@@ -1,0 +1,35 @@
+{
+  "$id": "https://ulb-h/schemas/metrics.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "latency_total_s": {
+      "type": "number"
+    },
+    "turns": {
+      "type": "integer"
+    },
+    "api_calls": {
+      "type": "integer"
+    },
+    "tokens_input": {
+      "type": "integer"
+    },
+    "tokens_output": {
+      "type": "integer"
+    },
+    "cost_usd_est": {
+      "type": "number"
+    },
+    "tool_calls": {
+      "type": "integer"
+    },
+    "tool_success_rate": {
+      "type": "number"
+    },
+    "stuck_detected": {
+      "type": "boolean"
+    }
+  },
+  "required": ["latency_total_s", "turns", "tool_calls"]
+}

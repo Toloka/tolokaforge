@@ -1,0 +1,101 @@
+[
+  {
+    "name": "get_customer",
+    "description": "Retrieve a customer record and account balance by customer ID.",
+    "parameters": {
+      "properties": {
+        "customer_id": {
+          "description": "Customer identifier, e.g. 'C-101'",
+          "title": "Customer Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "customer_id"
+      ],
+      "title": "get_customerArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "place_order",
+    "description": "Create a new order for a customer. Validates stock, creates an order record with status 'pending', and decrements stock for each ordered product. Returns the created order including the generated order ID.",
+    "parameters": {
+      "$defs": {
+        "OrderItem": {
+          "properties": {
+            "product_id": {
+              "title": "Product Id",
+              "type": "string"
+            },
+            "quantity": {
+              "minimum": 1,
+              "title": "Quantity",
+              "type": "integer"
+            },
+            "unit_price": {
+              "minimum": 0,
+              "title": "Unit Price",
+              "type": "number"
+            }
+          },
+          "required": [
+            "product_id",
+            "quantity",
+            "unit_price"
+          ],
+          "title": "OrderItem",
+          "type": "object"
+        }
+      },
+      "properties": {
+        "customer_id": {
+          "description": "Customer placing the order",
+          "title": "Customer Id",
+          "type": "string"
+        },
+        "items": {
+          "description": "Products to order",
+          "items": {
+            "$ref": "#/$defs/OrderItem"
+          },
+          "title": "Items",
+          "type": "array"
+        }
+      },
+      "required": [
+        "customer_id",
+        "items"
+      ],
+      "title": "place_orderArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "confirm_payment",
+    "description": "Mark a pending order as paid and deduct the total from the customer's account balance. Order must have status 'pending'.",
+    "parameters": {
+      "properties": {
+        "order_id": {
+          "description": "Order to pay, e.g. 'O-001'",
+          "title": "Order Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "order_id"
+      ],
+      "title": "confirm_paymentArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "list_products",
+    "description": "List all products currently in stock (stock > 0).",
+    "parameters": {
+      "properties": {},
+      "title": "list_productsArguments",
+      "type": "object"
+    }
+  }
+]

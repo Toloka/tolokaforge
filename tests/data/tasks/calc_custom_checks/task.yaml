@@ -1,0 +1,30 @@
+task_id: calc_custom_checks
+name: "Custom Checks Test Task"
+category: test
+description: |
+  A minimal task to test custom Python checks.
+  The agent should call update_counter to increment a counter.
+
+initial_state:
+  json_db:
+    counter: 0
+    operations: []
+
+tools:
+  agent:
+    enabled:
+      - update_counter
+  user:
+    enabled: []
+
+user_simulator:
+  mode: "scripted"
+  scripted_flow:
+    - role: "user"
+      content: "Please increment the counter by 5."
+
+policies:
+  disallowed_actions: []
+  guidance: []
+
+grading: "grading.yaml"

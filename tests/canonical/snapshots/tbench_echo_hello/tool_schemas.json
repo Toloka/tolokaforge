@@ -1,0 +1,43 @@
+[
+  {
+    "category": "compute",
+    "description": "Execute a bash command inside the task container",
+    "name": "bash",
+    "parameters": {
+      "properties": {
+        "command": {
+          "description": "Shell command to run",
+          "type": "string"
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "type": "object"
+    },
+    "source": {
+      "class_name": "bash",
+      "extra": {
+        "compose_file": "docker-compose.yaml",
+        "env_vars": {
+          "CPUS": "1",
+          "MEMORY": "512M",
+          "T_BENCH_CONTAINER_AGENT_LOGS_PATH": "/logs/agent",
+          "T_BENCH_CONTAINER_LOGS_PATH": "/logs",
+          "T_BENCH_TASK_AGENT_LOGS_PATH": "/workspace/agent_logs/echo-hello",
+          "T_BENCH_TASK_DOCKER_CLIENT_CONTAINER_NAME": "tbench_echo-hello_main",
+          "T_BENCH_TASK_DOCKER_CLIENT_IMAGE_NAME": "tbench_echo-hello",
+          "T_BENCH_TASK_LOGS_PATH": "/workspace/logs/echo-hello",
+          "T_BENCH_TEST_DIR": "/tests"
+        },
+        "service": "main",
+        "task_dir": "<ROOT>/tests/data/terminal_bench_tasks/echo-hello"
+      },
+      "invocation_style": "docker_compose_exec",
+      "mcp_server_script": null,
+      "module_path": "",
+      "toolset": "terminal_bench"
+    },
+    "timeout_s": 120.0
+  }
+]

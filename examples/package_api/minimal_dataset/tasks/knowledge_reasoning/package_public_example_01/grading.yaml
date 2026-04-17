@@ -1,0 +1,29 @@
+combine:
+  method: weighted
+  weights:
+    state_checks: 0.7
+    transcript_rules: 0.3
+  pass_threshold: 0.8
+state_checks:
+  jsonpaths:
+    - path_glob: "/env/fs/agent-visible/submissions/*"
+      contains_ci: "42"
+      description: "Answer file includes expected computed value"
+    - path_glob: "/env/fs/agent-visible/submissions/*"
+      contains_ci: "6 * 7"
+      description: "Answer file includes arithmetic evidence"
+transcript_rules:
+  max_turns: 6
+  required_actions:
+    - action_id: "read_problem"
+      requestor: assistant
+      name: read_file
+      arguments: {}
+      compare_args: []
+    - action_id: "write_answer"
+      requestor: assistant
+      name: write_file
+      arguments: {}
+      compare_args: []
+  disallow_regex:
+    - "(?i)(cannot complete|i don't know|failed)"

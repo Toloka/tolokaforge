@@ -1,0 +1,78 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+keys.txt
+keys2.txt
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# IDEs
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.local
+
+# Temporary plans (use docs/ for permanent development plans)
+plans/
+
+# Results and outputs
+results/
+finished_runs/
+
+# Output directory (benchmark results, generated reports)
+# NOTE: output/ is a working directory, not committed
+output/
+
+*.log
+
+# TypeSense data
+.cache/
+typesense-data/
+
+# Docker
+.docker/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Internal/local-only workspace artifacts (not part of OSS harness)
+_private/
+
+# Converted task outputs
+converted/

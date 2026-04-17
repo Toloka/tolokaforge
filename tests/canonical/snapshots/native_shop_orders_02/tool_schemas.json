@@ -1,0 +1,141 @@
+[
+  {
+    "category": "compute",
+    "description": "List all products currently in stock (stock > 0).",
+    "name": "list_products",
+    "parameters": {
+      "properties": {},
+      "title": "list_productsArguments",
+      "type": "object"
+    },
+    "source": {
+      "class_name": "list_products",
+      "extra": {},
+      "invocation_style": "mcp_server",
+      "mcp_server_script": "mcp_server.py",
+      "module_path": "mcp_server",
+      "toolset": "tool_use"
+    },
+    "timeout_s": 30.0
+  },
+  {
+    "category": "compute",
+    "description": "Retrieve a customer record and account balance by customer ID.",
+    "name": "get_customer",
+    "parameters": {
+      "properties": {
+        "customer_id": {
+          "description": "Customer identifier, e.g. 'C-101'",
+          "title": "Customer Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "customer_id"
+      ],
+      "title": "get_customerArguments",
+      "type": "object"
+    },
+    "source": {
+      "class_name": "get_customer",
+      "extra": {},
+      "invocation_style": "mcp_server",
+      "mcp_server_script": "mcp_server.py",
+      "module_path": "mcp_server",
+      "toolset": "tool_use"
+    },
+    "timeout_s": 30.0
+  },
+  {
+    "category": "compute",
+    "description": "Create a new order for a customer. Validates stock, creates an order record with status 'pending', and decrements stock for each ordered product. Returns the created order including the generated order ID.",
+    "name": "place_order",
+    "parameters": {
+      "$defs": {
+        "OrderItem": {
+          "properties": {
+            "product_id": {
+              "title": "Product Id",
+              "type": "string"
+            },
+            "quantity": {
+              "minimum": 1,
+              "title": "Quantity",
+              "type": "integer"
+            },
+            "unit_price": {
+              "minimum": 0,
+              "title": "Unit Price",
+              "type": "number"
+            }
+          },
+          "required": [
+            "product_id",
+            "quantity",
+            "unit_price"
+          ],
+          "title": "OrderItem",
+          "type": "object"
+        }
+      },
+      "properties": {
+        "customer_id": {
+          "description": "Customer placing the order",
+          "title": "Customer Id",
+          "type": "string"
+        },
+        "items": {
+          "description": "Products to order",
+          "items": {
+            "$ref": "#/$defs/OrderItem"
+          },
+          "title": "Items",
+          "type": "array"
+        }
+      },
+      "required": [
+        "customer_id",
+        "items"
+      ],
+      "title": "place_orderArguments",
+      "type": "object"
+    },
+    "source": {
+      "class_name": "place_order",
+      "extra": {},
+      "invocation_style": "mcp_server",
+      "mcp_server_script": "mcp_server.py",
+      "module_path": "mcp_server",
+      "toolset": "tool_use"
+    },
+    "timeout_s": 30.0
+  },
+  {
+    "category": "compute",
+    "description": "Mark a pending order as paid and deduct the total from the customer's account balance. Order must have status 'pending'.",
+    "name": "confirm_payment",
+    "parameters": {
+      "properties": {
+        "order_id": {
+          "description": "Order to pay, e.g. 'O-001'",
+          "title": "Order Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "order_id"
+      ],
+      "title": "confirm_paymentArguments",
+      "type": "object"
+    },
+    "source": {
+      "class_name": "confirm_payment",
+      "extra": {},
+      "invocation_style": "mcp_server",
+      "mcp_server_script": "mcp_server.py",
+      "module_path": "mcp_server",
+      "toolset": "tool_use"
+    },
+    "timeout_s": 30.0
+  }
+]

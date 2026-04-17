@@ -1,0 +1,84 @@
+syntax = "proto3";
+
+package agent;
+
+// Agent service - runs LLM to generate next action
+service AgentService {
+  // Get next action from agent given conversation history
+  rpc GetNextAction(AgentRequest) returns (AgentResponse);
+
+  // Health check
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+// Request to agent for next action
+message AgentRequest {
+  string task_id = 1;
+  string trial_id = 2;
+  repeated Message conversation_history = 3;
+  repeated ToolSchema available_tools = 4;
+  ModelConfig model_config = 5;
+  string system_prompt = 6;
+  int32 max_tokens = 7;
+}
+
+// Response from agent
+message AgentResponse {
+  oneof action {
+    ToolCall tool_call = 1;
+    FinalResponse final_response = 2;
+  }
+  AgentMetrics metrics = 3;
+}
+
+// Conversation message
+message Message {
+  string role = 1;  // "user", "assistant", "system"
+  string content = 2;
+  repeated ToolCall tool_calls = 3;  // For assistant messages with tool calls
+}
+
+// Tool call from agent
+message ToolCall {
+  string id = 1;
+  string name = 2;
+  string arguments_json = 3;  // JSON string of arguments
+}
+
+// Final response when agent is done
+message FinalResponse {
+  string content = 1;
+}
+
+// Tool schema definition
+message ToolSchema {
+  string name = 1;
+  string description = 2;
+  string parameters_json = 3;  // JSON schema for parameters
+}
+
+// Model configuration
+message ModelConfig {
+  string provider = 1;
+  string name = 2;
+  double temperature = 3;
+  int32 seed = 4;
+  int32 max_tokens = 5;
+}
+
+// Agent metrics
+message AgentMetrics {
+  int32 prompt_tokens = 1;
+  int32 completion_tokens = 2;
+  int32 total_tokens = 3;
+  double cost_usd = 4;
+  double latency_seconds = 5;
+}
+
+// Health check messages
+message HealthCheckRequest {}
+
+message HealthCheckResponse {
+  string status = 1;
+  string version = 2;
+}

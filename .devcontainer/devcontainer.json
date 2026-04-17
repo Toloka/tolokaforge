@@ -1,0 +1,50 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the
+// README at: https://github.com/devcontainers/templates/tree/main/src/ubuntu
+{
+	"name": "tolokaforge",
+	// Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
+	"build": {
+		"dockerfile": "./Dockerfile",
+		"args": {
+			"USER": "codespaces",
+			"DEVCONTAINER_VERSION": "1"
+		}
+	},
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"RooVeterinaryInc.roo-cline",
+				"TomRijndorp.find-it-faster",
+				"aaron-bond.better-comments",
+				"charliermarsh.ruff",
+				"eamodio.gitlens",
+				"github.vscode-github-actions",
+				"ms-python.python",
+				"spmeesseman.vscode-taskexplorer",
+				"yzhang.markdown-all-in-one",
+				"samuelcolvin.jinjahtml"
+			]
+		}
+	},
+	"mounts": [
+		// User cache volume mount
+		"source=${localWorkspaceFolderBasename}-cache,target=/home/codespaces/.cache,type=volume"
+	],
+	"workspaceMount": "source=${localWorkspaceFolder}/,target=${containerWorkspaceFolder},type=bind,consistency=cached",
+	"workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+
+	"initializeCommand": ".devcontainer/pre_init_container.sh",
+	"postCreateCommand": ".devcontainer/post_setup_container.sh codespaces \"${containerWorkspaceFolder}\"",
+	"postAttachCommand": ".devcontainer/post_attach_container.sh",
+
+	// https://containers.dev/features
+	"features": {
+		"ghcr.io/devcontainers/features/docker-in-docker:2": {}
+	},
+
+	// Configure tool-specific properties.
+	// "customizations": {},
+
+	// More info: https://aka.ms/dev-containers-non-root.
+	"remoteUser": "codespaces"
+}

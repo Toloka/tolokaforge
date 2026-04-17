@@ -1,0 +1,51 @@
+{
+  "adapter_settings": {
+    "compose_file": "<ROOT>/tests/data/terminal_bench_tasks/echo-hello/docker-compose.yaml",
+    "difficulty": "easy",
+    "tags": [
+      "shell",
+      "basics"
+    ],
+    "task_dir": "<ROOT>/tests/data/terminal_bench_tasks/echo-hello"
+  },
+  "adapter_type": "terminal_bench",
+  "category": "terminal",
+  "description": "Create a file /tmp/hello.txt containing the text \"Hello, World!\".\n",
+  "grading": "__adapter__",
+  "initial_state": {
+    "device_overrides": null,
+    "filesystem": null,
+    "initialization_actions": null,
+    "json_db": null,
+    "mock_web": null,
+    "rag": null,
+    "system_prompt": null
+  },
+  "initial_user_message": "Create a file /tmp/hello.txt containing the text \"Hello, World!\".\n",
+  "max_turns": null,
+  "metadata": {
+    "complexity": null,
+    "expected_failure_modes": [],
+    "tags": []
+  },
+  "name": "echo-hello",
+  "policies": {},
+  "system_prompt": "__adapter__",
+  "task_id": "echo-hello",
+  "tools": {
+    "agent": {
+      "enabled": [
+        "bash"
+      ]
+    },
+    "user": {
+      "enabled": []
+    }
+  },
+  "user_simulator": {
+    "backstory": null,
+    "mode": "scripted",
+    "persona": "cooperative",
+    "scripted_flow": []
+  }
+}

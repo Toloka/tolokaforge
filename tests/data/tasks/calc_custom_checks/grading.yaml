@@ -1,0 +1,26 @@
+combine:
+  method: "weighted"
+  weights:
+    state_checks: 0.3
+    custom_checks: 0.7
+  pass_threshold: 0.8
+
+state_checks:
+  jsonpaths:
+    - path: "$.counter"
+      op: "gte"
+      expected: 5
+      required: true
+      reason: "Counter should be at least 5"
+
+custom_checks:
+  enabled: true
+  file: "checks.py"
+  interface_version: "1.0"
+  timeout_seconds: 10
+  weight: 1.0
+  fail_on_error: true
+  relative_imports: []
+
+transcript_rules: null
+llm_judge: null

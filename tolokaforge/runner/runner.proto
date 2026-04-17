@@ -1,0 +1,310 @@
+// Runner Service Protocol
+// Host ↔ Runner communication for Tolokaforge distributed architecture
+// See docs/GRPC_PROTOCOL.md for full specification
+
+syntax = "proto3";
+
+package tolokaforge.runner;
+
+option go_package = "tolokaforge/runner";
+
+// =============================================================================
+// Runner Service - Main Host ↔ Runner communication
+// =============================================================================
+
+service RunnerService {
+  // Register a new trial with full task description
+  // Host sends TaskDescription JSON, Runner initializes environment
+  rpc RegisterTrial(RegisterTrialRequest) returns (RegisterTrialResponse);
+
+  // Execute a tool call from the LLM
+  // Host forwards tool call, Runner executes and returns output
+  rpc ExecuteTool(ExecuteToolRequest) returns (ExecuteToolResponse);
+
+  // Grade the completed trial
+  // Host sends trajectory, Runner computes grade via golden path comparison
+  rpc GradeTrial(GradeTrialRequest) returns (GradeTrialResponse);
+
+  // Get current state snapshot - for debugging
+  rpc GetState(GetStateRequest) returns (GetStateResponse);
+
+  // Reset trial state to initial - for retries
+  rpc ResetTrial(ResetTrialRequest) returns (ResetTrialResponse);
+
+  // Health check
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+// =============================================================================
+// RegisterTrial - Initialize trial with full TaskDescription
+// =============================================================================
+
+message RegisterTrialRequest {
+  // Unique identifier for this trial instance
+  // Format: "{task_id}:{trial_index}" e.g. "airline_task_001:0"
+  string trial_id = 1;
+
+  // Full TaskDescription as JSON string
+  // See docs/TASK_DESCRIPTION_SCHEMA.md for schema
+  // Contains: task_id, system_prompt, agent_tools, user_tools,
+  //           initial_state, grading config, user_simulator config
+  string task_description_json = 2;
+
+  // Optional: Override timeout for tool execution (seconds)
+  double default_tool_timeout_s = 3;
+}
+
+message RegisterTrialResponse {
+  // Whether registration succeeded
+  bool success = 1;
+
+  // Error message if registration failed
+  string error = 2;
+
+  // Tool schemas in OpenAI function calling format
+  // These are returned to Host for LLM tool configuration
+  // Format: [{"type": "function", "function": {"name": "...", "description": "...", "parameters": {...}}}]
+  repeated ToolSchema tool_schemas = 3;
+
+  // Number of agent tools registered
+  int32 num_agent_tools = 4;
+
+  // Number of user tools registered (for dual-control scenarios)
+  int32 num_user_tools = 5;
+}
+
+// Tool schema in OpenAI function calling format
+message ToolSchema {
+  string name = 1;
+  string description = 2;
+  // JSON Schema for parameters
+  string parameters_json = 3;
+  // Tool category: "read", "write", "compute"
+  string category = 4;
+  // Timeout override for this specific tool
+  double timeout_s = 5;
+}
+
+// =============================================================================
+// ExecuteTool - Execute a single tool call
+// =============================================================================
+
+message ExecuteToolRequest {
+  // Trial identifier (must match a registered trial)
+  string trial_id = 1;
+
+  // Tool name to execute
+  string tool_name = 2;
+
+  // Tool arguments as JSON string
+  // Must conform to the tool's parameter schema
+  string arguments_json = 3;
+
+  // Timeout for this execution (seconds)
+  // If 0, uses default from RegisterTrial or tool schema
+  double timeout_seconds = 4;
+
+  // Which environment is making the call
+  // "agent" for assistant tools, "user" for user-side tools
+  string executor = 5;
+}
+
+message ExecuteToolResponse {
+  // Execution status
+  ExecutionStatus status = 1;
+
+  // Tool output string (what the LLM sees)
+  // For success: the tool's return value as string
+  // For error: empty (see error_message)
+  // For timeout: empty (see error_message)
+  string output = 2;
+
+  // Error message if status != SUCCESS
+  string error_message = 3;
+
+  // Execution metrics
+  ToolMetrics metrics = 4;
+}
+
+enum ExecutionStatus {
+  EXECUTION_STATUS_UNSPECIFIED = 0;
+  EXECUTION_STATUS_SUCCESS = 1;
+  EXECUTION_STATUS_ERROR = 2;
+  EXECUTION_STATUS_TIMEOUT = 3;
+  EXECUTION_STATUS_TOOL_NOT_FOUND = 4;
+  EXECUTION_STATUS_INVALID_ARGUMENTS = 5;
+  EXECUTION_STATUS_TRIAL_NOT_FOUND = 6;
+}
+
+message ToolMetrics {
+  // Execution latency in seconds
+  double latency_seconds = 1;
+
+  // Exit code (for bash-like tools)
+  int32 exit_code = 2;
+
+  // Number of state mutations caused by this tool (optional, low priority)
+  // Requires Runner to track via DB Service - may be 0 if not implemented
+  int32 state_mutations = 3;
+}
+
+// =============================================================================
+// GradeTrial - Compute grade for completed trial
+// =============================================================================
+
+message GradeTrialRequest {
+  // Trial identifier
+  string trial_id = 1;
+
+  // Optional: LLM messages for transcript rules grading
+  // Only needed if grading config includes transcript_rules (must_contain, required_actions, etc.)
+  // For hash-only grading (TlkMcpCore, Tau), this can be omitted - Runner has tool call history
+  // Contains: messages array with role, content (assistant/user text only, not tool results)
+  string llm_messages_json = 2;
+
+  // Optional: Skip golden path execution if expected hash is pre-computed
+  // If provided, Runner compares trial state hash directly
+  string precomputed_expected_hash = 3;
+
+  // Which grading components to compute
+  // If empty, computes all configured in TaskDescription.grading
+  repeated string grading_components = 4;  // "state_checks", "transcript_rules"
+}
+
+message GradeTrialResponse {
+  // Whether grading succeeded
+  bool success = 1;
+
+  // Error message if grading failed
+  string error = 2;
+
+  // The computed grade
+  Grade grade = 3;
+}
+
+message Grade {
+  // Binary pass/fail based on pass_threshold
+  bool binary_pass = 1;
+
+  // Numeric score 0.0 - 1.0
+  double score = 2;
+
+  // Individual component scores
+  GradeComponents components = 3;
+
+  // Human-readable reasons for the grade
+  // Format: "State: hash mismatch | Transcript: 2 required actions missing"
+  string reasons = 4;
+
+  // State diff if hash comparison failed
+  // JSON object with: added, removed, modified, diff_lines
+  string state_diff_json = 5;
+
+  // Detailed custom check results if applicable
+  repeated CustomCheckResult custom_checks = 6;
+}
+
+message GradeComponents {
+  // State checks score (hash comparison, JSONPath assertions, env assertions)
+  // -1.0 means not evaluated
+  double state_checks = 1;
+
+  // Transcript rules score (required actions, communicate info, max turns)
+  double transcript_rules = 2;
+
+  // LLM judge score - NOT computed by Runner (see Design Note in GRPC_PROTOCOL.md)
+  // Runner returns -1.0; Host computes this separately if configured
+  double llm_judge = 3;
+
+  // Custom Python checks score
+  double custom_checks = 4;
+}
+
+message CustomCheckResult {
+  string check_name = 1;
+  // "passed", "failed", "skipped", "error"
+  string status = 2;
+  double score = 3;
+  string message = 4;
+  // Additional details as JSON
+  string details_json = 5;
+}
+
+// =============================================================================
+// GetState - Debug endpoint to inspect current state
+// =============================================================================
+
+message GetStateRequest {
+  // Trial identifier
+  string trial_id = 1;
+
+  // Whether to include unstable fields in response
+  bool include_unstable = 2;
+
+  // Specific tables to return (empty = all)
+  repeated string tables = 3;
+}
+
+message GetStateResponse {
+  // Whether request succeeded
+  bool success = 1;
+
+  // Error message if failed
+  string error = 2;
+
+  // Current state as JSON
+  // Structure: {"table_name": [records...], ...}
+  string state_json = 3;
+
+  // Stable state hash (excluding unstable fields)
+  string stable_hash = 4;
+
+  // Full state hash (including unstable fields)
+  string full_hash = 5;
+}
+
+// =============================================================================
+// ResetTrial - Reset state to initial for retries
+// =============================================================================
+
+message ResetTrialRequest {
+  // Trial identifier
+  string trial_id = 1;
+
+  // Whether to re-execute initialization_actions
+  bool execute_init_actions = 2;
+}
+
+message ResetTrialResponse {
+  // Whether reset succeeded
+  bool success = 1;
+
+  // Error message if failed
+  string error = 2;
+
+  // State hash after reset
+  string state_hash = 3;
+}
+
+// =============================================================================
+// HealthCheck - Service health status
+// =============================================================================
+
+message HealthCheckRequest {}
+
+message HealthCheckResponse {
+  // Service status: "healthy", "degraded", "unhealthy"
+  string status = 1;
+
+  // Service version
+  string version = 2;
+
+  // Number of active trials
+  int32 num_active_trials = 3;
+
+  // DB Service connectivity
+  bool db_service_connected = 4;
+
+  // Available tool adapters
+  repeated string available_adapters = 5;
+}

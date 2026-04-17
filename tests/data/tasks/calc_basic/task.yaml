@@ -1,0 +1,29 @@
+task_id: calc_basic
+name: "Simple Calculation Task"
+category: test
+description: |
+  Calculate 17 * 23 and save the result to a file called result.txt.
+  
+  This is a minimal test task designed for fast test execution.
+
+initial_state:
+  json_db: null
+
+tools:
+  agent:
+    enabled:
+      - write_file
+  user:
+    enabled: []
+
+user_simulator:
+  mode: "scripted"
+  scripted_flow:
+    - role: "user"
+      content: "Please calculate 17 times 23 and save the answer to a file called result.txt."
+
+policies:
+  disallowed_actions: []
+  guidance: []
+
+grading: "grading.yaml"

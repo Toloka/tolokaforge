@@ -1,0 +1,36 @@
+combine:
+  method: weighted
+  weights:
+    state_checks: 0.7
+    transcript_rules: 0.3
+  pass_threshold: 0.8
+state_checks:
+  jsonpaths:
+    - path_glob: "/env/fs/agent-visible/submissions/*"
+      contains_ci: "not eligible for cancellation"
+      description: "Response applies enterprise cancellation gate correctly"
+    - path_glob: "/env/fs/agent-visible/submissions/*"
+      contains_ci: "7 business days"
+      description: "Response applies enterprise refund SLA"
+    - path_glob: "/env/fs/agent-visible/submissions/*"
+      contains_ci: "compliance escalation"
+      description: "Response includes required escalation path for regulated account"
+    - path_glob: "/env/fs/agent-visible/submissions/*"
+      contains_ci: "order #7712"
+      description: "Response references the target order"
+transcript_rules:
+  max_turns: 10
+  disallow_regex:
+    - "(?i)(cannot complete|failed to complete|unable to complete)"
+  required_actions:
+    - action_id: "browse_policy_site"
+      requestor: assistant
+      name: browser
+      arguments: {}
+      compare_args: []
+    - action_id: "write_policy_response"
+      requestor: assistant
+      name: write_file
+      arguments: {}
+      compare_args: []
+  communicate_info: []

@@ -1,0 +1,286 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tolokaforge"
+version = "0.2.0"
+description = "Tolokaforge - LLM Tool-Use Benchmarking Harness"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+authors = [
+    {name = "Renaud de la Gueronniere"},
+    {name = "Tolokaforge Contributors"},
+]
+maintainers = [
+    {name = "Renaud de la Gueronniere"},
+]
+dependencies = [
+    # Core LLM integration
+    "litellm>=1.0.0",
+    # Data validation and schemas
+    "pydantic>=2.0.0",
+    "pydantic[email]>=2.0.0",
+    "jsonschema>=4.20.0",
+    # Configuration
+    "pyyaml>=6.0.1",
+    "python-dotenv>=1.0.0",
+    # CLI
+    "click>=8.1.0",
+    "rich>=13.0.0",
+    # JSON processing
+    "jsonpath-ng>=1.6.0",
+    # HTTP client
+    "httpx>=0.25.0",
+    # Utilities
+    "tenacity>=8.2.0",
+    "jinja2>=3.1.0",
+    "loguru>=0.7.0",
+    "docstring_parser>=0.16",
+    "deepdiff>=6.0.0",
+    "toml>=0.10.0",
+    "addict>=2.4.0",
+    "odata-query>=0.10.0",
+    "starlette>=0.52.1",
+    "sqlalchemy>=2.0.48",
+    "typesense>=2.0.0",
+    "structlog>=24.0.0",
+]
+
+[project.optional-dependencies]
+browser = [
+    "playwright>=1.40.0",
+    "pillow>=12.1.0",
+]
+docker = [
+    "docker>=7.0.0",
+    "grpcio>=1.60.0",
+    "grpcio-tools>=1.60.0",
+    "grpcio-health-checking>=1.60.0",
+]
+server = [
+    "fastapi>=0.108.0",
+    "uvicorn>=0.25.0",
+]
+rag = [
+    "rank-bm25>=0.2.2",
+]
+mcp = [
+    "mcp>=0.1.0",
+]
+office = [
+    "openpyxl>=3.1.0",
+    "python-docx>=1.0.0",
+    "python-pptx>=0.6.21",
+]
+terminal_bench = [
+    "tolokaforge-adapter-terminal-bench",
+]
+adapters = [
+    "tolokaforge[terminal_bench]",
+]
+all = [
+    "tolokaforge[browser,docker,server,rag,mcp,office,adapters]",
+]
+
+[project.scripts]
+tolokaforge = "tolokaforge.cli.main:cli"
+
+[tool.hatch.build]
+exclude = [
+    "tasks/**",
+    "scratchpad/**",
+    "demos/**",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["tolokaforge"]
+
+[tool.hatch.build.targets.sdist]
+exclude = ["tasks/"]
+
+[tool.black]
+line-length = 100
+target-version = ['py310']
+extend-exclude = '''
+(
+  tests/data/projects
+)
+'''
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = ["**/node_modules", "**/__pycache__", "tests/data/projects"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B", "C4", "SIM"]
+ignore = [
+    "E501",  # line-too-long (handled by formatter)
+    "E402",  # module-import-not-at-top (needed for some init files)
+    "B904",  # raise-without-from-inside-except (too noisy, often intentional)
+    "B905",  # zip-without-explicit-strict (strict param not always needed)
+    "B008",  # function-call-in-default-argument (standard pattern for Typer/FastAPI)
+    "SIM101",  # duplicate-isinstance-call (sometimes clearer to be explicit)
+    "SIM102",  # collapsible-if (sometimes less readable when collapsed)
+    "SIM103",  # needless-bool (sometimes clearer to be explicit)
+    "SIM105",  # suppressible-exception (contextlib.suppress not always clearer)
+    "SIM108",  # if-else-block-instead-of-if-exp (ternary not always clearer)
+    "SIM116",  # if-else-block-instead-of-dict-lookup (not always applicable)
+    "SIM117",  # multiple-with-statements (sometimes more readable separated)
+    "UP007",  # non-pep604-annotation-union (Union[] style for recursive types)
+]
+fixable = ["ALL"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["tolokaforge", "tolokaforge_adapter_terminal_bench"]
+
+[tool.ruff.format]
+# Use double quotes for strings (matches black default)
+quote-style = "double"
+# Indent with spaces (matches black default)
+indent-style = "space"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+norecursedirs = ["tests/data/projects/*/tests"]
+addopts = [
+    "-v",
+    "--strict-markers",
+    "--tb=short",
+]
+filterwarnings = [
+    # testcontainers internal — uses deprecated decorator; no fix on our side
+    "ignore:The @wait_container_is_ready decorator is deprecated:DeprecationWarning:testcontainers.core.waiting_utils",
+    # litellm uses Pydantic V1 APIs internally; our code uses V2
+    "ignore::pydantic.warnings.PydanticDeprecatedSince20",
+    # Dependencies use datetime.utcnow(); 0 occurrences in our code
+    "ignore:datetime\\.datetime\\.utcnow:DeprecationWarning",
+    # pytest-asyncio internal; our code fixed in #57, suppression for deps only
+    "ignore:.*iscoroutinefunction.*:DeprecationWarning",
+]
+markers = [
+    "unit: marks tests as unit tests (fast, isolated)",
+    "integration: marks tests as integration tests (with services)",
+    "slow: marks tests as slow (> 5 seconds)",
+    "requires_api: marks tests requiring API keys",
+    "requires_docker: marks tests requiring Docker",
+    "requires_browser: marks tests requiring Playwright/Chromium browser",
+    "docker: marks tests that require Docker daemon (real container tests)",
+    "requires_postgres: marks tests requiring a reachable Postgres instance",
+    "grading: marks tests related to grading system",
+    "security: marks tests for security validation",
+    "performance: marks tests for performance benchmarking",
+    "llm: marks tests that call real LLM providers",
+    "canonical: marks canonization snapshot tests",
+]
+
+[tool.coverage.run]
+source = ["tolokaforge"]
+omit = [
+    "tolokaforge/*/tests/*",
+    "*/test_*",
+    "*_pb2.py",
+    "*_pb2_grpc.py",
+    "*/__main__.py",
+    # gRPC service implementations (require running infrastructure)
+    "tolokaforge/agent/service.py",
+    "tolokaforge/executor/service.py",
+    "tolokaforge/runner/service.py",
+    # HTTP clients and tool factory (require running services / gRPC)
+    "tolokaforge/runner/db_client.py",
+    "tolokaforge/runner/db_proxy.py",
+    "tolokaforge/runner/rag_client.py",
+    "tolokaforge/runner/tool_factory.py",
+    # Docker runtime clients
+    "tolokaforge/core/docker_runtime.py",
+    "tolokaforge/core/docker_adapter.py",
+    # Docker SDK wrappers (require Docker daemon)
+    "tolokaforge/docker/builder.py",
+    "tolokaforge/docker/container.py",
+    "tolokaforge/docker/image.py",
+    "tolokaforge/docker/network.py",
+    "tolokaforge/docker/logging.py",
+    "tolokaforge/docker/wait_for_services.py",
+    "tolokaforge/docker/stacks/*",
+    # Docker runtime health/registry (require running containers)
+    "tolokaforge/docker/health.py",
+    "tolokaforge/docker/registry.py",
+    # FastAPI app entry points (require service context)
+    "tolokaforge/env/json_db_service/app.py",
+    "tolokaforge/env/mock_web_service/app.py",
+    "tolokaforge/env/rag_service/app.py",
+]
+
+[tool.coverage.report]
+fail_under = 60
+show_missing = true
+skip_covered = true
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+
+# =============================================================================
+# Development Dependencies (PEP 735)
+# =============================================================================
+
+[dependency-groups]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.0.0",
+    "pytest-docker>=2.0.0",
+    "testcontainers>=3.7.0",
+    "psutil>=5.9.0",
+    "black==25.11.0",
+    "ruff==0.14.4",
+    "mypy>=1.7.0",
+    "pre-commit>=3.6.0",
+    "playwright>=1.40.0",
+    "pillow>=12.1.0",
+    "docker>=7.0.0",
+    "grpcio>=1.60.0",
+    "grpcio-tools>=1.60.0",
+    "grpcio-health-checking>=1.60.0",
+    "fastapi>=0.108.0",
+    "uvicorn>=0.25.0",
+    "rank-bm25>=0.2.2",
+    "mcp>=0.1.0",
+    "psycopg[binary]>=3.2.0",
+    "tolokaforge-adapter-terminal-bench",
+    "dev-mcp",
+]
+
+# =============================================================================
+# UV Configuration
+# =============================================================================
+# uv is the recommended package manager for this project
+# See: https://docs.astral.sh/uv/
+
+[tool.uv.workspace]
+members = [
+    "tools/demo-recorder",
+    "tools/dev-mcp",
+    "tools/eval-orchestrator",
+    "tools/pricing-updater",
+    "external_adapters/tolokaforge-adapter-terminal-bench",
+]
+
+[tool.uv.sources]
+dev-mcp = { workspace = true }
+tolokaforge = { workspace = true }
+tolokaforge-adapter-terminal-bench = { workspace = true }
+
+# PyPI as primary index for cross-platform compatibility
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple/"

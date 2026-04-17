@@ -1,0 +1,52 @@
+{
+  "adapter_settings": null,
+  "adapter_type": "native",
+  "category": "test",
+  "description": "Open a simple HTML page and extract information from it.\n\nThis is a minimal test task for browser functionality testing.\n",
+  "grading": "grading.yaml",
+  "initial_state": {
+    "device_overrides": null,
+    "filesystem": null,
+    "initialization_actions": null,
+    "json_db": null,
+    "mock_web": null,
+    "rag": null,
+    "system_prompt": null
+  },
+  "initial_user_message": null,
+  "max_turns": null,
+  "metadata": {
+    "complexity": null,
+    "expected_failure_modes": [],
+    "tags": []
+  },
+  "name": "Simple Browser Task",
+  "policies": {
+    "disallowed_actions": [],
+    "guidance": []
+  },
+  "system_prompt": null,
+  "task_id": "browser_basic",
+  "tools": {
+    "agent": {
+      "enabled": [
+        "browser",
+        "write_file"
+      ]
+    },
+    "user": {
+      "enabled": []
+    }
+  },
+  "user_simulator": {
+    "backstory": null,
+    "mode": "scripted",
+    "persona": "cooperative",
+    "scripted_flow": [
+      {
+        "content": "Please open the test.html file in the browser and find the secret code displayed on the page. Save the secret code to a file called secret.txt.",
+        "role": "user"
+      }
+    ]
+  }
+}

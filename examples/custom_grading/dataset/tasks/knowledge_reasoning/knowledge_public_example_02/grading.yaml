@@ -1,0 +1,56 @@
+combine:
+  method: weighted
+  weights:
+    state_checks: 0.6
+    transcript_rules: 0.2
+    llm_judge: 0.2
+  pass_threshold: 0.75
+state_checks:
+  jsonpaths:
+    - path_glob: "/env/fs/agent-visible/submissions/*"
+      contains_ci: "hypothesis b"
+      description: "Rationale selects the stronger evidence-backed hypothesis"
+    - path_glob: "/env/fs/agent-visible/submissions/*"
+      contains_ci: "rollback"
+      description: "Rationale references strongest causal evidence"
+    - path_glob: "/env/fs/agent-visible/submissions/*"
+      contains_ci: "cross-region"
+      description: "Rationale uses multi-region evidence quality"
+    - path_glob: "/env/fs/agent-visible/submissions/*"
+      contains_ci: "uncertainty"
+      description: "Rationale acknowledges residual uncertainty"
+transcript_rules:
+  max_turns: 8
+  disallow_regex:
+    - "(?i)(cannot complete|no answer|i don't know)"
+  required_actions:
+    - action_id: "read_prompt"
+      requestor: assistant
+      name: read_file
+      arguments: {}
+      compare_args: []
+    - action_id: "write_rationale"
+      requestor: assistant
+      name: write_file
+      arguments: {}
+      compare_args: []
+  communicate_info: []
+llm_judge:
+  # Keep mock provider for portable CI; replace with a production judge model for live evals.
+  model_ref: "mock/mock-judge"
+  rubric: |
+    Grade the final reasoning quality.
+    High score requires:
+    - Correct hypothesis selection with causal timeline support.
+    - Clear distinction between evidence and assumptions.
+    - Executive clarity and explicit uncertainty handling.
+  output_schema:
+    type: object
+    properties:
+      score:
+        type: number
+        minimum: 0
+        maximum: 1
+      reasons:
+        type: string
+    required: ["score", "reasons"]

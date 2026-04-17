@@ -1,0 +1,18 @@
+[project]
+name = "pricing-updater"
+version = "0.1.0"
+description = "Fetch model pricing from OpenRouter API and update pricing.json"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.25.0",
+    "typer>=0.12.5,<0.13",
+    "click>=8.0.0,<8.2.0",
+    "rich>=13.0.0",
+]
+
+[project.scripts]
+pricing-updater = "pricing_updater.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

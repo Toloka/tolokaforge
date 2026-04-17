@@ -1,0 +1,23 @@
+# Distributed run example config.
+# Uses the package_api minimal dataset so the example is self-contained.
+models:
+  agent:
+    provider: "mock"
+    name: "mock-agent"
+    temperature: 0.0
+  user:
+    provider: "mock"
+    name: "mock-user"
+    temperature: 0.0
+
+orchestrator:
+  workers: 2
+  repeats: 2
+  max_turns: 8
+  queue_backend: sqlite
+
+evaluation:
+  task_packs:
+    - "examples/package_api/minimal_dataset"
+  tasks_glob: "**/task.yaml"
+  output_dir: "results/distributed_example"

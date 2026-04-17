@@ -1,0 +1,21 @@
+{
+	"mcpServers": {
+		"dev": {
+			"command": "bash",
+			"args": ["scripts/with_profile.sh", "uv", "run", "dev-mcp"],
+			"watchPaths": ["tools/dev-mcp"],
+			"alwaysAllow": [
+				"run_python",
+				"run_tests",
+				"update_canonical_snapshots",
+				"lint_check",
+				"lint_fix",
+				"format_code",
+				"format_check",
+				"validate_tasks",
+				"uv_sync",
+				"make_clean"
+			]
+		}
+	}
+}

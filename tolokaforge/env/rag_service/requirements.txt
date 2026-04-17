@@ -1,0 +1,12 @@
+# RAG Service Dependencies
+fastapi>=0.100.0
+uvicorn>=0.23.0
+pydantic>=2.0.0
+rank-bm25>=0.2.2
+numpy>=1.24.0
+httpx>=0.24.0
+
+# Optional: For semantic search (FAISS)
+# These are large dependencies, so they're optional
+sentence-transformers>=2.2.0
+# faiss-cpu>=1.7.4  # Uncomment for FAISS support

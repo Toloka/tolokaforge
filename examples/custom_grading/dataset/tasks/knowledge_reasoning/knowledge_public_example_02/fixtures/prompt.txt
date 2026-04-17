@@ -1,0 +1,16 @@
+Incident root-cause analysis
+
+Hypothesis A: latency spike was caused by external network congestion.
+Evidence for A:
+- A single traceroute from us-central showed elevated packet loss.
+- No equivalent packet-loss signal from eu-west or ap-south.
+- External ISP status page reported minor, non-critical maintenance.
+
+Hypothesis B: latency spike was caused by a bad cache rollout.
+Evidence for B:
+- Cache rollout started 6 minutes before p95 latency rose.
+- Rollback reduced p95 latency within 10 minutes.
+- Error logs show cache key mismatch warnings across three regions.
+- Reproducing the rollout in staging recreated key-mismatch errors.
+
+Question: Which hypothesis is stronger and why? Include one remaining uncertainty.

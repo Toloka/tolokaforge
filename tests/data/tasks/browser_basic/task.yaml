@@ -1,0 +1,44 @@
+task_id: browser_basic
+name: "Simple Browser Task"
+category: test
+description: |
+  Open a simple HTML page and extract information from it.
+  
+  This is a minimal test task for browser functionality testing.
+
+initial_state:
+  json_db: null
+  workspace:
+    files:
+      - path: test.html
+        content: |
+          <!DOCTYPE html>
+          <html>
+          <head>
+              <title>Test Page</title>
+          </head>
+          <body>
+              <h1>Welcome to the Test Page</h1>
+              <p>The secret code is: <span id="code">ABC123</span></p>
+          </body>
+          </html>
+
+tools:
+  agent:
+    enabled:
+      - browser
+      - write_file
+  user:
+    enabled: []
+
+user_simulator:
+  mode: "scripted"
+  scripted_flow:
+    - role: "user"
+      content: "Please open the test.html file in the browser and find the secret code displayed on the page. Save the secret code to a file called secret.txt."
+
+policies:
+  disallowed_actions: []
+  guidance: []
+
+grading: "grading.yaml"

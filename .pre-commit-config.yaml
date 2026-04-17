@@ -1,0 +1,21 @@
+# Pre-commit hooks for code quality
+# Install: uv sync --dev && uv run pre-commit install
+# Run manually: uv run pre-commit run --all-files
+
+# Exclude contrib/ (external libraries) and tests/data/projects/ (LFS files) from all hooks
+exclude: ^(contrib/|tests/data/projects/)
+
+repos:
+  # Ruff - Fast Python linter (linting only, not formatting)
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.4  # Must match pyproject.toml [project.optional-dependencies.dev]
+    hooks:
+      - id: ruff
+        args: [--fix, --config, pyproject.toml]
+
+  # Black - Python code formatter
+  - repo: https://github.com/psf/black
+    rev: 25.11.0  # Must match pyproject.toml [project.optional-dependencies.dev]
+    hooks:
+      - id: black
+        args: [--config, pyproject.toml]

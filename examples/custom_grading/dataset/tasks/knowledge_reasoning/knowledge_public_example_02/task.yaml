@@ -1,0 +1,27 @@
+task_id: "knowledge_public_example_02"
+name: "Hypothesis Selection Rationale"
+category: "knowledge_reasoning"
+description: "Compare competing root-cause hypotheses using evidence quality and produce an executive-ready rationale."
+max_turns: 8
+initial_user_message: "Read `prompt.txt`, choose the stronger hypothesis, and write a rationale to `submissions/knowledge_hypothesis_rationale.md` that separates evidence, assumptions, and residual uncertainty."
+initial_state:
+  filesystem:
+    copy:
+      - from: "fixtures/prompt.txt"
+        to: "/env/fs/agent-visible/prompt.txt"
+tools:
+  agent:
+    enabled: ["read_file", "write_file"]
+  user:
+    enabled: []
+user_simulator:
+  mode: scripted
+  persona: cooperative
+  scripted_flow:
+    - user: "Please tighten the write-up for an executive audience in under 120 words before finalizing."
+    - user: "Looks good, finalize when ready. ###STOP###"
+policies:
+  guidance:
+    - "Prioritize evidence quality over verbosity."
+    - "Differentiate evidence from assumptions."
+grading: "grading.yaml"

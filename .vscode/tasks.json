@@ -1,0 +1,72 @@
+{
+    // See https://go.microsoft.com/fwlink/?LinkId=733558
+    // for the documentation about the tasks.json format
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Create python venv",
+            "type": "shell",
+            "command": [
+                "${workspaceFolder}/scripts/setup/create_python_venv.sh"
+            ],
+            "problemMatcher": []
+        },
+        {
+            "label": "Run tests",
+            "type": "shell",
+            "command": [
+                "scripts/with_env.sh",
+                "uv",
+                "run",
+                "pytest",
+                "-v"
+            ],
+            "problemMatcher": []
+        },
+        {
+            "label": "Lint and format (fix)",
+            "detail": "Run ruff check --fix, ruff format, and black",
+            "type": "shell",
+            "command": [
+                "${workspaceFolder}/scripts/lint/run_ruff.sh"
+            ],
+            "problemMatcher": [],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        },
+        {
+            "label": "Check linting (no fix)",
+            "detail": "Check ruff and formatting without making changes (CI mode)",
+            "type": "shell",
+            "command": [
+                "${workspaceFolder}/scripts/lint/run_ruff.sh",
+                "--check"
+            ],
+            "problemMatcher": [],
+            "group": "build"
+        },
+        {
+            "label": "Run black formatter",
+            "detail": "Apply black formatting to codebase",
+            "type": "shell",
+            "command": [
+                "${workspaceFolder}/scripts/lint/run_black.sh"
+            ],
+            "problemMatcher": [],
+            "group": "build"
+        },
+        {
+            "label": "Check black formatting",
+            "detail": "Check black formatting without changes (CI mode)",
+            "type": "shell",
+            "command": [
+                "${workspaceFolder}/scripts/lint/run_black.sh",
+                "--check"
+            ],
+            "problemMatcher": [],
+            "group": "build"
+        }
+    ]
+}

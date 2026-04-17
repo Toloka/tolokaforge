@@ -1,0 +1,29 @@
+combine:
+  method: weighted
+  weights:
+    state_checks: 0.6
+    transcript_rules: 0.4
+  pass_threshold: 0.7
+
+state_checks:
+  jsonpaths: []
+  files:
+    - path: secret.txt
+      must_exist: true
+      must_contain: "ABC123"
+
+transcript_rules:
+  tool_expectations:
+    required_tools:
+      - browser
+      - write_file
+    disallowed_tools: []
+  
+  max_turns: 15
+  
+  must_contain_phrases:
+    - "ABC123"
+  
+  disallow_regex: []
+
+llm_judge: null

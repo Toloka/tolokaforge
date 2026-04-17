@@ -1,0 +1,26 @@
+task_id: "package_public_example_01"
+name: "Package API Minimal Example"
+category: "knowledge_reasoning"
+description: "Read a short prompt from file, compute the requested value, and write a markdown answer."
+initial_user_message: "Read `problem.txt`, then write `submissions/answer.md` with the final value and finish by saying 'analysis complete'."
+initial_state:
+  filesystem:
+    copy:
+      - from: "fixtures/problem.txt"
+        to: "/env/fs/agent-visible/problem.txt"
+tools:
+  agent:
+    enabled: ["read_file", "write_file"]
+  user:
+    enabled: []
+user_simulator:
+  mode: scripted
+  persona: cooperative
+  scripted_flow:
+    - if_assistant_contains: "analysis complete"
+      user: "Thanks. ###STOP###"
+    - default: "Please continue."
+policies:
+  guidance:
+    - "Include both the arithmetic and final answer in the output file."
+grading: "grading.yaml"

@@ -1,0 +1,13 @@
+{
+  "combine": {
+    "method": "weighted",
+    "pass_threshold": 0.5,
+    "weights": {
+      "custom_checks": 1.0
+    }
+  },
+  "custom_checks": null,
+  "llm_judge": null,
+  "state_checks": null,
+  "transcript_rules": null
+}

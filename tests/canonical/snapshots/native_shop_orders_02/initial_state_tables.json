@@ -1,0 +1,45 @@
+{
+  "schemas": [],
+  "tables": {
+    "customers": [
+      {
+        "balance": 300.0,
+        "email": "alex@example.com",
+        "id": "C-101",
+        "name": "Alex Torres"
+      }
+    ],
+    "orders": [],
+    "products": [
+      {
+        "category": "audio",
+        "id": "P-001",
+        "name": "Wireless Headphones",
+        "price": 89.99,
+        "stock": 42
+      },
+      {
+        "category": "accessories",
+        "id": "P-002",
+        "name": "USB-C Hub 7-Port",
+        "price": 34.5,
+        "stock": 15
+      },
+      {
+        "category": "accessories",
+        "id": "P-003",
+        "name": "Ergonomic Laptop Stand",
+        "price": 27.0,
+        "stock": 8
+      },
+      {
+        "category": "input",
+        "id": "P-004",
+        "name": "Mechanical Keyboard",
+        "price": 129.0,
+        "stock": 5
+      }
+    ]
+  },
+  "unstable_fields": []
+}

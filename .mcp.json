@@ -1,0 +1,9 @@
+{
+	"mcpServers": {
+		"dev": {
+			"command": "bash",
+			"args": ["scripts/with_profile.sh", "uv", "run", "dev-mcp"],
+			"type": "stdio"
+		}
+	}
+}

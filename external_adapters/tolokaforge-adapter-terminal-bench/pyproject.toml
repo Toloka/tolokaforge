@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tolokaforge-adapter-terminal-bench"
+version = "0.1.0"
+description = "Terminal-bench adapter plugin for tolokaforge"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+dependencies = [
+    "tolokaforge",
+    "pyyaml>=6.0.1",
+]
+
+[project.entry-points."tolokaforge.adapters"]
+terminal_bench = "tolokaforge_adapter_terminal_bench:TerminalBenchAdapter"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tolokaforge_adapter_terminal_bench"]

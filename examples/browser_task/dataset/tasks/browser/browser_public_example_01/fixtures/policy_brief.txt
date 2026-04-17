@@ -1,0 +1,9 @@
+Support escalation intake
+
+Customer account: ACME Bio (regulated clinical customer)
+Order: #7712
+Customer asks:
+1) Can this order still be canceled?
+2) If not, when should a refund post once approved?
+
+Use portal policy pages and include the correct escalation path.

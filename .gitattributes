@@ -1,0 +1,6 @@
+# Trajectory output files (large JSON/YAML from benchmark runs)
+tests/data/projects/*/output/**/*.json filter=lfs diff=lfs merge=lfs -text
+tests/data/projects/*/output/**/*.yaml filter=lfs diff=lfs merge=lfs -text
+
+# Mobile task screenshots (binary PNGs)
+tasks/mobile/_assets/images/*.png filter=lfs diff=lfs merge=lfs -text

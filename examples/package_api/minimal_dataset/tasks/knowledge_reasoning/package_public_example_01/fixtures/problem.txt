@@ -1,0 +1,5 @@
+Compute the product of 6 and 7.
+
+Output requirements:
+1. Write the arithmetic expression.
+2. Write the final value.

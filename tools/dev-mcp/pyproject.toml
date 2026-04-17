@@ -1,0 +1,16 @@
+[project]
+name = "dev-mcp"
+version = "0.1.0"
+description = "Dev MCP server for AI agent interaction with the tolokaforge repository"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=1.0.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.scripts]
+dev-mcp = "dev_mcp.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

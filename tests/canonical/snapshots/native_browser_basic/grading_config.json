@@ -1,0 +1,32 @@
+{
+  "combine": {
+    "method": "weighted",
+    "pass_threshold": 0.7,
+    "weights": {
+      "state_checks": 0.6,
+      "transcript_rules": 0.4
+    }
+  },
+  "custom_checks": null,
+  "llm_judge": null,
+  "state_checks": {
+    "db_hash_check": false,
+    "env_assertions": [],
+    "hash": null,
+    "jsonpaths": []
+  },
+  "transcript_rules": {
+    "communicate_info": [],
+    "disallow_regex": [],
+    "max_turns": 15,
+    "must_contain": [],
+    "required_actions": [],
+    "tool_expectations": {
+      "disallowed_tools": [],
+      "required_tools": [
+        "browser",
+        "write_file"
+      ]
+    }
+  }
+}

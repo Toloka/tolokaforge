@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If you use Tolokaforge in research, please cite it using this metadata."
+type: software
+title: "Tolokaforge"
+version: "0.2.0"
+authors:
+  - family-names: "de la Gueronniere"
+    given-names: "Renaud"
+repository-code: "https://github.com/tolokaforge/tolokaforge"
+license: "Apache-2.0"

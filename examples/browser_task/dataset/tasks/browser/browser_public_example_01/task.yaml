@@ -1,0 +1,30 @@
+task_id: "browser_public_example_01"
+name: "Enterprise Refund Policy Triage"
+category: "browser"
+description: "Investigate a multi-page policy portal and produce a support response that applies the correct enterprise cancellation and refund rules."
+max_turns: 10
+initial_user_message: "A customer from account `ACME Bio` asked to cancel order `#7712` and wants a refund timeline if cancellation is denied. Review the policy portal and write a response to `submissions/browser_policy_response.md` with the decision, rationale, and escalation path."
+initial_state:
+  filesystem:
+    copy:
+      - from: "fixtures/policy_brief.txt"
+        to: "/env/fs/agent-visible/policy_brief.txt"
+  mock_web:
+    base_url: "http://mock-web:8080"
+tools:
+  agent:
+    enabled: ["browser", "read_file", "write_file"]
+    browser:
+      initial_url: "http://mock-web:8080/task/browser/browser_public_example_01/index.html"
+  user:
+    enabled: []
+user_simulator:
+  mode: llm
+  persona: cooperative
+  backstory: "You are validating whether the assistant can combine account facts and policy pages to produce a correct support response. Acknowledge completion and end with ###STOP### once the assistant has delivered the requested artifact(s)."
+policies:
+  guidance:
+    - "Start by opening the browser once and stay on the provided policy portal; do not guess random localhost ports."
+    - "Use evidence from at least two policy pages."
+    - "Prioritize policy correctness over verbosity."
+grading: "grading.yaml"

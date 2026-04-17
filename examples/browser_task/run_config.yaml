@@ -1,0 +1,24 @@
+# Browser task example — requires Docker services (mock-web) and a real LLM provider.
+# Start services first:  make docker-up
+models:
+  agent:
+    provider: "anthropic"
+    name: "claude-sonnet-4-6"
+    temperature: 0.0
+    max_tokens: 4096
+  user:
+    provider: "openai"
+    name: "gpt-4o-mini"
+    temperature: 0.2
+
+orchestrator:
+  workers: 1
+  repeats: 1
+  max_turns: 10
+  queue_backend: sqlite
+
+evaluation:
+  task_packs:
+    - "examples/browser_task/dataset"
+  tasks_glob: "**/task.yaml"
+  output_dir: "results/browser_task"

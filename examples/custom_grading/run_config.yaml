@@ -1,0 +1,22 @@
+# Custom grading example — runs offline with mock provider.
+models:
+  agent:
+    provider: "mock"
+    name: "mock-agent"
+    temperature: 0.0
+  user:
+    provider: "mock"
+    name: "mock-user"
+    temperature: 0.0
+
+orchestrator:
+  workers: 1
+  repeats: 1
+  max_turns: 8
+  queue_backend: sqlite
+
+evaluation:
+  task_packs:
+    - "examples/custom_grading/dataset"
+  tasks_glob: "**/task.yaml"
+  output_dir: "results/custom_grading"

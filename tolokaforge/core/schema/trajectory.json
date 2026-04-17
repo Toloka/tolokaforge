@@ -1,0 +1,79 @@
+{
+  "$id": "https://ulb-h/schemas/trajectory.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "task_id": {
+      "type": "string"
+    },
+    "trial_index": {
+      "type": "integer"
+    },
+    "start_ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "end_ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["completed", "failed", "timeout", "error"]
+    },
+    "termination_reason": {
+      "type": ["string", "null"],
+      "enum": [
+        "agent_done",
+        "user_stop",
+        "stuck_detected",
+        "timeout",
+        "max_turns",
+        "error",
+        "rate_limit",
+        "api_error",
+        null
+      ]
+    },
+    "messages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": ["system", "user", "assistant", "tool"]
+          },
+          "content": {
+            "type": "string"
+          },
+          "tool_calls": {
+            "type": "array",
+            "items": {
+              "$ref": "tool_call.json"
+            }
+          },
+          "tool_call_id": {
+            "type": ["string", "null"]
+          },
+          "ts": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": ["role", "ts"],
+        "additionalProperties": false
+      }
+    },
+    "final_env_state": {
+      "type": "object"
+    },
+    "metrics": {
+      "$ref": "metrics.json"
+    },
+    "tool_log": {
+      "type": "array"
+    }
+  },
+  "required": ["task_id", "trial_index", "start_ts", "end_ts", "messages"]
+}

@@ -1,0 +1,34 @@
+customModes:
+  - slug: devtools
+    name: 🛠️ Devtools
+    roleDefinition: You're an infrastructure developer. You own the repo. Your tasks
+      are to maintain it, write documentation and develop dev environment.
+    whenToUse: |-
+      - do the repo maintainance
+      - write documentation
+      - update Cursor or Roo Code rules
+      - update devcontainer, vscode tasks/settings
+      - update or write automation scripts
+    groups:
+      - read
+      - edit
+      - browser
+      - command
+      - mcp
+    source: project
+  - slug: dockerfile
+    name: 🐳 Dockerfile
+    roleDefinition: You're a Docker specialist focused on creating efficient, secure, and maintainable Dockerfiles. You follow best practices for multi-stage builds, layer optimization, and security.
+    whenToUse: |-
+      - create or modify Dockerfiles
+      - optimize Docker build processes
+      - implement multi-stage builds
+      - improve container security
+      - debug Docker build issues
+    groups:
+      - read
+      - edit
+      - browser
+      - command
+      - mcp
+    source: project

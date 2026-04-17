@@ -1,0 +1,135 @@
+{
+  "combine": {
+    "method": "weighted",
+    "pass_threshold": 0.75,
+    "weights": {
+      "state_checks": 0.7,
+      "transcript_rules": 0.3
+    }
+  },
+  "custom_checks": null,
+  "llm_judge": null,
+  "state_checks": {
+    "db_hash_check": false,
+    "env_assertions": [],
+    "hash": {
+      "enabled": true,
+      "golden_actions": [
+        {
+          "kwargs": {
+            "customer_id": "C-101",
+            "items": [
+              {
+                "product_id": "P-001",
+                "quantity": 1,
+                "unit_price": 89.99
+              },
+              {
+                "product_id": "P-002",
+                "quantity": 2,
+                "unit_price": 34.5
+              }
+            ]
+          },
+          "name": "place_order"
+        },
+        {
+          "kwargs": {
+            "order_id": "O-001"
+          },
+          "name": "confirm_payment"
+        }
+      ],
+      "weight": 0.6
+    },
+    "jsonpaths": [
+      {
+        "description": "First order is assigned ID O-001",
+        "equals": "O-001",
+        "path": "$.db.orders[0].id"
+      },
+      {
+        "description": "Order belongs to customer C-101",
+        "equals": "C-101",
+        "path": "$.db.orders[0].customer_id"
+      },
+      {
+        "description": "Order status is 'paid' after confirm_payment",
+        "equals": "paid",
+        "path": "$.db.orders[0].status"
+      },
+      {
+        "description": "Order total: 1\u00d7$89.99 + 2\u00d7$34.50 = $158.99",
+        "equals": 158.99,
+        "path": "$.db.orders[0].total"
+      },
+      {
+        "description": "Customer balance after payment: $300.00 - $158.99 = $141.01",
+        "equals": 141.01,
+        "path": "$.db.customers[0].balance"
+      },
+      {
+        "description": "Wireless Headphones stock reduced by 1: 42 \u2192 41",
+        "equals": 41,
+        "path": "$.db.products[0].stock"
+      },
+      {
+        "description": "USB-C Hub stock reduced by 2: 15 \u2192 13",
+        "equals": 13,
+        "path": "$.db.products[1].stock"
+      }
+    ]
+  },
+  "transcript_rules": {
+    "communicate_info": [
+      {
+        "info": "O-001",
+        "required": true
+      },
+      {
+        "info": "paid",
+        "required": true
+      },
+      {
+        "info": "141.01",
+        "required": true
+      }
+    ],
+    "disallow_regex": [
+      "(?i)(unable to place|cannot process|order failed|payment failed)"
+    ],
+    "max_turns": 14,
+    "must_contain": [],
+    "required_actions": [
+      {
+        "action_id": "browse_catalog",
+        "arguments": {},
+        "compare_args": [],
+        "name": "list_products",
+        "requestor": "assistant"
+      },
+      {
+        "action_id": "verify_customer",
+        "arguments": {},
+        "compare_args": [],
+        "name": "get_customer",
+        "requestor": "assistant"
+      },
+      {
+        "action_id": "create_order",
+        "arguments": {},
+        "compare_args": [],
+        "name": "place_order",
+        "requestor": "assistant"
+      },
+      {
+        "action_id": "pay_order",
+        "arguments": {},
+        "compare_args": [],
+        "name": "confirm_payment",
+        "requestor": "assistant"
+      }
+    ],
+    "tool_expectations": null
+  }
+}

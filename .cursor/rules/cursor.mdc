@@ -1,0 +1,19 @@
+---
+description: Cursor settings — all project rules are in AGENTS.md
+alwaysApply: true
+---
+# Cursor Configuration
+
+All project rules, conventions, and commands are defined in `AGENTS.md` at the repository root.
+Read it first — it is the single source of truth for all AI agents.
+
+## Session Startup
+
+1. Read `README.md` and `.vscode/tasks.json` before writing any code
+2. Do not ask permission — these are essential context
+
+## Cursor-Specific
+
+- Use Context7 MCP (if available) to look up library/framework documentation before guessing at APIs
+- Available VSCode tasks are in `.vscode/tasks.json`
+- Plans and scratch files go in `plans/` directory — it is gitignored

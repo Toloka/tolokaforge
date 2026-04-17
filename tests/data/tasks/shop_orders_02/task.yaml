@@ -1,0 +1,46 @@
+task_id: "shop_orders_02"
+name: "Online Store — Place and Pay for an Order (typed state)"
+category: "tool_use"
+description: >
+  Use store tools to browse the product catalog, place a customer order,
+  and confirm payment. The task has persistent DB side effects: stock is
+  reduced and customer balance is deducted upon successful checkout.
+max_turns: 14
+
+initial_user_message: >
+  Hi! I'm customer C-101 (Alex Torres). I'd like to buy
+  1 × Wireless Headphones and 2 × USB-C Hub 7-Port.
+  Please check the catalog first so you can confirm availability,
+  then place the order and process my payment.
+
+initial_state:
+  json_db: "initial_state.json"
+
+tools:
+  agent:
+    mcp_server: "mcp_server.py"
+    enabled:
+      - list_products
+      - get_customer
+      - place_order
+      - confirm_payment
+  user:
+    enabled: []
+
+user_simulator:
+  mode: llm
+  persona: cooperative
+  backstory: >
+    You are customer Alex Torres (C-101) checking that the assistant can
+    correctly use the shop tools to place your order and process payment.
+    Confirm when the assistant tells you the order is placed and paid,
+    then end the conversation with ###STOP###.
+
+policies:
+  guidance:
+    - "Always call list_products before placing an order to confirm availability."
+    - "Verify the customer account with get_customer before charging."
+    - "Report the final order ID and remaining balance to the customer."
+
+grading: "grading.yaml"
+system_prompt: "system_prompt.md"

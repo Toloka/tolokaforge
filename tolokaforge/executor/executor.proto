@@ -1,0 +1,76 @@
+syntax = "proto3";
+
+package executor;
+
+// Executor service - executes tools with access to environment
+service ExecutorService {
+  // Execute a tool call
+  rpc ExecuteTool(ExecuteToolRequest) returns (ExecuteToolResponse);
+
+  // Register available tools for this trial
+  rpc RegisterTools(RegisterToolsRequest) returns (RegisterToolsResponse);
+
+  // Health check
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+// Request to execute a tool
+message ExecuteToolRequest {
+  string trial_id = 1;
+  string tool_name = 2;
+  string arguments_json = 3;  // JSON string of arguments
+  double timeout_seconds = 4;
+}
+
+// Response from tool execution
+message ExecuteToolResponse {
+  bool success = 1;
+  string output = 2;
+  string error = 3;
+  ToolMetrics metrics = 4;
+}
+
+// Tool execution metrics
+message ToolMetrics {
+  double latency_seconds = 1;
+  int32 exit_code = 2;  // For bash tool
+}
+
+// Register tools for a trial
+message RegisterToolsRequest {
+  string trial_id = 1;
+  repeated ToolDefinition tools = 2;
+  EnvironmentConfig env_config = 3;
+}
+
+message RegisterToolsResponse {
+  bool success = 1;
+  string error = 2;
+  int32 num_tools_registered = 3;
+}
+
+// Tool definition
+message ToolDefinition {
+  string name = 1;
+  string description = 2;
+  string parameters_json = 3;  // JSON schema
+  map<string, string> config = 4;  // Tool-specific config
+}
+
+// Environment configuration for this trial
+message EnvironmentConfig {
+  string json_db_url = 1;
+  string rag_service_url = 2;
+  string mock_web_url = 3;
+  string agent_visible_dir = 4;
+  string hidden_dir = 5;
+}
+
+// Health check messages
+message HealthCheckRequest {}
+
+message HealthCheckResponse {
+  string status = 1;
+  string version = 2;
+  int32 num_active_trials = 3;
+}

@@ -1,0 +1,2 @@
+instruction: |
+  Create a file /tmp/hello.txt containing the text "Hello, World!".

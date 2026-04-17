@@ -1,0 +1,127 @@
+combine:
+  method: weighted
+  weights:
+    state_checks: 0.70      # DB mutations are the primary success signal
+    transcript_rules: 0.30  # Tool call sequence is a secondary signal
+  pass_threshold: 0.75
+
+# ---------------------------------------------------------------------------
+# State checks
+#
+# Two complementary mechanisms:
+#
+#   1. golden_actions hash  — execute the canonical tool sequence on a fresh
+#      copy of initial_state.json and compare the resulting state hash with
+#      the agent's final DB state (tau-bench style, strictest check).
+#
+#   2. jsonpaths            — human-readable individual field assertions for
+#      partial credit and debugging when the hash doesn't match.
+#
+# hash.weight controls how jsonpath_score and hash_score are blended:
+#   final_state_score = jsonpath_score * (1 - weight) + hash_score * weight
+# ---------------------------------------------------------------------------
+
+state_checks:
+  hash:
+    enabled: true
+    weight: 0.60   # 60 % strict hash, 40 % jsonpath partial credit
+    golden_actions:
+      # Step 1: place the order (creates O-001, reduces P-001 stock by 1,
+      #         P-002 stock by 2)
+      - name: place_order
+        kwargs:
+          customer_id: "C-101"
+          items:
+            - product_id: "P-001"
+              quantity: 1
+              unit_price: 89.99
+            - product_id: "P-002"
+              quantity: 2
+              unit_price: 34.5
+
+      # Step 2: confirm payment (sets O-001 status → "paid",
+      #         deducts 158.99 from C-101 balance: 300.00 → 141.01)
+      - name: confirm_payment
+        kwargs:
+          order_id: "O-001"
+
+  # Individual field assertions — human-readable, partial-credit friendly
+  jsonpaths:
+    - path: "$.db.orders[0].id"
+      equals: "O-001"
+      description: "First order is assigned ID O-001"
+
+    - path: "$.db.orders[0].customer_id"
+      equals: "C-101"
+      description: "Order belongs to customer C-101"
+
+    - path: "$.db.orders[0].status"
+      equals: "paid"
+      description: "Order status is 'paid' after confirm_payment"
+
+    - path: "$.db.orders[0].total"
+      equals: 158.99
+      description: "Order total: 1×$89.99 + 2×$34.50 = $158.99"
+
+    - path: "$.db.customers[0].balance"
+      equals: 141.01
+      description: "Customer balance after payment: $300.00 - $158.99 = $141.01"
+
+    - path: "$.db.products[0].stock"
+      equals: 41
+      description: "Wireless Headphones stock reduced by 1: 42 → 41"
+
+    - path: "$.db.products[1].stock"
+      equals: 13
+      description: "USB-C Hub stock reduced by 2: 15 → 13"
+
+# ---------------------------------------------------------------------------
+# Transcript rules
+#
+# required_actions  — verify the agent called every tool in the workflow.
+# communicate_info  — verify the agent communicated key results to the user.
+# ---------------------------------------------------------------------------
+
+transcript_rules:
+  max_turns: 14
+
+  disallow_regex:
+    - "(?i)(unable to place|cannot process|order failed|payment failed)"
+
+  required_actions:
+    - action_id: "browse_catalog"
+      requestor: assistant
+      name: list_products
+      arguments: {}
+      compare_args: []
+
+    - action_id: "verify_customer"
+      requestor: assistant
+      name: get_customer
+      arguments: {}
+      compare_args: []
+
+    - action_id: "create_order"
+      requestor: assistant
+      name: place_order
+      arguments: {}
+      compare_args: []
+
+    - action_id: "pay_order"
+      requestor: assistant
+      name: confirm_payment
+      arguments: {}
+      compare_args: []
+
+  communicate_info:
+    # Agent must report the order ID to the customer
+    - info: "O-001"
+      required: true
+
+    # Agent must confirm the order is paid
+    - info: "paid"
+      required: true
+
+    # Agent must report the remaining balance (or the order total)
+    - info: "141.01"
+      required: true
