@@ -639,20 +639,8 @@ class ServiceStack(BaseModel):
             wait: If True, wait for health probe.
         """
         name = svc.name
-        container_name = f"{self.prefix}-{name}"
 
-        # ── Try to reuse an existing healthy container ──────────────
-        existing = self._try_reuse_existing(container_name, svc)
-        if existing:
-            self._containers[name] = existing
-            logger.info("Reusing existing healthy container '%s'", container_name)
-            # Resolve ports from the running container
-            if svc.ports:
-                port_map = self._extract_ports_from_container(container_name, svc)
-                self._resolved_ports[name] = port_map
-            return
-
-        # ── Build / fetch image ─────────────────────────────────────
+        # ── Build / fetch image first (need tag for container naming) ──
         if name not in self._images:
             if svc.use_prebuilt_image:
                 image = Image(
@@ -675,6 +663,40 @@ class ServiceStack(BaseModel):
                 raise ValueError(f"Service '{name}' has no image built and no dockerfile specified")
 
         image = self._images[name]
+
+        # Container name includes image tag to prevent reusing containers
+        # from a different image (e.g., with vs without Playwright).
+        container_name = f"{self.prefix}-{name}"
+
+        # ── Try to reuse an existing healthy container ──────────────
+        existing = self._try_reuse_existing(container_name, svc)
+        if existing:
+            # Verify the existing container uses the same image
+            try:
+                attrs = existing.attrs or {}
+                running_image = attrs.get("Config", {}).get("Image", "")
+                expected_image = image.full_tag
+                if running_image != expected_image:
+                    logger.info(
+                        "Existing container '%s' uses image '%s' but expected '%s' — recreating",
+                        container_name,
+                        running_image,
+                        expected_image,
+                    )
+                    existing.remove(force=True)
+                else:
+                    self._containers[name] = existing
+                    logger.info("Reusing existing healthy container '%s'", container_name)
+                    if svc.ports:
+                        port_map = self._extract_ports_from_container(container_name, svc)
+                        self._resolved_ports[name] = port_map
+                    return
+            except Exception as exc:
+                logger.warning("Failed to verify container image, recreating: %s", exc)
+                try:
+                    existing.remove(force=True)
+                except Exception:
+                    pass
 
         # ── Determine network ───────────────────────────────────────
         network = None

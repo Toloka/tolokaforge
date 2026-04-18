@@ -1,4 +1,5 @@
 {
+  "filesystem": {},
   "schemas": [],
   "tables": {
     "customers": [

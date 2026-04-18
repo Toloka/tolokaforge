@@ -57,6 +57,7 @@
     }
   },
   "initial_state": {
+    "filesystem": {},
     "schemas": [],
     "tables": {},
     "unstable_fields": []
