@@ -1,18 +1,11 @@
 """Unit tests for the CalculatorTool safe-arithmetic evaluator."""
 
-import ast
-
 import pytest
 
 from tolokaforge.tools.builtin.calculator import CalculatorTool
 from tolokaforge.tools.registry import ToolCategory
 
 pytestmark = pytest.mark.unit
-
-# ast.Num was removed in Python 3.14; the current calculator implementation
-# relies on it, so arithmetic evaluation is broken on 3.14+.
-_HAS_AST_NUM = hasattr(ast, "Num")
-_SKIP_REASON = "CalculatorTool uses ast.Num which was removed in Python 3.14+"
 
 
 @pytest.fixture
@@ -27,7 +20,6 @@ def calc() -> CalculatorTool:
 
 
 @pytest.mark.unit
-@pytest.mark.skipif(not _HAS_AST_NUM, reason=_SKIP_REASON)
 class TestCalculatorArithmetic:
     """Verify correct results for basic operations."""
 
@@ -70,28 +62,6 @@ class TestCalculatorArithmetic:
         result = calc.execute(expression="((2 + 3) * (4 - 1))")
         assert result.success is True
         assert float(result.output) == pytest.approx(15.0)
-
-
-# ---------------------------------------------------------------------------
-# Python 3.14+ ast.Num removal — verify the tool fails gracefully
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-@pytest.mark.skipif(_HAS_AST_NUM, reason="Only relevant on Python 3.14+ where ast.Num is removed")
-class TestCalculatorAstNumRemoved:
-    """On Python 3.14+ the calculator returns errors for all expressions
-    because ast.Num no longer exists. Verify it fails gracefully."""
-
-    def test_arithmetic_returns_error(self, calc: CalculatorTool) -> None:
-        result = calc.execute(expression="2 + 3")
-        assert result.success is False
-        assert result.error is not None
-
-    def test_error_message_mentions_ast(self, calc: CalculatorTool) -> None:
-        result = calc.execute(expression="1 + 1")
-        assert result.success is False
-        assert "ast" in (result.error or "").lower()
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +123,6 @@ class TestCalculatorSchema:
         schema = calc.get_schema()
         assert schema["type"] == "function"
 
-    @pytest.mark.skipif(not _HAS_AST_NUM, reason=_SKIP_REASON)
     def test_result_metadata_contains_expression(self, calc: CalculatorTool) -> None:
         """Successful results should include expression and numeric result in metadata."""
         result = calc.execute(expression="3 + 4")
@@ -167,7 +136,6 @@ class TestCalculatorSchema:
 
 
 @pytest.mark.unit
-@pytest.mark.skipif(not _HAS_AST_NUM, reason=_SKIP_REASON)
 class TestCalculatorEdgeCases:
     """Boundary and edge-case inputs."""
 

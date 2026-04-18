@@ -14,10 +14,14 @@ logger = logging.getLogger(__name__)
 
 @pytest.fixture(scope="session")
 def env_network():
-    """Isolated internal network for service containers.
+    """Shared network for service containers.
 
     Creates a Docker network that simulates the env-net from docker-compose.
     This network provides container-to-container communication.
+
+    Note: This is a bridged network (not internal) to allow testcontainers
+    health checks via port mapping. The ``test_security.py`` test verifies
+    network isolation separately by disconnecting external routes.
 
     The network is created once per test session and shared across all tests.
 

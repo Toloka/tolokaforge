@@ -20,6 +20,7 @@ def pytest_collection_modifyitems(config, items):
 # Import shared fixtures so they're available to all tests
 from tests.utils.containers import (  # noqa: E402
     json_db_container,
+    rag_service_container,
     runner_container,
 )
 from tests.utils.docker_helpers import (  # noqa: E402
@@ -60,5 +61,6 @@ __all__ = [
     "rag_data_volume",
     # Container fixtures
     "json_db_container",
+    "rag_service_container",
     "runner_container",
 ]

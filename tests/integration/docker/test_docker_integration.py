@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.utils.docker_helpers import is_docker_daemon_available
 from tolokaforge.docker import (
     Capability,
     Container,
@@ -31,6 +32,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.docker]
 
 
 @pytest.mark.docker
+@pytest.mark.skipif(not is_docker_daemon_available(), reason="Docker not available")
 class TestDockerFoundationIntegration:
     """End-to-end integration tests for the Docker foundation layer."""
 

@@ -53,8 +53,8 @@ class CalculatorTool(Tool):
 
     def _eval_expr(self, node: ast.AST) -> float:
         """Safely evaluate expression AST"""
-        if isinstance(node, ast.Num):  # number
-            return float(node.n)
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            return float(node.value)
         elif isinstance(node, ast.BinOp):  # binary operation
             op = self.ops.get(type(node.op))
             if not op:

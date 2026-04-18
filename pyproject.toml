@@ -179,7 +179,7 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-norecursedirs = ["tests/data/projects/*/tests"]
+norecursedirs = ["tests/data/projects/*/tests", "tests/data/terminal_bench_tasks"]
 addopts = [
     "-v",
     "--strict-markers",

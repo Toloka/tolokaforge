@@ -357,6 +357,8 @@ def list_project_tasks(project_name: str) -> list[str]:
         List of task IDs
     """
     tasks_dir = TEST_PROJECTS_DIR / project_name / "tasks"
+    if not tasks_dir.exists():
+        return []
     task_ids = []
 
     for task_dir in tasks_dir.iterdir():

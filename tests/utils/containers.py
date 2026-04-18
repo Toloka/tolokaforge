@@ -4,11 +4,10 @@ This module provides pytest fixtures for managing Docker containers using
 the testcontainers library. Containers are managed automatically with proper
 lifecycle handling and cleanup.
 
-Fixtures in this module reference locally-built Docker images. If an image
-is not available (e.g., in CI without pre-built images), the fixture will
-skip gracefully using pytest.skip().
+Images are auto-built from the project's Dockerfiles when not found locally.
 """
 
+import logging
 from datetime import timedelta
 
 import pytest
@@ -21,21 +20,63 @@ from testcontainers.core.wait_strategies import (
 
 import docker
 
+logger = logging.getLogger(__name__)
+
 
 def _check_image_available(image_name: str) -> None:
-    """Check if a Docker image is available locally.
+    """Ensure a Docker image is available locally, building it if necessary.
+
+    Uses tolokaforge.docker.builder to auto-build images from the project's
+    Dockerfiles when they are not found locally.
 
     Args:
         image_name: Full image name with tag (e.g., "tolokaforge-rag-service:latest")
 
     Raises:
-        pytest.skip: If the image is not found locally
+        pytest.skip: If the image cannot be built (e.g., missing Dockerfile or build error)
     """
     try:
         client = docker.from_env()
         client.images.get(image_name)
+        return  # Image exists
     except ImageNotFound:
-        pytest.skip(f"Docker image '{image_name}' not available (not built locally)")
+        pass
+    except Exception as exc:
+        pytest.skip(f"Docker not available: {exc}")
+        return
+
+    # Image not found — try to build it from the project's Dockerfiles
+    from tolokaforge.docker.builder import IMAGE_DEFINITIONS
+
+    # Resolve image name (without tag) to service name
+    base_name = image_name.split(":")[0]
+    service_name = None
+    for svc, defn in IMAGE_DEFINITIONS.items():
+        if defn["name"] == base_name:
+            service_name = svc
+            break
+
+    if service_name is None:
+        pytest.skip(f"Docker image '{image_name}' not found and no build definition exists for it")
+        return
+
+    logger.info(
+        "Image '%s' not found — building from Dockerfile (service: %s)", image_name, service_name
+    )
+    try:
+        from tolokaforge.docker.builder import build_image
+
+        image = build_image(service_name, force=True)
+        # Builder uses content-hash tags (e.g., :a3b8f2c1).
+        # Tag as :latest so testcontainers can find it.
+        client = docker.from_env()
+        docker_image = client.images.get(image.full_tag)
+        docker_image.tag(base_name, tag="latest")
+        logger.info("Built and tagged '%s:latest' (from %s)", base_name, image.full_tag)
+    except Exception as exc:
+        pytest.skip(
+            f"Failed to build Docker image '{image_name}' for service '{service_name}': {exc}"
+        )
 
 
 @pytest.fixture(scope="session")
@@ -98,7 +139,7 @@ def rag_service_container(env_network, rag_data_volume):
     container.waiting_for(
         HttpWaitStrategy(8001, path="/health")
         .for_status_code(200)
-        .with_startup_timeout(timedelta(seconds=30))
+        .with_startup_timeout(timedelta(seconds=120))
     )
 
     container.start()
@@ -143,9 +184,7 @@ def runner_container(
     container.with_network_aliases("runner")
     container.with_volume_mapping(env_files_volume, "/env/fs")
     container.waiting_for(
-        LogMessageWaitStrategy("Starting Runner service").with_startup_timeout(
-            timedelta(seconds=30)
-        )
+        LogMessageWaitStrategy("Starting Runner server").with_startup_timeout(timedelta(seconds=60))
     )
 
     container.start()

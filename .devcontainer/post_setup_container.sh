@@ -38,6 +38,27 @@ if [ "${CODESPACES:-false}" = "true" ]; then
     git config --global url."https://github.com/".insteadOf "git@github.com:"
 fi
 
+# Fix Docker credential store if the configured helper is broken.
+# Devcontainer environments sometimes set a credsStore that references
+# docker-credential-secretservice which may not be available, causing
+# all Docker SDK operations (build, pull, images.list) to fail.
+if [ -f "$HOME/.docker/config.json" ]; then
+    CREDS_STORE=$(python3 -c "import json; c=json.load(open('$HOME/.docker/config.json')); print(c.get('credsStore',''))" 2>/dev/null || echo "")
+    if [ -n "$CREDS_STORE" ]; then
+        HELPER="docker-credential-${CREDS_STORE}"
+        if ! command -v "$HELPER" >/dev/null 2>&1 || ! "$HELPER" list >/dev/null 2>&1; then
+            log_warning "Docker credential helper '$HELPER' is not functional — removing credsStore from config"
+            python3 -c "
+import json, pathlib
+p = pathlib.Path('$HOME/.docker/config.json')
+c = json.loads(p.read_text())
+c.pop('credsStore', None)
+p.write_text(json.dumps(c, indent=2) + '\n')
+"
+        fi
+    fi
+fi
+
 cd "$WORKSPACE_PATH"
 
 # Install pre-commit hooks

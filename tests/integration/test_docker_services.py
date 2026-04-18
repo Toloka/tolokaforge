@@ -137,11 +137,21 @@ orchestrator:
                 "Run complete" in result.stdout or "✓" in result.stdout
             ), f"Trial did not complete. Output: {result.stdout}"
 
+            # The orchestrator appends a timestamp to the output dir
+            # (e.g., "/tmp/output_20260418_183000"), so find the actual dir.
+            actual_output_dirs = sorted(
+                temp_output_dir.parent.glob(f"{temp_output_dir.name}_*"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            actual_output_dir = actual_output_dirs[0] if actual_output_dirs else temp_output_dir
+
             # Only validate if trial completed - this is an integration test
             # so we're checking the infrastructure works, not the task quality
-            if (temp_output_dir / "trials" / "calc_basic" / "0").exists():
+            trial_dir = actual_output_dir / "trials" / "calc_basic" / "0"
+            if trial_dir.exists():
                 grading_result = validate_grading_result(
-                    output_dir=temp_output_dir,
+                    output_dir=actual_output_dir,
                     task_id="calc_basic",
                     trial_num=0,
                     min_score=0.0,  # Just check it ran, don't require success
@@ -162,7 +172,10 @@ orchestrator:
                 assert grading_result["metrics"], "Metrics should be present"
             else:
                 # If trial didn't create output, just verify command succeeded
-                pytest.fail("Trial ran but didn't create expected output structure")
+                pytest.fail(
+                    f"Trial ran but didn't create expected output structure at {trial_dir}. "
+                    f"Checked output dirs: {actual_output_dirs}"
+                )
 
         finally:
             if os.path.exists(config_path):

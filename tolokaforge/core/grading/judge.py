@@ -1175,7 +1175,7 @@ class LLMJudge:
                         score = max(0.0, min(1.0, float(tool_args.get("score", 0.0))))
                         reasoning = tool_args.get("reasoning", "")
                         logger.info(
-                            f"Agentic judge submitted grade: {score:.2f} " f"after {turn + 1} turns"
+                            f"Agentic judge submitted grade: {score:.2f} after {turn + 1} turns"
                         )
                         return score, reasoning
 

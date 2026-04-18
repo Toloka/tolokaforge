@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 
 import pytest
+
 from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
 
 pytestmark = pytest.mark.canonical

@@ -1,9 +1,9 @@
 # Test Suite Baseline
 
-> **Updated:** 2026-04-17
-> **Branch:** `main`
-> **Stage:** Post issue-71 cleanup (print debugging removed, baseline refreshed)
-> **Previous baseline:** Phase 4 — 1127 tests, 971 passed, 14 skipped
+> **Updated:** 2026-04-18
+> **Branch:** `main` (open-source)
+> **Stage:** Open-source — all test failures resolved, Docker credential fix applied
+> **Previous baseline:** 1187 tests (1022 unit + 85 canonical + 80 integration)
 
 ---
 
@@ -11,20 +11,39 @@
 
 | Category    | Total | Passed | Failed | Skipped |
 |-------------|-------|--------|--------|---------|
-| Unit        | 1022  | 1008   | 0      | 14      |
-| Canonical   | 85    | 85     | 0      | 0       |
-| Integration | 80    | —      | 0      | —       |
-| **Total**   | **1187** | **1093+** | **0** | **14+** |
+| Unit        | 977   | 958    | 0      | 20      |
+| Canonical   | 60    | 57     | 0      | 3       |
+| Integration | 71    | 50     | 0      | 21      |
+| **Total**   | **1108** | **1065** | **0** | **44** |
 
-> Integration pass/skip counts depend on available services (Docker, API keys).
-> Unit + Canonical: **1093 passed, 14 skipped, 0 failed, 1 warning**.
-> Coverage: **62.59%** (with `--cov-fail-under=60`)
+> Full suite with Docker + API keys: **1065 passed, 44 skipped, 0 failed, 1 warning**.
+> Skips: Nova API (21), Docker runner containers (1), security (1), E2E (1), CreateDatabase (3), project data (2), other (15).
 
 **Warnings:** 1
 
 ---
 
 ## What Changed
+
+### Open-source branch — Full test suite fix
+
+- Proprietary `food_delivery_2` project data removed from `tests/data/projects/`
+- ~79 fewer tests collected (proprietary adapter tests removed in open-source branch)
+- Fixed `list_project_tasks()` in `tests/utils/project_fixtures.py` to return empty list
+  when project directory doesn't exist (was raising `FileNotFoundError`)
+- Added graceful `pytest.skip` guard to `test_all_enabled_components_contribute_to_grade`
+  when project data is unavailable
+- Excluded `tests/data/terminal_bench_tasks` from pytest collection via `norecursedirs`
+  (task fixture tests were being collected as project tests — 2 false failures)
+- Fixed Docker credential store issue: `~/.docker/config.json` had broken `credsStore`
+  pointing to non-functional devcontainer credential helper
+- Enhanced `is_docker_daemon_available()` to also verify Docker credential store works
+  (catches broken `credsStore` that causes all Docker SDK operations to fail)
+- Added missing `skipif(not is_docker_daemon_available())` guard to
+  `TestDockerFoundationIntegration` class in `test_docker_integration.py`
+- Added Docker credential helper auto-fix to `.devcontainer/post_setup_container.sh`
+- Fixed import sorting in `tests/canonical/test_terminal_bench_adapter_canon.py` (ruff I001)
+- Applied `ruff format` to 15 files with pre-existing formatting drift
 
 ### Phase 4 — Test Hardening (coverage 35.47% → 62.59%)
 

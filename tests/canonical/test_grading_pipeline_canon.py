@@ -135,8 +135,11 @@ class TestGradingEnginePipeline:
         3. If weighted, the component affects the final score
         """
         project_name = "food_delivery_2"
+        task_ids = list_project_tasks(project_name)
+        if not task_ids:
+            pytest.skip(f"No tasks found for project '{project_name}' — project data not available")
 
-        for task_id in list_project_tasks(project_name):
+        for task_id in task_ids:
             task_dir = TEST_PROJECTS_DIR / project_name / "tasks" / task_id
             grading_config_dict = load_project_grading(project_name, task_id)
 

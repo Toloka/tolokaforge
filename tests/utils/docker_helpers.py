@@ -55,12 +55,21 @@ def skip_if_no_docker_runner():
 
 
 def is_docker_daemon_available() -> bool:
-    """Check if the Docker daemon is reachable."""
+    """Check if the Docker daemon is reachable and operational.
+
+    Verifies both daemon connectivity (ping) and that Docker operations
+    work end-to-end — including credential store access, which can fail
+    in devcontainer environments with broken credential helpers.
+    """
     try:
         import docker
 
         client = docker.from_env()
         client.ping()
+        # Also verify credential store works — get_all_credentials() is
+        # called internally during image builds to set auth headers.
+        # A broken credsStore in ~/.docker/config.json causes this to fail.
+        docker.auth.load_config().get_all_credentials()
         return True
     except Exception:
         return False

@@ -551,7 +551,6 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         # Terminal-bench: start Docker Compose stack for this trial
         if task_description.adapter_type == AdapterType.TERMINAL_BENCH:
-
             project_name = f"tbench_{trial_id.replace(':', '_')}"
             for tool in trial_context.agent_tools.values():
                 if isinstance(tool, DockerComposeExecToolWrapper):
@@ -1476,7 +1475,6 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 trial_context.task_description
                 and trial_context.task_description.adapter_type == AdapterType.TERMINAL_BENCH
             ):
-
                 for tool in trial_context.agent_tools.values():
                     if isinstance(tool, DockerComposeExecToolWrapper):
                         try:
