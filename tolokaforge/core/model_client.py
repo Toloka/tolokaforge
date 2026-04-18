@@ -1047,7 +1047,7 @@ class UserSimulator:
         for rule in self.scripted_flow:
             if (
                 "if_assistant_contains" in rule
-                and rule["if_assistant_contains"] in last_assistant_msg
+                and rule["if_assistant_contains"].lower() in last_assistant_msg.lower()
             ):
                 return rule["user"]
             # Capture default for later use

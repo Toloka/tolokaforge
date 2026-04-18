@@ -14,7 +14,7 @@ state_checks:
       contains_ci: "rollback"
       description: "Rationale references strongest causal evidence"
     - path_glob: "/env/fs/agent-visible/submissions/*"
-      contains_ci: "cross-region"
+      contains_ci: "three regions"
       description: "Rationale uses multi-region evidence quality"
     - path_glob: "/env/fs/agent-visible/submissions/*"
       contains_ci: "uncertainty"

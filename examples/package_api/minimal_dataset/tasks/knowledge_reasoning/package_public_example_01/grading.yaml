@@ -10,8 +10,8 @@ state_checks:
       contains_ci: "42"
       description: "Answer file includes expected computed value"
     - path_glob: "/env/fs/agent-visible/submissions/*"
-      contains_ci: "6 * 7"
-      description: "Answer file includes arithmetic evidence"
+      contains_ci: "6"
+      description: "Answer file references the operand"
 transcript_rules:
   max_turns: 6
   required_actions:

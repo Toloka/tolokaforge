@@ -384,8 +384,17 @@ class Orchestrator:
                 from tolokaforge.docker.stacks import core_stack
 
                 self.logger.info("Auto-starting Docker services via ServiceStack")
+
+                # Detect required Docker features from task configs
+                needs_playwright = any(
+                    "browser" in (t.tools.agent.get("enabled", []) if t.tools else [])
+                    for t in self.tasks
+                )
+                if needs_playwright:
+                    self.logger.info("Browser tool detected in tasks — enabling Playwright")
+
                 self.logger.info("Creating service stack (db-service + runner)")
-                service_stack = core_stack()
+                service_stack = core_stack(enable_playwright=needs_playwright)
                 self.logger.info(
                     "Building Docker images and starting containers "
                     "(this may take a few minutes on first run)..."

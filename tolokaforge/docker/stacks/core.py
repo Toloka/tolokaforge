@@ -27,6 +27,7 @@ def core_stack(
     db_port: int | Literal["auto"] = "auto",
     runner_port: int | Literal["auto"] = "auto",
     enable_dind: bool = False,
+    enable_playwright: bool = False,
 ) -> ServiceStack:
     """Create a core service stack with DB service and Runner.
 
@@ -39,6 +40,8 @@ def core_stack(
         enable_dind: Add a Docker-in-Docker sidecar so the Runner can
             manage Docker Compose stacks for terminal-bench tasks.
             Runner connects via ``DOCKER_HOST=tcp://dind:2375``.
+        enable_playwright: Install Playwright + Chromium in the Runner
+            image for browser tool support. Detected automatically from tasks.
 
     Returns:
         ServiceStack configured with db-service and runner.
@@ -114,6 +117,10 @@ def core_stack(
         runner_depends.append("dind")
         runner_resources = ResourcePolicy()  # relaxed
 
+    runner_build_args: dict[str, str] = {}
+    if enable_playwright:
+        runner_build_args["INSTALL_PLAYWRIGHT"] = "true"
+
     runner = ServiceDefinition(
         name="runner",
         image_name="tolokaforge-runner",
@@ -133,6 +140,7 @@ def core_stack(
         mounts=runner_mounts,
         resources=runner_resources,
         networks=["runner-net"],
+        build_args=runner_build_args,
     )
     services.append(runner)
 
