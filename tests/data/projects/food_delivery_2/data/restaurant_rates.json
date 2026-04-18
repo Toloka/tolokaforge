@@ -1,0 +1,284 @@
+{
+  "rating_28455": {
+    "restaurant_id": "restaurant_67583799",
+    "rating": 2,
+    "user_id": "user_8803",
+    "rating_id": "rating_28455"
+  },
+  "rating_74826": {
+    "restaurant_id": "restaurant_67583799",
+    "rating": 4,
+    "user_id": "user_8802",
+    "rating_id": "rating_74826"
+  },
+  "rating_60556": {
+    "restaurant_id": "restaurant_67583799",
+    "rating": 5,
+    "user_id": "user_3374",
+    "rating_id": "rating_60556"
+  },
+  "rating_29460": {
+    "restaurant_id": "restaurant_87316785",
+    "rating": 4,
+    "user_id": "user_9515",
+    "rating_id": "rating_29460"
+  },
+  "rating_80462": {
+    "restaurant_id": "restaurant_87316785",
+    "rating": 1,
+    "user_id": "user_5804",
+    "rating_id": "rating_80462"
+  },
+  "rating_45683": {
+    "restaurant_id": "restaurant_87316785",
+    "rating": 4,
+    "user_id": "user_9166",
+    "rating_id": "rating_45683"
+  },
+  "rating_51525": {
+    "restaurant_id": "restaurant_50134348",
+    "rating": 4,
+    "user_id": "user_1466",
+    "rating_id": "rating_51525"
+  },
+  "rating_12426": {
+    "restaurant_id": "restaurant_50134348",
+    "rating": 1,
+    "user_id": "user_1399",
+    "rating_id": "rating_12426"
+  },
+  "rating_75553": {
+    "restaurant_id": "restaurant_40211315",
+    "rating": 2,
+    "user_id": "user_7949",
+    "rating_id": "rating_75553"
+  },
+  "rating_41733": {
+    "restaurant_id": "restaurant_40211315",
+    "rating": 4,
+    "user_id": "user_4423",
+    "rating_id": "rating_41733"
+  },
+  "rating_38951": {
+    "restaurant_id": "restaurant_46436936",
+    "rating": 4,
+    "user_id": "user_8802",
+    "rating_id": "rating_38951"
+  },
+  "rating_76619": {
+    "restaurant_id": "restaurant_56197947",
+    "rating": 5,
+    "user_id": "user_9342",
+    "rating_id": "rating_76619"
+  },
+  "rating_32843": {
+    "restaurant_id": "restaurant_44722558",
+    "rating": 4,
+    "user_id": "user_3374",
+    "rating_id": "rating_32843"
+  },
+  "rating_15115": {
+    "restaurant_id": "restaurant_41005549",
+    "rating": 5,
+    "user_id": "user_5247",
+    "rating_id": "rating_15115"
+  },
+  "rating_65549": {
+    "restaurant_id": "restaurant_41005549",
+    "rating": 4,
+    "user_id": "user_7770",
+    "rating_id": "rating_65549"
+  },
+  "rating_95919": {
+    "restaurant_id": "restaurant_37349679",
+    "rating": 1,
+    "user_id": "user_3715",
+    "rating_id": "rating_95919"
+  },
+  "rating_85266": {
+    "restaurant_id": "restaurant_37349679",
+    "rating": 3,
+    "user_id": "user_1466",
+    "rating_id": "rating_85266"
+  },
+  "rating_34958": {
+    "restaurant_id": "restaurant_18321519",
+    "rating": 3,
+    "user_id": "user_4423",
+    "rating_id": "rating_34958"
+  },
+  "rating_98390": {
+    "restaurant_id": "restaurant_78980040",
+    "rating": 1,
+    "user_id": "user_2286",
+    "rating_id": "rating_98390"
+  },
+  "rating_52739": {
+    "restaurant_id": "restaurant_63731989",
+    "rating": 4,
+    "user_id": "user_8803",
+    "rating_id": "rating_52739"
+  },
+  "rating_30870": {
+    "restaurant_id": "restaurant_63731989",
+    "rating": 2,
+    "user_id": "user_8802",
+    "rating_id": "rating_30870"
+  },
+  "rating_40418": {
+    "restaurant_id": "restaurant_50507474",
+    "rating": 4,
+    "user_id": "user_3175",
+    "rating_id": "rating_40418"
+  },
+  "rating_58322": {
+    "restaurant_id": "restaurant_50507474",
+    "rating": 3,
+    "user_id": "user_6626",
+    "rating_id": "rating_58322"
+  },
+  "rating_42266": {
+    "restaurant_id": "restaurant_99652497",
+    "rating": 5,
+    "user_id": "user_9499",
+    "rating_id": "rating_42266"
+  },
+  "rating_72363": {
+    "restaurant_id": "restaurant_99652497",
+    "rating": 4,
+    "user_id": "user_5042",
+    "rating_id": "rating_72363"
+  },
+  "rating_82638": {
+    "restaurant_id": "restaurant_29162059",
+    "rating": 4,
+    "user_id": "user_9499",
+    "rating_id": "rating_82638"
+  },
+  "rating_75658": {
+    "restaurant_id": "restaurant_29162059",
+    "rating": 5,
+    "user_id": "user_5042",
+    "rating_id": "rating_75658"
+  },
+  "rating_19464": {
+    "restaurant_id": "restaurant_29162059",
+    "rating": 4,
+    "user_id": "user_2242",
+    "rating_id": "rating_19464"
+  },
+  "rating_81635": {
+    "restaurant_id": "restaurant_51311291",
+    "rating": 5,
+    "user_id": "user_3069",
+    "rating_id": "rating_81635"
+  },
+  "rating_92229": {
+    "restaurant_id": "restaurant_25349042",
+    "rating": 4,
+    "user_id": "user_9342",
+    "rating_id": "rating_92229"
+  },
+  "rating_65286": {
+    "restaurant_id": "restaurant_48196876",
+    "rating": 3,
+    "user_id": "user_9342",
+    "rating_id": "rating_65286"
+  },
+  "rating_76625": {
+    "restaurant_id": "restaurant_92871146",
+    "rating": 1,
+    "user_id": "user_3069",
+    "rating_id": "rating_76625"
+  },
+  "rating_74501": {
+    "restaurant_id": "restaurant_75303418",
+    "rating": 4,
+    "user_id": "user_9515",
+    "rating_id": "rating_74501"
+  },
+  "rating_46405": {
+    "restaurant_id": "restaurant_75303418",
+    "rating": 2,
+    "user_id": "user_9166",
+    "rating_id": "rating_46405"
+  },
+  "rating_52458": {
+    "restaurant_id": "restaurant_61804753",
+    "rating": 5,
+    "user_id": "user_3175",
+    "rating_id": "rating_52458"
+  },
+  "rating_98218": {
+    "restaurant_id": "restaurant_61804753",
+    "rating": 4,
+    "user_id": "user_6626",
+    "rating_id": "rating_98218"
+  },
+  "rating_31962": {
+    "restaurant_id": "restaurant_61674683",
+    "rating": 4,
+    "user_id": "user_6626",
+    "rating_id": "rating_31962"
+  },
+  "rating_67396": {
+    "restaurant_id": "restaurant_64766497",
+    "rating": 5,
+    "user_id": "user_9515",
+    "rating_id": "rating_67396"
+  },
+  "rating_69261": {
+    "restaurant_id": "restaurant_64766497",
+    "rating": 5,
+    "user_id": "user_5804",
+    "rating_id": "rating_69261"
+  },
+  "rating_30553": {
+    "restaurant_id": "restaurant_64766497",
+    "rating": 5,
+    "user_id": "user_9166",
+    "rating_id": "rating_30553"
+  },
+  "rating_50110": {
+    "restaurant_id": "restaurant_70731486",
+    "rating": 4,
+    "user_id": "user_3715",
+    "rating_id": "rating_50110"
+  },
+  "rating_68035": {
+    "restaurant_id": "restaurant_70731486",
+    "rating": 2,
+    "user_id": "user_1399",
+    "rating_id": "rating_68035"
+  },
+  "rating_76975": {
+    "restaurant_id": "restaurant_70731486",
+    "rating": 5,
+    "user_id": "user_1466",
+    "rating_id": "rating_76975"
+  },
+  "rating_12595": {
+    "restaurant_id": "restaurant_34408535",
+    "rating": 4,
+    "user_id": "user_7949",
+    "rating_id": "rating_12595"
+  },
+  "rating_16559": {
+    "restaurant_id": "restaurant_70107432",
+    "rating": 5,
+    "user_id": "user_2286",
+    "rating_id": "rating_16559"
+  },
+  "rating_29229": {
+    "restaurant_id": "restaurant_68579222",
+    "rating": 4,
+    "user_id": "user_3069",
+    "rating_id": "rating_29229"
+  },
+  "rating_62063": {
+    "restaurant_id": "restaurant_77034838",
+    "rating": 2,
+    "user_id": "user_7949",
+    "rating_id": "rating_62063"
+  }
+}

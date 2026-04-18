@@ -1,0 +1,2891 @@
+{
+  "restaurant_44722558_item_0": {
+    "menu_item_id": "restaurant_44722558_item_0",
+    "restaurant_id": "restaurant_44722558",
+    "name": "Gyro Platter",
+    "description": "Delicious gyro platter prepared with fresh ingredients",
+    "price": 1059,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_44722558_item_1": {
+    "menu_item_id": "restaurant_44722558_item_1",
+    "restaurant_id": "restaurant_44722558",
+    "name": "Moussaka",
+    "description": "Delicious moussaka prepared with fresh ingredients",
+    "price": 1063,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_44722558_item_2": {
+    "menu_item_id": "restaurant_44722558_item_2",
+    "restaurant_id": "restaurant_44722558",
+    "name": "Gemista",
+    "description": "Delicious gemista prepared with fresh ingredients",
+    "price": 706,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_44722558_item_3": {
+    "menu_item_id": "restaurant_44722558_item_3",
+    "restaurant_id": "restaurant_44722558",
+    "name": "Grilled Octopus (Htapodi)",
+    "description": "Delicious grilled octopus (htapodi) prepared with fresh ingredients",
+    "price": 910,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_44722558_item_4": {
+    "menu_item_id": "restaurant_44722558_item_4",
+    "restaurant_id": "restaurant_44722558",
+    "name": "Souvlaki",
+    "description": "Delicious souvlaki prepared with fresh ingredients",
+    "price": 781,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_44722558_item_5": {
+    "menu_item_id": "restaurant_44722558_item_5",
+    "restaurant_id": "restaurant_44722558",
+    "name": "Avgolemono Soup",
+    "description": "Delicious avgolemono soup prepared with fresh ingredients",
+    "price": 620,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_44722558_item_6": {
+    "menu_item_id": "restaurant_44722558_item_6",
+    "restaurant_id": "restaurant_44722558",
+    "name": "Galaktoboureko",
+    "description": "Delicious galaktoboureko prepared with fresh ingredients",
+    "price": 1080,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_44722558_item_7": {
+    "menu_item_id": "restaurant_44722558_item_7",
+    "restaurant_id": "restaurant_44722558",
+    "name": "Pastitsio",
+    "description": "Delicious pastitsio prepared with fresh ingredients",
+    "price": 1162,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_40211315_item_0": {
+    "menu_item_id": "restaurant_40211315_item_0",
+    "restaurant_id": "restaurant_40211315",
+    "name": "G\u1ecf Cu\u1ed1n (Fresh Spring Rolls)",
+    "description": "Delicious g\u1ecf cu\u1ed1n (fresh spring rolls) prepared with fresh ingredients",
+    "price": 1757,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_40211315_item_1": {
+    "menu_item_id": "restaurant_40211315_item_1",
+    "restaurant_id": "restaurant_40211315",
+    "name": "Donburi Rice Bowl",
+    "description": "Delicious donburi rice bowl prepared with fresh ingredients",
+    "price": 934,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_40211315_item_2": {
+    "menu_item_id": "restaurant_40211315_item_2",
+    "restaurant_id": "restaurant_40211315",
+    "name": "B\u00fan Ch\u1ea3 (Grilled Pork with Rice Noodles)",
+    "description": "Delicious b\u00fan ch\u1ea3 (grilled pork with rice noodles) prepared with fresh ingredients",
+    "price": 1302,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_40211315_item_3": {
+    "menu_item_id": "restaurant_40211315_item_3",
+    "restaurant_id": "restaurant_40211315",
+    "name": "B\u00fan B\u00f2 Hu\u1ebf (Spicy Beef Noodle Soup)",
+    "description": "Delicious b\u00fan b\u00f2 hu\u1ebf (spicy beef noodle soup) prepared with fresh ingredients",
+    "price": 1115,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_40211315_item_4": {
+    "menu_item_id": "restaurant_40211315_item_4",
+    "restaurant_id": "restaurant_40211315",
+    "name": "Matcha Green Tea Ice Cream",
+    "description": "Delicious matcha green tea ice cream prepared with fresh ingredients",
+    "price": 983,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_40211315_item_5": {
+    "menu_item_id": "restaurant_40211315_item_5",
+    "restaurant_id": "restaurant_40211315",
+    "name": "Okonomiyaki",
+    "description": "Delicious okonomiyaki prepared with fresh ingredients",
+    "price": 652,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_40211315_item_6": {
+    "menu_item_id": "restaurant_40211315_item_6",
+    "restaurant_id": "restaurant_40211315",
+    "name": "Ph\u01b0\u1edf B\u00f2 (Beef Noodle Soup)",
+    "description": "Delicious ph\u01b0\u1edf b\u00f2 (beef noodle soup) prepared with fresh ingredients",
+    "price": 506,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_40211315_item_7": {
+    "menu_item_id": "restaurant_40211315_item_7",
+    "restaurant_id": "restaurant_40211315",
+    "name": "Canh Chua (Sweet and Sour Soup)",
+    "description": "Delicious canh chua (sweet and sour soup) prepared with fresh ingredients",
+    "price": 1029,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_99652497_item_0": {
+    "menu_item_id": "restaurant_99652497_item_0",
+    "restaurant_id": "restaurant_99652497",
+    "name": "Cochinita Pibil",
+    "description": "Delicious cochinita pibil prepared with fresh ingredients",
+    "price": 912,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_99652497_item_1": {
+    "menu_item_id": "restaurant_99652497_item_1",
+    "restaurant_id": "restaurant_99652497",
+    "name": "Quesadillas de Huitlacoche",
+    "description": "Delicious quesadillas de huitlacoche prepared with fresh ingredients",
+    "price": 821,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_99652497_item_2": {
+    "menu_item_id": "restaurant_99652497_item_2",
+    "restaurant_id": "restaurant_99652497",
+    "name": "Mole Poblano",
+    "description": "Delicious mole poblano prepared with fresh ingredients",
+    "price": 1516,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_99652497_item_3": {
+    "menu_item_id": "restaurant_99652497_item_3",
+    "restaurant_id": "restaurant_99652497",
+    "name": "Chiles en Nogada",
+    "description": "Delicious chiles en nogada prepared with fresh ingredients",
+    "price": 635,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_99652497_item_4": {
+    "menu_item_id": "restaurant_99652497_item_4",
+    "restaurant_id": "restaurant_99652497",
+    "name": "Sopa de Tortilla",
+    "description": "Delicious sopa de tortilla prepared with fresh ingredients",
+    "price": 1172,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_99652497_item_5": {
+    "menu_item_id": "restaurant_99652497_item_5",
+    "restaurant_id": "restaurant_99652497",
+    "name": "Enchiladas Verdes",
+    "description": "Delicious enchiladas verdes prepared with fresh ingredients",
+    "price": 1566,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_99652497_item_6": {
+    "menu_item_id": "restaurant_99652497_item_6",
+    "restaurant_id": "restaurant_99652497",
+    "name": "Camarones a la Diabla",
+    "description": "Delicious camarones a la diabla prepared with fresh ingredients",
+    "price": 1110,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_99652497_item_7": {
+    "menu_item_id": "restaurant_99652497_item_7",
+    "restaurant_id": "restaurant_99652497",
+    "name": "Tamales de Elote",
+    "description": "Delicious tamales de elote prepared with fresh ingredients",
+    "price": 991,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_77034838_item_0": {
+    "menu_item_id": "restaurant_77034838_item_0",
+    "restaurant_id": "restaurant_77034838",
+    "name": "Tamales de Elote",
+    "description": "Delicious tamales de elote prepared with fresh ingredients",
+    "price": 1177,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_77034838_item_1": {
+    "menu_item_id": "restaurant_77034838_item_1",
+    "restaurant_id": "restaurant_77034838",
+    "name": "Pozole Rojo",
+    "description": "Delicious pozole rojo prepared with fresh ingredients",
+    "price": 1112,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_77034838_item_2": {
+    "menu_item_id": "restaurant_77034838_item_2",
+    "restaurant_id": "restaurant_77034838",
+    "name": "Camarones a la Diabla",
+    "description": "Delicious camarones a la diabla prepared with fresh ingredients",
+    "price": 1454,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_77034838_item_3": {
+    "menu_item_id": "restaurant_77034838_item_3",
+    "restaurant_id": "restaurant_77034838",
+    "name": "Kafta Meshwi",
+    "description": "Delicious kafta meshwi prepared with fresh ingredients",
+    "price": 1993,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_77034838_item_4": {
+    "menu_item_id": "restaurant_77034838_item_4",
+    "restaurant_id": "restaurant_77034838",
+    "name": "Kibbeh Nayyeh",
+    "description": "Delicious kibbeh nayyeh prepared with fresh ingredients",
+    "price": 1456,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_77034838_item_5": {
+    "menu_item_id": "restaurant_77034838_item_5",
+    "restaurant_id": "restaurant_77034838",
+    "name": "Fajitas de Res",
+    "description": "Delicious fajitas de res prepared with fresh ingredients",
+    "price": 1129,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_77034838_item_6": {
+    "menu_item_id": "restaurant_77034838_item_6",
+    "restaurant_id": "restaurant_77034838",
+    "name": "Shawarma",
+    "description": "Delicious shawarma prepared with fresh ingredients",
+    "price": 1945,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_77034838_item_7": {
+    "menu_item_id": "restaurant_77034838_item_7",
+    "restaurant_id": "restaurant_77034838",
+    "name": "Falafel",
+    "description": "Delicious falafel prepared with fresh ingredients",
+    "price": 1133,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_29162059_item_0": {
+    "menu_item_id": "restaurant_29162059_item_0",
+    "restaurant_id": "restaurant_29162059",
+    "name": "Zaalouk (Eggplant and Tomato Dip)",
+    "description": "Delicious zaalouk (eggplant and tomato dip) prepared with fresh ingredients",
+    "price": 1965,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_29162059_item_1": {
+    "menu_item_id": "restaurant_29162059_item_1",
+    "restaurant_id": "restaurant_29162059",
+    "name": "Shakshuka",
+    "description": "Delicious shakshuka prepared with fresh ingredients",
+    "price": 1955,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_29162059_item_2": {
+    "menu_item_id": "restaurant_29162059_item_2",
+    "restaurant_id": "restaurant_29162059",
+    "name": "Tamales de Elote",
+    "description": "Delicious tamales de elote prepared with fresh ingredients",
+    "price": 514,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_29162059_item_3": {
+    "menu_item_id": "restaurant_29162059_item_3",
+    "restaurant_id": "restaurant_29162059",
+    "name": "Tagine of Lamb with Prunes and Almonds",
+    "description": "Delicious tagine of lamb with prunes and almonds prepared with fresh ingredients",
+    "price": 1284,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_29162059_item_4": {
+    "menu_item_id": "restaurant_29162059_item_4",
+    "restaurant_id": "restaurant_29162059",
+    "name": "Greek Moussaka",
+    "description": "Delicious greek moussaka prepared with fresh ingredients",
+    "price": 756,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_29162059_item_5": {
+    "menu_item_id": "restaurant_29162059_item_5",
+    "restaurant_id": "restaurant_29162059",
+    "name": "Tabbouleh Salad",
+    "description": "Delicious tabbouleh salad prepared with fresh ingredients",
+    "price": 1625,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_29162059_item_6": {
+    "menu_item_id": "restaurant_29162059_item_6",
+    "restaurant_id": "restaurant_29162059",
+    "name": "Chicken Bastilla (Savory Pastry with Cinnamon)",
+    "description": "Delicious chicken bastilla (savory pastry with cinnamon) prepared with fresh ingredients",
+    "price": 1820,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_29162059_item_7": {
+    "menu_item_id": "restaurant_29162059_item_7",
+    "restaurant_id": "restaurant_29162059",
+    "name": "Spanakopita (Spinach Pie)",
+    "description": "Delicious spanakopita (spinach pie) prepared with fresh ingredients",
+    "price": 1203,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_58347257_item_0": {
+    "menu_item_id": "restaurant_58347257_item_0",
+    "restaurant_id": "restaurant_58347257",
+    "name": "Spicy Diavola",
+    "description": "Delicious spicy diavola prepared with fresh ingredients",
+    "price": 1381,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_58347257_item_1": {
+    "menu_item_id": "restaurant_58347257_item_1",
+    "restaurant_id": "restaurant_58347257",
+    "name": "B\u00fan Ch\u1ea3 (Grilled Pork with Rice Noodles)",
+    "description": "Delicious b\u00fan ch\u1ea3 (grilled pork with rice noodles) prepared with fresh ingredients",
+    "price": 1725,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_58347257_item_2": {
+    "menu_item_id": "restaurant_58347257_item_2",
+    "restaurant_id": "restaurant_58347257",
+    "name": "Seafood Sensation",
+    "description": "Delicious seafood sensation prepared with fresh ingredients",
+    "price": 730,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_58347257_item_3": {
+    "menu_item_id": "restaurant_58347257_item_3",
+    "restaurant_id": "restaurant_58347257",
+    "name": "Hawaiian Paradise",
+    "description": "Delicious hawaiian paradise prepared with fresh ingredients",
+    "price": 1274,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_58347257_item_4": {
+    "menu_item_id": "restaurant_58347257_item_4",
+    "restaurant_id": "restaurant_58347257",
+    "name": "Shrimp Scampi Linguine",
+    "description": "Delicious shrimp scampi linguine prepared with fresh ingredients",
+    "price": 1248,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_58347257_item_5": {
+    "menu_item_id": "restaurant_58347257_item_5",
+    "restaurant_id": "restaurant_58347257",
+    "name": "Buffalo Chicken Ranch",
+    "description": "Delicious buffalo chicken ranch prepared with fresh ingredients",
+    "price": 857,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_58347257_item_6": {
+    "menu_item_id": "restaurant_58347257_item_6",
+    "restaurant_id": "restaurant_58347257",
+    "name": "Oysters Rockefeller",
+    "description": "Delicious oysters rockefeller prepared with fresh ingredients",
+    "price": 832,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_58347257_item_7": {
+    "menu_item_id": "restaurant_58347257_item_7",
+    "restaurant_id": "restaurant_58347257",
+    "name": "Steamed Dungeness Crab with Garlic Butter",
+    "description": "Delicious steamed dungeness crab with garlic butter prepared with fresh ingredients",
+    "price": 869,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_70731486_item_0": {
+    "menu_item_id": "restaurant_70731486_item_0",
+    "restaurant_id": "restaurant_70731486",
+    "name": "Bacon BBQ Deluxe",
+    "description": "Delicious bacon bbq deluxe prepared with fresh ingredients",
+    "price": 1146,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_70731486_item_1": {
+    "menu_item_id": "restaurant_70731486_item_1",
+    "restaurant_id": "restaurant_70731486",
+    "name": "Cioppino (Seafood Stew)",
+    "description": "Delicious cioppino (seafood stew) prepared with fresh ingredients",
+    "price": 520,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_70731486_item_2": {
+    "menu_item_id": "restaurant_70731486_item_2",
+    "restaurant_id": "restaurant_70731486",
+    "name": "Truffle Aioli & Arugula Burger",
+    "description": "Delicious truffle aioli & arugula burger prepared with fresh ingredients",
+    "price": 741,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_70731486_item_3": {
+    "menu_item_id": "restaurant_70731486_item_3",
+    "restaurant_id": "restaurant_70731486",
+    "name": "Pastel (Fried Pastry with Fillings)",
+    "description": "Delicious pastel (fried pastry with fillings) prepared with fresh ingredients",
+    "price": 1158,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_70731486_item_4": {
+    "menu_item_id": "restaurant_70731486_item_4",
+    "restaurant_id": "restaurant_70731486",
+    "name": "Classic American Cheeseburger",
+    "description": "Delicious classic american cheeseburger prepared with fresh ingredients",
+    "price": 1031,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_70731486_item_5": {
+    "menu_item_id": "restaurant_70731486_item_5",
+    "restaurant_id": "restaurant_70731486",
+    "name": "Picanha (Grilled Prime Cut of Beef)",
+    "description": "Delicious picanha (grilled prime cut of beef) prepared with fresh ingredients",
+    "price": 1793,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_70731486_item_6": {
+    "menu_item_id": "restaurant_70731486_item_6",
+    "restaurant_id": "restaurant_70731486",
+    "name": "Oysters Rockefeller",
+    "description": "Delicious oysters rockefeller prepared with fresh ingredients",
+    "price": 953,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_70731486_item_7": {
+    "menu_item_id": "restaurant_70731486_item_7",
+    "restaurant_id": "restaurant_70731486",
+    "name": "Southwest Avocado Burger",
+    "description": "Delicious southwest avocado burger prepared with fresh ingredients",
+    "price": 633,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_25905667_item_0": {
+    "menu_item_id": "restaurant_25905667_item_0",
+    "restaurant_id": "restaurant_25905667",
+    "name": "Chiles en Nogada",
+    "description": "Delicious chiles en nogada prepared with fresh ingredients",
+    "price": 950,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_25905667_item_1": {
+    "menu_item_id": "restaurant_25905667_item_1",
+    "restaurant_id": "restaurant_25905667",
+    "name": "Shrimp Scampi Linguine",
+    "description": "Delicious shrimp scampi linguine prepared with fresh ingredients",
+    "price": 1605,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_25905667_item_2": {
+    "menu_item_id": "restaurant_25905667_item_2",
+    "restaurant_id": "restaurant_25905667",
+    "name": "Fajitas de Res",
+    "description": "Delicious fajitas de res prepared with fresh ingredients",
+    "price": 1138,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_25905667_item_3": {
+    "menu_item_id": "restaurant_25905667_item_3",
+    "restaurant_id": "restaurant_25905667",
+    "name": "Crab-Stuffed Flounder with Beurre Blanc",
+    "description": "Delicious crab-stuffed flounder with beurre blanc prepared with fresh ingredients",
+    "price": 1284,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_25905667_item_4": {
+    "menu_item_id": "restaurant_25905667_item_4",
+    "restaurant_id": "restaurant_25905667",
+    "name": "Sarma (Stuffed Cabbage Rolls)",
+    "description": "Delicious sarma (stuffed cabbage rolls) prepared with fresh ingredients",
+    "price": 731,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_25905667_item_5": {
+    "menu_item_id": "restaurant_25905667_item_5",
+    "restaurant_id": "restaurant_25905667",
+    "name": "Coconut Curry Mussels",
+    "description": "Delicious coconut curry mussels prepared with fresh ingredients",
+    "price": 1309,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_25905667_item_6": {
+    "menu_item_id": "restaurant_25905667_item_6",
+    "restaurant_id": "restaurant_25905667",
+    "name": "Cac\u0131k (Yogurt with Cucumber)",
+    "description": "Delicious cac\u0131k (yogurt with cucumber) prepared with fresh ingredients",
+    "price": 1219,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_25905667_item_7": {
+    "menu_item_id": "restaurant_25905667_item_7",
+    "restaurant_id": "restaurant_25905667",
+    "name": "Cochinita Pibil",
+    "description": "Delicious cochinita pibil prepared with fresh ingredients",
+    "price": 1161,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_68579222_item_0": {
+    "menu_item_id": "restaurant_68579222_item_0",
+    "restaurant_id": "restaurant_68579222",
+    "name": "Warak Enab (Stuffed Grape Leaves)",
+    "description": "Delicious warak enab (stuffed grape leaves) prepared with fresh ingredients",
+    "price": 623,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_68579222_item_1": {
+    "menu_item_id": "restaurant_68579222_item_1",
+    "restaurant_id": "restaurant_68579222",
+    "name": "Mujaddara",
+    "description": "Delicious mujaddara prepared with fresh ingredients",
+    "price": 1650,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_68579222_item_2": {
+    "menu_item_id": "restaurant_68579222_item_2",
+    "restaurant_id": "restaurant_68579222",
+    "name": "Kale and Brussels Sprout Salad",
+    "description": "Delicious kale and brussels sprout salad prepared with fresh ingredients",
+    "price": 963,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_68579222_item_3": {
+    "menu_item_id": "restaurant_68579222_item_3",
+    "restaurant_id": "restaurant_68579222",
+    "name": "Labneh",
+    "description": "Delicious labneh prepared with fresh ingredients",
+    "price": 955,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_68579222_item_4": {
+    "menu_item_id": "restaurant_68579222_item_4",
+    "restaurant_id": "restaurant_68579222",
+    "name": "Kibbeh Nayyeh",
+    "description": "Delicious kibbeh nayyeh prepared with fresh ingredients",
+    "price": 754,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_68579222_item_5": {
+    "menu_item_id": "restaurant_68579222_item_5",
+    "restaurant_id": "restaurant_68579222",
+    "name": "Thai Beef Salad with Chili Lime Dressing",
+    "description": "Delicious thai beef salad with chili lime dressing prepared with fresh ingredients",
+    "price": 1703,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_68579222_item_6": {
+    "menu_item_id": "restaurant_68579222_item_6",
+    "restaurant_id": "restaurant_68579222",
+    "name": "Manakish Za'atar",
+    "description": "Delicious manakish za'atar prepared with fresh ingredients",
+    "price": 1367,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_68579222_item_7": {
+    "menu_item_id": "restaurant_68579222_item_7",
+    "restaurant_id": "restaurant_68579222",
+    "name": "Baba Ghanoush",
+    "description": "Delicious baba ghanoush prepared with fresh ingredients",
+    "price": 1681,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_34408535_item_0": {
+    "menu_item_id": "restaurant_34408535_item_0",
+    "restaurant_id": "restaurant_34408535",
+    "name": "Falafel Plate with Tahini",
+    "description": "Delicious falafel plate with tahini prepared with fresh ingredients",
+    "price": 1486,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_34408535_item_1": {
+    "menu_item_id": "restaurant_34408535_item_1",
+    "restaurant_id": "restaurant_34408535",
+    "name": "Turkish Kebab with Garlic Yogurt",
+    "description": "Delicious turkish kebab with garlic yogurt prepared with fresh ingredients",
+    "price": 1925,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_34408535_item_2": {
+    "menu_item_id": "restaurant_34408535_item_2",
+    "restaurant_id": "restaurant_34408535",
+    "name": "Seafood Paella",
+    "description": "Delicious seafood paella prepared with fresh ingredients",
+    "price": 733,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_34408535_item_3": {
+    "menu_item_id": "restaurant_34408535_item_3",
+    "restaurant_id": "restaurant_34408535",
+    "name": "Saffron Risotto with Seafood",
+    "description": "Delicious saffron risotto with seafood prepared with fresh ingredients",
+    "price": 766,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_34408535_item_4": {
+    "menu_item_id": "restaurant_34408535_item_4",
+    "restaurant_id": "restaurant_34408535",
+    "name": "Greek Moussaka",
+    "description": "Delicious greek moussaka prepared with fresh ingredients",
+    "price": 1083,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_34408535_item_5": {
+    "menu_item_id": "restaurant_34408535_item_5",
+    "restaurant_id": "restaurant_34408535",
+    "name": "Mezze Platter",
+    "description": "Delicious mezze platter prepared with fresh ingredients",
+    "price": 1566,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_34408535_item_6": {
+    "menu_item_id": "restaurant_34408535_item_6",
+    "restaurant_id": "restaurant_34408535",
+    "name": "Baba Ganoush with Pita",
+    "description": "Delicious baba ganoush with pita prepared with fresh ingredients",
+    "price": 1607,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_34408535_item_7": {
+    "menu_item_id": "restaurant_34408535_item_7",
+    "restaurant_id": "restaurant_34408535",
+    "name": "Ratatouille",
+    "description": "Delicious ratatouille prepared with fresh ingredients",
+    "price": 1039,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_78980040_item_0": {
+    "menu_item_id": "restaurant_78980040_item_0",
+    "restaurant_id": "restaurant_78980040",
+    "name": "Labneh",
+    "description": "Delicious labneh prepared with fresh ingredients",
+    "price": 1033,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_78980040_item_1": {
+    "menu_item_id": "restaurant_78980040_item_1",
+    "restaurant_id": "restaurant_78980040",
+    "name": "Knafeh",
+    "description": "Delicious knafeh prepared with fresh ingredients",
+    "price": 1293,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_78980040_item_2": {
+    "menu_item_id": "restaurant_78980040_item_2",
+    "restaurant_id": "restaurant_78980040",
+    "name": "Bibimbap (Mixed Rice Bowl)",
+    "description": "Delicious bibimbap (mixed rice bowl) prepared with fresh ingredients",
+    "price": 1826,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_78980040_item_3": {
+    "menu_item_id": "restaurant_78980040_item_3",
+    "restaurant_id": "restaurant_78980040",
+    "name": "Yukhoe (Korean Beef Tartare)",
+    "description": "Delicious yukhoe (korean beef tartare) prepared with fresh ingredients",
+    "price": 637,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_78980040_item_4": {
+    "menu_item_id": "restaurant_78980040_item_4",
+    "restaurant_id": "restaurant_78980040",
+    "name": "Jajangmyeon (Black Bean Noodles)",
+    "description": "Delicious jajangmyeon (black bean noodles) prepared with fresh ingredients",
+    "price": 1105,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_78980040_item_5": {
+    "menu_item_id": "restaurant_78980040_item_5",
+    "restaurant_id": "restaurant_78980040",
+    "name": "Galbi (Marinated Beef Short Ribs)",
+    "description": "Delicious galbi (marinated beef short ribs) prepared with fresh ingredients",
+    "price": 996,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_78980040_item_6": {
+    "menu_item_id": "restaurant_78980040_item_6",
+    "restaurant_id": "restaurant_78980040",
+    "name": "Samgyeopsal (Grilled Pork Belly)",
+    "description": "Delicious samgyeopsal (grilled pork belly) prepared with fresh ingredients",
+    "price": 1931,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_78980040_item_7": {
+    "menu_item_id": "restaurant_78980040_item_7",
+    "restaurant_id": "restaurant_78980040",
+    "name": "Japchae (Stir-fried Glass Noodles)",
+    "description": "Delicious japchae (stir-fried glass noodles) prepared with fresh ingredients",
+    "price": 673,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_50134348_item_0": {
+    "menu_item_id": "restaurant_50134348_item_0",
+    "restaurant_id": "restaurant_50134348",
+    "name": "Double Smash Patty",
+    "description": "Delicious double smash patty prepared with fresh ingredients",
+    "price": 1995,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_50134348_item_1": {
+    "menu_item_id": "restaurant_50134348_item_1",
+    "restaurant_id": "restaurant_50134348",
+    "name": "Jajangmyeon (Black Bean Noodles)",
+    "description": "Delicious jajangmyeon (black bean noodles) prepared with fresh ingredients",
+    "price": 732,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_50134348_item_2": {
+    "menu_item_id": "restaurant_50134348_item_2",
+    "restaurant_id": "restaurant_50134348",
+    "name": "Seafood Paella",
+    "description": "Delicious seafood paella prepared with fresh ingredients",
+    "price": 1148,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_50134348_item_3": {
+    "menu_item_id": "restaurant_50134348_item_3",
+    "restaurant_id": "restaurant_50134348",
+    "name": "Ratatouille",
+    "description": "Delicious ratatouille prepared with fresh ingredients",
+    "price": 1496,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_50134348_item_4": {
+    "menu_item_id": "restaurant_50134348_item_4",
+    "restaurant_id": "restaurant_50134348",
+    "name": "Lamb Souvlaki Skewers",
+    "description": "Delicious lamb souvlaki skewers prepared with fresh ingredients",
+    "price": 1611,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_50134348_item_5": {
+    "menu_item_id": "restaurant_50134348_item_5",
+    "restaurant_id": "restaurant_50134348",
+    "name": "Mediterranean Lamb Burger",
+    "description": "Delicious mediterranean lamb burger prepared with fresh ingredients",
+    "price": 1975,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_50134348_item_6": {
+    "menu_item_id": "restaurant_50134348_item_6",
+    "restaurant_id": "restaurant_50134348",
+    "name": "Galbi (Marinated Beef Short Ribs)",
+    "description": "Delicious galbi (marinated beef short ribs) prepared with fresh ingredients",
+    "price": 1804,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_50134348_item_7": {
+    "menu_item_id": "restaurant_50134348_item_7",
+    "restaurant_id": "restaurant_50134348",
+    "name": "Kimchi Jjigae (Kimchi Stew)",
+    "description": "Delicious kimchi jjigae (kimchi stew) prepared with fresh ingredients",
+    "price": 1032,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_10980591_item_0": {
+    "menu_item_id": "restaurant_10980591_item_0",
+    "restaurant_id": "restaurant_10980591",
+    "name": "Samgyeopsal (Grilled Pork Belly)",
+    "description": "Delicious samgyeopsal (grilled pork belly) prepared with fresh ingredients",
+    "price": 1412,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_10980591_item_1": {
+    "menu_item_id": "restaurant_10980591_item_1",
+    "restaurant_id": "restaurant_10980591",
+    "name": "Tagine of Lamb with Prunes and Almonds",
+    "description": "Delicious tagine of lamb with prunes and almonds prepared with fresh ingredients",
+    "price": 651,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_10980591_item_2": {
+    "menu_item_id": "restaurant_10980591_item_2",
+    "restaurant_id": "restaurant_10980591",
+    "name": "Dakgalbi (Spicy Stir-fried Chicken)",
+    "description": "Delicious dakgalbi (spicy stir-fried chicken) prepared with fresh ingredients",
+    "price": 1333,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_10980591_item_3": {
+    "menu_item_id": "restaurant_10980591_item_3",
+    "restaurant_id": "restaurant_10980591",
+    "name": "Galbi (Marinated Beef Short Ribs)",
+    "description": "Delicious galbi (marinated beef short ribs) prepared with fresh ingredients",
+    "price": 1647,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_10980591_item_4": {
+    "menu_item_id": "restaurant_10980591_item_4",
+    "restaurant_id": "restaurant_10980591",
+    "name": "Bibimbap (Mixed Rice Bowl)",
+    "description": "Delicious bibimbap (mixed rice bowl) prepared with fresh ingredients",
+    "price": 1977,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_10980591_item_5": {
+    "menu_item_id": "restaurant_10980591_item_5",
+    "restaurant_id": "restaurant_10980591",
+    "name": "Mrouzia (Sweet Lamb Tagine with Raisins and Honey)",
+    "description": "Delicious mrouzia (sweet lamb tagine with raisins and honey) prepared with fresh ingredients",
+    "price": 600,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_10980591_item_6": {
+    "menu_item_id": "restaurant_10980591_item_6",
+    "restaurant_id": "restaurant_10980591",
+    "name": "Pastilla au Lait (Sweet Milk Pastry with Almonds)",
+    "description": "Delicious pastilla au lait (sweet milk pastry with almonds) prepared with fresh ingredients",
+    "price": 1199,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_10980591_item_7": {
+    "menu_item_id": "restaurant_10980591_item_7",
+    "restaurant_id": "restaurant_10980591",
+    "name": "Jajangmyeon (Black Bean Noodles)",
+    "description": "Delicious jajangmyeon (black bean noodles) prepared with fresh ingredients",
+    "price": 1278,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_37349679_item_0": {
+    "menu_item_id": "restaurant_37349679_item_0",
+    "restaurant_id": "restaurant_37349679",
+    "name": "Asian Sesame Chicken Salad",
+    "description": "Delicious asian sesame chicken salad prepared with fresh ingredients",
+    "price": 1970,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_37349679_item_1": {
+    "menu_item_id": "restaurant_37349679_item_1",
+    "restaurant_id": "restaurant_37349679",
+    "name": "Hummus bi Tahini",
+    "description": "Delicious hummus bi tahini prepared with fresh ingredients",
+    "price": 1016,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_37349679_item_2": {
+    "menu_item_id": "restaurant_37349679_item_2",
+    "restaurant_id": "restaurant_37349679",
+    "name": "Manakish Za'atar",
+    "description": "Delicious manakish za'atar prepared with fresh ingredients",
+    "price": 1497,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_37349679_item_3": {
+    "menu_item_id": "restaurant_37349679_item_3",
+    "restaurant_id": "restaurant_37349679",
+    "name": "Chermoula Grilled Fish",
+    "description": "Delicious chermoula grilled fish prepared with fresh ingredients",
+    "price": 935,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_37349679_item_4": {
+    "menu_item_id": "restaurant_37349679_item_4",
+    "restaurant_id": "restaurant_37349679",
+    "name": "Rfissa (Chicken with Lentils and Msemen Bread)",
+    "description": "Delicious rfissa (chicken with lentils and msemen bread) prepared with fresh ingredients",
+    "price": 684,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_37349679_item_5": {
+    "menu_item_id": "restaurant_37349679_item_5",
+    "restaurant_id": "restaurant_37349679",
+    "name": "Caprese Salad with Balsamic Glaze",
+    "description": "Delicious caprese salad with balsamic glaze prepared with fresh ingredients",
+    "price": 826,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_37349679_item_6": {
+    "menu_item_id": "restaurant_37349679_item_6",
+    "restaurant_id": "restaurant_37349679",
+    "name": "Warak Enab (Stuffed Grape Leaves)",
+    "description": "Delicious warak enab (stuffed grape leaves) prepared with fresh ingredients",
+    "price": 544,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_37349679_item_7": {
+    "menu_item_id": "restaurant_37349679_item_7",
+    "restaurant_id": "restaurant_37349679",
+    "name": "Kefta Mkaouara (Meatball and Egg Tagine)",
+    "description": "Delicious kefta mkaouara (meatball and egg tagine) prepared with fresh ingredients",
+    "price": 1373,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_93561834_item_0": {
+    "menu_item_id": "restaurant_93561834_item_0",
+    "restaurant_id": "restaurant_93561834",
+    "name": "Bibimbap (Mixed Rice Bowl)",
+    "description": "Delicious bibimbap (mixed rice bowl) prepared with fresh ingredients",
+    "price": 1848,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_93561834_item_1": {
+    "menu_item_id": "restaurant_93561834_item_1",
+    "restaurant_id": "restaurant_93561834",
+    "name": "Mediterranean Olive",
+    "description": "Delicious mediterranean olive prepared with fresh ingredients",
+    "price": 706,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_93561834_item_2": {
+    "menu_item_id": "restaurant_93561834_item_2",
+    "restaurant_id": "restaurant_93561834",
+    "name": "Vatap\u00e1 (Bread and Shrimp Paste)",
+    "description": "Delicious vatap\u00e1 (bread and shrimp paste) prepared with fresh ingredients",
+    "price": 1200,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_93561834_item_3": {
+    "menu_item_id": "restaurant_93561834_item_3",
+    "restaurant_id": "restaurant_93561834",
+    "name": "P\u00e3o de Queijo (Cheese Bread)",
+    "description": "Delicious p\u00e3o de queijo (cheese bread) prepared with fresh ingredients",
+    "price": 1921,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_93561834_item_4": {
+    "menu_item_id": "restaurant_93561834_item_4",
+    "restaurant_id": "restaurant_93561834",
+    "name": "Dakgalbi (Spicy Stir-fried Chicken)",
+    "description": "Delicious dakgalbi (spicy stir-fried chicken) prepared with fresh ingredients",
+    "price": 1999,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_93561834_item_5": {
+    "menu_item_id": "restaurant_93561834_item_5",
+    "restaurant_id": "restaurant_93561834",
+    "name": "Yukhoe (Korean Beef Tartare)",
+    "description": "Delicious yukhoe (korean beef tartare) prepared with fresh ingredients",
+    "price": 844,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_93561834_item_6": {
+    "menu_item_id": "restaurant_93561834_item_6",
+    "restaurant_id": "restaurant_93561834",
+    "name": "Quindim (Coconut Custard Dessert)",
+    "description": "Delicious quindim (coconut custard dessert) prepared with fresh ingredients",
+    "price": 1126,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_93561834_item_7": {
+    "menu_item_id": "restaurant_93561834_item_7",
+    "restaurant_id": "restaurant_93561834",
+    "name": "Meat Lovers Feast",
+    "description": "Delicious meat lovers feast prepared with fresh ingredients",
+    "price": 526,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_49431883_item_0": {
+    "menu_item_id": "restaurant_49431883_item_0",
+    "restaurant_id": "restaurant_49431883",
+    "name": "Aloo Gobi",
+    "description": "Delicious aloo gobi prepared with fresh ingredients",
+    "price": 1410,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_49431883_item_1": {
+    "menu_item_id": "restaurant_49431883_item_1",
+    "restaurant_id": "restaurant_49431883",
+    "name": "Gulab Jamun",
+    "description": "Delicious gulab jamun prepared with fresh ingredients",
+    "price": 1790,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_49431883_item_2": {
+    "menu_item_id": "restaurant_49431883_item_2",
+    "restaurant_id": "restaurant_49431883",
+    "name": "Tuna Nigiri",
+    "description": "Delicious tuna nigiri prepared with fresh ingredients",
+    "price": 1113,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_49431883_item_3": {
+    "menu_item_id": "restaurant_49431883_item_3",
+    "restaurant_id": "restaurant_49431883",
+    "name": "Chimichurri Skirt Steak",
+    "description": "Delicious chimichurri skirt steak prepared with fresh ingredients",
+    "price": 1467,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_49431883_item_4": {
+    "menu_item_id": "restaurant_49431883_item_4",
+    "restaurant_id": "restaurant_49431883",
+    "name": "Coffee-Rubbed Hanger Steak",
+    "description": "Delicious coffee-rubbed hanger steak prepared with fresh ingredients",
+    "price": 877,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_49431883_item_5": {
+    "menu_item_id": "restaurant_49431883_item_5",
+    "restaurant_id": "restaurant_49431883",
+    "name": "Blue Cheese Crusted Tenderloin",
+    "description": "Delicious blue cheese crusted tenderloin prepared with fresh ingredients",
+    "price": 1696,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_49431883_item_6": {
+    "menu_item_id": "restaurant_49431883_item_6",
+    "restaurant_id": "restaurant_49431883",
+    "name": "Tomahawk Steak",
+    "description": "Delicious tomahawk steak prepared with fresh ingredients",
+    "price": 1496,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_49431883_item_7": {
+    "menu_item_id": "restaurant_49431883_item_7",
+    "restaurant_id": "restaurant_49431883",
+    "name": "Naan Bread Basket",
+    "description": "Delicious naan bread basket prepared with fresh ingredients",
+    "price": 797,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_46436936_item_0": {
+    "menu_item_id": "restaurant_46436936_item_0",
+    "restaurant_id": "restaurant_46436936",
+    "name": "Classic American Cheeseburger",
+    "description": "Delicious classic american cheeseburger prepared with fresh ingredients",
+    "price": 1110,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_46436936_item_1": {
+    "menu_item_id": "restaurant_46436936_item_1",
+    "restaurant_id": "restaurant_46436936",
+    "name": "Greek Salad (Horiatiki)",
+    "description": "Delicious greek salad (horiatiki) prepared with fresh ingredients",
+    "price": 1185,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_46436936_item_2": {
+    "menu_item_id": "restaurant_46436936_item_2",
+    "restaurant_id": "restaurant_46436936",
+    "name": "Saganaki",
+    "description": "Delicious saganaki prepared with fresh ingredients",
+    "price": 689,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_46436936_item_3": {
+    "menu_item_id": "restaurant_46436936_item_3",
+    "restaurant_id": "restaurant_46436936",
+    "name": "Gemista",
+    "description": "Delicious gemista prepared with fresh ingredients",
+    "price": 541,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_46436936_item_4": {
+    "menu_item_id": "restaurant_46436936_item_4",
+    "restaurant_id": "restaurant_46436936",
+    "name": "Souvlaki",
+    "description": "Delicious souvlaki prepared with fresh ingredients",
+    "price": 1952,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_46436936_item_5": {
+    "menu_item_id": "restaurant_46436936_item_5",
+    "restaurant_id": "restaurant_46436936",
+    "name": "Gyro Platter",
+    "description": "Delicious gyro platter prepared with fresh ingredients",
+    "price": 1520,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_46436936_item_6": {
+    "menu_item_id": "restaurant_46436936_item_6",
+    "restaurant_id": "restaurant_46436936",
+    "name": "Spicy Jalape\u00f1o Popper Burger",
+    "description": "Delicious spicy jalape\u00f1o popper burger prepared with fresh ingredients",
+    "price": 899,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_46436936_item_7": {
+    "menu_item_id": "restaurant_46436936_item_7",
+    "restaurant_id": "restaurant_46436936",
+    "name": "Pastitsio",
+    "description": "Delicious pastitsio prepared with fresh ingredients",
+    "price": 1046,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_70107432_item_0": {
+    "menu_item_id": "restaurant_70107432_item_0",
+    "restaurant_id": "restaurant_70107432",
+    "name": "Bourbon Glazed Flat Iron",
+    "description": "Delicious bourbon glazed flat iron prepared with fresh ingredients",
+    "price": 1201,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_70107432_item_1": {
+    "menu_item_id": "restaurant_70107432_item_1",
+    "restaurant_id": "restaurant_70107432",
+    "name": "Chirashi Bowl",
+    "description": "Delicious chirashi bowl prepared with fresh ingredients",
+    "price": 1219,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_70107432_item_2": {
+    "menu_item_id": "restaurant_70107432_item_2",
+    "restaurant_id": "restaurant_70107432",
+    "name": "Tonkotsu Ramen",
+    "description": "Delicious tonkotsu ramen prepared with fresh ingredients",
+    "price": 1157,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_70107432_item_3": {
+    "menu_item_id": "restaurant_70107432_item_3",
+    "restaurant_id": "restaurant_70107432",
+    "name": "Sirloin with Garlic Butter",
+    "description": "Delicious sirloin with garlic butter prepared with fresh ingredients",
+    "price": 1045,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_70107432_item_4": {
+    "menu_item_id": "restaurant_70107432_item_4",
+    "restaurant_id": "restaurant_70107432",
+    "name": "Takoyaki",
+    "description": "Delicious takoyaki prepared with fresh ingredients",
+    "price": 522,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_70107432_item_5": {
+    "menu_item_id": "restaurant_70107432_item_5",
+    "restaurant_id": "restaurant_70107432",
+    "name": "Blue Cheese Crusted Tenderloin",
+    "description": "Delicious blue cheese crusted tenderloin prepared with fresh ingredients",
+    "price": 1726,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_70107432_item_6": {
+    "menu_item_id": "restaurant_70107432_item_6",
+    "restaurant_id": "restaurant_70107432",
+    "name": "Tempura Udon",
+    "description": "Delicious tempura udon prepared with fresh ingredients",
+    "price": 637,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_70107432_item_7": {
+    "menu_item_id": "restaurant_70107432_item_7",
+    "restaurant_id": "restaurant_70107432",
+    "name": "New York Strip",
+    "description": "Delicious new york strip prepared with fresh ingredients",
+    "price": 1220,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_95856670_item_0": {
+    "menu_item_id": "restaurant_95856670_item_0",
+    "restaurant_id": "restaurant_95856670",
+    "name": "Seared Scallops with Brown Butter and Sage",
+    "description": "Delicious seared scallops with brown butter and sage prepared with fresh ingredients",
+    "price": 1235,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_95856670_item_1": {
+    "menu_item_id": "restaurant_95856670_item_1",
+    "restaurant_id": "restaurant_95856670",
+    "name": "Crispy Calamari with Spicy Remoulade",
+    "description": "Delicious crispy calamari with spicy remoulade prepared with fresh ingredients",
+    "price": 756,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_95856670_item_2": {
+    "menu_item_id": "restaurant_95856670_item_2",
+    "restaurant_id": "restaurant_95856670",
+    "name": "Cioppino (Seafood Stew)",
+    "description": "Delicious cioppino (seafood stew) prepared with fresh ingredients",
+    "price": 1200,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_95856670_item_3": {
+    "menu_item_id": "restaurant_95856670_item_3",
+    "restaurant_id": "restaurant_95856670",
+    "name": "Gamjatang (Pork Spine Soup)",
+    "description": "Delicious gamjatang (pork spine soup) prepared with fresh ingredients",
+    "price": 1858,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_95856670_item_4": {
+    "menu_item_id": "restaurant_95856670_item_4",
+    "restaurant_id": "restaurant_95856670",
+    "name": "Shrimp Scampi Linguine",
+    "description": "Delicious shrimp scampi linguine prepared with fresh ingredients",
+    "price": 551,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_95856670_item_5": {
+    "menu_item_id": "restaurant_95856670_item_5",
+    "restaurant_id": "restaurant_95856670",
+    "name": "Blackened Mahi-Mahi with Mango Salsa",
+    "description": "Delicious blackened mahi-mahi with mango salsa prepared with fresh ingredients",
+    "price": 1129,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_95856670_item_6": {
+    "menu_item_id": "restaurant_95856670_item_6",
+    "restaurant_id": "restaurant_95856670",
+    "name": "Bibimbap (Mixed Rice Bowl)",
+    "description": "Delicious bibimbap (mixed rice bowl) prepared with fresh ingredients",
+    "price": 979,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_95856670_item_7": {
+    "menu_item_id": "restaurant_95856670_item_7",
+    "restaurant_id": "restaurant_95856670",
+    "name": "Grilled Atlantic Salmon with Lemon Dill Sauce",
+    "description": "Delicious grilled atlantic salmon with lemon dill sauce prepared with fresh ingredients",
+    "price": 1916,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_14849136_item_0": {
+    "menu_item_id": "restaurant_14849136_item_0",
+    "restaurant_id": "restaurant_14849136",
+    "name": "Spanakopita (Spinach Pie)",
+    "description": "Delicious spanakopita (spinach pie) prepared with fresh ingredients",
+    "price": 1101,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_14849136_item_1": {
+    "menu_item_id": "restaurant_14849136_item_1",
+    "restaurant_id": "restaurant_14849136",
+    "name": "Shakshuka",
+    "description": "Delicious shakshuka prepared with fresh ingredients",
+    "price": 1092,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_14849136_item_2": {
+    "menu_item_id": "restaurant_14849136_item_2",
+    "restaurant_id": "restaurant_14849136",
+    "name": "Ratatouille",
+    "description": "Delicious ratatouille prepared with fresh ingredients",
+    "price": 1834,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_14849136_item_3": {
+    "menu_item_id": "restaurant_14849136_item_3",
+    "restaurant_id": "restaurant_14849136",
+    "name": "Lamb Souvlaki Skewers",
+    "description": "Delicious lamb souvlaki skewers prepared with fresh ingredients",
+    "price": 700,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_14849136_item_4": {
+    "menu_item_id": "restaurant_14849136_item_4",
+    "restaurant_id": "restaurant_14849136",
+    "name": "Greek Moussaka",
+    "description": "Delicious greek moussaka prepared with fresh ingredients",
+    "price": 1946,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_14849136_item_5": {
+    "menu_item_id": "restaurant_14849136_item_5",
+    "restaurant_id": "restaurant_14849136",
+    "name": "Seafood Paella",
+    "description": "Delicious seafood paella prepared with fresh ingredients",
+    "price": 1381,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_14849136_item_6": {
+    "menu_item_id": "restaurant_14849136_item_6",
+    "restaurant_id": "restaurant_14849136",
+    "name": "Falafel Plate with Tahini",
+    "description": "Delicious falafel plate with tahini prepared with fresh ingredients",
+    "price": 1953,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_14849136_item_7": {
+    "menu_item_id": "restaurant_14849136_item_7",
+    "restaurant_id": "restaurant_14849136",
+    "name": "Saffron Risotto with Seafood",
+    "description": "Delicious saffron risotto with seafood prepared with fresh ingredients",
+    "price": 1456,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_50507474_item_0": {
+    "menu_item_id": "restaurant_50507474_item_0",
+    "restaurant_id": "restaurant_50507474",
+    "name": "Roast Beef and Horseradish on Sourdough",
+    "description": "Delicious roast beef and horseradish on sourdough prepared with fresh ingredients",
+    "price": 570,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_50507474_item_1": {
+    "menu_item_id": "restaurant_50507474_item_1",
+    "restaurant_id": "restaurant_50507474",
+    "name": "Egg Salad BLT",
+    "description": "Delicious egg salad blt prepared with fresh ingredients",
+    "price": 1924,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_50507474_item_2": {
+    "menu_item_id": "restaurant_50507474_item_2",
+    "restaurant_id": "restaurant_50507474",
+    "name": "Spinach and Strawberry Salad",
+    "description": "Delicious spinach and strawberry salad prepared with fresh ingredients",
+    "price": 1444,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_50507474_item_3": {
+    "menu_item_id": "restaurant_50507474_item_3",
+    "restaurant_id": "restaurant_50507474",
+    "name": "Harvest Apple Walnut Salad",
+    "description": "Delicious harvest apple walnut salad prepared with fresh ingredients",
+    "price": 1563,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_50507474_item_4": {
+    "menu_item_id": "restaurant_50507474_item_4",
+    "restaurant_id": "restaurant_50507474",
+    "name": "Kale and Brussels Sprout Salad",
+    "description": "Delicious kale and brussels sprout salad prepared with fresh ingredients",
+    "price": 1887,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_50507474_item_5": {
+    "menu_item_id": "restaurant_50507474_item_5",
+    "restaurant_id": "restaurant_50507474",
+    "name": "New England Clam Chowder",
+    "description": "Delicious new england clam chowder prepared with fresh ingredients",
+    "price": 1489,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_50507474_item_6": {
+    "menu_item_id": "restaurant_50507474_item_6",
+    "restaurant_id": "restaurant_50507474",
+    "name": "Coconut Curry Mussels",
+    "description": "Delicious coconut curry mussels prepared with fresh ingredients",
+    "price": 1890,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_50507474_item_7": {
+    "menu_item_id": "restaurant_50507474_item_7",
+    "restaurant_id": "restaurant_50507474",
+    "name": "Falafel Pita Pocket",
+    "description": "Delicious falafel pita pocket prepared with fresh ingredients",
+    "price": 1114,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_61674683_item_0": {
+    "menu_item_id": "restaurant_61674683_item_0",
+    "restaurant_id": "restaurant_61674683",
+    "name": "Dakgalbi (Spicy Stir-fried Chicken)",
+    "description": "Delicious dakgalbi (spicy stir-fried chicken) prepared with fresh ingredients",
+    "price": 980,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_61674683_item_1": {
+    "menu_item_id": "restaurant_61674683_item_1",
+    "restaurant_id": "restaurant_61674683",
+    "name": "Grilled Chicken Pesto Panini",
+    "description": "Delicious grilled chicken pesto panini prepared with fresh ingredients",
+    "price": 538,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_61674683_item_2": {
+    "menu_item_id": "restaurant_61674683_item_2",
+    "restaurant_id": "restaurant_61674683",
+    "name": "Haemul Pajeon (Seafood Green Onion Pancake)",
+    "description": "Delicious haemul pajeon (seafood green onion pancake) prepared with fresh ingredients",
+    "price": 1853,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_61674683_item_3": {
+    "menu_item_id": "restaurant_61674683_item_3",
+    "restaurant_id": "restaurant_61674683",
+    "name": "Buffalo Chicken Burger",
+    "description": "Delicious buffalo chicken burger prepared with fresh ingredients",
+    "price": 502,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_61674683_item_4": {
+    "menu_item_id": "restaurant_61674683_item_4",
+    "restaurant_id": "restaurant_61674683",
+    "name": "Bacon BBQ Deluxe",
+    "description": "Delicious bacon bbq deluxe prepared with fresh ingredients",
+    "price": 942,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_61674683_item_5": {
+    "menu_item_id": "restaurant_61674683_item_5",
+    "restaurant_id": "restaurant_61674683",
+    "name": "Tteokbokki (Spicy Rice Cakes)",
+    "description": "Delicious tteokbokki (spicy rice cakes) prepared with fresh ingredients",
+    "price": 578,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_61674683_item_6": {
+    "menu_item_id": "restaurant_61674683_item_6",
+    "restaurant_id": "restaurant_61674683",
+    "name": "Bleu Cheese & Caramelized Onion",
+    "description": "Delicious bleu cheese & caramelized onion prepared with fresh ingredients",
+    "price": 1490,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_61674683_item_7": {
+    "menu_item_id": "restaurant_61674683_item_7",
+    "restaurant_id": "restaurant_61674683",
+    "name": "Japchae (Stir-fried Glass Noodles)",
+    "description": "Delicious japchae (stir-fried glass noodles) prepared with fresh ingredients",
+    "price": 1136,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_56197947_item_0": {
+    "menu_item_id": "restaurant_56197947_item_0",
+    "restaurant_id": "restaurant_56197947",
+    "name": "Seafood Paella",
+    "description": "Delicious seafood paella prepared with fresh ingredients",
+    "price": 1392,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_56197947_item_1": {
+    "menu_item_id": "restaurant_56197947_item_1",
+    "restaurant_id": "restaurant_56197947",
+    "name": "Shakshuka",
+    "description": "Delicious shakshuka prepared with fresh ingredients",
+    "price": 1402,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_56197947_item_2": {
+    "menu_item_id": "restaurant_56197947_item_2",
+    "restaurant_id": "restaurant_56197947",
+    "name": "Moroccan Tagine with Couscous",
+    "description": "Delicious moroccan tagine with couscous prepared with fresh ingredients",
+    "price": 1790,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_56197947_item_3": {
+    "menu_item_id": "restaurant_56197947_item_3",
+    "restaurant_id": "restaurant_56197947",
+    "name": "Falafel Plate with Tahini",
+    "description": "Delicious falafel plate with tahini prepared with fresh ingredients",
+    "price": 1686,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_56197947_item_4": {
+    "menu_item_id": "restaurant_56197947_item_4",
+    "restaurant_id": "restaurant_56197947",
+    "name": "Ratatouille",
+    "description": "Delicious ratatouille prepared with fresh ingredients",
+    "price": 864,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_56197947_item_5": {
+    "menu_item_id": "restaurant_56197947_item_5",
+    "restaurant_id": "restaurant_56197947",
+    "name": "Tabbouleh Salad",
+    "description": "Delicious tabbouleh salad prepared with fresh ingredients",
+    "price": 1971,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_56197947_item_6": {
+    "menu_item_id": "restaurant_56197947_item_6",
+    "restaurant_id": "restaurant_56197947",
+    "name": "Mezze Platter",
+    "description": "Delicious mezze platter prepared with fresh ingredients",
+    "price": 596,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_56197947_item_7": {
+    "menu_item_id": "restaurant_56197947_item_7",
+    "restaurant_id": "restaurant_56197947",
+    "name": "Lamb Souvlaki Skewers",
+    "description": "Delicious lamb souvlaki skewers prepared with fresh ingredients",
+    "price": 1855,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_64766497_item_0": {
+    "menu_item_id": "restaurant_64766497_item_0",
+    "restaurant_id": "restaurant_64766497",
+    "name": "Sopa de Tortilla",
+    "description": "Delicious sopa de tortilla prepared with fresh ingredients",
+    "price": 1725,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_64766497_item_1": {
+    "menu_item_id": "restaurant_64766497_item_1",
+    "restaurant_id": "restaurant_64766497",
+    "name": "Fajitas de Res",
+    "description": "Delicious fajitas de res prepared with fresh ingredients",
+    "price": 1490,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_64766497_item_2": {
+    "menu_item_id": "restaurant_64766497_item_2",
+    "restaurant_id": "restaurant_64766497",
+    "name": "Quesadillas de Huitlacoche",
+    "description": "Delicious quesadillas de huitlacoche prepared with fresh ingredients",
+    "price": 505,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_64766497_item_3": {
+    "menu_item_id": "restaurant_64766497_item_3",
+    "restaurant_id": "restaurant_64766497",
+    "name": "Camarones a la Diabla",
+    "description": "Delicious camarones a la diabla prepared with fresh ingredients",
+    "price": 943,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_64766497_item_4": {
+    "menu_item_id": "restaurant_64766497_item_4",
+    "restaurant_id": "restaurant_64766497",
+    "name": "Tostadas de Tinga",
+    "description": "Delicious tostadas de tinga prepared with fresh ingredients",
+    "price": 1985,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_64766497_item_5": {
+    "menu_item_id": "restaurant_64766497_item_5",
+    "restaurant_id": "restaurant_64766497",
+    "name": "Tacos al Pastor",
+    "description": "Delicious tacos al pastor prepared with fresh ingredients",
+    "price": 1710,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_64766497_item_6": {
+    "menu_item_id": "restaurant_64766497_item_6",
+    "restaurant_id": "restaurant_64766497",
+    "name": "Cochinita Pibil",
+    "description": "Delicious cochinita pibil prepared with fresh ingredients",
+    "price": 797,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_64766497_item_7": {
+    "menu_item_id": "restaurant_64766497_item_7",
+    "restaurant_id": "restaurant_64766497",
+    "name": "Guacamole con Totopos",
+    "description": "Delicious guacamole con totopos prepared with fresh ingredients",
+    "price": 1861,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_51311291_item_0": {
+    "menu_item_id": "restaurant_51311291_item_0",
+    "restaurant_id": "restaurant_51311291",
+    "name": "Lahmacun",
+    "description": "Delicious lahmacun prepared with fresh ingredients",
+    "price": 1683,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_51311291_item_1": {
+    "menu_item_id": "restaurant_51311291_item_1",
+    "restaurant_id": "restaurant_51311291",
+    "name": "Menemen (Turkish Scrambled Eggs)",
+    "description": "Delicious menemen (turkish scrambled eggs) prepared with fresh ingredients",
+    "price": 845,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_51311291_item_2": {
+    "menu_item_id": "restaurant_51311291_item_2",
+    "restaurant_id": "restaurant_51311291",
+    "name": "Pot-au-Feu",
+    "description": "Delicious pot-au-feu prepared with fresh ingredients",
+    "price": 579,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_51311291_item_3": {
+    "menu_item_id": "restaurant_51311291_item_3",
+    "restaurant_id": "restaurant_51311291",
+    "name": "Boeuf Bourguignon",
+    "description": "Delicious boeuf bourguignon prepared with fresh ingredients",
+    "price": 862,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_51311291_item_4": {
+    "menu_item_id": "restaurant_51311291_item_4",
+    "restaurant_id": "restaurant_51311291",
+    "name": "Dolma (Stuffed Grape Leaves)",
+    "description": "Delicious dolma (stuffed grape leaves) prepared with fresh ingredients",
+    "price": 1402,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_51311291_item_5": {
+    "menu_item_id": "restaurant_51311291_item_5",
+    "restaurant_id": "restaurant_51311291",
+    "name": "Coq au Vin",
+    "description": "Delicious coq au vin prepared with fresh ingredients",
+    "price": 1405,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_51311291_item_6": {
+    "menu_item_id": "restaurant_51311291_item_6",
+    "restaurant_id": "restaurant_51311291",
+    "name": "K\u00f6fte (Turkish Meatballs)",
+    "description": "Delicious k\u00f6fte (turkish meatballs) prepared with fresh ingredients",
+    "price": 1108,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_51311291_item_7": {
+    "menu_item_id": "restaurant_51311291_item_7",
+    "restaurant_id": "restaurant_51311291",
+    "name": "K\u00fcnefe",
+    "description": "Delicious k\u00fcnefe prepared with fresh ingredients",
+    "price": 1569,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_67583799_item_0": {
+    "menu_item_id": "restaurant_67583799_item_0",
+    "restaurant_id": "restaurant_67583799",
+    "name": "Reuben on Marble Rye",
+    "description": "Delicious reuben on marble rye prepared with fresh ingredients",
+    "price": 1792,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_67583799_item_1": {
+    "menu_item_id": "restaurant_67583799_item_1",
+    "restaurant_id": "restaurant_67583799",
+    "name": "Roast Beef and Horseradish on Sourdough",
+    "description": "Delicious roast beef and horseradish on sourdough prepared with fresh ingredients",
+    "price": 990,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_67583799_item_2": {
+    "menu_item_id": "restaurant_67583799_item_2",
+    "restaurant_id": "restaurant_67583799",
+    "name": "Cuban Sandwich",
+    "description": "Delicious cuban sandwich prepared with fresh ingredients",
+    "price": 1879,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_67583799_item_3": {
+    "menu_item_id": "restaurant_67583799_item_3",
+    "restaurant_id": "restaurant_67583799",
+    "name": "Falafel Pita Pocket",
+    "description": "Delicious falafel pita pocket prepared with fresh ingredients",
+    "price": 1973,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_67583799_item_4": {
+    "menu_item_id": "restaurant_67583799_item_4",
+    "restaurant_id": "restaurant_67583799",
+    "name": "Mediterranean Veggie Wrap",
+    "description": "Delicious mediterranean veggie wrap prepared with fresh ingredients",
+    "price": 1655,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_67583799_item_5": {
+    "menu_item_id": "restaurant_67583799_item_5",
+    "restaurant_id": "restaurant_67583799",
+    "name": "Smoked Salmon and Cream Cheese Bagel",
+    "description": "Delicious smoked salmon and cream cheese bagel prepared with fresh ingredients",
+    "price": 1667,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_67583799_item_6": {
+    "menu_item_id": "restaurant_67583799_item_6",
+    "restaurant_id": "restaurant_67583799",
+    "name": "Tuna Melt on Rye",
+    "description": "Delicious tuna melt on rye prepared with fresh ingredients",
+    "price": 522,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_67583799_item_7": {
+    "menu_item_id": "restaurant_67583799_item_7",
+    "restaurant_id": "restaurant_67583799",
+    "name": "Pulled Pork BBQ on Brioche",
+    "description": "Delicious pulled pork bbq on brioche prepared with fresh ingredients",
+    "price": 1852,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_72539083_item_0": {
+    "menu_item_id": "restaurant_72539083_item_0",
+    "restaurant_id": "restaurant_72539083",
+    "name": "Fajitas de Res",
+    "description": "Delicious fajitas de res prepared with fresh ingredients",
+    "price": 1081,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_72539083_item_1": {
+    "menu_item_id": "restaurant_72539083_item_1",
+    "restaurant_id": "restaurant_72539083",
+    "name": "Pozole Rojo",
+    "description": "Delicious pozole rojo prepared with fresh ingredients",
+    "price": 681,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_72539083_item_2": {
+    "menu_item_id": "restaurant_72539083_item_2",
+    "restaurant_id": "restaurant_72539083",
+    "name": "Enchiladas Verdes",
+    "description": "Delicious enchiladas verdes prepared with fresh ingredients",
+    "price": 1499,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_72539083_item_3": {
+    "menu_item_id": "restaurant_72539083_item_3",
+    "restaurant_id": "restaurant_72539083",
+    "name": "Turkey Cranberry Brie Croissant",
+    "description": "Delicious turkey cranberry brie croissant prepared with fresh ingredients",
+    "price": 848,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_72539083_item_4": {
+    "menu_item_id": "restaurant_72539083_item_4",
+    "restaurant_id": "restaurant_72539083",
+    "name": "Ceviche de Camar\u00f3n",
+    "description": "Delicious ceviche de camar\u00f3n prepared with fresh ingredients",
+    "price": 1502,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_72539083_item_5": {
+    "menu_item_id": "restaurant_72539083_item_5",
+    "restaurant_id": "restaurant_72539083",
+    "name": "Sopa de Tortilla",
+    "description": "Delicious sopa de tortilla prepared with fresh ingredients",
+    "price": 1148,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_72539083_item_6": {
+    "menu_item_id": "restaurant_72539083_item_6",
+    "restaurant_id": "restaurant_72539083",
+    "name": "Cochinita Pibil",
+    "description": "Delicious cochinita pibil prepared with fresh ingredients",
+    "price": 1484,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_72539083_item_7": {
+    "menu_item_id": "restaurant_72539083_item_7",
+    "restaurant_id": "restaurant_72539083",
+    "name": "Falafel Pita Pocket",
+    "description": "Delicious falafel pita pocket prepared with fresh ingredients",
+    "price": 713,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_25349042_item_0": {
+    "menu_item_id": "restaurant_25349042_item_0",
+    "restaurant_id": "restaurant_25349042",
+    "name": "Miso Black Cod",
+    "description": "Delicious miso black cod prepared with fresh ingredients",
+    "price": 1764,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_25349042_item_1": {
+    "menu_item_id": "restaurant_25349042_item_1",
+    "restaurant_id": "restaurant_25349042",
+    "name": "Crab-Stuffed Flounder with Beurre Blanc",
+    "description": "Delicious crab-stuffed flounder with beurre blanc prepared with fresh ingredients",
+    "price": 590,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_25349042_item_2": {
+    "menu_item_id": "restaurant_25349042_item_2",
+    "restaurant_id": "restaurant_25349042",
+    "name": "Cioppino (Seafood Stew)",
+    "description": "Delicious cioppino (seafood stew) prepared with fresh ingredients",
+    "price": 1526,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_25349042_item_3": {
+    "menu_item_id": "restaurant_25349042_item_3",
+    "restaurant_id": "restaurant_25349042",
+    "name": "Makouda (Moroccan Potato Fritters)",
+    "description": "Delicious makouda (moroccan potato fritters) prepared with fresh ingredients",
+    "price": 1598,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_25349042_item_4": {
+    "menu_item_id": "restaurant_25349042_item_4",
+    "restaurant_id": "restaurant_25349042",
+    "name": "Tuna Poke Bowl",
+    "description": "Delicious tuna poke bowl prepared with fresh ingredients",
+    "price": 1007,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_25349042_item_5": {
+    "menu_item_id": "restaurant_25349042_item_5",
+    "restaurant_id": "restaurant_25349042",
+    "name": "Sukiyaki Hot Pot",
+    "description": "Delicious sukiyaki hot pot prepared with fresh ingredients",
+    "price": 1648,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_25349042_item_6": {
+    "menu_item_id": "restaurant_25349042_item_6",
+    "restaurant_id": "restaurant_25349042",
+    "name": "Mrouzia (Sweet Lamb Tagine with Raisins and Honey)",
+    "description": "Delicious mrouzia (sweet lamb tagine with raisins and honey) prepared with fresh ingredients",
+    "price": 1331,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_25349042_item_7": {
+    "menu_item_id": "restaurant_25349042_item_7",
+    "restaurant_id": "restaurant_25349042",
+    "name": "Bissara (Fava Bean Soup with Olive Oil)",
+    "description": "Delicious bissara (fava bean soup with olive oil) prepared with fresh ingredients",
+    "price": 1450,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_32897079_item_0": {
+    "menu_item_id": "restaurant_32897079_item_0",
+    "restaurant_id": "restaurant_32897079",
+    "name": "Baklava",
+    "description": "Delicious baklava prepared with fresh ingredients",
+    "price": 1192,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_32897079_item_1": {
+    "menu_item_id": "restaurant_32897079_item_1",
+    "restaurant_id": "restaurant_32897079",
+    "name": "Gemista",
+    "description": "Delicious gemista prepared with fresh ingredients",
+    "price": 1283,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_32897079_item_2": {
+    "menu_item_id": "restaurant_32897079_item_2",
+    "restaurant_id": "restaurant_32897079",
+    "name": "Lamb Kleftiko",
+    "description": "Delicious lamb kleftiko prepared with fresh ingredients",
+    "price": 1499,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_32897079_item_3": {
+    "menu_item_id": "restaurant_32897079_item_3",
+    "restaurant_id": "restaurant_32897079",
+    "name": "Dolmades",
+    "description": "Delicious dolmades prepared with fresh ingredients",
+    "price": 1459,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_32897079_item_4": {
+    "menu_item_id": "restaurant_32897079_item_4",
+    "restaurant_id": "restaurant_32897079",
+    "name": "Tzatziki",
+    "description": "Delicious tzatziki prepared with fresh ingredients",
+    "price": 1038,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_32897079_item_5": {
+    "menu_item_id": "restaurant_32897079_item_5",
+    "restaurant_id": "restaurant_32897079",
+    "name": "Pastitsio",
+    "description": "Delicious pastitsio prepared with fresh ingredients",
+    "price": 589,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_32897079_item_6": {
+    "menu_item_id": "restaurant_32897079_item_6",
+    "restaurant_id": "restaurant_32897079",
+    "name": "Grilled Octopus (Htapodi)",
+    "description": "Delicious grilled octopus (htapodi) prepared with fresh ingredients",
+    "price": 1261,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_32897079_item_7": {
+    "menu_item_id": "restaurant_32897079_item_7",
+    "restaurant_id": "restaurant_32897079",
+    "name": "Avgolemono Soup",
+    "description": "Delicious avgolemono soup prepared with fresh ingredients",
+    "price": 514,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_75303418_item_0": {
+    "menu_item_id": "restaurant_75303418_item_0",
+    "restaurant_id": "restaurant_75303418",
+    "name": "Harira (Traditional Lentil and Tomato Soup)",
+    "description": "Delicious harira (traditional lentil and tomato soup) prepared with fresh ingredients",
+    "price": 1048,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_75303418_item_1": {
+    "menu_item_id": "restaurant_75303418_item_1",
+    "restaurant_id": "restaurant_75303418",
+    "name": "Cac\u0131k (Yogurt with Cucumber)",
+    "description": "Delicious cac\u0131k (yogurt with cucumber) prepared with fresh ingredients",
+    "price": 875,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_75303418_item_2": {
+    "menu_item_id": "restaurant_75303418_item_2",
+    "restaurant_id": "restaurant_75303418",
+    "name": "Pastilla au Lait (Sweet Milk Pastry with Almonds)",
+    "description": "Delicious pastilla au lait (sweet milk pastry with almonds) prepared with fresh ingredients",
+    "price": 1106,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_75303418_item_3": {
+    "menu_item_id": "restaurant_75303418_item_3",
+    "restaurant_id": "restaurant_75303418",
+    "name": "Philly Cheesesteak Sandwich",
+    "description": "Delicious philly cheesesteak sandwich prepared with fresh ingredients",
+    "price": 726,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_75303418_item_4": {
+    "menu_item_id": "restaurant_75303418_item_4",
+    "restaurant_id": "restaurant_75303418",
+    "name": "\u0130skender Kebab",
+    "description": "Delicious i\u0307skender kebab prepared with fresh ingredients",
+    "price": 582,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_75303418_item_5": {
+    "menu_item_id": "restaurant_75303418_item_5",
+    "restaurant_id": "restaurant_75303418",
+    "name": "Sarma (Stuffed Cabbage Rolls)",
+    "description": "Delicious sarma (stuffed cabbage rolls) prepared with fresh ingredients",
+    "price": 929,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_75303418_item_6": {
+    "menu_item_id": "restaurant_75303418_item_6",
+    "restaurant_id": "restaurant_75303418",
+    "name": "Loaded Potato Skins",
+    "description": "Delicious loaded potato skins prepared with fresh ingredients",
+    "price": 1038,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_75303418_item_7": {
+    "menu_item_id": "restaurant_75303418_item_7",
+    "restaurant_id": "restaurant_75303418",
+    "name": "Imam Bayildi (Stuffed Eggplant)",
+    "description": "Delicious imam bayildi (stuffed eggplant) prepared with fresh ingredients",
+    "price": 1540,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_63731989_item_0": {
+    "menu_item_id": "restaurant_63731989_item_0",
+    "restaurant_id": "restaurant_63731989",
+    "name": "Gamjatang (Pork Spine Soup)",
+    "description": "Delicious gamjatang (pork spine soup) prepared with fresh ingredients",
+    "price": 1405,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_63731989_item_1": {
+    "menu_item_id": "restaurant_63731989_item_1",
+    "restaurant_id": "restaurant_63731989",
+    "name": "Sundubu Jjigae (Soft Tofu Stew)",
+    "description": "Delicious sundubu jjigae (soft tofu stew) prepared with fresh ingredients",
+    "price": 1698,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_63731989_item_2": {
+    "menu_item_id": "restaurant_63731989_item_2",
+    "restaurant_id": "restaurant_63731989",
+    "name": "Spinach & Feta",
+    "description": "Delicious spinach & feta prepared with fresh ingredients",
+    "price": 1703,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_63731989_item_3": {
+    "menu_item_id": "restaurant_63731989_item_3",
+    "restaurant_id": "restaurant_63731989",
+    "name": "Bibimbap (Mixed Rice Bowl)",
+    "description": "Delicious bibimbap (mixed rice bowl) prepared with fresh ingredients",
+    "price": 1270,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_63731989_item_4": {
+    "menu_item_id": "restaurant_63731989_item_4",
+    "restaurant_id": "restaurant_63731989",
+    "name": "Bulgogi (Marinated Beef)",
+    "description": "Delicious bulgogi (marinated beef) prepared with fresh ingredients",
+    "price": 1720,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_63731989_item_5": {
+    "menu_item_id": "restaurant_63731989_item_5",
+    "restaurant_id": "restaurant_63731989",
+    "name": "BBQ Chicken",
+    "description": "Delicious bbq chicken prepared with fresh ingredients",
+    "price": 1529,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_63731989_item_6": {
+    "menu_item_id": "restaurant_63731989_item_6",
+    "restaurant_id": "restaurant_63731989",
+    "name": "B\u00fan B\u00f2 Hu\u1ebf (Spicy Beef Noodle Soup)",
+    "description": "Delicious b\u00fan b\u00f2 hu\u1ebf (spicy beef noodle soup) prepared with fresh ingredients",
+    "price": 1620,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_63731989_item_7": {
+    "menu_item_id": "restaurant_63731989_item_7",
+    "restaurant_id": "restaurant_63731989",
+    "name": "Jajangmyeon (Black Bean Noodles)",
+    "description": "Delicious jajangmyeon (black bean noodles) prepared with fresh ingredients",
+    "price": 626,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_63731989_item_8": {
+    "menu_item_id": "restaurant_63731989_item_8",
+    "restaurant_id": "restaurant_63731989",
+    "name": "Gyro platter",
+    "description": "Traditional gyro platter with Vietnamese spices",
+    "price": 2626,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_41005549_item_0": {
+    "menu_item_id": "restaurant_41005549_item_0",
+    "restaurant_id": "restaurant_41005549",
+    "name": "Mole Poblano",
+    "description": "Delicious mole poblano prepared with fresh ingredients",
+    "price": 1628,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_41005549_item_1": {
+    "menu_item_id": "restaurant_41005549_item_1",
+    "restaurant_id": "restaurant_41005549",
+    "name": "Whole Roasted Branzino with Mediterranean Herbs",
+    "description": "Delicious whole roasted branzino with mediterranean herbs prepared with fresh ingredients",
+    "price": 1271,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_41005549_item_2": {
+    "menu_item_id": "restaurant_41005549_item_2",
+    "restaurant_id": "restaurant_41005549",
+    "name": "Shrimp Scampi Linguine",
+    "description": "Delicious shrimp scampi linguine prepared with fresh ingredients",
+    "price": 1143,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_41005549_item_3": {
+    "menu_item_id": "restaurant_41005549_item_3",
+    "restaurant_id": "restaurant_41005549",
+    "name": "Chiles Rellenos",
+    "description": "Delicious chiles rellenos prepared with fresh ingredients",
+    "price": 1269,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_41005549_item_4": {
+    "menu_item_id": "restaurant_41005549_item_4",
+    "restaurant_id": "restaurant_41005549",
+    "name": "Shabu Shabu",
+    "description": "Delicious shabu shabu prepared with fresh ingredients",
+    "price": 1311,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_41005549_item_5": {
+    "menu_item_id": "restaurant_41005549_item_5",
+    "restaurant_id": "restaurant_41005549",
+    "name": "Camarones a la Diabla",
+    "description": "Delicious camarones a la diabla prepared with fresh ingredients",
+    "price": 1205,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_41005549_item_6": {
+    "menu_item_id": "restaurant_41005549_item_6",
+    "restaurant_id": "restaurant_41005549",
+    "name": "Tempura Udon",
+    "description": "Delicious tempura udon prepared with fresh ingredients",
+    "price": 805,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_41005549_item_7": {
+    "menu_item_id": "restaurant_41005549_item_7",
+    "restaurant_id": "restaurant_41005549",
+    "name": "Oysters Rockefeller",
+    "description": "Delicious oysters rockefeller prepared with fresh ingredients",
+    "price": 1478,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_18529013_item_0": {
+    "menu_item_id": "restaurant_18529013_item_0",
+    "restaurant_id": "restaurant_18529013",
+    "name": "Yakitori Skewers",
+    "description": "Delicious yakitori skewers prepared with fresh ingredients",
+    "price": 507,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_18529013_item_1": {
+    "menu_item_id": "restaurant_18529013_item_1",
+    "restaurant_id": "restaurant_18529013",
+    "name": "Meat Lovers Feast",
+    "description": "Delicious meat lovers feast prepared with fresh ingredients",
+    "price": 757,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_18529013_item_2": {
+    "menu_item_id": "restaurant_18529013_item_2",
+    "restaurant_id": "restaurant_18529013",
+    "name": "Mushroom Truffle",
+    "description": "Delicious mushroom truffle prepared with fresh ingredients",
+    "price": 1975,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_18529013_item_3": {
+    "menu_item_id": "restaurant_18529013_item_3",
+    "restaurant_id": "restaurant_18529013",
+    "name": "Tonkotsu Ramen",
+    "description": "Delicious tonkotsu ramen prepared with fresh ingredients",
+    "price": 1950,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_18529013_item_4": {
+    "menu_item_id": "restaurant_18529013_item_4",
+    "restaurant_id": "restaurant_18529013",
+    "name": "Gyoza Dumplings",
+    "description": "Delicious gyoza dumplings prepared with fresh ingredients",
+    "price": 926,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_18529013_item_5": {
+    "menu_item_id": "restaurant_18529013_item_5",
+    "restaurant_id": "restaurant_18529013",
+    "name": "Linguine alle Vongole",
+    "description": "Delicious linguine alle vongole prepared with fresh ingredients",
+    "price": 626,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_18529013_item_6": {
+    "menu_item_id": "restaurant_18529013_item_6",
+    "restaurant_id": "restaurant_18529013",
+    "name": "Matcha Green Tea Ice Cream",
+    "description": "Delicious matcha green tea ice cream prepared with fresh ingredients",
+    "price": 1637,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_18529013_item_7": {
+    "menu_item_id": "restaurant_18529013_item_7",
+    "restaurant_id": "restaurant_18529013",
+    "name": "Osso Buco alla Milanese",
+    "description": "Delicious osso buco alla milanese prepared with fresh ingredients",
+    "price": 910,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_48196876_item_0": {
+    "menu_item_id": "restaurant_48196876_item_0",
+    "restaurant_id": "restaurant_48196876",
+    "name": "Smoked Salmon and Cream Cheese Bagel",
+    "description": "Delicious smoked salmon and cream cheese bagel prepared with fresh ingredients",
+    "price": 1113,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_48196876_item_1": {
+    "menu_item_id": "restaurant_48196876_item_1",
+    "restaurant_id": "restaurant_48196876",
+    "name": "Bistecca alla Fiorentina",
+    "description": "Delicious bistecca alla fiorentina prepared with fresh ingredients",
+    "price": 1696,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_48196876_item_2": {
+    "menu_item_id": "restaurant_48196876_item_2",
+    "restaurant_id": "restaurant_48196876",
+    "name": "Chiles en Nogada",
+    "description": "Delicious chiles en nogada prepared with fresh ingredients",
+    "price": 1183,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_48196876_item_3": {
+    "menu_item_id": "restaurant_48196876_item_3",
+    "restaurant_id": "restaurant_48196876",
+    "name": "Spaghetti Carbonara",
+    "description": "Delicious spaghetti carbonara prepared with fresh ingredients",
+    "price": 1824,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_48196876_item_4": {
+    "menu_item_id": "restaurant_48196876_item_4",
+    "restaurant_id": "restaurant_48196876",
+    "name": "Chiles Rellenos",
+    "description": "Delicious chiles rellenos prepared with fresh ingredients",
+    "price": 1814,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_48196876_item_5": {
+    "menu_item_id": "restaurant_48196876_item_5",
+    "restaurant_id": "restaurant_48196876",
+    "name": "Roast Beef and Horseradish on Sourdough",
+    "description": "Delicious roast beef and horseradish on sourdough prepared with fresh ingredients",
+    "price": 1471,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_48196876_item_6": {
+    "menu_item_id": "restaurant_48196876_item_6",
+    "restaurant_id": "restaurant_48196876",
+    "name": "Ravioli di Ricotta e Spinaci",
+    "description": "Delicious ravioli di ricotta e spinaci prepared with fresh ingredients",
+    "price": 1924,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_48196876_item_7": {
+    "menu_item_id": "restaurant_48196876_item_7",
+    "restaurant_id": "restaurant_48196876",
+    "name": "Sopa de Tortilla",
+    "description": "Delicious sopa de tortilla prepared with fresh ingredients",
+    "price": 1662,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_55073342_item_0": {
+    "menu_item_id": "restaurant_55073342_item_0",
+    "restaurant_id": "restaurant_55073342",
+    "name": "Haemul Pajeon (Seafood Green Onion Pancake)",
+    "description": "Delicious haemul pajeon (seafood green onion pancake) prepared with fresh ingredients",
+    "price": 1258,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_55073342_item_1": {
+    "menu_item_id": "restaurant_55073342_item_1",
+    "restaurant_id": "restaurant_55073342",
+    "name": "Bibimbap (Mixed Rice Bowl)",
+    "description": "Delicious bibimbap (mixed rice bowl) prepared with fresh ingredients",
+    "price": 1782,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_55073342_item_2": {
+    "menu_item_id": "restaurant_55073342_item_2",
+    "restaurant_id": "restaurant_55073342",
+    "name": "Galbi (Marinated Beef Short Ribs)",
+    "description": "Delicious galbi (marinated beef short ribs) prepared with fresh ingredients",
+    "price": 794,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_55073342_item_3": {
+    "menu_item_id": "restaurant_55073342_item_3",
+    "restaurant_id": "restaurant_55073342",
+    "name": "Yukhoe (Korean Beef Tartare)",
+    "description": "Delicious yukhoe (korean beef tartare) prepared with fresh ingredients",
+    "price": 892,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_55073342_item_4": {
+    "menu_item_id": "restaurant_55073342_item_4",
+    "restaurant_id": "restaurant_55073342",
+    "name": "Bulgogi (Marinated Beef)",
+    "description": "Delicious bulgogi (marinated beef) prepared with fresh ingredients",
+    "price": 1805,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_55073342_item_5": {
+    "menu_item_id": "restaurant_55073342_item_5",
+    "restaurant_id": "restaurant_55073342",
+    "name": "Jajangmyeon (Black Bean Noodles)",
+    "description": "Delicious jajangmyeon (black bean noodles) prepared with fresh ingredients",
+    "price": 1715,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_55073342_item_6": {
+    "menu_item_id": "restaurant_55073342_item_6",
+    "restaurant_id": "restaurant_55073342",
+    "name": "Kimbap (Seaweed Rice Rolls)",
+    "description": "Delicious kimbap (seaweed rice rolls) prepared with fresh ingredients",
+    "price": 1676,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_55073342_item_7": {
+    "menu_item_id": "restaurant_55073342_item_7",
+    "restaurant_id": "restaurant_55073342",
+    "name": "Dakgalbi (Spicy Stir-fried Chicken)",
+    "description": "Delicious dakgalbi (spicy stir-fried chicken) prepared with fresh ingredients",
+    "price": 1046,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_18321519_item_0": {
+    "menu_item_id": "restaurant_18321519_item_0",
+    "restaurant_id": "restaurant_18321519",
+    "name": "Baba Ghanoush",
+    "description": "Delicious baba ghanoush prepared with fresh ingredients",
+    "price": 774,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_18321519_item_1": {
+    "menu_item_id": "restaurant_18321519_item_1",
+    "restaurant_id": "restaurant_18321519",
+    "name": "Watermelon and Arugula Salad with Mint",
+    "description": "Delicious watermelon and arugula salad with mint prepared with fresh ingredients",
+    "price": 1356,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_18321519_item_2": {
+    "menu_item_id": "restaurant_18321519_item_2",
+    "restaurant_id": "restaurant_18321519",
+    "name": "Thai Beef Salad with Chili Lime Dressing",
+    "description": "Delicious thai beef salad with chili lime dressing prepared with fresh ingredients",
+    "price": 1584,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_18321519_item_3": {
+    "menu_item_id": "restaurant_18321519_item_3",
+    "restaurant_id": "restaurant_18321519",
+    "name": "Grilled Salmon Nicoise Salad",
+    "description": "Delicious grilled salmon nicoise salad prepared with fresh ingredients",
+    "price": 1030,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_18321519_item_4": {
+    "menu_item_id": "restaurant_18321519_item_4",
+    "restaurant_id": "restaurant_18321519",
+    "name": "Falafel",
+    "description": "Delicious falafel prepared with fresh ingredients",
+    "price": 1481,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_18321519_item_5": {
+    "menu_item_id": "restaurant_18321519_item_5",
+    "restaurant_id": "restaurant_18321519",
+    "name": "Tamales de Elote",
+    "description": "Delicious tamales de elote prepared with fresh ingredients",
+    "price": 1913,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_18321519_item_6": {
+    "menu_item_id": "restaurant_18321519_item_6",
+    "restaurant_id": "restaurant_18321519",
+    "name": "Kibbeh Nayyeh",
+    "description": "Delicious kibbeh nayyeh prepared with fresh ingredients",
+    "price": 678,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_18321519_item_7": {
+    "menu_item_id": "restaurant_18321519_item_7",
+    "restaurant_id": "restaurant_18321519",
+    "name": "Knafeh",
+    "description": "Delicious knafeh prepared with fresh ingredients",
+    "price": 1345,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_61804753_item_0": {
+    "menu_item_id": "restaurant_61804753_item_0",
+    "restaurant_id": "restaurant_61804753",
+    "name": "Veggie Garden Patty",
+    "description": "Delicious veggie garden patty prepared with fresh ingredients",
+    "price": 1198,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_61804753_item_1": {
+    "menu_item_id": "restaurant_61804753_item_1",
+    "restaurant_id": "restaurant_61804753",
+    "name": "Truffle Aioli & Arugula Burger",
+    "description": "Delicious truffle aioli & arugula burger prepared with fresh ingredients",
+    "price": 1271,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_61804753_item_2": {
+    "menu_item_id": "restaurant_61804753_item_2",
+    "restaurant_id": "restaurant_61804753",
+    "name": "Pulled Pork Burger Stack",
+    "description": "Delicious pulled pork burger stack prepared with fresh ingredients",
+    "price": 1946,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_61804753_item_3": {
+    "menu_item_id": "restaurant_61804753_item_3",
+    "restaurant_id": "restaurant_61804753",
+    "name": "Hawaiian Teriyaki Pineapple Burger",
+    "description": "Delicious hawaiian teriyaki pineapple burger prepared with fresh ingredients",
+    "price": 559,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_61804753_item_4": {
+    "menu_item_id": "restaurant_61804753_item_4",
+    "restaurant_id": "restaurant_61804753",
+    "name": "Breakfast Burger with Fried Egg",
+    "description": "Delicious breakfast burger with fried egg prepared with fresh ingredients",
+    "price": 1710,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_61804753_item_5": {
+    "menu_item_id": "restaurant_61804753_item_5",
+    "restaurant_id": "restaurant_61804753",
+    "name": "Southwest Avocado Burger",
+    "description": "Delicious southwest avocado burger prepared with fresh ingredients",
+    "price": 1591,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_61804753_item_6": {
+    "menu_item_id": "restaurant_61804753_item_6",
+    "restaurant_id": "restaurant_61804753",
+    "name": "Black Bean Chipotle Burger",
+    "description": "Delicious black bean chipotle burger prepared with fresh ingredients",
+    "price": 1703,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_61804753_item_7": {
+    "menu_item_id": "restaurant_61804753_item_7",
+    "restaurant_id": "restaurant_61804753",
+    "name": "Spicy Jalape\u00f1o Popper Burger",
+    "description": "Delicious spicy jalape\u00f1o popper burger prepared with fresh ingredients",
+    "price": 1203,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_92871146_item_0": {
+    "menu_item_id": "restaurant_92871146_item_0",
+    "restaurant_id": "restaurant_92871146",
+    "name": "Salade Ni\u00e7oise",
+    "description": "Delicious salade ni\u00e7oise prepared with fresh ingredients",
+    "price": 607,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_92871146_item_1": {
+    "menu_item_id": "restaurant_92871146_item_1",
+    "restaurant_id": "restaurant_92871146",
+    "name": "\u0130skender Kebab",
+    "description": "Delicious i\u0307skender kebab prepared with fresh ingredients",
+    "price": 913,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_92871146_item_2": {
+    "menu_item_id": "restaurant_92871146_item_2",
+    "restaurant_id": "restaurant_92871146",
+    "name": "Coq au Vin",
+    "description": "Delicious coq au vin prepared with fresh ingredients",
+    "price": 1110,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_92871146_item_3": {
+    "menu_item_id": "restaurant_92871146_item_3",
+    "restaurant_id": "restaurant_92871146",
+    "name": "Croque Monsieur",
+    "description": "Delicious croque monsieur prepared with fresh ingredients",
+    "price": 1502,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_92871146_item_4": {
+    "menu_item_id": "restaurant_92871146_item_4",
+    "restaurant_id": "restaurant_92871146",
+    "name": "Bouillabaisse",
+    "description": "Delicious bouillabaisse prepared with fresh ingredients",
+    "price": 878,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_92871146_item_5": {
+    "menu_item_id": "restaurant_92871146_item_5",
+    "restaurant_id": "restaurant_92871146",
+    "name": "K\u00f6fte (Turkish Meatballs)",
+    "description": "Delicious k\u00f6fte (turkish meatballs) prepared with fresh ingredients",
+    "price": 1005,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_92871146_item_6": {
+    "menu_item_id": "restaurant_92871146_item_6",
+    "restaurant_id": "restaurant_92871146",
+    "name": "Imam Bayildi (Stuffed Eggplant)",
+    "description": "Delicious imam bayildi (stuffed eggplant) prepared with fresh ingredients",
+    "price": 509,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_92871146_item_7": {
+    "menu_item_id": "restaurant_92871146_item_7",
+    "restaurant_id": "restaurant_92871146",
+    "name": "Tarte Tatin",
+    "description": "Delicious tarte tatin prepared with fresh ingredients",
+    "price": 540,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_30213554_item_0": {
+    "menu_item_id": "restaurant_30213554_item_0",
+    "restaurant_id": "restaurant_30213554",
+    "name": "Masala Dosa",
+    "description": "Delicious masala dosa prepared with fresh ingredients",
+    "price": 1075,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_30213554_item_1": {
+    "menu_item_id": "restaurant_30213554_item_1",
+    "restaurant_id": "restaurant_30213554",
+    "name": "Chana Masala",
+    "description": "Delicious chana masala prepared with fresh ingredients",
+    "price": 1728,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_30213554_item_2": {
+    "menu_item_id": "restaurant_30213554_item_2",
+    "restaurant_id": "restaurant_30213554",
+    "name": "Mango Sticky Rice",
+    "description": "Delicious mango sticky rice prepared with fresh ingredients",
+    "price": 1764,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_30213554_item_3": {
+    "menu_item_id": "restaurant_30213554_item_3",
+    "restaurant_id": "restaurant_30213554",
+    "name": "Risotto ai Funghi Porcini",
+    "description": "Delicious risotto ai funghi porcini prepared with fresh ingredients",
+    "price": 1467,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_30213554_item_4": {
+    "menu_item_id": "restaurant_30213554_item_4",
+    "restaurant_id": "restaurant_30213554",
+    "name": "Pla Rad Prik (Crispy Fish with Chili Sauce)",
+    "description": "Delicious pla rad prik (crispy fish with chili sauce) prepared with fresh ingredients",
+    "price": 558,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_30213554_item_5": {
+    "menu_item_id": "restaurant_30213554_item_5",
+    "restaurant_id": "restaurant_30213554",
+    "name": "Bistecca alla Fiorentina",
+    "description": "Delicious bistecca alla fiorentina prepared with fresh ingredients",
+    "price": 1356,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_30213554_item_6": {
+    "menu_item_id": "restaurant_30213554_item_6",
+    "restaurant_id": "restaurant_30213554",
+    "name": "Pad See Ew",
+    "description": "Delicious pad see ew prepared with fresh ingredients",
+    "price": 1716,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_30213554_item_7": {
+    "menu_item_id": "restaurant_30213554_item_7",
+    "restaurant_id": "restaurant_30213554",
+    "name": "Linguine alle Vongole",
+    "description": "Delicious linguine alle vongole prepared with fresh ingredients",
+    "price": 1979,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_87316785_item_0": {
+    "menu_item_id": "restaurant_87316785_item_0",
+    "restaurant_id": "restaurant_87316785",
+    "name": "Tonkotsu Ramen",
+    "description": "Delicious tonkotsu ramen prepared with fresh ingredients",
+    "price": 1183,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_87316785_item_1": {
+    "menu_item_id": "restaurant_87316785_item_1",
+    "restaurant_id": "restaurant_87316785",
+    "name": "Gamjatang (Pork Spine Soup)",
+    "description": "Delicious gamjatang (pork spine soup) prepared with fresh ingredients",
+    "price": 1672,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_87316785_item_2": {
+    "menu_item_id": "restaurant_87316785_item_2",
+    "restaurant_id": "restaurant_87316785",
+    "name": "Couscous Royale with Seven Vegetables",
+    "description": "Delicious couscous royale with seven vegetables prepared with fresh ingredients",
+    "price": 750,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  },
+  "restaurant_87316785_item_3": {
+    "menu_item_id": "restaurant_87316785_item_3",
+    "restaurant_id": "restaurant_87316785",
+    "name": "Chermoula Grilled Fish",
+    "description": "Delicious chermoula grilled fish prepared with fresh ingredients",
+    "price": 1330,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_87316785_item_4": {
+    "menu_item_id": "restaurant_87316785_item_4",
+    "restaurant_id": "restaurant_87316785",
+    "name": "Samgyeopsal (Grilled Pork Belly)",
+    "description": "Delicious samgyeopsal (grilled pork belly) prepared with fresh ingredients",
+    "price": 1707,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_87316785_item_5": {
+    "menu_item_id": "restaurant_87316785_item_5",
+    "restaurant_id": "restaurant_87316785",
+    "name": "Bissara (Fava Bean Soup with Olive Oil)",
+    "description": "Delicious bissara (fava bean soup with olive oil) prepared with fresh ingredients",
+    "price": 1328,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_87316785_item_6": {
+    "menu_item_id": "restaurant_87316785_item_6",
+    "restaurant_id": "restaurant_87316785",
+    "name": "Chirashi Bowl",
+    "description": "Delicious chirashi bowl prepared with fresh ingredients",
+    "price": 1723,
+    "menu_item_category_id": "default",
+    "availability_status": "Available"
+  },
+  "restaurant_87316785_item_7": {
+    "menu_item_id": "restaurant_87316785_item_7",
+    "restaurant_id": "restaurant_87316785",
+    "name": "Matcha Green Tea Ice Cream",
+    "description": "Delicious matcha green tea ice cream prepared with fresh ingredients",
+    "price": 1296,
+    "menu_item_category_id": "default",
+    "availability_status": "Unavailable"
+  }
+}

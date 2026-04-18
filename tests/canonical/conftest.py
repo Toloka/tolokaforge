@@ -1,9 +1,17 @@
-"""Canonization infrastructure: --update-canon flag, canon_snapshot fixture."""
+"""Canonization infrastructure: --update-canon flag, canon_snapshot fixture, and project fixtures."""
 
 import json
 from pathlib import Path
 
 import pytest
+
+# Import food_delivery_2 project fixtures — only used by canonical tests
+from tests.utils.project_fixtures import (  # noqa: F401
+    food_delivery_2_grading_051fa6cb,
+    food_delivery_2_initial_state,
+    food_delivery_2_mcp_server,
+    food_delivery_2_trajectory_051fa6cb,
+)
 
 SNAPSHOT_DIR = Path(__file__).parent / "snapshots"
 

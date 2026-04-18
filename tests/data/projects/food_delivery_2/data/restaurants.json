@@ -1,0 +1,1698 @@
+{
+  "restaurant_44722558": {
+    "restaurant_id": "restaurant_44722558",
+    "name": "Olive Grove",
+    "cuisine_type": [
+      "Greek"
+    ],
+    "description": "A rustic Greek restaurant offering traditional dishes in a warm, family-friendly atmosphere.",
+    "address": "5252 Boyd Stravenue Suite 800",
+    "phone_number": "+14446772374",
+    "created_at": "2025-03-31T13:00:00",
+    "city_id": "bo617",
+    "working_hours": {
+      "monday": {
+        "open_time": "11:00",
+        "close_time": "20:00"
+      },
+      "tuesday": {
+        "open_time": "07:00",
+        "close_time": "20:00"
+      },
+      "wednesday": {
+        "open_time": "06:00",
+        "close_time": "23:00"
+      },
+      "thursday": {
+        "open_time": "06:00",
+        "close_time": "22:00"
+      },
+      "friday": null,
+      "saturday": {
+        "open_time": "11:00",
+        "close_time": "20:00"
+      },
+      "sunday": {
+        "open_time": "08:00",
+        "close_time": "22:00"
+      }
+    },
+    "unusual_working_hours": null
+  },
+  "restaurant_40211315": {
+    "restaurant_id": "restaurant_40211315",
+    "name": "The Hanoi Kitchen",
+    "cuisine_type": [
+      "Vietnamese",
+      "Japanese"
+    ],
+    "description": "A family-owned restaurant serving authentic Northern Vietnamese specialties and homemade rice noodles.",
+    "address": "005 Montoya Valleys",
+    "phone_number": "+12331799705",
+    "created_at": "2025-03-31T13:00:00",
+    "city_id": "au512",
+    "working_hours": {
+      "monday": {
+        "open_time": "08:00",
+        "close_time": "20:00"
+      },
+      "tuesday": {
+        "open_time": "07:00",
+        "close_time": "20:00"
+      },
+      "wednesday": {
+        "open_time": "07:00",
+        "close_time": "23:00"
+      },
+      "thursday": {
+        "open_time": "10:00",
+        "close_time": "23:00"
+      },
+      "friday": {
+        "open_time": "07:00",
+        "close_time": "20:00"
+      },
+      "saturday": {
+        "open_time": "07:00",
+        "close_time": "22:00"
+      },
+      "sunday": {
+        "open_time": "10:00",
+        "close_time": "20:00"
+      }
+    },
+    "unusual_working_hours": null
+  },
+  "restaurant_99652497": {
+    "restaurant_id": "restaurant_99652497",
+    "name": "El Jardin",
+    "cuisine_type": [
+      "Mexican"
+    ],
+    "description": "A vibrant Mexican restaurant featuring traditional recipes, set in a garden atmosphere with colorful decor and live music.",
+    "address": "8922 Rebecca Turnpike",
+    "phone_number": "+16232284023",
+    "created_at": "2025-03-31T13:00:00",
+    "city_id": "de303",
+    "working_hours": {
+      "monday": {
+        "open_time": "11:00",
+        "close_time": "21:00"
+      },
+      "tuesday": {
+        "open_time": "09:00",
+        "close_time": "22:00"
+      },
+      "wednesday": {
+        "open_time": "07:00",
+        "close_time": "20:00"
+      },
+      "thursday": {
+        "open_time": "09:00",
+        "close_time": "22:00"
+      },
+      "friday": null,
+      "saturday": {
+        "open_time": "07:00",
+        "close_time": "22:00"
+      },
+      "sunday": {
+        "open_time": "06:00",
+        "close_time": "21:00"
+      }
+    },
+    "unusual_working_hours": {
+      "2025-04-16": null,
+      "2025-04-04": null
+    }
+  },
+  "restaurant_77034838": {
+    "restaurant_id": "restaurant_77034838",
+    "name": "Cedar & Spice",
+    "cuisine_type": [
+      "Mexican",
+      "Lebanese"
+    ],
+    "description": "A cozy Lebanese restaurant offering authentic dishes with a modern twist.",
+    "address": "72706 Morgan Plaza Apt. 380",
+    "phone_number": "+19975773627",
+    "created_at": "2025-03-31T13:00:00",
+    "city_id": "au512",
+    "working_hours": {
+      "monday": null,
+      "tuesday": null,
+      "wednesday": {
+        "open_time": "06:00",
+        "close_time": "23:00"
+      },
+      "thursday": {
+        "open_time": "10:00",
+        "close_time": "22:00"
+      },
+      "friday": null,
+      "saturday": null,
+      "sunday": {
+        "open_time": "07:00",
+        "close_time": "22:00"
+      }
+    },
+    "unusual_working_hours": {
+      "2025-04-06": null,
+      "2025-04-15": {
+        "open_time": "09:00",
+        "close_time": "20:00"
+      }
+    }
+  },
+  "restaurant_29162059": {
+    "restaurant_id": "restaurant_29162059",
+    "name": "Casablanca Nights",
+    "cuisine_type": [
+      "Mexican",
+      "Mediterranean",
+      "Moroccan"
+    ],
+    "description": "A charming Moroccan restaurant offering traditional tagines and couscous in an authentic setting.",
+    "address": "81112 Williams Skyway",
+    "phone_number": "+10303070386",
+    "created_at": "2025-03-31T13:00:00",
+    "city_id": "de303",
+    "working_hours": {
+      "monday": {
+        "open_time": "10:00",
+        "close_time": "23:00"
+      },
+      "tuesday": {
+        "open_time": "09:00",
+        "close_time": "23:00"
+      },
+      "wednesday": {
+        "open_time": "08:00",
+        "close_time": "22:00"
+      },
+      "thursday": {
+        "open_time": "11:00",
+        "close_time": "22:00"
+      },
+      "friday": {
+        "open_time": "08:00",
+        "close_time": "22:00"
+      },
+      "saturday": {
+        "open_time": "07:00",
+        "close_time": "20:00"
+      },
+      "sunday": {
+        "open_time": "07:00",
+        "close_time": "23:00"
+      }
+    },
+    "unusual_working_hours": null
+  },
+  "restaurant_58347257": {
+    "restaurant_id": "restaurant_58347257",
+    "name": "Saigon Spice",
+    "cuisine_type": [
+      "Seafood",
+      "Pizza",
+      "Vietnamese"
+    ],
+    "description": "A modern twist on traditional Vietnamese cuisine, featuring aromatic pho, crisp banh mi, and craft cocktails in a sleek, contemporary space adorned with Vietnamese artwork.",
+    "address": "9879 Lauren Islands",
+    "phone_number": "+12331757138",
+    "created_at": "2025-03-31T13:00:00",
+    "city_id": "au512",
+    "working_hours": {
+      "monday": {
+        "open_time": "08:00",
+        "close_time": "23:00"
+      },
+      "tuesday": {
+        "open_time": "09:00",
+        "close_time": "20:00"
+      },
+      "wednesday": {
+        "open_time": "09:00",
+        "close_time": "20:00"
+      },
+      "thursday": null,
+      "friday": {
+        "open_time": "11:00",
+        "close_time": "22:00"
+      },
+      "saturday": {
+        "open_time": "09:00",
+        "close_time": "22:00"
+      },
+      "sunday": {
+        "open_time": "08:00",
+        "close_time": "23:00"
+      }
+    },
+    "unusual_working_hours": null
+  },
+  "restaurant_70731486": {
+    "restaurant_id": "restaurant_70731486",
+    "name": "Samba Grill",
+    "cuisine_type": [
+      "Brazilian",
+      "Seafood",
+      "Burger"
+    ],
+    "description": "A festive eatery combining Brazilian barbecue with contemporary flair, featuring live music, colorful decor, and a menu that balances traditional favorites with innovative fusion dishes.",
+    "address": "6315 Benton Unions Apt. 273",
+    "phone_number": "+15052276001",
+    "created_at": "2025-03-31T13:00:00",
+    "city_id": "se206",
+    "working_hours": {
+      "monday": {
+        "open_time": "09:00",
+        "close_time": "20:00"
+      },
+      "tuesday": null,
+      "wednesday": {
+        "open_time": "06:00",
+        "close_time": "22:00"
+      },
+      "thursday": {
+        "open_time": "07:00",
+        "close_time": "21:00"
+      },
+      "friday": {
+        "open_time": "11:00",
+        "close_time": "20:00"
+      },
+      "saturday": {
+        "open_time": "07:00",
+        "close_time": "22:00"
+      },
+      "sunday": {
+        "open_time": "11:00",
+        "close_time": "22:00"
+      }
+    },
+    "unusual_working_hours": null
+  },
+  "restaurant_25905667": {
+    "restaurant_id": "restaurant_25905667",
+    "name": "Ocean's Bounty Seafood",
+    "cuisine_type": [
+      "Seafood",
+      "Mexican",
+      "Turkish"
+    ],
+    "description": "An intimate bistro specializing in shellfish delicacies and seasonal ocean fare",
+    "address": "84707 Cochran Drives Apt. 377",
+    "phone_number": "+18344812632",
+    "created_at": "2025-03-31T13:00:00",
+    "city_id": "ny212",
+    "working_hours": {
+      "monday": {
+        "open_time": "10:00",
+        "close_time": "21:00"
+      },
+      "tuesday": {
+        "open_time": "11:00",
+        "close_time": "21:00"
+      },
+      "wednesday": {
+        "open_time": "09:00",
+        "close_time": "22:00"
+      },
+      "thursday": null,
+      "friday": {
+        "open_time": "09:00",
+        "close_time": "22:00"
+      },
+      "saturday": {
+        "open_time": "11:00",
+        "close_time": "20:00"
+      },
+      "sunday": {
+        "open_time": "07:00",
+        "close_time": "22:00"
+      }
+    },
+    "unusual_working_hours": {
+      "2025-04-21": {
+        "open_time": "06:00",
+        "close_time": "21:00"
+      },
+      "2025-04-03": null,
+      "2025-04-24": {
+        "open_time": "11:00",
+        "close_time": "20:00"
+      }
+    }
+  },
+  "restaurant_68579222": {
+    "restaurant_id": "restaurant_68579222",
+    "name": "Olive Harvest",
+    "cuisine_type": [
+      "Lebanese",
+      "Salad"
+    ],
+    "description": "An elegant dining experience celebrating the rich flavors of Lebanon through carefully crafted mezze platters, grilled meats, and fresh seafood, complemented by an extensive selection of Lebanese wines.",
+    "address": "8578 Antonio Vista Apt. 820",
+    "phone_number": "+17324742678",
+    "created_at": "2025-03-31T13:00:00",
+    "city_id": "ch312",
+    "working_hours": {
+      "monday": null,
+      "tuesday": {
+        "open_time": "08:00",
+        "close_time": "23:00"
+      },
+      "wednesday": {
+        "open_time": "09:00",
+        "close_time": "22:00"
+      },
+      "thursday": {
+        "open_time": "11:00",
+        "close_time": "20:00"
+      },
+      "friday": {
+        "open_time": "06:00",
+        "close_time": "21:00"
+      },
+      "saturday": {
+        "open_time": "06:00",
+        "close_time": "22:00"
+      },
+      "sunday": {
+        "open_time": "06:00",
+        "close_time": "21:00"
+      }
+    },
+    "unusual_working_hours": {
+      "2025-04-04": {
+        "open_time": "08:00",
+        "close_time": "21:00"
+      },
+      "2025-04-02": {
+        "open_time": "11:00",
+        "close_time": "21:00"
+      }
+    }
+  },
+  "restaurant_34408535": {
+    "restaurant_id": "restaurant_34408535",
+    "name": "Saffron & Salt",
+    "cuisine_type": [
+      "Mediterranean"
+    ],
+    "description": "A chic bistro blending Mediterranean influences with local ingredients, known for its aromatic dishes and inviting atmosphere perfect for both casual dining and special occasions.",
+    "address": "75300 Calhoun Highway Suite 120",
+    "phone_number": "+10592083343",
+    "created_at": "2025-03-31T13:00:00",
+    "city_id": "au512",
+    "working_hours": {
+      "monday": {
+        "open_time": "11:00",
+        "close_time": "20:00"
+      },
+      "tuesday": {
+        "open_time": "06:00",
+        "close_time": "22:00"
+      },
+      "wednesday": {
+        "open_time": "09:00",
+        "close_time": "22:00"
+      },
+      "thursday": {
+        "open_time": "08:00",
+        "close_time": "23:00"
+      },
+      "friday": {
+        "open_time": "07:00",
+        "close_time": "22:00"
+      },
+      "saturday": {
+        "open_time": "10:00",
+        "close_time": "23:00"
+      },
+      "sunday": null
+    },
+    "unusual_working_hours": null
+  },
+  "restaurant_78980040": {
+    "restaurant_id": "restaurant_78980040",
+    "name": "Sitti's Kitchen",
+    "cuisine_type": [
+      "Lebanese",
+      "Korean"
+    ],
+    "description": "A family-owned restaurant serving homestyle Lebanese cuisine made from generations-old recipes, creating a welcoming space that feels like dining in a Lebanese grandmother's home.",
+    "address": "64655 Jones Vista",
+    "phone_number": "+10594601509",
+    "created_at": "2025-03-31T13:00:00",
+    "city_id": "ny212",
+    "working_hours": {
+      "monday": {
+        "open_time": "06:00",
+        "close_time": "23:00"
+      },
+      "tuesday": {
+        "open_time": "11:00",
+        "close_time": "20:00"
+      },
+      "wednesday": {
+        "open_time": "08:00",
+        "close_time": "22:00"
+      },
+      "thursday": {
+        "open_time": "11:00",
+        "close_time": "22:00"
+      },
+      "friday": {
+        "open_time": "10:00",
+        "close_time": "21:00"
+      },
+      "saturday": {
+        "open_time": "08:00",
+        "close_time": "22:00"
+      },
+      "sunday": {
+        "open_time": "08:00",
+        "close_time": "22:00"
+      }
+    },
+    "unusual_working_hours": {
+      "2025-04-02": null
+    }
+  },
+  "restaurant_50134348": {
+    "restaurant_id": "restaurant_50134348",
+    "name": "Olive & Vine",
+    "cuisine_type": [
+      "Mediterranean",
+      "Korean",
+      "Burger"
+    ],
+    "description": "A cozy spot offering traditional Mediterranean dishes with a modern twist, emphasizing fresh ingredients and warm hospitality.",
+    "address": "08906 Christina Estate",
+    "phone_number": "+19042153299",
+    "created_at": "2025-03-31T13:00:00",
+    "city_id": "se206",
+    "working_hours": {
+      "monday": {
+        "open_time": "11:00",
+        "close_time": "21:00"
+      },
+      "tuesday": {
+        "open_time": "07:00",
+        "close_time": "22:00"
+      },
+      "wednesday": {
+        "open_time": "10:00",
+        "close_time": "23:00"
+      },
+      "thursday": {
+        "open_time": "09:00",
+        "close_time": "21:00"
+      },
+      "friday": {
+        "open_time": "10:00",
+        "close_time": "22:00"
+      },
+      "saturday": {
+        "open_time": "10:00",
+        "close_time": "21:00"
+      },
+      "sunday": {
+        "open_time": "07:00",
+        "close_time": "22:00"
+      }
+    },
+    "unusual_working_hours": {
+      "2025-04-11": {
+        "open_time": "06:00",
+        "close_time": "21:00"
+      },
+      "2025-04-09": {
+        "open_time": "09:00",
+        "close_time": "22:00"
+      }
+    }
+  },
+  "restaurant_10980591": {
+    "restaurant_id": "restaurant_10980591",
+    "name": "Bibimbap House",
+    "cuisine_type": [
+      "Korean",
+      "Moroccan"
+    ],
+    "description": "A cozy Korean eatery specializing in traditional bibimbap and other classic dishes, offering a warm and inviting atmosphere with authentic flavors.",
+    "address": "340 Kevin Corner",
+    "phone_number": "+10064522361",
+    "created_at": "2025-03-31T13:00:00",
+    "city_id": "ch312",
+    "working_hours": {
+      "monday": {
+        "open_time": "10:00",
+        "close_time": "23:00"
+      },
+      "tuesday": {
+        "open_time": "07:00",
+        "close_time": "23:00"
+      },
+      "wednesday": {
+        "open_time": "07:00",
+        "close_time": "21:00"
+      },
+      "thursday": {
+        "open_time": "06:00",
+        "close_time": "23:00"
+      },
+      "friday": {
+        "open_time": "06:00",
+        "close_time": "23:00"
+      },
+      "saturday": {
+        "open_time": "09:00",
+        "close_time": "22:00"
+      },
+      "sunday": null
+    },
+    "unusual_working_hours": null
+  },
+  "restaurant_37349679": {
+    "restaurant_id": "restaurant_37349679",
+    "name": "Atlas Spice",
+    "cuisine_type": [
+      "Moroccan",
+      "Lebanese",
+      "Salad"
+    ],
+    "description": "An elegant dining experience featuring contemporary Moroccan cuisine with French influences, set against a backdrop of mosaic tiles and flowing fountains, specializing in slow-cooked meats and aromatic spice blends.",
+    "address": "971 Gregory Expressway Suite 521",
+    "phone_number": "+15712340719",
+    "created_at": "2025-03-31T13:00:00",
+    "city_id": "se206",
+    "working_hours": {
+      "monday": null,
+      "tuesday": {
+        "open_time": "11:00",
+        "close_time": "21:00"
+      },
+      "wednesday": {
+        "open_time": "10:00",
+        "close_time": "22:00"
+      },
+      "thursday": {
+        "open_time": "09:00",
+        "close_time": "22:00"
+      },
+      "friday": {
+        "open_time": "09:00",
+        "close_time": "21:00"
+      },
+      "saturday": {
+        "open_time": "10:00",
+        "close_time": "22:00"
+      },
+      "sunday": {
+        "open_time": "11:00",
+        "close_time": "21:00"
+      }
+    },
+    "unusual_working_hours": null
+  },
+  "restaurant_93561834": {
+    "restaurant_id": "restaurant_93561834",
+    "name": "Crust & Co.",
+    "cuisine_type": [
+      "Pizza",
+      "Brazilian",
+      "Korean"
+    ],
+    "description": "An upscale pizza bistro featuring gourmet thin-crust creations with innovative toppings and a curated selection of craft beers and wines.",
+    "address": "9562 Stephen Rue",
+    "phone_number": "+19980254429",
+    "created_at": "2025-03-31T13:00:00",
+    "city_id": "mi305",
+    "working_hours": {
+      "monday": {
+        "open_time": "11:00",
+        "close_time": "23:00"
+      },
+      "tuesday": {
+        "open_time": "08:00",
+        "close_time": "21:00"
+      },
+      "wednesday": {
+        "open_time": "09:00",
+        "close_time": "20:00"
+      },
+      "thursday": {
+        "open_time": "08:00",
+        "close_time": "22:00"
+      },
+      "friday": {
+        "open_time": "07:00",
+        "close_time": "22:00"
+      },
+      "saturday": {
+        "open_time": "06:00",
+        "close_time": "22:00"
+      },
+      "sunday": {
+        "open_time": "10:00",
+        "close_time": "23:00"
+      }
+    },
+    "unusual_working_hours": null
+  },
+  "restaurant_46436936": {
+    "restaurant_id": "restaurant_46436936",
+    "name": "Sizzle & Stack",
+    "cuisine_type": [
+      "Burger",
+      "Greek"
+    ],
+    "description": "Experience the finest Burger and Greek dishes at Sizzle & Stack, where tradition meets innovation.",
+    "address": "319 Carlson Extension Apt. 949",
+    "phone_number": "+12699463415",
+    "created_at": "2025-03-31T13:00:00",
+    "city_id": "bo617",
+    "working_hours": {
+      "monday": {
+        "open_time": "10:00",
+        "close_time": "21:00"
+      },
+      "tuesday": {
+        "open_time": "11:00",
+        "close_time": "20:00"
+      },
+      "wednesday": {
+        "open_time": "09:00",
+        "close_time": "20:00"
+      },
+      "thursday": {
+        "open_time": "06:00",
+        "close_time": "21:00"
+      },
+      "friday": {
+        "open_time": "11:00",
+        "close_time": "20:00"
+      },
+      "saturday": {
+        "open_time": "09:00",
+        "close_time": "23:00"
+      },
+      "sunday": {
+        "open_time": "08:00",
+        "close_time": "23:00"
+      }
+    },
+    "unusual_working_hours": {
+      "2025-04-04": null,
+      "2025-04-20": null,
+      "2025-04-07": {
+        "open_time": "09:00",
+        "close_time": "23:00"
+      }
+    }
+  },
+  "restaurant_70107432": {
+    "restaurant_id": "restaurant_70107432",
+    "name": "Tokyo Bay Japanese Grill",
+    "cuisine_type": [
+      "Japanese",
+      "Steak"
+    ],
+    "description": "A lively teppanyaki restaurant where skilled chefs prepare sizzling dishes before your eyes, complemented by an extensive sushi bar and traditional izakaya small plates.",
+    "address": "7783 Tina Bypass Apt. 979",
+    "phone_number": "+16149713510",
+    "created_at": "2025-03-31T13:00:00",
+    "city_id": "ny212",
+    "working_hours": {
+      "monday": {
+        "open_time": "11:00",
+        "close_time": "22:00"
+      },
+      "tuesday": {
+        "open_time": "06:00",
+        "close_time": "20:00"
+      },
+      "wednesday": {
+        "open_time": "08:00",
+        "close_time": "23:00"
+      },
+      "thursday": {
+        "open_time": "11:00",
+        "close_time": "22:00"
+      },
+      "friday": {
+        "open_time": "07:00",
+        "close_time": "20:00"
+      },
+      "saturday": {
+        "open_time": "11:00",
+        "close_time": "21:00"
+      },
+      "sunday": {
+        "open_time": "08:00",
+        "close_time": "22:00"
+      }
+    },
+    "unusual_working_hours": null
+  },
+  "restaurant_95856670": {
+    "restaurant_id": "restaurant_95856670",
+    "name": "Seoul Garden",
+    "cuisine_type": [
+      "Korean",
+      "Seafood"
+    ],
+    "description": "An elegant dining experience featuring traditional Korean dishes prepared with fresh, seasonal ingredients.",
+    "address": "542 Sara Parks",
+    "phone_number": "+13763506120",
+    "created_at": "2025-03-31T13:00:00",
+    "city_id": "ny212",
+    "working_hours": {
+      "monday": {
+        "open_time": "08:00",
+        "close_time": "21:00"
+      },
+      "tuesday": null,
+      "wednesday": {
+        "open_time": "08:00",
+        "close_time": "21:00"
+      },
+      "thursday": null,
+      "friday": {
+        "open_time": "06:00",
+        "close_time": "23:00"
+      },
+      "saturday": null,
+      "sunday": {
+        "open_time": "07:00",
+        "close_time": "20:00"
+      }
+    },
+    "unusual_working_hours": null
+  },
+  "restaurant_14849136": {
+    "restaurant_id": "restaurant_14849136",
+    "name": "Azure Coast",
+    "cuisine_type": [
+      "Mediterranean"
+    ],
+    "description": "An elegant seaside-inspired eatery featuring Mediterranean flavors from Spain to Greece, with an extensive wine list and seafood specialties.",
+    "address": "15195 Brandon Branch Apt. 831",
+    "phone_number": "+16271461600",
+    "created_at": "2025-03-31T13:00:00",
+    "city_id": "au512",
+    "working_hours": {
+      "monday": {
+        "open_time": "06:00",
+        "close_time": "22:00"
+      },
+      "tuesday": {
+        "open_time": "11:00",
+        "close_time": "21:00"
+      },
+      "wednesday": {
+        "open_time": "10:00",
+        "close_time": "20:00"
+      },
+      "thursday": null,
+      "friday": {
+        "open_time": "07:00",
+        "close_time": "20:00"
+      },
+      "saturday": {
+        "open_time": "09:00",
+        "close_time": "21:00"
+      },
+      "sunday": {
+        "open_time": "09:00",
+        "close_time": "21:00"
+      }
+    },
+    "unusual_working_hours": {
+      "2025-04-27": null,
+      "2025-04-18": null
+    }
+  },
+  "restaurant_50507474": {
+    "restaurant_id": "restaurant_50507474",
+    "name": "The Stacked Sandwich Co.",
+    "cuisine_type": [
+      "Sandwich",
+      "Seafood",
+      "Salad"
+    ],
+    "description": "A modern eatery featuring artisanal sandwiches crafted with house-baked breads and locally sourced ingredients.",
+    "address": "07769 Angela Plains",
+    "phone_number": "+16276371248",
+    "created_at": "2025-03-31T13:00:00",
+    "city_id": "mi305",
+    "working_hours": {
+      "monday": {
+        "open_time": "11:00",
+        "close_time": "20:00"
+      },
+      "tuesday": {
+        "open_time": "09:00",
+        "close_time": "20:00"
+      },
+      "wednesday": {
+        "open_time": "08:00",
+        "close_time": "22:00"
+      },
+      "thursday": {
+        "open_time": "09:00",
+        "close_time": "22:00"
+      },
+      "friday": {
+        "open_time": "08:00",
+        "close_time": "21:00"
+      },
+      "saturday": null,
+      "sunday": {
+        "open_time": "06:00",
+        "close_time": "20:00"
+      }
+    },
+    "unusual_working_hours": {
+      "2025-04-10": {
+        "open_time": "06:00",
+        "close_time": "21:00"
+      }
+    }
+  },
+  "restaurant_61674683": {
+    "restaurant_id": "restaurant_61674683",
+    "name": "The Grill Garage",
+    "cuisine_type": [
+      "Burger",
+      "Sandwich",
+      "Korean"
+    ],
+    "description": "A rustic, industrial-themed restaurant specializing in flame-grilled burgers with bold flavors and unexpected combinations, complemented by craft beers.",
+    "address": "4437 Finley Fort",
+    "phone_number": "+17653579847",
+    "created_at": "2025-03-31T13:00:00",
+    "city_id": "mi305",
+    "working_hours": {
+      "monday": {
+        "open_time": "08:00",
+        "close_time": "22:00"
+      },
+      "tuesday": {
+        "open_time": "06:00",
+        "close_time": "21:00"
+      },
+      "wednesday": {
+        "open_time": "08:00",
+        "close_time": "21:00"
+      },
+      "thursday": {
+        "open_time": "06:00",
+        "close_time": "20:00"
+      },
+      "friday": {
+        "open_time": "06:00",
+        "close_time": "23:00"
+      },
+      "saturday": {
+        "open_time": "10:00",
+        "close_time": "23:00"
+      },
+      "sunday": {
+        "open_time": "10:00",
+        "close_time": "22:00"
+      }
+    },
+    "unusual_working_hours": null
+  },
+  "restaurant_56197947": {
+    "restaurant_id": "restaurant_56197947",
+    "name": "The Mediterranean Table",
+    "cuisine_type": [
+      "Mediterranean"
+    ],
+    "description": "A vibrant family-style restaurant celebrating the diverse culinary heritage of Mediterranean countries through shared plates and authentic recipes.",
+    "address": "31323 Megan Lock",
+    "phone_number": "+15571389568",
+    "created_at": "2025-03-31T13:00:00",
+    "city_id": "sf415",
+    "working_hours": {
+      "monday": {
+        "open_time": "09:00",
+        "close_time": "21:00"
+      },
+      "tuesday": {
+        "open_time": "10:00",
+        "close_time": "21:00"
+      },
+      "wednesday": {
+        "open_time": "06:00",
+        "close_time": "23:00"
+      },
+      "thursday": {
+        "open_time": "07:00",
+        "close_time": "21:00"
+      },
+      "friday": {
+        "open_time": "10:00",
+        "close_time": "20:00"
+      },
+      "saturday": {
+        "open_time": "07:00",
+        "close_time": "21:00"
+      },
+      "sunday": {
+        "open_time": "10:00",
+        "close_time": "21:00"
+      }
+    },
+    "unusual_working_hours": null
+  },
+  "restaurant_64766497": {
+    "restaurant_id": "restaurant_64766497",
+    "name": "Fuego & Sal",
+    "cuisine_type": [
+      "Mexican"
+    ],
+    "description": "An upscale Mexican bistro offering contemporary takes on classic dishes, with a focus on fire-roasted meats and house-made salsas in an intimate, candlelit setting.",
+    "address": "152 Berry Summit Apt. 812",
+    "phone_number": "+11196064881",
+    "created_at": "2025-03-31T13:00:00",
+    "city_id": "la310",
+    "working_hours": {
+      "monday": {
+        "open_time": "08:00",
+        "close_time": "20:00"
+      },
+      "tuesday": {
+        "open_time": "10:00",
+        "close_time": "23:00"
+      },
+      "wednesday": {
+        "open_time": "08:00",
+        "close_time": "23:00"
+      },
+      "thursday": {
+        "open_time": "10:00",
+        "close_time": "23:00"
+      },
+      "friday": {
+        "open_time": "09:00",
+        "close_time": "22:00"
+      },
+      "saturday": {
+        "open_time": "06:00",
+        "close_time": "22:00"
+      },
+      "sunday": {
+        "open_time": "06:00",
+        "close_time": "22:00"
+      }
+    },
+    "unusual_working_hours": null
+  },
+  "restaurant_51311291": {
+    "restaurant_id": "restaurant_51311291",
+    "name": "Holland, Ramirez and Long",
+    "cuisine_type": [
+      "French",
+      "Turkish"
+    ],
+    "description": "At Holland, Ramirez and Long, we pride ourselves on serving exceptional French and Turkish cuisine in a welcoming atmosphere.",
+    "address": "1126 Harris Parkway",
+    "phone_number": "+14506347993",
+    "created_at": "2025-03-31T13:00:00",
+    "city_id": "ch312",
+    "working_hours": {
+      "monday": {
+        "open_time": "11:00",
+        "close_time": "22:00"
+      },
+      "tuesday": {
+        "open_time": "06:00",
+        "close_time": "20:00"
+      },
+      "wednesday": {
+        "open_time": "07:00",
+        "close_time": "20:00"
+      },
+      "thursday": {
+        "open_time": "11:00",
+        "close_time": "21:00"
+      },
+      "friday": null,
+      "saturday": {
+        "open_time": "11:00",
+        "close_time": "22:00"
+      },
+      "sunday": {
+        "open_time": "11:00",
+        "close_time": "21:00"
+      }
+    },
+    "unusual_working_hours": {
+      "2025-04-08": null,
+      "2025-04-03": {
+        "open_time": "10:00",
+        "close_time": "22:00"
+      }
+    }
+  },
+  "restaurant_67583799": {
+    "restaurant_id": "restaurant_67583799",
+    "name": "Between Bread",
+    "cuisine_type": [
+      "Sandwich"
+    ],
+    "description": "A cozy, rustic caf\u00e9 specializing in hearty, handcrafted sandwiches made with slow-roasted meats, artisanal cheeses, and freshly baked breads. Each creation tells a story of comfort and quality.",
+    "address": "6528 Shane Gardens",
+    "phone_number": "+13026233251",
+    "created_at": "2025-03-31T13:00:00",
+    "city_id": "bo617",
+    "working_hours": {
+      "monday": {
+        "open_time": "08:00",
+        "close_time": "20:00"
+      },
+      "tuesday": {
+        "open_time": "08:00",
+        "close_time": "23:00"
+      },
+      "wednesday": {
+        "open_time": "11:00",
+        "close_time": "21:00"
+      },
+      "thursday": {
+        "open_time": "09:00",
+        "close_time": "22:00"
+      },
+      "friday": {
+        "open_time": "06:00",
+        "close_time": "21:00"
+      },
+      "saturday": {
+        "open_time": "06:00",
+        "close_time": "22:00"
+      },
+      "sunday": {
+        "open_time": "06:00",
+        "close_time": "22:00"
+      }
+    },
+    "unusual_working_hours": null
+  },
+  "restaurant_72539083": {
+    "restaurant_id": "restaurant_72539083",
+    "name": "Press & Melt",
+    "cuisine_type": [
+      "Sandwich",
+      "Mexican"
+    ],
+    "description": "An upscale sandwich bistro focusing on gourmet pressed sandwiches and melts. Our chef-driven menu features international flavors, premium ingredients, and house-made condiments in a sophisticated atmosphere.",
+    "address": "52685 Burns Isle",
+    "phone_number": "+11463531698",
+    "created_at": "2025-03-31T13:00:00",
+    "city_id": "ch312",
+    "working_hours": {
+      "monday": {
+        "open_time": "10:00",
+        "close_time": "21:00"
+      },
+      "tuesday": {
+        "open_time": "06:00",
+        "close_time": "22:00"
+      },
+      "wednesday": {
+        "open_time": "10:00",
+        "close_time": "21:00"
+      },
+      "thursday": {
+        "open_time": "06:00",
+        "close_time": "20:00"
+      },
+      "friday": {
+        "open_time": "08:00",
+        "close_time": "20:00"
+      },
+      "saturday": {
+        "open_time": "10:00",
+        "close_time": "21:00"
+      },
+      "sunday": {
+        "open_time": "06:00",
+        "close_time": "22:00"
+      }
+    },
+    "unusual_working_hours": {
+      "2025-04-15": {
+        "open_time": "11:00",
+        "close_time": "20:00"
+      }
+    }
+  },
+  "restaurant_25349042": {
+    "restaurant_id": "restaurant_25349042",
+    "name": "Tidal Wave",
+    "cuisine_type": [
+      "Seafood",
+      "Japanese",
+      "Moroccan"
+    ],
+    "description": "A contemporary seafood dining experience featuring fresh catches from local fishermen, served in a sleek, ocean-inspired space with panoramic waterfront views.",
+    "address": "84619 Marshall Harbors",
+    "phone_number": "+18525618134",
+    "created_at": "2025-03-31T13:00:00",
+    "city_id": "sf415",
+    "working_hours": {
+      "monday": {
+        "open_time": "10:00",
+        "close_time": "23:00"
+      },
+      "tuesday": {
+        "open_time": "09:00",
+        "close_time": "23:00"
+      },
+      "wednesday": {
+        "open_time": "09:00",
+        "close_time": "22:00"
+      },
+      "thursday": {
+        "open_time": "06:00",
+        "close_time": "20:00"
+      },
+      "friday": {
+        "open_time": "10:00",
+        "close_time": "20:00"
+      },
+      "saturday": {
+        "open_time": "08:00",
+        "close_time": "20:00"
+      },
+      "sunday": {
+        "open_time": "07:00",
+        "close_time": "20:00"
+      }
+    },
+    "unusual_working_hours": {
+      "2025-04-15": null
+    }
+  },
+  "restaurant_32897079": {
+    "restaurant_id": "restaurant_32897079",
+    "name": "Mckay-Floyd",
+    "cuisine_type": [
+      "Greek"
+    ],
+    "description": "Mckay-Floyd brings you the authentic tastes of Greek cooking, made with fresh ingredients daily.",
+    "address": "68911 Keith Dam",
+    "phone_number": "+16489944937",
+    "created_at": "2025-03-31T13:00:00",
+    "city_id": "ny212",
+    "working_hours": {
+      "monday": {
+        "open_time": "08:00",
+        "close_time": "21:00"
+      },
+      "tuesday": {
+        "open_time": "06:00",
+        "close_time": "22:00"
+      },
+      "wednesday": {
+        "open_time": "10:00",
+        "close_time": "22:00"
+      },
+      "thursday": null,
+      "friday": {
+        "open_time": "11:00",
+        "close_time": "20:00"
+      },
+      "saturday": {
+        "open_time": "10:00",
+        "close_time": "21:00"
+      },
+      "sunday": {
+        "open_time": "07:00",
+        "close_time": "22:00"
+      }
+    },
+    "unusual_working_hours": null
+  },
+  "restaurant_75303418": {
+    "restaurant_id": "restaurant_75303418",
+    "name": "Liberty Grill",
+    "cuisine_type": [
+      "American",
+      "Moroccan",
+      "Turkish"
+    ],
+    "description": "A classic diner-style establishment offering hearty American comfort food with a modern twist, featuring locally-sourced ingredients and signature house-made sauces.",
+    "address": "60090 Ashley Prairie Apt. 615",
+    "phone_number": "+17568852971",
+    "created_at": "2025-03-31T13:00:00",
+    "city_id": "la310",
+    "working_hours": {
+      "monday": {
+        "open_time": "06:00",
+        "close_time": "23:00"
+      },
+      "tuesday": {
+        "open_time": "09:00",
+        "close_time": "22:00"
+      },
+      "wednesday": {
+        "open_time": "07:00",
+        "close_time": "22:00"
+      },
+      "thursday": {
+        "open_time": "08:00",
+        "close_time": "22:00"
+      },
+      "friday": {
+        "open_time": "11:00",
+        "close_time": "22:00"
+      },
+      "saturday": {
+        "open_time": "06:00",
+        "close_time": "21:00"
+      },
+      "sunday": {
+        "open_time": "11:00",
+        "close_time": "21:00"
+      }
+    },
+    "unusual_working_hours": null
+  },
+  "restaurant_63731989": {
+    "restaurant_id": "restaurant_63731989",
+    "name": "Slice of Heaven",
+    "cuisine_type": [
+      "Pizza",
+      "Vietnamese",
+      "Korean"
+    ],
+    "description": "A cozy neighborhood pizzeria offering artisanal wood-fired pizzas with locally sourced ingredients and homemade sauces.",
+    "address": "7764 Johnson Burgs",
+    "phone_number": "+11834499965",
+    "created_at": "2025-03-31T13:00:00",
+    "city_id": "bo617",
+    "working_hours": {
+      "monday": {
+        "open_time": "11:00",
+        "close_time": "23:00"
+      },
+      "tuesday": {
+        "open_time": "09:00",
+        "close_time": "22:00"
+      },
+      "wednesday": {
+        "open_time": "10:00",
+        "close_time": "22:00"
+      },
+      "thursday": {
+        "open_time": "07:00",
+        "close_time": "23:00"
+      },
+      "friday": {
+        "open_time": "08:00",
+        "close_time": "23:00"
+      },
+      "saturday": {
+        "open_time": "10:00",
+        "close_time": "20:00"
+      },
+      "sunday": {
+        "open_time": "10:00",
+        "close_time": "21:00"
+      }
+    },
+    "unusual_working_hours": null
+  },
+  "restaurant_41005549": {
+    "restaurant_id": "restaurant_41005549",
+    "name": "Sakura Breeze",
+    "cuisine_type": [
+      "Japanese",
+      "Mexican",
+      "Seafood"
+    ],
+    "description": "An elegant dining experience offering traditional Japanese dishes with a modern twist, surrounded by cherry blossom-inspired decor and a serene atmosphere.",
+    "address": "613 Stephanie Mountain Suite 255",
+    "phone_number": "+17784977856",
+    "created_at": "2025-03-31T13:00:00",
+    "city_id": "po503",
+    "working_hours": {
+      "monday": null,
+      "tuesday": {
+        "open_time": "06:00",
+        "close_time": "20:00"
+      },
+      "wednesday": {
+        "open_time": "07:00",
+        "close_time": "20:00"
+      },
+      "thursday": {
+        "open_time": "10:00",
+        "close_time": "21:00"
+      },
+      "friday": {
+        "open_time": "09:00",
+        "close_time": "20:00"
+      },
+      "saturday": {
+        "open_time": "08:00",
+        "close_time": "22:00"
+      },
+      "sunday": {
+        "open_time": "10:00",
+        "close_time": "22:00"
+      }
+    },
+    "unusual_working_hours": {
+      "2025-04-20": {
+        "open_time": "09:00",
+        "close_time": "22:00"
+      }
+    }
+  },
+  "restaurant_48196876": {
+    "restaurant_id": "restaurant_48196876",
+    "name": "Sabor Mexicano",
+    "cuisine_type": [
+      "Mexican",
+      "Sandwich",
+      "Italian"
+    ],
+    "description": "A vibrant Mexican restaurant featuring traditional recipes with a modern twist, set in a colorful atmosphere with authentic decor and lively music.",
+    "address": "70902 Joel Fork",
+    "phone_number": "+15698808702",
+    "created_at": "2025-03-31T13:00:00",
+    "city_id": "sf415",
+    "working_hours": {
+      "monday": {
+        "open_time": "09:00",
+        "close_time": "21:00"
+      },
+      "tuesday": {
+        "open_time": "07:00",
+        "close_time": "23:00"
+      },
+      "wednesday": {
+        "open_time": "06:00",
+        "close_time": "20:00"
+      },
+      "thursday": {
+        "open_time": "06:00",
+        "close_time": "23:00"
+      },
+      "friday": {
+        "open_time": "08:00",
+        "close_time": "22:00"
+      },
+      "saturday": {
+        "open_time": "06:00",
+        "close_time": "20:00"
+      },
+      "sunday": {
+        "open_time": "08:00",
+        "close_time": "23:00"
+      }
+    },
+    "unusual_working_hours": {
+      "2025-04-26": null
+    }
+  },
+  "restaurant_55073342": {
+    "restaurant_id": "restaurant_55073342",
+    "name": "Mullen-Turner",
+    "cuisine_type": [
+      "Korean"
+    ],
+    "description": "At Mullen-Turner, we pride ourselves on serving exceptional Korean cuisine in a welcoming atmosphere.",
+    "address": "243 Christine Drive",
+    "phone_number": "+11268303514",
+    "created_at": "2025-03-31T13:00:00",
+    "city_id": "au512",
+    "working_hours": {
+      "monday": {
+        "open_time": "08:00",
+        "close_time": "21:00"
+      },
+      "tuesday": {
+        "open_time": "11:00",
+        "close_time": "22:00"
+      },
+      "wednesday": {
+        "open_time": "09:00",
+        "close_time": "21:00"
+      },
+      "thursday": {
+        "open_time": "09:00",
+        "close_time": "23:00"
+      },
+      "friday": {
+        "open_time": "08:00",
+        "close_time": "23:00"
+      },
+      "saturday": {
+        "open_time": "06:00",
+        "close_time": "20:00"
+      },
+      "sunday": {
+        "open_time": "07:00",
+        "close_time": "21:00"
+      }
+    },
+    "unusual_working_hours": null
+  },
+  "restaurant_18321519": {
+    "restaurant_id": "restaurant_18321519",
+    "name": "Stephenson, Willis and Klein",
+    "cuisine_type": [
+      "Mexican",
+      "Salad",
+      "Lebanese"
+    ],
+    "description": "Stephenson, Willis and Klein brings you the authentic tastes of Mexican and Salad and Lebanese cooking, made with fresh ingredients daily.",
+    "address": "495 Ross Station",
+    "phone_number": "+11274110786",
+    "created_at": "2025-03-31T13:00:00",
+    "city_id": "au512",
+    "working_hours": {
+      "monday": {
+        "open_time": "08:00",
+        "close_time": "23:00"
+      },
+      "tuesday": {
+        "open_time": "11:00",
+        "close_time": "21:00"
+      },
+      "wednesday": {
+        "open_time": "06:00",
+        "close_time": "20:00"
+      },
+      "thursday": {
+        "open_time": "08:00",
+        "close_time": "20:00"
+      },
+      "friday": {
+        "open_time": "10:00",
+        "close_time": "22:00"
+      },
+      "saturday": {
+        "open_time": "09:00",
+        "close_time": "23:00"
+      },
+      "sunday": {
+        "open_time": "11:00",
+        "close_time": "22:00"
+      }
+    },
+    "unusual_working_hours": null
+  },
+  "restaurant_61804753": {
+    "restaurant_id": "restaurant_61804753",
+    "name": "Simmons-Allen",
+    "cuisine_type": [
+      "Burger"
+    ],
+    "description": "Welcome to Simmons-Allen, specializing in Burger cuisine with a modern twist.",
+    "address": "643 Tony Plaza",
+    "phone_number": "+15484732142",
+    "created_at": "2025-03-31T13:00:00",
+    "city_id": "mi305",
+    "working_hours": {
+      "monday": {
+        "open_time": "09:00",
+        "close_time": "23:00"
+      },
+      "tuesday": {
+        "open_time": "06:00",
+        "close_time": "23:00"
+      },
+      "wednesday": {
+        "open_time": "11:00",
+        "close_time": "23:00"
+      },
+      "thursday": {
+        "open_time": "08:00",
+        "close_time": "20:00"
+      },
+      "friday": {
+        "open_time": "10:00",
+        "close_time": "21:00"
+      },
+      "saturday": {
+        "open_time": "09:00",
+        "close_time": "23:00"
+      },
+      "sunday": null
+    },
+    "unusual_working_hours": {
+      "2025-04-09": {
+        "open_time": "11:00",
+        "close_time": "20:00"
+      },
+      "2025-04-14": null
+    }
+  },
+  "restaurant_92871146": {
+    "restaurant_id": "restaurant_92871146",
+    "name": "Andersen-Kim",
+    "cuisine_type": [
+      "French",
+      "Turkish"
+    ],
+    "description": "Andersen-Kim is a French and Turkish restaurant offering authentic flavors and memorable dining experiences.",
+    "address": "5844 Fischer Run Apt. 366",
+    "phone_number": "+15359156636",
+    "created_at": "2025-03-31T13:00:00",
+    "city_id": "ch312",
+    "working_hours": {
+      "monday": {
+        "open_time": "10:00",
+        "close_time": "20:00"
+      },
+      "tuesday": {
+        "open_time": "09:00",
+        "close_time": "21:00"
+      },
+      "wednesday": {
+        "open_time": "08:00",
+        "close_time": "20:00"
+      },
+      "thursday": {
+        "open_time": "08:00",
+        "close_time": "20:00"
+      },
+      "friday": {
+        "open_time": "10:00",
+        "close_time": "20:00"
+      },
+      "saturday": {
+        "open_time": "08:00",
+        "close_time": "20:00"
+      },
+      "sunday": {
+        "open_time": "11:00",
+        "close_time": "22:00"
+      }
+    },
+    "unusual_working_hours": null
+  },
+  "restaurant_30213554": {
+    "restaurant_id": "restaurant_30213554",
+    "name": "The Saffron Table",
+    "cuisine_type": [
+      "Indian",
+      "Thai",
+      "Italian"
+    ],
+    "description": "An elegant Indian restaurant offering a modern interpretation of traditional dishes, featuring aromatic curries, tandoori specialties, and an extensive selection of regional breads in a sophisticated setting.",
+    "address": "236 Valerie Pine",
+    "phone_number": "+16267166568",
+    "created_at": "2025-03-31T13:00:00",
+    "city_id": "ch312",
+    "working_hours": {
+      "monday": {
+        "open_time": "06:00",
+        "close_time": "22:00"
+      },
+      "tuesday": {
+        "open_time": "10:00",
+        "close_time": "23:00"
+      },
+      "wednesday": {
+        "open_time": "07:00",
+        "close_time": "20:00"
+      },
+      "thursday": {
+        "open_time": "07:00",
+        "close_time": "21:00"
+      },
+      "friday": {
+        "open_time": "07:00",
+        "close_time": "21:00"
+      },
+      "saturday": {
+        "open_time": "10:00",
+        "close_time": "20:00"
+      },
+      "sunday": null
+    },
+    "unusual_working_hours": {
+      "2025-04-03": {
+        "open_time": "07:00",
+        "close_time": "20:00"
+      },
+      "2025-04-07": {
+        "open_time": "07:00",
+        "close_time": "20:00"
+      }
+    }
+  },
+  "restaurant_87316785": {
+    "restaurant_id": "restaurant_87316785",
+    "name": "Kimchi & Co.",
+    "cuisine_type": [
+      "Korean",
+      "Moroccan",
+      "Japanese"
+    ],
+    "description": "A modern Korean eatery celebrating the art of fermentation. Our menu showcases creative kimchi variations alongside contemporary Korean street food in a vibrant, casual setting.",
+    "address": "0432 Smith Well",
+    "phone_number": "+14430684833",
+    "created_at": "2025-03-31T13:00:00",
+    "city_id": "la310",
+    "working_hours": {
+      "monday": {
+        "open_time": "09:00",
+        "close_time": "23:00"
+      },
+      "tuesday": {
+        "open_time": "10:00",
+        "close_time": "22:00"
+      },
+      "wednesday": {
+        "open_time": "10:00",
+        "close_time": "23:00"
+      },
+      "thursday": {
+        "open_time": "11:00",
+        "close_time": "21:00"
+      },
+      "friday": {
+        "open_time": "11:00",
+        "close_time": "21:00"
+      },
+      "saturday": {
+        "open_time": "09:00",
+        "close_time": "23:00"
+      },
+      "sunday": null
+    },
+    "unusual_working_hours": null
+  }
+}

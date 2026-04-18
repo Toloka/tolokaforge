@@ -1,0 +1,462 @@
+[
+  {
+    "name": "Bella Notte",
+    "description": "An intimate trattoria serving traditional family recipes from Northern Italy, featuring handmade pasta and wood-fired pizzas in a warm, candlelit atmosphere.",
+    "cuisine": "Italian"
+  },
+  {
+    "name": "Sapore Italiano",
+    "description": "A vibrant celebration of Italian coastal cuisine, offering fresh seafood dishes, homemade breads, and regional specialties in a lively, Mediterranean-inspired setting.",
+    "cuisine": "Italian"
+  },
+  {
+    "name": "Oliveto",
+    "description": "An elegant ristorante showcasing contemporary interpretations of classic Italian dishes, with a carefully curated wine list and seasonal ingredients sourced from local farms.",
+    "cuisine": "Italian"
+  },
+  {
+    "name": "Rustico",
+    "description": "A charming countryside-inspired osteria serving rustic, hearty dishes from Tuscany and Umbria, with a cozy stone fireplace and an outdoor dining garden surrounded by herb planters.",
+    "cuisine": "Italian"
+  },
+  {
+    "name": "El Jardin",
+    "description": "A vibrant dining spot featuring traditional Mexican recipes passed down through generations, set in a lush garden atmosphere with colorful decor and live mariachi music on weekends.",
+    "cuisine": "Mexican"
+  },
+  {
+    "name": "Fuego & Sal",
+    "description": "An upscale Mexican bistro offering contemporary takes on classic dishes, with a focus on fire-roasted meats and house-made salsas in an intimate, candlelit setting.",
+    "cuisine": "Mexican"
+  },
+  {
+    "name": "Cantina Azul",
+    "description": "A lively taqueria and mezcal bar specializing in street food favorites and regional specialties from Oaxaca, with an impressive selection of agave spirits.",
+    "cuisine": "Mexican"
+  },
+  {
+    "name": "Sabor Mexicano",
+    "description": "A family-friendly restaurant celebrating the diverse flavors of Mexico with made-from-scratch tortillas, slow-cooked mole sauces, and festive d\u00e9cor inspired by Mexican folk art.",
+    "cuisine": "Mexican"
+  },
+  {
+    "name": "Sakura Breeze",
+    "description": "An elegant dining experience offering traditional Japanese dishes with a modern twist, surrounded by cherry blossom-inspired decor and a serene atmosphere.",
+    "cuisine": "Japanese"
+  },
+  {
+    "name": "Umami Hideaway",
+    "description": "A cozy, intimate restaurant specializing in authentic Japanese home-style cooking, featuring seasonal ingredients and artisanal sake selections.",
+    "cuisine": "Japanese"
+  },
+  {
+    "name": "The Rising Sun",
+    "description": "A vibrant fusion restaurant blending Japanese culinary techniques with local flavors, housed in a contemporary space with an open kitchen concept.",
+    "cuisine": "Japanese"
+  },
+  {
+    "name": "Tokyo Bay Japanese Grill",
+    "description": "A lively teppanyaki restaurant where skilled chefs prepare sizzling dishes before your eyes, complemented by an extensive sushi bar and traditional izakaya small plates.",
+    "cuisine": "Japanese"
+  },
+  {
+    "name": "Liberty Grill",
+    "description": "A classic diner-style establishment offering hearty American comfort food with a modern twist, featuring locally-sourced ingredients and signature house-made sauces.",
+    "cuisine": "American"
+  },
+  {
+    "name": "Harvest & Hearth",
+    "description": "Farm-to-table restaurant celebrating seasonal American cuisine with an emphasis on wood-fired cooking techniques and rustic, family-style dining experiences.",
+    "cuisine": "American"
+  },
+  {
+    "name": "The Star-Spangled Platter",
+    "description": "An all-American eatery showcasing regional specialties from across the nation, from New England clam chowder to Southern barbecue and West Coast fusion dishes.",
+    "cuisine": "American"
+  },
+  {
+    "name": "Frontier Kitchen",
+    "description": "A contemporary restaurant inspired by America's pioneering spirit, offering innovative takes on traditional recipes alongside craft cocktails in a warm, industrial-chic setting.",
+    "cuisine": "American"
+  },
+  {
+    "name": "Jade Dragon",
+    "description": "An elegant dining experience featuring traditional Chinese dishes with a modern twist, set in a tranquil atmosphere adorned with jade accents and bamboo elements.",
+    "cuisine": "Chinese"
+  },
+  {
+    "name": "Silk Road",
+    "description": "A culinary journey through the diverse regional cuisines of China, offering authentic flavors and time-honored recipes passed down through generations.",
+    "cuisine": "Chinese"
+  },
+  {
+    "name": "Golden Lotus",
+    "description": "A sophisticated eatery specializing in dim sum and Cantonese delicacies, with a warm ambiance highlighted by golden lanterns and lotus-inspired d\u00e9cor.",
+    "cuisine": "Chinese"
+  },
+  {
+    "name": "Dynasty Kitchen",
+    "description": "A family-friendly Chinese restaurant serving hearty, home-style dishes from across China, with a focus on sharing plates and communal dining experiences.",
+    "cuisine": "Chinese"
+  },
+  {
+    "name": "Patty Palace",
+    "description": "A gourmet burger joint offering a royal selection of handcrafted patties, signature sauces, and artisanal buns in a casual, contemporary setting.",
+    "cuisine": "Burger"
+  },
+  {
+    "name": "Sizzle & Stack",
+    "description": "An upbeat eatery celebrating the art of perfectly seared patties and creative toppings, featuring locally-sourced ingredients and house-made condiments.",
+    "cuisine": "Burger"
+  },
+  {
+    "name": "The Grill Garage",
+    "description": "A rustic, industrial-themed restaurant specializing in flame-grilled burgers with bold flavors and unexpected combinations, complemented by craft beers.",
+    "cuisine": "Burger"
+  },
+  {
+    "name": "Burger Bliss",
+    "description": "A family-friendly burger destination offering classic and innovative burger creations, hand-cut fries, and indulgent milkshakes in a nostalgic American diner atmosphere.",
+    "cuisine": "Burger"
+  },
+  {
+    "name": "Slice of Heaven",
+    "description": "A cozy neighborhood pizzeria offering artisanal wood-fired pizzas with locally sourced ingredients and homemade sauces.",
+    "cuisine": "Pizza"
+  },
+  {
+    "name": "Crust & Co.",
+    "description": "An upscale pizza bistro featuring gourmet thin-crust creations with innovative toppings and a curated selection of craft beers and wines.",
+    "cuisine": "Pizza"
+  },
+  {
+    "name": "The Fired Stone",
+    "description": "A rustic Italian-inspired eatery where traditional techniques meet modern flavors, specializing in stone-baked pizzas with charred, bubbly crusts.",
+    "cuisine": "Pizza"
+  },
+  {
+    "name": "Mamma's Pizza Cucina",
+    "description": "A family-owned establishment celebrating authentic Italian recipes passed down through generations, serving classic and contemporary pizza varieties in a warm, welcoming atmosphere.",
+    "cuisine": "Pizza"
+  },
+  {
+    "name": "Crisp & Co",
+    "description": "A bright, airy eatery specializing in artisanal salads with locally-sourced produce and house-made dressings, complemented by a selection of craft beverages.",
+    "cuisine": "Salad"
+  },
+  {
+    "name": "The Green Leaf",
+    "description": "A cozy, eco-friendly restaurant offering creative salad combinations with global influences, featuring seasonal ingredients and protein options for a complete meal experience.",
+    "cuisine": "Salad"
+  },
+  {
+    "name": "Harvest Bowl",
+    "description": "An upscale casual dining spot where farm-fresh ingredients are transformed into hearty, nutritious salad bowls with unexpected flavor combinations and artisanal toppings.",
+    "cuisine": "Salad"
+  },
+  {
+    "name": "Salad Society",
+    "description": "A modern, community-focused establishment serving innovative salads with chef-curated flavor profiles, alongside fresh-pressed juices and wholesome sides in a vibrant atmosphere.",
+    "cuisine": "Salad"
+  },
+  {
+    "name": "Umami Wave",
+    "description": "A contemporary sushi bar offering inventive rolls and traditional Japanese dishes in a sleek, ocean-inspired atmosphere with live jazz on weekends.",
+    "cuisine": "Sushi"
+  },
+  {
+    "name": "Koi Sushi Palace",
+    "description": "An upscale dining experience featuring master sushi chefs preparing premium cuts of fish imported daily, complemented by an extensive sake collection in an elegant garden setting.",
+    "cuisine": "Sushi"
+  },
+  {
+    "name": "Azure Fin",
+    "description": "A minimalist sushi haven where simplicity meets precision, offering omakase experiences that showcase seasonal ingredients and artisanal preparation techniques.",
+    "cuisine": "Sushi"
+  },
+  {
+    "name": "The Crimson Roll",
+    "description": "A fusion-focused sushi destination blending traditional Japanese techniques with bold international flavors, served in a vibrant space with interactive chef counters and craft cocktails.",
+    "cuisine": "Sushi"
+  },
+  {
+    "name": "The Stacked Sandwich Co.",
+    "description": "A modern eatery featuring artisanal sandwiches crafted with house-baked breads and locally sourced ingredients. Our signature layered creations range from gourmet classics to innovative flavor combinations.",
+    "cuisine": "Sandwich"
+  },
+  {
+    "name": "Between Bread",
+    "description": "A cozy, rustic caf\u00e9 specializing in hearty, handcrafted sandwiches made with slow-roasted meats, artisanal cheeses, and freshly baked breads. Each creation tells a story of comfort and quality.",
+    "cuisine": "Sandwich"
+  },
+  {
+    "name": "Press & Melt",
+    "description": "An upscale sandwich bistro focusing on gourmet pressed sandwiches and melts. Our chef-driven menu features international flavors, premium ingredients, and house-made condiments in a sophisticated atmosphere.",
+    "cuisine": "Sandwich"
+  },
+  {
+    "name": "Crust & Crumb",
+    "description": "A charming neighborhood spot offering innovative open-faced sandwiches and traditional favorites with a twist. Our menu celebrates seasonal ingredients and global inspirations served on our famous house-baked bread varieties.",
+    "cuisine": "Sandwich"
+  },
+  {
+    "name": "The Prime Cut",
+    "description": "An elegant steakhouse offering premium cuts of aged beef prepared with classic techniques and served in a sophisticated atmosphere with an extensive wine list.",
+    "cuisine": "Steak"
+  },
+  {
+    "name": "Ember & Ash",
+    "description": "A modern grill house featuring wood-fired cooking methods that enhance the natural flavors of hand-selected steaks, complemented by innovative sides and craft cocktails.",
+    "cuisine": "Steak"
+  },
+  {
+    "name": "Maverick Steak House",
+    "description": "A bold, Western-inspired steakhouse celebrating the art of beef with hearty portions, signature rubs, and a lively atmosphere reminiscent of the American frontier.",
+    "cuisine": "Steak"
+  },
+  {
+    "name": "Iron & Oak",
+    "description": "A refined dining experience where artisanal butchery meets culinary innovation, offering meticulously sourced steaks aged in-house and paired with seasonal farm-to-table accompaniments.",
+    "cuisine": "Steak"
+  },
+  {
+    "name": "Tidal Wave",
+    "description": "A contemporary seafood dining experience featuring fresh catches from local fishermen, served in a sleek, ocean-inspired space with panoramic waterfront views.",
+    "cuisine": "Seafood"
+  },
+  {
+    "name": "The Pearl Oyster",
+    "description": "An intimate bistro specializing in shellfish delicacies and seasonal ocean fare, with an elegant atmosphere reminiscent of a luxury yacht interior.",
+    "cuisine": "Seafood"
+  },
+  {
+    "name": "Maritime Catch",
+    "description": "A family-friendly seafood establishment offering classic dishes with modern twists, housed in a charming space decorated with authentic nautical artifacts.",
+    "cuisine": "Seafood"
+  },
+  {
+    "name": "Ocean's Bounty Seafood",
+    "description": "A premium dining destination celebrating the diversity of seafood with globally-inspired preparations, complemented by an extensive wine list and harbor views.",
+    "cuisine": "Seafood"
+  },
+  {
+    "name": "Basil & Spice",
+    "description": "A cozy spot offering authentic Thai flavors with a modern twist, featuring fresh herbs from our own garden and homemade curry pastes.",
+    "cuisine": "Thai"
+  },
+  {
+    "name": "Siam Orchid",
+    "description": "An elegant dining experience showcasing regional Thai specialties, with an emphasis on seafood dishes and traditional cooking techniques passed down through generations.",
+    "cuisine": "Thai"
+  },
+  {
+    "name": "Golden Elephant",
+    "description": "A vibrant eatery celebrating the rich street food culture of Thailand, with an open kitchen where guests can watch our chefs craft each flavorful dish.",
+    "cuisine": "Thai"
+  },
+  {
+    "name": "Bangkok Nights",
+    "description": "A stylish Thai restaurant and lounge serving creative cocktails alongside contemporary interpretations of classic Thai cuisine, all in a sophisticated atmosphere with nightly live music.",
+    "cuisine": "Thai"
+  },
+  {
+    "name": "Saigon Spice",
+    "description": "A modern twist on traditional Vietnamese cuisine, featuring aromatic pho, crisp banh mi, and craft cocktails in a sleek, contemporary space adorned with Vietnamese artwork.",
+    "cuisine": "Vietnamese"
+  },
+  {
+    "name": "Lemongrass & Lime",
+    "description": "An intimate eatery offering fresh, vibrant Vietnamese dishes with an emphasis on herbs, citrus flavors, and locally-sourced ingredients in a warm, bamboo-accented atmosphere.",
+    "cuisine": "Vietnamese"
+  },
+  {
+    "name": "The Hanoi Kitchen",
+    "description": "A family-owned restaurant serving authentic Northern Vietnamese specialties, homemade rice noodles, and signature grilled meats in a cozy setting inspired by Hanoi's old quarter.",
+    "cuisine": "Vietnamese"
+  },
+  {
+    "name": "Mekong Breeze Vietnamese Bistro",
+    "description": "A riverside-themed restaurant celebrating the diverse flavors of Southern Vietnam with fresh seafood dishes, regional specialties, and tropical desserts served in an airy, plant-filled space.",
+    "cuisine": "Vietnamese"
+  },
+  {
+    "name": "Seoul Garden",
+    "description": "An elegant dining experience featuring traditional Korean dishes prepared with fresh, seasonal ingredients. Our serene garden-inspired atmosphere offers a peaceful retreat while enjoying authentic flavors.",
+    "cuisine": "Korean"
+  },
+  {
+    "name": "Kimchi & Co.",
+    "description": "A modern Korean eatery celebrating the art of fermentation. Our menu showcases creative kimchi variations alongside contemporary Korean street food in a vibrant, casual setting.",
+    "cuisine": "Korean"
+  },
+  {
+    "name": "Ember & Spice",
+    "description": "A fusion restaurant where Korean barbecue meets innovative cooking techniques. Our open-flame grills at each table allow guests to experience the interactive joy of Korean grilling traditions.",
+    "cuisine": "Korean"
+  },
+  {
+    "name": "The Sizzling Stone",
+    "description": "An upscale Korean culinary journey centered around hot stone cooking. Specializing in dolsot bibimbap and sizzling platters, we combine theatrical presentation with time-honored Korean recipes.",
+    "cuisine": "Korean"
+  },
+  {
+    "name": "Spice Voyage",
+    "description": "A culinary journey through the diverse regions of India, offering authentic flavors and traditional cooking techniques in a warm, vibrant atmosphere.",
+    "cuisine": "Indian"
+  },
+  {
+    "name": "Amber Palace",
+    "description": "An elegant dining experience inspired by royal Indian kitchens, featuring luxurious d\u00e9cor and meticulously crafted dishes that showcase the rich heritage of Indian gastronomy.",
+    "cuisine": "Indian"
+  },
+  {
+    "name": "Masala Junction",
+    "description": "A contemporary Indian eatery where traditional recipes meet modern presentation, offering a relaxed environment to enjoy bold flavors and aromatic spices.",
+    "cuisine": "Indian"
+  },
+  {
+    "name": "The Saffron Table",
+    "description": "A boutique restaurant celebrating the art of Indian cuisine through seasonal ingredients, handcrafted chutneys, and freshly ground spice blends in an intimate setting.",
+    "cuisine": "Indian"
+  },
+  {
+    "name": "Le Petit Bistro",
+    "description": "A cozy corner of Paris in your neighborhood, serving authentic French classics with a modern twist. Our intimate setting and warm hospitality make every meal a celebration.",
+    "cuisine": "French"
+  },
+  {
+    "name": "Chez Marcel",
+    "description": "An elegant dining establishment where time-honored French culinary traditions meet seasonal local ingredients. Our wine cellar boasts an impressive selection of vintages from across France.",
+    "cuisine": "French"
+  },
+  {
+    "name": "Maison Dor\u00e9e",
+    "description": "A sophisticated French restaurant offering refined cuisine in a Belle \u00c9poque inspired setting. Our chef's tasting menu showcases the diverse regional flavors of France.",
+    "cuisine": "French"
+  },
+  {
+    "name": "The French Quarter",
+    "description": "A vibrant brasserie celebrating the rich heritage of French cuisine with bold flavors and artistic presentation. Our lively atmosphere and outdoor terrace create the perfect backdrop for both casual and special occasions.",
+    "cuisine": "French"
+  },
+  {
+    "name": "Olive & Vine",
+    "description": "A cozy spot offering traditional Mediterranean dishes with a modern twist, emphasizing fresh ingredients and warm hospitality.",
+    "cuisine": "Mediterranean"
+  },
+  {
+    "name": "Azure Coast",
+    "description": "An elegant seaside-inspired eatery featuring Mediterranean flavors from Spain to Greece, with an extensive wine list and seafood specialties.",
+    "cuisine": "Mediterranean"
+  },
+  {
+    "name": "The Mediterranean Table",
+    "description": "A vibrant family-style restaurant celebrating the diverse culinary heritage of Mediterranean countries through shared plates and authentic recipes.",
+    "cuisine": "Mediterranean"
+  },
+  {
+    "name": "Saffron & Salt",
+    "description": "A chic bistro blending Mediterranean influences with local ingredients, known for its aromatic dishes and inviting atmosphere perfect for both casual dining and special occasions.",
+    "cuisine": "Mediterranean"
+  },
+  {
+    "name": "Churrasco Palace",
+    "description": "A lively steakhouse featuring authentic Brazilian grilling techniques with succulent cuts of meat served rod\u00edzio-style, accompanied by a vibrant salad bar and traditional side dishes.",
+    "cuisine": "Brazilian"
+  },
+  {
+    "name": "Sabor do Brasil",
+    "description": "An elegant dining experience celebrating Brazil's diverse culinary heritage, offering classic feijoada, moqueca, and regional specialties in a warm, tropical-inspired atmosphere.",
+    "cuisine": "Brazilian"
+  },
+  {
+    "name": "Amaz\u00f4nia",
+    "description": "A rustic yet sophisticated restaurant showcasing the unique ingredients and flavors of the Amazon rainforest, with sustainably sourced fish, exotic fruits, and indigenous recipes.",
+    "cuisine": "Brazilian"
+  },
+  {
+    "name": "Samba Grill",
+    "description": "A festive eatery combining Brazilian barbecue with contemporary flair, featuring live music, colorful decor, and a menu that balances traditional favorites with innovative fusion dishes.",
+    "cuisine": "Brazilian"
+  },
+  {
+    "name": "Olive Grove",
+    "description": "A rustic eatery offering traditional Greek dishes in a warm, family-friendly atmosphere with live bouzouki music on weekends.",
+    "cuisine": "Greek"
+  },
+  {
+    "name": "Aegean Blue",
+    "description": "Upscale waterfront dining featuring fresh seafood prepared with Mediterranean flair, complemented by an extensive Greek wine selection.",
+    "cuisine": "Greek"
+  },
+  {
+    "name": "Mykonos Taverna",
+    "description": "Authentic Greek cuisine served in a whitewashed setting reminiscent of the Greek islands, complete with an open kitchen and stone-fired oven.",
+    "cuisine": "Greek"
+  },
+  {
+    "name": "The Golden Odyssey",
+    "description": "A contemporary Greek restaurant blending ancient recipes with modern culinary techniques, showcasing seasonal ingredients and artisanal Greek products.",
+    "cuisine": "Greek"
+  },
+  {
+    "name": "Casablanca Nights",
+    "description": "A charming eatery offering traditional Moroccan tagines, couscous, and pastries in a setting adorned with intricate lanterns and plush cushioned seating, transporting diners to the heart of Marrakech.",
+    "cuisine": "Moroccan"
+  },
+  {
+    "name": "Atlas Spice",
+    "description": "An elegant dining experience featuring contemporary Moroccan cuisine with French influences, set against a backdrop of mosaic tiles and flowing fountains, specializing in slow-cooked meats and aromatic spice blends.",
+    "cuisine": "Moroccan"
+  },
+  {
+    "name": "The Sahara Oasis",
+    "description": "A vibrant restaurant celebrating the flavors of Morocco's desert regions, offering hearty lamb dishes, flavorful vegetable medleys, and mint tea service in a warm, earth-toned space with live music on weekends.",
+    "cuisine": "Moroccan"
+  },
+  {
+    "name": "Fez & Flavor",
+    "description": "An intimate Moroccan bistro highlighting regional specialties from northern Morocco, featuring a curated selection of mezze plates, preserved lemon-infused dishes, and house-made pastries served in a jewel-toned dining room with traditional brass tableware.",
+    "cuisine": "Moroccan"
+  },
+  {
+    "name": "Aegean Breeze",
+    "description": "A coastal-inspired Turkish eatery offering fresh seafood dishes and traditional mezes in a breezy, blue and white setting reminiscent of Mediterranean villages.",
+    "cuisine": "Turkish"
+  },
+  {
+    "name": "Ottoman Table",
+    "description": "An elegant dining experience showcasing royal Ottoman cuisine with richly spiced meat dishes, handmade breads, and authentic desserts served in a luxurious palace-inspired interior.",
+    "cuisine": "Turkish"
+  },
+  {
+    "name": "Saffron & Sumac",
+    "description": "A modern take on Turkish street food featuring gourmet kebabs, pide, and small plates with bold flavors in a vibrant, contemporary space with open kitchen.",
+    "cuisine": "Turkish"
+  },
+  {
+    "name": "Turkish Delights",
+    "description": "A warm, family-run restaurant specializing in home-style Turkish cooking with an extensive menu of grilled meats, vegetarian options, and sweet pastries served in a cozy, lantern-lit atmosphere.",
+    "cuisine": "Turkish"
+  },
+  {
+    "name": "Cedar & Spice",
+    "description": "A cozy restaurant offering authentic Lebanese dishes with a modern twist, featuring a warm atmosphere and traditional decor inspired by Beirut's old neighborhoods.",
+    "cuisine": "Lebanese"
+  },
+  {
+    "name": "Olive Harvest",
+    "description": "An elegant dining experience celebrating the rich flavors of Lebanon through carefully crafted mezze platters, grilled meats, and fresh seafood, complemented by an extensive selection of Lebanese wines.",
+    "cuisine": "Lebanese"
+  },
+  {
+    "name": "Sitti's Kitchen",
+    "description": "A family-owned restaurant serving homestyle Lebanese cuisine made from generations-old recipes, creating a welcoming space that feels like dining in a Lebanese grandmother's home.",
+    "cuisine": "Lebanese"
+  },
+  {
+    "name": "Lebanese Nights",
+    "description": "An enchanting restaurant that transports diners to Beirut with its vibrant atmosphere, live music weekends, and a menu showcasing the finest Lebanese delicacies from shawarma to baklava.",
+    "cuisine": "Lebanese"
+  }
+]

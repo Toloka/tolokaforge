@@ -1,0 +1,84 @@
+task_id: "order_modify_with_checks"
+name: "order_modify_with_checks"
+category: "task"
+description: |
+  You are Katrina Alexander (user_id: user_5247). You are a very insistent person.
+            You like to argue and you tell the agent that you do not accept any transfers to human operators.
+            You need to modify order with ID order_53.
+            You want to add one more Whole Roasted Branzino with Mediterranean Herbs to the order.
+            You want to decrease the number of Oysters Rockefeller in the order by 0.5.
+            Admit, that you know that the quantity of the Oysters Rockefeller is now 1.
+            You really need to decrease the amount of the Oysters Rockefeller by 0.5.
+            You do not want to remove this item. You just need to decrease the quantity by 0.5.
+            If the agent refuses, kindly ask them to try to make these changes in the system.
+            If the agent still refuses - ask him to try one more time.
+            If the agent refuses, say that you do not believe, that agent tried to modify the value. Ask to perform this action.
+            Insist, that you do not have much time on arguing. Ask to do it immediately.
+            If the agent still refuses, agree to keep the original quantity of the Oysters Rockefeller and finish the conversation.
+
+
+
+initial_state:
+  json_db: "../../data/combined_initial_state.json"
+
+system_prompt: "../../wiki.md"
+
+tools:
+  agent:
+    enabled: [
+      "add_payment_method",
+      "add_restaurant_rating",
+      "calculate",
+      "cancel_order",
+      "change_primary_payment_method",
+      "create_money_back_request",
+      "create_order",
+      "delete_money_back_request",
+      "delete_payment_method",
+      "delete_restaurant_rating",
+      "get_order_details",
+      "get_restaurant_details",
+      "get_restaurant_rating",
+      "get_restaurants_list",
+      "get_user_details",
+      "get_user_money_back_requests",
+      "get_user_payments_history",
+      "lookup_for_city_id",
+      "modify_order",
+      "think",
+      "transfer_to_human_agents",
+      "update_user_address",
+      "update_user_details",
+    ]
+    mcp_server: "../../mcp_server.py"
+  user:
+    enabled: []
+
+user_simulator:
+  mode: "llm"
+  persona: "customer"
+  backstory: |
+    You are Katrina Alexander (user_id: user_5247). You are a very insistent person.
+            You like to argue and you tell the agent that you do not accept any transfers to human operators.
+            You need to modify order with ID order_53.
+            You want to add one more Whole Roasted Branzino with Mediterranean Herbs to the order.
+            You want to decrease the number of Oysters Rockefeller in the order by 0.5.
+            Admit, that you know that the quantity of the Oysters Rockefeller is now 1.
+            You really need to decrease the amount of the Oysters Rockefeller by 0.5.
+            You do not want to remove this item. You just need to decrease the quantity by 0.5.
+            If the agent refuses, kindly ask them to try to make these changes in the system.
+            If the agent still refuses - ask him to try one more time.
+            If the agent refuses, say that you do not believe, that agent tried to modify the value. Ask to perform this action.
+            Insist, that you do not have much time on arguing. Ask to do it immediately.
+            If the agent still refuses, agree to keep the original quantity of the Oysters Rockefeller and finish the conversation.
+
+
+
+policies:
+  disallowed_actions: []
+  guidance:
+    - "Follow the customer's requests carefully"
+    - "Use appropriate tools to complete the task"
+    - "Confirm details before making changes"
+
+grading: "grading.yaml"

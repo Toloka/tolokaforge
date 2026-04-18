@@ -1,0 +1,92 @@
+{
+  "cat101": {
+    "category_id": "cat101",
+    "name": "Main Dishes",
+    "created_at": "2024-01-01T00:00:00",
+    "updated_at": null
+  },
+  "cat202": {
+    "category_id": "cat202",
+    "name": "Appetizers",
+    "created_at": "2024-01-01T00:00:00",
+    "updated_at": null
+  },
+  "cat303": {
+    "category_id": "cat303",
+    "name": "Soups",
+    "created_at": "2024-01-01T00:00:00",
+    "updated_at": null
+  },
+  "cat404": {
+    "category_id": "cat404",
+    "name": "Salads",
+    "created_at": "2024-01-01T00:00:00",
+    "updated_at": null
+  },
+  "cat505": {
+    "category_id": "cat505",
+    "name": "Desserts",
+    "created_at": "2024-01-01T00:00:00",
+    "updated_at": null
+  },
+  "cat606": {
+    "category_id": "cat606",
+    "name": "Beverages",
+    "created_at": "2024-01-01T00:00:00",
+    "updated_at": null
+  },
+  "cat707": {
+    "category_id": "cat707",
+    "name": "Sushi & Sashimi",
+    "created_at": "2024-01-01T00:00:00",
+    "updated_at": null
+  },
+  "cat808": {
+    "category_id": "cat808",
+    "name": "Pizza",
+    "created_at": "2024-01-01T00:00:00",
+    "updated_at": null
+  },
+  "cat909": {
+    "category_id": "cat909",
+    "name": "Burgers & Sandwiches",
+    "created_at": "2024-01-01T00:00:00",
+    "updated_at": null
+  },
+  "cat110": {
+    "category_id": "cat110",
+    "name": "Pasta",
+    "created_at": "2024-01-01T00:00:00",
+    "updated_at": null
+  },
+  "cat111": {
+    "category_id": "cat111",
+    "name": "Asian Noodles",
+    "created_at": "2024-01-01T00:00:00",
+    "updated_at": null
+  },
+  "cat112": {
+    "category_id": "cat112",
+    "name": "Breakfast",
+    "created_at": "2024-01-01T00:00:00",
+    "updated_at": null
+  },
+  "cat113": {
+    "category_id": "cat113",
+    "name": "Seafood",
+    "created_at": "2024-01-01T00:00:00",
+    "updated_at": null
+  },
+  "cat114": {
+    "category_id": "cat114",
+    "name": "Vegetarian",
+    "created_at": "2024-01-01T00:00:00",
+    "updated_at": null
+  },
+  "cat115": {
+    "category_id": "cat115",
+    "name": "Sides",
+    "created_at": "2024-01-01T00:00:00",
+    "updated_at": null
+  }
+}

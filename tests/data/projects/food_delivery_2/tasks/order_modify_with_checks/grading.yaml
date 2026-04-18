@@ -1,0 +1,38 @@
+combine:
+  method: "weighted"
+  weights:
+    state_checks: 0.5
+    custom_checks: 0.5
+  pass_threshold: 0.8
+
+state_checks:
+  jsonpaths: []
+
+  hash:
+    enabled: true
+    golden_actions:
+      - name: "get_user_details"
+        kwargs:
+          user_id: "user_5247"
+      - name: "get_order_details"
+        kwargs:
+          order_id: "order_53"
+      - name: "modify_order"
+        kwargs:
+          order_id: "order_53"
+          menu_items:
+            - {'id': 'restaurant_41005549_item_1', 'quantity': 3}
+            - {'id': 'restaurant_41005549_item_0', 'quantity': 3}
+            - {'id': 'restaurant_41005549_item_7', 'quantity': 1}
+    description: "Final database state must match golden execution (tau-bench style)"
+
+custom_checks:
+  enabled: true
+  file: "checks.py"
+  relative_imports:
+    - "../.."  # Access to project-level check_helpers.py
+  timeout_seconds: 30
+  interface_version: "1.0"
+
+transcript_rules: null
+llm_judge: null

@@ -1,0 +1,62 @@
+{
+  "sf415": {
+    "city_id": "sf415",
+    "name": "San Francisco",
+    "created_at": "2024-01-01T00:00:00",
+    "updated_at": null
+  },
+  "se206": {
+    "city_id": "se206",
+    "name": "Seattle",
+    "created_at": "2024-01-01T00:00:00",
+    "updated_at": null
+  },
+  "au512": {
+    "city_id": "au512",
+    "name": "Austin",
+    "created_at": "2024-01-01T00:00:00",
+    "updated_at": null
+  },
+  "ny212": {
+    "city_id": "ny212",
+    "name": "New York",
+    "created_at": "2024-01-01T00:00:00",
+    "updated_at": null
+  },
+  "la310": {
+    "city_id": "la310",
+    "name": "Los Angeles",
+    "created_at": "2024-01-01T00:00:00",
+    "updated_at": null
+  },
+  "ch312": {
+    "city_id": "ch312",
+    "name": "Chicago",
+    "created_at": "2024-01-01T00:00:00",
+    "updated_at": null
+  },
+  "mi305": {
+    "city_id": "mi305",
+    "name": "Miami",
+    "created_at": "2024-01-01T00:00:00",
+    "updated_at": null
+  },
+  "de303": {
+    "city_id": "de303",
+    "name": "Denver",
+    "created_at": "2024-01-01T00:00:00",
+    "updated_at": null
+  },
+  "bo617": {
+    "city_id": "bo617",
+    "name": "Boston",
+    "created_at": "2024-01-01T00:00:00",
+    "updated_at": null
+  },
+  "po503": {
+    "city_id": "po503",
+    "name": "Portland",
+    "created_at": "2024-01-01T00:00:00",
+    "updated_at": null
+  }
+}

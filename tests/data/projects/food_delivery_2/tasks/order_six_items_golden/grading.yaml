@@ -1,0 +1,52 @@
+combine:
+  method: "weighted"
+  weights:
+    state_checks: 1.0
+  pass_threshold: 1.0
+
+state_checks:
+  jsonpaths: []
+
+  hash:
+    enabled: true
+    golden_actions:
+      - name: "get_user_details"
+        kwargs:
+          user_id: "user_9515"
+      - name: "create_order"
+        kwargs:
+          user_id: "user_9515"
+          restaurant_id: "restaurant_75303418"
+          menu_items:
+            - {'id': 'restaurant_75303418_item_0', 'quantity': 1}
+          credit_card_id: "pm021"
+          delivery_address:
+            city_id: "la310"
+            address: "264 Lawrence Well Apt. 599"
+            zip: "62109"
+      - name: "create_order"
+        kwargs:
+          user_id: "user_9515"
+          restaurant_id: "restaurant_75303418"
+          menu_items:
+            - {'id': 'restaurant_75303418_item_1', 'quantity': 1}
+          credit_card_id: "pm021"
+          delivery_address:
+            city_id: "la310"
+            address: "264 Lawrence Well Apt. 599"
+            zip: "62109"
+      - name: "create_order"
+        kwargs:
+          user_id: "user_9515"
+          restaurant_id: "restaurant_75303418"
+          menu_items:
+            - {'id': 'restaurant_75303418_item_6', 'quantity': 1}
+          credit_card_id: "pm021"
+          delivery_address:
+            city_id: "la310"
+            address: "264 Lawrence Well Apt. 599"
+            zip: "62109"
+    description: "Final database state must match golden execution (tau-bench style)"
+
+transcript_rules: null
+llm_judge: null

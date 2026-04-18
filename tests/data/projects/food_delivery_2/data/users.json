@@ -1,0 +1,846 @@
+{
+  "user_3374": {
+    "user_id": "user_3374",
+    "name": {
+      "first_name": "Eric",
+      "last_name": "French"
+    },
+    "email": "eric.french@digitalrealm.com",
+    "phone_number": "+11522247516",
+    "address": {
+      "address": "374 Logan Ports",
+      "city_id": "bo617",
+      "zip": "84203"
+    },
+    "created_at": "2024-03-01T13:00:00",
+    "updated_at": null,
+    "payment_methods": [
+      {
+        "type": "gift_card",
+        "is_default": false,
+        "last_four": null,
+        "expiry_date": "06/2026",
+        "amount": 12,
+        "gift_card_id": "GC-57033732"
+      },
+      {
+        "type": "paypal",
+        "is_default": true,
+        "last_four": null,
+        "expiry_date": null,
+        "amount": null,
+        "gift_card_id": null,
+        "payment_method_id": "pm001"
+      },
+      {
+        "type": "gift_card",
+        "is_default": false,
+        "last_four": null,
+        "expiry_date": "01/2029",
+        "amount": 272,
+        "gift_card_id": "GC-11917034"
+      }
+    ],
+    "is_active": true,
+    "user_tier": "standard"
+  },
+  "user_4423": {
+    "user_id": "user_4423",
+    "name": {
+      "first_name": "William",
+      "last_name": "Fox"
+    },
+    "email": "william.fox@digitalmatrix.com",
+    "phone_number": "+16585042957",
+    "address": {
+      "address": "646 Phillip Summit Apt. 932",
+      "city_id": "au512",
+      "zip": "05101"
+    },
+    "created_at": "2025-03-31T13:00:00",
+    "updated_at": null,
+    "payment_methods": [
+      {
+        "type": "paypal",
+        "is_default": true,
+        "last_four": null,
+        "expiry_date": null,
+        "amount": null,
+        "gift_card_id": null,
+        "payment_method_id": "pm002"
+      },
+      {
+        "type": "debit_card",
+        "is_default": false,
+        "last_four": "3485",
+        "expiry_date": "10/2026",
+        "amount": null,
+        "gift_card_id": null,
+        "payment_method_id": "pm003"
+      }
+    ],
+    "is_active": true,
+    "user_tier": "standard"
+  },
+  "user_5247": {
+    "user_id": "user_5247",
+    "name": {
+      "first_name": "Katrina",
+      "last_name": "Alexander"
+    },
+    "email": "katrina.alexander@digitalrealm.com",
+    "phone_number": "+16635981527",
+    "address": {
+      "address": "4935 Kelly Cliff",
+      "city_id": "po503",
+      "zip": "24138"
+    },
+    "created_at": "2025-03-31T13:00:00",
+    "updated_at": null,
+    "payment_methods": [
+      {
+        "type": "credit_card",
+        "is_default": true,
+        "last_four": "6778",
+        "expiry_date": "11/2027",
+        "amount": null,
+        "gift_card_id": null,
+        "payment_method_id": "pm004"
+      }
+    ],
+    "is_active": true,
+    "user_tier": "standard"
+  },
+  "user_9342": {
+    "user_id": "user_9342",
+    "name": {
+      "first_name": "Laurie",
+      "last_name": "Jones"
+    },
+    "email": "laurie.jones@gmailcat.com",
+    "phone_number": "+16109013540",
+    "address": {
+      "address": "0310 Brandon Unions Suite 968",
+      "city_id": "sf415",
+      "zip": "15281"
+    },
+    "created_at": "2025-03-31T13:00:00",
+    "updated_at": null,
+    "payment_methods": [
+      {
+        "type": "credit_card",
+        "is_default": true,
+        "last_four": "1212",
+        "expiry_date": "10/2029",
+        "amount": null,
+        "gift_card_id": null,
+        "payment_method_id": "pm005"
+      },
+      {
+        "type": "apple_pay",
+        "is_default": false,
+        "last_four": null,
+        "expiry_date": null,
+        "amount": null,
+        "gift_card_id": null,
+        "payment_method_id": "pm006"
+      },
+      {
+        "type": "apple_pay",
+        "is_default": false,
+        "last_four": null,
+        "expiry_date": null,
+        "amount": null,
+        "gift_card_id": null,
+        "payment_method_id": "pm007"
+      }
+    ],
+    "is_active": true,
+    "user_tier": "gold"
+  },
+  "user_7770": {
+    "user_id": "user_7770",
+    "name": {
+      "first_name": "Randy",
+      "last_name": "Hamilton"
+    },
+    "email": "randy.hamilton@techverse.net",
+    "phone_number": "+10900356370",
+    "address": {
+      "address": "45106 Nathaniel Light",
+      "city_id": "po503",
+      "zip": "42296"
+    },
+    "created_at": "2025-03-31T13:00:00",
+    "updated_at": null,
+    "payment_methods": [
+      {
+        "type": "gift_card",
+        "is_default": false,
+        "last_four": null,
+        "expiry_date": "12/2029",
+        "amount": 382,
+        "gift_card_id": "GC-41834272"
+      },
+      {
+        "type": "debit_card",
+        "is_default": true,
+        "last_four": "7467",
+        "expiry_date": "02/2027",
+        "amount": null,
+        "gift_card_id": null,
+        "payment_method_id": "pm008"
+      },
+      {
+        "type": "apple_pay",
+        "is_default": false,
+        "last_four": null,
+        "expiry_date": null,
+        "amount": null,
+        "gift_card_id": null,
+        "payment_method_id": "pm009"
+      }
+    ],
+    "is_active": true,
+    "user_tier": "standard"
+  },
+  "user_7949": {
+    "user_id": "user_7949",
+    "name": {
+      "first_name": "John",
+      "last_name": "Hoffman"
+    },
+    "email": "john.hoffman@digitalrealm.com",
+    "phone_number": "+18259241279",
+    "address": {
+      "address": "0765 Davis Isle",
+      "city_id": "au512",
+      "zip": "28207"
+    },
+    "created_at": "2025-03-31T13:00:00",
+    "updated_at": null,
+    "payment_methods": [
+      {
+        "type": "debit_card",
+        "is_default": true,
+        "last_four": "7032",
+        "expiry_date": "05/2028",
+        "amount": null,
+        "gift_card_id": null,
+        "payment_method_id": "pm010"
+      },
+      {
+        "type": "debit_card",
+        "is_default": false,
+        "last_four": "2866",
+        "expiry_date": "03/2030",
+        "amount": null,
+        "gift_card_id": null,
+        "payment_method_id": "pm011"
+      },
+      {
+        "type": "gift_card",
+        "is_default": false,
+        "last_four": null,
+        "expiry_date": "09/2027",
+        "amount": 230,
+        "gift_card_id": "GC-39738865"
+      }
+    ],
+    "is_active": true,
+    "user_tier": "silver"
+  },
+  "user_5042": {
+    "user_id": "user_5042",
+    "name": {
+      "first_name": "Annette",
+      "last_name": "Edwards"
+    },
+    "email": "annette.edwards@galacticmail.com",
+    "phone_number": "+10438641909",
+    "address": {
+      "address": "063 Cynthia Lakes",
+      "city_id": "de303",
+      "zip": "58149"
+    },
+    "created_at": "2025-03-31T13:00:00",
+    "updated_at": null,
+    "payment_methods": [
+      {
+        "type": "gift_card",
+        "is_default": false,
+        "last_four": null,
+        "expiry_date": "11/2026",
+        "amount": 203,
+        "gift_card_id": "GC-79777233"
+      }
+    ],
+    "is_active": true,
+    "user_tier": "gold"
+  },
+  "user_1466": {
+    "user_id": "user_1466",
+    "name": {
+      "first_name": "Andrea",
+      "last_name": "Davis"
+    },
+    "email": "andrea.davis@icloudnet.com",
+    "phone_number": "+17350973460",
+    "address": {
+      "address": "110 John Orchard Suite 261",
+      "city_id": "se206",
+      "zip": "98794"
+    },
+    "created_at": "2025-03-31T13:00:00",
+    "updated_at": null,
+    "payment_methods": [
+      {
+        "type": "credit_card",
+        "is_default": true,
+        "last_four": "2766",
+        "expiry_date": "05/2029",
+        "amount": null,
+        "gift_card_id": null,
+        "payment_method_id": "pm012"
+      },
+      {
+        "type": "paypal",
+        "is_default": false,
+        "last_four": null,
+        "expiry_date": null,
+        "amount": null,
+        "gift_card_id": null,
+        "payment_method_id": "pm013"
+      }
+    ],
+    "is_active": true,
+    "user_tier": "silver"
+  },
+  "user_2286": {
+    "user_id": "user_2286",
+    "name": {
+      "first_name": "Brandon",
+      "last_name": "Burnett"
+    },
+    "email": "brandon.burnett@digitalmatrix.com",
+    "phone_number": "+14468039171",
+    "address": {
+      "address": "440 Warner Village Suite 783",
+      "city_id": "ny212",
+      "zip": "41530"
+    },
+    "created_at": "2025-03-31T13:00:00",
+    "updated_at": null,
+    "payment_methods": [
+      {
+        "type": "apple_pay",
+        "is_default": true,
+        "last_four": null,
+        "expiry_date": null,
+        "amount": null,
+        "gift_card_id": null,
+        "payment_method_id": "pm014"
+      }
+    ],
+    "is_active": true,
+    "user_tier": "standard"
+  },
+  "user_6626": {
+    "user_id": "user_6626",
+    "name": {
+      "first_name": "Melissa",
+      "last_name": "Walker"
+    },
+    "email": "melissa.walker@techverse.net",
+    "phone_number": "+15033512466",
+    "address": {
+      "address": "52738 Wendy Terrace",
+      "city_id": "mi305",
+      "zip": "08630"
+    },
+    "created_at": "2025-03-31T13:00:00",
+    "updated_at": null,
+    "payment_methods": [
+      {
+        "type": "debit_card",
+        "is_default": true,
+        "last_four": "1635",
+        "expiry_date": "11/2027",
+        "amount": null,
+        "gift_card_id": null,
+        "payment_method_id": "pm015"
+      },
+      {
+        "type": "apple_pay",
+        "is_default": false,
+        "last_four": null,
+        "expiry_date": null,
+        "amount": null,
+        "gift_card_id": null,
+        "payment_method_id": "pm016"
+      }
+    ],
+    "is_active": true,
+    "user_tier": "standard"
+  },
+  "user_9499": {
+    "user_id": "user_9499",
+    "name": {
+      "first_name": "Austin",
+      "last_name": "Miller"
+    },
+    "email": "austin.miller@techverse.net",
+    "phone_number": "+13193450152",
+    "address": {
+      "address": "6377 Greene Way",
+      "city_id": "de303",
+      "zip": "57877"
+    },
+    "created_at": "2025-03-31T13:00:00",
+    "updated_at": null,
+    "payment_methods": [
+      {
+        "type": "credit_card",
+        "is_default": true,
+        "last_four": "1203",
+        "expiry_date": "03/2030",
+        "amount": null,
+        "gift_card_id": null,
+        "payment_method_id": "pm017"
+      },
+      {
+        "type": "credit_card",
+        "is_default": false,
+        "last_four": "2540",
+        "expiry_date": "02/2028",
+        "amount": null,
+        "gift_card_id": null,
+        "payment_method_id": "pm018"
+      }
+    ],
+    "is_active": true,
+    "user_tier": "standard"
+  },
+  "user_1399": {
+    "user_id": "user_1399",
+    "name": {
+      "first_name": "Brett",
+      "last_name": "Hamilton"
+    },
+    "email": "brett.hamilton@techverse.net",
+    "phone_number": "+19058504291",
+    "address": {
+      "address": "789 Harmon Plaza",
+      "city_id": "se206",
+      "zip": "87475"
+    },
+    "created_at": "2025-03-31T13:00:00",
+    "updated_at": null,
+    "payment_methods": [
+      {
+        "type": "apple_pay",
+        "is_default": true,
+        "last_four": null,
+        "expiry_date": null,
+        "amount": null,
+        "gift_card_id": null,
+        "payment_method_id": "pm001"
+      },
+      {
+        "type": "debit_card",
+        "is_default": false,
+        "last_four": "8279",
+        "expiry_date": "04/2029",
+        "amount": null,
+        "gift_card_id": null,
+        "payment_method_id": "pm002"
+      },
+      {
+        "type": "paypal",
+        "is_default": false,
+        "last_four": null,
+        "expiry_date": null,
+        "amount": null,
+        "gift_card_id": null,
+        "payment_method_id": "pm003"
+      }
+    ],
+    "is_active": true,
+    "user_tier": "standard"
+  },
+  "user_2242": {
+    "user_id": "user_2242",
+    "name": {
+      "first_name": "Thomas",
+      "last_name": "Davis"
+    },
+    "email": "thomas.davis@digitalmatrix.com",
+    "phone_number": "+15675163685",
+    "address": {
+      "address": "9438 Gregory Mount Apt. 206 Suite 275",
+      "city_id": "de303",
+      "zip": "80577"
+    },
+    "created_at": "2025-03-31T13:00:00",
+    "updated_at": null,
+    "payment_methods": [
+      {
+        "type": "apple_pay",
+        "is_default": true,
+        "last_four": null,
+        "expiry_date": null,
+        "amount": null,
+        "gift_card_id": null,
+        "payment_method_id": "pm019"
+      },
+      {
+        "type": "apple_pay",
+        "is_default": false,
+        "last_four": null,
+        "expiry_date": null,
+        "amount": null,
+        "gift_card_id": null,
+        "payment_method_id": "pm020"
+      }
+    ],
+    "is_active": true,
+    "user_tier": "standard"
+  },
+  "user_9515": {
+    "user_id": "user_9515",
+    "name": {
+      "first_name": "Robert",
+      "last_name": "Hernandez"
+    },
+    "email": "robert.hernandez@quantummail.com",
+    "phone_number": "+17788572928",
+    "address": {
+      "address": "264 Lawrence Well Apt. 599",
+      "city_id": "la310",
+      "zip": "62109"
+    },
+    "created_at": "2025-03-31T13:00:00",
+    "updated_at": null,
+    "payment_methods": [
+      {
+        "type": "gift_card",
+        "is_default": false,
+        "last_four": null,
+        "expiry_date": "02/2028",
+        "amount": 436,
+        "gift_card_id": "GC-56546345"
+      },
+      {
+        "type": "paypal",
+        "is_default": true,
+        "last_four": null,
+        "expiry_date": null,
+        "amount": null,
+        "gift_card_id": null,
+        "payment_method_id": "pm021"
+      }
+    ],
+    "is_active": true,
+    "user_tier": "silver"
+  },
+  "user_5804": {
+    "user_id": "user_5804",
+    "name": {
+      "first_name": "Russell",
+      "last_name": "Davis"
+    },
+    "email": "russell.davis@yahoonet.com",
+    "phone_number": "+12462534798",
+    "address": {
+      "address": "92204 Kelly Heights Suite 231",
+      "city_id": "la310",
+      "zip": "58359"
+    },
+    "created_at": "2025-03-31T13:00:00",
+    "updated_at": null,
+    "payment_methods": [
+      {
+        "type": "gift_card",
+        "is_default": false,
+        "last_four": null,
+        "expiry_date": "10/2029",
+        "amount": 14,
+        "gift_card_id": "GC-80842829"
+      },
+      {
+        "type": "credit_card",
+        "is_default": true,
+        "last_four": "2019",
+        "expiry_date": "07/2027",
+        "amount": null,
+        "gift_card_id": null,
+        "payment_method_id": "pm022"
+      }
+    ],
+    "is_active": true,
+    "user_tier": "silver"
+  },
+  "user_3175": {
+    "user_id": "user_3175",
+    "name": {
+      "first_name": "Sandy",
+      "last_name": "Salazar"
+    },
+    "email": "sandy.salazar@digitalmatrix.com",
+    "phone_number": "+16854968314",
+    "address": {
+      "address": "926 Michael Run Apt. 326",
+      "city_id": "mi305",
+      "zip": "32916"
+    },
+    "created_at": "2025-03-31T13:00:00",
+    "updated_at": null,
+    "payment_methods": [
+      {
+        "type": "gift_card",
+        "is_default": false,
+        "last_four": null,
+        "expiry_date": "06/2027",
+        "amount": 71,
+        "gift_card_id": "GC-51325801"
+      }
+    ],
+    "is_active": true,
+    "user_tier": "standard"
+  },
+  "user_3715": {
+    "user_id": "user_3715",
+    "name": {
+      "first_name": "Tiffany",
+      "last_name": "Johnson"
+    },
+    "email": "tiffany.johnson@virtualspace.net",
+    "phone_number": "+14978391554",
+    "address": {
+      "address": "9660 York Mill Apt. 930 Apt. 406",
+      "city_id": "se206",
+      "zip": "71055"
+    },
+    "created_at": "2025-03-31T13:00:00",
+    "updated_at": null,
+    "payment_methods": [
+      {
+        "type": "credit_card",
+        "is_default": true,
+        "last_four": "9062",
+        "expiry_date": "03/2028",
+        "amount": null,
+        "gift_card_id": null,
+        "payment_method_id": "pm023"
+      },
+      {
+        "type": "gift_card",
+        "is_default": false,
+        "last_four": null,
+        "expiry_date": "10/2029",
+        "amount": 386,
+        "gift_card_id": "GC-90214657"
+      },
+      {
+        "type": "apple_pay",
+        "is_default": false,
+        "last_four": null,
+        "expiry_date": null,
+        "amount": null,
+        "gift_card_id": null,
+        "payment_method_id": "pm024"
+      }
+    ],
+    "is_active": false,
+    "user_tier": "standard"
+  },
+  "user_9166": {
+    "user_id": "user_9166",
+    "name": {
+      "first_name": "Jessica",
+      "last_name": "Cunningham"
+    },
+    "email": "jessica.cunningham@quantummail.com",
+    "phone_number": "+18298440477",
+    "address": {
+      "address": "32683 White Fork Suite 337 Apt. 352",
+      "city_id": "la310",
+      "zip": "17821"
+    },
+    "created_at": "2025-03-31T13:00:00",
+    "updated_at": null,
+    "payment_methods": [
+      {
+        "type": "debit_card",
+        "is_default": true,
+        "last_four": "3295",
+        "expiry_date": "07/2027",
+        "amount": null,
+        "gift_card_id": null,
+        "payment_method_id": "pm025"
+      },
+      {
+        "type": "apple_pay",
+        "is_default": false,
+        "last_four": null,
+        "expiry_date": null,
+        "amount": null,
+        "gift_card_id": null,
+        "payment_method_id": "pm026"
+      },
+      {
+        "type": "credit_card",
+        "is_default": false,
+        "last_four": "4904",
+        "expiry_date": "01/2028",
+        "amount": null,
+        "gift_card_id": null,
+        "payment_method_id": "pm027"
+      }
+    ],
+    "is_active": true,
+    "user_tier": "standard"
+  },
+  "user_3069": {
+    "user_id": "user_3069",
+    "name": {
+      "first_name": "David",
+      "last_name": "Herrera"
+    },
+    "email": "david.herrera@digitalmatrix.com",
+    "phone_number": "+13624426294",
+    "address": {
+      "address": "87171 White Lakes Apt. 701",
+      "city_id": "ch312",
+      "zip": "14013"
+    },
+    "created_at": "2025-03-31T13:00:00",
+    "updated_at": null,
+    "payment_methods": [
+      {
+        "type": "credit_card",
+        "is_default": true,
+        "last_four": "1607",
+        "expiry_date": "01/2027",
+        "amount": null,
+        "gift_card_id": null,
+        "payment_method_id": "pm028"
+      }
+    ],
+    "is_active": true,
+    "user_tier": "standard"
+  },
+  "user_8802": {
+    "user_id": "user_8802",
+    "name": {
+      "first_name": "Michael",
+      "last_name": "Coleman"
+    },
+    "email": "michael.coleman@yahoonet.com",
+    "phone_number": "+12943347325",
+    "address": {
+      "address": "951 Malone Expressway Apt. 553",
+      "city_id": "bo617",
+      "zip": "20004"
+    },
+    "created_at": "2025-03-31T13:00:00",
+    "updated_at": null,
+    "payment_methods": [
+      {
+        "type": "gift_card",
+        "is_default": false,
+        "last_four": null,
+        "expiry_date": "11/2028",
+        "amount": 201,
+        "gift_card_id": "GC-62022983"
+      },
+      {
+        "type": "debit_card",
+        "is_default": true,
+        "last_four": "1776",
+        "expiry_date": "05/2029",
+        "amount": null,
+        "gift_card_id": null,
+        "payment_method_id": "pm029"
+      },
+      {
+        "type": "paypal",
+        "is_default": false,
+        "last_four": null,
+        "expiry_date": null,
+        "amount": null,
+        "gift_card_id": null,
+        "payment_method_id": "pm030"
+      }
+    ],
+    "is_active": true,
+    "user_tier": "silver"
+  },
+  "user_8803": {
+    "user_id": "user_8803",
+    "name": {
+      "first_name": "John",
+      "last_name": "Doe"
+    },
+    "email": "john.doe@yahoonet.com",
+    "phone_number": "+12943347336",
+    "address": {
+      "address": "951 Malone Expressway Apt. 554",
+      "city_id": "bo617",
+      "zip": "20005"
+    },
+    "created_at": "2025-03-31T13:00:00",
+    "updated_at": null,
+    "payment_methods": [
+      {
+        "type": "debit_card",
+        "is_default": true,
+        "last_four": "1776",
+        "expiry_date": "05/2029",
+        "amount": null,
+        "gift_card_id": null,
+        "payment_method_id": "pm031"
+      }
+    ],
+    "is_active": true,
+    "user_tier": "standard"
+  },
+  "user_8804": {
+    "user_id": "user_8804",
+    "name": {
+      "first_name": "Laurie",
+      "last_name": "Doe"
+    },
+    "email": "laurie.doe@yahoonet.com",
+    "phone_number": "+12943347337",
+    "address": {
+      "address1": "951 Malone Expressway Apt. 654",
+      "address2": null,
+      "city_id": "bo617",
+      "zip": "20005"
+    },
+    "created_at": "2025-03-31T13:00:00",
+    "updated_at": null,
+    "payment_methods": [
+      {
+        "type": "debit_card",
+        "is_default": true,
+        "last_four": "1776",
+        "expiry_date": "05/2029",
+        "amount": null,
+        "gift_card_id": null,
+        "payment_method_id": "pm031"
+      },
+      {
+        "type": "gift_card",
+        "is_default": false,
+        "last_four": null,
+        "expiry_date": "11/2028",
+        "amount": 1201,
+        "gift_card_id": "GC-62022983"
+      }
+    ],
+    "is_active": true,
+    "user_tier": "standard"
+  }
+}

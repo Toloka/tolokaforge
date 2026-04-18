@@ -1,0 +1,462 @@
+[
+  {
+    "cuisine_type": "Italian",
+    "items": [
+      "Margherita Pizza",
+      "Spaghetti Carbonara",
+      "Osso Buco alla Milanese",
+      "Risotto ai Funghi Porcini",
+      "Lasagna Bolognese",
+      "Fettuccine Alfredo",
+      "Tiramisu",
+      "Caprese Salad",
+      "Gnocchi al Pesto",
+      "Veal Saltimbocca",
+      "Panna Cotta",
+      "Bruschetta al Pomodoro",
+      "Ravioli di Ricotta e Spinaci",
+      "Linguine alle Vongole",
+      "Bistecca alla Fiorentina"
+    ]
+  },
+  {
+    "cuisine_type": "Mexican",
+    "items": [
+      "Tacos al Pastor",
+      "Chiles Rellenos",
+      "Enchiladas Verdes",
+      "Mole Poblano",
+      "Pozole Rojo",
+      "Guacamole con Totopos",
+      "Quesadillas de Huitlacoche",
+      "Tamales de Elote",
+      "Ceviche de Camar\u00f3n",
+      "Sopa de Tortilla",
+      "Cochinita Pibil",
+      "Fajitas de Res",
+      "Chiles en Nogada",
+      "Tostadas de Tinga",
+      "Camarones a la Diabla"
+    ]
+  },
+  {
+    "cuisine_type": "Japanese",
+    "items": [
+      "Sushi Nigiri",
+      "Tonkotsu Ramen",
+      "Chicken Katsu Curry",
+      "Tempura Udon",
+      "Salmon Sashimi",
+      "Gyoza Dumplings",
+      "Yakitori Skewers",
+      "Okonomiyaki",
+      "Miso Black Cod",
+      "Donburi Rice Bowl",
+      "Shabu Shabu",
+      "Takoyaki",
+      "Matcha Green Tea Ice Cream",
+      "Chirashi Bowl",
+      "Sukiyaki Hot Pot"
+    ]
+  },
+  {
+    "cuisine_type": "American",
+    "items": [
+      "Classic Cheeseburger",
+      "Buffalo Chicken Wings",
+      "New England Clam Chowder",
+      "Philly Cheesesteak Sandwich",
+      "Southern Fried Chicken",
+      "BBQ Pulled Pork Sandwich",
+      "Loaded Potato Skins",
+      "Meatloaf with Gravy",
+      "Chicken Pot Pie",
+      "Cajun Jambalaya",
+      "Buttermilk Pancakes with Maple Syrup",
+      "Shrimp and Grits",
+      "Cobb Salad",
+      "Mac and Cheese",
+      "Apple Pie \u00e0 la Mode"
+    ]
+  },
+  {
+    "cuisine_type": "Chinese",
+    "items": [
+      "Kung Pao Chicken",
+      "Peking Duck",
+      "Hot and Sour Soup",
+      "Dim Sum Platter",
+      "Mapo Tofu",
+      "Xiao Long Bao (Soup Dumplings)",
+      "Beef Chow Fun",
+      "Crispy Orange Beef",
+      "Shrimp Fried Rice",
+      "Steamed Whole Fish with Ginger and Scallions",
+      "Dan Dan Noodles",
+      "General Tso's Chicken",
+      "Char Siu (BBQ Pork)",
+      "Egg Drop Soup",
+      "Salt and Pepper Squid"
+    ]
+  },
+  {
+    "cuisine_type": "Burger",
+    "items": [
+      "Classic American Cheeseburger",
+      "Bacon BBQ Deluxe",
+      "Mushroom Swiss Melt",
+      "Southwest Avocado Burger",
+      "Double Smash Patty",
+      "Bleu Cheese & Caramelized Onion",
+      "Mediterranean Lamb Burger",
+      "Spicy Jalape\u00f1o Popper Burger",
+      "Veggie Garden Patty",
+      "Breakfast Burger with Fried Egg",
+      "Hawaiian Teriyaki Pineapple Burger",
+      "Buffalo Chicken Burger",
+      "Truffle Aioli & Arugula Burger",
+      "Pulled Pork Burger Stack",
+      "Black Bean Chipotle Burger"
+    ]
+  },
+  {
+    "cuisine_type": "Pizza",
+    "items": [
+      "Margherita Classic",
+      "Pepperoni Supreme",
+      "Four Cheese Delight",
+      "Vegetarian Garden",
+      "BBQ Chicken",
+      "Hawaiian Paradise",
+      "Meat Lovers Feast",
+      "Buffalo Chicken Ranch",
+      "Mediterranean Olive",
+      "Spicy Diavola",
+      "Mushroom Truffle",
+      "Pesto Primavera",
+      "Prosciutto & Arugula",
+      "Seafood Sensation",
+      "Spinach & Feta"
+    ]
+  },
+  {
+    "cuisine_type": "Salad",
+    "items": [
+      "Classic Caesar Salad",
+      "Greek Salad with Feta",
+      "Cobb Salad",
+      "Spinach and Strawberry Salad",
+      "Asian Sesame Chicken Salad",
+      "Mediterranean Quinoa Salad",
+      "Harvest Apple Walnut Salad",
+      "Taco Salad with Avocado Lime Dressing",
+      "Caprese Salad with Balsamic Glaze",
+      "Roasted Beet and Goat Cheese Salad",
+      "Southwest Black Bean Salad",
+      "Grilled Salmon Nicoise Salad",
+      "Kale and Brussels Sprout Salad",
+      "Watermelon and Arugula Salad with Mint",
+      "Thai Beef Salad with Chili Lime Dressing"
+    ]
+  },
+  {
+    "cuisine_type": "Sushi",
+    "items": [
+      "Tuna Nigiri",
+      "Dragon Roll",
+      "Spicy Salmon Roll",
+      "Tempura Udon",
+      "California Roll",
+      "Rainbow Roll",
+      "Unagi Don (Grilled Eel Bowl)",
+      "Chirashi Sushi",
+      "Salmon Sashimi",
+      "Vegetable Tempura Roll",
+      "Ikura Gunkan (Salmon Roe)",
+      "Spider Roll (Soft-Shell Crab)",
+      "Miso Black Cod",
+      "Hamachi Kama (Yellowtail Collar)",
+      "Tobiko Temaki (Flying Fish Roe Hand Roll)"
+    ]
+  },
+  {
+    "cuisine_type": "Sandwich",
+    "items": [
+      "Classic Club Sandwich",
+      "Mediterranean Veggie Wrap",
+      "Grilled Chicken Pesto Panini",
+      "Philly Cheesesteak Sub",
+      "Caprese Ciabatta",
+      "Tuna Melt on Rye",
+      "Cuban Sandwich",
+      "Turkey Cranberry Brie Croissant",
+      "Roast Beef and Horseradish on Sourdough",
+      "Egg Salad BLT",
+      "Buffalo Chicken Wrap",
+      "Falafel Pita Pocket",
+      "Reuben on Marble Rye",
+      "Smoked Salmon and Cream Cheese Bagel",
+      "Pulled Pork BBQ on Brioche"
+    ]
+  },
+  {
+    "cuisine_type": "Steak",
+    "items": [
+      "Classic Ribeye",
+      "Filet Mignon",
+      "New York Strip",
+      "Tomahawk Steak",
+      "Porterhouse",
+      "Sirloin with Garlic Butter",
+      "Pepper-Crusted T-Bone",
+      "Bourbon Glazed Flat Iron",
+      "Chimichurri Skirt Steak",
+      "Blue Cheese Crusted Tenderloin",
+      "Prime Rib Au Jus",
+      "Wagyu Beef with Truffle Butter",
+      "Steak Oscar with Crab and B\u00e9arnaise",
+      "Coffee-Rubbed Hanger Steak",
+      "Surf and Turf (Filet with Lobster Tail)"
+    ]
+  },
+  {
+    "cuisine_type": "Seafood",
+    "items": [
+      "Grilled Atlantic Salmon with Lemon Dill Sauce",
+      "Lobster Thermidor",
+      "Seared Scallops with Brown Butter and Sage",
+      "Shrimp Scampi Linguine",
+      "Cioppino (Seafood Stew)",
+      "Blackened Mahi-Mahi with Mango Salsa",
+      "Steamed Dungeness Crab with Garlic Butter",
+      "Tuna Poke Bowl",
+      "New England Clam Chowder",
+      "Oysters Rockefeller",
+      "Pan-Seared Chilean Sea Bass with Champagne Sauce",
+      "Coconut Curry Mussels",
+      "Crispy Calamari with Spicy Remoulade",
+      "Whole Roasted Branzino with Mediterranean Herbs",
+      "Crab-Stuffed Flounder with Beurre Blanc"
+    ]
+  },
+  {
+    "cuisine_type": "Thai",
+    "items": [
+      "Pad Thai",
+      "Tom Yum Goong",
+      "Green Curry",
+      "Mango Sticky Rice",
+      "Som Tum (Papaya Salad)",
+      "Massaman Curry",
+      "Pad See Ew",
+      "Larb Gai (Spicy Chicken Salad)",
+      "Pad Kra Pao (Holy Basil Stir-Fry)",
+      "Tom Kha Gai (Coconut Chicken Soup)",
+      "Khao Soi (Northern Thai Curry Noodles)",
+      "Pla Rad Prik (Crispy Fish with Chili Sauce)",
+      "Gaeng Panang (Panang Curry)",
+      "Yam Nua (Spicy Beef Salad)",
+      "Gai Tod (Thai Fried Chicken)"
+    ]
+  },
+  {
+    "cuisine_type": "Vietnamese",
+    "items": [
+      "Ph\u01b0\u1edf B\u00f2 (Beef Noodle Soup)",
+      "B\u00e1nh M\u00ec Th\u1ecbt (Vietnamese Sandwich)",
+      "G\u1ecf Cu\u1ed1n (Fresh Spring Rolls)",
+      "B\u00fan Ch\u1ea3 (Grilled Pork with Rice Noodles)",
+      "C\u00e1 Kho T\u1ed9 (Caramelized Fish in Clay Pot)",
+      "B\u00e1nh X\u00e8o (Crispy Vietnamese Pancake)",
+      "Ch\u1ea3 Gi\u00f2 (Fried Spring Rolls)",
+      "B\u00fan B\u00f2 Hu\u1ebf (Spicy Beef Noodle Soup)",
+      "C\u01a1m T\u1ea5m (Broken Rice with Grilled Pork)",
+      "Canh Chua (Sweet and Sour Soup)",
+      "G\u00e0 N\u01b0\u1edbng S\u1ea3 (Lemongrass Grilled Chicken)",
+      "B\u00f2 L\u00fac L\u1eafc (Shaking Beef)",
+      "B\u00e1nh Cu\u1ed1n (Steamed Rice Rolls)",
+      "H\u1ee7 Ti\u1ebfu Nam Vang (Cambodian-Style Noodle Soup)",
+      "B\u00f2 Kho (Vietnamese Beef Stew)"
+    ]
+  },
+  {
+    "cuisine_type": "Korean",
+    "items": [
+      "Bibimbap (Mixed Rice Bowl)",
+      "Bulgogi (Marinated Beef)",
+      "Kimchi Jjigae (Kimchi Stew)",
+      "Japchae (Stir-fried Glass Noodles)",
+      "Tteokbokki (Spicy Rice Cakes)",
+      "Samgyeopsal (Grilled Pork Belly)",
+      "Haemul Pajeon (Seafood Green Onion Pancake)",
+      "Sundubu Jjigae (Soft Tofu Stew)",
+      "Galbi (Marinated Beef Short Ribs)",
+      "Kimbap (Seaweed Rice Rolls)",
+      "Jajangmyeon (Black Bean Noodles)",
+      "Dakgalbi (Spicy Stir-fried Chicken)",
+      "Yukhoe (Korean Beef Tartare)",
+      "Gamjatang (Pork Spine Soup)",
+      "Bossam (Boiled Pork Wraps)"
+    ]
+  },
+  {
+    "cuisine_type": "Indian",
+    "items": [
+      "Butter Chicken",
+      "Vegetable Biryani",
+      "Palak Paneer",
+      "Lamb Rogan Josh",
+      "Masala Dosa",
+      "Chana Masala",
+      "Tandoori Chicken",
+      "Aloo Gobi",
+      "Malai Kofta",
+      "Chicken Tikka Kebab",
+      "Samosa Chaat",
+      "Mango Lassi",
+      "Prawn Vindaloo",
+      "Naan Bread Basket",
+      "Gulab Jamun"
+    ]
+  },
+  {
+    "cuisine_type": "French",
+    "items": [
+      "Coq au Vin",
+      "Boeuf Bourguignon",
+      "Ratatouille",
+      "Soupe \u00e0 l'Oignon",
+      "Croque Monsieur",
+      "Quiche Lorraine",
+      "Bouillabaisse",
+      "Cassoulet",
+      "Confit de Canard",
+      "Tarte Tatin",
+      "Escargots de Bourgogne",
+      "Cr\u00e8me Br\u00fbl\u00e9e",
+      "Salade Ni\u00e7oise",
+      "Moules Marini\u00e8res",
+      "Pot-au-Feu"
+    ]
+  },
+  {
+    "cuisine_type": "Mediterranean",
+    "items": [
+      "Greek Moussaka",
+      "Spanakopita (Spinach Pie)",
+      "Lamb Souvlaki Skewers",
+      "Falafel Plate with Tahini",
+      "Seafood Paella",
+      "Tabbouleh Salad",
+      "Shakshuka",
+      "Grilled Octopus with Lemon",
+      "Baba Ganoush with Pita",
+      "Moroccan Tagine with Couscous",
+      "Dolmades (Stuffed Grape Leaves)",
+      "Mezze Platter",
+      "Ratatouille",
+      "Saffron Risotto with Seafood",
+      "Turkish Kebab with Garlic Yogurt"
+    ]
+  },
+  {
+    "cuisine_type": "Brazilian",
+    "items": [
+      "Feijoada (Black Bean Stew with Pork)",
+      "Moqueca (Seafood Stew)",
+      "P\u00e3o de Queijo (Cheese Bread)",
+      "Coxinha (Chicken Croquettes)",
+      "Picanha (Grilled Prime Cut of Beef)",
+      "Acaraj\u00e9 (Black-eyed Pea Fritters)",
+      "Bob\u00f3 de Camar\u00e3o (Shrimp in Cassava Cream)",
+      "Vatap\u00e1 (Bread and Shrimp Paste)",
+      "Brigadeiro (Chocolate Truffles)",
+      "Churrasco (Brazilian Barbecue)",
+      "Empad\u00e3o (Brazilian Savory Pie)",
+      "Caipirinha (Lime and Cacha\u00e7a Cocktail)",
+      "Pastel (Fried Pastry with Fillings)",
+      "Quindim (Coconut Custard Dessert)",
+      "A\u00e7a\u00ed Bowl (Frozen A\u00e7a\u00ed Berry Smoothie)"
+    ]
+  },
+  {
+    "cuisine_type": "Greek",
+    "items": [
+      "Moussaka",
+      "Spanakopita",
+      "Souvlaki",
+      "Tzatziki",
+      "Greek Salad (Horiatiki)",
+      "Dolmades",
+      "Pastitsio",
+      "Gyro Platter",
+      "Saganaki",
+      "Avgolemono Soup",
+      "Grilled Octopus (Htapodi)",
+      "Baklava",
+      "Lamb Kleftiko",
+      "Galaktoboureko",
+      "Gemista"
+    ]
+  },
+  {
+    "cuisine_type": "Moroccan",
+    "items": [
+      "Tagine of Lamb with Prunes and Almonds",
+      "Chicken Bastilla (Savory Pastry with Cinnamon)",
+      "Harira (Traditional Lentil and Tomato Soup)",
+      "Kefta Mkaouara (Meatball and Egg Tagine)",
+      "Zaalouk (Eggplant and Tomato Dip)",
+      "Couscous Royale with Seven Vegetables",
+      "Chermoula Grilled Fish",
+      "Rfissa (Chicken with Lentils and Msemen Bread)",
+      "Taktouka (Roasted Pepper and Tomato Salad)",
+      "Mrouzia (Sweet Lamb Tagine with Raisins and Honey)",
+      "Pastilla au Lait (Sweet Milk Pastry with Almonds)",
+      "Makouda (Moroccan Potato Fritters)",
+      "Bissara (Fava Bean Soup with Olive Oil)",
+      "Chebakia (Honey-Soaked Sesame Cookies)",
+      "Mechoui (Slow-Roasted Lamb)"
+    ]
+  },
+  {
+    "cuisine_type": "Turkish",
+    "items": [
+      "Adana Kebab",
+      "\u0130skender Kebab",
+      "Pide with Minced Meat",
+      "Lahmacun",
+      "Manti (Turkish Dumplings)",
+      "Imam Bayildi (Stuffed Eggplant)",
+      "Dolma (Stuffed Grape Leaves)",
+      "K\u00f6fte (Turkish Meatballs)",
+      "Baklava",
+      "K\u00fcnefe",
+      "Mercimek \u00c7orbas\u0131 (Lentil Soup)",
+      "B\u00f6rek (Savory Pastry)",
+      "Cac\u0131k (Yogurt with Cucumber)",
+      "Sarma (Stuffed Cabbage Rolls)",
+      "Menemen (Turkish Scrambled Eggs)"
+    ]
+  },
+  {
+    "cuisine_type": "Lebanese",
+    "items": [
+      "Hummus bi Tahini",
+      "Tabbouleh",
+      "Baba Ghanoush",
+      "Falafel",
+      "Shawarma",
+      "Kibbeh Nayyeh",
+      "Manakish Za'atar",
+      "Shish Tawook",
+      "Fattoush",
+      "Mujaddara",
+      "Labneh",
+      "Kafta Meshwi",
+      "Batata Harra",
+      "Warak Enab (Stuffed Grape Leaves)",
+      "Knafeh"
+    ]
+  }
+]

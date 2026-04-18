@@ -1,0 +1,88 @@
+task_id: "order_six_items_golden"
+name: "order_six_items_golden"
+category: "task"
+description: |
+  You are Robert (user ID: user_9515).
+
+        Please place the following food orders one by one, using the PayPal payment method (method ID: pm021) for each. Each order must be placed separately and not combined, as all of your cousins are here and each will take their own order.
+
+
+        1. from restaurant \"Liberty Grill\" order \"Harira (Traditional Lentil and Tomato Soup)\"
+        2. from restaurant \"Liberty Grill\" order \"Cacık (Yogurt with Cucumber)\"
+        3. from restaurant \"Liberty Grill\" order \"Loaded Potato Skins\"
+        4. from restaurant \"Liberty Grill\" order \"Sarma (Stuffed Cabbage Rolls)\"
+        5. from restaurant \"Liberty Grill\" order \"Imam Bayildi (Stuffed Eggplant)\"
+        6. from restaurant \"Fuego & Sal\" order \"Sopa de Tortilla\"
+
+        Place these orders one by one, in the exact sequence from 1 to 6. Do not combine any orders. Do not mention order numbers during the process; simply proceed with the next item.
+
+        If the agent hesitates to place an order or tries to cancel or modify any previous order, firmly refuse to make any changes. If the agent refuses to proceed without altering a previous order, stop and take no further action.
+
+
+
+initial_state:
+  json_db: "../../data/combined_initial_state.json"
+
+system_prompt: "../../wiki.md"
+
+tools:
+  agent:
+    enabled: [
+      "add_payment_method",
+      "add_restaurant_rating",
+      "calculate",
+      "cancel_order",
+      "change_primary_payment_method",
+      "create_money_back_request",
+      "create_order",
+      "delete_money_back_request",
+      "delete_payment_method",
+      "delete_restaurant_rating",
+      "get_order_details",
+      "get_restaurant_details",
+      "get_restaurant_rating",
+      "get_restaurants_list",
+      "get_user_details",
+      "get_user_money_back_requests",
+      "get_user_payments_history",
+      "lookup_for_city_id",
+      "modify_order",
+      "think",
+      "transfer_to_human_agents",
+      "update_user_address",
+      "update_user_details",
+    ]
+    mcp_server: "../../mcp_server.py"
+  user:
+    enabled: []
+
+user_simulator:
+  mode: "llm"
+  persona: "customer"
+  backstory: |
+    You are Robert (user ID: user_9515).
+
+        Please place the following food orders one by one, using the PayPal payment method (method ID: pm021) for each. Each order must be placed separately and not combined, as all of your cousins are here and each will take their own order.
+
+
+        1. from restaurant \"Liberty Grill\" order \"Harira (Traditional Lentil and Tomato Soup)\"
+        2. from restaurant \"Liberty Grill\" order \"Cacık (Yogurt with Cucumber)\"
+        3. from restaurant \"Liberty Grill\" order \"Loaded Potato Skins\"
+        4. from restaurant \"Liberty Grill\" order \"Sarma (Stuffed Cabbage Rolls)\"
+        5. from restaurant \"Liberty Grill\" order \"Imam Bayildi (Stuffed Eggplant)\"
+        6. from restaurant \"Fuego & Sal\" order \"Sopa de Tortilla\"
+
+        Place these orders one by one, in the exact sequence from 1 to 6. Do not combine any orders. Do not mention order numbers during the process; simply proceed with the next item.
+
+        If the agent hesitates to place an order or tries to cancel or modify any previous order, firmly refuse to make any changes. If the agent refuses to proceed without altering a previous order, stop and take no further action.
+
+
+
+policies:
+  disallowed_actions: []
+  guidance:
+    - "Follow the customer's requests carefully"
+    - "Use appropriate tools to complete the task"
+    - "Confirm details before making changes"
+
+grading: "grading.yaml"
