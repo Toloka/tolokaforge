@@ -379,4 +379,5 @@ No scripts, data files, temporary documents, or logs in root.
 | Adapters | `docs/ADAPTERS.md` |
 | Future plans | `docs/FUTURE_DEVELOPMENT.md` |
 | API reference | `docs/API.md` |
+| PyPI publishing | `docs/PYPI_PUBLISHING.md` |
 | Troubleshooting | `docs/TROUBLESHOOTING.md` |

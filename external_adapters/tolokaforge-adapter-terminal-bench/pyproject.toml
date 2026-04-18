@@ -6,12 +6,41 @@ build-backend = "hatchling.build"
 name = "tolokaforge-adapter-terminal-bench"
 version = "0.1.0"
 description = "Terminal-bench adapter plugin for tolokaforge"
+readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "Apache-2.0"}
+authors = [
+    {name = "Tolokaforge Contributors"},
+]
+keywords = [
+    "tolokaforge",
+    "adapter",
+    "terminal-bench",
+    "benchmark",
+    "llm",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Testing",
+]
 dependencies = [
     "tolokaforge",
     "pyyaml>=6.0.1",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Toloka/tolokaforge"
+Repository = "https://github.com/Toloka/tolokaforge/tree/main/external_adapters/tolokaforge-adapter-terminal-bench"
+Issues = "https://github.com/Toloka/tolokaforge/issues"
 
 [project.entry-points."tolokaforge.adapters"]
 terminal_bench = "tolokaforge_adapter_terminal_bench:TerminalBenchAdapter"

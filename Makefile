@@ -1,4 +1,4 @@
-.PHONY: install install-dev sync test test-coverage lint lint-fix format format-check clean docker-build docker-build-core docker-up docker-down docker-status help
+.PHONY: install install-dev sync test test-coverage lint lint-fix format format-check clean build build-adapter build-all docker-build docker-build-core docker-up docker-down docker-status help
 
 # =============================================================================
 # Installation (using uv)
@@ -55,6 +55,20 @@ format:
 format-check:
 	uv run black --check $(LINT_DIRS)
 	uv run ruff format --check $(LINT_DIRS)
+
+# =============================================================================
+# Package Building
+# =============================================================================
+
+build:
+	rm -rf dist/
+	uv build
+
+build-adapter:
+	rm -rf dist/
+	uv build --package tolokaforge-adapter-terminal-bench
+
+build-all: build build-adapter
 
 # =============================================================================
 # Docker (via tolokaforge CLI — replaces docker-compose and bash scripts)
@@ -114,6 +128,11 @@ help:
 	@echo "  make lint-fix     - Auto-fix linting issues (ruff --fix)"
 	@echo "  make format       - Format code (black + ruff format)"
 	@echo "  make format-check - Check formatting only - CI ready"
+	@echo ""
+	@echo "Packaging:"
+	@echo "  make build         - Build tolokaforge sdist + wheel"
+	@echo "  make build-adapter - Build tolokaforge-adapter-terminal-bench"
+	@echo "  make build-all     - Build all packages"
 	@echo ""
 	@echo "Docker:"
 	@echo "  make docker-build       - Build all Docker images"

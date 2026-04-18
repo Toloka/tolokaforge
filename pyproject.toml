@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tolokaforge"
-version = "0.2.0"
+version = "0.1.0"
 description = "Tolokaforge - LLM Tool-Use Benchmarking Harness"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -15,6 +15,29 @@ authors = [
 ]
 maintainers = [
     {name = "Renaud de la Gueronniere"},
+]
+keywords = [
+    "llm",
+    "benchmark",
+    "tool-use",
+    "agents",
+    "evaluation",
+    "litellm",
+    "testing",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Testing",
+    "Typing :: Typed",
 ]
 dependencies = [
     # Core LLM integration
@@ -83,6 +106,13 @@ adapters = [
 all = [
     "tolokaforge[browser,docker,server,rag,mcp,office,adapters]",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Toloka/tolokaforge"
+Repository = "https://github.com/Toloka/tolokaforge"
+Documentation = "https://github.com/Toloka/tolokaforge/tree/main/docs"
+Issues = "https://github.com/Toloka/tolokaforge/issues"
+Changelog = "https://github.com/Toloka/tolokaforge/releases"
 
 [project.scripts]
 tolokaforge = "tolokaforge.cli.main:cli"
