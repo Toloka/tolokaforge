@@ -1,7 +1,7 @@
 """Docker CLI commands for TolokaForge.
 
-Provides `tolokaforge docker build|up|down|status` subcommands as replacements
-for docker-compose.yaml and scripts/release/build_docker_images.sh.
+Provides `tolokaforge docker build|up|down|status` subcommands for managing
+Docker images and services.
 
 Uses lazy imports to avoid requiring docker dependency at CLI registration time.
 """

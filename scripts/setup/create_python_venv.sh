@@ -95,10 +95,10 @@ fi
 # NOTE: Docker images are NOT built during environment setup to keep
 # Codespaces startup fast and save disk space (~1.5-2GB).
 # To build Docker images for integration tests, run:
-#   scripts/release/build_docker_images.sh
+#   make docker-build
 # Tests that need Docker images will skip gracefully if not built.
 
 log_info "Development environment setup complete!"
 log_info ""
 log_info "Run tests with: scripts/with_env.sh uv run pytest"
-log_info "Build Docker images (optional): scripts/release/build_docker_images.sh"
+log_info "Build Docker images (optional): make docker-build"

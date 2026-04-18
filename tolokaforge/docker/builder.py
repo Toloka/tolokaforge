@@ -3,8 +3,7 @@
 Provides a single source of truth for all project Docker image definitions
 and utility functions for building images individually or in bulk.
 
-This replaces scripts/release/build_docker_images.sh with a Python-native
-builder that uses the foundation layer's ImageRegistry for content-hash caching.
+Uses the foundation layer's ImageRegistry for content-hash caching.
 
 Example:
     >>> from tolokaforge.docker.builder import build_all_images, build_image

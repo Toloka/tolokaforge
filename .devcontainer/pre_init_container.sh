@@ -23,6 +23,5 @@ if ! RESULT=$(ssh-add -l 2>&1); then
     log_info "Add the SSH key to the ssh-agent: https://docs.github.com/en/authentication/connecting-to-github-with-ssh/generating-a-new-ssh-key-and-adding-it-to-the-ssh-agent#adding-your-ssh-key-to-the-ssh-agent"
     exit 1
 fi
-[ ! -f .env.sh ] && "${SCRIPT_DIR}/../scripts/setup/setup_secrets.sh" || true
 
 log_info "Pre-init step is success!"
