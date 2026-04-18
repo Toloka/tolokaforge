@@ -29,7 +29,9 @@
     "openai/o3-pro": {"input": 20.0, "output": 80.0},
 
     "anthropic/claude-sonnet-4.6": {"input": 3.0, "output": 15.0},
+    "anthropic/claude-sonnet-4-6": {"input": 3.0, "output": 15.0},
     "anthropic/claude-sonnet-4.5": {"input": 3.0, "output": 15.0},
+    "anthropic/claude-sonnet-4-5": {"input": 3.0, "output": 15.0},
     "anthropic/claude-sonnet-4": {"input": 3.0, "output": 15.0},
     "anthropic/claude-3.7-sonnet": {"input": 3.0, "output": 15.0},
     "anthropic/claude-3.5-sonnet": {"input": 3.0, "output": 15.0},

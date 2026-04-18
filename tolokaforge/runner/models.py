@@ -120,7 +120,8 @@ class InitialStateConfig(BaseModel):
     """
     Complete initial state specification.
 
-    Contains all data and metadata needed to initialize the DB service.
+    Contains all data and metadata needed to initialize the DB service
+    and provision the agent's filesystem.
     """
 
     # Data: table_name → list of records
@@ -131,6 +132,10 @@ class InitialStateConfig(BaseModel):
 
     # Unstable fields: single source of truth for hash exclusion
     unstable_fields: list[UnstableFieldSpec] = Field(default_factory=list)
+
+    # Filesystem: dest_path → file content (text)
+    # Files are written to the Runner's agent-visible directory during RegisterTrial.
+    filesystem: dict[str, str] = Field(default_factory=dict)
 
     model_config = {"extra": "forbid"}
 
@@ -657,6 +662,8 @@ class GradeComponents(BaseModel):
 
     hash_match: bool | None = None
     hash_score: float = -1.0  # -1.0 means not evaluated
+    jsonpath_score: float = -1.0  # -1.0 means not evaluated
+    jsonpath_reasons: str = ""
     transcript_pass: bool | None = None
     transcript_score: float = -1.0
 

@@ -130,7 +130,12 @@ def normalize_model_name(model: str) -> str:
     - ``"claude-sonnet-4.5"`` → ``"anthropic/claude-sonnet-4.5"``
     - ``"minimax-m2.7"`` → ``"minimax/minimax-m2.7"``
     - ``"openai/gpt-4o"`` → ``"openai/gpt-4o"`` (no change)
+    - ``"openrouter/anthropic/claude-sonnet-4-6"`` → ``"anthropic/claude-sonnet-4-6"``
     """
+    # Strip routing provider prefix (openrouter is a proxy, not a model provider)
+    if model.startswith("openrouter/"):
+        model = model[len("openrouter/") :]
+
     # If already has provider prefix, return as is
     if "/" in model:
         return model

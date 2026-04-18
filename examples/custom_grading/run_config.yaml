@@ -1,12 +1,13 @@
-# Custom grading example — runs offline with mock provider.
+# Custom grading example — weighted scoring with state checks, transcript rules, and LLM judge.
+# Requires OPENROUTER_API_KEY in .env.
 models:
   agent:
-    provider: "mock"
-    name: "mock-agent"
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
     temperature: 0.0
   user:
-    provider: "mock"
-    name: "mock-user"
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
     temperature: 0.0
 
 orchestrator:

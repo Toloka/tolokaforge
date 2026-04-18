@@ -19,12 +19,10 @@ uv run tolokaforge validate --tasks "examples/custom_grading/dataset/**/task.yam
 ## Run
 
 ```bash
-# Mock provider (no API keys needed)
-uv run tolokaforge run --config examples/custom_grading/run_config.yaml
-
-# Real provider (edit run_config.yaml or pass overrides)
 scripts/with_env.sh uv run tolokaforge run --config examples/custom_grading/run_config.yaml
 ```
+
+Requires `OPENROUTER_API_KEY` in `.env`.
 
 ## Grading Pattern
 

@@ -38,9 +38,11 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 RUN pip install --no-cache-dir -e ".[docker]"
 
-# Install Playwright for browser tool (optional, can be removed if not needed)
-# RUN pip install playwright && \
-#     playwright install --with-deps chromium
+# Playwright for browser tool (opt-in via build arg)
+ARG INSTALL_PLAYWRIGHT=false
+RUN if [ "$INSTALL_PLAYWRIGHT" = "true" ]; then \
+    pip install playwright && playwright install --with-deps chromium; \
+    fi
 
 # Copy tolokaforge package
 COPY tolokaforge/ ./tolokaforge/

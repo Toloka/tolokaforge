@@ -96,10 +96,10 @@ def test_write_metrics(tmp_path, sample_trajectory):
     tool_usage = data["tool_usage"]
     assert len(tool_usage) == 2
 
-    create_order_stats = next(t for t in tool_usage if t["tool"] == "create_order")
-    assert create_order_stats["count"] == 2
-    assert create_order_stats["success"] == 1
-    assert create_order_stats["fail"] == 1
+    create_order_stats = next(t for t in tool_usage if t["tool_name"] == "create_order")
+    assert create_order_stats["call_count"] == 2
+    assert create_order_stats["success_count"] == 1
+    assert create_order_stats["error_count"] == 1
 
 
 def test_write_grade(tmp_path, sample_grade):

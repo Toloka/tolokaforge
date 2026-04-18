@@ -9,11 +9,8 @@ navigates a support site, reads order and policy pages, and writes a refund reco
 
 ## Prerequisites
 
-Browser tasks require Docker environment services (mock-web):
-
-```bash
-make docker-up
-```
+- Docker installed and running (the orchestrator auto-starts required services)
+- `OPENROUTER_API_KEY` in `.env`
 
 ## Validate
 
@@ -24,7 +21,6 @@ uv run tolokaforge validate --tasks "examples/browser_task/dataset/**/task.yaml"
 ## Run
 
 ```bash
-# Uses the self-contained run_config.yaml (requires API keys in .env)
 scripts/with_env.sh uv run tolokaforge run --config examples/browser_task/run_config.yaml
 ```
 

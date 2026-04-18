@@ -36,8 +36,7 @@ transcript_rules:
       compare_args: []
   communicate_info: []
 llm_judge:
-  # Keep mock provider for portable CI; replace with a production judge model for live evals.
-  model_ref: "mock/mock-judge"
+  model_ref: "openrouter/anthropic/claude-sonnet-4-6"
   rubric: |
     Grade the final reasoning quality.
     High score requires:

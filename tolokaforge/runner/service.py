@@ -45,6 +45,7 @@ from tolokaforge.runner.grading import (
     build_grade_reasons,
     combine_grade_components,
     compute_state_diff,
+    evaluate_jsonpath_file_checks,
     evaluate_transcript_rules,
 )
 from tolokaforge.runner.models import (
@@ -469,6 +470,31 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             return pb2.RegisterTrialResponse(
                 success=False,
                 error=f"DB Service initialization failed: {e}",
+            )
+
+        # Provision initial filesystem files (from initial_state.filesystem)
+        if initial_state.filesystem:
+            base_dir = Path("/env/fs/agent-visible")
+            for dest_path, content in initial_state.filesystem.items():
+                # dest_path is like "/env/fs/agent-visible/prompt.txt"
+                # Write to the absolute path or resolve relative to base_dir
+                if dest_path.startswith("/env/fs/agent-visible/") or dest_path.startswith("/"):
+                    file_path = Path(dest_path)
+                else:
+                    file_path = base_dir / dest_path
+                try:
+                    file_path.parent.mkdir(parents=True, exist_ok=True)
+                    file_path.write_text(content, encoding="utf-8")
+                    logger.info(f"RegisterTrial: {trial_id} - Provisioned file: {file_path}")
+                except Exception as e:
+                    logger.error(f"RegisterTrial: Failed to provision file {dest_path}: {e}")
+                    return pb2.RegisterTrialResponse(
+                        success=False,
+                        error=f"Filesystem provisioning failed for {dest_path}: {e}",
+                    )
+            logger.info(
+                f"RegisterTrial: {trial_id} - "
+                f"Provisioned {len(initial_state.filesystem)} filesystem file(s)"
             )
 
         # Initialize RAG service if search is enabled (FAIL FAST)
@@ -938,6 +964,21 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     error=f"Hash grading failed: {type(e).__name__}: {str(e)}",
                 )
 
+        # A.2) JSONPATH FILE ASSERTIONS (if jsonpath_checks exist)
+        if state_checks_config and state_checks_config.jsonpath_checks:
+            logger.info(
+                f"GradeTrial: {trial_id} - Evaluating "
+                f"{len(state_checks_config.jsonpath_checks)} jsonpath file checks"
+            )
+            jsonpath_score, jsonpath_reasons = evaluate_jsonpath_file_checks(
+                state_checks_config.jsonpath_checks
+            )
+            components.jsonpath_score = jsonpath_score
+            components.jsonpath_reasons = jsonpath_reasons
+            logger.info(
+                f"GradeTrial: {trial_id} - Jsonpath file checks: score={jsonpath_score:.2f}"
+            )
+
         # B) TRANSCRIPT RULES GRADING (if transcript_rules exist)
         transcript_rules_config = grading_config.transcript_rules
         if transcript_rules_config:
@@ -995,7 +1036,15 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 binary_pass=binary_pass,
                 score=score,
                 components=pb2.GradeComponents(
-                    state_checks=components.hash_score,
+                    state_checks=(
+                        components.jsonpath_score
+                        if components.hash_score < 0
+                        else (
+                            components.hash_score
+                            if components.jsonpath_score < 0
+                            else components.hash_score * components.jsonpath_score
+                        )
+                    ),
                     transcript_rules=components.transcript_score,
                     llm_judge=-1.0,  # Not computed by Runner
                     custom_checks=-1.0,  # Not implemented yet

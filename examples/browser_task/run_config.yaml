@@ -1,14 +1,15 @@
-# Browser task example — requires Docker services (mock-web) and a real LLM provider.
-# Start services first:  make docker-up
+# Browser task example — requires Docker and a real LLM provider.
+# Docker services auto-start via orchestrator (auto_start_services: true).
+# Requires OPENROUTER_API_KEY in .env.
 models:
   agent:
-    provider: "anthropic"
-    name: "claude-sonnet-4-6"
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
     temperature: 0.0
     max_tokens: 4096
   user:
-    provider: "openai"
-    name: "gpt-4o-mini"
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
     temperature: 0.2
 
 orchestrator:

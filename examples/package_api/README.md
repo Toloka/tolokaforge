@@ -17,21 +17,18 @@ read a problem file, compute the answer, and write it to a markdown file.
 ## Run
 
 ```bash
-# Mock provider (no API keys needed, offline)
-uv run python examples/package_api/run_minimal_dataset.py
-
-# Real provider (requires API key in .env)
-uv run python examples/package_api/run_minimal_dataset.py \
-  --provider openrouter --model openrouter/openai/gpt-4o-mini
+scripts/with_env.sh uv run python examples/package_api/run_minimal_dataset.py
 ```
+
+Requires `OPENROUTER_API_KEY` in `.env`.
 
 ## Options
 
 | Flag | Default | Description |
 |---|---|---|
 | `--dataset` | `minimal_dataset/` | Path to external dataset root |
-| `--provider` | `mock` | LiteLLM provider name |
-| `--model` | `mock-agent` | Model name passed to LiteLLM |
+| `--provider` | `openrouter` | LiteLLM provider name |
+| `--model` | `anthropic/claude-sonnet-4-6` | Model name passed to LiteLLM |
 | `--output-dir` | `results/package_api` | Output directory for results |
 
 ## Validate Tasks
@@ -42,8 +39,6 @@ uv run tolokaforge validate --tasks "examples/package_api/minimal_dataset/**/tas
 
 ## Expected Output
 
-With mock provider the trial runs 8 turns (mock never calls tools), grading
-evaluates, and results are written to `results/package_api_<timestamp>/`.
-
-With a real provider the agent should read `problem.txt`, compute `6 × 7 = 42`,
+The agent should read `problem.txt`, compute `6 × 7 = 42`,
 and write the answer to `submissions/answer.md`.
+Results are written to `results/package_api_<timestamp>/`.

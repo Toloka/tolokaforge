@@ -555,11 +555,30 @@ class NativeAdapter(BaseAdapter):
             ),
         )
 
+        # Build filesystem state from initial_state.filesystem.copy
+        initial_filesystem: dict[str, str] = {}
+        if task.initial_state and task.initial_state.filesystem:
+            copy_spec = task.initial_state.filesystem.get("copy", [])
+            for file_spec in copy_spec:
+                src_path = task_dir / file_spec["from"]
+                dest_path = file_spec["to"]
+                if src_path.exists():
+                    # Read file content and map destination path → content
+                    content = src_path.read_text(encoding="utf-8")
+                    initial_filesystem[dest_path] = content
+                else:
+                    logger.warning(
+                        "Filesystem file not found for initial state",
+                        src=str(src_path),
+                        dest=dest_path,
+                    )
+
         # Build initial state config
         initial_state = RunnerInitialStateConfig(
             tables=initial_tables,
             schemas=[],
             unstable_fields=[],
+            filesystem=initial_filesystem,
         )
 
         # Build source files for debugging

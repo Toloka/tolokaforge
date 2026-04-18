@@ -620,7 +620,7 @@ class MCPServerToolWrapper(ToolWrapper):
 
 
 class BuiltinFileToolWrapper(ToolWrapper):
-    """Wrapper for builtin filesystem tools (read_file, write_file).
+    """Wrapper for builtin filesystem tools (read_file, write_file, list_dir).
 
     Used when a task declares these tools in ``enabled`` but provides no
     custom ``mcp_server`` script.  The runner container ships the builtin
@@ -629,17 +629,73 @@ class BuiltinFileToolWrapper(ToolWrapper):
 
     def __init__(self, tool_schema: ToolSchemaModel):
         super().__init__(tool_schema)
-        from tolokaforge.tools.builtin.files import ReadFileTool, WriteFileTool
+        from tolokaforge.tools.builtin.files import ListDirTool, ReadFileTool, WriteFileTool
 
         if tool_schema.name == "read_file":
             self._tool = ReadFileTool()
         elif tool_schema.name == "write_file":
             self._tool = WriteFileTool()
+        elif tool_schema.name == "list_dir":
+            self._tool = ListDirTool()
         else:
             raise ToolConfigurationError(
                 tool_schema.name,
                 f"BuiltinFileToolWrapper does not support tool '{tool_schema.name}'",
             )
+
+    async def execute(self, arguments: dict[str, Any]) -> str:
+        result = self._tool.execute(**arguments)
+        if result.success:
+            return result.output or ""
+        return f"Error: {result.error}"
+
+
+# =============================================================================
+# Builtin Generic Tool Wrapper
+# =============================================================================
+
+
+# Lazy factory registry for builtin tools that are NOT file tools and NOT search_kb.
+# Each entry maps tool_name → (module_path, class_name).
+_BUILTIN_TOOL_FACTORIES: dict[str, tuple[str, str]] = {
+    "bash": ("tolokaforge.tools.builtin.bash", "BashTool"),
+    "calculator": ("tolokaforge.tools.builtin.calculator", "CalculatorTool"),
+    "browser": ("tolokaforge.tools.builtin.browser", "BrowserTool"),
+    "http_request": ("tolokaforge.tools.builtin.http_request", "HTTPRequestTool"),
+    "mobile": ("tolokaforge.tools.builtin.mobile", "MobileTool"),
+    "db_query": ("tolokaforge.tools.builtin.db_json", "DBQueryTool"),
+    "db_update": ("tolokaforge.tools.builtin.db_json", "DBUpdateTool"),
+}
+
+
+class BuiltinGenericToolWrapper(ToolWrapper):
+    """Wrapper for builtin tools loaded by name from the tool registry.
+
+    Handles tools like browser, bash, calculator, http_request, mobile, etc.
+    Instantiates the tool class from ``_BUILTIN_TOOL_FACTORIES`` and
+    delegates ``execute()`` to it.
+    """
+
+    def __init__(self, tool_schema: ToolSchemaModel):
+        super().__init__(tool_schema)
+        import importlib
+
+        entry = _BUILTIN_TOOL_FACTORIES.get(tool_schema.name)
+        if entry is None:
+            raise ToolConfigurationError(
+                tool_schema.name,
+                f"No builtin factory for tool '{tool_schema.name}'",
+            )
+        module_path, class_name = entry
+        try:
+            mod = importlib.import_module(module_path)
+            cls = getattr(mod, class_name)
+            self._tool = cls()
+        except Exception as exc:
+            raise ToolConfigurationError(
+                tool_schema.name,
+                f"Failed to instantiate builtin tool '{tool_schema.name}': {exc}",
+            ) from exc
 
     async def execute(self, arguments: dict[str, Any]) -> str:
         result = self._tool.execute(**arguments)
@@ -1103,8 +1159,10 @@ class ToolFactory:
             # Check if this is a known built-in tool
             if schema.name == "search_kb":
                 return self._create_rag_search_wrapper(schema)
-            if schema.name in ("read_file", "write_file"):
+            if schema.name in ("read_file", "write_file", "list_dir"):
                 return BuiltinFileToolWrapper(schema)
+            if schema.name in _BUILTIN_TOOL_FACTORIES:
+                return BuiltinGenericToolWrapper(schema)
             raise ToolConfigurationError(
                 schema.name, "Tool has no source configuration, cannot reconstruct"
             )

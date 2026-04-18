@@ -42,12 +42,17 @@ OPENROUTER_API_KEY=sk-or-...
 # or OPENAI_API_KEY / ANTHROPIC_API_KEY / GOOGLE_API_KEY
 ```
 
-## Start Environment Services (Recommended)
+## Docker Services
 
-Browser, JSON DB, and RAG tasks rely on services. Start them with Docker:
+Docker services (db-service, runner) start **automatically** when you run a benchmark.
+The orchestrator's `auto_start_services` setting (default: `true`) handles building images
+and starting containers on the first run.
+
+No manual `docker compose up` is needed. If you prefer manual control, set
+`auto_start_services: false` in your run config and use:
 
 ```bash
-docker compose up -d json-db mock-web rag-service
+uv run tolokaforge docker up --profile core
 ```
 
 ## Quick Start Run

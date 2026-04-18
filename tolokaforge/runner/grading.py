@@ -9,8 +9,10 @@ This module provides helper functions for the GradeTrial RPC implementation:
 See docs/GRPC_PROTOCOL.md for grading algorithm specification.
 """
 
+import glob
 import logging
 import re
+from pathlib import Path
 from typing import Any
 
 from tolokaforge.runner.models import (
@@ -438,6 +440,68 @@ def _evaluate_max_turns(rule: dict[str, Any], messages: list[dict[str, Any]]) ->
         }
 
 
+def evaluate_jsonpath_file_checks(
+    checks: list[dict[str, Any]],
+) -> tuple[float, str]:
+    """
+    Evaluate jsonpath file assertions against the Runner container's filesystem.
+
+    Each check has:
+    - path_glob: glob pattern for files (e.g., "/env/fs/agent-visible/submissions/*")
+    - contains_ci: case-insensitive substring to find in file content
+    - description: human-readable description of the check
+
+    Args:
+        checks: List of jsonpath check dicts from grading.yaml
+
+    Returns:
+        Tuple of (score, reasons_string) where score is fraction of checks passed.
+    """
+    if not checks:
+        return -1.0, ""
+
+    passed = 0
+    total = len(checks)
+    reasons_parts: list[str] = []
+
+    for check in checks:
+        path_pattern = check.get("path_glob", "")
+        contains_ci = check.get("contains_ci", "")
+        description = check.get("description", f"Check: {contains_ci}")
+
+        if not path_pattern:
+            reasons_parts.append(f"SKIP: No path_glob — {description}")
+            continue
+
+        # Glob for matching files on the container filesystem
+        matching_files = glob.glob(path_pattern)
+
+        if not matching_files:
+            reasons_parts.append(f"FAIL: No files match {path_pattern} — {description}")
+            continue
+
+        # Check if any matching file contains the expected text
+        found = False
+        for file_path in matching_files:
+            try:
+                content = Path(file_path).read_text(encoding="utf-8", errors="replace")
+                if contains_ci.lower() in content.lower():
+                    found = True
+                    break
+            except Exception as exc:
+                logger.warning("Failed to read file %s: %s", file_path, exc)
+
+        if found:
+            passed += 1
+            reasons_parts.append(f"PASS: {description}")
+        else:
+            reasons_parts.append(f"FAIL: {description}")
+
+    score = passed / total if total > 0 else 0.0
+    reasons = "; ".join(reasons_parts)
+    return score, reasons
+
+
 def combine_grade_components(
     components: dict[str, Any], grading_config: dict[str, Any]
 ) -> tuple[float, bool]:
@@ -473,12 +537,19 @@ def combine_grade_components(
 
     # Extract component scores
     hash_score = components.get("hash_score", -1.0)
+    jsonpath_score = components.get("jsonpath_score", -1.0)
     transcript_score = components.get("transcript_score", -1.0)
 
     # Determine which components are active (score >= 0 means evaluated)
     active_components: dict[str, float] = {}
-    if hash_score >= 0:
+    # state_checks: combine hash and jsonpath scores if both are available
+    if hash_score >= 0 and jsonpath_score >= 0:
+        # Both evaluated — use product for strictness
+        active_components["state_checks"] = hash_score * jsonpath_score
+    elif hash_score >= 0:
         active_components["state_checks"] = hash_score
+    elif jsonpath_score >= 0:
+        active_components["state_checks"] = jsonpath_score
     if transcript_score >= 0:
         active_components["transcript_rules"] = transcript_score
 
@@ -563,7 +634,7 @@ def build_grade_reasons(
     """
     reasons = []
 
-    # State checks reason
+    # State checks reason — hash
     hash_score = components.get("hash_score", -1.0)
     if hash_score >= 0:
         if components.get("hash_match", False):
@@ -573,6 +644,17 @@ def build_grade_reasons(
                 reasons.append(f"State: {state_diff['summary']}")
             else:
                 reasons.append("State: hash mismatch")
+
+    # State checks reason — jsonpath file assertions
+    jsonpath_score = components.get("jsonpath_score", -1.0)
+    if jsonpath_score >= 0:
+        jsonpath_reasons = components.get("jsonpath_reasons", "")
+        if jsonpath_reasons:
+            reasons.append(f"Files: {jsonpath_reasons}")
+        elif jsonpath_score == 1.0:
+            reasons.append("Files: all jsonpath checks passed")
+        else:
+            reasons.append(f"Files: jsonpath score={jsonpath_score:.2f}")
 
     # Transcript rules reason
     transcript_score = components.get("transcript_score", -1.0)

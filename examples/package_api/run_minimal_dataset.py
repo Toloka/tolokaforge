@@ -47,13 +47,13 @@ def main() -> int:
     )
     parser.add_argument(
         "--provider",
-        default="mock",
-        help="LiteLLM provider name (for example: mock, openrouter, openai, anthropic)",
+        default="openrouter",
+        help="LiteLLM provider name (for example: openrouter, openai, anthropic)",
     )
     parser.add_argument(
         "--model",
-        default="mock-agent",
-        help="Model name passed to LiteLLM (default: mock-agent for offline use)",
+        default="anthropic/claude-sonnet-4-6",
+        help="Model name passed to LiteLLM (default: anthropic/claude-sonnet-4-6)",
     )
     parser.add_argument(
         "--output-dir",

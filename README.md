@@ -35,16 +35,15 @@ See [Python Package Guide](docs/PYTHON_PACKAGE.md) for all extras and programmat
 # 1. Configure provider keys
 cp .env.example .env
 
-# 2. Start environment services (browser/mobile/RAG tasks)
-docker compose up -d json-db mock-web rag-service
+# 2. Run an example benchmark (Docker services auto-start)
+scripts/with_env.sh uv run tolokaforge run --config examples/custom_grading/run_config.yaml
 
-# 3. Run an example benchmark
-uv run tolokaforge run --config examples/browser_task/run_config.yaml
-
-# 4. Check results
-uv run tolokaforge status --run-dir results/my_run
-uv run tolokaforge analyze --trajectory results/my_run/trials/task_id/0/trajectory.yaml
+# 3. Check results
+uv run tolokaforge status --run-dir results/custom_grading_<timestamp>
 ```
+
+Docker services start automatically via [`auto_start_services`](tolokaforge/core/models.py) (default: `true`).
+No manual `docker compose up` needed.
 
 For distributed execution, task packs, and advanced workflows see the [Runner Guide](docs/RUNNER.md).
 

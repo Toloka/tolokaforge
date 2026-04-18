@@ -1269,55 +1269,10 @@ class Orchestrator:
                 reasons="Agent got stuck (repeated actions without progress)",
             )
         else:
-            # Grade trajectory via Runner's GradeTrial RPC
-            # It computes golden hash via DB service
-            trial_id = f"{task.task_id}:{trial_idx}"
-            grade_result = docker_runtime.executor_client.grade_trial(trial_id=trial_id)
-            if grade_result["success"] and grade_result["grade"]:
-                g = grade_result["grade"]
-
-                # Parse state_diff from gRPC JSON for post-mortem diagnostics
-                state_diff_parsed: dict[str, Any] | None = None
-                if g.get("state_diff_json"):
-                    try:
-                        state_diff_parsed = json.loads(g["state_diff_json"])
-                    except (json.JSONDecodeError, TypeError):
-                        pass
-
-                grade = Grade(
-                    binary_pass=g["binary_pass"],
-                    score=g["score"],
-                    components=GradeComponents(
-                        state_checks=g["components"].get("state_checks", -1.0),
-                        transcript_rules=g["components"].get("transcript_rules", -1.0),
-                        llm_judge=g["components"].get("llm_judge", -1.0),
-                        custom_checks=g["components"].get("custom_checks", -1.0),
-                    ),
-                    reasons=g.get("reasons", ""),
-                    state_diff=state_diff_parsed,
-                )
-                self.logger.info(
-                    "Grading via Runner RPC",
-                    task_id=task.task_id,
-                    trial_index=trial_idx,
-                    score=grade.score,
-                    binary_pass=grade.binary_pass,
-                )
-            else:
-                # Grading RPC failed - fail the trial
-                error_msg = grade_result.get("error", "Unknown grading error")
-                self.logger.error(
-                    "Grading RPC failed",
-                    task_id=task.task_id,
-                    trial_index=trial_idx,
-                    error=error_msg,
-                )
-                grade = Grade(
-                    binary_pass=False,
-                    score=0.0,
-                    components=GradeComponents(state_checks=0.0),
-                    reasons=f"Grading RPC failed: {error_msg}",
-                )
+            # Grade via Runner's GradeTrial RPC.
+            # The Runner has direct access to the agent's filesystem and DB state,
+            # supporting hash-based grading, jsonpath file assertions, and transcript rules.
+            grade = self._grade_via_runner_rpc(task, trial_idx, docker_runtime)
         trajectory.grade = grade
 
         self.logger.info(
@@ -1362,6 +1317,45 @@ class Orchestrator:
         )
 
         return trajectory
+
+    def _grade_via_runner_rpc(self, task: TaskConfig, trial_idx: int, docker_runtime: Any) -> Grade:
+        """Fallback grading via Runner's GradeTrial RPC."""
+        trial_id = f"{task.task_id}:{trial_idx}"
+        grade_result = docker_runtime.executor_client.grade_trial(trial_id=trial_id)
+        if grade_result["success"] and grade_result["grade"]:
+            g = grade_result["grade"]
+            state_diff_parsed: dict[str, Any] | None = None
+            if g.get("state_diff_json"):
+                try:
+                    state_diff_parsed = json.loads(g["state_diff_json"])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            return Grade(
+                binary_pass=g["binary_pass"],
+                score=g["score"],
+                components=GradeComponents(
+                    state_checks=g["components"].get("state_checks"),
+                    transcript_rules=g["components"].get("transcript_rules"),
+                    llm_judge=g["components"].get("llm_judge"),
+                    custom_checks=g["components"].get("custom_checks"),
+                ),
+                reasons=g.get("reasons", ""),
+                state_diff=state_diff_parsed,
+            )
+        else:
+            error_msg = grade_result.get("error", "Unknown grading error")
+            self.logger.error(
+                "Grading RPC failed",
+                task_id=task.task_id,
+                trial_index=trial_idx,
+                error=error_msg,
+            )
+            return Grade(
+                binary_pass=False,
+                score=0.0,
+                components=GradeComponents(state_checks=0.0),
+                reasons=f"Grading RPC failed: {error_msg}",
+            )
 
     def _build_system_prompt(
         self, task: TaskConfig, tool_schemas: list[dict[str, Any]], task_dir: Path

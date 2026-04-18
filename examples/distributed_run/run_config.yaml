@@ -1,13 +1,14 @@
 # Distributed run example config.
 # Uses the package_api minimal dataset so the example is self-contained.
+# Requires OPENROUTER_API_KEY in .env.
 models:
   agent:
-    provider: "mock"
-    name: "mock-agent"
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
     temperature: 0.0
   user:
-    provider: "mock"
-    name: "mock-user"
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
     temperature: 0.0
 
 orchestrator:

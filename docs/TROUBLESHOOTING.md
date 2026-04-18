@@ -2,10 +2,11 @@
 
 ## Services Not Running
 
-Browser, JSON DB, and RAG tasks require services:
+Docker services auto-start by default (`auto_start_services: true`).
+If they fail to start, try manual startup:
 
 ```bash
-docker compose up -d json-db mock-web rag-service
+uv run tolokaforge docker up --profile core
 ```
 
 Check health:
