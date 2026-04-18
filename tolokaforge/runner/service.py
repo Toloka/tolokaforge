@@ -915,8 +915,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         if state_checks_config:
             golden_actions = state_checks_config.golden_actions
 
-        # A) HASH-BASED GRADING (if golden_actions exist)
-        if golden_actions:
+        # A) HASH-BASED GRADING
+        # Run hash grading when hash_enabled is set (even with empty golden_actions,
+        # which represents refusal tasks where the expected state == initial state).
+        if state_checks_config and state_checks_config.hash_enabled:
             logger.info(
                 f"GradeTrial: {trial_id} - Executing hash-based grading with {len(golden_actions)} golden actions"
             )

@@ -482,8 +482,27 @@ def combine_grade_components(
     if transcript_score >= 0:
         active_components["transcript_rules"] = transcript_score
 
-    # If no components are active, pass by default
+    # If no components are active but grading was configured, fail explicitly.
+    # This prevents refusal tasks (empty golden_actions) or misconfigured
+    # grading from silently passing with score=1.0.
+    #
+    # A component is "actually configured" when:
+    #   1. It appears in weights, AND
+    #   2. Its config section exists in grading_config (not just a model default)
     if not active_components:
+        actually_configured: set[str] = set()
+        if "state_checks" in weights and grading_config.get("state_checks") is not None:
+            actually_configured.add("state_checks")
+        if "transcript_rules" in weights and grading_config.get("transcript_rules") is not None:
+            actually_configured.add("transcript_rules")
+
+        if actually_configured:
+            logger.warning(
+                "Grading configured for %s but no components were evaluated — failing",
+                actually_configured,
+            )
+            return 0.0, False
+        # Truly no grading configured at all — pass by default
         return 1.0, True
 
     if method == "all":

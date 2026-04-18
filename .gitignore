@@ -57,6 +57,8 @@ finished_runs/
 # Output directory (benchmark results, generated reports)
 # NOTE: output/ is a working directory, not committed
 output/
+# Exception: test project output data (canonical trajectory fixtures, tracked via Git LFS)
+!tests/data/projects/*/output/
 
 *.log
 

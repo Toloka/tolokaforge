@@ -435,6 +435,64 @@ class TestLLMJudgePlaceholderStatus:
         assert score == 1.0
         assert binary_pass is True
 
+    def test_combine_grade_components_fails_when_configured_but_unevaluated(self):
+        """
+        Verify combine_grade_components fails when grading is configured
+        (weights include state_checks) but no components were actually evaluated.
+
+        This catches the refusal-task bug: golden_actions=[] caused hash grading
+        to be skipped, leaving hash_score=-1.0. Previously this silently returned
+        (1.0, True) — a false pass. Now it must return (0.0, False).
+        """
+        components = {
+            "hash_match": None,
+            "hash_score": -1.0,  # Not evaluated
+            "transcript_pass": None,
+            "transcript_score": -1.0,  # Not evaluated
+        }
+
+        grading_config = {
+            "combine_method": "weighted",
+            "weights": {"state_checks": 1.0},
+            "pass_threshold": 1.0,
+            "state_checks": {"hash_enabled": True, "golden_actions": []},
+        }
+
+        score, binary_pass = combine_grade_components(components, grading_config)
+
+        assert (
+            score == 0.0
+        ), f"Score should be 0.0 when configured grading has no evaluated components, got {score}"
+        assert (
+            binary_pass is False
+        ), "binary_pass should be False when grading was configured but nothing evaluated"
+
+    def test_combine_grade_components_passes_when_nothing_configured(self):
+        """
+        Verify combine_grade_components passes when no grading is configured at all.
+
+        When weights are empty (no grading components requested), the system
+        should pass by default — this is the "no grading" case, not the
+        "grading skipped" case.
+        """
+        components = {
+            "hash_match": None,
+            "hash_score": -1.0,
+            "transcript_pass": None,
+            "transcript_score": -1.0,
+        }
+
+        grading_config = {
+            "combine_method": "weighted",
+            "weights": {},  # No grading configured
+            "pass_threshold": 1.0,
+        }
+
+        score, binary_pass = combine_grade_components(components, grading_config)
+
+        assert score == 1.0, f"Score should be 1.0 when no grading configured, got {score}"
+        assert binary_pass is True, "binary_pass should be True when no grading configured"
+
 
 class TestTranscriptRulesEvaluation:
     """Test transcript rules evaluation (implemented but often not used)"""
