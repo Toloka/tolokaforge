@@ -241,9 +241,7 @@ async def lint_fix(
 async def format_code(
     paths: str = "",
 ) -> str:
-    """Format code with black and ruff format.
-
-    Runs both formatters sequentially (black first, then ruff format).
+    """Format code with ruff format.
 
     Args:
         paths: Space-separated paths to format.
@@ -254,23 +252,14 @@ async def format_code(
     targets = paths or DEFAULT_LINT_DIRS
     target_list = targets.split()
 
-    # Run black first
-    black_result = await run_command(
-        ["uv", "run", "black", *target_list],
-        cwd=REPO_ROOT,
-        timeout=60,
-        tool_name="format_code_black",
-    )
-
-    # Then ruff format
-    ruff_result = await run_command(
+    result = await run_command(
         ["uv", "run", "ruff", "format", *target_list],
         cwd=REPO_ROOT,
         timeout=60,
         tool_name="format_code_ruff",
     )
 
-    return f"=== black ===\n{black_result}\n\n=== ruff format ===\n{ruff_result}"
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -282,7 +271,7 @@ async def format_code(
 async def format_check(
     paths: str = "",
 ) -> str:
-    """Check code formatting without making changes (black --check + ruff format --check).
+    """Check code formatting without making changes (ruff format --check).
 
     Args:
         paths: Space-separated paths to check.
@@ -293,21 +282,14 @@ async def format_check(
     targets = paths or DEFAULT_LINT_DIRS
     target_list = targets.split()
 
-    black_result = await run_command(
-        ["uv", "run", "black", "--check", *target_list],
-        cwd=REPO_ROOT,
-        timeout=60,
-        tool_name="format_check_black",
-    )
-
-    ruff_result = await run_command(
+    result = await run_command(
         ["uv", "run", "ruff", "format", "--check", *target_list],
         cwd=REPO_ROOT,
         timeout=60,
         tool_name="format_check_ruff",
     )
 
-    return f"=== black --check ===\n{black_result}\n\n=== ruff format --check ===\n{ruff_result}"
+    return result
 
 
 # ---------------------------------------------------------------------------

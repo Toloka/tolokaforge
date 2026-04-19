@@ -39,9 +39,9 @@ def test_browser_schema(browser_tool):
         "drag_and_drop",
     ]
 
-    assert set(actions) == set(
-        expected_actions
-    ), f"Missing actions: {set(expected_actions) - set(actions)}"
+    assert set(actions) == set(expected_actions), (
+        f"Missing actions: {set(expected_actions) - set(actions)}"
+    )
 
 
 def test_grid_to_pixel_conversion(browser_tool):

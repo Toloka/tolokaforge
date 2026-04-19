@@ -134,9 +134,9 @@ class TestGoldenSetWithRealTools:
         actual_hash = consistent_hash(to_hashable(actual_db_state))
 
         # Step 5: Verify bug is reproduced
-        assert (
-            expected_hash != actual_hash
-        ), "Bug should be reproduced - if this fails, bug was fixed!"
+        assert expected_hash != actual_hash, (
+            "Bug should be reproduced - if this fails, bug was fixed!"
+        )
 
 
 @pytest.mark.canonical
@@ -164,6 +164,6 @@ class TestStateExtraction:
         agent_hash = consistent_hash(to_hashable(agent_state))
         db_hash = consistent_hash(to_hashable(db_state))
 
-        assert (
-            agent_hash == db_hash
-        ), f"Agent and DB states differ: agent={agent_hash[:16]}… db={db_hash[:16]}…"
+        assert agent_hash == db_hash, (
+            f"Agent and DB states differ: agent={agent_hash[:16]}… db={db_hash[:16]}…"
+        )

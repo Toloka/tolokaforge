@@ -151,9 +151,9 @@ class TestCalculateDatabaseHash:
         db.update(ticket)
         hash_after = calculate_database_hash(db)
 
-        assert (
-            hash_before == hash_after
-        ), "Hash changed when only unstable fields (subject, description) were modified"
+        assert hash_before == hash_after, (
+            "Hash changed when only unstable fields (subject, description) were modified"
+        )
 
 
 # ---------------------------------------------------------------------------

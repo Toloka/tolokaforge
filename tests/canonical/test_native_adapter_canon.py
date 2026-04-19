@@ -148,12 +148,12 @@ class TestShopOrders02SnapshotIntegrity:
             "Snapshot products differ from initial_state.json — "
             "run --update-canon only if initial_state.json was intentionally changed"
         )
-        assert by_id(tables["customers"]) == by_id(
-            source["customers"]
-        ), "Snapshot customers differ from initial_state.json"
-        assert (
-            tables["orders"] == source["orders"]
-        ), "Snapshot orders differ from initial_state.json"
+        assert by_id(tables["customers"]) == by_id(source["customers"]), (
+            "Snapshot customers differ from initial_state.json"
+        )
+        assert tables["orders"] == source["orders"], (
+            "Snapshot orders differ from initial_state.json"
+        )
 
     def test_grading_snapshot_mirrors_source(self):
         """Snapshot grading_config must faithfully reflect grading.yaml without adapter.
@@ -171,33 +171,33 @@ class TestShopOrders02SnapshotIntegrity:
 
         snap_actions = snapshot["state_checks"]["hash"]["golden_actions"]
         src_actions = source["state_checks"]["hash"]["golden_actions"]
-        assert len(snap_actions) == len(
-            src_actions
-        ), f"golden_actions count: snapshot={len(snap_actions)}, source={len(src_actions)}"
+        assert len(snap_actions) == len(src_actions), (
+            f"golden_actions count: snapshot={len(snap_actions)}, source={len(src_actions)}"
+        )
         for snap_act, src_act in zip(snap_actions, src_actions):
             assert snap_act["name"] == src_act["name"]
             assert snap_act["kwargs"] == src_act["kwargs"]
 
         snap_paths = {jp["path"]: jp["equals"] for jp in snapshot["state_checks"]["jsonpaths"]}
         src_paths = {jp["path"]: jp["equals"] for jp in source["state_checks"]["jsonpaths"]}
-        assert set(snap_paths.keys()) == set(
-            src_paths.keys()
-        ), "jsonpath keys differ between snapshot and grading.yaml"
+        assert set(snap_paths.keys()) == set(src_paths.keys()), (
+            "jsonpath keys differ between snapshot and grading.yaml"
+        )
         for path, expected in src_paths.items():
             if isinstance(expected, float):
-                assert (
-                    abs(snap_paths[path] - expected) < 1e-9
-                ), f"jsonpath {path}: snapshot={snap_paths[path]}, source={expected}"
+                assert abs(snap_paths[path] - expected) < 1e-9, (
+                    f"jsonpath {path}: snapshot={snap_paths[path]}, source={expected}"
+                )
             else:
-                assert (
-                    snap_paths[path] == expected
-                ), f"jsonpath {path}: snapshot={snap_paths[path]!r}, source={expected!r}"
+                assert snap_paths[path] == expected, (
+                    f"jsonpath {path}: snapshot={snap_paths[path]!r}, source={expected!r}"
+                )
 
         snap_info = {ci["info"] for ci in snapshot["transcript_rules"]["communicate_info"]}
         src_info = {ci["info"] for ci in source["transcript_rules"]["communicate_info"]}
-        assert (
-            snap_info == src_info
-        ), f"communicate_info mismatch: snapshot={snap_info}, source={src_info}"
+        assert snap_info == src_info, (
+            f"communicate_info mismatch: snapshot={snap_info}, source={src_info}"
+        )
 
     def test_tool_schemas_snapshot_respects_enabled_order(self):
         """Snapshot tool list must contain exactly the tools from task.yaml `enabled`, in order.
@@ -224,15 +224,15 @@ class TestShopOrders02SnapshotIntegrity:
 
         for snap_tool in snapshot_tools:
             name = snap_tool["name"]
-            assert (
-                name in source_tools
-            ), f"Snapshot contains tool '{name}' not present in fixtures/tools.json"
-            assert (
-                snap_tool["description"] == source_tools[name]["description"]
-            ), f"Tool '{name}' description mismatch between snapshot and tools.json"
-            assert (
-                snap_tool["parameters"] == source_tools[name]["parameters"]
-            ), f"Tool '{name}' parameter schema mismatch between snapshot and tools.json"
+            assert name in source_tools, (
+                f"Snapshot contains tool '{name}' not present in fixtures/tools.json"
+            )
+            assert snap_tool["description"] == source_tools[name]["description"], (
+                f"Tool '{name}' description mismatch between snapshot and tools.json"
+            )
+            assert snap_tool["parameters"] == source_tools[name]["parameters"], (
+                f"Tool '{name}' parameter schema mismatch between snapshot and tools.json"
+            )
 
     def test_grading_arithmetic_consistency(self):
         """Expected final values in grading.yaml must be arithmetically derivable from initial_state.json.
@@ -288,9 +288,9 @@ class TestShopOrders02SnapshotIntegrity:
             product_idx = next(i for i, p in enumerate(product_list) if p["id"] == pid)
             expected_stock = products[pid]["stock"] - item["quantity"]
             stock_path = f"$.db.products[{product_idx}].stock"
-            assert (
-                stock_path in jsonpaths
-            ), f"grading.yaml has no jsonpath for {pid} stock (expected path: {stock_path})"
+            assert stock_path in jsonpaths, (
+                f"grading.yaml has no jsonpath for {pid} stock (expected path: {stock_path})"
+            )
             assert abs(jsonpaths[stock_path] - expected_stock) < 0.001, (
                 f"Stock for {pid}: grading.yaml says {jsonpaths[stock_path]}, "
                 f"computed {expected_stock} "

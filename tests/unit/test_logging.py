@@ -226,6 +226,6 @@ def test_no_printf_style_structured_logger_calls():
                             f"Use keyword args instead."
                         )
 
-    assert (
-        not violations
-    ), f"Found {len(violations)} printf-style StructuredLogger call(s):\n" + "\n".join(violations)
+    assert not violations, (
+        f"Found {len(violations)} printf-style StructuredLogger call(s):\n" + "\n".join(violations)
+    )

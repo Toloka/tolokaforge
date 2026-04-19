@@ -46,14 +46,12 @@ lint:
 lint-fix:
 	uv run ruff check --fix $(LINT_DIRS)
 
-# Apply formatting (black + ruff format)
+# Apply formatting (ruff format — drop-in black replacement)
 format:
-	uv run black $(LINT_DIRS)
 	uv run ruff format $(LINT_DIRS)
 
 # Check formatting only (no changes) - CI ready, exits non-zero on issues
 format-check:
-	uv run black --check $(LINT_DIRS)
 	uv run ruff format --check $(LINT_DIRS)
 
 # =============================================================================
@@ -126,7 +124,7 @@ help:
 	@echo "Code Quality:"
 	@echo "  make lint         - Check linting (ruff, no fix) - CI ready"
 	@echo "  make lint-fix     - Auto-fix linting issues (ruff --fix)"
-	@echo "  make format       - Format code (black + ruff format)"
+	@echo "  make format       - Format code (ruff format)"
 	@echo "  make format-check - Check formatting only - CI ready"
 	@echo ""
 	@echo "Packaging:"

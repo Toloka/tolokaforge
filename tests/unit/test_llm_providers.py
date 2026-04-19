@@ -219,9 +219,9 @@ class TestProviderBaseUrlIsolation:
             LLMClient(openrouter_config)
 
             # litellm.api_base should NOT point to Nova
-            assert (
-                litellm.api_base != "https://api.nova.amazon.com/v1"
-            ), "OpenRouter client should not inherit Nova's api_base"
+            assert litellm.api_base != "https://api.nova.amazon.com/v1", (
+                "OpenRouter client should not inherit Nova's api_base"
+            )
         finally:
             # Restore original
             litellm.api_base = original_api_base

@@ -139,9 +139,9 @@ class TestComputeStableHashCrossImplementation:
         stable_state = get_stable_database_state(db)
         tf_hash = compute_stable_hash(stable_state)
 
-        assert (
-            mcp_hash == tf_hash
-        ), f"Hash mismatch: mcp_core={mcp_hash[:16]}... vs tolokaforge={tf_hash[:16]}..."
+        assert mcp_hash == tf_hash, (
+            f"Hash mismatch: mcp_core={mcp_hash[:16]}... vs tolokaforge={tf_hash[:16]}..."
+        )
 
     def test_hash_matches_after_mutation(self):
         """Cross-implementation hash still matches after DB mutation."""

@@ -166,15 +166,15 @@ class TestGradingEnginePipeline:
 
             # state_checks
             if grading_config_dict.get("state_checks") and "state_checks" in weights:
-                assert (
-                    grade.components.state_checks is not None
-                ), f"Task {task_id}: state_checks enabled but not in grade"
+                assert grade.components.state_checks is not None, (
+                    f"Task {task_id}: state_checks enabled but not in grade"
+                )
 
             # transcript_rules
             if grading_config_dict.get("transcript_rules") and "transcript_rules" in weights:
-                assert (
-                    grade.components.transcript_rules is not None
-                ), f"Task {task_id}: transcript_rules enabled but not in grade"
+                assert grade.components.transcript_rules is not None, (
+                    f"Task {task_id}: transcript_rules enabled but not in grade"
+                )
 
             # custom_checks
             custom_checks_config = grading_config_dict.get("custom_checks", {})

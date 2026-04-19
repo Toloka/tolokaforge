@@ -1,0 +1,218 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel in-progress runs for the same branch/PR
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+  UV_CACHE_DIR: /tmp/.uv-cache
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Lint: ruff check + ruff format --check
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Ruff check (lint)
+        run: uv run ruff check tolokaforge tests scripts tools
+
+      - name: Ruff format check
+        run: uv run ruff format --check tolokaforge tests scripts tools
+
+  # ---------------------------------------------------------------------------
+  # Test: unit + canonical tests across Python version matrix
+  # ---------------------------------------------------------------------------
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Pull LFS objects
+        run: git lfs pull
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Run unit + canonical tests
+        run: >
+          uv run pytest tests/ -v
+          -m "unit or canonical"
+          --tb=short
+          --junitxml=junit-results-${{ matrix.python-version }}.xml
+          ${{ matrix.python-version == '3.12' && '--cov=tolokaforge --cov-report=xml --cov-report=term' || '' }}
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.python-version }}
+          path: junit-results-${{ matrix.python-version }}.xml
+
+      - name: Upload coverage report
+        if: matrix.python-version == '3.12' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+
+  # ---------------------------------------------------------------------------
+  # Build: verify packages build correctly
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Build tolokaforge
+        run: uv build
+
+      - name: Build adapter-terminal-bench
+        run: uv build --package tolokaforge-adapter-terminal-bench
+
+      - name: Verify wheel contents
+        run: |
+          echo "=== Built artifacts ==="
+          ls -lh dist/
+          echo ""
+          echo "=== Wheel contents ==="
+          uv run python -c "
+          import zipfile
+          for f in __import__('pathlib').Path('dist').glob('*.whl'):
+              print(f'--- {f.name} ---')
+              with zipfile.ZipFile(f) as zf:
+                  for name in sorted(zf.namelist()):
+                      print(f'  {name}')
+          "
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Integration: Docker-based integration tests
+  # ---------------------------------------------------------------------------
+  integration:
+    name: Integration tests
+    runs-on: ubuntu-latest
+    # Run on main pushes and PRs, but allow skipping on forks without secrets
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Pull LFS objects
+        run: git lfs pull
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Install Playwright browsers
+        run: uv run playwright install --with-deps chromium
+
+      - name: Run integration tests
+        env:
+          # API keys — tests auto-skip when keys are missing
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          NOVA_API_KEY: ${{ secrets.NOVA_API_KEY }}
+        run: >
+          uv run pytest tests/ -v
+          -m integration
+          --tb=short
+          --junitxml=junit-results-integration.xml
+
+      - name: Upload integration test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-integration
+          path: junit-results-integration.xml
+
+  # ---------------------------------------------------------------------------
+  # Validate: task YAML definitions
+  # ---------------------------------------------------------------------------
+  validate:
+    name: Validate tasks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Validate task definitions
+        run: uv run tolokaforge validate --tasks "examples/**/task.yaml"

@@ -26,7 +26,7 @@ The server is automatically configured for Roo Code (`.roo/mcp.json`) and Claude
 | `update_canonical_snapshots` | Regenerate canonical test snapshots (`--update-canon`) |
 | `lint_check` | Check linting issues without fixing (ruff check) |
 | `lint_fix` | Auto-fix linting issues (ruff check --fix) |
-| `format_code` | Format code with black + ruff format |
+| `format_code` | Format code with ruff format |
 | `format_check` | Check formatting without changes |
 | `validate_tasks` | Validate task YAML definitions |
 | `uv_sync` | Install/sync project dependencies |

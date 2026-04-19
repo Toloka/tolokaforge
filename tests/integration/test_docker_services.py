@@ -127,15 +127,15 @@ orchestrator:
 
             assert result.returncode == 0, f"Trial failed: {result.stderr}"
             # Check for task loading (new logging format or CLI output)
-            assert (
-                "Tasks loaded" in result.stdout or "Found 1 tasks" in result.stdout
-            ), f"Task not loaded. Output: {result.stdout}"
-            assert (
-                "Starting new run" in result.stdout or "run_id" in result.stdout
-            ), f"Trial did not start. Output: {result.stdout}"
-            assert (
-                "Run complete" in result.stdout or "✓" in result.stdout
-            ), f"Trial did not complete. Output: {result.stdout}"
+            assert "Tasks loaded" in result.stdout or "Found 1 tasks" in result.stdout, (
+                f"Task not loaded. Output: {result.stdout}"
+            )
+            assert "Starting new run" in result.stdout or "run_id" in result.stdout, (
+                f"Trial did not start. Output: {result.stdout}"
+            )
+            assert "Run complete" in result.stdout or "✓" in result.stdout, (
+                f"Trial did not complete. Output: {result.stdout}"
+            )
 
             # The orchestrator appends a timestamp to the output dir
             # (e.g., "/tmp/output_20260418_183000"), so find the actual dir.

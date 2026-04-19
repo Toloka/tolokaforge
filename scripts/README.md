@@ -11,8 +11,8 @@ scripts/
 ├── with_profile.sh              # Load shell profile and execute a command
 │
 ├── lint/                        # Code quality scripts
-│   ├── run_black.sh             # Run black formatter
-│   └── run_ruff.sh              # Run ruff linter and formatter
+│   ├── run_black.sh             # Run black formatter (legacy, kept for compatibility)
+│   └── run_ruff.sh              # Run ruff linter and formatter (primary)
 │
 ├── setup/                       # Development environment setup
 │   ├── create_python_venv.sh    # Full dev environment setup (uv, playwright, docker)
@@ -86,16 +86,8 @@ Runs ruff linter and formatter on the codebase.
 ./scripts/lint/run_ruff.sh --check
 ```
 
-### `run_black.sh`
-Runs black formatter on the codebase.
-
-```bash
-# Format code
-./scripts/lint/run_black.sh
-
-# Check only (for CI, exits non-zero on issues)
-./scripts/lint/run_black.sh --check
-```
+### `run_black.sh` (legacy)
+Runs black formatter on the codebase. Kept for compatibility — CI uses `ruff format` only.
 
 ---
 
@@ -139,8 +131,7 @@ uv run pre-commit install
 
 **What the hooks check:**
 - **ruff**: Python linting (auto-fixes issues when possible)
-- **ruff-format**: Code formatting
-- **black**: Python code formatting
+- **ruff-format**: Code formatting (drop-in black replacement)
 
 **Manual usage:**
 
@@ -164,7 +155,7 @@ make lint
 # Auto-fix linting issues
 make lint-fix
 
-# Format code (black + ruff format)
+# Format code (ruff format)
 make format
 
 # Check formatting only - CI ready
