@@ -171,8 +171,11 @@ jobs:
           name: tolokaforge-dist
           path: dist/
 
+      - name: List downloaded files
+        run: find dist/ -type f
+
       - name: Publish to TestPyPI
-        run: uv publish --publish-url https://test.pypi.org/legacy/ --trusted-publishing always
+        run: uv publish dist/* --publish-url https://test.pypi.org/legacy/ --trusted-publishing always
 
   publish-pypi:
     name: Publish to PyPI
@@ -192,8 +195,11 @@ jobs:
           name: tolokaforge-dist
           path: dist/
 
+      - name: List downloaded files
+        run: find dist/ -type f
+
       - name: Publish to PyPI
-        run: uv publish --trusted-publishing always
+        run: uv publish dist/* --trusted-publishing always
 
   github-release:
     name: Create GitHub Release
