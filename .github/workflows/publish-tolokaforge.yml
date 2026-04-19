@@ -124,7 +124,12 @@ jobs:
           cat tolokaforge/__init__.py
 
       - name: Build package
-        run: uv build
+        run: |
+          if [ "${{ github.event.inputs.stub }}" = "true" ]; then
+            uv build --wheel
+          else
+            uv build
+          fi
 
       - name: Verify package contents
         run: |

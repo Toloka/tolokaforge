@@ -119,7 +119,7 @@ jobs:
       - name: Build package
         run: |
           if [ "${{ github.event.inputs.stub }}" = "true" ]; then
-            cd _stub_build && uv build
+            cd _stub_build && uv build --wheel
           else
             uv build --package tolokaforge-adapter-terminal-bench
           fi
