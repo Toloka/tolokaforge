@@ -36,6 +36,7 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: |
             You are reviewing a PR for Tolokaforge — an LLM tool-use benchmarking harness.
             Read AGENTS.md for full project rules before reviewing.
