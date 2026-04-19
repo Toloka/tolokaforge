@@ -13,6 +13,11 @@ on:
         options:
           - testpypi
           - pypi
+      stub:
+        description: "Publish a minimal stub package (v0.0.1) to reserve the name"
+        required: false
+        type: boolean
+        default: false
 
 # Cancel in-progress runs for the same tag
 concurrency:
@@ -33,6 +38,80 @@ jobs:
 
       - name: Install Python
         run: uv python install 3.12
+
+      - name: Prepare stub package
+        if: github.event.inputs.stub == 'true'
+        run: |
+          # Replace repo source with a minimal placeholder package
+          rm -rf tolokaforge
+          mkdir -p tolokaforge
+
+          cat > tolokaforge/__init__.py << 'STUB_EOF'
+          """Tolokaforge - LLM Tool-Use Benchmarking Harness.
+
+          This is a placeholder package. The full release is coming soon.
+          See https://github.com/Toloka/tolokaforge for more information.
+          """
+
+          __version__ = "0.0.1"
+          STUB_EOF
+
+          cat > pyproject.toml << 'TOML_EOF'
+          [build-system]
+          requires = ["hatchling"]
+          build-backend = "hatchling.build"
+
+          [project]
+          name = "tolokaforge"
+          version = "0.0.1"
+          description = "Tolokaforge - LLM Tool-Use Benchmarking Harness"
+          readme = "README.md"
+          requires-python = ">=3.10"
+          license = {text = "Apache-2.0"}
+          authors = [
+              {name = "Tolokaforge Contributors"},
+          ]
+          keywords = [
+              "llm",
+              "benchmark",
+              "tool-use",
+              "agents",
+              "evaluation",
+              "litellm",
+              "testing",
+          ]
+          classifiers = [
+              "Development Status :: 1 - Planning",
+              "Intended Audience :: Developers",
+              "Intended Audience :: Science/Research",
+              "License :: OSI Approved :: Apache Software License",
+              "Operating System :: OS Independent",
+              "Programming Language :: Python :: 3",
+              "Programming Language :: Python :: 3.10",
+              "Programming Language :: Python :: 3.11",
+              "Programming Language :: Python :: 3.12",
+              "Topic :: Scientific/Engineering :: Artificial Intelligence",
+              "Topic :: Software Development :: Testing",
+          ]
+          dependencies = []
+
+          [project.urls]
+          Homepage = "https://github.com/Toloka/tolokaforge"
+          Repository = "https://github.com/Toloka/tolokaforge"
+          Documentation = "https://github.com/Toloka/tolokaforge/tree/main/docs"
+          Issues = "https://github.com/Toloka/tolokaforge/issues"
+
+          [tool.hatch.build.targets.wheel]
+          packages = ["tolokaforge"]
+          TOML_EOF
+
+          # Remove uv.lock to avoid workspace resolution
+          rm -f uv.lock
+
+          echo "Stub package prepared:"
+          cat pyproject.toml
+          echo "---"
+          cat tolokaforge/__init__.py
 
       - name: Build package
         run: uv build
