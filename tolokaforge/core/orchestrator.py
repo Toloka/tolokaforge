@@ -401,9 +401,24 @@ class Orchestrator:
                 if needs_playwright:
                     self.logger.info("Browser tool detected in tasks — enabling Playwright")
 
+                # Detect if any task needs the mock-web service
+                needs_mock_web = any(
+                    t.initial_state.mock_web is not None
+                    and t.initial_state.mock_web.get("base_url")
+                    for t in self.tasks
+                    if t.initial_state
+                )
+                if needs_mock_web:
+                    self.logger.info("Mock-web detected in tasks — enabling mock-web service")
+
+                # Collect task pack paths for mock-web file serving
+                task_packs = self.config.evaluation.task_packs if self.config.evaluation else None
+
                 self.logger.info("Creating service stack (db-service + runner)")
                 service_stack = core_stack(
                     enable_playwright=needs_playwright,
+                    enable_mock_web=needs_mock_web,
+                    task_packs=task_packs,
                 )
                 self.logger.info(
                     "Building Docker images and starting containers "
@@ -1624,7 +1639,28 @@ Try to be helpful and always follow the policy."""
 
         # 4. Minimal default fallback
         # Tool schemas are sent separately via function calling API, NOT in system prompt
-        return "You are a helpful assistant."
+        # Enrich the default prompt with task-specific context when available.
+        parts = ["You are a helpful assistant."]
+
+        # Add task guidance from policies
+        guidance = task.policies.get("guidance", [])
+        if guidance:
+            parts.append("\nGuidance:")
+            for g in guidance:
+                parts.append(f"- {g}")
+
+        # Add browser URL if configured so the agent knows where to navigate
+        browser_config = task.tools.agent.get("browser", {}) if task.tools else {}
+        if isinstance(browser_config, dict):
+            browser_url = browser_config.get("initial_url")
+            if browser_url:
+                parts.append(f"\nThe web portal is available at: {browser_url}")
+                parts.append(
+                    "Navigate to this URL to access the portal content. "
+                    "Do not guess other URLs or ports."
+                )
+
+        return "\n".join(parts)
 
     def _generate_reports(self, output_dir: Path) -> None:
         """Generate aggregate reports with pass@k"""

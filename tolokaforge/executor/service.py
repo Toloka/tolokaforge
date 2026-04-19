@@ -74,7 +74,9 @@ class ExecutorServiceImpl(executor_pb2_grpc.ExecutorServiceServicer):
                 "db_update": lambda: DBUpdateTool(env_state.json_db_url),
                 "search_kb": lambda: SearchKBTool(env_state.rag_service_url),
                 "http_request": lambda: HTTPRequestTool(),
-                "browser": lambda: BrowserTool(),
+                "browser": lambda: BrowserTool(
+                    initial_url=env_state.mock_web_url if env_state.mock_web_url else None,
+                ),
             }
 
             num_registered = 0

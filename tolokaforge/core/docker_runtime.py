@@ -28,6 +28,16 @@ from tolokaforge.tools.registry import ToolResult
 logger = logging.getLogger(__name__)
 
 
+def _proto_score_to_optional(value: float) -> float | None:
+    """Convert proto sentinel -1.0 to None for unconfigured grade components.
+
+    In the gRPC protocol, unconfigured grade components use -1.0 as a sentinel
+    (protobuf float fields default to 0.0, so we can't use None directly).
+    Convert negative sentinels to proper None for the Python ``GradeComponents`` model.
+    """
+    return None if value < 0 else value
+
+
 class RunnerClient:
     """Client for communicating with Runner service via gRPC
 
@@ -306,13 +316,25 @@ class RunnerClient:
                     "reasons": grade.reasons,
                     "state_diff_json": grade.state_diff_json if grade.state_diff_json else None,
                     "components": {
-                        "state_checks": grade.components.state_checks if grade.components else -1.0,
-                        "transcript_rules": (
-                            grade.components.transcript_rules if grade.components else -1.0
+                        "state_checks": (
+                            _proto_score_to_optional(grade.components.state_checks)
+                            if grade.components
+                            else None
                         ),
-                        "llm_judge": grade.components.llm_judge if grade.components else -1.0,
+                        "transcript_rules": (
+                            _proto_score_to_optional(grade.components.transcript_rules)
+                            if grade.components
+                            else None
+                        ),
+                        "llm_judge": (
+                            _proto_score_to_optional(grade.components.llm_judge)
+                            if grade.components
+                            else None
+                        ),
                         "custom_checks": (
-                            grade.components.custom_checks if grade.components else -1.0
+                            _proto_score_to_optional(grade.components.custom_checks)
+                            if grade.components
+                            else None
                         ),
                     },
                     "custom_checks": [

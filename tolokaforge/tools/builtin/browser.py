@@ -667,25 +667,21 @@ class BrowserTool(Tool):
 
     @staticmethod
     def _resolve_url(url: str) -> str:
-        """Normalize Docker-internal hostnames to localhost equivalents.
+        """Map short service hostnames to full Docker container names.
 
-        Legacy compatibility shim. Inside Docker containers the service
-        hostnames (mock-web, json-db, etc.) resolve natively, so the
-        replacements are effectively no-ops. Kept for safety in case the
-        browser tool is ever exercised outside a container network.
+        Task configs use short names (mock-web, json-db) but the actual Docker
+        containers are prefixed (tolokaforge-mock-web, tolokaforge-db-service).
+        Docker DNS on user-defined networks resolves by container name, so we
+        map the short aliases to their full container names.
         """
-        # Map Docker service hostnames to localhost equivalents
-        docker_hosts = {
-            "mock-web:8080": "localhost:8080",
-            "mock-web": "localhost",
-            "json-db:8000": "localhost:8000",
-            "json-db": "localhost",
-            "rag-service:8001": "localhost:8001",
-            "rag-service": "localhost",
+        docker_aliases = {
+            "mock-web": "tolokaforge-mock-web",
+            "json-db": "tolokaforge-db-service",
+            "rag-service": "tolokaforge-rag-service",
         }
-        for docker_host, local_host in docker_hosts.items():
-            if docker_host in url:
-                return url.replace(docker_host, local_host)
+        for short_name, full_name in docker_aliases.items():
+            if short_name in url:
+                return url.replace(short_name, full_name)
         return url
 
     def _normalize_navigation_url(self, url: str) -> str:

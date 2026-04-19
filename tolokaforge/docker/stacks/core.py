@@ -28,6 +28,9 @@ def core_stack(
     runner_port: int | Literal["auto"] = "auto",
     enable_dind: bool = False,
     enable_playwright: bool = False,
+    enable_mock_web: bool = False,
+    mock_web_port: int | Literal["auto"] = "auto",
+    task_packs: list[str] | None = None,
 ) -> ServiceStack:
     """Create a core service stack with DB service and Runner.
 
@@ -42,6 +45,12 @@ def core_stack(
             Runner connects via ``DOCKER_HOST=tcp://dind:2375``.
         enable_playwright: Install Playwright + Chromium in the Runner
             image for browser tool support. Detected automatically from tasks.
+        enable_mock_web: Add mock-web service for browser tasks that
+            need an HTTP server hosting task HTML files.
+        mock_web_port: Host port for mock-web service (default: ``"auto"``).
+        task_packs: Absolute paths to task pack directories. These are
+            bind-mounted into the mock-web container so it can serve
+            static task files (HTML, CSS, etc.).
 
     Returns:
         ServiceStack configured with db-service and runner.
@@ -151,6 +160,45 @@ def core_stack(
         build_args=runner_build_args,
     )
     services.append(runner)
+
+    # Mock Web Service — static file server for browser tasks
+    if enable_mock_web:
+        mock_web_mounts: list[Mount] = []
+        mock_web_env = {
+            "PYTHONUNBUFFERED": "1",
+            "JSON_DB_URL": "http://tolokaforge-db-service:8000",
+        }
+        # Bind-mount each task pack so mock-web can serve static HTML files
+        if task_packs:
+            import os
+
+            resolved_paths: list[str] = []
+            for idx, pack_path in enumerate(task_packs):
+                abs_path = os.path.abspath(pack_path)
+                container_path = f"/app/task_packs/{idx}"
+                mock_web_mounts.append(Mount.bind(abs_path, container_path, read_only=True))
+                resolved_paths.append(container_path)
+            mock_web_env["TASKS_DIRS"] = ",".join(resolved_paths)
+
+        mock_web = ServiceDefinition(
+            name="mock-web",
+            image_name="tolokaforge-mock-web",
+            dockerfile="docker/mock_web.Dockerfile",
+            context=".",
+            context_files=[
+                "tolokaforge/env/mock_web_service/",
+            ],
+            ports=[PortConfig(container_port=8080, host_port=mock_web_port)],
+            environment=mock_web_env,
+            depends_on=["db-service"],
+            mounts=mock_web_mounts,
+            networks=["runner-net"],
+        )
+        services.append(mock_web)
+
+        # Tell the Runner where mock-web lives so it can pass the URL to the
+        # BrowserTool and executor.
+        runner_env["MOCK_WEB_URL"] = "http://tolokaforge-mock-web:8080"
 
     stack.add_services(services)
     return stack

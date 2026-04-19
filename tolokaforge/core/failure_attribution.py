@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from typing import Any
 
@@ -11,8 +12,14 @@ DETERMINISTIC_CLASSES = {
     "tool_arguments",
     "tool_execution",
     "grader_contract",
+    "infrastructure",
     "timeout_or_resource",
 }
+
+_CONNECTION_ERROR_RE = re.compile(
+    r"ERR_CONNECTION_REFUSED|ECONNREFUSED|Connection refused|net::ERR_",
+    re.IGNORECASE,
+)
 
 
 def is_failed_trajectory(trajectory: Trajectory) -> bool:
@@ -86,6 +93,48 @@ def attribute_failure(trajectory: Trajectory) -> dict[str, Any]:
                     {"kind": "grade_reasons", "keys": sorted(trajectory.grade.reasons.keys())}
                 )
 
+        # --- Extended heuristics for richer evidence ---
+
+        # Detect connection errors in conversation messages (infrastructure issues)
+        if not deterministic:
+            connection_errors = 0
+            for msg in trajectory.messages:
+                if msg.content and _CONNECTION_ERROR_RE.search(msg.content):
+                    connection_errors += 1
+            if connection_errors > 0:
+                failure_class = "infrastructure"
+                deterministic = True
+                evidence.append(
+                    {
+                        "kind": "connection_errors",
+                        "count": connection_errors,
+                    }
+                )
+
+        # Extract FAIL patterns from grading reasons string
+        if not evidence and trajectory.grade and isinstance(trajectory.grade.reasons, str):
+            reasons = trajectory.grade.reasons
+            fail_patterns = [r.strip() for r in reasons.split("|") if "FAIL" in r.upper()]
+            if fail_patterns:
+                evidence.append(
+                    {
+                        "kind": "grade_fail_patterns",
+                        "patterns": fail_patterns[:5],
+                    }
+                )
+
+        # Detect missing required tool calls (grading expects files but tool was never called)
+        if trajectory.grade and isinstance(trajectory.grade.reasons, str):
+            tools_used = {log.get("tool") for log in trajectory.tool_log}
+            if "No files match" in trajectory.grade.reasons and "write_file" not in tools_used:
+                evidence.append(
+                    {
+                        "kind": "missing_tool",
+                        "tool": "write_file",
+                        "detail": "Grading expects output files but write_file was never called",
+                    }
+                )
+
     confidence = 1.0 if deterministic else 0.5
     return {
         "task_id": trajectory.task_id,
@@ -118,7 +167,7 @@ def summarize_failure_attributions(attributions: list[dict[str, Any]]) -> dict[s
     total = len(attributions)
     return {
         "total_failed_attempts": total,
-        "deterministic_attribution_coverage": (deterministic_count / total) if total else 0.0,
+        "deterministic_attribution_coverage": (deterministic_count / total) if total else None,
         "by_failure_class": dict(by_class),
         "by_tool": dict(by_tool),
     }
