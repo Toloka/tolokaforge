@@ -55,7 +55,15 @@ jobs:
           __version__ = "0.0.1"
           STUB_EOF
 
-          cp external_adapters/tolokaforge-adapter-terminal-bench/README.md _stub_build/README.md
+          cat > _stub_build/README.md << 'README_EOF'
+          # tolokaforge-adapter-terminal-bench
+
+          > **This is a placeholder release.** The full package is coming soon.
+
+          Terminal-bench adapter plugin for [Tolokaforge](https://github.com/Toloka/tolokaforge).
+
+          For more information, visit [github.com/Toloka/tolokaforge](https://github.com/Toloka/tolokaforge).
+          README_EOF
 
           cat > _stub_build/pyproject.toml << 'TOML_EOF'
           [build-system]

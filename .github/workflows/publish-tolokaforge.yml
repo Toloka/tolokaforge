@@ -46,6 +46,16 @@ jobs:
           rm -rf tolokaforge
           mkdir -p tolokaforge
 
+          cat > README.md << 'README_EOF'
+          # Tolokaforge
+
+          > **This is a placeholder release.** The full package is coming soon.
+
+          A benchmarking harness for evaluating tool-using LLM agents.
+
+          For more information, visit [github.com/Toloka/tolokaforge](https://github.com/Toloka/tolokaforge).
+          README_EOF
+
           cat > tolokaforge/__init__.py << 'STUB_EOF'
           """Tolokaforge - LLM Tool-Use Benchmarking Harness.
 
