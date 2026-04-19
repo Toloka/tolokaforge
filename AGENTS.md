@@ -75,7 +75,7 @@ uv pip list
 
 ### Linting and Formatting
 
-We use `ruff` for linting and formatting Python code.
+We use `ruff` for both linting and formatting (drop-in `black` replacement).
 
 ```bash
 # Check for linting issues
@@ -85,10 +85,10 @@ uv run ruff check tolokaforge tests scripts tools
 uv run ruff check . --fix
 
 # Format code
-uv run ruff format .
+uv run ruff format tolokaforge tests scripts tools
 
 # Format check (CI)
-uv run black --check tolokaforge tests scripts tools && uv run ruff format --check tolokaforge tests scripts tools
+uv run ruff format --check tolokaforge tests scripts tools
 
 # All-in-one lint script
 scripts/lint/run_ruff.sh
@@ -356,18 +356,51 @@ No scripts, data files, temporary documents, or logs in root.
 3. Ensure grading checks agent-produced outcomes, not default/pre-filled values.
 4. Route app/task state through the state service so grading can verify deterministically.
 
+## CI / GitHub Actions
+
+### Workflows
+
+| Workflow | Trigger | Purpose |
+|---|---|---|
+| `ci.yml` | Push to `main`, PRs, manual | Lint, test matrix, build, integration, validate |
+| `claude-review.yml` | PR opened/synced, `@claude` comment | AI code review via Claude Code Action |
+| `publish-tolokaforge.yml` | Tag `v*`, manual | Publish tolokaforge to PyPI |
+| `publish-adapter-terminal-bench.yml` | Tag `adapter-terminal-bench-v*`, manual | Publish adapter to PyPI |
+
+### CI Jobs (ci.yml)
+
+| Job | What it checks |
+|---|---|
+| **lint** | `ruff check` + `ruff format --check` |
+| **test** | Unit + canonical tests on Python 3.11, 3.12 |
+| **build** | Build both packages, verify wheel contents |
+| **integration** | Docker-based integration tests (auto-skips missing API keys) |
+| **validate** | Task YAML definitions (`examples/**/task.yaml`) |
+
+### Required GitHub Secrets
+
+| Secret | Required by | Notes |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | `claude-review.yml`, integration tests | **Required** for Claude Code reviewer |
+
+Optional secrets (integration tests auto-skip without them):
+
+| Secret | Purpose |
+|---|---|
+| `OPENAI_API_KEY` | OpenAI LLM integration tests |
+| `OPENROUTER_API_KEY` | OpenRouter LLM integration tests |
+| `NOVA_API_KEY` | Nova API integration tests |
+
 ## Known Gotchas
 
 1. **Browser automation** requires Chromium: `uv run playwright install --with-deps chromium`
 2. **Golden-set tests** depend on Git LFS data under `tests/data/projects/`. Missing LFS content → fixture failures. Run `git lfs pull` first if needed.
-3. **Formatting drift**: `ruff format --check` may report pre-existing drift in ~8 files. Known, not your fault.
-4. **`black --check`** exits non-zero on pre-existing files. Same known drift.
-5. **Benchmark runs** and e2e flows require API keys in `.env`, accessed via `SecretManager` (`tolokaforge/secrets`). Unit and canonical tests do not need secrets.
-6. **10 tests in `test_golden_set_projects.py`** need `git lfs pull`. Not required for normal development.
-7. **JSON DB update API** uses JSON Patch-style operations: `{"ops": [{"op": "replace", "path": "$.field", "value": ...}]}`. Supported ops: `add`, `replace`, `remove`.
-8. **Service startup**: Start both services in background (`&`) for JSON DB (port 8000) + Mock Web (port 8080). Mock Web requires `JSON_DB_URL=http://localhost:8000`.
-9. **`tolokaforge run`** requires at least one LLM API key in `.env` (Anthropic, OpenAI, etc.).
-10. **LLM judge in Runner** requires API keys injected into the container. The orchestrator auto-derives needed keys from `grading.yaml` `llm_judge.model_ref` and passes them via `core_stack(secret_keys=...)` → `ServiceDefinition.secret_keys` → container env vars.
+3. **Benchmark runs** and e2e flows require API keys in `.env`, accessed via `SecretManager` (`tolokaforge/secrets`). Unit and canonical tests do not need secrets.
+4. **10 tests in `test_golden_set_projects.py`** need `git lfs pull`. Not required for normal development.
+5. **JSON DB update API** uses JSON Patch-style operations: `{"ops": [{"op": "replace", "path": "$.field", "value": ...}]}`. Supported ops: `add`, `replace`, `remove`.
+6. **Service startup**: Start both services in background (`&`) for JSON DB (port 8000) + Mock Web (port 8080). Mock Web requires `JSON_DB_URL=http://localhost:8000`.
+7. **`tolokaforge run`** requires at least one LLM API key in `.env` (Anthropic, OpenAI, etc.).
+8. **LLM judge in Runner** requires API keys injected into the container. The orchestrator auto-derives needed keys from `grading.yaml` `llm_judge.model_ref` and passes them via `core_stack(secret_keys=...)` → `ServiceDefinition.secret_keys` → container env vars.
 
 ## Detailed Documentation
 

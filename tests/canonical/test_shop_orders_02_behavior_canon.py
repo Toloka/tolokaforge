@@ -369,9 +369,9 @@ class TestShopOrders02McpTools:
 
         assert result["status"] == "paid"
         customer = next(c for c in data["customers"] if c["id"] == "C-101")
-        assert (
-            abs(customer["balance"] - 141.01) < 0.001
-        ), f"Expected balance 141.01 (300.00 − 158.99), got {customer['balance']}"
+        assert abs(customer["balance"] - 141.01) < 0.001, (
+            f"Expected balance 141.01 (300.00 − 158.99), got {customer['balance']}"
+        )
 
     def test_confirm_payment_already_paid_returns_error(self, mcp_tools):
         """confirm_payment returns {\"error\": ...} if the order is already paid."""
@@ -408,9 +408,9 @@ class TestShopOrders02StateAfterGoldenActions:
         data = _fresh_data()
         for action in actions:
             result = mcp_tools[action["name"]].invoke(data=data, **action["kwargs"])
-            assert (
-                "error" not in result
-            ), f"Golden action '{action['name']}' returned an error: {result}"
+            assert "error" not in result, (
+                f"Golden action '{action['name']}' returned an error: {result}"
+            )
 
         order = data["orders"][0]
         customer = data["customers"][0]
@@ -571,16 +571,16 @@ class TestShopOrders02GradingPipeline:
             self._passing_trajectory(),
             self._expected_final_env_state(mcp_tools),
         )
-        assert grade.score == pytest.approx(
-            1.0
-        ), f"Expected score=1.0, got {grade.score}. Reasons: {grade.reasons}"
+        assert grade.score == pytest.approx(1.0), (
+            f"Expected score=1.0, got {grade.score}. Reasons: {grade.reasons}"
+        )
         assert grade.binary_pass is True
-        assert grade.components.state_checks == pytest.approx(
-            1.0
-        ), f"state_checks={grade.components.state_checks}"
-        assert grade.components.transcript_rules == pytest.approx(
-            1.0
-        ), f"transcript_rules={grade.components.transcript_rules}"
+        assert grade.components.state_checks == pytest.approx(1.0), (
+            f"state_checks={grade.components.state_checks}"
+        )
+        assert grade.components.transcript_rules == pytest.approx(1.0), (
+            f"transcript_rules={grade.components.transcript_rules}"
+        )
 
     def test_failing_trajectory_does_not_pass_threshold(self, mcp_tools):
         """No tool calls + unchanged DB → score < pass_threshold (0.75) → binary_pass=False."""
@@ -589,9 +589,9 @@ class TestShopOrders02GradingPipeline:
             self._no_tool_calls_trajectory(),
             {"db": _fresh_data()},  # unchanged state
         )
-        assert (
-            grade.score < 0.75
-        ), f"Failing trajectory must score below pass_threshold=0.75, got {grade.score}"
+        assert grade.score < 0.75, (
+            f"Failing trajectory must score below pass_threshold=0.75, got {grade.score}"
+        )
         assert grade.binary_pass is False
 
     def test_correct_transcript_wrong_db_state_still_fails(self, mcp_tools):
@@ -605,12 +605,12 @@ class TestShopOrders02GradingPipeline:
             self._passing_trajectory(),
             {"db": _fresh_data()},  # ← unchanged DB, but perfect transcript
         )
-        assert grade.components.state_checks == pytest.approx(
-            0.0
-        ), f"state_checks should be 0 for unchanged DB, got {grade.components.state_checks}"
-        assert (
-            grade.binary_pass is False
-        ), "state_checks weight (0.70) means even a perfect transcript cannot save a 0 state score"
+        assert grade.components.state_checks == pytest.approx(0.0), (
+            f"state_checks should be 0 for unchanged DB, got {grade.components.state_checks}"
+        )
+        assert grade.binary_pass is False, (
+            "state_checks weight (0.70) means even a perfect transcript cannot save a 0 state score"
+        )
 
     def test_correct_db_state_missing_communicate_info_reduces_score(self, mcp_tools):
         """transcript_rules < 1.0 when required communicate_info values are absent.
@@ -755,9 +755,9 @@ class TestShopOrders02McpTransport:
         request, confirm_payment would return 'order not found'.
         """
         result = mcp_server.call_tool("confirm_payment", {"order_id": "O-001"})
-        assert (
-            "error" not in result
-        ), f"confirm_payment failed — state not persisted across JSON-RPC calls: {result}"
+        assert "error" not in result, (
+            f"confirm_payment failed — state not persisted across JSON-RPC calls: {result}"
+        )
         assert result["status"] == "paid"
 
     def test_get_state_shows_correct_mutations_after_full_workflow(self, mcp_server):
@@ -848,9 +848,9 @@ class TestShopOrders02AdapterGradingIntegration:
             env,
         )
         assert grade.binary_pass is False
-        assert grade.components.state_checks == pytest.approx(
-            0.0
-        ), f"state_checks should be 0 for unchanged DB, got {grade.components.state_checks}"
+        assert grade.components.state_checks == pytest.approx(0.0), (
+            f"state_checks should be 0 for unchanged DB, got {grade.components.state_checks}"
+        )
 
     def test_adapter_task_dir_points_to_functional_mcp_server(self, real_adapter):
         """adapter.get_task_dir() must return tests/data/tasks/shop_orders_02/ with
@@ -861,12 +861,12 @@ class TestShopOrders02AdapterGradingIntegration:
         mcp_path = task_dir / "mcp_server.py"
         assert mcp_path.exists(), f"mcp_server.py not found at {mcp_path}"
         content = mcp_path.read_text()
-        assert (
-            "TOOLS" in content
-        ), f"mcp_server.py at {mcp_path} has no TOOLS — golden_action execution will fail"
-        assert (
-            "create_server" in content
-        ), f"mcp_server.py at {mcp_path} does not use create_server — may not register tools"
+        assert "TOOLS" in content, (
+            f"mcp_server.py at {mcp_path} has no TOOLS — golden_action execution will fail"
+        )
+        assert "create_server" in content, (
+            f"mcp_server.py at {mcp_path} does not use create_server — may not register tools"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -899,9 +899,9 @@ class TestShopOrders02TrajectoryRoundTrip:
             tc["name"] for msg in raw["messages"] for tc in (msg.get("tool_calls") or [])
         ]
         for expected_name in ("list_products", "get_customer", "place_order", "confirm_payment"):
-            assert (
-                expected_name in all_tool_names
-            ), f"'{expected_name}' not found in reloaded tool_calls: {all_tool_names}"
+            assert expected_name in all_tool_names, (
+                f"'{expected_name}' not found in reloaded tool_calls: {all_tool_names}"
+            )
 
     def test_nested_place_order_arguments_survive_yaml_round_trip(self, tmp_path):
         """place_order nested items list survives YAML serialization with correct types.

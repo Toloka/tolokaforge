@@ -42,9 +42,9 @@ def canon_snapshot(request):
                     json.dumps(actual, indent=2, sort_keys=True, default=str) + "\n"
                 )
                 return
-            assert (
-                golden_path.exists()
-            ), f"Golden snapshot missing: {golden_path}. Run --update-canon"
+            assert golden_path.exists(), (
+                f"Golden snapshot missing: {golden_path}. Run --update-canon"
+            )
             expected = json.loads(golden_path.read_text())
             assert actual == expected, f"Mismatch with golden {golden_path}"
 

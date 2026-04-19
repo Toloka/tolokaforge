@@ -6,16 +6,11 @@
 exclude: ^(contrib/|tests/data/projects/)
 
 repos:
-  # Ruff - Fast Python linter (linting only, not formatting)
+  # Ruff - Fast Python linter and formatter
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.14.4  # Must match pyproject.toml [project.optional-dependencies.dev]
+    rev: v0.14.4  # Must match pyproject.toml [dependency-groups] dev
     hooks:
       - id: ruff
         args: [--fix, --config, pyproject.toml]
-
-  # Black - Python code formatter
-  - repo: https://github.com/psf/black
-    rev: 25.11.0  # Must match pyproject.toml [project.optional-dependencies.dev]
-    hooks:
-      - id: black
+      - id: ruff-format
         args: [--config, pyproject.toml]

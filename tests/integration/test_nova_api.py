@@ -312,15 +312,15 @@ class TestNovaAPIAvailability:
                 # Validate pricing is reasonable
                 assert pricing["input"] > 0, f"Model {model_name} has zero input pricing"
                 assert pricing["output"] > 0, f"Model {model_name} has zero output pricing"
-                assert (
-                    pricing["input"] < 100
-                ), f"Model {model_name} input pricing seems too high: ${pricing['input']}/1M"
-                assert (
-                    pricing["output"] < 100
-                ), f"Model {model_name} output pricing seems too high: ${pricing['output']}/1M"
-                assert (
-                    pricing["output"] >= pricing["input"]
-                ), f"Model {model_name} output pricing should be >= input pricing"
+                assert pricing["input"] < 100, (
+                    f"Model {model_name} input pricing seems too high: ${pricing['input']}/1M"
+                )
+                assert pricing["output"] < 100, (
+                    f"Model {model_name} output pricing seems too high: ${pricing['output']}/1M"
+                )
+                assert pricing["output"] >= pricing["input"], (
+                    f"Model {model_name} output pricing should be >= input pricing"
+                )
 
         # Ensure we have at least basic coverage of major models
         major_models = {"Nova Pro v3", "nova-orchestrator-v1", "nova-lite-v2", "nova-premier-v1"}
@@ -329,9 +329,9 @@ class TestNovaAPIAvailability:
 
         if available_major:
             major_coverage = (len(covered_major) / len(available_major)) * 100
-            assert (
-                major_coverage >= 50
-            ), f"Low coverage of major Nova models: {len(covered_major)}/{len(available_major)}"
+            assert major_coverage >= 50, (
+                f"Low coverage of major Nova models: {len(covered_major)}/{len(available_major)}"
+            )
 
 
 @pytest.mark.integration

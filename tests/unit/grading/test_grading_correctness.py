@@ -460,12 +460,12 @@ class TestLLMJudgePlaceholderStatus:
 
         score, binary_pass = combine_grade_components(components, grading_config)
 
-        assert (
-            score == 0.0
-        ), f"Score should be 0.0 when configured grading has no evaluated components, got {score}"
-        assert (
-            binary_pass is False
-        ), "binary_pass should be False when grading was configured but nothing evaluated"
+        assert score == 0.0, (
+            f"Score should be 0.0 when configured grading has no evaluated components, got {score}"
+        )
+        assert binary_pass is False, (
+            "binary_pass should be False when grading was configured but nothing evaluated"
+        )
 
     def test_combine_grade_components_passes_when_nothing_configured(self):
         """
