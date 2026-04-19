@@ -1,4 +1,4 @@
-"""Secret providers for the Docker Foundation Layer.
+"""Secret providers for the secret management system.
 
 This module provides abstract and concrete implementations of secret providers
 that can retrieve secrets from various sources.
@@ -8,7 +8,7 @@ Providers:
     - DotEnvProvider: Parses a .env file (lazy-loaded, does NOT modify os.environ)
 
 Example:
-    >>> from tolokaforge.docker.secrets.providers import EnvProvider, DotEnvProvider
+    >>> from tolokaforge.secrets.providers import EnvProvider, DotEnvProvider
     >>> env_provider = EnvProvider()
     >>> dotenv_provider = DotEnvProvider(".env")
     >>> api_key = env_provider.get_secret("API_KEY")
@@ -111,6 +111,11 @@ class EnvProvider(SecretProvider):
             True if the environment variable is set, False otherwise.
         """
         return key in os.environ
+
+    def list_keys(self) -> list[str]:
+        """Return env var names that look like secrets (API keys, tokens, etc.)."""
+        secret_patterns = ("API_KEY", "API_KEYS", "API_BASE", "BASE_URL", "SECRET", "TOKEN")
+        return sorted(k for k in os.environ if any(p in k for p in secret_patterns))
 
 
 class DotEnvProvider(SecretProvider):
@@ -304,6 +309,12 @@ class DotEnvProvider(SecretProvider):
         assert self._secrets is not None  # noqa: S101
         return key in self._secrets
 
+    def list_keys(self) -> list[str]:
+        """Return all key names from the .env file."""
+        self._load()
+        assert self._secrets is not None  # noqa: S101
+        return sorted(self._secrets.keys())
+
     def reload(self) -> None:
         """Force reload the .env file.
 
@@ -313,3 +324,30 @@ class DotEnvProvider(SecretProvider):
         self._loaded = False
         self._secrets = None
         self._load()
+
+
+class DictProvider(SecretProvider):
+    """Provider backed by a pre-resolved dictionary.
+
+    Used when secrets are transported as serialized data
+    (e.g., from orchestrator to Runner container via env var).
+
+    This allows the Runner container to have a proper SecretManager
+    without access to the original .env file or host environment.
+    """
+
+    def __init__(self, secrets: dict[str, str]) -> None:
+        self._secrets = dict(secrets)
+
+    def get_secret(self, key: str) -> str | None:
+        value = self._secrets.get(key)
+        if value is not None:
+            logger.debug("DictProvider: found secret '%s'", key)
+        return value
+
+    def has_secret(self, key: str) -> bool:
+        return key in self._secrets
+
+    def list_keys(self) -> list[str]:
+        """Return all available key names."""
+        return sorted(self._secrets.keys())

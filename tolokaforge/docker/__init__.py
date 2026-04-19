@@ -97,20 +97,20 @@ from tolokaforge.docker.network import Network, NetworkError
 from tolokaforge.docker.policy import Capability, ResourcePolicy
 from tolokaforge.docker.ports import PortAllocationError, PortConfig
 from tolokaforge.docker.registry import ImageRegistry
-from tolokaforge.docker.secrets import (
-    DotEnvProvider,
-    EnvProvider,
-    MissingSecretError,
-    SecretConfig,
-    SecretManager,
-    SecretProvider,
-)
 from tolokaforge.docker.stack import ServiceDefinition, ServiceStack, ServiceStatus
 from tolokaforge.docker.wait_for_services import (
     ServiceTarget,
     ServiceType,
     ServiceWaitError,
     wait_for_services,
+)
+from tolokaforge.secrets import (
+    DotEnvProvider,
+    EnvProvider,
+    MissingSecretError,
+    SecretConfig,
+    SecretManager,
+    SecretProvider,
 )
 
 __all__ = [

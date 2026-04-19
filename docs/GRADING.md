@@ -134,6 +134,46 @@ combine:
 
 ---
 
+## LLM Judge Evaluation in Runner
+
+The `llm_judge` grading component is evaluated by the **Runner** container (not the orchestrator). This keeps all grading co-located with execution and eliminates round-trips.
+
+### How It Works
+
+1. Task `grading.yaml` declares an `llm_judge` section with `model_ref`, `rubric`, and optional `output_schema`.
+2. The orchestrator derives which API keys the judge model needs from `model_ref` (e.g., `openrouter/anthropic/claude-sonnet-4-6` → `OPENROUTER_API_KEY`).
+3. Those keys are passed to the Runner container via `ServiceDefinition.secret_keys` → container environment variables, using `SecretManager.to_env_dict()`.
+4. The Runner calls [litellm](https://docs.litellm.ai/) directly with the configured model to evaluate the agent's transcript against the rubric.
+5. The judge score is combined with `state_checks` and `transcript_rules` per the `combine.weights` configuration.
+
+### Configuration
+
+```yaml
+llm_judge:
+  model_ref: "openrouter/anthropic/claude-sonnet-4-6"
+  rubric: |
+    Evaluate whether the agent completed the customer's request correctly.
+    Score 1.0 for full completion, 0.5 for partial, 0.0 for failure.
+  output_schema:
+    type: object
+    properties:
+      score:
+        type: number
+      reasoning:
+        type: string
+    required: [score, reasoning]
+
+combine:
+  weights: { state_checks: 0.6, transcript_rules: 0.2, llm_judge: 0.2 }
+  pass_threshold: 0.75
+```
+
+### CI Portability
+
+Public examples may use `mock/mock-judge` as `model_ref` so CI can run without live judge inference. For real evaluations, replace it with your production judge model.
+
+---
+
 ## Grading for RL Training
 
 Tasks used for RL training need grading that produces a meaningful signal — not always 1.0 or always 0.0.

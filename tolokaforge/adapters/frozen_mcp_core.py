@@ -869,6 +869,18 @@ class FrozenMcpCoreAdapter(BaseAdapter):
                 golden_actions=golden_actions,
             )
 
+        # Build LLM judge config
+        llm_judge_config = None
+        llm_judge_data = grading_data.get("llm_judge", {}) if grading_data else {}
+        if llm_judge_data and llm_judge_data.get("model_ref"):
+            from tolokaforge.runner.models import LLMJudgeConfig as RunnerLLMJudgeConfig
+
+            llm_judge_config = RunnerLLMJudgeConfig(
+                model_ref=llm_judge_data["model_ref"],
+                rubric=llm_judge_data.get("rubric", ""),
+                output_schema=llm_judge_data.get("output_schema", {}),
+            )
+
         combine_data = grading_data.get("combine", {}) if grading_data else {}
         grading_config = RunnerGradingConfig(
             combine_method=combine_data.get("method", "weighted"),
@@ -876,6 +888,7 @@ class FrozenMcpCoreAdapter(BaseAdapter):
             pass_threshold=combine_data.get("pass_threshold", 1.0),
             state_checks=state_checks,
             transcript_rules=transcript_rules,
+            llm_judge=llm_judge_config,
         )
 
         # ---- User simulator ----

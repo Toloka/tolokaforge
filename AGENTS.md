@@ -67,6 +67,7 @@ uv pip list
 - Virtual environment lives in `.venv`
 - For new dependencies, add to `pyproject.toml` and run `uv sync`
 - `uv` does **not** load `.env` — use `scripts/with_env.sh` wrapper when env vars are needed
+- In Python code, use `SecretManager` (`tolokaforge/secrets`) to access secrets — it reads `.env` via `DotEnvProvider` without polluting `os.environ`. `tolokaforge run` calls `init_default()` automatically. Do not use `os.environ.get()` or `load_dotenv()` for API keys.
 
 **Troubleshooting `uv` availability:** If you get `command not found: uv`, use `scripts/with_env.sh uv ...` — it loads the shell profile correctly in addition to `.env` variables.
 
@@ -158,18 +159,20 @@ uv run pytest -v 2>&1 | tee /tmp/test-output.log
 | `tolokaforge/adapters` | Benchmark adapters (native, frozen_mcp_core) |
 | `tolokaforge/tools` | Tool registry and builtin tools |
 | `tolokaforge/env` | Local environment services (JSON DB, mock web, RAG) |
+| `tolokaforge/secrets` | Secret management (SecretManager, providers, config) |
 | `examples/` | Example tasks and run configurations |
 
 ### Key Subsystems
 
 - **CLI** (`tolokaforge/cli`): Entry point for all commands — `run`, `validate`, `docker`, etc.
 - **Core** (`tolokaforge/core`): Orchestration engine, grading pipeline, metrics collection, model interfaces, and task search.
-- **Runner** (`tolokaforge/runner`): gRPC service managing benchmark execution, database clients, and tool instantiation.
+- **Runner** (`tolokaforge/runner`): gRPC service managing benchmark execution, database clients, tool instantiation, and LLM judge evaluation.
 - **Executor** (`tolokaforge/executor`): gRPC service that executes individual agent steps in isolated environments.
 - **Agent** (`tolokaforge/agent`): gRPC service wrapping LLM agent interactions.
 - **Adapters** (`tolokaforge/adapters`): Translate between task formats — native (built-in) and frozen_mcp_core.
 - **Tools** (`tolokaforge/tools`): Registry of builtin tools available to agents during benchmark runs.
 - **Environment Services** (`tolokaforge/env`): JSON DB state service, mock web service, and RAG service for local development.
+- **Secrets** (`tolokaforge/secrets`): Universal secret management via `SecretManager`. Reads `.env` via `DotEnvProvider` without polluting `os.environ`. CLI entry (`tolokaforge run`) calls `init_default()` automatically.
 
 ## Development Workflow
 
@@ -359,11 +362,12 @@ No scripts, data files, temporary documents, or logs in root.
 2. **Golden-set tests** depend on Git LFS data under `tests/data/projects/`. Missing LFS content → fixture failures. Run `git lfs pull` first if needed.
 3. **Formatting drift**: `ruff format --check` may report pre-existing drift in ~8 files. Known, not your fault.
 4. **`black --check`** exits non-zero on pre-existing files. Same known drift.
-5. **Benchmark runs** and e2e flows require API keys in `.env`. Unit and canonical tests do not.
+5. **Benchmark runs** and e2e flows require API keys in `.env`, accessed via `SecretManager` (`tolokaforge/secrets`). Unit and canonical tests do not need secrets.
 6. **10 tests in `test_golden_set_projects.py`** need `git lfs pull`. Not required for normal development.
 7. **JSON DB update API** uses JSON Patch-style operations: `{"ops": [{"op": "replace", "path": "$.field", "value": ...}]}`. Supported ops: `add`, `replace`, `remove`.
 8. **Service startup**: Start both services in background (`&`) for JSON DB (port 8000) + Mock Web (port 8080). Mock Web requires `JSON_DB_URL=http://localhost:8000`.
 9. **`tolokaforge run`** requires at least one LLM API key in `.env` (Anthropic, OpenAI, etc.).
+10. **LLM judge in Runner** requires API keys injected into the container. The orchestrator auto-derives needed keys from `grading.yaml` `llm_judge.model_ref` and passes them via `core_stack(secret_keys=...)` → `ServiceDefinition.secret_keys` → container env vars.
 
 ## Detailed Documentation
 

@@ -394,7 +394,9 @@ class Orchestrator:
                     self.logger.info("Browser tool detected in tasks — enabling Playwright")
 
                 self.logger.info("Creating service stack (db-service + runner)")
-                service_stack = core_stack(enable_playwright=needs_playwright)
+                service_stack = core_stack(
+                    enable_playwright=needs_playwright,
+                )
                 self.logger.info(
                     "Building Docker images and starting containers "
                     "(this may take a few minutes on first run)..."
@@ -1280,8 +1282,9 @@ class Orchestrator:
         else:
             # Grade via Runner's GradeTrial RPC.
             # The Runner has direct access to the agent's filesystem and DB state,
-            # supporting hash-based grading, jsonpath file assertions, and transcript rules.
-            grade = self._grade_via_runner_rpc(task, trial_idx, docker_runtime)
+            # supporting hash-based grading, jsonpath file assertions, transcript rules,
+            # and LLM judge evaluation.
+            grade = self._grade_via_runner_rpc(task, trial_idx, docker_runtime, trajectory)
         trajectory.grade = grade
 
         self.logger.info(
@@ -1327,10 +1330,45 @@ class Orchestrator:
 
         return trajectory
 
-    def _grade_via_runner_rpc(self, task: TaskConfig, trial_idx: int, docker_runtime: Any) -> Grade:
-        """Fallback grading via Runner's GradeTrial RPC."""
+    def _grade_via_runner_rpc(
+        self,
+        task: TaskConfig,
+        trial_idx: int,
+        docker_runtime: Any,
+        trajectory: Trajectory | None = None,
+    ) -> Grade:
+        """Grading via Runner's GradeTrial RPC.
+
+        Passes the conversation transcript so the Runner can evaluate
+        transcript rules and LLM judge components.
+        """
         trial_id = f"{task.task_id}:{trial_idx}"
-        grade_result = docker_runtime.executor_client.grade_trial(trial_id=trial_id)
+
+        # Serialize transcript messages for the Runner (including tool calls)
+        llm_messages_json: str | None = None
+        if trajectory and trajectory.messages:
+            try:
+                messages_data = []
+                for m in trajectory.messages:
+                    msg_dict: dict[str, Any] = {
+                        "role": m.role.value if hasattr(m.role, "value") else str(m.role),
+                        "content": m.content or "",
+                    }
+                    if m.tool_calls:
+                        msg_dict["tool_calls"] = [
+                            {"name": tc.name, "arguments": tc.arguments} for tc in m.tool_calls
+                        ]
+                    if m.tool_call_id:
+                        msg_dict["tool_call_id"] = m.tool_call_id
+                    messages_data.append(msg_dict)
+                llm_messages_json = json.dumps(messages_data)
+            except Exception as e:
+                self.logger.warning("Failed to serialize messages for grading", error=str(e))
+
+        grade_result = docker_runtime.executor_client.grade_trial(
+            trial_id=trial_id,
+            llm_messages_json=llm_messages_json,
+        )
         if grade_result["success"] and grade_result["grade"]:
             g = grade_result["grade"]
             state_diff_parsed: dict[str, Any] | None = None
@@ -1339,7 +1377,7 @@ class Orchestrator:
                     state_diff_parsed = json.loads(g["state_diff_json"])
                 except (json.JSONDecodeError, TypeError):
                     pass
-            return Grade(
+            grade = Grade(
                 binary_pass=g["binary_pass"],
                 score=g["score"],
                 components=GradeComponents(
@@ -1351,6 +1389,27 @@ class Orchestrator:
                 reasons=g.get("reasons", ""),
                 state_diff=state_diff_parsed,
             )
+
+            # Log full grading details for debuggability
+            if grade.reasons:
+                self.logger.info(
+                    "Grading details",
+                    task_id=task.task_id,
+                    trial_index=trial_idx,
+                    reasons=grade.reasons,
+                )
+
+            # Log when judge evaluation failed (0.0) vs not configured (-1.0)
+            llm_judge_score = g["components"].get("llm_judge", -1.0)
+            if llm_judge_score == 0.0:
+                self.logger.warning(
+                    "LLM judge evaluation failed",
+                    task_id=task.task_id,
+                    trial_index=trial_idx,
+                    reasons=grade.reasons,
+                )
+
+            return grade
         else:
             error_msg = grade_result.get("error", "Unknown grading error")
             self.logger.error(

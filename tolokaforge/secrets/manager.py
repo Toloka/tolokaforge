@@ -1,10 +1,10 @@
-"""Secret manager for the Docker Foundation Layer.
+"""Secret manager — the single source of truth for all secret/API key access.
 
 This module provides the SecretManager class that orchestrates secret retrieval
-from an ordered chain of providers.
+from an ordered chain of providers, plus module-level singleton helpers.
 
 Example:
-    >>> from tolokaforge.docker.secrets import SecretManager, SecretConfig
+    >>> from tolokaforge.secrets import SecretManager, SecretConfig
     >>> manager = SecretManager.from_config(SecretConfig.default())
     >>> api_key = manager.get_secret("API_KEY")
     >>> manager.validate_required(["API_KEY", "DB_URL"])
@@ -15,10 +15,10 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from tolokaforge.docker.secrets.providers import SecretProvider
+from tolokaforge.secrets.providers import SecretProvider
 
 if TYPE_CHECKING:
-    from tolokaforge.docker.secrets.config import SecretConfig
+    from tolokaforge.secrets.config import SecretConfig
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ class SecretManager:
         providers: Ordered list of secret providers to check.
 
     Example:
-        >>> from tolokaforge.docker.secrets.providers import EnvProvider, DotEnvProvider
+        >>> from tolokaforge.secrets.providers import EnvProvider, DotEnvProvider
         >>> manager = SecretManager([
         ...     DotEnvProvider(".env"),  # Check .env first
         ...     EnvProvider(),           # Fall back to environment
@@ -205,6 +205,71 @@ class SecretManager:
         )
         return env_dict
 
+    def export_to_environ(self, keys: list[str]) -> int:
+        """Export resolved secrets to os.environ for third-party library compatibility.
+
+        Only sets keys that have values. Uses os.environ.setdefault so
+        existing env vars are NOT overwritten.
+
+        Args:
+            keys: Secret key names to export.
+
+        Returns:
+            Number of keys actually exported.
+        """
+        import os
+
+        exported = 0
+        for key in keys:
+            value = self.get_secret(key)
+            if value is not None:
+                os.environ.setdefault(key, value)
+                exported += 1
+        return exported
+
+    def list_all_keys(self) -> list[str]:
+        """List all available secret keys across all providers."""
+        keys: set[str] = set()
+        for provider in self._providers:
+            if hasattr(provider, "list_keys"):
+                keys.update(provider.list_keys())
+        return sorted(keys)
+
+    def serialize(self, keys: list[str] | None = None) -> dict[str, str]:
+        """Serialize resolved secrets for transport to containers.
+
+        Resolves secrets by checking providers in order (same as get_secret).
+        Only includes keys that have values.
+
+        Args:
+            keys: Explicit list of keys to serialize. If None, serializes
+                all available keys from all providers.
+
+        Returns:
+            Dict mapping key names to resolved values.
+        """
+        if keys is None:
+            keys = self.list_all_keys()
+        return self.to_env_dict(keys)
+
+    @classmethod
+    def from_dict(cls, secrets: dict[str, str]) -> SecretManager:
+        """Create a SecretManager from a pre-resolved dict.
+
+        Used in containers where secrets are injected as serialized data.
+        Future: this can be replaced with a GrPCProvider for on-demand
+        secret fetching without changing the SecretManager interface.
+
+        Args:
+            secrets: Dict mapping secret key names to values.
+
+        Returns:
+            SecretManager backed by a DictProvider.
+        """
+        from tolokaforge.secrets.providers import DictProvider
+
+        return cls([DictProvider(secrets)])
+
     @classmethod
     def from_config(cls, config: SecretConfig) -> SecretManager:
         """Create a SecretManager from a configuration object.
@@ -222,8 +287,8 @@ class SecretManager:
             >>> config = SecretConfig.default()
             >>> manager = SecretManager.from_config(config)
         """
-        from tolokaforge.docker.secrets.config import SecretSource
-        from tolokaforge.docker.secrets.providers import DotEnvProvider, EnvProvider
+        from tolokaforge.secrets.config import SecretSource
+        from tolokaforge.secrets.providers import DotEnvProvider, EnvProvider
 
         providers: list[SecretProvider] = []
 
@@ -243,3 +308,52 @@ class SecretManager:
             manager.validate_required(config.required_keys)
 
         return manager
+
+
+# ---------------------------------------------------------------------------
+# Module-level singleton helpers
+# ---------------------------------------------------------------------------
+
+_default_manager: SecretManager | None = None
+
+
+def init_default(config: SecretConfig | None = None) -> SecretManager:
+    """Initialize the default SecretManager singleton.
+
+    Called once at CLI startup. Subsequent calls return the same instance.
+    """
+    global _default_manager
+    if _default_manager is None:
+        if config is None:
+            from tolokaforge.secrets.config import SecretConfig as _SC
+
+            config = _SC.default()
+        _default_manager = SecretManager.from_config(config)
+    return _default_manager
+
+
+def get_default() -> SecretManager:
+    """Get the default SecretManager, auto-initializing with defaults if needed."""
+    global _default_manager
+    if _default_manager is None:
+        from tolokaforge.secrets.config import SecretConfig
+
+        _default_manager = SecretManager.from_config(SecretConfig.default())
+    return _default_manager
+
+
+def init_default_from(manager: SecretManager) -> SecretManager:
+    """Set an existing SecretManager as the default singleton.
+
+    Used by the Runner to install a pre-configured SecretManager
+    (e.g., from deserialized secrets).
+
+    Args:
+        manager: SecretManager instance to use as default.
+
+    Returns:
+        The same manager instance.
+    """
+    global _default_manager
+    _default_manager = manager
+    return manager

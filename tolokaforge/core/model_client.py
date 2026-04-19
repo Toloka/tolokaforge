@@ -22,6 +22,7 @@ from tenacity import (
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import Message, MessageRole, ModelConfig, ToolCall
 from tolokaforge.core.pricing import estimate_cost
+from tolokaforge.secrets import SecretManager, get_default
 
 
 def _should_retry_exception(exc: BaseException) -> bool:
@@ -61,11 +62,12 @@ class GenerationResult:
 class LLMClient:
     """Provider-agnostic LLM client using LiteLLM"""
 
-    def __init__(self, config: ModelConfig):
+    def __init__(self, config: ModelConfig, secrets: SecretManager | None = None):
         self.config = config
         self.model_name = self._format_model_name()
         self.provider = (config.provider or "").lower()
         self.logger = get_logger("llm_client")
+        self._secrets = secrets if secrets is not None else get_default()
         # Load API key chain for rotation on key exhaustion
         self._api_keys = self._load_api_keys()
         self._current_key_index = 0
@@ -79,6 +81,7 @@ class LLMClient:
         self._openrouter_headers = (
             self._configure_openrouter_headers() if self.provider.startswith("openrouter") else {}
         )
+        self._ensure_litellm_env()
 
     def _load_api_keys(self) -> list[str]:
         """Load API keys for rotation from environment or file.
@@ -88,8 +91,8 @@ class LLMClient:
         2. File path in OPENROUTER_KEY_FILE env var (default: keys.txt)
         3. Single key from OPENROUTER_API_KEY env var
         """
-        # Try OPENROUTER_API_KEYS env var (comma-separated)
-        keys_str = os.environ.get("OPENROUTER_API_KEYS", "")
+        # Try OPENROUTER_API_KEYS (comma-separated)
+        keys_str = self._secrets.get_secret("OPENROUTER_API_KEYS") or ""
         if keys_str:
             keys = [k.strip() for k in keys_str.split(",") if k.strip()]
             if keys:
@@ -100,7 +103,7 @@ class LLMClient:
                 return keys
 
         # Try key file
-        key_file = os.environ.get("OPENROUTER_KEY_FILE", "keys.txt")
+        key_file = self._secrets.get_secret("OPENROUTER_KEY_FILE") or "keys.txt"
         if os.path.exists(key_file):
             keys = []
             with open(key_file) as f:
@@ -119,8 +122,8 @@ class LLMClient:
                 )
                 return keys
 
-        # Fall back to single key from env
-        key = os.environ.get("OPENROUTER_API_KEY", "")
+        # Fall back to single key
+        key = self._secrets.get_secret("OPENROUTER_API_KEY") or ""
         if key:
             return [key]
         return []
@@ -157,15 +160,18 @@ class LLMClient:
         # current mapping (if any) to avoid mutating shared state in-place.
         existing_headers = dict(getattr(litellm, "openai_headers", {}) or {})
 
-        referer = os.getenv(
-            "TOLOKAFORGE_OPENROUTER_REFERER", "https://github.com/Toloka-F/tolokaforge"
+        referer = (
+            self._secrets.get_secret("TOLOKAFORGE_OPENROUTER_REFERER")
+            or "https://github.com/Toloka-F/tolokaforge"
         )
-        title = os.getenv("TOLOKAFORGE_OPENROUTER_TITLE", "Tolokaforge Evaluation")
+        title = self._secrets.get_secret("TOLOKAFORGE_OPENROUTER_TITLE") or "Tolokaforge Evaluation"
 
         existing_headers.setdefault("HTTP-Referer", referer)
         existing_headers.setdefault("X-Title", title)
 
-        opt_out_pref = os.getenv("TOLOKAFORGE_OPENROUTER_OPT_OUT", "true").lower()
+        opt_out_pref = (
+            self._secrets.get_secret("TOLOKAFORGE_OPENROUTER_OPT_OUT") or "true"
+        ).lower()
         if opt_out_pref in {"1", "true", "yes", "on"}:
             existing_headers.setdefault("X-Data-Collection-Opt-Out", "true")
 
@@ -188,7 +194,9 @@ class LLMClient:
 
         # Prioritise an explicit OPENROUTER_BASE_URL override, falling back to
         # OPENROUTER_API_BASE if it was provided already.
-        base_url = os.getenv("OPENROUTER_BASE_URL") or os.getenv("OPENROUTER_API_BASE")
+        base_url = self._secrets.get_secret("OPENROUTER_BASE_URL") or self._secrets.get_secret(
+            "OPENROUTER_API_BASE"
+        )
 
         if not base_url:
             return
@@ -212,6 +220,17 @@ class LLMClient:
         # Note: We intentionally do NOT set litellm.api_base here because it's a
         # global setting that would affect other providers. The api_base is
         # passed per-request in the generate() method instead.
+
+    def _ensure_litellm_env(self) -> None:
+        """Export API keys to os.environ so litellm can read them."""
+        litellm_keys = [
+            "OPENROUTER_API_KEY",
+            "OPENROUTER_API_BASE",
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "NOVA_API_KEY",
+        ]
+        self._secrets.export_to_environ(litellm_keys)
 
     def _format_model_name(self) -> str:
         """Format model name for LiteLLM"""
@@ -826,7 +845,7 @@ class LLMClient:
                 if self.provider == "nova":
                     # Nova uses OpenAI-compatible API with custom base URL and auth
                     kwargs["api_base"] = "https://api.nova.amazon.com/v1"
-                    kwargs["api_key"] = os.getenv("NOVA_API_KEY")
+                    kwargs["api_key"] = self._secrets.get_secret("NOVA_API_KEY")
                     if not kwargs["api_key"]:
                         raise RuntimeError(
                             "NOVA_API_KEY environment variable is required for Nova provider"

@@ -1,8 +1,8 @@
 # Future Development Plan
 
 > **Status:** Active
-> **Updated:** 2026-04-02
-> **Scope:** Dockerfile cleanup, end-to-end validation, feature verification, SQLite resilience
+> **Updated:** 2026-04-19
+> **Scope:** Dockerfile cleanup, end-to-end validation, feature verification, SQLite resilience, Runner improvements
 
 ---
 
@@ -14,6 +14,9 @@
 - [Stage 11 — End-to-End Adapter and Provider Validation](#stage-11--end-to-end-adapter-and-provider-validation)
 - [Stage 12 — Feature Verification Matrix](#stage-12--feature-verification-matrix)
 - [Stage 14 — SQLite Run Queue Corruption Resilience](#stage-14--sqlite-run-queue-corruption-resilience)
+- [Stage 15 — Runner LLM Judge Cost Tracking](#stage-15--runner-llm-judge-cost-tracking)
+- [Stage 16 — Browser Tool API Fix](#stage-16--browser-tool-api-fix)
+- [Stage 17 — Runner Health Check Noise Reduction](#stage-17--runner-health-check-noise-reduction)
 - [Dependency Graph](#dependency-graph)
 - [Migration Checklist](#migration-checklist)
 
@@ -28,12 +31,15 @@
 | 10 | Test consolidation: 5→3 categories (unit/canonical/integration). `functional/` and `e2e/` deleted. 688→449 tests |
 | 13 | `.gitattributes` cleaned, 39 orphaned files removed, `.gitignore` updated, 3 unused test utils deleted |
 | FrozenMcpCoreAdapter | Self-contained converted tasks with `_domain/` bundle, `tool_artifacts` delivery, stable hash grading. Unit + integration tests |
+| SecretManager | Relocated from `docker/secrets/` to `tolokaforge/secrets/`. Universal source of truth — all `os.environ.get`/`load_dotenv` for API keys replaced. Singleton pattern (`init_default`/`get_default`). Serialization for Runner (`DictProvider`, `TOLOKAFORGE_SECRETS_JSON`). 993 unit tests pass. |
+| LLM Judge in Runner | Runner evaluates `llm_judge` component via litellm. Secrets injected via SecretManager serialization. Adapters serialize config. Robust JSON extraction. Judge failure returns 0.0 (never silent). Tool calls/results included in judge transcript. Grading details logged to host. |
+| Container reuse fix | Fixed `attrs` bug in `ServiceStack._start_service` — uses `image_tag` comparison instead of Docker SDK `attrs`. No more spurious "Failed to verify container image" warnings. |
 
 ---
 
 ## Open Issues
 
-### Issue 1 — Runner Docker image includes unnecessary domain files
+### Issue 1 — Runner Docker image includes unnecessary domain files (pre-existing)
 
 The Runner Docker image bakes in domain-specific directories that should not be part of the image. This causes:
 - **Unnecessary rebuilds:** touching domain files triggers a content-hash change and full rebuild
@@ -49,33 +55,96 @@ The problem exists in three synchronized locations:
 | `tolokaforge/docker/stacks/core.py` | `context_files` list with domain dirs |
 | `tolokaforge/docker/builder.py` | `IMAGE_DEFINITIONS` with domain dirs |
 
-### Issue 2 — `docker/` directory: still needed?
+### Issue 2 — `docker/` directory: still needed? (pre-existing)
 
 The `docker/` directory contains 8 Dockerfiles. Questions:
 - Are all 8 Dockerfiles still needed? `json_db.Dockerfile` and `db_service.Dockerfile` may overlap. `orchestrator.Dockerfile` and `agent.Dockerfile` may be obsolete.
 - Should Dockerfiles move inside `tolokaforge/docker/dockerfiles/`?
 - Do Dockerfiles correctly reference the new project structure?
 
-### Issue 3 — No end-to-end validation for native adapter
+### Issue 3 — No end-to-end validation for native adapter (PARTIALLY RESOLVED)
 
-We have not:
-- Launched tasks with `native` adapter
-- Verified different LLM providers (Anthropic, OpenAI, OpenRouter)
-- Verified the Docker infrastructure works (`tolokaforge docker build`, `tolokaforge docker up`)
+**Resolved (2026-04-19):** NativeAdapter now validated end-to-end:
+- ✅ `custom_grading` — 3-component scoring (state_checks=1.0, transcript_rules=1.0, llm_judge=0.92)
+- ✅ `package_api` — simple read/write task with jsonpath grading
+- ✅ `distributed_run` — parallel execution (workers=2) verified
+- ✅ `browser_task` — infrastructure works (Playwright installed, container created) but browser tool API has a bug (see Issue 6)
+- ✅ Docker infrastructure auto-starts via orchestrator
 
-Frozen MCP core adapter has been partially validated — converted tasks run successfully via `frozen_mcp_core`. More complex features remain untested.
+**Still open:**
+- Different LLM providers (only OpenRouter/Anthropic tested)
+- `tolokaforge docker build` / `tolokaforge docker up` CLI commands not tested
 
-### Issue 4 — Feature verification gaps
+### Issue 4 — Feature verification gaps (PARTIALLY RESOLVED)
 
-Task/grading features not verified post-refactoring:
+**Resolved (2026-04-19):**
+- ✅ LLM judge grading verified end-to-end (custom_grading example, score=0.92)
+- ✅ Combined grading verified (weighted: state_checks × 0.6 + transcript_rules × 0.2 + llm_judge × 0.2)
+- ✅ Transcript rules with required_actions verified
+- ✅ JSONPath file assertions verified
+- ✅ Multi-turn conversation tracing verified (6 turns, scripted user interaction)
+
+**Still open:**
 - Unstable fields (excluded from hash comparison)
 - Unstable extra fields (dynamically added by tool execution)
 - Tools initial state + task-specific data patches
-- Different grading methods (hash, transcript, LLM judge, custom checks, combined)
+- Hash-based grading method
+- Custom checks grading method
 - User simulator with backstory/context injection
-- Multi-turn conversation tracing
 
-### Issue 5 — SQLite run queue corruption crashes CI benchmark shards
+### Issue 6 — LLM Judge cost not tracked in trial metrics
+
+**Discovered:** 2026-04-19, during integration testing of LLM Judge in Runner.
+
+The `cost_usd_est` in metrics only includes agent/user LLM calls made by the orchestrator's `LLMClient`. The Runner's `litellm.completion()` call for the judge is invisible. Over large benchmark runs, this underreporting compounds.
+
+**Fix:** Extract cost from litellm response via `litellm.completion_cost()` in `evaluate_llm_judge()`. Return it along with score/reasons. Add `judge_cost_usd` field to the proto `Grade` message. Orchestrator adds to `trial_cost_usd`.
+
+**See:** [Stage 15](#stage-15--runner-llm-judge-cost-tracking)
+
+### Issue 7 — Browser tool API: `actions` parameter not passed by agent
+
+**Discovered:** 2026-04-19, `browser_task` example run.
+
+The agent calls `browser({})` without the required `actions` positional argument, producing:
+```
+TypeError: BrowserTool.execute() missing 1 required positional argument: 'actions'
+```
+
+The agent doesn't know how to use the browser tool API. The tool schema may not clearly communicate the required parameters, or the parameter structure is too complex for the model to infer from the schema alone.
+
+**Impact:** `browser_task` scores 0.475 (1/4 state checks) — the agent falls back to `read_file` which can't serve HTML pages.
+
+**Fix options:**
+- Improve browser tool schema to clearly describe the `actions` parameter format
+- Add examples to the tool description
+- Simplify the API (e.g., accept a URL string for basic navigation)
+
+**See:** [Stage 16](#stage-16--browser-tool-api-fix)
+
+### Issue 8 — Runner gRPC health check noise during startup
+
+**Discovered:** 2026-04-19, observed in all example runs.
+
+Every run shows 3-5 "Health check failed: UNAVAILABLE: Connection reset by peer" lines from the gRPC health probe before the Runner is ready. Not an error (the probe polls during startup), but looks alarming in logs.
+
+**Fix:** Suppress health check failed messages during initial startup grace period, or only start logging after a configurable number of retries.
+
+**See:** [Stage 17](#stage-17--runner-health-check-noise-reduction)
+
+### Issue 9 — `CommandHealthProbe` Pydantic field shadowing warning
+
+**Pre-existing.** Every run shows:
+```
+UserWarning: Field name "command" in "CommandHealthProbe" shadows an attribute in parent "HealthProbe"
+```
+at `tolokaforge/docker/health.py:700`. Fix: rename the field or use `model_config` alias.
+
+### Issue 10 — Tool execution duration always 0.0s in metrics
+
+**Pre-existing.** The `total_duration_s` field in metrics is always 0.0 for all tools. The Runner doesn't track tool execution timing. Fix: measure duration around tool `execute()` calls in the Runner service.
+
+### Issue 5 — SQLite run queue corruption crashes CI benchmark shards (pre-existing)
 
 **Observed:** 2026-04-02, during a long-running benchmark shard.
 
@@ -530,6 +599,79 @@ For true corruption, Fix 1 (orchestrator safety net) is the backstop.
 
 ---
 
+## Stage 15 — Runner LLM Judge Cost Tracking
+
+> **Goal:** Make LLM judge costs visible in trial metrics.
+> **Tracks:** [Issue 6](#issue-6--llm-judge-cost-not-tracked-in-trial-metrics)
+> **Priority:** Medium
+
+### 15.1 Problem
+
+`evaluate_llm_judge()` calls `litellm.completion()` inside the Runner container. The cost is invisible to the orchestrator's `trial_cost_usd` metric.
+
+### 15.2 Fix
+
+1. Extract cost from litellm response via `litellm.completion_cost(completion_response=response)`
+2. Return cost alongside score and reasons from `evaluate_llm_judge()`
+3. Add `judge_cost_usd` double field to `GradeTrialResponse` proto (or embed in `Grade` message)
+4. Orchestrator adds judge cost to `trial_cost_usd` and `total_cost_usd`
+
+### 15.3 Verification gate
+
+- [ ] `evaluate_llm_judge` returns cost info
+- [ ] Grade response includes judge cost
+- [ ] `cost_usd_est` in metrics includes judge cost
+- [ ] `aggregate.json` reflects total costs including judge
+
+---
+
+## Stage 16 — Browser Tool API Fix
+
+> **Goal:** Fix the browser tool so the agent can use it correctly.
+> **Tracks:** [Issue 7](#issue-7--browser-tool-api-actions-parameter-not-passed-by-agent)
+> **Priority:** High — browser_task example fails
+
+### 16.1 Problem
+
+`BrowserTool.execute()` requires a positional `actions` argument, but the agent doesn't know how to pass it. The tool schema needs to clearly communicate the parameter format.
+
+### 16.2 Fix options
+
+1. **Improve tool schema description** — add detailed parameter documentation and examples
+2. **Simplify the API** — accept a URL string for basic navigation, make `actions` optional
+3. **Add system prompt hints** — include browser tool usage examples in the system prompt
+
+### 16.3 Verification gate
+
+- [ ] Agent successfully calls browser tool with correct parameters
+- [ ] `browser_task` example passes (score > 0.75)
+- [ ] Other examples not affected
+
+---
+
+## Stage 17 — Runner Health Check Noise Reduction
+
+> **Goal:** Reduce startup log noise from gRPC health probe retries.
+> **Tracks:** [Issue 8](#issue-8--runner-grpc-health-check-noise-during-startup)
+> **Priority:** Low
+
+### 17.1 Problem
+
+3-5 "Health check failed: UNAVAILABLE: Connection reset by peer" lines appear during every startup while the Runner container initializes.
+
+### 17.2 Fix
+
+Add a grace period or suppress early failures in the health probe:
+- Only log failures after a configurable initial grace period (e.g., 3 seconds)
+- Or log at DEBUG level during grace period, switch to WARNING after
+
+### 17.3 Verification gate
+
+- [ ] No alarming health check messages during normal startup
+- [ ] Genuine health check failures still logged at WARNING/ERROR level
+
+---
+
 ## Dependency Graph
 
 ```mermaid
@@ -538,18 +680,27 @@ graph TD
     S11[Stage 11: E2E Validation]
     S12[Stage 12: Feature Verification]
     S14[Stage 14: SQLite Queue Resilience]
+    S15[Stage 15: Judge Cost Tracking]
+    S16[Stage 16: Browser Tool API Fix]
+    S17[Stage 17: Health Check Noise]
 
     S9 --> S11
     S11 --> S12
     S14
+    S15
+    S16 --> S11
+    S17
 
     style S9 fill:#ffa,stroke:#333
     style S11 fill:#ffa,stroke:#333
     style S12 fill:#bbf,stroke:#333
     style S14 fill:#f99,stroke:#333
+    style S15 fill:#bbf,stroke:#333
+    style S16 fill:#f99,stroke:#333
+    style S17 fill:#ddd,stroke:#333
 ```
 
-**Execution order:** Stage 14 is independent and can be implemented immediately. Stage 9 → 11 → 12 remain sequential.
+**Execution order:** Stage 14, 15, 16, 17 are independent. Stage 16 (browser fix) is a prerequisite for full Stage 11 completion. Stage 9 → 11 → 12 remain sequential.
 
 ---
 
@@ -566,12 +717,19 @@ graph TD
 ### Stage 11 — E2E Validation
 - [x] FrozenMcpCoreAdapter converts and runs tasks (basic pipeline)
 - [ ] FrozenMcpCoreAdapter extended validation (TypeSense, user LLM, data patches)
-- [ ] NativeAdapter validates and runs tasks
-- [ ] Docker services start and health-check
-- [ ] At least one LLM provider completes a task
+- [x] NativeAdapter validates and runs tasks (custom_grading, package_api, distributed_run)
+- [x] Docker services start and health-check (auto_start_services)
+- [x] At least one LLM provider completes a task (OpenRouter/Anthropic)
+- [ ] Browser tool tasks pass end-to-end (blocked by Stage 16)
+- [ ] Other LLM providers tested (OpenAI, Anthropic direct)
 
 ### Stage 12 — Feature Verification
-- [ ] All grading methods verified
+- [x] LLM judge grading verified (custom_grading: score=0.92)
+- [x] Combined grading verified (weighted 3-component: state + transcript + judge)
+- [x] JSONPath file assertions verified
+- [x] Transcript rules with required_actions verified
+- [ ] Hash-based grading verified
+- [ ] Custom checks grading verified
 - [ ] Unstable fields work correctly
 - [ ] Initial state and data patches work
 - [ ] User simulator maintains context
@@ -583,3 +741,21 @@ graph TD
 - [ ] Fix 5: Unit tests for retry, thread-local, checkpoint, and orchestrator resilience
 - [ ] All existing `test_run_queue.py` tests still pass
 - [ ] Lint clean
+
+### Stage 15 — Runner LLM Judge Cost Tracking
+- [ ] `evaluate_llm_judge` extracts cost via `litellm.completion_cost()`
+- [ ] Cost returned alongside score/reasons
+- [ ] Grade response includes judge cost
+- [ ] `cost_usd_est` in metrics includes judge cost
+- [ ] `aggregate.json` reflects total costs
+
+### Stage 16 — Browser Tool API Fix
+- [ ] Browser tool schema clearly documents `actions` parameter
+- [ ] Agent successfully calls browser tool
+- [ ] `browser_task` example score > 0.75
+- [ ] Other examples not affected
+
+### Stage 17 — Runner Health Check Noise Reduction
+- [ ] Grace period or DEBUG level for initial health check failures
+- [ ] Normal startup shows clean output
+- [ ] Genuine failures still logged at WARNING/ERROR

@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from docker.models.containers import Container as DockerContainer
 
     from docker import DockerClient
-    from tolokaforge.docker.secrets.manager import SecretManager
+    from tolokaforge.secrets.manager import SecretManager
 
 logger = logging.getLogger(__name__)
 
@@ -313,8 +313,8 @@ class Container(BaseModel):
         # Resolve secrets and add to environment
         if secret_keys:
             # Import here to avoid circular imports
-            from tolokaforge.docker.secrets.config import SecretConfig
-            from tolokaforge.docker.secrets.manager import SecretManager as SM
+            from tolokaforge.secrets.config import SecretConfig
+            from tolokaforge.secrets.manager import SecretManager as SM
 
             if secret_manager is None:
                 secret_manager = SM.from_config(SecretConfig.default())

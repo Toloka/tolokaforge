@@ -15,7 +15,6 @@ Usage::
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -256,6 +255,9 @@ def _validate_model(
 
 def _validate_api_keys(raw: dict[str, Any]) -> list[ValidationIssue]:
     """Check that expected API keys are present in the environment."""
+    from tolokaforge.secrets import get_default
+
+    sm = get_default()
     issues: list[ValidationIssue] = []
     models = raw.get("models", {})
     seen_providers: set[str] = set()
@@ -265,7 +267,7 @@ def _validate_api_keys(raw: dict[str, Any]) -> list[ValidationIssue]:
         if provider and provider not in seen_providers:
             seen_providers.add(provider)
             env_keys = _PROVIDER_ENV_KEYS.get(provider, [])
-            if env_keys and not any(os.environ.get(k) for k in env_keys):
+            if env_keys and not any(sm.has_secret(k) for k in env_keys):
                 issues.append(
                     ValidationIssue(
                         severity=Severity.WARNING,

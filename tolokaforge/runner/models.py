@@ -666,6 +666,7 @@ class GradeComponents(BaseModel):
     jsonpath_reasons: str = ""
     transcript_pass: bool | None = None
     transcript_score: float = -1.0
+    llm_judge_score: float = -1.0  # -1.0 means not evaluated
 
     model_config = {"extra": "forbid"}
 

@@ -145,6 +145,20 @@ queue = create_run_queue(
 )
 ```
 
+## LLM Judge Evaluation
+
+The Runner evaluates `llm_judge` grading inline during trial execution. API keys required by the judge model are injected into the Runner container via `ServiceDefinition.secret_keys`.
+
+**How secrets flow:**
+
+1. Orchestrator reads `grading.yaml` → extracts `llm_judge.model_ref`
+2. `model_ref` is mapped to the required API key (e.g., `openrouter/...` → `OPENROUTER_API_KEY`)
+3. `SecretManager.to_env_dict()` resolves the key values from `.env` / environment
+4. Keys are passed to the Runner container as environment variables during `Container.create()`
+5. Runner calls litellm with the judge model to score the agent's transcript
+
+Only the specific keys needed for the judge model are injected — not all available secrets. See [SECURITY.md](SECURITY.md) for the security model.
+
 ## Output Artifacts
 
 Queue state + per-attempt artifacts are written under `run_dir`:

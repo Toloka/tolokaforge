@@ -46,6 +46,7 @@ from tolokaforge.runner.grading import (
     combine_grade_components,
     compute_state_diff,
     evaluate_jsonpath_file_checks,
+    evaluate_llm_judge,
     evaluate_transcript_rules,
 )
 from tolokaforge.runner.models import (
@@ -979,18 +980,17 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 f"GradeTrial: {trial_id} - Jsonpath file checks: score={jsonpath_score:.2f}"
             )
 
+        # Parse LLM messages once for both transcript rules and LLM judge
+        llm_messages = []
+        if request.llm_messages_json:
+            try:
+                llm_messages = json.loads(request.llm_messages_json)
+            except json.JSONDecodeError as e:
+                logger.warning(f"GradeTrial: Invalid llm_messages_json: {e}")
+
         # B) TRANSCRIPT RULES GRADING (if transcript_rules exist)
         transcript_rules_config = grading_config.transcript_rules
         if transcript_rules_config:
-            # Only evaluate if we have messages or tool history
-            llm_messages = []
-            if request.llm_messages_json:
-                try:
-                    llm_messages = json.loads(request.llm_messages_json)
-                except json.JSONDecodeError as e:
-                    logger.warning(f"GradeTrial: Invalid llm_messages_json: {e}")
-                    # Continue with empty messages - tool history may still be useful
-
             # Convert tool call history to dicts for grading
             tool_history = [r.model_dump() for r in trial_context.tool_call_history]
 
@@ -1012,6 +1012,24 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     f"GradeTrial: {trial_id} - Skipping transcript rules (no messages or tool history)"
                 )
 
+        # B.2) LLM JUDGE GRADING (if llm_judge config exists)
+        llm_judge_config = grading_config.llm_judge
+        judge_reasons_str: str | None = None
+        if llm_judge_config:
+            if llm_messages:
+                logger.info(f"GradeTrial: {trial_id} - Evaluating LLM judge")
+                judge_score, judge_reasons = evaluate_llm_judge(
+                    llm_judge_config.model_dump(), llm_messages
+                )
+                components.llm_judge_score = judge_score
+                judge_reasons_str = judge_reasons
+                if judge_score >= 0:
+                    logger.info(f"GradeTrial: {trial_id} - LLM judge: score={judge_score:.2f}")
+                else:
+                    logger.warning(f"GradeTrial: {trial_id} - LLM judge failed: {judge_reasons}")
+            else:
+                logger.info(f"GradeTrial: {trial_id} - Skipping LLM judge (no messages)")
+
         # C) COMBINE SCORES
         components_dict = components.model_dump()
         grading_config_dict = grading_config.model_dump()
@@ -1020,7 +1038,12 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # Build reasons string
         state_diff_dict = state_diff.model_dump() if state_diff else None
         transcript_result_dict = transcript_result.model_dump() if transcript_result else None
-        reasons = build_grade_reasons(components_dict, state_diff_dict, transcript_result_dict)
+        reasons = build_grade_reasons(
+            components_dict,
+            state_diff_dict,
+            transcript_result_dict,
+            judge_reasons=judge_reasons_str,
+        )
 
         # Append golden action errors if any (critical for debugging golden replay failures)
         if hash_result and hash_result.golden_action_errors:
@@ -1046,7 +1069,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                         )
                     ),
                     transcript_rules=components.transcript_score,
-                    llm_judge=-1.0,  # Not computed by Runner
+                    llm_judge=components.llm_judge_score,
                     custom_checks=-1.0,  # Not implemented yet
                 ),
                 reasons=reasons,

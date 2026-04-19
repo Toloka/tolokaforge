@@ -4,7 +4,7 @@ This module provides the SecretConfig dataclass for configuring the
 secret provider chain.
 
 Example:
-    >>> from tolokaforge.docker.secrets.config import SecretConfig, SecretSource
+    >>> from tolokaforge.secrets.config import SecretConfig, SecretSource
     >>> config = SecretConfig(
     ...     sources=[SecretSource.DOTENV, SecretSource.ENV],
     ...     dotenv_path=".env.local",

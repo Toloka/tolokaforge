@@ -7,16 +7,16 @@ from pathlib import Path
 
 import click
 import yaml
-from dotenv import load_dotenv
 from rich.console import Console
 
 from tolokaforge.core.models import RunConfig
 from tolokaforge.core.orchestrator import Orchestrator
 from tolokaforge.core.resume import RunStateManager
 from tolokaforge.core.run_queue import create_run_queue
+from tolokaforge.secrets import init_default
 
-# Load environment variables from .env file
-load_dotenv()
+# Initialize the default SecretManager (replaces load_dotenv)
+init_default()
 
 console = Console()
 

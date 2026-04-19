@@ -144,6 +144,10 @@ class ServiceDefinition(BaseModel):
         default=False,
         description="Run in privileged mode (required for Docker-in-Docker).",
     )
+    secret_keys: list[str] = Field(
+        default_factory=list,
+        description="Secret env var names to resolve via SecretManager and inject into the container.",
+    )
 
     model_config = {
         "frozen": True,
@@ -672,31 +676,26 @@ class ServiceStack(BaseModel):
         existing = self._try_reuse_existing(container_name, svc)
         if existing:
             # Verify the existing container uses the same image
-            try:
-                attrs = existing.attrs or {}
-                running_image = attrs.get("Config", {}).get("Image", "")
-                expected_image = image.full_tag
-                if running_image != expected_image:
-                    logger.info(
-                        "Existing container '%s' uses image '%s' but expected '%s' — recreating",
-                        container_name,
-                        running_image,
-                        expected_image,
-                    )
-                    existing.remove(force=True)
-                else:
-                    self._containers[name] = existing
-                    logger.info("Reusing existing healthy container '%s'", container_name)
-                    if svc.ports:
-                        port_map = self._extract_ports_from_container(container_name, svc)
-                        self._resolved_ports[name] = port_map
-                    return
-            except Exception as exc:
-                logger.warning("Failed to verify container image, recreating: %s", exc)
+            running_image = existing.image_tag or ""
+            expected_image = image.full_tag
+            if running_image != expected_image:
+                logger.info(
+                    "Existing container '%s' uses image '%s' but expected '%s' — recreating",
+                    container_name,
+                    running_image,
+                    expected_image,
+                )
                 try:
                     existing.remove(force=True)
                 except Exception:
                     pass
+            else:
+                self._containers[name] = existing
+                logger.info("Reusing existing healthy container '%s'", container_name)
+                if svc.ports:
+                    port_map = self._extract_ports_from_container(container_name, svc)
+                    self._resolved_ports[name] = port_map
+                return
 
         # ── Determine network ───────────────────────────────────────
         network = None
@@ -731,6 +730,7 @@ class ServiceStack(BaseModel):
             command=svc.command,
             ports=resolved_port_configs if resolved_port_configs else None,
             privileged=svc.privileged,
+            secret_keys=svc.secret_keys if svc.secret_keys else None,
         )
 
         # Attach to additional networks

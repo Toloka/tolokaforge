@@ -9,7 +9,6 @@ Multiple callers for the same domain will properly coordinate - only one perform
 initialization while others wait.
 """
 
-import os
 from pathlib import Path
 from typing import Any
 
@@ -66,7 +65,11 @@ class TypeSenseProviderConfig:
         self.enabled = enabled
         self.host = host
         self.port = port
-        self.api_key = api_key or os.environ.get("TYPESENSE_API_KEY")
+        if api_key is None:
+            from tolokaforge.secrets import get_default
+
+            api_key = get_default().get_secret("TYPESENSE_API_KEY")
+        self.api_key = api_key
         self.timeout = timeout
         self.use_stub = use_stub
 

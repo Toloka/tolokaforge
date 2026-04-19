@@ -117,6 +117,17 @@ def core_stack(
         runner_depends.append("dind")
         runner_resources = ResourcePolicy()  # relaxed
 
+    # Serialize all secrets into a single env var for the Runner container.
+    # The Runner will deserialize this into its own SecretManager instance.
+    import json
+
+    from tolokaforge.secrets import get_default
+
+    sm = get_default()
+    secrets_data = sm.serialize()
+    if secrets_data:
+        runner_env["TOLOKAFORGE_SECRETS_JSON"] = json.dumps(secrets_data)
+
     runner_build_args: dict[str, str] = {}
     if enable_playwright:
         runner_build_args["INSTALL_PLAYWRIGHT"] = "true"

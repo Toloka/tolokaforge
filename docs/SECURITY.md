@@ -73,7 +73,8 @@ Tool call arguments are logged with automatic redaction of keys containing `pass
 
 ## Secret Management
 
-- **API keys** are host environment variables (loaded from `.env`). In Docker mode, only the orchestrator container receives them.
+- **`SecretManager`** (`tolokaforge/secrets`) is the canonical way to access secrets in code. It reads `.env` via `DotEnvProvider` without polluting `os.environ`. CLI entry (`tolokaforge run`) calls `init_default()` automatically. Do not use `os.environ.get()` or `load_dotenv()` for API keys.
+- **Container secret injection**: Secrets are injected into containers via `SecretManager.to_env_dict()`. Only the specific keys needed (derived from grading config `llm_judge.model_ref`) are passed — not all available secrets. This is controlled by `ServiceDefinition.secret_keys`.
 - **Grading assets** (`grading.yaml`, expected states) are read by the orchestrator after trial completion. They are never passed to the agent or exposed through tool outputs.
 - **`.env`** is gitignored and never mounted into executor or environment containers.
 

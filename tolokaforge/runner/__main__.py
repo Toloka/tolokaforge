@@ -223,6 +223,31 @@ async def run_server() -> None:
     setup_logging(config["log_level"])
     logger = logging.getLogger(__name__)
 
+    # Initialize SecretManager from serialized secrets (passed by orchestrator)
+    # or fall back to env-only provider chain
+    import json as json_mod
+
+    from tolokaforge.secrets.manager import SecretManager, init_default_from
+
+    secrets_json = os.environ.get("TOLOKAFORGE_SECRETS_JSON")
+    if secrets_json:
+        try:
+            secrets_data = json_mod.loads(secrets_json)
+            sm = SecretManager.from_dict(secrets_data)
+            init_default_from(sm)
+            logger.info(
+                "SecretManager initialized from serialized secrets (%d keys)", len(secrets_data)
+            )
+        except Exception as e:
+            logger.warning("Failed to deserialize secrets, falling back to env: %s", e)
+            from tolokaforge.secrets import init_default
+
+            init_default()
+    else:
+        from tolokaforge.secrets import init_default
+
+        init_default()
+
     logger.info("=" * 60)
     logger.info("Tolokaforge Runner Service")
     logger.info("=" * 60)

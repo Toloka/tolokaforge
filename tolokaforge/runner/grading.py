@@ -553,6 +553,11 @@ def combine_grade_components(
     if transcript_score >= 0:
         active_components["transcript_rules"] = transcript_score
 
+    # LLM judge
+    llm_judge_score = components.get("llm_judge_score", -1.0)
+    if llm_judge_score >= 0:
+        active_components["llm_judge"] = llm_judge_score
+
     # If no components are active but grading was configured, fail explicitly.
     # This prevents refusal tasks (empty golden_actions) or misconfigured
     # grading from silently passing with score=1.0.
@@ -566,6 +571,8 @@ def combine_grade_components(
             actually_configured.add("state_checks")
         if "transcript_rules" in weights and grading_config.get("transcript_rules") is not None:
             actually_configured.add("transcript_rules")
+        if "llm_judge" in weights and grading_config.get("llm_judge") is not None:
+            actually_configured.add("llm_judge")
 
         if actually_configured:
             logger.warning(
@@ -620,6 +627,7 @@ def build_grade_reasons(
     components: dict[str, Any],
     state_diff: dict[str, Any] | None = None,
     transcript_result: dict[str, Any] | None = None,
+    judge_reasons: str | None = None,
 ) -> str:
     """
     Build human-readable reasons string for the grade.
@@ -628,6 +636,7 @@ def build_grade_reasons(
         components: Component scores dict
         state_diff: State diff if hash comparison failed
         transcript_result: Transcript evaluation result
+        judge_reasons: Reasons string returned by the LLM judge evaluation
 
     Returns:
         Human-readable reasons string
@@ -673,4 +682,153 @@ def build_grade_reasons(
             else:
                 reasons.append("Transcript: failed")
 
+    # LLM judge reason
+    llm_judge_score = components.get("llm_judge_score", -1.0)
+    if llm_judge_score >= 0:
+        if judge_reasons:
+            reasons.append(f"Judge: score={llm_judge_score:.2f} ({judge_reasons})")
+        else:
+            reasons.append(f"Judge: score={llm_judge_score:.2f}")
+
     return " | ".join(reasons) if reasons else "No grading components evaluated"
+
+
+def evaluate_llm_judge(
+    llm_judge_config: dict[str, Any],
+    llm_messages: list[dict[str, Any]],
+) -> tuple[float, str]:
+    """Evaluate transcript using LLM judge via litellm.
+
+    Args:
+        llm_judge_config: Dict with model_ref, rubric, output_schema keys.
+        llm_messages: Conversation messages from the trial.
+
+    Returns:
+        Tuple of (score 0.0-1.0, reasons string).
+        Returns (-1.0, msg) only when not configured (no model_ref/rubric).
+        Returns (0.0, error_msg) on evaluation failure so the score is
+        included in the weighted grade (penalizing rather than hiding failure).
+    """
+
+    import litellm
+
+    model_ref = llm_judge_config.get("model_ref", "")
+    rubric = llm_judge_config.get("rubric", "")
+
+    if not model_ref or not rubric:
+        logger.warning("LLM judge not configured (missing model_ref or rubric)")
+        return -1.0, "LLM judge not configured"
+
+    # Ensure API keys are in os.environ for litellm compatibility
+    from tolokaforge.secrets import get_default
+
+    sm = get_default()
+    sm.export_to_environ(sm.list_all_keys())
+
+    transcript_text = _format_transcript_for_judge(llm_messages)
+
+    system_prompt = (
+        "You are a grading judge. Evaluate the following agent transcript "
+        "against the provided rubric. Respond ONLY with a JSON object containing "
+        "'score' (float 0.0-1.0) and 'reasons' (string explaining the score). "
+        "No other text.\n\n"
+        f"Rubric:\n{rubric}"
+    )
+
+    user_prompt = f"Transcript to evaluate:\n\n{transcript_text}"
+
+    try:
+        response = litellm.completion(
+            model=model_ref,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.0,
+        )
+
+        content = response.choices[0].message.content or ""
+        if not content.strip():
+            logger.error("LLM judge returned empty response")
+            return 0.0, "LLM judge returned empty response"
+
+        result = _parse_judge_json(content)
+        score = max(0.0, min(1.0, float(result.get("score", 0.0))))
+        reasons = str(result.get("reasons", result.get("reasoning", "")))
+        logger.info("LLM judge evaluation: score=%.2f", score)
+        return score, reasons
+
+    except Exception as e:
+        logger.error("LLM judge evaluation failed: %s", e, exc_info=True)
+        # Return 0.0 so the failure IS included in the weighted score.
+        # -1.0 means "not configured" and would be excluded.
+        return 0.0, f"LLM judge failed: {e}"
+
+
+def _parse_judge_json(text: str) -> dict[str, Any]:
+    """Parse JSON from judge response, handling markdown code blocks.
+
+    Tries direct JSON parse first, then extracts from ```json blocks,
+    then tries to find any JSON object in the text.
+    """
+    import json as json_mod
+
+    # Try direct parse
+    try:
+        return json_mod.loads(text)
+    except (json_mod.JSONDecodeError, ValueError):
+        pass
+
+    # Try extracting from markdown code block
+    match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if match:
+        try:
+            return json_mod.loads(match.group(1))
+        except (json_mod.JSONDecodeError, ValueError):
+            pass
+
+    # Try finding any JSON object in the text
+    match = re.search(r"\{[^{}]*\"score\"[^{}]*\}", text, re.DOTALL)
+    if match:
+        try:
+            return json_mod.loads(match.group(0))
+        except (json_mod.JSONDecodeError, ValueError):
+            pass
+
+    raise ValueError(f"Could not parse JSON from judge response: {text[:200]}")
+
+
+def _format_transcript_for_judge(messages: list[dict[str, Any]]) -> str:
+    """Format conversation messages into readable transcript for judge.
+
+    Includes tool call details so the judge can evaluate tool usage quality.
+
+    Args:
+        messages: List of message dicts with 'role', 'content', optional
+            'tool_calls' and 'tool_call_id' keys.
+
+    Returns:
+        Human-readable transcript string.
+    """
+    parts = []
+    for msg in messages:
+        role = msg.get("role", "unknown")
+        content = msg.get("content", "")
+        tool_calls = msg.get("tool_calls", [])
+        tool_call_id = msg.get("tool_call_id")
+
+        # Tool result messages
+        if role == "tool" and tool_call_id:
+            # Truncate long tool outputs for judge
+            truncated = content[:2000] + ("..." if len(content) > 2000 else "")
+            parts.append(f"[tool result]: {truncated}")
+        elif content:
+            parts.append(f"[{role}]: {content}")
+
+        # Tool call details
+        for tc in tool_calls or []:
+            name = tc.get("name", "?")
+            args = tc.get("arguments", {})
+            parts.append(f"  → Tool call: {name}({args})")
+
+    return "\n\n".join(parts)
