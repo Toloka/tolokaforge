@@ -151,7 +151,7 @@ class FrozenMcpCoreAdapter(BaseAdapter):
         """Create :class:`InMemoryDatabase` from ``initial_state.json``."""
         self._setup_sys_path(domain_dir)
 
-        from mcp_core.db.database import InMemoryDatabase  # noqa: WPS433 (late import)
+        from mcp_core.db.database import InMemoryDatabase  # late import: domain package
 
         # Load initial state
         initial_state_path = task_dir / "initial_state.json"

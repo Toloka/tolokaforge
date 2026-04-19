@@ -40,6 +40,29 @@
 
 **Status:** Fixed. `trajectory.yaml` now includes `tool_log` with full entries. Verified: all trial directories include `tool_log` in trajectory.yaml with tool name, success status, output, error, and duration fields.
 
+### ~~Issue 7 — Docker network/container name collisions~~ → RESOLVED
+
+**Status:** Fixed in `tolokaforge/docker/network.py:221-239`. The 409 Conflict race condition is handled: when `client.networks.create()` fails with 409, the code retries with `_find_existing_network()` lookup and reuses the existing network. Container stale-removal is also handled in `container.py:353-375`.
+
+### ~~Issue 10 — BuiltinGenericToolWrapper masks tool failures~~ → RESOLVED
+
+**Status:** Fixed in `tolokaforge/runner/tool_factory.py:712-723`. `BuiltinGenericToolWrapper.execute()` now raises `ToolExecutionError` when the underlying tool returns `result.success == False`. The runner service (`service.py:795-801`) catches this exception and correctly records `EXECUTION_STATUS_ERROR`. This ensures:
+- `tool_success_rate` accurately reflects actual success/failure ratio
+- `failure_attribution` detects tool argument and execution errors
+- `tool_usage.error_count` correctly tracks failures
+
+### ~~Issue 11 — Missing `.env.example`~~ → RESOLVED
+
+**Status:** Fixed. `.env.example` exists with documented API key placeholders (OPENROUTER_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY). Matches README Quick Start instructions.
+
+### ~~Issue 8 — Tool duration measurements meaningless in Docker mode~~ → RESOLVED
+
+**Status:** Fixed. The Runner service measures actual tool execution time server-side via `time.time()` in `service.py:748-804`. The measured `latency_seconds` is reported through `response.metrics.latency_seconds` in the proto response. The `RunnerClient` in `docker_runtime.py:248-251` reads this server-side measurement (not gRPC round-trip). The orchestrator's `output_writer.py` correctly aggregates these durations in `tool_usage.total_duration_s`.
+
+### ~~Issue 13 — `run_state.json` config_path inconsistency~~ → RESOLVED
+
+**Status:** Fixed in `tolokaforge/core/resume.py`. Added `_normalize_to_relative()` static method to `RunStateManager` that converts absolute paths to CWD-relative paths when possible. Applied to both `config_path` and `output_dir` in `initialize_run()`. Now both CLI and programmatic API produce consistent relative paths in `run_state.json`.
+
 ---
 
 ## Open Issues
@@ -63,100 +86,74 @@ The Runner image bakes in domain-specific directories causing unnecessary rebuil
 
 ### Issue 3 — env.yaml does not capture agent-written files
 
-After trial completion, `env.yaml` only shows initial filesystem state (files from `initial_state.filesystem.copy`). Files written by the agent during execution are absent. The grading works (Runner has direct filesystem access) but post-hoc analysis tools see incomplete state.
+After trial completion, `env.yaml` only shows initial filesystem state (files from `initial_state.filesystem.copy`). Files written by the agent during execution are absent. The grading works correctly (Runner has direct filesystem access) but post-hoc analysis tools see incomplete state.
 
-**Confirmed by example runs (2026-04-19):**
-- `custom_grading`: env.yaml has `prompt.txt` but not `submissions/knowledge_hypothesis_rationale.md`
-- `package_api`: env.yaml has `problem.txt` but not `submissions/answer.md`
-- `browser_task`: env.yaml has `policy_brief.txt` but not `submissions/browser_policy_response.md`
+**Root cause verified (2026-04-19):** `EnvironmentState.sync_filesystem_from_disk()` is defined at `tolokaforge/core/env_state.py:233-252` but **never called anywhere** in the codebase. This is dead code — no caller invokes it before `get_final_state()`.
 
-**Fix requires:** Extending the GetState gRPC response to include filesystem state from the Runner container, or adding a dedicated filesystem sync RPC.
+In Docker mode, the orchestrator runs on the host and cannot access the Runner container's filesystem (files are at `/work/` inside the container). The `GetState` gRPC only returns DB state, not filesystem state.
 
-### Issue 4 — Feature verification gaps
-
-**Verified (2026-04-19 example analysis):**
-- ✅ LLM judge grading (custom_grading: judge score=0.92, combined=0.984)
-- ✅ Combined weighted grading (state 0.6 + transcript 0.2 + judge 0.2)
-- ✅ JSONPath file assertions (contains_ci, path_glob)
-- ✅ Transcript rules with `required_actions` and `disallow_regex`
-- ✅ Browser tool end-to-end (mock-web + Playwright, score=0.825)
-- ✅ Multi-turn conversation (scripted user in custom_grading, LLM user in browser_task)
-- ✅ Distributed execution (workers=2, repeats=2, SQLite backend)
-- ✅ Package API programmatic run (Orchestrator + RunConfig from Python)
-- ✅ Docker auto-start lifecycle (build, start, health check, stop, destroy)
-- ✅ Cost tracking (per-trial and aggregate)
-- ✅ Grade component `None` sentinel (replaces old `-1.0`)
-- ✅ `analyze_results` example loads trajectories, computes metrics, reports pass rates
-- ✅ `trajectory.yaml` includes full `tool_log` data
-
-**Open:**
-- Hash-based grading method
-- Custom checks grading method
-- Unstable fields / unstable extra fields
-- Initial state data patches
-- TypeSense RAG search integration
-- Multiple LLM providers (only OpenRouter/Anthropic tested)
-- `tolokaforge docker build` / `tolokaforge docker up` CLI commands
-
-### Issue 7 — Docker network/container name collisions prevent concurrent runs (BUG)
-
-**Files:** `tolokaforge/docker/network.py:188-222`, `tolokaforge/docker/stack.py`
-
-Fixed names (`runner-net`, `tolokaforge-runner`, `tolokaforge-db-service`) cause 409 Conflict errors when two `tolokaforge run` processes execute simultaneously. The `Network.create()` has a TOCTOU race between `_find_existing_network()` and `client.networks.create()`.
-
-**Fix:** Add unique run-id suffix to Docker resource names, or catch 409 and retry.
-
-### Issue 8 — Tool duration measurements meaningless in Docker mode
-
-`DockerRunnerAdapter` measures only gRPC round-trip (0.001–0.002s), not actual tool execution time inside the container. Makes `tool_usage.total_duration_s` misleading.
+**Fix options:**
+1. **(Minimal)** For non-Docker mode: call `env_state.sync_filesystem_from_disk()` before `get_final_state()` in the orchestrator.
+2. **(Full)** Extend `GetState` gRPC to include filesystem state from the Runner container, or add a dedicated filesystem sync RPC. This would also benefit `env.yaml` in Docker mode.
 
 ### Issue 9 — `mock_web_url` in env.yaml uses Docker-internal DNS
 
 `env.yaml` shows `mock_web_url: http://mock-web:8080` — only useful inside Docker. Confusing for post-hoc analysis from the host.
 
-### Issue 10 — BuiltinGenericToolWrapper masks tool failures as successes (BUG — CRITICAL)
+### Issue 12 — Browser task state checks could be more robust (TASK QUALITY)
 
-**Files:** `tolokaforge/runner/tool_factory.py:700-704`, `tolokaforge/runner/service.py:780-788`
+**File:** `examples/browser_task/dataset/tasks/browser/browser_public_example_01/grading.yaml:10`
 
-When a builtin tool (browser, calculator, etc.) returns `ToolResult(success=False, error="...")`, `BuiltinGenericToolWrapper.execute()` converts it to the string `"Error: {error}"` and returns it. The runner service (`service.py:787`) then treats any string return as `EXECUTION_STATUS_SUCCESS` since no exception was raised.
+The state checks use literal substring matching (`contains_ci: "not permitted"`, `contains_ci: "7 business days"`, etc.). While improved from the original "not eligible for cancellation" phrasing, agents that correctly identify the answer but use different wording (synonyms, paraphrases) will still fail. Consider regex or `contains_any_ci` for checks where multiple valid phrasings exist.
 
-**Impact chain confirmed via browser_task run (2026-04-19):**
-1. BrowserTool.execute(`{}`) → `ToolResult(success=False, error="Missing required 'actions' parameter...")`
-2. BuiltinGenericToolWrapper.execute() → returns string `"Error: Missing required 'actions' parameter..."`
-3. runner/service.py → `EXECUTION_STATUS_SUCCESS` (line 787: no exception = success)
-4. docker_adapter.py → logs `success: True` with error text in output field
+### Issue 14 — `_grade_via_runner_rpc` incorrect return type annotation (BUG)
 
-**Corruption effects:**
-- `tool_success_rate` artificially inflated (shows 100% when tool had validation errors)
-- `failure_attribution` cannot detect tool argument errors (tool evidence is empty)
-- `tool_usage.error_count` always 0 even when tools returned errors
-- `metrics.yaml` records `tool_success_rate: 1.0` for browser task despite failed browser call
+**File:** `tolokaforge/core/orchestrator.py:1425`
 
-**Fix:** `BuiltinGenericToolWrapper.execute()` should raise an exception on `result.success == False`, letting the runner service mark it as `EXECUTION_STATUS_ERROR`. Alternatively, refactor the runner service to understand structured `ToolResult` returns.
+The method is annotated as `-> Grade` but actually returns `tuple[Grade, float]` (line 1498: `return grade, grade_result.get("judge_cost_usd", 0.0)`; line 1514: `return Grade(...), 0.0`). The caller at line 1366 correctly destructures: `grade, judge_cost = self._grade_via_runner_rpc(...)`.
 
-### Issue 11 — Missing `.env.example` referenced in README (USABILITY)
+This doesn't cause runtime errors but violates type safety and will confuse type checkers (mypy/pyright) and IDEs.
 
-**File:** `README.md:36`
+**Fix:** Change annotation to `-> tuple[Grade, float]`.
 
-README Quick Start says `cp .env.example .env` but `.env.example` does not exist in the repository. New users see a broken first step.
+### Issue 15 — Invalid `# noqa` directive (MINOR)
 
-**Fix:** Create `.env.example` with documented placeholder variables.
+**File:** `tolokaforge/adapters/frozen_mcp_core.py:154`
 
-### Issue 12 — Browser task `contains_ci` state check is brittle (TASK QUALITY)
+Line has `# noqa: WPS433` (wemake-python-styleguide rule) but the project uses `ruff` for linting. Ruff warns: "Invalid rule code provided to `# noqa`". Should be changed to a standard `# noqa: E402` or just a comment explaining the late import.
 
-**File:** `examples/browser_task/dataset/tasks/browser/browser_public_example_01/grading.yaml:11`
+### Issue 4 — Feature verification gaps
 
-The state check `contains_ci: "not eligible for cancellation"` expects the exact phrase "not eligible for cancellation". The agent correctly identifies that cancellation is not allowed and uses semantically equivalent phrases ("cannot be cancelled", "Cancellation DENIED", "cancellation is not permitted"), but the literal substring match fails.
+**Verified (2026-04-19 code analysis + test runs):**
+- ✅ LLM judge grading (custom_grading grading config: llm_judge.model_ref + rubric + output_schema)
+- ✅ Combined weighted grading (state 0.6 + transcript 0.2 + judge 0.2)
+- ✅ JSONPath file assertions (contains_ci, path_glob)
+- ✅ Transcript rules with `required_actions` and `disallow_regex`
+- ✅ Browser tool support (mock-web + Playwright, grading via state_checks + transcript_rules)
+- ✅ Multi-turn conversation (scripted user in custom_grading, LLM user in browser_task)
+- ✅ Distributed execution (workers=2, repeats=2, SQLite backend)
+- ✅ Package API programmatic run (Orchestrator + RunConfig from Python)
+- ✅ Docker auto-start lifecycle (build, start, health check, stop, destroy)
+- ✅ Cost tracking (per-trial and aggregate)
+- ✅ Grade component `None` sentinel (replaces old `-1.0` at proto boundary via `_proto_score_to_optional`)
+- ✅ `analyze_results` example loads trajectories, computes metrics, reports pass rates
+- ✅ `trajectory.yaml` includes full `tool_log` data
+- ✅ BuiltinGenericToolWrapper properly raises on tool failure
+- ✅ Docker network 409 race condition handled
+- ✅ Tool duration uses server-side measurement in Docker mode
+- ✅ Unit tests: 1000 passed, 6 skipped
+- ✅ Canonical tests: 72 passed, 1 skipped
+- ✅ Lint: all checks passed
+- ✅ Task validation: 3/3 example tasks valid
 
-This reduces the task score from 1.0 to 0.825 (state_checks: 0.75 instead of 1.0) even though the agent's reasoning and conclusion are correct.
-
-**Fix:** Broaden the check to accept common phrasings: `contains_any_ci: ["not eligible for cancellation", "cannot be cancelled", "cancellation is not permitted", "cancellation denied"]` or use a regex pattern.
-
-### Issue 13 — `run_state.json` config_path inconsistency (MINOR)
-
-**Files:** `tolokaforge/core/orchestrator.py`, `tolokaforge/core/resume.py`
-
-When using the programmatic API (`Orchestrator(RunConfig(...))`), `run_state.json.config_path` is an absolute path (e.g., `/workspaces/tolokaforge_opensource/results/package_api`). When using CLI (`tolokaforge run --config ...`), it's a relative path (e.g., `results/custom_grading`). This inconsistency could break tooling that resolves paths from `run_state.json`.
+**Open:**
+- Hash-based grading method (end-to-end with real LLM)
+- Custom checks grading method (end-to-end with real LLM)
+- Unstable fields / unstable extra fields
+- Initial state data patches
+- TypeSense RAG search integration
+- Multiple LLM providers (only OpenRouter/Anthropic tested)
+- `tolokaforge docker build` / `tolokaforge docker up` CLI commands
 
 ---
 
@@ -185,37 +182,28 @@ Convert all tasks to frozen format, use `frozen_mcp_core` exclusively for Docker
 
 ---
 
-## Stage 10 — Critical Bug Fixes
+## Stage 10 — Bug Fixes
 
-> **Goal:** Fix bugs discovered during 2026-04-19 example analysis.
-> **Priority:** ASAP — these affect metric accuracy and analysis tooling.
+> **Goal:** Fix bugs discovered during 2026-04-19 code analysis.
 
 ### Bug fixes needed
 
-1. **BuiltinGenericToolWrapper masks tool failures** (Issue 10 — CRITICAL)
-   - Raise exception or return structured error from `BuiltinGenericToolWrapper.execute()`
-   - Ensure runner service records correct `EXECUTION_STATUS_ERROR`
-   - Verify tool_success_rate and failure_attribution reflect actual errors
+1. **`_grade_via_runner_rpc` return type** (Issue 14)
+   - Fix type annotation from `-> Grade` to `-> tuple[Grade, float]`
 
-2. **Docker network race condition** (Issue 7)
-   - Catch 409 Conflict in `Network.create()` and retry with lookup
-   - Consider adding run-id suffix to Docker resource names
+2. **Invalid `# noqa` directive** (Issue 15)
+   - Fix `frozen_mcp_core.py:154` to use valid ruff code or plain comment
 
-3. **Missing `.env.example`** (Issue 11)
-   - Create `.env.example` with documented API key placeholders
-   - Ensure README Quick Start works for new users
-
-4. **Browser task brittle state check** (Issue 12)
-   - Broaden `contains_ci` to accept common paraphrases
+3. **`sync_filesystem_from_disk` dead code** (Issue 3 — partial fix)
+   - Call `sync_filesystem_from_disk()` in non-Docker mode orchestrator path
+   - Document that Docker mode requires gRPC extension for full fix
 
 ### Verification
 
-- [ ] Tool validation errors recorded as `success=false` in tool_log
-- [ ] `tool_success_rate` reflects actual success/failure ratio
-- [ ] `failure_attribution` detects tool argument errors
-- [ ] `Network.create()` handles 409 Conflict gracefully
-- [ ] `.env.example` exists and matches README instructions
-- [ ] Browser task state check passes for semantically correct responses
+- [ ] `_grade_via_runner_rpc` type annotation matches actual return
+- [ ] No ruff warnings about invalid noqa directives
+- [ ] Non-Docker mode env.yaml includes agent-written files
+- [ ] All 1000 unit + 72 canonical tests still pass
 
 ---
 
@@ -256,11 +244,9 @@ Convert all tasks to frozen format, use `frozen_mcp_core` exclusively for Docker
 
 ### Work items
 
-- [ ] env.yaml captures agent-written files (Issue 3 — requires gRPC extension)
-- [ ] Tool duration reflects actual execution time, not just gRPC round-trip (Issue 8)
+- [ ] env.yaml captures agent-written files in Docker mode (Issue 3 — requires gRPC extension)
 - [ ] `mock_web_url` in env.yaml uses host-accessible URL (Issue 9)
 - [ ] Add stale results directory cleanup mechanism
-- [ ] Normalize `run_state.json` config_path to always be relative (Issue 13)
 
 ---
 
@@ -271,11 +257,10 @@ Convert all tasks to frozen format, use `frozen_mcp_core` exclusively for Docker
 - [ ] Audit all 8 Dockerfiles for necessity
 - [ ] Verify minimal runner image works with frozen_mcp_core
 
-### Stage 10 — Critical Bug Fixes (ASAP)
-- [ ] Fix BuiltinGenericToolWrapper masking tool failures (Issue 10)
-- [ ] Fix Docker network race condition (Issue 7)
-- [ ] Create `.env.example` (Issue 11)
-- [ ] Fix browser task brittle state check (Issue 12)
+### Stage 10 — Bug Fixes (ASAP)
+- [ ] Fix `_grade_via_runner_rpc` return type annotation (Issue 14)
+- [ ] Fix invalid `# noqa: WPS433` directive (Issue 15)
+- [ ] Call `sync_filesystem_from_disk()` in non-Docker orchestrator path (Issue 3 partial)
 
 ### Stage 11 — E2E Validation (remaining)
 - [ ] FrozenMcpCoreAdapter extended validation (TypeSense, user LLM, data patches)
@@ -290,8 +275,6 @@ Convert all tasks to frozen format, use `frozen_mcp_core` exclusively for Docker
 - [ ] User simulator context maintenance
 
 ### Stage 13 — Analysis Tooling
-- [ ] env.yaml captures agent-written files (requires gRPC extension)
-- [ ] Tool duration reflects actual execution time
+- [ ] env.yaml captures agent-written files in Docker mode (requires gRPC extension)
 - [ ] mock_web_url uses host-accessible URL
 - [ ] Stale results directory cleanup
-- [ ] Normalize run_state.json config_path

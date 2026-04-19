@@ -82,6 +82,22 @@ class RunStateManager:
         self.state_file = self.output_dir / "run_state.json"
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
+    @staticmethod
+    def _normalize_to_relative(path_str: str) -> str:
+        """Normalize path to be relative to CWD when possible.
+
+        Ensures consistent paths in run_state.json regardless of whether the
+        run was started via CLI (relative paths) or programmatic API (often
+        absolute paths from Path.resolve()).
+        """
+        p = Path(path_str)
+        if p.is_absolute():
+            try:
+                return str(p.relative_to(Path.cwd()))
+            except ValueError:
+                return path_str  # Path not under CWD, keep absolute
+        return path_str
+
     def initialize_run(
         self, run_id: str, config_path: str, task_ids: list[str], repeats: int
     ) -> RunState:
@@ -96,8 +112,8 @@ class RunStateManager:
 
         run_state = RunState(
             run_id=run_id,
-            config_path=config_path,
-            output_dir=str(self.output_dir),
+            config_path=self._normalize_to_relative(config_path),
+            output_dir=self._normalize_to_relative(str(self.output_dir)),
             start_ts=datetime.now(tz=timezone.utc),
             last_updated=datetime.now(tz=timezone.utc),
             status="running",

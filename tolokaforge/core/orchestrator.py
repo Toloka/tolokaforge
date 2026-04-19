@@ -1422,7 +1422,7 @@ class Orchestrator:
         trial_idx: int,
         docker_runtime: Any,
         trajectory: Trajectory | None = None,
-    ) -> Grade:
+    ) -> tuple[Grade, float]:
         """Grading via Runner's GradeTrial RPC.
 
         Passes the conversation transcript so the Runner can evaluate
