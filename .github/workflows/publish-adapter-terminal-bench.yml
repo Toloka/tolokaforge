@@ -52,7 +52,7 @@ jobs:
           See https://github.com/Toloka/tolokaforge for more information.
           """
 
-          __version__ = "0.0.1"
+          __version__ = "0.0.2"
           STUB_EOF
 
           cat > _stub_build/README.md << 'README_EOF'
@@ -72,7 +72,7 @@ jobs:
 
           [project]
           name = "tolokaforge-adapter-terminal-bench"
-          version = "0.0.1"
+          version = "0.0.2"
           description = "Terminal-bench adapter plugin for tolokaforge"
           readme = "README.md"
           requires-python = ">=3.10"
