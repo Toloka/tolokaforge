@@ -53,10 +53,12 @@ class EnvironmentState:
         self.initial_filesystem_state: dict[str, Union[str, bytes]] = {}  # Store original for reset
         self.logger = get_logger("env_state")
 
-        # Service URLs (for Docker mode)
-        self.json_db_url: str = "http://json-db:8000"
-        self.rag_service_url: str = "http://rag-service:8001"
-        self.mock_web_url: str = "http://mock-web:8080"
+        # Service URLs — empty by default, set explicitly by executor/orchestrator
+        # when the service is actually needed. Never default to Docker-internal URLs
+        # to avoid leaking implementation details into task results.
+        self.json_db_url: str = ""
+        self.rag_service_url: str = ""
+        self.mock_web_url: str = ""
 
         # File system paths (for tools)
         self.agent_visible_dir: Path = Path("/work")  # Agent's working directory

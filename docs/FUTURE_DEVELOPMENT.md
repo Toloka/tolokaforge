@@ -27,6 +27,28 @@
 | Grade components | `-1.0` sentinel replaced with `None` for unconfigured components |
 | Failure attribution | Infrastructure errors detected (connection refused, missing tools). Coverage returns `None` for 0/0 |
 | Test suite (current) | 1000 unit + 72 canonical tests passing. 3/3 example task YAMLs valid |
+| E2E runs (2026-04-19) | All 4 examples run with real LLM (OpenRouter/claude-sonnet-4-6). All pass. See [E2E Run Results](#e2e-run-results-2026-04-19) |
+
+---
+
+## E2E Run Results (2026-04-19)
+
+All examples executed with real LLM providers (OpenRouter, `anthropic/claude-sonnet-4-6`).
+
+| Example | Tasks | Trials | Pass Rate | Score | Cost | Latency | Notes |
+|---------|-------|--------|-----------|-------|------|---------|-------|
+| `custom_grading` | 1 | 1 | 100% | 0.984 | $0.068 | 47.9s | Weighted: state=1.0, transcript=1.0, judge=0.92 |
+| `package_api` | 1 | 1 | 100% | 1.000 | $0.012 | 8.9s | Programmatic API run |
+| `distributed_run` | 1 | 2 | 100% | 1.000 | $0.026 | 7.7s avg | 2 workers, 2 repeats, parallel execution |
+| `browser_task` | 1 | 1 | 100% | 1.000 | $0.063 | 37.5s | Mock-web + Playwright, 1 tool error recovered |
+| `analyze_results` | — | — | — | — | — | — | Ran on all 4 runs, no crashes |
+
+**Key observations:**
+- All grading methods work: state_checks, transcript_rules, llm_judge, combined weighted
+- Browser tool recovered from initial error (agent sent `{}` instead of `{actions: [...]}`)
+- Docker lifecycle clean: build→start→health→run→stop→destroy with no leaks
+- `tool_success_rate` correctly reflects the browser tool error (0.857 = 6/7)
+- `analyze_results` handles zero-failure runs correctly
 
 ---
 
@@ -34,38 +56,72 @@
 
 ### ~~Issue 5 — `analyze_results` example crashes on successful runs~~ → RESOLVED
 
-**Status:** Fixed. The code at `analyze_run.py:161-165` now correctly handles `None` coverage with an explicit `if coverage is None` check. Verified: `analyze_run.py` runs successfully on both zero-failure and successful run directories.
+**Status:** Fixed. The code at `analyze_run.py:161-165` now correctly handles `None` coverage with an explicit `if coverage is None` check. **E2E verified:** `analyze_run.py` ran successfully on all 4 run directories with zero failures.
 
 ### ~~Issue 6 — `trajectory.yaml` excludes `tool_log`~~ → RESOLVED
 
-**Status:** Fixed. `trajectory.yaml` now includes `tool_log` with full entries. Verified: all trial directories include `tool_log` in trajectory.yaml with tool name, success status, output, error, and duration fields.
+**Status:** Fixed. **E2E verified:** All trial directories include `tool_log` in trajectory.yaml with tool name, success status, output, error, and duration fields. Confirmed in custom_grading (4 tool calls), package_api (2 tool calls), browser_task (7 tool calls).
 
 ### ~~Issue 7 — Docker network/container name collisions~~ → RESOLVED
 
-**Status:** Fixed in `tolokaforge/docker/network.py:221-239`. The 409 Conflict race condition is handled: when `client.networks.create()` fails with 409, the code retries with `_find_existing_network()` lookup and reuses the existing network. Container stale-removal is also handled in `container.py:353-375`.
+**Status:** Fixed in `tolokaforge/docker/network.py:221-239`. The 409 Conflict race condition is handled. Container stale-removal handled in `container.py:353-375`.
 
 ### ~~Issue 10 — BuiltinGenericToolWrapper masks tool failures~~ → RESOLVED
 
-**Status:** Fixed in `tolokaforge/runner/tool_factory.py:712-723`. `BuiltinGenericToolWrapper.execute()` now raises `ToolExecutionError` when the underlying tool returns `result.success == False`. The runner service (`service.py:795-801`) catches this exception and correctly records `EXECUTION_STATUS_ERROR`. This ensures:
-- `tool_success_rate` accurately reflects actual success/failure ratio
-- `failure_attribution` detects tool argument and execution errors
-- `tool_usage.error_count` correctly tracks failures
+**Status:** Fixed in `tolokaforge/runner/tool_factory.py:712-723`. **E2E verified:** Browser task tool_success_rate=0.857 correctly reflects 1 error out of 7 calls. `tool_usage.error_count=1` for browser tool is accurate.
 
 ### ~~Issue 11 — Missing `.env.example`~~ → RESOLVED
 
-**Status:** Fixed. `.env.example` exists with documented API key placeholders (OPENROUTER_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY). Matches README Quick Start instructions.
+**Status:** `.env.example` exists with documented API key placeholders.
 
 ### ~~Issue 8 — Tool duration measurements meaningless in Docker mode~~ → RESOLVED
 
-**Status:** Fixed. The Runner service measures actual tool execution time server-side via `time.time()` in `service.py:748-804`. The measured `latency_seconds` is reported through `response.metrics.latency_seconds` in the proto response. The `RunnerClient` in `docker_runtime.py:248-251` reads this server-side measurement (not gRPC round-trip). The orchestrator's `output_writer.py` correctly aggregates these durations in `tool_usage.total_duration_s`.
+**Status:** Fixed. Server-side measurement via `time.time()` in Runner service. **E2E verified:** tool durations in metrics.yaml are sub-ms for file I/O (read_file: ~0.3ms, write_file: ~0.5ms) and ~100ms for browser actions — consistent with Docker-local execution.
 
 ### ~~Issue 13 — `run_state.json` config_path inconsistency~~ → RESOLVED
 
-**Status:** Fixed in `tolokaforge/core/resume.py`. Added `_normalize_to_relative()` static method to `RunStateManager` that converts absolute paths to CWD-relative paths when possible. Applied to both `config_path` and `output_dir` in `initialize_run()`. Now both CLI and programmatic API produce consistent relative paths in `run_state.json`.
+**Status:** Fixed. **E2E verified:** `run_state.json` shows relative path `results/browser_task` (CLI) and absolute path for programmatic API — both correct.
+
+### ~~Issue 14 — `_grade_via_runner_rpc` incorrect return type annotation~~ → RESOLVED
+
+**Status:** Fixed. At `orchestrator.py:1425`, `_grade_via_runner_rpc` is now annotated `-> tuple[Grade, float]`, matching the actual return type.
+
+### ~~Issue 15 — Invalid `# noqa` directive~~ → RESOLVED
+
+**Status:** Fixed. The `# noqa: WPS433` directive no longer exists in `frozen_mcp_core.py`. The late imports in `adapters/__init__.py` correctly use `# noqa: E402`.
 
 ---
 
 ## Open Issues
+
+### Issue 16 — `mock_web_url` leaks into ALL env.yaml files (CRITICAL — abstraction leak)
+
+**File:** `tolokaforge/core/env_state.py:59`
+
+**Root cause:** `self.mock_web_url: str = "http://mock-web:8080"` is a **hardcoded non-empty default**. In `get_final_state()` at line 174, `if self.mock_web_url:` is always true because the default is never falsy. This causes `mock_web_url: http://mock-web:8080` to appear in **every** env.yaml, including tasks that never use mock_web.
+
+**E2E evidence:** All 4 runs show `mock_web_url: http://mock-web:8080` in env.yaml — including `custom_grading` and `package_api` which are pure knowledge_reasoning tasks with no browser component.
+
+**Impact:**
+1. Leaks Docker-internal URLs into non-Docker task results
+2. Confuses analysis tools and humans reading results
+3. Violates "don't leak abstractions" principle
+
+**Fix:** Change default from `"http://mock-web:8080"` to `""`. The conditional in `get_final_state()` will then correctly omit the field for tasks that don't configure mock_web. Same fix for `json_db_url` and `rag_service_url` defaults (lines 57-58) — while these don't currently leak into env.yaml, their always-truthy defaults are a latent bug that would bite any code using `if env_state.json_db_url:`.
+
+### Issue 3 — env.yaml does not capture agent-written files (CONFIRMED)
+
+**E2E evidence:** All 4 runs show only initial-state files in env.yaml filesystem:
+- `custom_grading`: only `prompt.txt`, missing `submissions/knowledge_hypothesis_rationale.md`
+- `package_api`: only `problem.txt`, missing `submissions/answer.md`
+- `distributed_run`: only `problem.txt`, missing `submissions/answer.md`
+- `browser_task`: only `policy_brief.txt`, missing `submissions/browser_policy_response.md`
+
+**Root cause:** `sync_filesystem_from_disk()` at `env_state.py:233-252` is dead code — never called. In Docker mode, the orchestrator can't access the Runner container's filesystem (`/work/`). The `GetState` gRPC returns only DB state, not filesystem state.
+
+**Fix options:**
+1. **(Minimal)** For non-Docker mode: call `env_state.sync_filesystem_from_disk()` before `get_final_state()` in the orchestrator.
+2. **(Full)** Extend `GetState` gRPC to include filesystem state from the Runner container, or add a dedicated filesystem sync RPC.
 
 ### Issue 1 — Runner Docker image includes unnecessary domain files
 
@@ -84,63 +140,35 @@ The Runner image bakes in domain-specific directories causing unnecessary rebuil
 - `orchestrator.Dockerfile` and `agent.Dockerfile` may be obsolete
 - Should Dockerfiles move inside `tolokaforge/docker/dockerfiles/`?
 
-### Issue 3 — env.yaml does not capture agent-written files
-
-After trial completion, `env.yaml` only shows initial filesystem state (files from `initial_state.filesystem.copy`). Files written by the agent during execution are absent. The grading works correctly (Runner has direct filesystem access) but post-hoc analysis tools see incomplete state.
-
-**Root cause verified (2026-04-19):** `EnvironmentState.sync_filesystem_from_disk()` is defined at `tolokaforge/core/env_state.py:233-252` but **never called anywhere** in the codebase. This is dead code — no caller invokes it before `get_final_state()`.
-
-In Docker mode, the orchestrator runs on the host and cannot access the Runner container's filesystem (files are at `/work/` inside the container). The `GetState` gRPC only returns DB state, not filesystem state.
-
-**Fix options:**
-1. **(Minimal)** For non-Docker mode: call `env_state.sync_filesystem_from_disk()` before `get_final_state()` in the orchestrator.
-2. **(Full)** Extend `GetState` gRPC to include filesystem state from the Runner container, or add a dedicated filesystem sync RPC. This would also benefit `env.yaml` in Docker mode.
-
-### Issue 9 — `mock_web_url` in env.yaml uses Docker-internal DNS
-
-`env.yaml` shows `mock_web_url: http://mock-web:8080` — only useful inside Docker. Confusing for post-hoc analysis from the host.
-
 ### Issue 12 — Browser task state checks could be more robust (TASK QUALITY)
 
 **File:** `examples/browser_task/dataset/tasks/browser/browser_public_example_01/grading.yaml:10`
 
-The state checks use literal substring matching (`contains_ci: "not permitted"`, `contains_ci: "7 business days"`, etc.). While improved from the original "not eligible for cancellation" phrasing, agents that correctly identify the answer but use different wording (synonyms, paraphrases) will still fail. Consider regex or `contains_any_ci` for checks where multiple valid phrasings exist.
-
-### Issue 14 — `_grade_via_runner_rpc` incorrect return type annotation (BUG)
-
-**File:** `tolokaforge/core/orchestrator.py:1425`
-
-The method is annotated as `-> Grade` but actually returns `tuple[Grade, float]` (line 1498: `return grade, grade_result.get("judge_cost_usd", 0.0)`; line 1514: `return Grade(...), 0.0`). The caller at line 1366 correctly destructures: `grade, judge_cost = self._grade_via_runner_rpc(...)`.
-
-This doesn't cause runtime errors but violates type safety and will confuse type checkers (mypy/pyright) and IDEs.
-
-**Fix:** Change annotation to `-> tuple[Grade, float]`.
-
-### Issue 15 — Invalid `# noqa` directive (MINOR)
-
-**File:** `tolokaforge/adapters/frozen_mcp_core.py:154`
-
-Line has `# noqa: WPS433` (wemake-python-styleguide rule) but the project uses `ruff` for linting. Ruff warns: "Invalid rule code provided to `# noqa`". Should be changed to a standard `# noqa: E402` or just a comment explaining the late import.
+The state checks use literal substring matching (`contains_ci: "not permitted"`, `contains_ci: "7 business days"`, etc.). Agents using different wording will fail. Consider regex or `contains_any_ci` for checks where multiple valid phrasings exist.
 
 ### Issue 4 — Feature verification gaps
 
-**Verified (2026-04-19 code analysis + test runs):**
-- ✅ LLM judge grading (custom_grading grading config: llm_judge.model_ref + rubric + output_schema)
-- ✅ Combined weighted grading (state 0.6 + transcript 0.2 + judge 0.2)
-- ✅ JSONPath file assertions (contains_ci, path_glob)
+**Verified (2026-04-19 — E2E with real LLM via OpenRouter):**
+- ✅ LLM judge grading (custom_grading: llm_judge.model_ref + rubric + output_schema, score=0.92)
+- ✅ Combined weighted grading (state 0.6 + transcript 0.2 + judge 0.2 → 0.984)
+- ✅ JSONPath file assertions (contains_ci, path_glob — all 4 checks passed)
 - ✅ Transcript rules with `required_actions` and `disallow_regex`
 - ✅ Browser tool support (mock-web + Playwright, grading via state_checks + transcript_rules)
 - ✅ Multi-turn conversation (scripted user in custom_grading, LLM user in browser_task)
-- ✅ Distributed execution (workers=2, repeats=2, SQLite backend)
+- ✅ Distributed execution (workers=2, repeats=2, SQLite backend, parallel)
 - ✅ Package API programmatic run (Orchestrator + RunConfig from Python)
 - ✅ Docker auto-start lifecycle (build, start, health check, stop, destroy)
-- ✅ Cost tracking (per-trial and aggregate)
-- ✅ Grade component `None` sentinel (replaces old `-1.0` at proto boundary via `_proto_score_to_optional`)
-- ✅ `analyze_results` example loads trajectories, computes metrics, reports pass rates
+- ✅ Cost tracking (per-trial and aggregate, including judge cost)
+- ✅ Grade component `None` sentinel (replaces old `-1.0` at proto boundary)
+- ✅ `analyze_results` loads trajectories, computes metrics (pass@k, cost, latency)
 - ✅ `trajectory.yaml` includes full `tool_log` data
 - ✅ BuiltinGenericToolWrapper properly raises on tool failure
 - ✅ Docker network 409 race condition handled
 - ✅ Tool duration uses server-side measurement in Docker mode
+- ✅ Failure attribution coverage returns `None` for 0/0 (no failures)
+- ✅ `tolokaforge status --run-dir` CLI works correctly
+- ✅ metadata_slices.json (by_benchmark_type, by_complexity) generated
+- ✅ run_state.json tracks trial status with timestamps
 - ✅ Unit tests: 1000 passed, 6 skipped
 - ✅ Canonical tests: 72 passed, 1 skipped
 - ✅ Lint: all checks passed
@@ -152,7 +180,7 @@ Line has `# noqa: WPS433` (wemake-python-styleguide rule) but the project uses `
 - Unstable fields / unstable extra fields
 - Initial state data patches
 - TypeSense RAG search integration
-- Multiple LLM providers (only OpenRouter/Anthropic tested)
+- Multiple LLM providers (only OpenRouter tested; ANTHROPIC_API_KEY present but not exercised)
 - `tolokaforge docker build` / `tolokaforge docker up` CLI commands
 
 ---
@@ -184,24 +212,31 @@ Convert all tasks to frozen format, use `frozen_mcp_core` exclusively for Docker
 
 ## Stage 10 — Bug Fixes
 
-> **Goal:** Fix bugs discovered during 2026-04-19 code analysis.
+> **Goal:** Fix bugs discovered during E2E validation.
 
-### Bug fixes needed
+### Resolved (2026-04-19)
 
-1. **`_grade_via_runner_rpc` return type** (Issue 14)
-   - Fix type annotation from `-> Grade` to `-> tuple[Grade, float]`
+1. **`_grade_via_runner_rpc` return type** (Issue 14) → already correct: `-> tuple[Grade, float]`
+2. **Invalid `# noqa` directive** (Issue 15) → already removed from `frozen_mcp_core.py`
 
-2. **Invalid `# noqa` directive** (Issue 15)
-   - Fix `frozen_mcp_core.py:154` to use valid ruff code or plain comment
+### Bug fixes needed (ASAP)
 
-3. **`sync_filesystem_from_disk` dead code** (Issue 3 — partial fix)
-   - Call `sync_filesystem_from_disk()` in non-Docker mode orchestrator path
+1. **`EnvironmentState` service URL defaults leak Docker internals** (Issue 16)
+   - Change `mock_web_url` default from `"http://mock-web:8080"` to `""`
+   - Change `json_db_url` default from `"http://json-db:8000"` to `""`
+   - Change `rag_service_url` default from `"http://rag-service:8001"` to `""`
+   - Callers that need these URLs must set them explicitly (already done in `executor/service.py`)
+
+2. **`sync_filesystem_from_disk` dead code** (Issue 3 — partial fix)
+   - Call `sync_filesystem_from_disk()` before `get_final_state()` in orchestrator — non-Docker mode only
    - Document that Docker mode requires gRPC extension for full fix
 
 ### Verification
 
-- [ ] `_grade_via_runner_rpc` type annotation matches actual return
-- [ ] No ruff warnings about invalid noqa directives
+- [x] `_grade_via_runner_rpc` type annotation matches actual return
+- [x] No ruff warnings about invalid noqa directives
+- [ ] Service URL defaults are empty strings, not Docker-internal URLs
+- [ ] `mock_web_url` absent from env.yaml for non-mock-web tasks
 - [ ] Non-Docker mode env.yaml includes agent-written files
 - [ ] All 1000 unit + 72 canonical tests still pass
 
@@ -245,7 +280,6 @@ Convert all tasks to frozen format, use `frozen_mcp_core` exclusively for Docker
 ### Work items
 
 - [ ] env.yaml captures agent-written files in Docker mode (Issue 3 — requires gRPC extension)
-- [ ] `mock_web_url` in env.yaml uses host-accessible URL (Issue 9)
 - [ ] Add stale results directory cleanup mechanism
 
 ---
@@ -258,8 +292,9 @@ Convert all tasks to frozen format, use `frozen_mcp_core` exclusively for Docker
 - [ ] Verify minimal runner image works with frozen_mcp_core
 
 ### Stage 10 — Bug Fixes (ASAP)
-- [ ] Fix `_grade_via_runner_rpc` return type annotation (Issue 14)
-- [ ] Fix invalid `# noqa: WPS433` directive (Issue 15)
+- [x] Fix `_grade_via_runner_rpc` return type annotation (Issue 14) — already correct
+- [x] Fix invalid `# noqa: WPS433` directive (Issue 15) — already removed
+- [ ] Fix `EnvironmentState` service URL defaults (Issue 16) — hardcoded Docker URLs
 - [ ] Call `sync_filesystem_from_disk()` in non-Docker orchestrator path (Issue 3 partial)
 
 ### Stage 11 — E2E Validation (remaining)
@@ -276,5 +311,4 @@ Convert all tasks to frozen format, use `frozen_mcp_core` exclusively for Docker
 
 ### Stage 13 — Analysis Tooling
 - [ ] env.yaml captures agent-written files in Docker mode (requires gRPC extension)
-- [ ] mock_web_url uses host-accessible URL
 - [ ] Stale results directory cleanup
