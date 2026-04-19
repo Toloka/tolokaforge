@@ -2,17 +2,11 @@ name: Claude Code Review
 
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, synchronize, reopened]
   issue_comment:
     types: [created]
   pull_request_review_comment:
     types: [created]
-
-permissions:
-  contents: read
-  pull-requests: write
-  issues: write
-  id-token: write
 
 # Cancel in-progress reviews for the same PR
 concurrency:
@@ -23,58 +17,48 @@ jobs:
   review:
     name: Claude Code Review
     runs-on: ubuntu-latest
-    # Run on PR events, or on @claude mentions in comments
     if: >
       github.event_name == 'pull_request' ||
       (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
       (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude'))
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - uses: anthropics/claude-code-action@v1
+      - uses: anthropics/claude-code-action@beta
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          prompt: |
-            You are reviewing a PR for Tolokaforge — an LLM tool-use benchmarking harness.
-            Read AGENTS.md for full project rules before reviewing.
+          direct_prompt: |
+            Review this PR for violations of the project's AGENTS.md rules. Check:
 
-            Review the PR diff for:
+            1. CODE QUALITY: Are errors surfaced explicitly? No silent fallbacks,
+               no swallowed exceptions (except Exception: pass), no returning None
+               instead of raising. Functions under 100 lines, nesting depth < 3.
 
-            ## Code Quality
-            - Errors surfaced explicitly — no silent fallbacks, no swallowed exceptions
-            - Fail fast: prefer explicit failures over defaults that mask problems
-            - DRY: no duplicated logic — common code belongs in shared modules
-            - Functions under 100 lines, no god classes, nesting depth < 3
-            - Self-describing code: names communicate intent, minimal comments needed
-            - No warnings suppressed — update code to use current APIs instead
+            2. SECRETS: Are API keys accessed via SecretManager only? Never
+               os.environ.get() or load_dotenv() for API keys. No secrets in code,
+               logs, or container mounts.
 
-            ## Architecture
-            - Harness logic stays generic — task-specific logic in task packs only
-            - Clean abstraction boundaries — no implementation details leaking across layers
-            - Backward compatibility preserved for task contracts unless migration is explicit
-            - Deterministic grading preferred over LLM judge when feasible
-            - Secrets via SecretManager only — never os.environ.get() or load_dotenv() for API keys
+            3. TESTING: Does every test file have pytestmark (pytest.mark.unit,
+               .canonical, or .integration)? Zero xfail, zero bare @skip — use
+               conditional markers (requires_api, requires_docker). MockAsyncClient
+               from tests.utils.mock_clients only — no local copies.
 
-            ## Testing
-            - Every new/changed test has a marker: @pytest.mark.unit, .canonical, or .integration
-            - Tests verify behavior, not implementation — mocks only for external deps
-            - Zero xfail, zero bare @skip — use conditional markers (requires_api, requires_docker)
-            - MockAsyncClient imported from tests.utils.mock_clients — no local copies
-            - Shared fixtures from conftest.py — no duplication
-            - Canonical snapshot changes are intentional regressions until proven otherwise
+            4. ARCHITECTURE: Is harness logic generic? Task-specific logic in task
+               packs only. Clean abstraction boundaries. Backward compatibility
+               preserved for task contracts.
 
-            ## Security
-            - No secrets in code, logs, or container mounts
-            - Docker containers: cap_drop ALL, no-new-privileges, internal networks
-            - Tool arguments validated against JSON schemas
-            - Only needed secret keys injected into containers (not all available)
+            5. REPOSITORY HYGIENE: No scripts, data, temp files, or logs in repo
+               root. Docs updated when user-facing behavior changes.
 
-            ## Repository Hygiene
-            - No scripts, data, temp files, or logs in repo root
-            - Docs updated when user-facing behavior changes
-            - No speculative future features in docs — only actual information
+            6. CODE STANDARDS: DRY — no duplicated logic. Self-describing code.
+               Early returns to minimize nesting. No warnings suppressed.
 
-            Be concise. Focus on issues, not praise. Suggest specific fixes when possible.
+            If violations are found, list them clearly with file paths, line numbers, and suggested fixes.
+            If no violations, confirm the PR passes all checks.
