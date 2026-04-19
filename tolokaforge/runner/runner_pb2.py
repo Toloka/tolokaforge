@@ -3,7 +3,6 @@
 # source: runner.proto
 # Protobuf Python Version: 6.31.1
 """Generated protocol buffer code."""
-
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import descriptor_pool as _descriptor_pool
 from google.protobuf import runtime_version as _runtime_version
@@ -19,7 +18,7 @@ _sym_db = _symbol_database.Default()
 
 
 DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(
-    b'\n\x0crunner.proto\x12\x12tolokaforge.runner"g\n\x14RegisterTrialRequest\x12\x10\n\x08trial_id\x18\x01 \x01(\t\x12\x1d\n\x15task_description_json\x18\x02 \x01(\t\x12\x1e\n\x16\x64\x65\x66\x61ult_tool_timeout_s\x18\x03 \x01(\x01"\x9e\x01\n\x15RegisterTrialResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\r\n\x05\x65rror\x18\x02 \x01(\t\x12\x34\n\x0ctool_schemas\x18\x03 \x03(\x0b\x32\x1e.tolokaforge.runner.ToolSchema\x12\x17\n\x0fnum_agent_tools\x18\x04 \x01(\x05\x12\x16\n\x0enum_user_tools\x18\x05 \x01(\x05"m\n\nToolSchema\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x13\n\x0b\x64\x65scription\x18\x02 \x01(\t\x12\x17\n\x0fparameters_json\x18\x03 \x01(\t\x12\x10\n\x08\x63\x61tegory\x18\x04 \x01(\t\x12\x11\n\ttimeout_s\x18\x05 \x01(\x01"|\n\x12\x45xecuteToolRequest\x12\x10\n\x08trial_id\x18\x01 \x01(\t\x12\x11\n\ttool_name\x18\x02 \x01(\t\x12\x16\n\x0e\x61rguments_json\x18\x03 \x01(\t\x12\x17\n\x0ftimeout_seconds\x18\x04 \x01(\x01\x12\x10\n\x08\x65xecutor\x18\x05 \x01(\t"\xa3\x01\n\x13\x45xecuteToolResponse\x12\x33\n\x06status\x18\x01 \x01(\x0e\x32#.tolokaforge.runner.ExecutionStatus\x12\x0e\n\x06output\x18\x02 \x01(\t\x12\x15\n\rerror_message\x18\x03 \x01(\t\x12\x30\n\x07metrics\x18\x04 \x01(\x0b\x32\x1f.tolokaforge.runner.ToolMetrics"R\n\x0bToolMetrics\x12\x17\n\x0flatency_seconds\x18\x01 \x01(\x01\x12\x11\n\texit_code\x18\x02 \x01(\x05\x12\x17\n\x0fstate_mutations\x18\x03 \x01(\x05"\x7f\n\x11GradeTrialRequest\x12\x10\n\x08trial_id\x18\x01 \x01(\t\x12\x19\n\x11llm_messages_json\x18\x02 \x01(\t\x12!\n\x19precomputed_expected_hash\x18\x03 \x01(\t\x12\x1a\n\x12grading_components\x18\x04 \x03(\t"^\n\x12GradeTrialResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\r\n\x05\x65rror\x18\x02 \x01(\t\x12(\n\x05grade\x18\x03 \x01(\x0b\x32\x19.tolokaforge.runner.Grade"\xcc\x01\n\x05Grade\x12\x13\n\x0b\x62inary_pass\x18\x01 \x01(\x08\x12\r\n\x05score\x18\x02 \x01(\x01\x12\x37\n\ncomponents\x18\x03 \x01(\x0b\x32#.tolokaforge.runner.GradeComponents\x12\x0f\n\x07reasons\x18\x04 \x01(\t\x12\x17\n\x0fstate_diff_json\x18\x05 \x01(\t\x12<\n\rcustom_checks\x18\x06 \x03(\x0b\x32%.tolokaforge.runner.CustomCheckResult"k\n\x0fGradeComponents\x12\x14\n\x0cstate_checks\x18\x01 \x01(\x01\x12\x18\n\x10transcript_rules\x18\x02 \x01(\x01\x12\x11\n\tllm_judge\x18\x03 \x01(\x01\x12\x15\n\rcustom_checks\x18\x04 \x01(\x01"m\n\x11\x43ustomCheckResult\x12\x12\n\ncheck_name\x18\x01 \x01(\t\x12\x0e\n\x06status\x18\x02 \x01(\t\x12\r\n\x05score\x18\x03 \x01(\x01\x12\x0f\n\x07message\x18\x04 \x01(\t\x12\x14\n\x0c\x64\x65tails_json\x18\x05 \x01(\t"M\n\x0fGetStateRequest\x12\x10\n\x08trial_id\x18\x01 \x01(\t\x12\x18\n\x10include_unstable\x18\x02 \x01(\x08\x12\x0e\n\x06tables\x18\x03 \x03(\t"n\n\x10GetStateResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\r\n\x05\x65rror\x18\x02 \x01(\t\x12\x12\n\nstate_json\x18\x03 \x01(\t\x12\x13\n\x0bstable_hash\x18\x04 \x01(\t\x12\x11\n\tfull_hash\x18\x05 \x01(\t"C\n\x11ResetTrialRequest\x12\x10\n\x08trial_id\x18\x01 \x01(\t\x12\x1c\n\x14\x65xecute_init_actions\x18\x02 \x01(\x08"H\n\x12ResetTrialResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\r\n\x05\x65rror\x18\x02 \x01(\t\x12\x12\n\nstate_hash\x18\x03 \x01(\t"\x14\n\x12HealthCheckRequest"\x8b\x01\n\x13HealthCheckResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x0f\n\x07version\x18\x02 \x01(\t\x12\x19\n\x11num_active_trials\x18\x03 \x01(\x05\x12\x1c\n\x14\x64\x62_service_connected\x18\x04 \x01(\x08\x12\x1a\n\x12\x61vailable_adapters\x18\x05 \x03(\t*\xfe\x01\n\x0f\x45xecutionStatus\x12 \n\x1c\x45XECUTION_STATUS_UNSPECIFIED\x10\x00\x12\x1c\n\x18\x45XECUTION_STATUS_SUCCESS\x10\x01\x12\x1a\n\x16\x45XECUTION_STATUS_ERROR\x10\x02\x12\x1c\n\x18\x45XECUTION_STATUS_TIMEOUT\x10\x03\x12#\n\x1f\x45XECUTION_STATUS_TOOL_NOT_FOUND\x10\x04\x12&\n"EXECUTION_STATUS_INVALID_ARGUMENTS\x10\x05\x12$\n EXECUTION_STATUS_TRIAL_NOT_FOUND\x10\x06\x32\xc6\x04\n\rRunnerService\x12\x64\n\rRegisterTrial\x12(.tolokaforge.runner.RegisterTrialRequest\x1a).tolokaforge.runner.RegisterTrialResponse\x12^\n\x0b\x45xecuteTool\x12&.tolokaforge.runner.ExecuteToolRequest\x1a\'.tolokaforge.runner.ExecuteToolResponse\x12[\n\nGradeTrial\x12%.tolokaforge.runner.GradeTrialRequest\x1a&.tolokaforge.runner.GradeTrialResponse\x12U\n\x08GetState\x12#.tolokaforge.runner.GetStateRequest\x1a$.tolokaforge.runner.GetStateResponse\x12[\n\nResetTrial\x12%.tolokaforge.runner.ResetTrialRequest\x1a&.tolokaforge.runner.ResetTrialResponse\x12^\n\x0bHealthCheck\x12&.tolokaforge.runner.HealthCheckRequest\x1a\'.tolokaforge.runner.HealthCheckResponseB\x14Z\x12tolokaforge/runnerb\x06proto3'
+    b'\n\x0crunner.proto\x12\x12tolokaforge.runner"g\n\x14RegisterTrialRequest\x12\x10\n\x08trial_id\x18\x01 \x01(\t\x12\x1d\n\x15task_description_json\x18\x02 \x01(\t\x12\x1e\n\x16\x64\x65\x66\x61ult_tool_timeout_s\x18\x03 \x01(\x01"\x9e\x01\n\x15RegisterTrialResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\r\n\x05\x65rror\x18\x02 \x01(\t\x12\x34\n\x0ctool_schemas\x18\x03 \x03(\x0b\x32\x1e.tolokaforge.runner.ToolSchema\x12\x17\n\x0fnum_agent_tools\x18\x04 \x01(\x05\x12\x16\n\x0enum_user_tools\x18\x05 \x01(\x05"m\n\nToolSchema\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x13\n\x0b\x64\x65scription\x18\x02 \x01(\t\x12\x17\n\x0fparameters_json\x18\x03 \x01(\t\x12\x10\n\x08\x63\x61tegory\x18\x04 \x01(\t\x12\x11\n\ttimeout_s\x18\x05 \x01(\x01"|\n\x12\x45xecuteToolRequest\x12\x10\n\x08trial_id\x18\x01 \x01(\t\x12\x11\n\ttool_name\x18\x02 \x01(\t\x12\x16\n\x0e\x61rguments_json\x18\x03 \x01(\t\x12\x17\n\x0ftimeout_seconds\x18\x04 \x01(\x01\x12\x10\n\x08\x65xecutor\x18\x05 \x01(\t"\xa3\x01\n\x13\x45xecuteToolResponse\x12\x33\n\x06status\x18\x01 \x01(\x0e\x32#.tolokaforge.runner.ExecutionStatus\x12\x0e\n\x06output\x18\x02 \x01(\t\x12\x15\n\rerror_message\x18\x03 \x01(\t\x12\x30\n\x07metrics\x18\x04 \x01(\x0b\x32\x1f.tolokaforge.runner.ToolMetrics"R\n\x0bToolMetrics\x12\x17\n\x0flatency_seconds\x18\x01 \x01(\x01\x12\x11\n\texit_code\x18\x02 \x01(\x05\x12\x17\n\x0fstate_mutations\x18\x03 \x01(\x05"\x7f\n\x11GradeTrialRequest\x12\x10\n\x08trial_id\x18\x01 \x01(\t\x12\x19\n\x11llm_messages_json\x18\x02 \x01(\t\x12!\n\x19precomputed_expected_hash\x18\x03 \x01(\t\x12\x1a\n\x12grading_components\x18\x04 \x03(\t"v\n\x12GradeTrialResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\r\n\x05\x65rror\x18\x02 \x01(\t\x12(\n\x05grade\x18\x03 \x01(\x0b\x32\x19.tolokaforge.runner.Grade\x12\x16\n\x0ejudge_cost_usd\x18\x04 \x01(\x01"\xcc\x01\n\x05Grade\x12\x13\n\x0b\x62inary_pass\x18\x01 \x01(\x08\x12\r\n\x05score\x18\x02 \x01(\x01\x12\x37\n\ncomponents\x18\x03 \x01(\x0b\x32#.tolokaforge.runner.GradeComponents\x12\x0f\n\x07reasons\x18\x04 \x01(\t\x12\x17\n\x0fstate_diff_json\x18\x05 \x01(\t\x12<\n\rcustom_checks\x18\x06 \x03(\x0b\x32%.tolokaforge.runner.CustomCheckResult"k\n\x0fGradeComponents\x12\x14\n\x0cstate_checks\x18\x01 \x01(\x01\x12\x18\n\x10transcript_rules\x18\x02 \x01(\x01\x12\x11\n\tllm_judge\x18\x03 \x01(\x01\x12\x15\n\rcustom_checks\x18\x04 \x01(\x01"m\n\x11\x43ustomCheckResult\x12\x12\n\ncheck_name\x18\x01 \x01(\t\x12\x0e\n\x06status\x18\x02 \x01(\t\x12\r\n\x05score\x18\x03 \x01(\x01\x12\x0f\n\x07message\x18\x04 \x01(\t\x12\x14\n\x0c\x64\x65tails_json\x18\x05 \x01(\t"M\n\x0fGetStateRequest\x12\x10\n\x08trial_id\x18\x01 \x01(\t\x12\x18\n\x10include_unstable\x18\x02 \x01(\x08\x12\x0e\n\x06tables\x18\x03 \x03(\t"n\n\x10GetStateResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\r\n\x05\x65rror\x18\x02 \x01(\t\x12\x12\n\nstate_json\x18\x03 \x01(\t\x12\x13\n\x0bstable_hash\x18\x04 \x01(\t\x12\x11\n\tfull_hash\x18\x05 \x01(\t"C\n\x11ResetTrialRequest\x12\x10\n\x08trial_id\x18\x01 \x01(\t\x12\x1c\n\x14\x65xecute_init_actions\x18\x02 \x01(\x08"H\n\x12ResetTrialResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\r\n\x05\x65rror\x18\x02 \x01(\t\x12\x12\n\nstate_hash\x18\x03 \x01(\t"\x14\n\x12HealthCheckRequest"\x8b\x01\n\x13HealthCheckResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x0f\n\x07version\x18\x02 \x01(\t\x12\x19\n\x11num_active_trials\x18\x03 \x01(\x05\x12\x1c\n\x14\x64\x62_service_connected\x18\x04 \x01(\x08\x12\x1a\n\x12\x61vailable_adapters\x18\x05 \x03(\t*\xfe\x01\n\x0f\x45xecutionStatus\x12 \n\x1c\x45XECUTION_STATUS_UNSPECIFIED\x10\x00\x12\x1c\n\x18\x45XECUTION_STATUS_SUCCESS\x10\x01\x12\x1a\n\x16\x45XECUTION_STATUS_ERROR\x10\x02\x12\x1c\n\x18\x45XECUTION_STATUS_TIMEOUT\x10\x03\x12#\n\x1f\x45XECUTION_STATUS_TOOL_NOT_FOUND\x10\x04\x12&\n"EXECUTION_STATUS_INVALID_ARGUMENTS\x10\x05\x12$\n EXECUTION_STATUS_TRIAL_NOT_FOUND\x10\x06\x32\xc6\x04\n\rRunnerService\x12\x64\n\rRegisterTrial\x12(.tolokaforge.runner.RegisterTrialRequest\x1a).tolokaforge.runner.RegisterTrialResponse\x12^\n\x0b\x45xecuteTool\x12&.tolokaforge.runner.ExecuteToolRequest\x1a\'.tolokaforge.runner.ExecuteToolResponse\x12[\n\nGradeTrial\x12%.tolokaforge.runner.GradeTrialRequest\x1a&.tolokaforge.runner.GradeTrialResponse\x12U\n\x08GetState\x12#.tolokaforge.runner.GetStateRequest\x1a$.tolokaforge.runner.GetStateResponse\x12[\n\nResetTrial\x12%.tolokaforge.runner.ResetTrialRequest\x1a&.tolokaforge.runner.ResetTrialResponse\x12^\n\x0bHealthCheck\x12&.tolokaforge.runner.HealthCheckRequest\x1a\'.tolokaforge.runner.HealthCheckResponseB\x14Z\x12tolokaforge/runnerb\x06proto3'
 )
 
 _globals = globals()
@@ -28,8 +27,8 @@ _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, "runner_pb2", _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
     _globals["DESCRIPTOR"]._loaded_options = None
     _globals["DESCRIPTOR"]._serialized_options = b"Z\022tolokaforge/runner"
-    _globals["_EXECUTIONSTATUS"]._serialized_start = 1940
-    _globals["_EXECUTIONSTATUS"]._serialized_end = 2194
+    _globals["_EXECUTIONSTATUS"]._serialized_start = 1964
+    _globals["_EXECUTIONSTATUS"]._serialized_end = 2218
     _globals["_REGISTERTRIALREQUEST"]._serialized_start = 36
     _globals["_REGISTERTRIALREQUEST"]._serialized_end = 139
     _globals["_REGISTERTRIALRESPONSE"]._serialized_start = 142
@@ -45,25 +44,25 @@ if not _descriptor._USE_C_DESCRIPTORS:
     _globals["_GRADETRIALREQUEST"]._serialized_start = 789
     _globals["_GRADETRIALREQUEST"]._serialized_end = 916
     _globals["_GRADETRIALRESPONSE"]._serialized_start = 918
-    _globals["_GRADETRIALRESPONSE"]._serialized_end = 1012
-    _globals["_GRADE"]._serialized_start = 1015
-    _globals["_GRADE"]._serialized_end = 1219
-    _globals["_GRADECOMPONENTS"]._serialized_start = 1221
-    _globals["_GRADECOMPONENTS"]._serialized_end = 1328
-    _globals["_CUSTOMCHECKRESULT"]._serialized_start = 1330
-    _globals["_CUSTOMCHECKRESULT"]._serialized_end = 1439
-    _globals["_GETSTATEREQUEST"]._serialized_start = 1441
-    _globals["_GETSTATEREQUEST"]._serialized_end = 1518
-    _globals["_GETSTATERESPONSE"]._serialized_start = 1520
-    _globals["_GETSTATERESPONSE"]._serialized_end = 1630
-    _globals["_RESETTRIALREQUEST"]._serialized_start = 1632
-    _globals["_RESETTRIALREQUEST"]._serialized_end = 1699
-    _globals["_RESETTRIALRESPONSE"]._serialized_start = 1701
-    _globals["_RESETTRIALRESPONSE"]._serialized_end = 1773
-    _globals["_HEALTHCHECKREQUEST"]._serialized_start = 1775
-    _globals["_HEALTHCHECKREQUEST"]._serialized_end = 1795
-    _globals["_HEALTHCHECKRESPONSE"]._serialized_start = 1798
-    _globals["_HEALTHCHECKRESPONSE"]._serialized_end = 1937
-    _globals["_RUNNERSERVICE"]._serialized_start = 2197
-    _globals["_RUNNERSERVICE"]._serialized_end = 2779
+    _globals["_GRADETRIALRESPONSE"]._serialized_end = 1036
+    _globals["_GRADE"]._serialized_start = 1039
+    _globals["_GRADE"]._serialized_end = 1243
+    _globals["_GRADECOMPONENTS"]._serialized_start = 1245
+    _globals["_GRADECOMPONENTS"]._serialized_end = 1352
+    _globals["_CUSTOMCHECKRESULT"]._serialized_start = 1354
+    _globals["_CUSTOMCHECKRESULT"]._serialized_end = 1463
+    _globals["_GETSTATEREQUEST"]._serialized_start = 1465
+    _globals["_GETSTATEREQUEST"]._serialized_end = 1542
+    _globals["_GETSTATERESPONSE"]._serialized_start = 1544
+    _globals["_GETSTATERESPONSE"]._serialized_end = 1654
+    _globals["_RESETTRIALREQUEST"]._serialized_start = 1656
+    _globals["_RESETTRIALREQUEST"]._serialized_end = 1723
+    _globals["_RESETTRIALRESPONSE"]._serialized_start = 1725
+    _globals["_RESETTRIALRESPONSE"]._serialized_end = 1797
+    _globals["_HEALTHCHECKREQUEST"]._serialized_start = 1799
+    _globals["_HEALTHCHECKREQUEST"]._serialized_end = 1819
+    _globals["_HEALTHCHECKRESPONSE"]._serialized_start = 1822
+    _globals["_HEALTHCHECKRESPONSE"]._serialized_end = 1961
+    _globals["_RUNNERSERVICE"]._serialized_start = 2221
+    _globals["_RUNNERSERVICE"]._serialized_end = 2803
 # @@protoc_insertion_point(module_scope)

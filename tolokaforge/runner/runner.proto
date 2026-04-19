@@ -180,6 +180,9 @@ message GradeTrialResponse {
 
   // The computed grade
   Grade grade = 3;
+
+  // Cost of LLM judge evaluation in USD (0.0 if no judge was used)
+  double judge_cost_usd = 4;
 }
 
 message Grade {

@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -30,15 +34,66 @@ class SqliteRunQueue:
         self.db_path = Path(db_path)
         self.max_retries = max(0, int(max_retries))
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._local = threading.local()
+        self._checkpoint_interval_s = 60.0
+        self._last_checkpoint_at = 0.0
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path, timeout=30.0, isolation_level=None)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA busy_timeout=5000")
+        """Return a per-thread cached connection, creating one if needed."""
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            try:
+                conn.execute("SELECT 1")
+                return conn
+            except sqlite3.Error:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                self._local.conn = None
+
+        conn = self._new_connection()
+        self._local.conn = conn
         return conn
+
+    def _new_connection(self, retries: int = 3) -> sqlite3.Connection:
+        """Create a new SQLite connection with retry and exponential backoff."""
+        last_err: Exception | None = None
+        for attempt in range(retries):
+            try:
+                conn = sqlite3.connect(self.db_path, timeout=30.0, isolation_level=None)
+                conn.row_factory = sqlite3.Row
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA synchronous=NORMAL")
+                conn.execute("PRAGMA busy_timeout=5000")
+                return conn
+            except sqlite3.DatabaseError as e:
+                last_err = e
+                if attempt < retries - 1:
+                    sleep_s = 0.5 * (2**attempt)
+                    logger.warning(
+                        "SQLite connect attempt %d/%d failed: %s (retrying in %.1fs)",
+                        attempt + 1,
+                        retries,
+                        e,
+                        sleep_s,
+                    )
+                    time.sleep(sleep_s)
+        raise sqlite3.DatabaseError(
+            f"SQLite connect failed after {retries} attempts: {last_err}"
+        ) from last_err
+
+    def _maybe_checkpoint(self, conn: sqlite3.Connection) -> None:
+        """Run passive WAL checkpoint to prevent unbounded WAL growth."""
+        now = time.time()
+        if now - self._last_checkpoint_at < self._checkpoint_interval_s:
+            return
+        try:
+            conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            self._last_checkpoint_at = now
+        except sqlite3.Error:
+            pass  # best-effort; do not propagate checkpoint failures
 
     def _init_db(self) -> None:
         with self._connect() as conn:
@@ -196,6 +251,7 @@ class SqliteRunQueue:
                 """,
                 (now, max(0.0, float(cost_usd)), now, attempt_id),
             )
+            self._maybe_checkpoint(conn)
 
     def mark_failed(self, attempt_id: int, error: str, retryable: bool) -> bool:
         """Mark failed. Returns True if requeued for retry."""
@@ -239,6 +295,7 @@ class SqliteRunQueue:
                     """,
                     (now, error, now, attempt_id),
                 )
+            self._maybe_checkpoint(conn)
             return should_retry
 
     def get_counts(self) -> dict[str, int]:

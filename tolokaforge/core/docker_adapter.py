@@ -82,7 +82,7 @@ class DockerRunnerAdapter:
             executor=self.executor,
         )
 
-        # Log for metrics
+        # Log for metrics (include duration_s for tool_usage aggregation)
         self.tool_logs.append(
             {
                 "tool_name": tool_name,
@@ -92,6 +92,7 @@ class DockerRunnerAdapter:
                 "success": result.success,
                 "output": result.output if result.success else None,
                 "error": result.error if not result.success else None,
+                "duration_s": result.duration_s,
             }
         )
 

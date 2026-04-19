@@ -601,7 +601,7 @@ def combine_grade_components(
             total_weight += weight
 
         if total_weight > 0:
-            final_score = weighted_sum / total_weight
+            final_score = round(weighted_sum / total_weight, 6)
         else:
             final_score = 1.0
 
@@ -696,7 +696,7 @@ def build_grade_reasons(
 def evaluate_llm_judge(
     llm_judge_config: dict[str, Any],
     llm_messages: list[dict[str, Any]],
-) -> tuple[float, str]:
+) -> tuple[float, str, float]:
     """Evaluate transcript using LLM judge via litellm.
 
     Args:
@@ -704,9 +704,9 @@ def evaluate_llm_judge(
         llm_messages: Conversation messages from the trial.
 
     Returns:
-        Tuple of (score 0.0-1.0, reasons string).
-        Returns (-1.0, msg) only when not configured (no model_ref/rubric).
-        Returns (0.0, error_msg) on evaluation failure so the score is
+        Tuple of (score 0.0-1.0, reasons string, cost_usd).
+        Returns (-1.0, msg, 0.0) only when not configured (no model_ref/rubric).
+        Returns (0.0, error_msg, 0.0) on evaluation failure so the score is
         included in the weighted grade (penalizing rather than hiding failure).
     """
 
@@ -717,7 +717,7 @@ def evaluate_llm_judge(
 
     if not model_ref or not rubric:
         logger.warning("LLM judge not configured (missing model_ref or rubric)")
-        return -1.0, "LLM judge not configured"
+        return -1.0, "LLM judge not configured", 0.0
 
     # Ensure API keys are in os.environ for litellm compatibility
     from tolokaforge.secrets import get_default
@@ -747,22 +747,29 @@ def evaluate_llm_judge(
             temperature=0.0,
         )
 
+        # Extract cost from litellm response
+        judge_cost = 0.0
+        try:
+            judge_cost = litellm.completion_cost(completion_response=response)
+        except Exception:
+            pass  # cost extraction is best-effort
+
         content = response.choices[0].message.content or ""
         if not content.strip():
             logger.error("LLM judge returned empty response")
-            return 0.0, "LLM judge returned empty response"
+            return 0.0, "LLM judge returned empty response", judge_cost
 
         result = _parse_judge_json(content)
         score = max(0.0, min(1.0, float(result.get("score", 0.0))))
         reasons = str(result.get("reasons", result.get("reasoning", "")))
-        logger.info("LLM judge evaluation: score=%.2f", score)
-        return score, reasons
+        logger.info("LLM judge evaluation: score=%.2f, cost=$%.6f", score, judge_cost)
+        return score, reasons, judge_cost
 
     except Exception as e:
         logger.error("LLM judge evaluation failed: %s", e, exc_info=True)
         # Return 0.0 so the failure IS included in the weighted score.
         # -1.0 means "not configured" and would be excluded.
-        return 0.0, f"LLM judge failed: {e}"
+        return 0.0, f"LLM judge failed: {e}", 0.0
 
 
 def _parse_judge_json(text: str) -> dict[str, Any]:

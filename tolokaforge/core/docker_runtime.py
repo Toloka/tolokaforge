@@ -235,7 +235,13 @@ class RunnerClient:
             if not success:
                 error = response.error_message or self._status_to_error(response.status)
 
-            return ToolResult(success=success, output=response.output, error=error)
+            duration_s = 0.0
+            if response.metrics:
+                duration_s = response.metrics.latency_seconds
+
+            return ToolResult(
+                success=success, output=response.output, error=error, duration_s=duration_s
+            )
 
         except grpc.RpcError as e:
             logger.error(f"gRPC error in execute_tool: {e}")
@@ -289,6 +295,7 @@ class RunnerClient:
                 "success": response.success,
                 "error": response.error if response.error else None,
                 "grade": None,
+                "judge_cost_usd": response.judge_cost_usd,
             }
 
             if response.success and response.grade:
@@ -441,7 +448,7 @@ class RunnerClient:
             response = self.stub.HealthCheck(runner_pb2.HealthCheckRequest())
             return response.status == "healthy"
         except grpc.RpcError as e:
-            logger.error(f"Health check failed: {e}")
+            logger.debug(f"Health check failed (will retry): {e}")
             return False
 
     def health_check_detailed(self) -> dict:
@@ -463,7 +470,7 @@ class RunnerClient:
                 "available_adapters": list(response.available_adapters),
             }
         except grpc.RpcError as e:
-            logger.error(f"Health check failed: {e}")
+            logger.debug(f"Health check failed (will retry): {e}")
             return {
                 "status": "unhealthy",
                 "version": "",

@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import threading
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
@@ -92,7 +93,17 @@ class BrowserTool(Tool):
         )
         super().__init__(
             name="browser",
-            description="Control a headless browser using coordinate-based actions (Gemini Computer Use API)",
+            description=(
+                "Control a headless browser. Pass an 'actions' array where each action has a "
+                '\'type\' field. Example: {"actions": [{"type": "navigate", '
+                '"url": "http://example.com"}, {"type": "screenshot"}]}. '
+                "Action types: navigate (url), click_at (x,y 0-999 grid), "
+                "type_text_at (x,y,text), screenshot, scroll_document (direction), "
+                "search (query), go_back, go_forward, wait_5_seconds, hover_at (x,y), "
+                "select (x,y,text), key_combination (keys[]), scroll_at (x,y,direction), "
+                "drag_and_drop (x,y,destination_x,destination_y). "
+                "Coordinates use a 0-999 grid mapped to viewport pixels."
+            ),
             policy=policy,
         )
         self.screenshots_dir = screenshots_dir
@@ -172,7 +183,11 @@ class BrowserTool(Tool):
                     "properties": {
                         "actions": {
                             "type": "array",
-                            "description": "Sequence of browser actions to perform (Gemini Computer Use API)",
+                            "description": (
+                                "Required. Array of browser action objects. Each must have a "
+                                '\'type\' field. Example: [{"type": "navigate", '
+                                '"url": "http://localhost:8080"}, {"type": "screenshot"}]'
+                            ),
                             "items": {
                                 "type": "object",
                                 "properties": {
@@ -1125,11 +1140,131 @@ class BrowserTool(Tool):
         except Exception as e:
             return False, "", str(e)
 
-    def execute(self, actions: list[dict[str, Any]]) -> ToolResult:
-        """Execute browser actions"""
+    def _ensure_browser_loop(self) -> asyncio.AbstractEventLoop:
+        """Ensure a persistent background event loop for browser operations.
+
+        When running inside an existing async event loop (e.g., Runner gRPC service),
+        we create a dedicated thread with its own event loop. Playwright objects are
+        bound to their creation loop, so we must reuse the same loop across calls.
+        """
+        if self._loop is not None and not self._loop.is_closed():
+            return self._loop
+
+        loop = asyncio.new_event_loop()
+
+        def _run_loop() -> None:
+            asyncio.set_event_loop(loop)
+            loop.run_forever()
+
+        thread = threading.Thread(target=_run_loop, daemon=True, name="browser-event-loop")
+        thread.start()
+        self._loop = loop
+        return loop
+
+    def _run_on_browser_loop(self, coro: Any, timeout: float | None = None) -> Any:
+        """Submit a coroutine to the persistent browser event loop and wait for result."""
+        import concurrent.futures
+
+        loop = self._ensure_browser_loop()
+        future = asyncio.run_coroutine_threadsafe(coro, loop)
+        effective_timeout = timeout if timeout is not None else self.policy.timeout_s
+        try:
+            return future.result(timeout=effective_timeout)
+        except concurrent.futures.TimeoutError as e:
+            future.cancel()
+            raise TimeoutError(f"Browser action timed out after {effective_timeout}s") from e
+
+    def _execute_in_thread(
+        self, actions: list[dict[str, Any]], has_risky_action: bool
+    ) -> ToolResult:
+        """Run browser operations on the persistent browser event loop.
+
+        This is used when execute() is called from within an existing async event loop
+        (e.g., the Runner gRPC service), where creating a nested event loop would fail.
+        """
+        try:
+            success, output, error = self._run_on_browser_loop(self._execute_actions(actions))
+
+            if not success and self._is_transient_driver_error(error):
+                self._run_on_browser_loop(self._reset_browser_state())
+                success, output, error = self._run_on_browser_loop(self._execute_actions(actions))
+
+            # Capture screenshot in visual_mode
+            content_blocks = None
+            if self.visual_mode and success and self.page:
+                content_blocks = self._run_on_browser_loop(self._capture_screenshot_blocks(output))
+
+            risky_actions_list = [
+                "navigate",
+                "type_text_at",
+                "key_combination",
+                "click_at",
+                "select",
+            ]
+            metadata: dict[str, Any] = {}
+            if has_risky_action:
+                metadata["safety_decision"] = {
+                    "requires_confirmation": True,
+                    "risky_actions": [
+                        a.get("type") for a in actions if a.get("type") in risky_actions_list
+                    ],
+                    "reason": "Actions may modify page state or navigate away",
+                }
+
+            return ToolResult(
+                success=success,
+                output=output,
+                error=error if error else None,
+                metadata=metadata,
+                content_blocks=content_blocks,
+            )
+        except TimeoutError:
+            return ToolResult(
+                success=False,
+                output="",
+                error=f"Browser actions timed out after {self.policy.timeout_s}s",
+            )
+        except Exception as e:
+            return ToolResult(
+                success=False,
+                output="",
+                error=f"Browser execution failed: {e!s}",
+            )
+
+    def execute(self, actions: list[dict[str, Any]] | None = None, **kwargs: Any) -> ToolResult:
+        """Execute browser actions.
+
+        Args:
+            actions: Required. Array of action objects, each with a 'type' field.
+                Example: [{"type": "navigate", "url": "http://example.com"}, {"type": "screenshot"}]
+        """
+        if actions is None:
+            return ToolResult(
+                success=False,
+                output="",
+                error=(
+                    "Missing required 'actions' parameter. "
+                    "Pass an array of action objects, e.g.: "
+                    '{"actions": [{"type": "navigate", "url": "http://example.com"}, '
+                    '{"type": "screenshot"}]}. '
+                    "Supported types: navigate, click_at, type_text_at, screenshot, "
+                    "scroll_document, search, go_back, go_forward, wait_5_seconds, "
+                    "hover_at, select, key_combination, scroll_at, drag_and_drop."
+                ),
+            )
+
         # Check for risky actions and surface safety_decision metadata
         risky_actions = ["navigate", "type_text_at", "key_combination", "click_at", "select"]
         has_risky_action = any(a.get("type") in risky_actions for a in actions)
+
+        # Detect if we're inside an existing async event loop (e.g., Runner gRPC service).
+        # If so, run browser operations in a dedicated thread with its own event loop.
+        try:
+            asyncio.get_running_loop()
+            # We're inside an async context — delegate to a thread
+            return self._execute_in_thread(actions, has_risky_action)
+        except RuntimeError:
+            pass  # No running loop — proceed with direct execution
 
         # Reuse event loop across tool calls to keep browser alive
         if self._loop is None or self._loop.is_closed():

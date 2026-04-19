@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import sqlite3
+import threading
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -83,3 +86,104 @@ def test_clear_all_resets_queue(tmp_path: Path):
     assert queue.get_counts()["total"] == 2
     queue.clear_all()
     assert queue.get_counts()["total"] == 0
+
+
+# ── Stage 14: Resilience tests ──────────────────────────────────────
+
+
+def test_thread_local_connection_reuse(tmp_path: Path):
+    """Same thread should get the same cached connection object."""
+    queue = SqliteRunQueue(tmp_path / "run_queue.sqlite", max_retries=0)
+    conn1 = queue._connect()
+    conn2 = queue._connect()
+    assert conn1 is conn2
+
+
+def test_thread_local_isolation(tmp_path: Path):
+    """Different threads should get different connection objects."""
+    queue = SqliteRunQueue(tmp_path / "run_queue.sqlite", max_retries=0)
+    conn_main = queue._connect()
+    conn_other = [None]
+
+    def worker():
+        conn_other[0] = queue._connect()
+
+    t = threading.Thread(target=worker)
+    t.start()
+    t.join()
+
+    assert conn_other[0] is not None
+    assert conn_other[0] is not conn_main
+
+
+def test_stale_connection_replaced(tmp_path: Path):
+    """A broken cached connection should be replaced with a fresh one."""
+    queue = SqliteRunQueue(tmp_path / "run_queue.sqlite", max_retries=0)
+    conn1 = queue._connect()
+    # Simulate a broken connection by closing it
+    conn1.close()
+    conn2 = queue._connect()
+    assert conn2 is not conn1
+    # New connection should work
+    conn2.execute("SELECT 1")
+
+
+def test_connect_retries_on_transient_error(tmp_path: Path):
+    """_new_connection should retry on transient sqlite3.DatabaseError."""
+    queue = SqliteRunQueue(tmp_path / "run_queue.sqlite", max_retries=0)
+    call_count = [0]
+    original_connect = sqlite3.connect
+
+    def flaky_connect(*args, **kwargs):
+        call_count[0] += 1
+        if call_count[0] <= 2:
+            raise sqlite3.DatabaseError("file is not a database")
+        return original_connect(*args, **kwargs)
+
+    with patch("tolokaforge.core.run_queue.sqlite3.connect", side_effect=flaky_connect):
+        # Clear cached connection so _new_connection is called
+        queue._local.conn = None
+        conn = queue._connect()
+        assert conn is not None
+        assert call_count[0] == 3  # 2 failures + 1 success
+
+
+def test_connect_raises_after_max_retries(tmp_path: Path):
+    """_new_connection should raise after exhausting retries."""
+    queue = SqliteRunQueue(tmp_path / "run_queue.sqlite", max_retries=0)
+
+    def always_fail(*args, **kwargs):
+        raise sqlite3.DatabaseError("file is not a database")
+
+    with patch("tolokaforge.core.run_queue.sqlite3.connect", side_effect=always_fail):
+        queue._local.conn = None
+        with pytest.raises(sqlite3.DatabaseError, match="after 3 attempts"):
+            queue._connect()
+
+
+def test_wal_checkpoint_called_periodically(tmp_path: Path):
+    """_maybe_checkpoint should fire PRAGMA wal_checkpoint after interval."""
+    queue = SqliteRunQueue(tmp_path / "run_queue.sqlite", max_retries=0)
+    queue._checkpoint_interval_s = 0  # Always eligible
+    queue._last_checkpoint_at = 0.0
+    queue.enqueue("task_a", 0)
+
+    # mark_completed calls _maybe_checkpoint internally
+    lease = queue.lease_next(worker_id="w1", lease_seconds=300)
+    assert lease is not None
+    queue.mark_completed(lease.id, cost_usd=0.1)
+
+    # Verify checkpoint was called (last_checkpoint_at updated)
+    assert queue._last_checkpoint_at > 0.0
+
+
+def test_wal_checkpoint_not_called_too_often(tmp_path: Path):
+    """_maybe_checkpoint should skip if called within interval."""
+    queue = SqliteRunQueue(tmp_path / "run_queue.sqlite", max_retries=0)
+    queue._checkpoint_interval_s = 9999  # Very long interval
+    queue._last_checkpoint_at = 1e18  # Far in the future
+
+    conn = queue._connect()
+    queue._maybe_checkpoint(conn)
+    # last_checkpoint_at should not have changed (checkpoint was skipped)
+    assert queue._last_checkpoint_at == 1e18

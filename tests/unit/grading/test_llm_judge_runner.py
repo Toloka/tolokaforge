@@ -81,10 +81,11 @@ class TestEvaluateLLMJudge:
         ]
 
         with patch("litellm.completion", return_value=mock_response) as mock_completion:
-            score, reasons = evaluate_llm_judge(config, messages)
+            score, reasons, cost = evaluate_llm_judge(config, messages)
 
         assert score == 0.85
         assert reasons == "Good"
+        assert isinstance(cost, float)
         mock_completion.assert_called_once()
 
     def test_score_clamped(self):
@@ -101,7 +102,7 @@ class TestEvaluateLLMJudge:
         ]
 
         with patch("litellm.completion", return_value=mock_response):
-            score, _ = evaluate_llm_judge(config, messages)
+            score, _, _cost = evaluate_llm_judge(config, messages)
 
         assert score == 1.0  # Clamped
 
@@ -115,16 +116,18 @@ class TestEvaluateLLMJudge:
         messages = [{"role": "user", "content": "Test"}]
 
         with patch("litellm.completion", side_effect=Exception("API error")):
-            score, reasons = evaluate_llm_judge(config, messages)
+            score, reasons, cost = evaluate_llm_judge(config, messages)
 
         assert score == 0.0  # Was -1.0, now 0.0
         assert "API error" in reasons
+        assert cost == 0.0
 
     def test_no_config(self):
         """Missing model_ref or rubric returns -1.0 (not configured)."""
-        score, reasons = evaluate_llm_judge({}, [])
+        score, reasons, cost = evaluate_llm_judge({}, [])
         assert score == -1.0  # Not configured = -1.0
         assert "not configured" in reasons
+        assert cost == 0.0
 
 
 class TestCombineWithLLMJudge:

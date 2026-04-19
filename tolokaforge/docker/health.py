@@ -703,14 +703,21 @@ class CommandHealthProbe(HealthProbe):
     Runs a command and checks the exit code.
 
     Attributes:
-        command: Command to run as a list of arguments.
+        cmd: Command to run as a list of arguments (serialized as "command").
         expected_exit_code: Expected exit code.
         exec_timeout_s: Timeout for command execution.
     """
 
-    command: list[str] = Field(
+    cmd: list[str] = Field(
+        alias="command",
         description="Command to run as a list of arguments",
     )
+
+    model_config = {
+        "frozen": True,
+        "extra": "forbid",
+        "populate_by_name": True,
+    }
     expected_exit_code: int = Field(
         default=0,
         ge=0,
@@ -727,7 +734,7 @@ class CommandHealthProbe(HealthProbe):
         description="Type of health probe",
     )
 
-    @field_validator("command")
+    @field_validator("cmd")
     @classmethod
     def validate_command(cls, v: list[str]) -> list[str]:
         """Validate that command is not empty."""
@@ -739,7 +746,7 @@ class CommandHealthProbe(HealthProbe):
 
     def _get_target(self) -> str:
         """Get target description for logging."""
-        return " ".join(self.command)
+        return " ".join(self.cmd)
 
     def _check(self) -> bool:
         """Execute command and check exit code."""
@@ -756,7 +763,7 @@ class CommandHealthProbe(HealthProbe):
         """
         try:
             result = subprocess.run(
-                self.command,
+                self.cmd,
                 capture_output=True,
                 timeout=self.exec_timeout_s,
                 check=False,
@@ -797,7 +804,7 @@ class CommandHealthProbe(HealthProbe):
             raise HealthProbeError(
                 ProbeType.COMMAND,
                 self._get_target(),
-                f"Command not found: {self.command[0]}",
+                f"Command not found: {self.cmd[0]}",
             ) from e
 
 

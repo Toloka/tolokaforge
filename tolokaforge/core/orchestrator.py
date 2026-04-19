@@ -140,6 +140,14 @@ class Orchestrator:
             return True
         return False
 
+    @staticmethod
+    def _safe_get_pending(run_queue: Any) -> int:
+        """Get pending count from run queue, returning -1 if DB is unreachable."""
+        try:
+            return run_queue.get_counts().get("pending", 0)
+        except Exception:
+            return -1
+
     def _ensure_typesense_started(self) -> None:
         """Start TypeSense server if configured for local mode.
 
@@ -536,11 +544,20 @@ class Orchestrator:
                                 if trajectory.termination_reason
                                 else trajectory.status.value
                             )
-                            should_retry = run_queue.mark_failed(
-                                lease.id,
-                                f"Retryable failure: {reason}",
-                                retryable=True,
-                            )
+                            try:
+                                should_retry = run_queue.mark_failed(
+                                    lease.id,
+                                    f"Retryable failure: {reason}",
+                                    retryable=True,
+                                )
+                            except Exception as db_err:
+                                self.logger.error(
+                                    "Queue DB error in retryable path; treating as non-retryable",
+                                    task_id=task_id,
+                                    trial_index=trial_idx,
+                                    db_error=str(db_err),
+                                )
+                                should_retry = False
                             if should_retry:
                                 self.logger.warning(
                                     "Retrying trial after transient failure",
@@ -565,7 +582,15 @@ class Orchestrator:
                                 total_cost_usd=round(total_cost_usd, 6),
                             )
                         else:
-                            run_queue.mark_completed(lease.id, cost_usd=trial_cost)
+                            try:
+                                run_queue.mark_completed(lease.id, cost_usd=trial_cost)
+                            except Exception as db_err:
+                                self.logger.error(
+                                    "Queue DB error marking completed; run_state still updated",
+                                    task_id=task_id,
+                                    trial_index=trial_idx,
+                                    db_error=str(db_err),
+                                )
                             # Update run state
                             if trajectory.grade:
                                 run_state.mark_completed(
@@ -588,7 +613,17 @@ class Orchestrator:
                                 total_cost_usd=round(total_cost_usd, 6),
                             )
                     except Exception as e:
-                        should_retry = run_queue.mark_failed(lease.id, str(e), retryable=True)
+                        try:
+                            should_retry = run_queue.mark_failed(lease.id, str(e), retryable=True)
+                        except Exception as db_err:
+                            self.logger.error(
+                                "Queue DB error while marking failure; treating as non-retryable",
+                                task_id=task_id,
+                                trial_index=trial_idx,
+                                original_error=str(e),
+                                db_error=str(db_err),
+                            )
+                            should_retry = False
                         self.logger.error(
                             "Trial execution exception",
                             task_id=task_id,
@@ -609,14 +644,17 @@ class Orchestrator:
                                 "Budget limit reached; no new trials will be scheduled",
                                 budget_limit_usd=budget_limit,
                                 total_cost_usd=round(total_cost_usd, 6),
-                                remaining_trials=run_queue.get_counts().get("pending", 0),
+                                remaining_trials=self._safe_get_pending(run_queue),
                             )
                         continue
 
                     while len(active_futures) < self.config.orchestrator.workers and submit_one():
                         pass
 
-        counts = run_queue.get_counts()
+        try:
+            counts = run_queue.get_counts()
+        except Exception:
+            counts = {}
         remaining = counts.get("pending", 0) + counts.get("leased", 0) + counts.get("running", 0)
         if budget_exhausted and remaining > 0:
             self.state_manager.mark_run_paused()
@@ -777,17 +815,43 @@ class Orchestrator:
                             if trajectory.termination_reason
                             else trajectory.status.value
                         )
-                        if run_queue.mark_failed(
-                            lease.id, f"Retryable failure: {reason}", retryable=True
-                        ):
+                        try:
+                            should_retry = run_queue.mark_failed(
+                                lease.id, f"Retryable failure: {reason}", retryable=True
+                            )
+                        except Exception as db_err:
+                            self.logger.error(
+                                "Queue DB error in retryable path",
+                                task_id=lease.task_id,
+                                db_error=str(db_err),
+                            )
+                            should_retry = False
+                        if should_retry:
                             requeued += 1
                         else:
                             failed += 1
                     else:
-                        run_queue.mark_completed(lease.id, cost_usd=trial_cost)
+                        try:
+                            run_queue.mark_completed(lease.id, cost_usd=trial_cost)
+                        except Exception as db_err:
+                            self.logger.error(
+                                "Queue DB error marking completed",
+                                task_id=lease.task_id,
+                                db_error=str(db_err),
+                            )
                         completed += 1
                 except Exception as e:
-                    if run_queue.mark_failed(lease.id, str(e), retryable=True):
+                    try:
+                        should_retry = run_queue.mark_failed(lease.id, str(e), retryable=True)
+                    except Exception as db_err:
+                        self.logger.error(
+                            "Queue DB error while marking failure; treating as non-retryable",
+                            task_id=lease.task_id,
+                            original_error=str(e),
+                            db_error=str(db_err),
+                        )
+                        should_retry = False
+                    if should_retry:
                         requeued += 1
                     else:
                         failed += 1
@@ -1284,7 +1348,14 @@ class Orchestrator:
             # The Runner has direct access to the agent's filesystem and DB state,
             # supporting hash-based grading, jsonpath file assertions, transcript rules,
             # and LLM judge evaluation.
-            grade = self._grade_via_runner_rpc(task, trial_idx, docker_runtime, trajectory)
+            grade, judge_cost = self._grade_via_runner_rpc(
+                task, trial_idx, docker_runtime, trajectory
+            )
+            # Add judge cost to trial metrics so it appears in cost_usd_est
+            if judge_cost > 0:
+                trajectory.metrics.cost_usd_est = (
+                    trajectory.metrics.cost_usd_est or 0.0
+                ) + judge_cost
         trajectory.grade = grade
 
         self.logger.info(
@@ -1409,7 +1480,7 @@ class Orchestrator:
                     reasons=grade.reasons,
                 )
 
-            return grade
+            return grade, grade_result.get("judge_cost_usd", 0.0)
         else:
             error_msg = grade_result.get("error", "Unknown grading error")
             self.logger.error(
@@ -1418,11 +1489,14 @@ class Orchestrator:
                 trial_index=trial_idx,
                 error=error_msg,
             )
-            return Grade(
-                binary_pass=False,
-                score=0.0,
-                components=GradeComponents(state_checks=0.0),
-                reasons=f"Grading RPC failed: {error_msg}",
+            return (
+                Grade(
+                    binary_pass=False,
+                    score=0.0,
+                    components=GradeComponents(state_checks=0.0),
+                    reasons=f"Grading RPC failed: {error_msg}",
+                ),
+                0.0,
             )
 
     def _build_system_prompt(

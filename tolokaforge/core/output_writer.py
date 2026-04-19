@@ -114,16 +114,22 @@ class OutputWriter:
 
         # Add detailed tool usage breakdown from tool_log
         # Field names must match ToolUsage model: tool_name, call_count, success_count, error_count
-        tool_usage: dict[str, dict[str, int]] = {}
+        tool_usage: dict[str, dict[str, float | int]] = {}
         for log in trajectory.tool_log:
             tool_name = log.get("tool")
             if not tool_name:
                 continue
 
             if tool_name not in tool_usage:
-                tool_usage[tool_name] = {"call_count": 0, "success_count": 0, "error_count": 0}
+                tool_usage[tool_name] = {
+                    "call_count": 0,
+                    "success_count": 0,
+                    "error_count": 0,
+                    "total_duration_s": 0.0,
+                }
 
             tool_usage[tool_name]["call_count"] += 1
+            tool_usage[tool_name]["total_duration_s"] += log.get("duration_s", 0.0)
             if log.get("success"):
                 tool_usage[tool_name]["success_count"] += 1
             else:
@@ -131,8 +137,7 @@ class OutputWriter:
 
         # Convert to sorted list matching ToolUsage schema
         metrics_data["tool_usage"] = [
-            {"tool_name": name, "total_duration_s": 0.0, **stats}
-            for name, stats in sorted(tool_usage.items())
+            {"tool_name": name, **stats} for name, stats in sorted(tool_usage.items())
         ]
 
         with open(self.output_dir / "metrics.yaml", "w") as f:

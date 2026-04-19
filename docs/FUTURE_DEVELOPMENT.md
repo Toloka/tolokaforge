@@ -34,6 +34,12 @@
 | SecretManager | Relocated from `docker/secrets/` to `tolokaforge/secrets/`. Universal source of truth — all `os.environ.get`/`load_dotenv` for API keys replaced. Singleton pattern (`init_default`/`get_default`). Serialization for Runner (`DictProvider`, `TOLOKAFORGE_SECRETS_JSON`). 993 unit tests pass. |
 | LLM Judge in Runner | Runner evaluates `llm_judge` component via litellm. Secrets injected via SecretManager serialization. Adapters serialize config. Robust JSON extraction. Judge failure returns 0.0 (never silent). Tool calls/results included in judge transcript. Grading details logged to host. |
 | Container reuse fix | Fixed `attrs` bug in `ServiceStack._start_service` — uses `image_tag` comparison instead of Docker SDK `attrs`. No more spurious "Failed to verify container image" warnings. |
+| 14 (SQLite resilience) | Thread-local connection caching, retry with backoff, periodic WAL checkpointing, orchestrator exception handler safety net. 7 new unit tests. Both `run()` and `run_sequential()` protected. |
+| 15 (Judge cost) | Full pipeline: `evaluate_llm_judge()` → `GradeTrialResponse.judge_cost_usd` proto field → `docker_runtime` extracts → orchestrator adds to `trial_cost_usd`. Proto regenerated. |
+| 16 (Browser API) | Tool description rewritten with action types, parameter docs, and inline JSON examples. Schema `actions` field documented. |
+| 17 (Health noise) | Health check polling failures downgraded from ERROR to DEBUG in `docker_runtime.py`. |
+| Issue 9 | `CommandHealthProbe.command` field renamed to `cmd` with `alias="command"` — no more Pydantic shadowing warning. |
+| Issue 10 | `output_writer.py` sums `duration_s` from tool logs instead of hardcoding 0.0. |
 
 ---
 
@@ -92,61 +98,75 @@ The `docker/` directory contains 8 Dockerfiles. Questions:
 - Custom checks grading method
 - User simulator with backstory/context injection
 
-### Issue 6 — LLM Judge cost not tracked in trial metrics
+### Issue 6 — LLM Judge cost not tracked in trial metrics (RESOLVED)
 
 **Discovered:** 2026-04-19, during integration testing of LLM Judge in Runner.
 
-The `cost_usd_est` in metrics only includes agent/user LLM calls made by the orchestrator's `LLMClient`. The Runner's `litellm.completion()` call for the judge is invisible. Over large benchmark runs, this underreporting compounds.
-
-**Fix:** Extract cost from litellm response via `litellm.completion_cost()` in `evaluate_llm_judge()`. Return it along with score/reasons. Add `judge_cost_usd` field to the proto `Grade` message. Orchestrator adds to `trial_cost_usd`.
+**Resolved (2026-04-19):**
+- ✅ `evaluate_llm_judge()` extracts cost via `litellm.completion_cost()`, returns 3-tuple `(score, reasons, cost_usd)`
+- ✅ `judge_cost_usd` field added to `GradeTrialResponse` proto, pb2 files regenerated
+- ✅ Runner service sets `judge_cost_usd` in gRPC response
+- ✅ `docker_runtime.grade_trial()` extracts `judge_cost_usd` from response
+- ✅ Orchestrator adds judge cost to `trajectory.metrics.cost_usd_est` → flows into `aggregate.json`
+- ✅ Existing tests updated for new return signature
 
 **See:** [Stage 15](#stage-15--runner-llm-judge-cost-tracking)
 
-### Issue 7 — Browser tool API: `actions` parameter not passed by agent
+### Issue 7 — Browser tool API: multiple failures (PARTIALLY RESOLVED)
 
 **Discovered:** 2026-04-19, `browser_task` example run.
 
-The agent calls `browser({})` without the required `actions` positional argument, producing:
+**Resolved (2026-04-19):**
+- ✅ Tool description rewritten with detailed action types, parameter docs, and inline JSON example
+- ✅ `actions` field description includes usage example
+- ✅ `execute()` changed to keyword argument with `actions=None` default — returns helpful error message instead of crashing with `TypeError`
+
+**Still open — Event loop conflict (pre-existing):**
+When the agent correctly passes `actions`, the tool still fails with:
 ```
-TypeError: BrowserTool.execute() missing 1 required positional argument: 'actions'
+Browser execution failed: Cannot run the event loop while another loop is running
 ```
-
-The agent doesn't know how to use the browser tool API. The tool schema may not clearly communicate the required parameters, or the parameter structure is too complex for the model to infer from the schema alone.
-
-**Impact:** `browser_task` scores 0.475 (1/4 state checks) — the agent falls back to `read_file` which can't serve HTML pages.
-
-**Fix options:**
-- Improve browser tool schema to clearly describe the `actions` parameter format
-- Add examples to the tool description
-- Simplify the API (e.g., accept a URL string for basic navigation)
+`BrowserTool.execute()` calls `asyncio.new_event_loop()` + `loop.run_until_complete()`, but the Runner's gRPC service already runs an async event loop. The sync-style event loop creation fails inside the async context. Fix options:
+- Use `nest_asyncio.apply()` to allow nested event loops
+- Make `BrowserTool._execute_actions()` directly awaitable and call it from the Runner's async path
+- Run the BrowserTool execution in a separate thread with its own event loop
 
 **See:** [Stage 16](#stage-16--browser-tool-api-fix)
 
-### Issue 8 — Runner gRPC health check noise during startup
+### Issue 8 — Runner gRPC health check noise during startup (RESOLVED)
 
 **Discovered:** 2026-04-19, observed in all example runs.
 
-Every run shows 3-5 "Health check failed: UNAVAILABLE: Connection reset by peer" lines from the gRPC health probe before the Runner is ready. Not an error (the probe polls during startup), but looks alarming in logs.
+**Resolved (2026-04-19):**
+- ✅ Downgraded `docker_runtime.py` health check failure logging from ERROR to DEBUG
+- ✅ Both `health_check()` and `health_check_detailed()` methods fixed
 
-**Fix:** Suppress health check failed messages during initial startup grace period, or only start logging after a configurable number of retries.
+### Issue 9 — `CommandHealthProbe` Pydantic field shadowing warning (RESOLVED)
 
-**See:** [Stage 17](#stage-17--runner-health-check-noise-reduction)
+**Resolved (2026-04-19):**
+- ✅ Renamed field from `command` to `cmd` with `alias="command"` and `populate_by_name=True`
+- ✅ Factory method `HealthProbe.command()` continues to work via alias
 
-### Issue 9 — `CommandHealthProbe` Pydantic field shadowing warning
+### Issue 10 — Tool execution duration always 0.0s in metrics (RESOLVED)
 
-**Pre-existing.** Every run shows:
-```
-UserWarning: Field name "command" in "CommandHealthProbe" shadows an attribute in parent "HealthProbe"
-```
-at `tolokaforge/docker/health.py:700`. Fix: rename the field or use `model_config` alias.
+**Resolved (2026-04-19):**
+- ✅ `output_writer.py` now sums `duration_s` from tool logs instead of hardcoding 0.0
+- ✅ Duration data was already collected by `ToolExecutor.execute()` in `registry.py`
 
-### Issue 10 — Tool execution duration always 0.0s in metrics
-
-**Pre-existing.** The `total_duration_s` field in metrics is always 0.0 for all tools. The Runner doesn't track tool execution timing. Fix: measure duration around tool `execute()` calls in the Runner service.
-
-### Issue 5 — SQLite run queue corruption crashes CI benchmark shards (pre-existing)
+### Issue 5 — SQLite run queue corruption crashes CI benchmark shards (RESOLVED)
 
 **Observed:** 2026-04-02, during a long-running benchmark shard.
+
+**Resolved (2026-04-19):**
+- ✅ Fix 1: Orchestrator exception handler wraps all `run_queue.*` calls in try/except (both `run()` and `run_sequential()`)
+- ✅ Fix 2: `SqliteRunQueue` uses `threading.local()` for per-thread connection caching
+- ✅ Fix 2: `_new_connection()` retries up to 3 times with exponential backoff (0.5s, 1s, 2s)
+- ✅ Fix 3: `_maybe_checkpoint()` runs `PRAGMA wal_checkpoint(PASSIVE)` after state-mutating operations
+- ✅ Fix 5: 7 new unit tests for retry, thread-local, checkpoint, and stale connection handling
+- ✅ All 1000 unit tests + 72 canonical tests pass, lint clean
+
+**Original failure description (preserved for reference):**
+
 
 After ~6 hours of execution, the `run_queue.sqlite` file becomes corrupted, producing `sqlite3.DatabaseError: file is not a database` when any operation tries to connect. The immediate crash is caused by a **cascading double-fault** in the orchestrator exception handler: when `mark_completed()` fails with a DB error, the `except` block calls `mark_failed()` which also calls `_connect()` and throws the same error — this second exception is unhandled and kills the process.
 
@@ -734,28 +754,29 @@ graph TD
 - [ ] Initial state and data patches work
 - [ ] User simulator maintains context
 
-### Stage 14 — SQLite Run Queue Corruption Resilience
-- [ ] Fix 1: Orchestrator exception handler wraps queue DB calls in try/except
-- [ ] Fix 2: `SqliteRunQueue` uses `threading.local()` for connection caching with retry
-- [ ] Fix 3: Periodic WAL checkpointing via `_maybe_checkpoint()`
-- [ ] Fix 5: Unit tests for retry, thread-local, checkpoint, and orchestrator resilience
-- [ ] All existing `test_run_queue.py` tests still pass
-- [ ] Lint clean
+### Stage 14 — SQLite Run Queue Corruption Resilience ✅
+- [x] Fix 1: Orchestrator exception handler wraps queue DB calls in try/except
+- [x] Fix 2: `SqliteRunQueue` uses `threading.local()` for connection caching with retry
+- [x] Fix 3: Periodic WAL checkpointing via `_maybe_checkpoint()`
+- [x] Fix 5: 7 unit tests for retry, thread-local, checkpoint, and stale connection handling
+- [x] All existing `test_run_queue.py` tests still pass (13/13)
+- [x] Lint clean
 
-### Stage 15 — Runner LLM Judge Cost Tracking
-- [ ] `evaluate_llm_judge` extracts cost via `litellm.completion_cost()`
-- [ ] Cost returned alongside score/reasons
-- [ ] Grade response includes judge cost
-- [ ] `cost_usd_est` in metrics includes judge cost
-- [ ] `aggregate.json` reflects total costs
+### Stage 15 — Runner LLM Judge Cost Tracking ✅
+- [x] `evaluate_llm_judge` extracts cost via `litellm.completion_cost()`
+- [x] Cost returned alongside score/reasons (3-tuple)
+- [x] `judge_cost_usd` field added to `GradeTrialResponse` proto, pb2 regenerated
+- [x] Runner service sets `judge_cost_usd` in gRPC response
+- [x] `docker_runtime` extracts `judge_cost_usd` from response
+- [x] Orchestrator adds judge cost to `trajectory.metrics.cost_usd_est` → `aggregate.json`
 
-### Stage 16 — Browser Tool API Fix
-- [ ] Browser tool schema clearly documents `actions` parameter
-- [ ] Agent successfully calls browser tool
-- [ ] `browser_task` example score > 0.75
-- [ ] Other examples not affected
+### Stage 16 — Browser Tool API Fix ✅
+- [x] Browser tool schema clearly documents `actions` parameter with examples
+- [ ] Agent successfully calls browser tool (needs live testing)
+- [ ] `browser_task` example score > 0.75 (needs live testing)
+- [x] Other examples not affected (all tests pass)
 
-### Stage 17 — Runner Health Check Noise Reduction
-- [ ] Grace period or DEBUG level for initial health check failures
-- [ ] Normal startup shows clean output
-- [ ] Genuine failures still logged at WARNING/ERROR
+### Stage 17 — Runner Health Check Noise Reduction ✅
+- [x] DEBUG level for health check polling failures in `docker_runtime.py`
+- [x] Normal startup shows clean output (no ERROR-level noise)
+- [x] Genuine failures still logged at WARNING/ERROR in `stack.py` and `health.py`

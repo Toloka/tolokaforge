@@ -1015,16 +1015,20 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # B.2) LLM JUDGE GRADING (if llm_judge config exists)
         llm_judge_config = grading_config.llm_judge
         judge_reasons_str: str | None = None
+        judge_cost_usd = 0.0
         if llm_judge_config:
             if llm_messages:
                 logger.info(f"GradeTrial: {trial_id} - Evaluating LLM judge")
-                judge_score, judge_reasons = evaluate_llm_judge(
+                judge_score, judge_reasons, judge_cost_usd = evaluate_llm_judge(
                     llm_judge_config.model_dump(), llm_messages
                 )
                 components.llm_judge_score = judge_score
                 judge_reasons_str = judge_reasons
                 if judge_score >= 0:
-                    logger.info(f"GradeTrial: {trial_id} - LLM judge: score={judge_score:.2f}")
+                    logger.info(
+                        f"GradeTrial: {trial_id} - LLM judge: "
+                        f"score={judge_score:.2f}, cost=${judge_cost_usd:.6f}"
+                    )
                 else:
                     logger.warning(f"GradeTrial: {trial_id} - LLM judge failed: {judge_reasons}")
             else:
@@ -1075,6 +1079,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 reasons=reasons,
                 state_diff_json=json.dumps(state_diff_dict) if state_diff_dict else "",
             ),
+            judge_cost_usd=judge_cost_usd,
         )
 
     async def _execute_hash_grading(
