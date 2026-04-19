@@ -7,7 +7,7 @@ combine:
 state_checks:
   jsonpaths:
     - path_glob: "/env/fs/agent-visible/submissions/*"
-      contains_ci: "not eligible for cancellation"
+      contains_ci: "not permitted"
       description: "Response applies enterprise cancellation gate correctly"
     - path_glob: "/env/fs/agent-visible/submissions/*"
       contains_ci: "7 business days"

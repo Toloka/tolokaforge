@@ -77,6 +77,18 @@ class ToolConfigurationError(ToolReconstructionError):
     pass
 
 
+class ToolExecutionError(Exception):
+    """Error during tool execution at runtime (e.g., validation failures).
+
+    Distinct from ToolReconstructionError which is for setup-time failures.
+    """
+
+    def __init__(self, tool_name: str, message: str):
+        self.tool_name = tool_name
+        self.message = message
+        super().__init__(f"{tool_name}: {message}")
+
+
 # =============================================================================
 # Tool Wrapper Base Class
 # =============================================================================
@@ -701,7 +713,14 @@ class BuiltinGenericToolWrapper(ToolWrapper):
         result = self._tool.execute(**arguments)
         if result.success:
             return result.output or ""
-        return f"Error: {result.error}"
+        # Raise so the runner service records EXECUTION_STATUS_ERROR,
+        # preserving correct tool_success_rate and failure attribution.
+        # The runner's exception handler sends the error message back to
+        # the LLM, so the agent can still self-correct.
+        raise ToolExecutionError(
+            self.name,
+            result.error or "Tool returned failure with no error message",
+        )
 
 
 # =============================================================================

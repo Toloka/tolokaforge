@@ -30,6 +30,18 @@
 
 ---
 
+## Resolved Issues (verified 2026-04-19)
+
+### ~~Issue 5 — `analyze_results` example crashes on successful runs~~ → RESOLVED
+
+**Status:** Fixed. The code at `analyze_run.py:161-165` now correctly handles `None` coverage with an explicit `if coverage is None` check. Verified: `analyze_run.py` runs successfully on both zero-failure and successful run directories.
+
+### ~~Issue 6 — `trajectory.yaml` excludes `tool_log`~~ → RESOLVED
+
+**Status:** Fixed. `trajectory.yaml` now includes `tool_log` with full entries. Verified: all trial directories include `tool_log` in trajectory.yaml with tool name, success status, output, error, and duration fields.
+
+---
+
 ## Open Issues
 
 ### Issue 1 — Runner Docker image includes unnecessary domain files
@@ -74,6 +86,8 @@ After trial completion, `env.yaml` only shows initial filesystem state (files fr
 - ✅ Docker auto-start lifecycle (build, start, health check, stop, destroy)
 - ✅ Cost tracking (per-trial and aggregate)
 - ✅ Grade component `None` sentinel (replaces old `-1.0`)
+- ✅ `analyze_results` example loads trajectories, computes metrics, reports pass rates
+- ✅ `trajectory.yaml` includes full `tool_log` data
 
 **Open:**
 - Hash-based grading method
@@ -83,25 +97,6 @@ After trial completion, `env.yaml` only shows initial filesystem state (files fr
 - TypeSense RAG search integration
 - Multiple LLM providers (only OpenRouter/Anthropic tested)
 - `tolokaforge docker build` / `tolokaforge docker up` CLI commands
-
-### Issue 5 — `analyze_results` example crashes on successful runs (BUG)
-
-**File:** `examples/analyze_results/analyze_run.py:162`
-
-`summarize_failure_attributions([])` returns `{"deterministic_attribution_coverage": None}`. The `.get("deterministic_attribution_coverage", 0.0)` returns `None` (key exists with `None` value, not missing). Then `{coverage:.3f}` throws `TypeError`.
-
-**Fix:** `coverage=failure_summary.get("deterministic_attribution_coverage") or 0.0`
-
-### Issue 6 — `trajectory.yaml` excludes `tool_log` — breaks analysis round-trip (BUG)
-
-**File:** `tolokaforge/core/output_writer.py:77-96`
-
-`write_trajectory()` only writes messages metadata — no `tool_log`. When `analyze_run.py` loads trajectory.yaml to reconstruct `Trajectory`, `tool_log` defaults to `[]`. This breaks:
-- Failure attribution (empty tool evidence)
-- Per-tool analytics
-- `failure_attribution.py:128` false positive on "missing_tool"
-
-**Fix:** Save tool_log in trajectory.yaml or as a separate `tool_log.yaml` that `analyze_run.py` loads.
 
 ### Issue 7 — Docker network/container name collisions prevent concurrent runs (BUG)
 
@@ -118,6 +113,50 @@ Fixed names (`runner-net`, `tolokaforge-runner`, `tolokaforge-db-service`) cause
 ### Issue 9 — `mock_web_url` in env.yaml uses Docker-internal DNS
 
 `env.yaml` shows `mock_web_url: http://mock-web:8080` — only useful inside Docker. Confusing for post-hoc analysis from the host.
+
+### Issue 10 — BuiltinGenericToolWrapper masks tool failures as successes (BUG — CRITICAL)
+
+**Files:** `tolokaforge/runner/tool_factory.py:700-704`, `tolokaforge/runner/service.py:780-788`
+
+When a builtin tool (browser, calculator, etc.) returns `ToolResult(success=False, error="...")`, `BuiltinGenericToolWrapper.execute()` converts it to the string `"Error: {error}"` and returns it. The runner service (`service.py:787`) then treats any string return as `EXECUTION_STATUS_SUCCESS` since no exception was raised.
+
+**Impact chain confirmed via browser_task run (2026-04-19):**
+1. BrowserTool.execute(`{}`) → `ToolResult(success=False, error="Missing required 'actions' parameter...")`
+2. BuiltinGenericToolWrapper.execute() → returns string `"Error: Missing required 'actions' parameter..."`
+3. runner/service.py → `EXECUTION_STATUS_SUCCESS` (line 787: no exception = success)
+4. docker_adapter.py → logs `success: True` with error text in output field
+
+**Corruption effects:**
+- `tool_success_rate` artificially inflated (shows 100% when tool had validation errors)
+- `failure_attribution` cannot detect tool argument errors (tool evidence is empty)
+- `tool_usage.error_count` always 0 even when tools returned errors
+- `metrics.yaml` records `tool_success_rate: 1.0` for browser task despite failed browser call
+
+**Fix:** `BuiltinGenericToolWrapper.execute()` should raise an exception on `result.success == False`, letting the runner service mark it as `EXECUTION_STATUS_ERROR`. Alternatively, refactor the runner service to understand structured `ToolResult` returns.
+
+### Issue 11 — Missing `.env.example` referenced in README (USABILITY)
+
+**File:** `README.md:36`
+
+README Quick Start says `cp .env.example .env` but `.env.example` does not exist in the repository. New users see a broken first step.
+
+**Fix:** Create `.env.example` with documented placeholder variables.
+
+### Issue 12 — Browser task `contains_ci` state check is brittle (TASK QUALITY)
+
+**File:** `examples/browser_task/dataset/tasks/browser/browser_public_example_01/grading.yaml:11`
+
+The state check `contains_ci: "not eligible for cancellation"` expects the exact phrase "not eligible for cancellation". The agent correctly identifies that cancellation is not allowed and uses semantically equivalent phrases ("cannot be cancelled", "Cancellation DENIED", "cancellation is not permitted"), but the literal substring match fails.
+
+This reduces the task score from 1.0 to 0.825 (state_checks: 0.75 instead of 1.0) even though the agent's reasoning and conclusion are correct.
+
+**Fix:** Broaden the check to accept common phrasings: `contains_any_ci: ["not eligible for cancellation", "cannot be cancelled", "cancellation is not permitted", "cancellation denied"]` or use a regex pattern.
+
+### Issue 13 — `run_state.json` config_path inconsistency (MINOR)
+
+**Files:** `tolokaforge/core/orchestrator.py`, `tolokaforge/core/resume.py`
+
+When using the programmatic API (`Orchestrator(RunConfig(...))`), `run_state.json.config_path` is an absolute path (e.g., `/workspaces/tolokaforge_opensource/results/package_api`). When using CLI (`tolokaforge run --config ...`), it's a relative path (e.g., `results/custom_grading`). This inconsistency could break tooling that resolves paths from `run_state.json`.
 
 ---
 
@@ -149,30 +188,34 @@ Convert all tasks to frozen format, use `frozen_mcp_core` exclusively for Docker
 ## Stage 10 — Critical Bug Fixes
 
 > **Goal:** Fix bugs discovered during 2026-04-19 example analysis.
-> **Priority:** ASAP — these affect example usability and analysis tooling.
+> **Priority:** ASAP — these affect metric accuracy and analysis tooling.
 
 ### Bug fixes needed
 
-1. **`analyze_run.py` NoneType crash** (Issue 5)
-   - Fix `.get()` fallback for `None` values
-   - Test with zero-failure and non-zero-failure runs
+1. **BuiltinGenericToolWrapper masks tool failures** (Issue 10 — CRITICAL)
+   - Raise exception or return structured error from `BuiltinGenericToolWrapper.execute()`
+   - Ensure runner service records correct `EXECUTION_STATUS_ERROR`
+   - Verify tool_success_rate and failure_attribution reflect actual errors
 
-2. **`trajectory.yaml` missing `tool_log`** (Issue 6)
-   - Add `tool_log` to `write_trajectory()` output
-   - Update `analyze_run.py` to load tool_log if present
-   - Verify failure attribution works with loaded trajectories
-
-3. **Docker network race condition** (Issue 7)
+2. **Docker network race condition** (Issue 7)
    - Catch 409 Conflict in `Network.create()` and retry with lookup
    - Consider adding run-id suffix to Docker resource names
 
+3. **Missing `.env.example`** (Issue 11)
+   - Create `.env.example` with documented API key placeholders
+   - Ensure README Quick Start works for new users
+
+4. **Browser task brittle state check** (Issue 12)
+   - Broaden `contains_ci` to accept common paraphrases
+
 ### Verification
 
-- [ ] `analyze_run.py` succeeds against zero-failure run directory
-- [ ] `analyze_run.py` succeeds against runs with failures
-- [ ] `trajectory.yaml` includes tool_log data
-- [ ] Failure attribution works on loaded trajectories
+- [ ] Tool validation errors recorded as `success=false` in tool_log
+- [ ] `tool_success_rate` reflects actual success/failure ratio
+- [ ] `failure_attribution` detects tool argument errors
 - [ ] `Network.create()` handles 409 Conflict gracefully
+- [ ] `.env.example` exists and matches README instructions
+- [ ] Browser task state check passes for semantically correct responses
 
 ---
 
@@ -217,6 +260,7 @@ Convert all tasks to frozen format, use `frozen_mcp_core` exclusively for Docker
 - [ ] Tool duration reflects actual execution time, not just gRPC round-trip (Issue 8)
 - [ ] `mock_web_url` in env.yaml uses host-accessible URL (Issue 9)
 - [ ] Add stale results directory cleanup mechanism
+- [ ] Normalize `run_state.json` config_path to always be relative (Issue 13)
 
 ---
 
@@ -228,9 +272,10 @@ Convert all tasks to frozen format, use `frozen_mcp_core` exclusively for Docker
 - [ ] Verify minimal runner image works with frozen_mcp_core
 
 ### Stage 10 — Critical Bug Fixes (ASAP)
-- [ ] Fix `analyze_run.py` NoneType crash
-- [ ] Fix `trajectory.yaml` missing tool_log
-- [ ] Fix Docker network race condition (409 Conflict)
+- [ ] Fix BuiltinGenericToolWrapper masking tool failures (Issue 10)
+- [ ] Fix Docker network race condition (Issue 7)
+- [ ] Create `.env.example` (Issue 11)
+- [ ] Fix browser task brittle state check (Issue 12)
 
 ### Stage 11 — E2E Validation (remaining)
 - [ ] FrozenMcpCoreAdapter extended validation (TypeSense, user LLM, data patches)
@@ -249,3 +294,4 @@ Convert all tasks to frozen format, use `frozen_mcp_core` exclusively for Docker
 - [ ] Tool duration reflects actual execution time
 - [ ] mock_web_url uses host-accessible URL
 - [ ] Stale results directory cleanup
+- [ ] Normalize run_state.json config_path
