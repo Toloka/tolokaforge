@@ -219,6 +219,23 @@ class Network(BaseModel):
             return network
 
         except APIError as e:
+            # Handle 409 Conflict race condition: another process created the
+            # network between our _find_existing_network() check and create().
+            if e.status_code == 409:
+                logger.info(
+                    "Network '%s' created by another process (409 Conflict), reusing",
+                    name,
+                )
+                existing = cls._find_existing_network(client, name)
+                if existing:
+                    network = cls(
+                        name=name,
+                        network_id=existing.id,
+                        internal=internal,
+                        driver=driver,
+                    )
+                    object.__setattr__(network, "_client", client)
+                    return network
             raise NetworkError("create", name, f"Docker API error: {e}") from e
 
     @classmethod

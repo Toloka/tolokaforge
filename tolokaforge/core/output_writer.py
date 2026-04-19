@@ -75,7 +75,7 @@ class OutputWriter:
             yaml.dump(task_info, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
     def write_trajectory(self, trajectory: Trajectory):
-        """Write trajectory.yaml with messages only
+        """Write trajectory.yaml with messages and tool log
 
         Args:
             trajectory: Trajectory object containing messages and metadata
@@ -91,6 +91,10 @@ class OutputWriter:
             ),
             "messages": [msg.model_dump(mode="json") for msg in trajectory.messages],
         }
+
+        # Include tool_log so analysis tools can reconstruct full Trajectory
+        if trajectory.tool_log:
+            traj_data["tool_log"] = trajectory.tool_log
 
         with open(self.output_dir / "trajectory.yaml", "w") as f:
             yaml.dump(traj_data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)

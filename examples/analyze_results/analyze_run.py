@@ -158,11 +158,11 @@ def main() -> int:
             cost=aggregate.get("total_cost_usd", 0.0),
         )
     )
-    print(
-        "Failure attribution coverage (deterministic): {coverage:.3f}".format(
-            coverage=failure_summary.get("deterministic_attribution_coverage", 0.0)
-        )
-    )
+    coverage = failure_summary.get("deterministic_attribution_coverage")
+    if coverage is None:
+        print("Failure attribution coverage (deterministic): N/A (no failures)")
+    else:
+        print(f"Failure attribution coverage (deterministic): {coverage:.3f}")
     print(f"Report written to: {output_path}")
 
     return 0
