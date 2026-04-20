@@ -13,11 +13,6 @@ on:
         options:
           - testpypi
           - pypi
-      stub:
-        description: "Publish a minimal stub package (v0.0.1) to reserve the name"
-        required: false
-        type: boolean
-        default: false
 
 # Cancel in-progress runs for the same tag
 concurrency:
@@ -39,118 +34,23 @@ jobs:
       - name: Install Python
         run: uv python install 3.12
 
-      - name: Prepare stub package
-        if: github.event.inputs.stub == 'true'
-        run: |
-          # Create a standalone minimal package (bypass workspace)
-          rm -rf _stub_build && mkdir -p _stub_build/src/tolokaforge_adapter_terminal_bench
-
-          cat > _stub_build/src/tolokaforge_adapter_terminal_bench/__init__.py << 'STUB_EOF'
-          """Terminal-bench adapter plugin for tolokaforge.
-
-          This is a placeholder package. The full release is coming soon.
-          See https://github.com/Toloka/tolokaforge for more information.
-          """
-
-          __version__ = "0.0.2"
-          STUB_EOF
-
-          cat > _stub_build/README.md << 'README_EOF'
-          # tolokaforge-adapter-terminal-bench
-
-          > **This is a placeholder release.** The full package is coming soon.
-
-          Terminal-bench adapter plugin for [Tolokaforge](https://github.com/Toloka/tolokaforge).
-
-          For more information, visit [github.com/Toloka/tolokaforge](https://github.com/Toloka/tolokaforge).
-          README_EOF
-
-          cat > _stub_build/pyproject.toml << 'TOML_EOF'
-          [build-system]
-          requires = ["hatchling"]
-          build-backend = "hatchling.build"
-
-          [project]
-          name = "tolokaforge-adapter-terminal-bench"
-          version = "0.0.2"
-          description = "Terminal-bench adapter plugin for tolokaforge"
-          readme = "README.md"
-          requires-python = ">=3.10"
-          license = {text = "Apache-2.0"}
-          authors = [
-              {name = "Tolokaforge Contributors"},
-          ]
-          keywords = [
-              "tolokaforge",
-              "adapter",
-              "terminal-bench",
-              "benchmark",
-              "llm",
-          ]
-          classifiers = [
-              "Development Status :: 1 - Planning",
-              "Intended Audience :: Developers",
-              "Intended Audience :: Science/Research",
-              "License :: OSI Approved :: Apache Software License",
-              "Operating System :: OS Independent",
-              "Programming Language :: Python :: 3",
-              "Programming Language :: Python :: 3.10",
-              "Programming Language :: Python :: 3.11",
-              "Programming Language :: Python :: 3.12",
-              "Topic :: Scientific/Engineering :: Artificial Intelligence",
-              "Topic :: Software Development :: Testing",
-          ]
-          dependencies = []
-
-          [project.urls]
-          Homepage = "https://github.com/Toloka/tolokaforge"
-          Repository = "https://github.com/Toloka/tolokaforge/tree/main/external_adapters/tolokaforge-adapter-terminal-bench"
-          Issues = "https://github.com/Toloka/tolokaforge/issues"
-
-          [tool.hatch.build.targets.wheel]
-          packages = ["src/tolokaforge_adapter_terminal_bench"]
-          TOML_EOF
-
-          echo "Stub package prepared:"
-          cat _stub_build/pyproject.toml
-          echo "---"
-          cat _stub_build/src/tolokaforge_adapter_terminal_bench/__init__.py
-
       - name: Build package
-        run: |
-          if [ "${{ github.event.inputs.stub }}" = "true" ]; then
-            cd _stub_build && uv build --wheel
-          else
-            uv build --package tolokaforge-adapter-terminal-bench
-          fi
+        run: uv build --package tolokaforge-adapter-terminal-bench
 
       - name: Verify package contents
         run: |
-          # Find dist/ in the right location
-          DIST_DIR="dist"
-          if [ "${{ github.event.inputs.stub }}" = "true" ]; then
-            DIST_DIR="_stub_build/dist"
-          fi
           echo "=== Built artifacts ==="
-          ls -lh "$DIST_DIR/"
+          ls -lh dist/
           echo ""
           echo "=== Wheel contents ==="
           uv run python -c "
           import zipfile, sys
-          for f in __import__('pathlib').Path('$DIST_DIR').glob('*.whl'):
+          for f in __import__('pathlib').Path('dist').glob('*.whl'):
               print(f'--- {f.name} ---')
               with zipfile.ZipFile(f) as zf:
                   for name in sorted(zf.namelist()):
                       print(f'  {name}')
           "
-
-      - name: Normalize dist directory
-        run: |
-          # Ensure all built files are in dist/ for consistent artifact handling
-          if [ "${{ github.event.inputs.stub }}" = "true" ] && [ -d _stub_build/dist ]; then
-            mkdir -p dist
-            cp _stub_build/dist/* dist/
-          fi
 
       - name: Upload distribution artifacts
         uses: actions/upload-artifact@v4
