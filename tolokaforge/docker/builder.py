@@ -53,9 +53,6 @@ IMAGE_DEFINITIONS: dict[str, dict[str, Any]] = {
             "pyproject.toml",
             "README.md",
             "tolokaforge/",
-            "contrib/tau-bench/",
-            "tasks/telecom/tau_tools/",
-            "tasks/telecom/data/",
         ],
     },
     "rag-service": {
