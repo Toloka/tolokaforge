@@ -61,7 +61,7 @@ evaluation:
 ```yaml
 task_id: "unique_task_identifier"
 name: "Human-readable task name"
-category: "terminal"                # terminal, web, telecom, airline, etc.
+category: "terminal"                # e.g. terminal, web, airline, retail
 description: |
   Detailed task description.
 
@@ -275,7 +275,7 @@ from tolokaforge.core.grading.combine import GradingEngine
 engine = GradingEngine(
     grading_config: GradingConfig,
     judge_model: ModelConfig | None = None,
-    task_domain: str = "telecom",
+    task_domain: str = "general",
     task_dir: Path | None = None,
 )
 

@@ -54,7 +54,7 @@ class ToolSource(BaseModel):
     or mounted in the container.
     """
 
-    toolset: str  # Package/directory: "zendesk", "airline", "telecom"
+    toolset: str  # Package/directory: "zendesk", "airline", "retail"
     module_path: str  # Module within toolset: "tools.create_item"
     class_name: str  # Class/function: "CreateItem", "BookReservation"
     invocation_style: InvocationStyle = InvocationStyle.TAU_SYNC
@@ -324,7 +324,7 @@ class TaskDescription(BaseModel):
     # --- Identity ---
     task_id: str
     name: str
-    category: str  # Domain: "airline", "telecom", "retail"
+    category: str  # Domain: "airline", "retail"
     description: str  # Task description / user goal
     adapter_type: AdapterType
     schema_version: str = "1.0.0"

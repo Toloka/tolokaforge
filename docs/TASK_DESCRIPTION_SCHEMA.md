@@ -63,7 +63,7 @@ class ToolSource(BaseModel):
     implementation in the container. Tool code must be pre-installed
     or mounted in the container.
     """
-    toolset: str                                  # Package/directory: "zendesk", "airline", "telecom"
+    toolset: str                                  # Package/directory: e.g. "zendesk", "airline", "retail"
     module_path: str                              # Module within toolset: "tools.create_item"
     class_name: str                               # Class/function: "CreateItem", "BookReservation"
     invocation_style: InvocationStyle = InvocationStyle.TAU_SYNC
@@ -273,7 +273,7 @@ class TaskDescription(BaseModel):
     # --- Identity ---
     task_id: str
     name: str
-    category: str                                 # Domain: "airline", "telecom", "retail"
+    category: str                                 # Domain: e.g. "airline", "retail"
     description: str                              # Task description / user goal
     adapter_type: AdapterType
     schema_version: str = "1.0.0"
@@ -514,14 +514,14 @@ class TaskDescription(BaseModel):
 
 ```json
 {
-  "task_id": "telecom_task_002",
+  "task_id": "example_task_002",
   "name": "Mobile Data / Slow Internet Issues",
-  "category": "telecom",
+  "category": "general",
   "description": "User experiencing mobile data issues",
   "adapter_type": "native",
   "schema_version": "1.0.0",
 
-  "system_prompt": "# Telecom Support Manual\n\nYou are a customer service agent...",
+  "system_prompt": "# Support Manual\n\nYou are a customer service agent...",
 
   "agent_tools": [
     {
@@ -533,7 +533,7 @@ class TaskDescription(BaseModel):
         "required": ["phone_number"]
       },
       "source": {
-        "toolset": "telecom",
+        "toolset": "example_support",
         "module_path": "mcp_server",
         "class_name": "get_customer_by_phone",
         "invocation_style": "mcp_server",
@@ -548,7 +548,7 @@ class TaskDescription(BaseModel):
       "description": "Toggle airplane mode on/off",
       "parameters": {"type": "object", "properties": {}},
       "source": {
-        "toolset": "telecom_user",
+        "toolset": "example_user",
         "module_path": "user_device",
         "class_name": "toggle_airplane_mode",
         "invocation_style": "tau_sync"
@@ -601,8 +601,8 @@ class TaskDescription(BaseModel):
   },
 
   "source_files": {
-    "task": "tasks/telecom/task_002/task.yaml",
-    "grading": "tasks/telecom/task_002/grading.yaml"
+    "task": "tasks/example/task_002/task.yaml",
+    "grading": "tasks/example/task_002/grading.yaml"
   }
 }
 ```

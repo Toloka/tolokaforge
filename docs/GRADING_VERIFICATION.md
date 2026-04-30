@@ -132,7 +132,7 @@ state_diff: null
 
 **REWARD=0 (Fail):**
 ```yaml
-# output/sandbox_telecom_field_service_v1_docker_20260308_065713/trials/DC-F-001/0/grade.yaml
+# output/sandbox_example_docker_20260308_065713/trials/DC-F-001/0/grade.yaml
 binary_pass: false
 score: 0.0
 components:

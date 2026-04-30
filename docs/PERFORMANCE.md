@@ -74,7 +74,7 @@ These numbers confirm the harness can sustain high throughput even when agent an
 
 ## Historical (Real LLM) Reference
 
-Previous Sonnet 4.5 runs with real API calls (4 workers × telecom slice) produced roughly:
+Previous Sonnet 4.5 runs with real API calls (4 workers on a realistic task slice) produced roughly:
 
 | Metric | Value |
 |--------|-------|

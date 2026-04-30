@@ -675,8 +675,8 @@ PATCH /trials/airline_task_001:0/state/reservations
 POST /trials/airline_task_001:1/init
 PATCH /trials/airline_task_001:1/state/reservations
 
-# Trial 3: telecom_task_002:0 (different task)
-POST /trials/telecom_task_002:0/init
+# Trial 3: retail_task_002:0 (different task)
+POST /trials/retail_task_002:0/init
 ```
 
 ### Cleanup
