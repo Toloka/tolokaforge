@@ -84,7 +84,7 @@ class EnvironmentState:
         # Ensure db_state has consistent structure (device + surroundings mirrors user_db)
         self._normalize_db_state()
 
-        # Apply per-task device state overrides (for τ² telecom tasks)
+        # Apply per-task device state overrides (for τ² tasks with device state)
         if self.config.device_overrides and "device" in self.db_state:
             for key, value in self.config.device_overrides.items():
                 self.db_state["device"][key] = value

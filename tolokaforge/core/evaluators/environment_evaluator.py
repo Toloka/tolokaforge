@@ -56,13 +56,13 @@ class EnvironmentEvaluator:
     def __init__(self):
         self.assertion_modules = {}  # Cache loaded modules
 
-    def load_assertion_function(self, func_name: str, domain: str = "telecom") -> callable:
+    def load_assertion_function(self, func_name: str, domain: str = "general") -> callable:
         """
         Load an assertion function dynamically
 
         Args:
             func_name: Name of the assertion function
-            domain: Domain to load from (telecom, airline, etc.)
+            domain: Domain to load from (e.g. airline, retail)
 
         Returns:
             Callable assertion function
@@ -103,7 +103,7 @@ class EnvironmentEvaluator:
         assertion: EnvAssertion,
         agent_env_state: dict[str, Any],
         user_env_state: dict[str, Any],
-        domain: str = "telecom",
+        domain: str = "general",
     ) -> EnvAssertionResult:
         """
         Evaluate a single environment assertion
@@ -142,7 +142,7 @@ class EnvironmentEvaluator:
         final_state: dict[str, Any],
         state_checks_config: StateChecksConfig,
         expected_db_hash: str | None = None,
-        domain: str = "telecom",
+        domain: str = "general",
     ) -> StateCheckResult:
         """
         Evaluate all state checks including env assertions and DB hash
