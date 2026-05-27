@@ -41,7 +41,7 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
-1. `litellm` pinned to `1.83.14` (was `>=1.0.0`). Required for the canonical `thinking={}` kwarg and `thinking_blocks` first-class assistant-message field.
+1. `litellm` version range set to `>=1.83.14,<2.0.0` (was `>=1.0.0`). Minimum version required for the canonical `thinking={}` kwarg and `thinking_blocks` first-class assistant-message field.
 2. `task.yaml.model_config.<role>.resolved.*` block now records `{effective_preset, schema_sanitizer, prompt_policy, content_policy, response_policy, reasoning_codec, cache_policy}` for analytics-level config-drift detection. See [`docs/OUTPUT_FORMAT.md`](docs/OUTPUT_FORMAT.md) § `task.yaml`.
 
 ### Traceability
