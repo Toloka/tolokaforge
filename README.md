@@ -1,7 +1,5 @@
 # Tolokaforge
 
-Created by **Renaud de la Gueronniere** | **Toloka AI**
-
 A benchmarking harness for evaluating tool-using LLM agents. Multi-turn agent/user loops, sandboxed execution, deterministic grading, and rich telemetry — across any provider via LiteLLM.
 
 ## Highlights
