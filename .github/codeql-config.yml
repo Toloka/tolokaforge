@@ -1,0 +1,9 @@
+name: "CodeQL config for tolokaforge"
+
+paths-ignore:
+  # Test files - not production code
+  - tests/
+  # Development tools - not shipped to users
+  - tools/dev-mcp/
+  # Mock web service - intentional test fixture that echoes input
+  - tolokaforge/env/mock_web_service/
