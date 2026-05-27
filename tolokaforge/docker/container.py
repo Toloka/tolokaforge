@@ -323,14 +323,14 @@ class Container(BaseModel):
             secret_manager.validate_required(secret_keys)
 
             # Resolve secrets and add to environment
-            secrets_env = secret_manager.to_env_dict(secret_keys)
-            create_kwargs["environment"].update(secrets_env)
+            resolved_env = secret_manager.to_env_dict(secret_keys)
+            create_kwargs["environment"].update(resolved_env)
 
             logger.info(
-                "Resolved %d secrets for container '%s': %s",
-                len(secrets_env),
+                "Injected %d credentials for container '%s': %s",
+                len(resolved_env),
                 name,
-                list(secrets_env.keys()),
+                list(resolved_env.keys()),
             )
 
         # Add privileged mode (required for Docker-in-Docker)

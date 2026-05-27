@@ -101,14 +101,14 @@ class SecretManager:
             value = provider.get_secret(key)
             if value is not None:
                 logger.debug(
-                    "Secret '%s' found in provider '%s'",
+                    "Key '%s' resolved via provider '%s'",
                     key,
                     provider.name,
                 )
                 return value
 
         logger.debug(
-            "Secret '%s' not found in any of %d providers",
+            "Key '%s' not found in any of %d providers",
             key,
             len(self._providers),
         )
@@ -170,7 +170,7 @@ class SecretManager:
                 raise MissingSecretError(key, [p.name for p in self._providers])
 
         logger.debug(
-            "Validated %d required secrets: %s",
+            "Validated %d required keys: %s",
             len(keys),
             keys,
         )
@@ -199,12 +199,12 @@ class SecretManager:
                 env_dict[key] = value
             else:
                 logger.debug(
-                    "Secret '%s' not found, omitting from env dict",
+                    "Key '%s' not found, omitting from env dict",
                     key,
                 )
 
         logger.debug(
-            "Built env dict with %d/%d secrets",
+            "Built env dict with %d/%d keys",
             len(env_dict),
             len(keys),
         )
