@@ -33,7 +33,7 @@ not checked in).
 | Nullable + optional Pydantic fields treated as opt-in | All Gemini, **most strict in Pro 3.1** | Intrinsic — measured by eval |
 | Doubled-prefix tool name mangling (`a_a_foo` → `a:a_foo`) | Pro 3.1 | Known_unsupported `TOOL_NAME_DISCIPLINE` |
 | Lexical tool invention (`knowledge_base_search_policy`) | Pro 3.1 | Known_unsupported `LEXICAL_TOOL_INVENTION` |
-| Reasoning runaways at `max_tokens` ceiling | Flash 3.5 | Open: [#147](https://github.com/toloka-partners/tolokaforge/issues/147) |
+| Reasoning runaways at `max_tokens` ceiling | Flash 3.5 | Open: [#147](https://github.com/Toloka/tolokaforge/issues/147) |
 | Over-eager workflow completion on multi-step tasks | Flash 3.5 | Intrinsic — visible on `ots_bank_hr_d365` |
 
 ## 1. Common quirks across the Gemini family
@@ -307,9 +307,9 @@ lets Flash 3.5 sustain longer thinking chains than it could pre-fix —
 this is the operational side-effect.
 
 **Harness response**: open issue
-[#147](https://github.com/toloka-partners/tolokaforge/issues/147)
+[#147](https://github.com/Toloka/tolokaforge/issues/147)
 proposes a stuck-detector rule for this pattern. Tracking issue
-[#148](https://github.com/toloka-partners/tolokaforge/issues/148)
+[#148](https://github.com/Toloka/tolokaforge/issues/148)
 adds a composable per-call reasoning ceiling. Neither shipped yet.
 
 ### 3.2 Heavy completion-token usage (good and bad)
@@ -449,15 +449,15 @@ logistics: $1.86 / pass → $0.41 / pass — 4.5× more efficient).
 
 - Investigation report: [`plans/gemini_31_pro_ots_investigation_20260521.md`](../plans/gemini_31_pro_ots_investigation_20260521.md) (local, gitignored)
 - Open issues:
-  [#147](https://github.com/toloka-partners/tolokaforge/issues/147)
+  [#147](https://github.com/Toloka/tolokaforge/issues/147)
   (stuck detector),
-  [#148](https://github.com/toloka-partners/tolokaforge/issues/148)
+  [#148](https://github.com/Toloka/tolokaforge/issues/148)
   (composable reasoning ceiling),
-  [#149](https://github.com/toloka-partners/tolokaforge/issues/149)
+  [#149](https://github.com/Toloka/tolokaforge/issues/149)
   (Anthropic codec parity),
-  [#150](https://github.com/toloka-partners/tolokaforge/issues/150)
+  [#150](https://github.com/Toloka/tolokaforge/issues/150)
   (config-error retry filter),
-  [#151](https://github.com/toloka-partners/tolokaforge/issues/151)
+  [#151](https://github.com/Toloka/tolokaforge/issues/151)
   (api_error follow-up).
 - Capability registry: [`tests/integration/llm/registry.py`](../tests/integration/llm/registry.py)
   (`TOOL_NAME_DISCIPLINE`, `LEXICAL_TOOL_INVENTION` declared
