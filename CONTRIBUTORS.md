@@ -6,9 +6,8 @@
 
 ## Additional Contributors
 
-- **Mikhail Ostanin** (Toloka AI)
-- **Leonid Kozhinov** (Toloka AI)
-- **Ciro Alberto Gamboa Entralgo*** (Toloka AI)
+- **Mikhail Ostanin**
+- **Leonid Kozhinov**
 - Listed via Git history and pull requests.
 - Add notable contributions here by area:
   - Core orchestration/runtime

@@ -14,6 +14,8 @@ See docs/GRPC_PROTOCOL.md for the full specification.
 """
 
 from tolokaforge.runner.runner_pb2 import (
+    CleanupTrialRequest,
+    CleanupTrialResponse,
     CustomCheckResult,
     ExecuteToolRequest,
     ExecuteToolResponse,
@@ -54,6 +56,8 @@ __all__ = [
     "GetStateResponse",
     "ResetTrialRequest",
     "ResetTrialResponse",
+    "CleanupTrialRequest",
+    "CleanupTrialResponse",
     "HealthCheckRequest",
     "HealthCheckResponse",
     # Supporting messages

@@ -1,0 +1,79 @@
+# Changelog
+
+All notable changes to this project are documented in this file.
+
+## [Unreleased] — LLM Reasoning & Observability Overhaul
+
+### Breaking Changes
+
+1. **`ModelConfig.reasoning`** migrated from bare string to `ReasoningConfig` struct. YAML configs using `reasoning: "medium"` now raise `ValidationError` at load time — migrate to `reasoning: {mode: adaptive, effort_hint: medium}` or equivalent. See [`docs/CONFIG.md`](docs/CONFIG.md) § `reasoning:`.
+2. **`GenerationResult.token_usage: dict`** removed — replaced by `GenerationResult.usage: Usage` (full Anthropic + OpenAI accounting incl. cache + reasoning tokens).
+3. **`Metrics.tokens_input`** / **`Metrics.tokens_output`** removed — replaced by `Metrics.usage: Usage`. Aggregators expose `avg_<field>` / `total_<field>` per `Usage` field (e.g. `avg_reasoning_tokens`, `total_cache_read_input_tokens`).
+4. **`Message.reasoning: str`** migrated to `Message.reasoning: StructuredReasoning | None` — preserves provider signatures + block types for replay.
+5. **`tolokaforge.core.model_client`** / **`tolokaforge.core.model_policies`** modules deleted — every concept moved into `tolokaforge.core.llm.*`. Update imports accordingly.
+
+### Fixed
+
+1. **P1 / GPT-5.5 Decimal tool-call 500s** — `StrictSchema` now strips RE2-incompatible `pattern` + `format` keys and collapses Pydantic's `Decimal` `anyOf{number, string+pattern}` idiom to `{type: number}`. Four OTS domains that scored 0.000 on gpt55 now return valid tool calls.
+2. **P2 / Qwen dict-map stringification** — new `qwen` preset wires `schema_sanitizer: strict` + `response_policy: array_dict_map` + `prompt_policy: dict_map_hints`. `qwen/*` and `qwen3*` now handle `Dict[str, T]` parameters correctly.
+3. **P3 / Claude 4.7 ignores `reasoning: medium`** — new `anthropic_claude_4_7` preset emits canonical litellm `thinking={"type":"enabled","budget_tokens":N}` kwarg + drops `temperature` / `top_p` / `top_k` when thinking is active.
+4. **P4 / Anthropic thinking blocks dropped across turns** — new `ReasoningCodec` abstraction captures full `{type, thinking, signature}` blocks on extraction and splices them back via `thinking_blocks` on assistant message dicts for interleaved-thinking replay.
+5. **P5 / user-simulator prompt never persisted** — new `Trajectory.user_system_prompt` field captures the full simulator system prompt on first turn.
+6. **P6 / effective tool schemas never persisted** — new `results/tools_schemas/<task_id>__<model_id>.json` sidecar dedup'd per `(task, model)` via filename.
+7. **P7 / cache + reasoning token counters lost** — new `Usage` dataclass + `UsageExtractor` reads every normalised litellm field: `prompt_tokens`, `completion_tokens`, `reasoning_tokens`, `cached_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, plus `provider_raw` for forensics. OpenRouter-routed Anthropic caching now surfaces correctly — reads `prompt_tokens_details.cache_write_tokens` / `cache_read_tokens` as a fallback when top-level Anthropic fields are zero.
+8. **P8 / no `cache_control` markers on Anthropic calls** — new `AnthropicEphemeralCache` automatically marks the last system-prompt content block + last tools entry with `cache_control: {type: ephemeral}` (5-minute TTL, Anthropic default).
+9. **P9 / `reasoning: medium` abstraction leak** — new `ReasoningConfig(mode, budget_tokens, effort_hint, display)` provides explicit per-provider routing. Single in-repo legacy config migrated; external configs rebase in lockstep.
+10. **P10 / no shared per-provider integration scaffolding** — new `tests/integration/llm/` with `Capability` enum + `ModelCertificate` registry; per-capability tests auto-skip with explanatory messages based on each model's declared certificate. See [`docs/ADD_NEW_MODEL.md`](docs/ADD_NEW_MODEL.md).
+
+### Added
+
+1. `tolokaforge/core/llm/` package with seven Protocol-driven policy modules:
+   - `reasoning.py` / `reasoning_codec.py` — structured thinking-block extraction + replay
+   - `schema_sanitizer.py` — `ToolSchemaSanitizer` with RE2 post-condition
+   - `cache_policy.py` — `CachePolicy` with ephemeral-cache implementation
+   - `usage.py` — `Usage` dataclass + `UsageExtractor` + field-wise `__add__`
+   - `params_policy.py` / `content_policy.py` / `response_policy.py` — pre-existing classes ported
+   - `capabilities.py` — `ModelCapabilities` with all seven policy slots
+   - `presets.py` — preset registry with reverse-lookup + fingerprint helpers
+2. `tolokaforge/core/output/artifacts.py` with `TrialArtifactWriter` Protocol + `FileArtifactWriter` + `model_id_slug`.
+3. [`docs/LLM_LAYER.md`](docs/LLM_LAYER.md) — single authoritative reference for the new package.
+4. [`docs/ADD_NEW_MODEL.md`](docs/ADD_NEW_MODEL.md) — six-step contributor guide for adding a new model / provider.
+
+### Changed
+
+1. `litellm` pinned to `1.83.14` (was `>=1.0.0`). Required for the canonical `thinking={}` kwarg and `thinking_blocks` first-class assistant-message field.
+2. `task.yaml.model_config.<role>.resolved.*` block now records `{effective_preset, schema_sanitizer, prompt_policy, content_policy, response_policy, reasoning_codec, cache_policy}` for analytics-level config-drift detection. See [`docs/OUTPUT_FORMAT.md`](docs/OUTPUT_FORMAT.md) § `task.yaml`.
+
+### Traceability
+
+Every P# in [`plans/llm_reasoning_and_observability_fix.md`](plans/llm_reasoning_and_observability_fix.md) maps to a closed fix. Integration evals (Stage 10) require live API keys and are run manually — see [`docs/ADD_NEW_MODEL.md`](docs/ADD_NEW_MODEL.md) for the capability suite.
+
+## [0.3.0] - 2026-03-30
+
+### Breaking Changes
+
+1. Removed `in-process` runtime mode. Docker is now the only supported runtime (`runtime: "docker"`). All tool execution is routed through the containerised executor service. Existing configs that specify `runtime: "in-process"` must be updated to `runtime: "docker"`.
+
+## [0.2.0] - 2026-02-25
+
+### Added
+
+1. `evaluation.task_packs` support across Docker runtime.
+2. Multi-root mock-web routing via `TASKS_DIRS`.
+3. Docker task-pack mount planning and smoke validation scripts.
+4. Public benchmark examples across all OSS v1 benchmark types.
+5. Tiered CI pipeline (PR smoke, nightly/full, release gate).
+6. Public export verification tooling:
+   - `scripts/release/prepare_public_export.sh`
+   - Public export verification scripts
+   - `scripts/tests/public_export_smoke.sh`
+
+### Changed
+
+1. Public examples were upgraded to non-placeholder structure with stronger grading and fixtures.
+2. CI summary thresholds now enforce completion-rate in mock smoke runs and configurable pass-rate in release gating.
+3. Mock-web static path resolution now supports multi-page task-local `www/` layouts.
+
+### Security
+
+1. Public export flow now strips internal-only integrations and scans for forbidden internal URL patterns.

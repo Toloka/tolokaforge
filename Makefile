@@ -1,4 +1,4 @@
-.PHONY: install install-dev sync test test-coverage lint lint-fix format format-check clean build build-adapter build-all docker-build docker-build-core docker-up docker-down docker-status help
+.PHONY: install install-dev sync test test-coverage lint lint-fix format format-check clean docker-build docker-build-core docker-up docker-down docker-status help
 
 # =============================================================================
 # Installation (using uv)
@@ -46,27 +46,15 @@ lint:
 lint-fix:
 	uv run ruff check --fix $(LINT_DIRS)
 
-# Apply formatting (ruff format — drop-in black replacement)
+# Apply formatting (black + ruff format)
 format:
+	uv run black $(LINT_DIRS)
 	uv run ruff format $(LINT_DIRS)
 
 # Check formatting only (no changes) - CI ready, exits non-zero on issues
 format-check:
+	uv run black --check $(LINT_DIRS)
 	uv run ruff format --check $(LINT_DIRS)
-
-# =============================================================================
-# Package Building
-# =============================================================================
-
-build:
-	rm -rf dist/
-	uv build
-
-build-adapter:
-	rm -rf dist/
-	uv build --package tolokaforge-adapter-terminal-bench
-
-build-all: build build-adapter
 
 # =============================================================================
 # Docker (via tolokaforge CLI — replaces docker-compose and bash scripts)
@@ -86,6 +74,18 @@ docker-down:
 
 docker-status:
 	uv run tolokaforge docker status
+
+# =============================================================================
+# Benchmarking
+# =============================================================================
+
+run:
+	uv run tolokaforge run --config examples/native/coding/run_config.yaml
+
+TASKS_GLOB ?= tasks/**/task.yaml
+
+validate:
+	uv run tolokaforge validate --tasks "$(TASKS_GLOB)"
 
 # =============================================================================
 # Cleanup
@@ -124,13 +124,8 @@ help:
 	@echo "Code Quality:"
 	@echo "  make lint         - Check linting (ruff, no fix) - CI ready"
 	@echo "  make lint-fix     - Auto-fix linting issues (ruff --fix)"
-	@echo "  make format       - Format code (ruff format)"
+	@echo "  make format       - Format code (black + ruff format)"
 	@echo "  make format-check - Check formatting only - CI ready"
-	@echo ""
-	@echo "Packaging:"
-	@echo "  make build         - Build tolokaforge sdist + wheel"
-	@echo "  make build-adapter - Build tolokaforge-adapter-terminal-bench"
-	@echo "  make build-all     - Build all packages"
 	@echo ""
 	@echo "Docker:"
 	@echo "  make docker-build       - Build all Docker images"
@@ -138,6 +133,10 @@ help:
 	@echo "  make docker-up          - Start Docker services (core stack)"
 	@echo "  make docker-down        - Stop and remove Docker services"
 	@echo "  make docker-status      - Show Docker service status"
+	@echo ""
+	@echo "Benchmarking:"
+	@echo "  make run          - Run benchmark"
+	@echo "  make validate     - Validate task configurations"
 	@echo ""
 	@echo "Cleanup:"
 	@echo "  make clean        - Clean build artifacts"

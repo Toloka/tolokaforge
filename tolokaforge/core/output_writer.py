@@ -71,11 +71,26 @@ class OutputWriter:
             "policies": task_config.get("policies", {}),
         }
 
+        # Include model_config when present (added by orchestrator for reproducibility)
+        if "model_config" in task_config:
+            task_info["model_config"] = task_config["model_config"]
+
         with open(self.output_dir / "task.yaml", "w") as f:
             yaml.dump(task_info, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
     def write_trajectory(self, trajectory: Trajectory):
-        """Write trajectory.yaml with messages and tool log
+        """Write trajectory.yaml — message trace + status + metrics only.
+
+        The agent's system prompt and user-simulator system prompt are
+        persisted separately as ``prompts.yaml`` (see
+        :meth:`FileArtifactWriter.write_prompts`); tool schemas live in
+        ``tools_schemas.yaml``. Keeping the trajectory lean means
+        analysts who scan the message trace don't have to scroll past
+        ~15-20 KB of system prompt text on every file open.
+
+        ``simulator_schema_version`` stays here because it describes the
+        *shape* of the message trace (when the simulator prompt was
+        revised, the on-disk shape may have changed too).
 
         Args:
             trajectory: Trajectory object containing messages and metadata
@@ -83,6 +98,7 @@ class OutputWriter:
         traj_data = {
             "task_id": trajectory.task_id,
             "trial_index": trajectory.trial_index,
+            "simulator_schema_version": trajectory.simulator_schema_version,
             "start_ts": trajectory.start_ts.isoformat(),
             "end_ts": trajectory.end_ts.isoformat(),
             "status": trajectory.status.value,
@@ -91,10 +107,6 @@ class OutputWriter:
             ),
             "messages": [msg.model_dump(mode="json") for msg in trajectory.messages],
         }
-
-        # Include tool_log so analysis tools can reconstruct full Trajectory
-        if trajectory.tool_log:
-            traj_data["tool_log"] = trajectory.tool_log
 
         with open(self.output_dir / "trajectory.yaml", "w") as f:
             yaml.dump(traj_data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
@@ -115,9 +127,12 @@ class OutputWriter:
             trajectory: Trajectory object containing metrics
         """
         metrics_data = trajectory.metrics.model_dump(mode="json")
+        metrics_data["schema_version"] = 1
 
         # Add detailed tool usage breakdown from tool_log
-        # Field names must match ToolUsage model: tool_name, call_count, success_count, error_count
+        # Field names match ToolUsage model: tool_name, call_count, success_count,
+        # error_count, total_duration_s — so analysis tooling can model_validate()
+        # the metrics.yaml round-trip.
         tool_usage: dict[str, dict[str, float | int]] = {}
         for log in trajectory.tool_log:
             tool_name = log.get("tool")

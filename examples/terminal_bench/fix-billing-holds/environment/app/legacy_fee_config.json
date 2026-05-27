@@ -1,0 +1,12 @@
+{
+  "_comment": "Legacy fee configuration — migrated to platform_settings table in DB.",
+  "_note": "fee_rate is stored as percentage integer (e.g. 5 = 5%) for backward compatibility with v1 integrations.",
+  "fee_rate": 5,
+  "fee_rate_type": "percentage_integer",
+  "min_fee": 0.01,
+  "max_fee": 10000.00,
+  "rounding": "round_half_up",
+  "currency": "USD",
+  "last_updated": "2024-01-14",
+  "migrated_to_db": true
+}

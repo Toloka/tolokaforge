@@ -250,7 +250,7 @@ def compute_stable_hash(state: Dict, unstable_fields: List[UnstableFieldSpec]) -
     return hashlib.sha256(json_str.encode("utf-8")).hexdigest()
 ```
 
-**CRITICAL:** The hash algorithm must match the canonical algorithm defined in [`TASK_DESCRIPTION_SCHEMA.md`](TASK_DESCRIPTION_SCHEMA.md#canonical-hash-algorithm):
+**CRITICAL:** The hash algorithm must match the canonical algorithm defined in [`TASK_DESCRIPTION_SCHEMA.md`](TASK_DESCRIPTION_SCHEMA.md#canonical-hash-algorithm) and [`calculate_database_hash()`](../contrib/mcp_core/src/mcp_core/utils/validation.py:74) from mcp_core:
 - `sort_keys=True` for deterministic key ordering
 - `separators=(",", ":")` for compact JSON (no spaces) — NOT default `(", ", ": ")`
 - `encode("utf-8")` — explicit UTF-8 encoding
@@ -675,8 +675,8 @@ PATCH /trials/airline_task_001:0/state/reservations
 POST /trials/airline_task_001:1/init
 PATCH /trials/airline_task_001:1/state/reservations
 
-# Trial 3: telecom_task_002:0 (different task)
-POST /trials/telecom_task_002:0/init
+# Trial 3: retail_task_002:0 (different task)
+POST /trials/retail_task_002:0/init
 ```
 
 ### Cleanup

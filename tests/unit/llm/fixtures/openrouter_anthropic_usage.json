@@ -1,0 +1,17 @@
+{
+  "_comment": "OpenRouter-routed Anthropic response — cache-WRITE turn (cold start). OpenRouter surfaces writes under prompt_tokens_details.cache_write_tokens; reads (when present) live in prompt_tokens_details.cached_tokens (OpenAI-canonical singular). On a write-only turn cached_tokens is 0. On a hit-only turn cache_write_tokens is 0 and cached_tokens carries the read count — see openrouter_anthropic_usage_real.json for that case.",
+  "model": "anthropic/claude-opus-4.7",
+  "usage": {
+    "prompt_tokens": 1800,
+    "completion_tokens": 150,
+    "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 8234
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 1200
+    },
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0
+  }
+}

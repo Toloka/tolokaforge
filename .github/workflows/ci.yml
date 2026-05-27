@@ -2,217 +2,305 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+    paths:
+      - 'tolokaforge/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - 'tools/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/workflows/ci.yml'
+      - '.pre-commit-config.yaml'
   pull_request:
-    branches: [main]
-  workflow_dispatch:
-
-# Cancel in-progress runs for the same branch/PR
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
-
-env:
-  PYTHON_VERSION: "3.12"
-  UV_CACHE_DIR: /tmp/.uv-cache
+    types: [opened, synchronize, reopened, labeled]
+    paths:
+      - 'tolokaforge/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - 'tools/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/workflows/ci.yml'
+      - '.pre-commit-config.yaml'
+  schedule:
+    - cron: '0 6 * * *'
 
 jobs:
-  # ---------------------------------------------------------------------------
-  # Lint: ruff check + ruff format --check
-  # ---------------------------------------------------------------------------
+  # ============================================================================
+  # Lint job - Fast feedback on code quality
+  # ============================================================================
   lint:
-    name: Lint
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-22.04-8
+    timeout-minutes: 20
+
     steps:
-      - uses: actions/checkout@v4
+    - uses: actions/checkout@v4
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
+    - name: Install uv
+      uses: astral-sh/setup-uv@v4
+      with:
+        version: "latest"
+        enable-cache: true
+        cache-dependency-glob: "uv.lock"
 
-      - name: Install Python
-        run: uv python install ${{ env.PYTHON_VERSION }}
+    - name: Set up Python 3.10
+      run: uv python install 3.10
 
-      - name: Install dependencies
-        run: uv sync --frozen
 
-      - name: Ruff check (lint)
-        run: uv run ruff check tolokaforge tests scripts tools
+    - name: Install dependencies
+      run: uv sync --dev
 
-      - name: Ruff format check
-        run: uv run ruff format --check tolokaforge tests scripts tools
+    - name: Run pre-commit checks
+      run: uv run pre-commit run --all-files --show-diff-on-failure
 
-  # ---------------------------------------------------------------------------
-  # Test: unit + canonical tests across Python version matrix
-  # ---------------------------------------------------------------------------
-  test:
-    name: Test (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11", "3.12"]
+  # ============================================================================
+  # PR smoke tests - fast required gate
+  # ============================================================================
+  test-smoke:
+    runs-on: depot-ubuntu-22.04-8
+    if: github.event_name == 'pull_request'
+    needs: lint  # Only run tests if linting passes
+    timeout-minutes: 45
+
     steps:
-      - uses: actions/checkout@v4
-        with:
-          lfs: true
+    - uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.CI_GITHUB_TOKEN }}
+        lfs: true
 
-      - name: Pull LFS objects
-        run: git lfs pull
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
+    - name: Install uv
+      uses: astral-sh/setup-uv@v4
+      with:
+        version: "latest"
+        enable-cache: true
+        cache-dependency-glob: "uv.lock"
 
-      - name: Install Python ${{ matrix.python-version }}
-        run: uv python install ${{ matrix.python-version }}
+    - name: Set up Python 3.10
+      run: uv python install 3.10
 
-      - name: Install dependencies
-        run: uv sync --frozen
 
-      - name: Run unit + canonical tests
-        run: >
-          uv run pytest tests/ -v
-          -m "unit or canonical"
-          --tb=short
-          --junitxml=junit-results-${{ matrix.python-version }}.xml
-          ${{ matrix.python-version == '3.12' && '--cov=tolokaforge --cov-report=xml --cov-report=term' || '' }}
+    - name: Install dependencies
+      run: |
+        uv sync --dev
 
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-results-${{ matrix.python-version }}
-          path: junit-results-${{ matrix.python-version }}.xml
+    - name: Install Playwright browsers
+      run: |
+        uv run python -m playwright install chromium
 
-      - name: Upload coverage report
-        if: matrix.python-version == '3.12' && always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-report
-          path: coverage.xml
+    - name: Create .env file
+      run: |
+        echo "OPENROUTER_API_KEY=${{ secrets.OPENROUTER_TESTING_TOKEN }}" > .env
 
-  # ---------------------------------------------------------------------------
-  # Build: verify packages build correctly
-  # ---------------------------------------------------------------------------
-  build:
-    name: Build packages
-    runs-on: ubuntu-latest
+    - name: Run unit + canonical tests with coverage
+      run: |
+        uv run pytest tests/unit/ tests/canonical/ -v --tb=short \
+          --cov=tolokaforge --cov-report=term-missing --cov-fail-under=60
+
+    - name: Run tool tests
+      run: |
+        for tool_dir in tools/*/; do
+          if [ -d "${tool_dir}tests" ]; then
+            echo "=== Testing ${tool_dir} ==="
+            (cd "${tool_dir}" && uv run pytest tests/ -v --tb=short -p no:cacheprovider) || exit 1
+          fi
+        done
+
+    - name: Validate public example suites
+      run: |
+        uv run tolokaforge validate --tasks "examples/native/*/dataset/**/task.yaml"
+
+
+    - name: Docker task-pack mount smoke
+      run: |
+        scripts/tests/task_pack_docker_smoke.sh
+
+    # TODO: Re-enable once in-process runtime or Docker-less orchestrator is available.
+    # The smoke script requires `tolokaforge run` which now needs a Docker runtime.
+    # - name: Run public examples end-to-end (mock smoke)
+    #   run: |
+    #     scripts/tests/run_public_examples_smoke.sh
+    #
+    # - name: Summarize public examples
+    #   run: |
+    #     uv run python scripts/tests/summarize_public_examples.py --min-pass-rate 0.0 --min-completion-rate 1.0
+    #
+    # - name: Upload public example summary artifact
+    #   uses: actions/upload-artifact@v4
+    #   with:
+    #     name: public-example-summary-pr
+    #     path: |
+    #       output/public_examples_summary.json
+    #       output/public_examples_summary.md
+
+  # ============================================================================
+  # Full test suite - push + nightly confidence
+  # ============================================================================
+  test-full:
+    runs-on: depot-ubuntu-22.04-8
+    if: github.event_name != 'pull_request'
+    needs: [lint]
+    timeout-minutes: 120
+
     steps:
-      - uses: actions/checkout@v4
+    - uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.CI_GITHUB_TOKEN }}
+        lfs: true
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
 
-      - name: Install Python
-        run: uv python install ${{ env.PYTHON_VERSION }}
+    - name: Install uv
+      uses: astral-sh/setup-uv@v4
+      with:
+        version: "latest"
+        enable-cache: true
+        cache-dependency-glob: "uv.lock"
 
-      - name: Build tolokaforge
-        run: uv build
+    - name: Set up Python 3.10
+      run: uv python install 3.10
 
-      - name: Build adapter-terminal-bench
-        run: uv build --package tolokaforge-adapter-terminal-bench
 
-      - name: Verify wheel contents
-        run: |
-          echo "=== Built artifacts ==="
-          ls -lh dist/
-          echo ""
-          echo "=== Wheel contents ==="
-          uv run python -c "
-          import zipfile
-          for f in __import__('pathlib').Path('dist').glob('*.whl'):
-              print(f'--- {f.name} ---')
-              with zipfile.ZipFile(f) as zf:
-                  for name in sorted(zf.namelist()):
-                      print(f'  {name}')
-          "
+    - name: Install dependencies
+      run: |
+        uv sync --dev
 
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: dist
-          path: dist/
-          if-no-files-found: error
+    - name: Install Playwright browsers
+      run: |
+        uv run python -m playwright install chromium
 
-  # ---------------------------------------------------------------------------
-  # Integration: Docker-based integration tests
-  # ---------------------------------------------------------------------------
-  integration:
-    name: Integration tests
-    runs-on: ubuntu-latest
-    # Run on main pushes and PRs, but allow skipping on forks without secrets
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request'
+    - name: Create .env file
+      run: |
+        echo "OPENROUTER_API_KEY=${{ secrets.OPENROUTER_TESTING_TOKEN }}" > .env
+
+    - name: Validate public example suites
+      run: |
+        uv run tolokaforge validate --tasks "examples/native/*/dataset/**/task.yaml"
+
+
+    - name: Docker task-pack mount smoke
+      run: |
+        scripts/tests/task_pack_docker_smoke.sh
+
+    # TODO: Re-enable once in-process runtime or Docker-less orchestrator is available.
+    # - name: Run public examples end-to-end (mock smoke)
+    #   run: |
+    #     scripts/tests/run_public_examples_smoke.sh
+    #
+    # - name: Summarize public examples
+    #   run: |
+    #     uv run python scripts/tests/summarize_public_examples.py --min-pass-rate 0.0 --min-completion-rate 1.0
+
+    - name: Run unit + canonical tests with coverage
+      run: |
+        uv run pytest tests/unit/ tests/canonical/ -v --tb=short \
+          --cov=tolokaforge --cov-report=term-missing --cov-fail-under=60
+
+    - name: Run tool tests
+      run: |
+        for tool_dir in tools/*/; do
+          if [ -d "${tool_dir}tests" ]; then
+            echo "=== Testing ${tool_dir} ==="
+            (cd "${tool_dir}" && uv run pytest tests/ -v --tb=short -p no:cacheprovider) || exit 1
+          fi
+        done
+
+    - name: Build Docker images for integration tests
+      if: github.event_name == 'schedule' || github.event_name == 'push'
+      id: docker-build-full
+      run: |
+        uv run tolokaforge docker build --core
+
+    - name: Run integration tests
+      if: (github.event_name == 'schedule' || github.event_name == 'push') && steps.docker-build-full.outcome == 'success'
+      run: |
+        uv run pytest tests/integration/ -v --tb=short
+
+    - name: Generate coverage XML for Codecov
+      if: github.event_name == 'schedule'
+      run: |
+        uv run coverage xml
+
+    - name: Upload coverage to Codecov
+      if: github.event_name == 'schedule'
+      uses: codecov/codecov-action@v3
+      with:
+        files: ./coverage.xml
+        flags: unittests
+        name: codecov-umbrella
+      continue-on-error: true
+
+  # ============================================================================
+  # Label-triggered gate - full suite + coverage (add 'ready-to-merge' label)
+  # ============================================================================
+  test-gate:
+    runs-on: depot-ubuntu-22.04-8
+    if: >-
+      github.event_name == 'pull_request' &&
+      contains(github.event.pull_request.labels.*.name, 'ready-to-merge')
+    needs: [lint]
+    timeout-minutes: 120
+
     steps:
-      - uses: actions/checkout@v4
-        with:
-          lfs: true
+    - uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.CI_GITHUB_TOKEN }}
+        lfs: true
 
-      - name: Pull LFS objects
-        run: git lfs pull
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
+    - name: Install uv
+      uses: astral-sh/setup-uv@v4
+      with:
+        version: "latest"
+        enable-cache: true
+        cache-dependency-glob: "uv.lock"
 
-      - name: Install Python
-        run: uv python install ${{ env.PYTHON_VERSION }}
+    - name: Set up Python 3.10
+      run: uv python install 3.10
 
-      - name: Install dependencies
-        run: uv sync --frozen
 
-      - name: Install Playwright browsers
-        run: uv run playwright install --with-deps chromium
+    - name: Install dependencies
+      run: |
+        uv sync --dev
 
-      - name: Run integration tests
-        env:
-          # API keys — tests auto-skip when keys are missing
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          NOVA_API_KEY: ${{ secrets.NOVA_API_KEY }}
-        run: >
-          uv run pytest tests/ -v
-          -m integration
-          --tb=short
-          --junitxml=junit-results-integration.xml
+    - name: Install Playwright browsers
+      run: |
+        uv run python -m playwright install chromium
 
-      - name: Upload integration test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-results-integration
-          path: junit-results-integration.xml
+    - name: Create .env file
+      run: |
+        echo "OPENROUTER_API_KEY=${{ secrets.OPENROUTER_TESTING_TOKEN }}" > .env
 
-  # ---------------------------------------------------------------------------
-  # Validate: task YAML definitions
-  # ---------------------------------------------------------------------------
-  validate:
-    name: Validate tasks
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+    - name: Validate public example suites
+      run: |
+        uv run tolokaforge validate --tasks "examples/native/*/dataset/**/task.yaml"
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
 
-      - name: Install Python
-        run: uv python install ${{ env.PYTHON_VERSION }}
+    - name: Docker task-pack mount smoke
+      run: |
+        scripts/tests/task_pack_docker_smoke.sh
 
-      - name: Install dependencies
-        run: uv sync --frozen
+    - name: Run unit + canonical tests with coverage
+      run: |
+        uv run pytest tests/unit/ tests/canonical/ -v --tb=short \
+          --cov=tolokaforge --cov-report=xml --cov-report=term-missing \
+          --cov-fail-under=60
 
-      - name: Validate task definitions
-        run: uv run tolokaforge validate --tasks "examples/**/task.yaml"
+    - name: Build Docker images for integration tests
+      id: docker-build
+      run: |
+        uv run tolokaforge docker build --core
+
+    - name: Run integration tests
+      if: steps.docker-build.outcome == 'success'
+      run: |
+        uv run pytest tests/integration/ -v --tb=short
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        files: ./coverage.xml
+        flags: merge-gate
+        name: codecov-merge-gate
+      continue-on-error: true

@@ -4,8 +4,9 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
+from tolokaforge.core.llm import LLMClient, UserSimulator
+from tolokaforge.core.llm.client import LLMApiTimeoutError
 from tolokaforge.core.logging import StructuredLogger, init_trial_logger
-from tolokaforge.core.model_client import LLMClient, UserSimulator
 from tolokaforge.core.models import (
     Message,
     MessageRole,
@@ -64,6 +65,37 @@ class TrialRunner:
         self.metrics = Metrics()
         self.start_time: float = 0.0
         self.logger: StructuredLogger | None = None  # Initialized in run()
+        self._effective_system_prompt: str | None = None
+        self._effective_system_prompt_captured: bool = False
+        # Captured from UserSimulator.last_system_prompt once the LLM
+        # simulator has fired at least one reply. The orchestrator reads
+        # both prompts off the runner after ``run()`` returns and persists
+        # them via :meth:`FileArtifactWriter.write_prompts` so analytics
+        # can audit which simulator prompt drove ``###STOP###`` fires.
+        # Scripted simulators never populate this — stays ``None``.
+        self._user_system_prompt_captured: str | None = None
+
+    @property
+    def effective_system_prompt(self) -> str | None:
+        """Agent's post-policy system prompt as actually sent on the wire.
+
+        Captured from :attr:`GenerationResult.effective_system_prompt` on
+        the first turn; ``None`` until ``run()`` has issued at least one
+        agent generation. Read by the orchestrator after ``run()``
+        returns and persisted to ``prompts.yaml``.
+        """
+        return self._effective_system_prompt
+
+    @property
+    def user_system_prompt(self) -> str | None:
+        """User simulator's system prompt for this trial.
+
+        Captured from :attr:`UserSimulator.last_system_prompt` after the
+        first simulator reply. ``None`` for scripted simulators (which
+        carry no LLM-shaped prompt) or when ``run()`` has not yet driven
+        a simulator turn.
+        """
+        return self._user_system_prompt_captured
 
     @staticmethod
     def _is_rate_limit_error(exc: Exception) -> bool:
@@ -229,21 +261,34 @@ class TrialRunner:
                         tool_choice="auto",
                     )
 
-                    # Update metrics
+                    # Capture effective system prompt from first generation
+                    if (
+                        result.effective_system_prompt
+                        and not self._effective_system_prompt_captured
+                    ):
+                        self._effective_system_prompt = result.effective_system_prompt
+                        self._effective_system_prompt_captured = True
+
+                    # Update metrics — full Usage accumulation (prompt,
+                    # completion, reasoning, cache creation/read, cached, calls).
+                    # Usage.__add__ is field-wise; calls concatenate (preserving
+                    # per-call cost_source / latency_s); provider_raw is
+                    # "latest wins" per the Usage contract.
                     self.metrics.api_calls += 1
-                    self.metrics.tokens_input += result.token_usage.get("input", 0)
-                    self.metrics.tokens_output += result.token_usage.get("output", 0)
+                    self.metrics.usage = self.metrics.usage + result.usage
                     if result.cost_usd is not None:
-                        if self.metrics.cost_usd_est is None:
-                            self.metrics.cost_usd_est = result.cost_usd
+                        if self.metrics.cost_usd is None:
+                            self.metrics.cost_usd = result.cost_usd
                         else:
-                            self.metrics.cost_usd_est += result.cost_usd
+                            self.metrics.cost_usd += result.cost_usd
 
                     self.logger.debug(
                         "Agent response received",
                         turn=turn,
-                        tokens_input=result.token_usage.get("input", 0),
-                        tokens_output=result.token_usage.get("output", 0),
+                        prompt_tokens=result.usage.prompt_tokens,
+                        completion_tokens=result.usage.completion_tokens,
+                        reasoning_tokens=result.usage.reasoning_tokens,
+                        cache_read_input_tokens=result.usage.cache_read_input_tokens,
                     )
 
                     # Add assistant message
@@ -411,9 +456,15 @@ class TrialRunner:
                         error_type=type(e).__name__,
                     )
 
-                    # Detect specific error types for better classification
+                    # Detect specific error types for better classification.
+                    # ``LLMApiTimeoutError`` is matched by type — substring
+                    # matching on "timeout" mis-classifies tool / sandbox
+                    # / browser timeouts that aren't upstream-LLM timeouts.
                     error_str = str(e)
-                    if (
+                    if isinstance(e, LLMApiTimeoutError):
+                        termination_reason = TerminationReason.API_TIMEOUT
+                        error_msg = f"API timeout: {error_str}. Dialogue terminated."
+                    elif (
                         "429" in error_str
                         or "RateLimitError" in error_str
                         or "rate limit" in error_str.lower()
@@ -496,7 +547,23 @@ class TrialRunner:
             latency_s=self.metrics.latency_total_s,
         )
 
-        # Create trajectory with status and termination reason
+        # Stage 7 (P5) — pull simulator prompt from the (possibly None)
+        # attribute exposed by UserSimulator. LLM mode populates it on every
+        # reply; scripted mode leaves it None. Overwrite our cached copy on
+        # every trial-end so that if a follow-up reply revised the prompt,
+        # we land the latest version. Guard against non-string values
+        # (e.g. MagicMock in tests) — a real UserSimulator never populates a
+        # non-string-non-None value, but silently coercing garbage onto the
+        # Trajectory would violate AGENTS.md rule #1.
+        sim_prompt = getattr(self.user_simulator, "last_system_prompt", None)
+        if isinstance(sim_prompt, str) and sim_prompt:
+            self._user_system_prompt_captured = sim_prompt
+
+        # Create trajectory with status and termination reason. Both
+        # system prompts are read off the runner via the
+        # :attr:`effective_system_prompt` / :attr:`user_system_prompt`
+        # properties and persisted by the orchestrator into
+        # ``prompts.yaml`` — they no longer ride on Trajectory.
         trajectory = Trajectory(
             task_id=self.task_id,
             trial_index=self.trial_index,

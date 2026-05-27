@@ -138,9 +138,7 @@ def convert(
 
 def _validate_converted(output_path: Path, task_ids: list[str], verbose: bool) -> None:
     """Validate converted output by loading via NativeAdapter."""
-    import yaml
-
-    from tolokaforge.core.models import TaskConfig
+    from tolokaforge.adapters._task_loader import load_task_yaml
 
     console.print("\n[bold blue]Validating converted output…[/bold blue]")
     valid = 0
@@ -151,9 +149,7 @@ def _validate_converted(output_path: Path, task_ids: list[str], verbose: bool) -
         if not task_yaml.exists():
             continue
         try:
-            with open(task_yaml) as fh:
-                data = yaml.safe_load(fh)
-            TaskConfig(**data)
+            load_task_yaml(task_yaml)
             valid += 1
             if verbose:
                 console.print(f"  ✓ valid: {task_id}", style="green")

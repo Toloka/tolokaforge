@@ -70,9 +70,9 @@ tools:
     enabled: ["mobile"]
     mobile:
       apps:
-        MyApp: "http://mock-web:8080"
+        DoorDash: "http://mock-web:8080"
         Settings: "http://mock-web:8080/settings"
-      initial_app: "MyApp"
+      initial_app: "DoorDash"
 ```
 
 - **`apps`**: Maps app names to URLs. The agent sees app names in the tool schema; URLs are never exposed.
@@ -86,7 +86,7 @@ tools:
 | Navigation | URLs (`navigate`, `search`) | Apps (`open_app` with app names) |
 | Actions | All 14 | 11 (tap/type/scroll/open_app/back/drag/keys/wait/select/press_enter) |
 | Schema | Includes `url`, `query` params | Includes `app_name` param |
-| Category | `tasks/browser/` | `tasks/mobile/` |
+| Category | `examples/browser_task/dataset/` (public) | `tasks/mobile/` (full benchmark) and `examples/mobile/dataset/` (public) |
 
 ### Mobile Actions
 

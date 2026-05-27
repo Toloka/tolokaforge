@@ -150,4 +150,4 @@ Gold tier users are permitted to cancel the order in the "Confirmed" status as w
 - Ratings can be added or updated:
   - Within 1 month after delivery. After that, direct the user to human support.
   - Only for orders that are successfully finalized.
-- Users may request deletion of their own rating.
+- Users may request deletion of their own rating. 

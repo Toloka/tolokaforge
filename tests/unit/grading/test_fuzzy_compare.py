@@ -1,201 +1,48 @@
-"""Unit tests for fuzzy/stable state comparison using synthetic mcp_core models.
+"""Unit tests for fuzzy/stable state comparison — tolokaforge-internal surface only.
 
-Tests verify that:
-- get_stable_database_state correctly filters UnstableField-annotated fields
-- calculate_database_hash is deterministic and only changes with stable data
-- UnstableField.extract_names works for annotated vs un-annotated models
+These tests cover the public-facing tolokaforge code paths:
+
+- ``HashComparator`` (pure-dict comparison + nested path extraction)
+- ``FuzzyStateComparator`` (wrapper API and constructor config)
+- ``get_stable_state`` / ``calculate_stable_hash`` ImportError guards when
+  ``mcp_core`` is not installed
+- Module-level sys.path injection does not crash when ``contrib/`` is absent
+
+The companion tests that exercise ``mcp_core`` library behaviour directly
+(``get_stable_database_state``, ``calculate_database_hash``,
+``UnstableField.extract_names``) live in the adapter package's test
+suite, because they require ``mcp_core`` to be importable.
 """
+
+from __future__ import annotations
+
+from unittest.mock import patch
 
 import pytest
 
 pytestmark = pytest.mark.unit
 
-# Trigger mcp_core sys.path setup via tolokaforge module (which adds contrib to path)
+# Import-time side effect: this module adds ``contrib/<...>/mcp_core/src``
+# to ``sys.path`` if available. We import it eagerly so that
+# ``TestSysPathIsolation`` can verify the module loads cleanly.
 import tolokaforge.core.grading.fuzzy_compare  # noqa: F401
-
-mcp_core = pytest.importorskip("mcp_core", reason="mcp_core runtime not available")
-
-from mcp_core.db.unstable_field import UnstableField
-from mcp_core.utils.validation import calculate_database_hash, get_stable_database_state
-
-from tests.data.tlk_mcp_core.db_helpers import make_test_db
-from tests.data.tlk_mcp_core.models import SyntheticOrder, SyntheticTicket, SyntheticUser
+from tolokaforge.core.grading.fuzzy_compare import (
+    FuzzyStateComparator,
+    HashComparator,
+    calculate_stable_hash,
+    get_stable_state,
+)
 
 # ---------------------------------------------------------------------------
-# Test 4: get_stable_database_state filters UnstableField-annotated fields
+# get_stable_state / calculate_stable_hash: ImportError guards
 # ---------------------------------------------------------------------------
-
-
-class TestGetStableStateFiltering:
-    """Verify that get_stable_database_state removes UnstableField-annotated fields."""
-
-    def test_ticket_unstable_fields_removed(self):
-        """SyntheticTicket.subject and .description must be absent in stable state."""
-        db = make_test_db(
-            tickets=[
-                {
-                    "id": "1",
-                    "subject": "Should be stripped",
-                    "description": "Also stripped",
-                    "status": "open",
-                    "priority": "high",
-                    "requester_id": "100",
-                }
-            ]
-        )
-
-        stable = get_stable_database_state(db)
-        ticket = stable["test_tickets"][0]
-
-        # Unstable fields must be absent
-        assert "subject" not in ticket
-        assert "description" not in ticket
-
-        # Stable fields must be present
-        assert ticket["status"] == "open"
-        assert ticket["priority"] == "high"
-        assert ticket["requester_id"] == "100"
-
-    def test_user_timestamp_fields_removed(self):
-        """SyntheticUser.created_at and .updated_at must be absent in stable state."""
-        db = make_test_db(
-            users=[
-                {
-                    "id": "2",
-                    "name": "Bob",
-                    "email": "bob@test.com",
-                    "created_at": "2025-01-01T00:00:00Z",
-                    "updated_at": "2025-01-01T00:00:00Z",
-                }
-            ]
-        )
-
-        stable = get_stable_database_state(db)
-        user = stable["test_users"][0]
-
-        # Timestamp unstable fields must be absent
-        assert "created_at" not in user
-        assert "updated_at" not in user
-
-        # Stable fields must be present
-        assert user["name"] == "Bob"
-        assert user["email"] == "bob@test.com"
-
-    def test_order_all_fields_kept(self):
-        """SyntheticOrder has no unstable fields — all fields must survive."""
-        db = make_test_db(orders=[{"id": "3", "status": "pending", "total": 42.0}])
-
-        stable = get_stable_database_state(db)
-        order = stable["test_orders"][0]
-
-        assert order == {"id": "3", "status": "pending", "total": 42.0}
-
-
-# ---------------------------------------------------------------------------
-# Test 5: calculate_database_hash determinism and sensitivity
-# ---------------------------------------------------------------------------
-
-
-class TestCalculateDatabaseHash:
-    """Verify hash determinism and sensitivity to stable vs unstable changes."""
-
-    def test_same_state_produces_same_hash(self):
-        """Two databases with identical data must produce the same hash."""
-        kwargs = {
-            "tickets": [
-                {
-                    "id": "1",
-                    "subject": "Same subject",
-                    "description": "Same desc",
-                    "status": "open",
-                    "priority": "high",
-                }
-            ]
-        }
-        db1 = make_test_db(**kwargs)
-        db2 = make_test_db(**kwargs)
-
-        assert calculate_database_hash(db1) == calculate_database_hash(db2)
-
-    def test_stable_field_change_alters_hash(self):
-        """Changing a stable field (status) must change the hash."""
-        db = make_test_db(tickets=[{"id": "1", "status": "open", "priority": "normal"}])
-        hash_before = calculate_database_hash(db)
-
-        # Mutate a stable field
-        ticket = db.get_by_id(SyntheticTicket, "1")
-        ticket.status = "closed"
-        db.update(ticket)
-        hash_after = calculate_database_hash(db)
-
-        assert hash_before != hash_after
-
-    def test_unstable_field_change_preserves_hash(self):
-        """Changing an unstable field (subject) must NOT change the hash."""
-        db = make_test_db(
-            tickets=[
-                {
-                    "id": "1",
-                    "subject": "Original",
-                    "description": "Original desc",
-                    "status": "open",
-                }
-            ]
-        )
-        hash_before = calculate_database_hash(db)
-
-        # Mutate only unstable fields
-        ticket = db.get_by_id(SyntheticTicket, "1")
-        ticket.subject = "Completely different subject"
-        ticket.description = "Completely different description"
-        db.update(ticket)
-        hash_after = calculate_database_hash(db)
-
-        assert hash_before == hash_after, (
-            "Hash changed when only unstable fields (subject, description) were modified"
-        )
-
-
-# ---------------------------------------------------------------------------
-# Test 6: UnstableField.extract_names works for synthetic models
-# ---------------------------------------------------------------------------
-
-
-class TestUnstableFieldExtractNames:
-    """Verify UnstableField.extract_names for synthetic domain models."""
-
-    def test_ticket_unstable_fields(self):
-        """SyntheticTicket must have subject and description as unstable."""
-        names = UnstableField.extract_names(SyntheticTicket)
-        assert "subject" in names
-        assert "description" in names
-
-    def test_user_unstable_fields(self):
-        """SyntheticUser must have created_at and updated_at as unstable."""
-        names = UnstableField.extract_names(SyntheticUser)
-        assert "created_at" in names
-        assert "updated_at" in names
-
-    def test_order_has_no_unstable_fields(self):
-        """SyntheticOrder should have no unstable fields."""
-        names = UnstableField.extract_names(SyntheticOrder)
-        assert names == [], f"Expected no unstable fields, got {names}"
-
-
-# ---------------------------------------------------------------------------
-# Tests: get_stable_state / calculate_stable_hash error handling
-# ---------------------------------------------------------------------------
-
-from unittest.mock import patch
 
 
 class TestGetStableStateErrorHandling:
-    """Verify get_stable_state raises ImportError when mcp_core is absent."""
+    """Verify the public helpers raise a helpful ImportError when mcp_core is absent."""
 
     def test_get_stable_state_raises_on_missing_mcp_core(self):
-        """get_stable_state() must raise ImportError with helpful message."""
-        from tolokaforge.core.grading.fuzzy_compare import get_stable_state
-
+        """``get_stable_state()`` must raise ImportError with a helpful message."""
         with patch.dict(
             "sys.modules",
             {
@@ -208,9 +55,7 @@ class TestGetStableStateErrorHandling:
                 get_stable_state(object())
 
     def test_calculate_stable_hash_raises_on_missing_mcp_core(self):
-        """calculate_stable_hash() must raise ImportError with helpful message."""
-        from tolokaforge.core.grading.fuzzy_compare import calculate_stable_hash
-
+        """``calculate_stable_hash()`` must raise ImportError with a helpful message."""
         with patch.dict(
             "sys.modules",
             {
@@ -224,10 +69,8 @@ class TestGetStableStateErrorHandling:
 
 
 # ---------------------------------------------------------------------------
-# Tests: HashComparator
+# HashComparator
 # ---------------------------------------------------------------------------
-
-from tolokaforge.core.grading.fuzzy_compare import HashComparator
 
 
 class TestHashComparator:
@@ -299,10 +142,8 @@ class TestHashComparator:
 
 
 # ---------------------------------------------------------------------------
-# Tests: FuzzyStateComparator
+# FuzzyStateComparator
 # ---------------------------------------------------------------------------
-
-from tolokaforge.core.grading.fuzzy_compare import FuzzyStateComparator
 
 
 class TestFuzzyStateComparator:
@@ -335,12 +176,19 @@ class TestFuzzyStateComparator:
 
 
 # ---------------------------------------------------------------------------
-# Test: sys.path isolation — module loads even without contrib
+# sys.path isolation — module loads even without contrib
 # ---------------------------------------------------------------------------
 
 
 class TestSysPathIsolation:
-    """Verify fuzzy_compare module loads without error when contrib is absent."""
+    """Verify fuzzy_compare module loads without error when contrib is absent.
+
+    NOTE: this test exists because the module currently performs a
+    ``sys.path.insert`` of ``contrib/<...>/mcp_core/src`` at import time
+    so that ``mcp_core`` becomes importable when present. Phase 2 of the
+    public-release cleanup removes that ``sys.path`` hack entirely; when
+    that happens, this test becomes obsolete and should be deleted.
+    """
 
     def test_module_level_sys_path_does_not_error_when_contrib_missing(self):
         """The module is already imported at test time — confirm it loaded."""

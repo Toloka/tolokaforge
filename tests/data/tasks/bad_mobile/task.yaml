@@ -1,0 +1,16 @@
+task_id: bad_mobile
+name: Bad Mobile Config
+category: mobile
+description: typo regression — tools.agent.mobile is bool instead of mapping
+max_turns: 1
+initial_user_message: x
+initial_state: {}
+tools:
+  agent:
+    enabled: ["mobile"]
+    mobile: true
+  user:
+    enabled: []
+user_simulator:
+  mode: scripted
+grading: grading.yaml

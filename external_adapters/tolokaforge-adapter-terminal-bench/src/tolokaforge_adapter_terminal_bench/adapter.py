@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from tolokaforge.adapters.base import AdapterEnvironment, BaseAdapter
+from tolokaforge.adapters.base import AdapterEnvironment, BaseAdapter, DockerStackRequirements
 from tolokaforge.core.models import (
     Grade,
     GradeComponents,
@@ -24,17 +24,20 @@ from tolokaforge.core.models import (
 )
 from tolokaforge.runner.models import (
     AdapterType,
-    GradingConfig as RunnerGradingConfig,
     InvocationStyle,
     TaskDescription,
     ToolSchema,
     ToolSource,
 )
 from tolokaforge.runner.models import (
+    GradingConfig as RunnerGradingConfig,
+)
+from tolokaforge.runner.models import (
     InitialStateConfig as RunnerInitialStateConfig,
+)
+from tolokaforge.runner.models import (
     UserSimulatorConfig as RunnerUserSimulatorConfig,
 )
-
 from tolokaforge_adapter_terminal_bench.compose_env import (
     bundle_task_artifacts,
     resolve_tbench_env_vars,
@@ -48,14 +51,43 @@ from tolokaforge_adapter_terminal_bench.task_parser import (
 class TerminalBenchAdapter(BaseAdapter):
     """Adapter that runs terminal-bench tasks inside Docker Compose stacks."""
 
+    # Per-task log root for host-socket runs.  Bind-mounted into the Runner so
+    # ``docker compose`` inside the Runner (talking to the host daemon via
+    # socket passthrough) and the daemon itself resolve the same paths.
+    LOGS_HOST_ROOT = "/tmp/tolokaforge-tbench-logs"
+
     def __init__(self, params: dict[str, Any]):
         super().__init__(params)
-        self.terminal_bench_dir = Path(params.get("terminal_bench_dir", "."))
+        # When task_packs is configured but discovery / runner paths aren't,
+        # default them to the first pack so the host-socket setup resolves
+        # identical paths inside Runner and on the host daemon.
+        first_pack = self.task_packs[0] if self.task_packs else None
+        first_pack_str = str(first_pack) if first_pack else None
+
+        self.terminal_bench_dir = Path(params.get("terminal_bench_dir") or first_pack_str or ".")
         self.image_registry: str | None = params.get("image_registry")
         self.task_id_filter: list[str] | None = params.get("task_ids")
         # Path where Runner container sees tasks (if different from host path)
-        self.runner_task_dir: str | None = params.get("runner_task_dir")
+        self.runner_task_dir: str | None = params.get("runner_task_dir") or first_pack_str
+        # Root for per-task log bind-mounts on the Docker daemon's filesystem.
+        # Defaults to LOGS_HOST_ROOT (host-socket).  Pass /workspace for DinD.
+        self.logs_host_root: str = params.get("logs_host_root", self.LOGS_HOST_ROOT)
         self._tasks: dict[str, TerminalBenchTask] = {}
+
+    # -- Docker stack requirements -------------------------------------------
+
+    def docker_stack_requirements(self) -> DockerStackRequirements:
+        """Host-socket mode: bind every task pack at the same path on the
+        Runner and on the host daemon, share a log directory, mount the
+        Docker socket. The Runner inside the stack uses ``docker compose``
+        against the host daemon, so paths must resolve identically.
+        """
+        existing_packs: list[Path] = [pack for pack in self.task_packs if pack.exists()]
+        return DockerStackRequirements(
+            task_pack_mounts=existing_packs,
+            extra_runner_binds=[(Path(self.LOGS_HOST_ROOT), self.LOGS_HOST_ROOT)],
+            mount_docker_socket=True,
+        )
 
     # -- discovery ------------------------------------------------------------
 
@@ -146,7 +178,7 @@ class TerminalBenchAdapter(BaseAdapter):
     def to_task_description(self, task_id: str) -> TaskDescription:
         self._ensure_discovered()
         meta = self._tasks[task_id]
-        env_vars = resolve_tbench_env_vars(meta, self.image_registry)
+        env_vars = resolve_tbench_env_vars(meta, self.image_registry, self.logs_host_root)
 
         # Decide task_dir strategy
         if self.image_registry:

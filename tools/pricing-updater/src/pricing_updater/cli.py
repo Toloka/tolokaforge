@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import typer
@@ -9,8 +10,10 @@ from rich.console import Console
 
 from .fetcher import (
     DEFAULT_PRICING_PATH,
+    SIGNIFICANT_PRICING_CHANGE_FACTOR,
     convert_pricing,
     fetch_openrouter_models,
+    find_significant_pricing_changes,
     write_pricing_json,
 )
 
@@ -51,6 +54,34 @@ def update(
     pricing = convert_pricing(models)
     console.print(f"  → {len(pricing)} models with non-zero pricing")
 
+    existing_models: dict[str, dict[str, float]] = {}
+    if output.exists():
+        try:
+            with open(output) as fh:
+                data = json.load(fh)
+            existing_models = data.get("models", {}) or {}
+        except (json.JSONDecodeError, OSError):
+            existing_models = {}
+
+    significant_changes = find_significant_pricing_changes(
+        existing_models, pricing, threshold=SIGNIFICANT_PRICING_CHANGE_FACTOR
+    )
+    if significant_changes:
+        console.print(
+            f"\n[yellow]⚠️  {len(significant_changes)} model(s) shifted "
+            f"≥{SIGNIFICANT_PRICING_CHANGE_FACTOR:g}× vs the previous snapshot:[/yellow]"
+        )
+        for model_id, old_values, new_values, ratios in significant_changes[:20]:
+            console.print(
+                f"  {model_id}: "
+                f"input {old_values.get('input')}→{new_values.get('input')} "
+                f"(×{ratios['input_ratio']:.2f}), "
+                f"output {old_values.get('output')}→{new_values.get('output')} "
+                f"(×{ratios['output_ratio']:.2f})"
+            )
+        if len(significant_changes) > 20:
+            console.print(f"  … and {len(significant_changes) - 20} more")
+
     if dry_run:
         console.print("\n[yellow]Dry run — not writing.[/yellow]")
         # Show a sample
@@ -79,8 +110,6 @@ def show(
     model: str | None = typer.Argument(None, help="Filter by model ID substring"),
 ) -> None:
     """Show current pricing table."""
-    import json
-
     if not pricing_file.exists():
         console.print(f"[red]❌ File not found: {pricing_file}[/red]")
         raise typer.Exit(1)

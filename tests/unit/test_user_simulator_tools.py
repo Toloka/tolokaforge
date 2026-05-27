@@ -7,7 +7,7 @@ pytestmark = pytest.mark.unit
 
 from datetime import datetime, timezone
 
-from tolokaforge.core.model_client import GenerationResult, UserSimulator
+from tolokaforge.core.llm import GenerationResult, UserSimulator
 from tolokaforge.core.models import Message, MessageRole
 
 

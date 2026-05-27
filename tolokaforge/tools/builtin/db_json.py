@@ -1,16 +1,36 @@
 """JSON DB tools"""
 
+import os
 from typing import Any
 
 import httpx
 
 from tolokaforge.tools.registry import Tool, ToolCategory, ToolPolicy, ToolResult
 
+# Runner-side default. ``DB_SERVICE_URL`` is set in the runner container
+# (see ``tolokaforge/docker/stacks/core.py``) to point at the actual
+# tolokaforge-db-service network alias on ``runner-net``. Without this
+# env-var fallback the tool defaulted to ``http://json-db:8000`` —
+# a hostname that has not existed since the docker-compose retirement,
+# so every db call from the runner path failed with
+# ``Name or service not known``. Surfaced by #110/#121 (was masked by
+# the empty-schema bug). The literal fallback below is preserved so
+# call sites that construct the tool outside any docker stack still get
+# a deterministic value.
+_DEFAULT_DB_URL_ENV = "DB_SERVICE_URL"
+_DEFAULT_DB_URL_FALLBACK = "http://json-db:8000"
+
+
+def _default_db_url() -> str:
+    return os.environ.get(_DEFAULT_DB_URL_ENV, _DEFAULT_DB_URL_FALLBACK)
+
 
 class DBQueryTool(Tool):
     """Query JSON database"""
 
-    def __init__(self, db_url: str = "http://json-db:8000"):
+    def __init__(self, db_url: str | None = None):
+        if db_url is None:
+            db_url = _default_db_url()
         policy = ToolPolicy(
             timeout_s=10.0,
             category=ToolCategory.READ,
@@ -73,7 +93,9 @@ class DBQueryTool(Tool):
 class DBUpdateTool(Tool):
     """Update JSON database"""
 
-    def __init__(self, db_url: str = "http://json-db:8000"):
+    def __init__(self, db_url: str | None = None):
+        if db_url is None:
+            db_url = _default_db_url()
         policy = ToolPolicy(
             timeout_s=10.0,
             category=ToolCategory.WRITE,
@@ -145,7 +167,9 @@ class DBUpdateTool(Tool):
 class SQLQueryTool(Tool):
     """Execute SQL queries on the database"""
 
-    def __init__(self, db_url: str = "http://json-db:8000"):
+    def __init__(self, db_url: str | None = None):
+        if db_url is None:
+            db_url = _default_db_url()
         policy = ToolPolicy(
             timeout_s=30.0,
             category=ToolCategory.READ,
@@ -208,7 +232,9 @@ class SQLQueryTool(Tool):
 class SQLSchemaToolDB(Tool):
     """Get database schema information"""
 
-    def __init__(self, db_url: str = "http://json-db:8000"):
+    def __init__(self, db_url: str | None = None):
+        if db_url is None:
+            db_url = _default_db_url()
         policy = ToolPolicy(
             timeout_s=10.0,
             category=ToolCategory.READ,

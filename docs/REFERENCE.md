@@ -61,7 +61,7 @@ evaluation:
 ```yaml
 task_id: "unique_task_identifier"
 name: "Human-readable task name"
-category: "terminal"                # terminal, web, telecom, airline, etc.
+category: "terminal"                # e.g. terminal, web, airline, retail
 description: |
   Detailed task description.
 
@@ -222,7 +222,8 @@ response = client.generate(
     tools=[...],          # OpenAI function calling format
     tool_choice="auto",   # "auto", "none", or specific tool name
 )
-# Returns: text, tool_calls, token_usage, cost_usd
+# Returns: text, tool_calls, usage (Usage dataclass), cost_usd,
+#          reasoning (StructuredReasoning|None), effective_system_prompt
 ```
 
 ### Tool API
@@ -275,7 +276,7 @@ from tolokaforge.core.grading.combine import GradingEngine
 engine = GradingEngine(
     grading_config: GradingConfig,
     judge_model: ModelConfig | None = None,
-    task_domain: str = "telecom",
+    task_domain: str = "general",
     task_dir: Path | None = None,
 )
 

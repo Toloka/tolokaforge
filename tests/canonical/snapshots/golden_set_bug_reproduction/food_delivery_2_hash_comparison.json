@@ -1,0 +1,6 @@
+{
+  "actual_hash": "e04d7e8616f55b5388175f8c32455a013c1121f201a57559c6cb1a4fa94619aa",
+  "bug_reproduced": true,
+  "expected_hash": "1d57efd98b5a24f93777163e834f3207779fc7e2fb60e1d6df89c7456d3b48f3",
+  "hashes_match": false
+}

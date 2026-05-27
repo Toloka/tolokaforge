@@ -81,6 +81,31 @@ exercised in the frozen retail evaluation.
 
 ---
 
+## `tau` — TauAdapter (external plugin)
+
+External adapter for TAU environment tasks.  Registered via entry-point
+`tolokaforge_adapter_tau`.
+
+### Open Issues
+
+No issues found during this evaluation run.  The `tau` adapter was not
+exercised in the frozen retail evaluation.
+
+---
+
+## `tlk_mcp_core` — TlkMcpCoreAdapter (external plugin)
+
+External adapter that runs live `mcp_core` tools against the source
+`mcp-tools-library`.  Registered via entry-point
+`tolokaforge_adapter_tlk_mcp_core`.
+
+### Open Issues
+
+No issues found during this evaluation run.  The live `tlk_mcp_core` adapter
+was not exercised — the frozen variant (`frozen_mcp_core`) was used instead.
+
+---
+
 ## Cross-Cutting Harness Issues
 
 Issues that affect all adapters or the harness infrastructure.

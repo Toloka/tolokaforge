@@ -1,0 +1,3 @@
+{
+  "hints": "\n\nCRITICAL: tau_manufacturing_create_order \u2014 the 'lines' parameter MUST be included in the tool call. It is a JSON object where:\n  - Keys are string identifiers\n  - Values are objects with fields:\n  - \"requested_quantity\" (number)\n  - \"allocated_quantity\" (number)\n  Example: {\"lines\": {\"example_key\": {\"requested_quantity\": 0, \"allocated_quantity\": 0}}}\n  DO NOT omit the 'lines' parameter."
+}

@@ -1,0 +1,30 @@
+# Run config for fix-billing-holds only.
+# See run_config.yaml for the full-directory variant.
+
+models:
+  agent:
+    provider: "anthropic"
+    name: "claude-sonnet-4-6"
+    temperature: 0.0
+    max_tokens: 4096
+  user:
+    provider: "anthropic"
+    name: "claude-sonnet-4-6"
+    temperature: 0.0
+
+orchestrator:
+  workers: 1
+  repeats: 1
+  max_turns: 80
+  queue_backend: sqlite
+
+evaluation:
+  task_packs:
+    - "examples/terminal_bench"
+  tasks_glob: "fix-billing-holds/task.yaml"
+  output_dir: "results/terminal_bench/fix-billing-holds"
+  harness_adapter:
+    type: "terminal_bench"
+    params:
+      terminal_bench_dir: "examples/terminal_bench"
+      task_ids: ["fix-billing-holds"]

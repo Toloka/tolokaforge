@@ -1,35 +1,28 @@
 {
-  "$id": "https://ulb-h/schemas/metrics.json",
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "type": "object",
-  "properties": {
-    "latency_total_s": {
-      "type": "number"
+    "$id": "https://ulb-h/schemas/metrics.json",
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+        "latency_total_s": {"type": "number"},
+        "turns": {"type": "integer"},
+        "api_calls": {"type": "integer"},
+        "usage": {
+            "type": "object",
+            "description": "Full Usage accounting (prompt / completion / reasoning / cache) from tolokaforge.core.llm.usage.Usage. See docs/LLM_LAYER.md.",
+            "properties": {
+                "prompt_tokens": {"type": "integer"},
+                "completion_tokens": {"type": "integer"},
+                "reasoning_tokens": {"type": "integer"},
+                "cached_tokens": {"type": "integer"},
+                "cache_creation_input_tokens": {"type": "integer"},
+                "cache_read_input_tokens": {"type": "integer"},
+                "provider_raw": {"type": "object"},
+            },
+        },
+        "cost_usd_est": {"type": "number"},
+        "tool_calls": {"type": "integer"},
+        "tool_success_rate": {"type": "number"},
+        "stuck_detected": {"type": "boolean"},
     },
-    "turns": {
-      "type": "integer"
-    },
-    "api_calls": {
-      "type": "integer"
-    },
-    "tokens_input": {
-      "type": "integer"
-    },
-    "tokens_output": {
-      "type": "integer"
-    },
-    "cost_usd_est": {
-      "type": "number"
-    },
-    "tool_calls": {
-      "type": "integer"
-    },
-    "tool_success_rate": {
-      "type": "number"
-    },
-    "stuck_detected": {
-      "type": "boolean"
-    }
-  },
-  "required": ["latency_total_s", "turns", "tool_calls"]
+    "required": ["latency_total_s", "turns", "tool_calls"],
 }

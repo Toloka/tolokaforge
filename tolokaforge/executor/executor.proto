@@ -54,7 +54,9 @@ message ToolDefinition {
   string name = 1;
   string description = 2;
   string parameters_json = 3;  // JSON schema
-  map<string, string> config = 4;  // Tool-specific config
+  string config_json = 4;  // JSON-encoded per-tool __init__ kwargs
+                           // (mobile.apps, browser.initial_url, …);
+                           // matches runner-side ToolSchema.tool_config.
 }
 
 // Environment configuration for this trial

@@ -43,32 +43,25 @@ from tolokaforge.core.output_writer import OutputWriter
 pytestmark = pytest.mark.canonical
 
 # ---------------------------------------------------------------------------
-# Path constants
-# ---------------------------------------------------------------------------
-
-_TEST_TASK_DIR = Path(__file__).parent.parent / "data" / "tasks" / "shop_orders_02"
-
-
-# ---------------------------------------------------------------------------
 # Module-level helpers
 # ---------------------------------------------------------------------------
 
 
-def _fresh_data() -> dict:
+def _fresh_data(task_dir: Path) -> dict:
     """Return a new deep copy of initial_state.json on every call."""
-    return json.loads((_TEST_TASK_DIR / "initial_state.json").read_text())
+    return json.loads((task_dir / "initial_state.json").read_text())
 
 
-def _load_grading_config() -> GradingConfig:
-    raw = yaml.safe_load((_TEST_TASK_DIR / "grading.yaml").read_text())
+def _load_grading_config(task_dir: Path) -> GradingConfig:
+    raw = yaml.safe_load((task_dir / "grading.yaml").read_text())
     return GradingConfig(**raw)
 
 
-def _build_engine() -> GradingEngine:
+def _build_engine(task_dir: Path) -> GradingEngine:
     return GradingEngine(
-        grading_config=_load_grading_config(),
+        grading_config=_load_grading_config(task_dir),
         task_domain="tool_use",
-        task_dir=_TEST_TASK_DIR,
+        task_dir=task_dir,
         task_initial_state=InitialStateConfig(json_db="initial_state.json"),
         task_mcp_server="mcp_server.py",
     )
@@ -251,7 +244,7 @@ def _make_passing_trajectory() -> Trajectory:
 
 
 @pytest.fixture(scope="module")
-def mcp_tools() -> dict:
+def mcp_tools(shop_orders_02_task_dir) -> dict:
     """Import TOOLS from the real mcp_server.py via importlib.
 
     The lifespan hook is never triggered on import, so ``_STATE`` remains an
@@ -260,13 +253,13 @@ def mcp_tools() -> dict:
 
     If this fixture fails to load, the grading hash check will also be broken.
     """
-    task_dir_str = str(_TEST_TASK_DIR)
+    task_dir_str = str(shop_orders_02_task_dir)
     # Mirror setup_task_server: task_dir must be at sys.path[0]
     mp = pytest.MonkeyPatch()
     mp.syspath_prepend(task_dir_str)
 
     spec = importlib.util.spec_from_file_location(
-        "_mcp_server_shop_orders_02", _TEST_TASK_DIR / "mcp_server.py"
+        "_mcp_server_shop_orders_02", shop_orders_02_task_dir / "mcp_server.py"
     )
     mcp_module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mcp_module)
@@ -289,36 +282,40 @@ class TestShopOrders02McpTools:
     directly — the same interface used by the grading engine.
     """
 
-    def test_tools_dict_exposes_all_enabled_tools(self, mcp_tools):
+    def test_tools_dict_exposes_all_enabled_tools(self, mcp_tools, shop_orders_02_task_dir):
         """TOOLS dict contains every tool listed in task.yaml ``enabled``."""
-        task_cfg = yaml.safe_load((_TEST_TASK_DIR / "task.yaml").read_text())
+        task_cfg = yaml.safe_load((shop_orders_02_task_dir / "task.yaml").read_text())
         enabled = set(task_cfg["tools"]["agent"]["enabled"])
         missing = enabled - set(mcp_tools.keys())
         assert not missing, f"TOOLS is missing: {missing}"
 
-    def test_list_products_returns_all_in_stock(self, mcp_tools):
+    def test_list_products_returns_all_in_stock(self, mcp_tools, shop_orders_02_task_dir):
         """list_products returns all 4 products (all have stock > 0 initially)."""
-        result = mcp_tools["list_products"].invoke(data=_fresh_data())
+        result = mcp_tools["list_products"].invoke(data=_fresh_data(shop_orders_02_task_dir))
         assert isinstance(result, list), "Expected a list of products"
         assert len(result) == 4
         assert {p["id"] for p in result} == {"P-001", "P-002", "P-003", "P-004"}
 
-    def test_get_customer_returns_correct_record(self, mcp_tools):
+    def test_get_customer_returns_correct_record(self, mcp_tools, shop_orders_02_task_dir):
         """get_customer returns the C-101 record with name and balance from initial_state."""
-        result = mcp_tools["get_customer"].invoke(data=_fresh_data(), customer_id="C-101")
+        result = mcp_tools["get_customer"].invoke(
+            data=_fresh_data(shop_orders_02_task_dir), customer_id="C-101"
+        )
         assert result["id"] == "C-101"
         assert result["name"] == "Alex Torres"
         assert abs(result["balance"] - 300.0) < 0.001
 
-    def test_get_customer_unknown_id_returns_error(self, mcp_tools):
+    def test_get_customer_unknown_id_returns_error(self, mcp_tools, shop_orders_02_task_dir):
         """get_customer returns {\"error\": ...} for non-existent customer IDs."""
-        result = mcp_tools["get_customer"].invoke(data=_fresh_data(), customer_id="C-999")
+        result = mcp_tools["get_customer"].invoke(
+            data=_fresh_data(shop_orders_02_task_dir), customer_id="C-999"
+        )
         assert "error" in result, f"Expected error response, got: {result}"
 
-    def test_place_order_returns_pending_order(self, mcp_tools):
+    def test_place_order_returns_pending_order(self, mcp_tools, shop_orders_02_task_dir):
         """place_order creates an order with status 'pending' and correct total."""
         result = mcp_tools["place_order"].invoke(
-            data=_fresh_data(),
+            data=_fresh_data(shop_orders_02_task_dir),
             customer_id="C-101",
             items=[
                 {"product_id": "P-001", "quantity": 1, "unit_price": 89.99},
@@ -329,9 +326,9 @@ class TestShopOrders02McpTools:
         assert result["status"] == "pending", "New order must start as 'pending'"
         assert abs(result["total"] - 158.99) < 0.001  # 89.99 + 2×34.50
 
-    def test_place_order_decrements_stock(self, mcp_tools):
+    def test_place_order_decrements_stock(self, mcp_tools, shop_orders_02_task_dir):
         """place_order reduces stock on the data dict in-place."""
-        data = _fresh_data()
+        data = _fresh_data(shop_orders_02_task_dir)
         mcp_tools["place_order"].invoke(
             data=data,
             customer_id="C-101",
@@ -345,18 +342,20 @@ class TestShopOrders02McpTools:
         assert p001["stock"] == 41, "P-001 stock: 42 − 1 = 41"
         assert p002["stock"] == 13, "P-002 stock: 15 − 2 = 13"
 
-    def test_place_order_insufficient_stock_returns_error(self, mcp_tools):
+    def test_place_order_insufficient_stock_returns_error(self, mcp_tools, shop_orders_02_task_dir):
         """place_order returns {\"error\": ...} when requested qty exceeds stock."""
         result = mcp_tools["place_order"].invoke(
-            data=_fresh_data(),
+            data=_fresh_data(shop_orders_02_task_dir),
             customer_id="C-101",
             items=[{"product_id": "P-004", "quantity": 999, "unit_price": 129.0}],
         )
         assert "error" in result, f"Expected error for over-stock order, got: {result}"
 
-    def test_confirm_payment_marks_order_paid_and_deducts_balance(self, mcp_tools):
+    def test_confirm_payment_marks_order_paid_and_deducts_balance(
+        self, mcp_tools, shop_orders_02_task_dir
+    ):
         """confirm_payment sets order status=paid and deducts total from balance."""
-        data = _fresh_data()
+        data = _fresh_data(shop_orders_02_task_dir)
         mcp_tools["place_order"].invoke(
             data=data,
             customer_id="C-101",
@@ -369,13 +368,13 @@ class TestShopOrders02McpTools:
 
         assert result["status"] == "paid"
         customer = next(c for c in data["customers"] if c["id"] == "C-101")
-        assert abs(customer["balance"] - 141.01) < 0.001, (
-            f"Expected balance 141.01 (300.00 − 158.99), got {customer['balance']}"
-        )
+        assert (
+            abs(customer["balance"] - 141.01) < 0.001
+        ), f"Expected balance 141.01 (300.00 − 158.99), got {customer['balance']}"
 
-    def test_confirm_payment_already_paid_returns_error(self, mcp_tools):
+    def test_confirm_payment_already_paid_returns_error(self, mcp_tools, shop_orders_02_task_dir):
         """confirm_payment returns {\"error\": ...} if the order is already paid."""
-        data = _fresh_data()
+        data = _fresh_data(shop_orders_02_task_dir)
         mcp_tools["place_order"].invoke(
             data=data,
             customer_id="C-101",
@@ -399,18 +398,18 @@ class TestShopOrders02StateAfterGoldenActions:
     grading pipeline itself.
     """
 
-    def test_golden_actions_produce_expected_db_state(self, mcp_tools):
+    def test_golden_actions_produce_expected_db_state(self, mcp_tools, shop_orders_02_task_dir):
         """Replaying golden_actions on a fresh DB yields values matching every jsonpath."""
-        grading = yaml.safe_load((_TEST_TASK_DIR / "grading.yaml").read_text())
+        grading = yaml.safe_load((shop_orders_02_task_dir / "grading.yaml").read_text())
         actions = grading["state_checks"]["hash"]["golden_actions"]
         expected = {jp["path"]: jp["equals"] for jp in grading["state_checks"]["jsonpaths"]}
 
-        data = _fresh_data()
+        data = _fresh_data(shop_orders_02_task_dir)
         for action in actions:
             result = mcp_tools[action["name"]].invoke(data=data, **action["kwargs"])
-            assert "error" not in result, (
-                f"Golden action '{action['name']}' returned an error: {result}"
-            )
+            assert (
+                "error" not in result
+            ), f"Golden action '{action['name']}' returned an error: {result}"
 
         order = data["orders"][0]
         customer = data["customers"][0]
@@ -424,11 +423,13 @@ class TestShopOrders02StateAfterGoldenActions:
         assert products["P-001"]["stock"] == expected["$.db.products[0].stock"]
         assert products["P-002"]["stock"] == expected["$.db.products[1].stock"]
 
-    def test_golden_actions_leave_non_ordered_products_unchanged(self, mcp_tools):
+    def test_golden_actions_leave_non_ordered_products_unchanged(
+        self, mcp_tools, shop_orders_02_task_dir
+    ):
         """Products not involved in golden_actions must keep their original stock."""
-        grading = yaml.safe_load((_TEST_TASK_DIR / "grading.yaml").read_text())
-        initial = _fresh_data()
-        data = _fresh_data()
+        grading = yaml.safe_load((shop_orders_02_task_dir / "grading.yaml").read_text())
+        initial = _fresh_data(shop_orders_02_task_dir)
+        data = _fresh_data(shop_orders_02_task_dir)
 
         for action in grading["state_checks"]["hash"]["golden_actions"]:
             mcp_tools[action["name"]].invoke(data=data, **action["kwargs"])
@@ -456,10 +457,10 @@ class TestShopOrders02GradingPipeline:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _expected_final_env_state(self, mcp_tools: dict) -> dict:
+    def _expected_final_env_state(self, mcp_tools: dict, task_dir) -> dict:
         """Run golden_actions on a fresh DB and wrap in the env_state structure."""
-        grading = yaml.safe_load((_TEST_TASK_DIR / "grading.yaml").read_text())
-        data = _fresh_data()
+        grading = yaml.safe_load((task_dir / "grading.yaml").read_text())
+        data = _fresh_data(task_dir)
         for action in grading["state_checks"]["hash"]["golden_actions"]:
             mcp_tools[action["name"]].invoke(data=data, **action["kwargs"])
         return {"db": data}
@@ -564,61 +565,65 @@ class TestShopOrders02GradingPipeline:
     # Tests
     # ------------------------------------------------------------------
 
-    def test_passing_trajectory_scores_1_0(self, mcp_tools):
+    def test_passing_trajectory_scores_1_0(self, mcp_tools, shop_orders_02_task_dir):
         """Correct tool sequence + communicated info + correct final DB → score 1.0."""
-        engine = _build_engine()
+        engine = _build_engine(shop_orders_02_task_dir)
         grade = engine.grade_trajectory(
             self._passing_trajectory(),
-            self._expected_final_env_state(mcp_tools),
+            self._expected_final_env_state(mcp_tools, shop_orders_02_task_dir),
         )
-        assert grade.score == pytest.approx(1.0), (
-            f"Expected score=1.0, got {grade.score}. Reasons: {grade.reasons}"
-        )
+        assert grade.score == pytest.approx(
+            1.0
+        ), f"Expected score=1.0, got {grade.score}. Reasons: {grade.reasons}"
         assert grade.binary_pass is True
-        assert grade.components.state_checks == pytest.approx(1.0), (
-            f"state_checks={grade.components.state_checks}"
-        )
-        assert grade.components.transcript_rules == pytest.approx(1.0), (
-            f"transcript_rules={grade.components.transcript_rules}"
-        )
+        assert grade.components.state_checks == pytest.approx(
+            1.0
+        ), f"state_checks={grade.components.state_checks}"
+        assert grade.components.transcript_rules == pytest.approx(
+            1.0
+        ), f"transcript_rules={grade.components.transcript_rules}"
 
-    def test_failing_trajectory_does_not_pass_threshold(self, mcp_tools):
+    def test_failing_trajectory_does_not_pass_threshold(self, mcp_tools, shop_orders_02_task_dir):
         """No tool calls + unchanged DB → score < pass_threshold (0.75) → binary_pass=False."""
-        engine = _build_engine()
+        engine = _build_engine(shop_orders_02_task_dir)
         grade = engine.grade_trajectory(
             self._no_tool_calls_trajectory(),
-            {"db": _fresh_data()},  # unchanged state
+            {"db": _fresh_data(shop_orders_02_task_dir)},  # unchanged state
         )
-        assert grade.score < 0.75, (
-            f"Failing trajectory must score below pass_threshold=0.75, got {grade.score}"
-        )
+        assert (
+            grade.score < 0.75
+        ), f"Failing trajectory must score below pass_threshold=0.75, got {grade.score}"
         assert grade.binary_pass is False
 
-    def test_correct_transcript_wrong_db_state_still_fails(self, mcp_tools):
+    def test_correct_transcript_wrong_db_state_still_fails(
+        self, mcp_tools, shop_orders_02_task_dir
+    ):
         """state_checks=0 when DB is unchanged, even if transcript is perfect.
 
         Verifies that state_checks are independent from transcript_rules and that
         the 70 % weight on state_checks is enough to push the total below 0.75.
         """
-        engine = _build_engine()
+        engine = _build_engine(shop_orders_02_task_dir)
         grade = engine.grade_trajectory(
             self._passing_trajectory(),
-            {"db": _fresh_data()},  # ← unchanged DB, but perfect transcript
+            {"db": _fresh_data(shop_orders_02_task_dir)},  # ← unchanged DB, but perfect transcript
         )
-        assert grade.components.state_checks == pytest.approx(0.0), (
-            f"state_checks should be 0 for unchanged DB, got {grade.components.state_checks}"
-        )
-        assert grade.binary_pass is False, (
-            "state_checks weight (0.70) means even a perfect transcript cannot save a 0 state score"
-        )
+        assert grade.components.state_checks == pytest.approx(
+            0.0
+        ), f"state_checks should be 0 for unchanged DB, got {grade.components.state_checks}"
+        assert (
+            grade.binary_pass is False
+        ), "state_checks weight (0.70) means even a perfect transcript cannot save a 0 state score"
 
-    def test_correct_db_state_missing_communicate_info_reduces_score(self, mcp_tools):
+    def test_correct_db_state_missing_communicate_info_reduces_score(
+        self, mcp_tools, shop_orders_02_task_dir
+    ):
         """transcript_rules < 1.0 when required communicate_info values are absent.
 
         Uses a trajectory where all required_actions are called but the final
         assistant message omits order ID, status, and balance.
         """
-        engine = _build_engine()
+        engine = _build_engine(shop_orders_02_task_dir)
         silent_messages = [
             Message(role=MessageRole.USER, content="Place my order."),
             Message(
@@ -658,7 +663,9 @@ class TestShopOrders02GradingPipeline:
             status=TrialStatus.COMPLETED,
             messages=silent_messages,
         )
-        grade = engine.grade_trajectory(traj, self._expected_final_env_state(mcp_tools))
+        grade = engine.grade_trajectory(
+            traj, self._expected_final_env_state(mcp_tools, shop_orders_02_task_dir)
+        )
 
         assert grade.components.transcript_rules < 1.0, (
             "transcript_rules should be < 1.0 when communicate_info items are missing "
@@ -691,16 +698,16 @@ class TestShopOrders02McpTransport:
     """
 
     @pytest.fixture(scope="class")
-    def mcp_server(self) -> _McpSubprocess:
+    def mcp_server(self, shop_orders_02_task_dir) -> _McpSubprocess:
         """Start mcp_server.py subprocess and inject fresh initial state.
 
         Lifespan does not run when the script is started without file input,
         so _STATE starts empty. reset_state() injects the known initial data
         through the internal _tolokaforge_set_state_ JSON-RPC tool.
         """
-        server = _McpSubprocess(str(_TEST_TASK_DIR / "mcp_server.py"))
+        server = _McpSubprocess(str(shop_orders_02_task_dir / "mcp_server.py"))
         server.start()
-        server.reset_state(json.loads((_TEST_TASK_DIR / "initial_state.json").read_text()))
+        server.reset_state(json.loads((shop_orders_02_task_dir / "initial_state.json").read_text()))
         yield server
         server.stop()
 
@@ -755,19 +762,21 @@ class TestShopOrders02McpTransport:
         request, confirm_payment would return 'order not found'.
         """
         result = mcp_server.call_tool("confirm_payment", {"order_id": "O-001"})
-        assert "error" not in result, (
-            f"confirm_payment failed — state not persisted across JSON-RPC calls: {result}"
-        )
+        assert (
+            "error" not in result
+        ), f"confirm_payment failed — state not persisted across JSON-RPC calls: {result}"
         assert result["status"] == "paid"
 
-    def test_get_state_shows_correct_mutations_after_full_workflow(self, mcp_server):
+    def test_get_state_shows_correct_mutations_after_full_workflow(
+        self, mcp_server, shop_orders_02_task_dir
+    ):
         """get_state() after place_order + confirm_payment reflects all expected changes."""
         state = mcp_server.get_state()
         expected = {
             jp["path"]: jp["equals"]
-            for jp in yaml.safe_load((_TEST_TASK_DIR / "grading.yaml").read_text())["state_checks"][
-                "jsonpaths"
-            ]
+            for jp in yaml.safe_load((shop_orders_02_task_dir / "grading.yaml").read_text())[
+                "state_checks"
+            ]["jsonpaths"]
         }
         order = state["orders"][0]
         customer = state["customers"][0]
@@ -802,57 +811,65 @@ class TestShopOrders02AdapterGradingIntegration:
     """
 
     @pytest.fixture(scope="class")
-    def real_adapter(self) -> NativeAdapter:
+    def real_adapter(self, test_data_dir) -> NativeAdapter:
         """NativeAdapter pointing at tests/data/ — same base_dir as TestNativeAdapterCanon."""
         return NativeAdapter(
             {
-                "base_dir": str(_TEST_TASK_DIR.parent.parent),
+                "base_dir": str(test_data_dir),
                 "tasks_glob": "tasks/**/task.yaml",
             }
         )
 
-    def _expected_env_state(self, mcp_tools: dict) -> dict:
-        grading = yaml.safe_load((_TEST_TASK_DIR / "grading.yaml").read_text())
-        data = _fresh_data()
+    def _expected_env_state(self, mcp_tools: dict, shop_orders_02_task_dir) -> dict:
+        grading = yaml.safe_load((shop_orders_02_task_dir / "grading.yaml").read_text())
+        data = _fresh_data(shop_orders_02_task_dir)
         for action in grading["state_checks"]["hash"]["golden_actions"]:
             mcp_tools[action["name"]].invoke(data=data, **action["kwargs"])
         return {"db": data}
 
-    def test_grade_via_adapter_passes_for_correct_state(self, real_adapter, mcp_tools):
+    def test_grade_via_adapter_passes_for_correct_state(
+        self, real_adapter, mcp_tools, shop_orders_02_task_dir
+    ):
         """NativeAdapter.grade() returns score=1.0 for a trajectory with correct final DB.
 
         Tests the full integration chain: adapter config loading → GradingEngine
         construction → tau-style hash check using the real mcp_server.py.
         """
-        env = AdapterEnvironment(data=_fresh_data(), tools=[], wiki="", rules=[])
+        env = AdapterEnvironment(
+            data=_fresh_data(shop_orders_02_task_dir), tools=[], wiki="", rules=[]
+        )
         grade = real_adapter.grade(
             "shop_orders_02",
             _make_passing_trajectory(),
-            self._expected_env_state(mcp_tools),
+            self._expected_env_state(mcp_tools, shop_orders_02_task_dir),
             env,
         )
         assert grade.binary_pass is True, f"Expected pass, reasons: {grade.reasons}"
         assert grade.score == pytest.approx(1.0)
 
-    def test_grade_via_adapter_fails_for_unchanged_db(self, real_adapter):
+    def test_grade_via_adapter_fails_for_unchanged_db(self, real_adapter, shop_orders_02_task_dir):
         """NativeAdapter.grade() returns fail when DB is unchanged (no tools called).
 
         Verifies that the adapter correctly wires task_dir and mcp_server_ref so
         the GradingEngine can detect the missing mutations.
         """
-        env = AdapterEnvironment(data=_fresh_data(), tools=[], wiki="", rules=[])
+        env = AdapterEnvironment(
+            data=_fresh_data(shop_orders_02_task_dir), tools=[], wiki="", rules=[]
+        )
         grade = real_adapter.grade(
             "shop_orders_02",
             _make_passing_trajectory(),
-            {"db": _fresh_data()},
+            {"db": _fresh_data(shop_orders_02_task_dir)},
             env,
         )
         assert grade.binary_pass is False
-        assert grade.components.state_checks == pytest.approx(0.0), (
-            f"state_checks should be 0 for unchanged DB, got {grade.components.state_checks}"
-        )
+        assert grade.components.state_checks == pytest.approx(
+            0.0
+        ), f"state_checks should be 0 for unchanged DB, got {grade.components.state_checks}"
 
-    def test_adapter_task_dir_points_to_functional_mcp_server(self, real_adapter):
+    def test_adapter_task_dir_points_to_functional_mcp_server(
+        self, real_adapter, shop_orders_02_task_dir
+    ):
         """adapter.get_task_dir() must return tests/data/tasks/shop_orders_02/ with
         a functional mcp_server.py — not an empty stub — so GradingEngine
         golden_action execution can find TOOLS.
@@ -861,12 +878,12 @@ class TestShopOrders02AdapterGradingIntegration:
         mcp_path = task_dir / "mcp_server.py"
         assert mcp_path.exists(), f"mcp_server.py not found at {mcp_path}"
         content = mcp_path.read_text()
-        assert "TOOLS" in content, (
-            f"mcp_server.py at {mcp_path} has no TOOLS — golden_action execution will fail"
-        )
-        assert "create_server" in content, (
-            f"mcp_server.py at {mcp_path} does not use create_server — may not register tools"
-        )
+        assert (
+            "TOOLS" in content
+        ), f"mcp_server.py at {mcp_path} has no TOOLS — golden_action execution will fail"
+        assert (
+            "create_server" in content
+        ), f"mcp_server.py at {mcp_path} does not use create_server — may not register tools"
 
 
 # ---------------------------------------------------------------------------
@@ -899,9 +916,9 @@ class TestShopOrders02TrajectoryRoundTrip:
             tc["name"] for msg in raw["messages"] for tc in (msg.get("tool_calls") or [])
         ]
         for expected_name in ("list_products", "get_customer", "place_order", "confirm_payment"):
-            assert expected_name in all_tool_names, (
-                f"'{expected_name}' not found in reloaded tool_calls: {all_tool_names}"
-            )
+            assert (
+                expected_name in all_tool_names
+            ), f"'{expected_name}' not found in reloaded tool_calls: {all_tool_names}"
 
     def test_nested_place_order_arguments_survive_yaml_round_trip(self, tmp_path):
         """place_order nested items list survives YAML serialization with correct types.

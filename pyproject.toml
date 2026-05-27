@@ -4,11 +4,11 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tolokaforge"
-version = "0.1.0"
+version = "0.2.0"
 description = "Tolokaforge - LLM Tool-Use Benchmarking Harness"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "Apache-2.0"}
+license = {text = "MIT"}
 authors = [
     {name = "Renaud de la Gueronniere"},
     {name = "Tolokaforge Contributors"},
@@ -16,32 +16,22 @@ authors = [
 maintainers = [
     {name = "Renaud de la Gueronniere"},
 ]
-keywords = [
-    "llm",
-    "benchmark",
-    "tool-use",
-    "agents",
-    "evaluation",
-    "litellm",
-    "testing",
-]
+keywords = ["llm", "benchmark", "tool-use", "agents", "evaluation", "mcp"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: Apache Software License",
-    "Operating System :: OS Independent",
+    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
-    "Topic :: Software Development :: Testing",
-    "Typing :: Typed",
 ]
+
 dependencies = [
     # Core LLM integration
-    "litellm>=1.0.0",
+    "litellm==1.83.14",
     # Data validation and schemas
     "pydantic>=2.0.0",
     "pydantic[email]>=2.0.0",
@@ -69,6 +59,17 @@ dependencies = [
     "sqlalchemy>=2.0.48",
     "typesense>=2.0.0",
     "structlog>=24.0.0",
+    # Docker runtime — the only supported runtime for `tolokaforge run`.
+    # Previously optional, promoted to core because every `tolokaforge run`
+    # invocation requires these (there is no in-process runtime).
+    "docker>=7.0.0",
+    "grpcio>=1.60.0",
+    "grpcio-tools>=1.60.0",
+    "grpcio-health-checking>=1.60.0",
+    # MCP server support — needed by any task that declares an mcp_server.py.
+    # Previously optional, promoted to core because the recommended task
+    # authoring pattern (FastMCP server subprocess) requires it.
+    "mcp>=0.1.0",
 ]
 
 [project.optional-dependencies]
@@ -76,21 +77,12 @@ browser = [
     "playwright>=1.40.0",
     "pillow>=12.1.0",
 ]
-docker = [
-    "docker>=7.0.0",
-    "grpcio>=1.60.0",
-    "grpcio-tools>=1.60.0",
-    "grpcio-health-checking>=1.60.0",
-]
 server = [
     "fastapi>=0.108.0",
     "uvicorn>=0.25.0",
 ]
 rag = [
     "rank-bm25>=0.2.2",
-]
-mcp = [
-    "mcp>=0.1.0",
 ]
 office = [
     "openpyxl>=3.1.0",
@@ -104,7 +96,7 @@ adapters = [
     "tolokaforge[terminal_bench]",
 ]
 all = [
-    "tolokaforge[browser,docker,server,rag,mcp,office,adapters]",
+    "tolokaforge[browser,server,rag,office,adapters]",
 ]
 
 [project.urls]
@@ -112,7 +104,6 @@ Homepage = "https://github.com/Toloka/tolokaforge"
 Repository = "https://github.com/Toloka/tolokaforge"
 Documentation = "https://github.com/Toloka/tolokaforge/tree/main/docs"
 Issues = "https://github.com/Toloka/tolokaforge/issues"
-Changelog = "https://github.com/Toloka/tolokaforge/releases"
 
 [project.scripts]
 tolokaforge = "tolokaforge.cli.main:cli"
@@ -122,27 +113,37 @@ exclude = [
     "tasks/**",
     "scratchpad/**",
     "demos/**",
+    "external_adapters/**",
 ]
 
 [tool.hatch.build.targets.wheel]
 packages = ["tolokaforge"]
 
 [tool.hatch.build.targets.sdist]
-exclude = ["tasks/"]
 
 [tool.black]
 line-length = 100
 target-version = ['py310']
 extend-exclude = '''
 (
-  tests/data/projects
+  contrib
+  | tests/data/projects
+  | external_adapters
+  | examples/terminal_bench
 )
 '''
 
 [tool.ruff]
 line-length = 100
 target-version = "py310"
-extend-exclude = ["**/node_modules", "**/__pycache__", "tests/data/projects"]
+extend-exclude = [
+    "**/node_modules",
+    "**/__pycache__", 
+    "contrib",
+    "tests/data/projects", 
+    "external_adapters",
+    "examples/terminal_bench",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP", "B", "C4", "SIM"]
@@ -164,7 +165,6 @@ ignore = [
 fixable = ["ALL"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["tolokaforge", "tolokaforge_adapter_terminal_bench"]
 
 [tool.ruff.format]
 # Use double quotes for strings (matches black default)
@@ -179,7 +179,7 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-norecursedirs = ["tests/data/projects/*/tests", "tests/data/terminal_bench_tasks"]
+norecursedirs = ["tests/data/projects/*/tests"]
 addopts = [
     "-v",
     "--strict-markers",
@@ -285,6 +285,7 @@ dev = [
     "uvicorn>=0.25.0",
     "rank-bm25>=0.2.2",
     "mcp>=0.1.0",
+    "build>=1.0.0",
     "psycopg[binary]>=3.2.0",
     "tolokaforge-adapter-terminal-bench",
     "dev-mcp",
@@ -298,9 +299,7 @@ dev = [
 
 [tool.uv.workspace]
 members = [
-    "tools/demo-recorder",
     "tools/dev-mcp",
-    "tools/eval-orchestrator",
     "tools/pricing-updater",
     "external_adapters/tolokaforge-adapter-terminal-bench",
 ]

@@ -1,0 +1,100 @@
+name: Claude Code PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+
+jobs:
+  hygiene-review:
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'issue_comment' &&
+       contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review_comment' &&
+       contains(github.event.comment.body, '@claude'))
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: anthropics/claude-code-action@beta
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          direct_prompt: |
+            Review this PR against the project's AGENTS.md rules. Flag any
+            violation with file path, line number, and a concrete suggested
+            fix. If everything checks out, say so explicitly.
+
+            1. CODE QUALITY: Errors are surfaced explicitly. No silent
+               fallbacks, no swallowed exceptions (`except Exception: pass`),
+               no returning `None` instead of raising. Functions under 100
+               lines, nesting depth < 3.
+
+            2. SECRETS — single abstraction (HARD RULE): API keys, DB
+               credentials, tokens, signing keys, and any other credential
+               are accessed *only* via `SecretManager`
+               (`tolokaforge.secrets`). Flag any new `os.environ.get` /
+               `os.getenv` for credentials, any `load_dotenv()` call, any
+               `from dotenv import` outside `tolokaforge.secrets`, any
+               direct `.env` / `.netrc` / `.aws/credentials` file read,
+               any one-off env-var helper, any secret baked into a Docker
+               image / build-arg / mount / image-tag. New secret backends
+               must ship as new `SecretProvider` subclasses, never as
+               ad-hoc call sites. The
+               `tests/unit/secrets/test_no_raw_secret_access.py`
+               enforcement test must remain green.
+
+            3. TESTING: Every new test file has a `pytestmark` marker
+               (`pytest.mark.unit`, `.canonical`, or `.integration`).
+               Zero `xfail`, zero bare `@skip` — use conditional markers
+               (`requires_api`, `requires_docker`). MockAsyncClient comes
+               from `tests.utils.mock_clients` only — no local copies.
+
+            4. ARCHITECTURE: Harness logic stays generic. Task-specific
+               logic lives in task packs only. Clean abstraction
+               boundaries. Backward compatibility for task contracts.
+
+            5. REPOSITORY HYGIENE: No scripts, data, temp files, or logs
+               in the repo root. Documentation updated when user-facing
+               behaviour changes.
+
+            6. CODE STANDARDS: DRY — no duplicated logic. Self-describing
+               names. Early returns to minimise nesting. No warnings
+               suppressed.
+
+            7. ROOT CLEANLINESS: New files in the repo root must be on
+               this allow-list — README.md, LICENSE, CHANGELOG.md,
+               CONTRIBUTING.md, CONTRIBUTORS.md, CITATION.*, CLAUDE.md,
+               AGENTS.md, pyproject.toml, uv.lock, Makefile,
+               docker-compose.yaml, and dotfiles (.gitignore,
+               .pre-commit-config.yaml, etc.).
+
+            8. NO TEMP ARTIFACTS: No temporary plans, log files, JSON
+               data dumps, or build outputs.
+
+            9. SCRIPT LOCATION: Bash scripts only in scripts/. Exceptions:
+               tests/ for test helpers, tasks/ for benchmark data,
+               .devcontainer/ for container setup, Docker entrypoints
+               alongside Dockerfiles.
+
+            10. SCRIPTS ORGANIZATION: New scripts placed in the correct
+                scripts/ subdirectory (benchmark/, setup/, lint/, tests/,
+                release/, analysis/).
+
+            11. PYTHON TOOLS: Complex Python tools in tools/ as uv
+                workspace members, linked in
+                `pyproject.toml [tool.uv.workspace]`.
+
+            12. NO PROJECT-SPECIFIC CONTENT ON MAIN: No domain-specific
+                configs or runner scripts on the `main` branch.

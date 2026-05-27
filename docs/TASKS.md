@@ -2,16 +2,9 @@
 
 This guide explains how to create and organize tasks in Tolokaforge.
 
-## Task Organization
+## Task Directory
 
-Tasks can be organized in any directory. Example tasks are included in `examples/`:
-
-```bash
-# Validate example tasks
-uv run tolokaforge validate --tasks "examples/**/task.yaml"
-```
-
-Use the `task_packs` configuration to point at any directory containing tasks:
+Task packs live outside the engine tree. Use the `task_packs` configuration to point at any directory containing tasks:
 ```yaml
 evaluation:
   task_packs:
@@ -22,7 +15,7 @@ evaluation:
 ## Task Layout
 
 ```
-<tasks_root>/<category>/<task_id>/
+tasks/<category>/<task_id>/
 ├── task.yaml
 ├── grading.yaml
 ├── initial_state.json          # optional

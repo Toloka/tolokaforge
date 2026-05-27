@@ -40,7 +40,7 @@ def test_stack(
     db_service = ServiceDefinition(
         name="db-service",
         image_name="tolokaforge-db-service",
-        dockerfile="docker/db_service.Dockerfile",
+        dockerfile="tolokaforge/docker/dockerfiles/db_service.Dockerfile",
         context=".",
         ports=[PortConfig(container_port=8000, host_port="auto")],
         environment={"PYTHONUNBUFFERED": "1"},
@@ -51,7 +51,7 @@ def test_stack(
     runner = ServiceDefinition(
         name="runner",
         image_name="tolokaforge-runner",
-        dockerfile="docker/runner.Dockerfile",
+        dockerfile="tolokaforge/docker/dockerfiles/runner.Dockerfile",
         context=".",
         ports=[PortConfig(container_port=50051, host_port="auto")],
         environment={

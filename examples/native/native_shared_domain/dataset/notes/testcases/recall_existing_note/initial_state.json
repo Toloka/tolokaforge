@@ -1,0 +1,14 @@
+{
+  "notes": [
+    {
+      "id": "N-001",
+      "title": "Office Wi-Fi",
+      "body": "SSID: stonebridge-guest. Password: aurora-481-fennel."
+    },
+    {
+      "id": "N-002",
+      "title": "Lunch order cutoff",
+      "body": "Group lunch orders close at 11:15 every weekday."
+    }
+  ]
+}

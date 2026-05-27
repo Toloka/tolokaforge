@@ -43,13 +43,13 @@ For contributor-facing contract details, see `docs/ADAPTER_INTERFACE.md`.
 │  │   (abstract)     │                                          │
 │  └────────┬─────────┘                                          │
 │           │                                                     │
-│  ┌────────┴────────┬──────────────────┐                   │     │
-│  ▼                 ▼                  │                    │     │
-│  ┌──────────────┐  ┌────────────────┐ │                   │     │
-│  │NativeAdapter │  │FrozenMcpCore  │ │                   │     │
-│  │ (task.yaml)  │  │ (_domain/)    │ │                   │     │
-│  │  [built-in]  │  │  [built-in]   │ │                   │     │
-│  └──────────────┘  └────────────────┘ │                   │     │
+│  ┌────────┴────────┬──────────────────┬──────────────────┐     │
+│  ▼                 ▼                  ▼                   │     │
+│  ┌──────────────┐  ┌──────────────┐  ┌────────────────┐  │     │
+│  │NativeAdapter │  │ TauAdapter   │  │TlkMcpCoreAdptr │  │     │
+│  │ (task.yaml)  │  │ (env.py)     │  │(testcase.json) │  │     │
+│  │  [built-in]  │  │  [plugin]    │  │   [plugin]     │  │     │
+│  └──────────────┘  └──────────────┘  └────────────────┘  │     │
 └─────────────────────────────────────────────────────────────────┘
                                 │
                                 ▼
@@ -72,9 +72,9 @@ them automatically at import time.
 Each adapter package declares an entry-point in its `pyproject.toml`:
 
 ```toml
-# In external_adapters/tolokaforge-adapter-terminal-bench/pyproject.toml
+# In external_adapters/tolokaforge-adapter-tau/pyproject.toml
 [project.entry-points."tolokaforge.adapters"]
-terminal_bench = "tolokaforge_adapter_terminal_bench:TerminalBenchAdapter"
+tau = "tolokaforge_adapter_tau:TauAdapter"
 ```
 
 ### Discovery Mechanism
@@ -96,28 +96,35 @@ def _discover_adapters() -> dict[str, type]:
 ### Installation
 
 ```bash
-# Install an external adapter
-uv pip install -e external_adapters/tolokaforge-adapter-terminal-bench
+# Install specific adapter
+uv sync --extra tau
+uv sync --extra tlk_mcp_core
+
+# Install all adapters
+uv sync --extra adapters
 ```
 
 ## File Structure
 
 ```
 tolokaforge/adapters/
-├── __init__.py          # Entry-point discovery, get_adapter(), register_adapter()
-├── base.py              # BaseAdapter abstract class, AdapterEnvironment
-├── native.py            # NativeAdapter for file-based tasks (built-in)
-├── frozen_mcp_core.py   # FrozenMcpCoreAdapter for converted tasks (built-in)
-└── bundle_writer.py     # Bundle writer for task artifacts
+├── __init__.py        # Entry-point discovery, get_adapter(), register_adapter()
+├── base.py            # BaseAdapter abstract class, AdapterEnvironment
+└── native.py          # NativeAdapter for file-based tasks (built-in)
 
 external_adapters/
-└── tolokaforge-adapter-terminal-bench/  # Terminal-bench adapter plugin
-    ├── pyproject.toml                   # Entry-point: terminal_bench
-    └── src/tolokaforge_adapter_terminal_bench/
+├── tolokaforge-adapter-tau/           # Tau-bench adapter plugin
+│   ├── pyproject.toml                 # Entry-point: tau
+│   └── src/tolokaforge_adapter_tau/
+│       ├── __init__.py
+│       ├── adapter.py                 # TauAdapter
+│       └── import_hook.py            # TauBenchImportFinder
+└── tolokaforge-adapter-tlk-mcp-core/  # MCP Core adapter plugin
+    ├── pyproject.toml                 # Entry-point: tlk_mcp_core
+    └── src/tolokaforge_adapter_tlk_mcp_core/
         ├── __init__.py
-        ├── adapter.py                   # TerminalBenchAdapter
-        ├── compose_env.py
-        └── task_parser.py
+        ├── adapter.py                 # TlkMcpCoreAdapter
+        └── testcase.py               # TlkMcpCoreTestCase
 ```
 
 ## BaseAdapter Interface
@@ -147,18 +154,22 @@ All adapters implement these core methods:
 - **Grading**: Uses `grading.yaml` with state checks, transcript rules, LLM judge
 - **Package**: Built into `tolokaforge` core
 
-### FrozenMcpCoreAdapter (built-in)
+### TauAdapter (plugin: `tolokaforge-adapter-tau`)
 
-- **Detection**: Task directories with `_domain/` bundle
-- **Tools**: Loaded from bundled `_domain/` directory via `tool_artifacts`
-- **Data**: Converted task data, DB creation and tool wrapping
-- **Grading**: Stable hash comparison (excludes unstable fields)
+- **Detection**: Directory containing `env.py`
+- **Tools**: Loaded from `tools/__init__.py` with `ALL_TOOLS` list
+- **Data**: Loaded from `data/__init__.py` with `load_data()` function
+- **Grading**: Hash-based comparison after executing `golden_actions`
+- **Install**: `uv sync --extra tau`
 
-### TerminalBenchAdapter (plugin: `tolokaforge-adapter-terminal-bench`)
+### TlkMcpCoreAdapter (plugin: `tolokaforge-adapter-tlk-mcp-core`)
 
-- **Detection**: Docker Compose task definitions
-- **Tools**: Docker Compose environment
-- **Install**: `uv pip install -e external_adapters/tolokaforge-adapter-terminal-bench`
+- **Detection**: Glob pattern matching `testcases/*.json`
+- **Tools**: Loaded from `mcp-tools-library` package
+- **Data**: `mcp_core.InMemoryDatabase` with `data_patch` overlays
+- **Grading**: Stable hash comparison (excludes `UnstableField` annotations)
+- **TypeSense**: Automatic indexing of `docindex/*.md` for knowledge base search
+- **Install**: `uv sync --extra tlk_mcp_core`
 
 ## Configuration Examples
 
@@ -166,24 +177,37 @@ All adapters implement these core methods:
 
 ```yaml
 evaluation:
-  tasks_glob: "examples/**/task.yaml"
-  output_dir: "output/examples"
+  tasks_glob: "tasks/food_delivery_2/tasks/**/task.yaml"
+  output_dir: "output/food_delivery"
 
 # No harness_adapter = uses NativeAdapter automatically
 ```
 
-### Frozen MCP Core Tasks
+### Tau-format Environment
 
 ```yaml
 evaluation:
-  task_packs:
-    - "/path/to/frozen-pack"
-  tasks_glob: "**/task.yaml"
-  output_dir: "output/frozen_mcp_core"
+  tasks_glob: "tasks/tau/food_delivery"
+  output_dir: "output/tau_food_delivery"
 
 harness_adapter:
-  type: "frozen_mcp_core"
-  params: {}
+  type: "tau"
+  params:
+    task_split: "test"
+```
+
+### TLK MCP Core Environment
+
+```yaml
+evaluation:
+  tasks_glob: "contrib/project-m-copilot-mock-tools/mcp_servers/*/src/domains/*/testcases/*.json"
+  output_dir: "output/tlk_mcp_core_retail"
+
+harness_adapter:
+  type: "tlk_mcp_core"
+  params:
+    tools_library: "contrib/project-m-copilot-mock-tools/mcp-tools-library"
+    use_full_instruction: false
 ```
 
 ## Benefits

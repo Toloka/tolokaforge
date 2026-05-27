@@ -1,0 +1,59 @@
+[
+  {
+    "name": "_tolokaforge_get_state_",
+    "description": "Internal: get state snapshot",
+    "parameters": {
+      "properties": {},
+      "title": "_tolokaforge_get_state_Arguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "_tolokaforge_set_state_",
+    "description": "Internal: replace state",
+    "parameters": {
+      "properties": {
+        "state_json": {
+          "title": "State Json",
+          "type": "string"
+        }
+      },
+      "required": [
+        "state_json"
+      ],
+      "title": "_tolokaforge_set_state_Arguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "list_notes",
+    "description": "List every stored note, newest first.",
+    "parameters": {
+      "properties": {},
+      "title": "list_notesArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "add_note",
+    "description": "Save a new note. Returns the created note including its ID.",
+    "parameters": {
+      "properties": {
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "body": {
+          "title": "Body",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "body"
+      ],
+      "title": "add_noteArguments",
+      "type": "object"
+    }
+  }
+]

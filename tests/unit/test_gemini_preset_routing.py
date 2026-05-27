@@ -1,0 +1,62 @@
+"""Unit guard for the ``gemini`` preset's match-glob routing.
+
+Asserts every Google Gemini model identifier under integration-test
+coverage is routed through the named ``gemini`` preset rather than
+falling through to ``default``.
+
+The first-match-wins discipline matters here: the ``gemini:`` block
+must sit AFTER any preset whose match globs could shadow it. None
+exist today (no other preset matches ``google/*`` or ``*gemini*``),
+but if a future preset is added with overlapping globs, this test
+catches the silent reroute.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from tolokaforge.core.llm.presets import resolve_effective_preset
+
+pytestmark = pytest.mark.canonical
+
+
+_GEMINI_MODELS = (
+    # Both variants under live integration test (see registry.py).
+    "google/gemini-3-flash-preview",
+    "google/gemini-3.1-pro-preview",
+    # Older family members — the preset must capture them too so we
+    # don't leave stale fallthrough on existing eval configs.
+    "google/gemini-3.0-flash",
+    "google/gemini-3.1-pro",
+    "google/gemini-2.5-pro",
+    "google/gemini-2.5-flash",
+    # OpenRouter-flavoured prefix (litellm sometimes sees the doubled form).
+    "openrouter/google/gemini-3-flash-preview",
+)
+
+
+@pytest.mark.parametrize("model", _GEMINI_MODELS)
+def test_gemini_models_route_to_gemini_preset(model: str) -> None:
+    """Every Gemini-shaped model name resolves to the named preset."""
+    name = resolve_effective_preset(model, "openrouter")
+    assert name == "gemini", (
+        f"Expected {model!r} to route to 'gemini' preset, got {name!r}. "
+        "If a new preset was added with overlapping match globs, restore "
+        "first-match-wins by moving the ``gemini:`` block earlier in "
+        "model_presets.yaml."
+    )
+
+
+def test_non_gemini_models_do_not_route_to_gemini_preset() -> None:
+    """The new preset must not shadow other vendors' routing."""
+    sample_non_gemini = (
+        ("anthropic/claude-opus-4.7", "anthropic_claude_4_7"),
+        ("anthropic/claude-sonnet-4.6", "anthropic"),
+        ("openai/gpt-5.5", "openai_gpt5"),
+        ("x-ai/grok-4", "xai_grok"),
+        ("qwen/qwen3.6-plus", "qwen"),
+        ("openai/gpt-4o", "default"),
+    )
+    for model, expected in sample_non_gemini:
+        name = resolve_effective_preset(model, "openrouter")
+        assert name == expected, f"{model!r} should resolve to {expected!r}, not {name!r}"

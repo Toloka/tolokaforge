@@ -83,92 +83,13 @@ class TestFilterUnstableFields:
 
 
 # ---------------------------------------------------------------------------
-# Test 8: compute_stable_hash matches mcp_core's calculate_database_hash
-# ---------------------------------------------------------------------------
-
-
-class TestComputeStableHashCrossImplementation:
-    """Verify that compute_stable_hash produces the same result as mcp_core."""
-
-    @pytest.fixture(autouse=True)
-    def _require_mcp_core(self):
-        # Trigger mcp_core sys.path setup via tolokaforge module
-        import tolokaforge.core.grading.fuzzy_compare  # noqa: F401
-
-        pytest.importorskip("mcp_core", reason="mcp_core runtime not available")
-
-    def test_hash_matches_mcp_core(self):
-        """compute_stable_hash(stable_state) == calculate_database_hash(db).
-
-        Flow:
-        1. Build InMemoryDatabase with synthetic models
-        2. get_stable_database_state(db) → filtered state dict
-        3. calculate_database_hash(db) → mcp_core hash
-        4. compute_stable_hash(filtered_state) → tolokaforge hash
-        5. Assert equal
-        """
-        from mcp_core.utils.validation import (
-            calculate_database_hash,
-            get_stable_database_state,
-        )
-
-        from tests.data.tlk_mcp_core.db_helpers import make_test_db
-
-        db = make_test_db(
-            tickets=[
-                {
-                    "id": "1",
-                    "subject": "Cross-hash test",
-                    "description": "Verifying hash consistency",
-                    "status": "open",
-                    "priority": "high",
-                }
-            ],
-            users=[
-                {
-                    "id": "2",
-                    "name": "Alice",
-                    "email": "alice@test.com",
-                    "created_at": "2025-06-01",
-                    "updated_at": "2025-06-01",
-                }
-            ],
-        )
-
-        mcp_hash = calculate_database_hash(db)
-        stable_state = get_stable_database_state(db)
-        tf_hash = compute_stable_hash(stable_state)
-
-        assert mcp_hash == tf_hash, (
-            f"Hash mismatch: mcp_core={mcp_hash[:16]}... vs tolokaforge={tf_hash[:16]}..."
-        )
-
-    def test_hash_matches_after_mutation(self):
-        """Cross-implementation hash still matches after DB mutation."""
-        from mcp_core.utils.validation import (
-            calculate_database_hash,
-            get_stable_database_state,
-        )
-
-        from tests.data.tlk_mcp_core.db_helpers import make_test_db
-        from tests.data.tlk_mcp_core.models import SyntheticTicket
-
-        db = make_test_db(tickets=[{"id": "1", "status": "open", "priority": "normal"}])
-
-        # Mutate stable field
-        ticket = db.get_by_id(SyntheticTicket, "1")
-        ticket.priority = "urgent"
-        db.update(ticket)
-
-        mcp_hash = calculate_database_hash(db)
-        stable_state = get_stable_database_state(db)
-        tf_hash = compute_stable_hash(stable_state)
-
-        assert mcp_hash == tf_hash
-
-
-# ---------------------------------------------------------------------------
-# Tests: compute_stable_hash standalone behavior
+# compute_stable_hash standalone behavior
+#
+# NOTE: the cross-implementation contract test that verified
+# ``tolokaforge.core.hash.compute_stable_hash`` produces the same hash as
+# ``mcp_core.utils.validation.calculate_database_hash`` lives in the
+# adapter package's test suite, because it requires ``mcp_core`` to be
+# importable.
 # ---------------------------------------------------------------------------
 
 import copy

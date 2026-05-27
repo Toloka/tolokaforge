@@ -6,7 +6,7 @@ combine:
 
 state_checks:
   jsonpaths: []
-
+  
   hash:
     enabled: true
     golden_actions:

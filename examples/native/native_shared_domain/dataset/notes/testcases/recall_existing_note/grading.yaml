@@ -1,0 +1,18 @@
+# Transcript-only rubric — see add_first_note/grading.yaml for the rationale.
+combine:
+  method: weighted
+  weights:
+    transcript_rules: 1.0
+  pass_threshold: 0.75
+
+transcript_rules:
+  max_turns: 6
+  required_actions:
+    - action_id: "list_notes"
+      requestor: assistant
+      name: list_notes
+      arguments: {}
+      compare_args: []
+  communicate_info:
+    - info: "aurora-481-fennel"
+      required: true

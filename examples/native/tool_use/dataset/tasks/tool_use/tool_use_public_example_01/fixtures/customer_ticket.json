@@ -1,0 +1,8 @@
+{
+  "ticket_id": "T-100",
+  "priority": "high",
+  "service": "billing-api",
+  "customer_tier": "enterprise",
+  "symptom": "Refund webhook retries exceed 8 attempts",
+  "impact": "Delayed refund confirmations"
+}

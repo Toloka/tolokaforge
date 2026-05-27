@@ -1,0 +1,24 @@
+{
+  "combine": {
+    "method": "weighted",
+    "pass_threshold": 1.0,
+    "weights": {
+      "state_checks": 1.0
+    }
+  },
+  "custom_checks": null,
+  "llm_judge": null,
+  "state_checks": {
+    "db_hash_check": false,
+    "env_assertions": [],
+    "hash": null,
+    "jsonpaths": [
+      {
+        "description": "items remain empty (no-op task)",
+        "equals": [],
+        "path": "$.db.items"
+      }
+    ]
+  },
+  "transcript_rules": null
+}

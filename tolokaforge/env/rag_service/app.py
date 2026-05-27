@@ -29,11 +29,14 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from rank_bm25 import BM25Okapi
 
+from tolokaforge.secrets import install_global_redactor
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
+install_global_redactor()
 logger = logging.getLogger(__name__)
 
 # Service version

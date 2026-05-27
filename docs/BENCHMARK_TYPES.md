@@ -34,5 +34,8 @@ Tolokaforge OSS v1 supports the following benchmark types (ARC-AGI excluded by d
 
 ## Related Docs
 
-1. `docs/KNOWLEDGE_REASONING.md`
-2. `docs/FUTURE_DEVELOPMENT.md`
+1. `docs/OSS_V1_IMPLEMENTATION_PLAN.md`
+2. `docs/BACKEND_STATUS_MATRIX.md`
+3. `docs/BENCHMARK_BACKEND_DESIGNS.md`
+4. `docs/DEEP_RESEARCH.md`
+5. `docs/KNOWLEDGE_REASONING.md`

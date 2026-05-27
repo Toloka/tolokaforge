@@ -1,0 +1,11 @@
+combine:
+  method: weighted
+  weights:
+    state_checks: 1.0
+  pass_threshold: 1.0
+
+state_checks:
+  jsonpaths:
+    - path: "$.db.items"
+      equals: []
+      description: "items remain empty (no-op task)"

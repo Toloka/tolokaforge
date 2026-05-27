@@ -1,0 +1,10 @@
+{
+  "keys": [
+    "_shared/domain.yaml",
+    "_shared/mcp_server.py",
+    "_shared/system_prompt.md",
+    "testcases/case_a/grading.yaml",
+    "testcases/case_a/initial_state.json",
+    "testcases/case_a/task.yaml"
+  ]
+}

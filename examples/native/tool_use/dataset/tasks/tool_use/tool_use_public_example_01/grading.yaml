@@ -1,0 +1,42 @@
+combine:
+  method: weighted
+  weights:
+    state_checks: 0.65
+    transcript_rules: 0.35
+  pass_threshold: 0.8
+state_checks:
+  jsonpaths:
+    - path: "$.db.tickets[0].status"
+      equals: "in_progress"
+      description: "Ticket status updated in JSON DB"
+    - path: "$.db.tickets[0].assignee"
+      equals: "oncall-platform"
+      description: "Ticket assigned to on-call platform owner"
+    - path_glob: "/env/fs/agent-visible/submissions/*"
+      contains_ci: "rollback"
+      description: "Plan includes rollback precaution"
+transcript_rules:
+  max_turns: 9
+  disallow_regex:
+    - "(?i)(cannot complete|no plan|skipping details)"
+  required_actions:
+    - action_id: "query_ticket"
+      requestor: assistant
+      name: db_query
+      arguments: {}
+      compare_args: []
+    - action_id: "update_ticket"
+      requestor: assistant
+      name: db_update
+      arguments: {}
+      compare_args: []
+    - action_id: "write_ticket_plan"
+      requestor: assistant
+      name: write_file
+      arguments: {}
+      compare_args: []
+  communicate_info:
+    - info: "in_progress"
+      required: true
+    - info: "rollback"
+      required: true

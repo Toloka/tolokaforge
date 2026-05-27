@@ -1,0 +1,18 @@
+# Hermetic shared-domain fixture for canonical tests. Two minimal cases
+# share this domain dict (category, tools wiring, system_prompt ref). Cases
+# only override task_id, name, description, json_db, and grading.
+category: "tool_use"
+
+tools:
+  agent:
+    mcp_server: "mcp_server.py"
+    enabled:
+      - echo_value
+  user:
+    enabled: []
+
+user_simulator:
+  mode: llm
+  persona: cooperative
+
+system_prompt: "system_prompt.md"

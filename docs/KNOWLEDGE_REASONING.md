@@ -37,6 +37,6 @@ under one harness format and reporting pipeline.
 
 ## Example Locations
 
-1. `tasks/knowledge_reasoning/knowledge_public_example_01/`
-2. `tasks/knowledge_reasoning/knowledge_public_example_02/`
+1. `examples/knowledge_reasoning/dataset/tasks/knowledge_reasoning/knowledge_public_example_01/`
+2. `examples/knowledge_reasoning/dataset/tasks/knowledge_reasoning/knowledge_public_example_02/`
    - Includes a multi-turn scripted follow-up step before final stop.

@@ -1,0 +1,441 @@
+"""Unit tests for tolokaforge.adapters._task_loader.
+
+Covers the shared-domain merge that lets ``<dom>/testcases/<case>/task.yaml``
+inherit fields from ``<dom>/_shared/domain.yaml``. Each test builds a tiny
+hermetic fixture under ``tmp_path`` so the layout choices are explicit and
+not coupled to any in-tree task pack.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+import yaml
+from pydantic import ValidationError
+
+from tolokaforge.adapters._task_loader import (
+    _apply_domain,
+    _detect_task_root,
+    _rewrite_task_paths,
+    load_task_yaml,
+)
+
+pytestmark = pytest.mark.unit
+
+
+# ---------------------------------------------------------------------------
+# Fixture helpers
+# ---------------------------------------------------------------------------
+
+
+def _write_yaml(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(data, sort_keys=False))
+
+
+def _make_domain_layout(root: Path, *, case: str = "case_a") -> Path:
+    """Build a minimal valid domain-layout fixture under *root* and return the
+    case task.yaml path."""
+    shared = root / "demo" / "_shared"
+    case_dir = root / "demo" / "testcases" / case
+
+    _write_yaml(
+        shared / "domain.yaml",
+        {
+            "category": "tool_use",
+            "tools": {
+                "agent": {"mcp_server": "mcp_server.py", "enabled": ["t1"]},
+                "user": {"enabled": []},
+            },
+            "user_simulator": {"mode": "llm", "persona": "cooperative"},
+            "system_prompt": "system_prompt.md",
+        },
+    )
+    (shared / "mcp_server.py").write_text("# stub\n")
+    (shared / "system_prompt.md").write_text("Be helpful.\n")
+
+    (case_dir / "initial_state.json").parent.mkdir(parents=True, exist_ok=True)
+    (case_dir / "initial_state.json").write_text("{}")
+    _write_yaml(
+        case_dir / "task.yaml",
+        {
+            "task_id": f"demo_{case}",
+            "name": f"demo {case}",
+            "description": f"demo case {case}",
+            "domain": "../../_shared/domain.yaml",
+            "initial_state": {"json_db": "initial_state.json"},
+            "grading": "grading.yaml",
+        },
+    )
+    _write_yaml(
+        case_dir / "grading.yaml",
+        {
+            "combine": {
+                "method": "weighted",
+                "weights": {"state_checks": 1.0},
+                "pass_threshold": 1.0,
+            },
+        },
+    )
+    return case_dir / "task.yaml"
+
+
+def _make_flat_layout(root: Path) -> Path:
+    """Build a minimal flat-layout task and return its task.yaml path."""
+    task_dir = root / "flat_task"
+    (task_dir / "system_prompt.md").parent.mkdir(parents=True, exist_ok=True)
+    (task_dir / "system_prompt.md").write_text("hello\n")
+    (task_dir / "initial_state.json").write_text("{}")
+    _write_yaml(
+        task_dir / "task.yaml",
+        {
+            "task_id": "flat",
+            "name": "flat task",
+            "category": "tool_use",
+            "description": "flat task",
+            "initial_state": {"json_db": "initial_state.json"},
+            "tools": {"agent": {"enabled": []}, "user": {"enabled": []}},
+            "user_simulator": {"mode": "llm", "persona": "cooperative"},
+            "grading": "grading.yaml",
+            "system_prompt": "system_prompt.md",
+        },
+    )
+    _write_yaml(
+        task_dir / "grading.yaml",
+        {
+            "combine": {
+                "method": "weighted",
+                "weights": {"state_checks": 1.0},
+                "pass_threshold": 1.0,
+            },
+        },
+    )
+    return task_dir / "task.yaml"
+
+
+# ---------------------------------------------------------------------------
+# _detect_task_root
+# ---------------------------------------------------------------------------
+
+
+class TestDetectTaskRoot:
+    def test_domain_layout_returns_domain_root(self, tmp_path: Path) -> None:
+        # Regression for the original PR #81 bug: an unreachable nested ``if``
+        # left _task_roots empty so domain-layout tasks silently degraded to
+        # the flat layout. _detect_task_root must return <dom>, not the case
+        # dir, so downstream consumers (NativeAdapter._bundle_task_artifacts)
+        # bundle the _shared/ siblings.
+        task_path = tmp_path / "my_dom" / "testcases" / "case_a" / "task.yaml"
+        assert _detect_task_root(task_path) == tmp_path / "my_dom"
+
+    def test_flat_layout_returns_parent(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "my_task" / "task.yaml"
+        assert _detect_task_root(task_path) == tmp_path / "my_task"
+
+    def test_intermediate_dir_named_testcases_does_not_trigger(self, tmp_path: Path) -> None:
+        # Only <dom>/testcases/<case>/task.yaml triggers the domain heuristic.
+        # A task whose grandparent is *not* literally "testcases" stays flat.
+        task_path = tmp_path / "tasks" / "my_dom" / "task.yaml"
+        assert _detect_task_root(task_path) == tmp_path / "tasks" / "my_dom"
+
+
+# ---------------------------------------------------------------------------
+# _apply_domain
+# ---------------------------------------------------------------------------
+
+
+class TestApplyDomain:
+    def test_no_domain_ref_is_passthrough(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "task.yaml"
+        task_data = {"task_id": "x", "category": "tool_use"}
+        out = _apply_domain(task_path, task_data, tmp_path)
+        assert out == {"task_id": "x", "category": "tool_use"}
+
+    def test_deep_merge_task_wins_on_conflict(self, tmp_path: Path) -> None:
+        domain_path = tmp_path / "dom" / "_shared" / "domain.yaml"
+        _write_yaml(
+            domain_path,
+            {
+                "category": "domain_default",
+                "tools": {"agent": {"enabled": ["t_domain"]}},
+            },
+        )
+        task_path = tmp_path / "dom" / "testcases" / "c1" / "task.yaml"
+        task_path.parent.mkdir(parents=True)
+        task_data = {
+            "task_id": "c1",
+            "domain": "../../_shared/domain.yaml",
+            "category": "case_override",
+            "tools": {"agent": {"enabled": ["t_case"]}},
+        }
+        merged = _apply_domain(task_path, task_data, tmp_path / "dom")
+        # Scalar conflict: case wins.
+        assert merged["category"] == "case_override"
+        # Nested dict conflict: deep-merge, case-side leaf wins.
+        assert merged["tools"]["agent"]["enabled"] == ["t_case"]
+
+    def test_strips_domain_key(self, tmp_path: Path) -> None:
+        domain_path = tmp_path / "dom" / "_shared" / "domain.yaml"
+        _write_yaml(domain_path, {"category": "x"})
+        task_path = tmp_path / "dom" / "testcases" / "c" / "task.yaml"
+        task_path.parent.mkdir(parents=True)
+        merged = _apply_domain(
+            task_path,
+            {"task_id": "c", "domain": "../../_shared/domain.yaml"},
+            tmp_path / "dom",
+        )
+        assert "domain" not in merged
+
+    def test_missing_domain_file_raises(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "task.yaml"
+        with pytest.raises(RuntimeError, match="Domain file referenced"):
+            _apply_domain(task_path, {"domain": "missing.yaml"}, tmp_path)
+
+    def test_non_mapping_domain_raises(self, tmp_path: Path) -> None:
+        bad = tmp_path / "bad.yaml"
+        bad.write_text("- just\n- a\n- list\n")
+        task_path = tmp_path / "task.yaml"
+        with pytest.raises(RuntimeError, match="not a YAML mapping"):
+            _apply_domain(task_path, {"domain": "bad.yaml"}, tmp_path)
+
+    def test_domain_paths_rewritten_to_task_root(self, tmp_path: Path) -> None:
+        # Domain-side ``mcp_server: mcp_server.py`` lives at <dom>/_shared/.
+        # The task root is <dom>. After merge the path should resolve to
+        # ``_shared/mcp_server.py`` from the task root frame, not from the
+        # case dir frame — that's the bug surfaced by
+        # test_load_task_yaml_real_example.
+        domain_dir = tmp_path / "dom" / "_shared"
+        domain_dir.mkdir(parents=True)
+        (domain_dir / "mcp_server.py").write_text("# stub\n")
+        _write_yaml(
+            domain_dir / "domain.yaml",
+            {"tools": {"agent": {"mcp_server": "mcp_server.py"}}},
+        )
+        case_dir = tmp_path / "dom" / "testcases" / "c1"
+        case_dir.mkdir(parents=True)
+        merged = _apply_domain(
+            case_dir / "task.yaml",
+            {"task_id": "c1", "domain": "../../_shared/domain.yaml"},
+            tmp_path / "dom",
+        )
+        # After merge, the path resolves cleanly from task_root.
+        assert merged["tools"]["agent"]["mcp_server"] == "_shared/mcp_server.py"
+        assert (tmp_path / "dom" / merged["tools"]["agent"]["mcp_server"]).exists()
+
+
+# ---------------------------------------------------------------------------
+# _rewrite_task_paths
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "field_path",
+    [
+        ["grading"],
+        ["system_prompt"],
+        ["tools", "agent", "mcp_server"],
+        ["tools", "user", "mcp_server"],
+        ["initial_state", "json_db"],
+        ["initial_state", "system_prompt"],
+    ],
+)
+def test_rewrite_string_path_fields_covers_all(tmp_path: Path, field_path: list[str]) -> None:
+    """Every relative-path string field on TaskConfig / InitialStateConfig is
+    rewritten when the task root moves from one dir to another. Failure here
+    means a new path field landed without an entry in
+    ``_PATH_FIELD_REWRITERS`` — add it there."""
+    domain_dir = tmp_path / "_shared"
+    case_dir = tmp_path / "testcases" / "c1"
+    domain_dir.mkdir(parents=True)
+    case_dir.mkdir(parents=True)
+
+    # Build a nested dict with a single relative path leaf.
+    data: dict = {}
+    node = data
+    for key in field_path[:-1]:
+        node[key] = {}
+        node = node[key]
+    node[field_path[-1]] = "thing.txt"
+
+    # File lives next to the domain dict so the rewrite resolves.
+    (domain_dir / "thing.txt").write_text("x")
+
+    _rewrite_task_paths(data, domain_dir, case_dir)
+
+    # Walk the same path and confirm the leaf is now case-relative.
+    node2: object = data
+    for key in field_path:
+        assert isinstance(node2, dict)
+        node2 = node2[key]
+    assert node2 == "../../_shared/thing.txt"
+
+
+def test_rewrite_filesystem_copy_walks_list_of_dicts(tmp_path: Path) -> None:
+    """``initial_state.filesystem.copy[].from`` is a list of dicts where only
+    the ``from`` key is a path. Regression for F3 — the original PR's
+    rewriter missed this field entirely."""
+    domain_dir = tmp_path / "_shared"
+    case_dir = tmp_path / "testcases" / "c1"
+    domain_dir.mkdir(parents=True)
+    case_dir.mkdir(parents=True)
+    (domain_dir / "seed.txt").write_text("hi")
+
+    data = {
+        "initial_state": {
+            "filesystem": {
+                "copy": [
+                    {"from": "seed.txt", "to": "/agent/seed.txt"},
+                    {"from": "seed.txt", "to": "/agent/seed2.txt"},
+                ]
+            }
+        }
+    }
+
+    _rewrite_task_paths(data, domain_dir, case_dir)
+
+    copies = data["initial_state"]["filesystem"]["copy"]
+    assert copies[0]["from"] == "../../_shared/seed.txt"
+    assert copies[0]["to"] == "/agent/seed.txt"  # ``to`` left untouched
+    assert copies[1]["from"] == "../../_shared/seed.txt"
+
+
+def test_rewrite_inline_json_db_dict_is_left_alone(tmp_path: Path) -> None:
+    """When ``initial_state.json_db`` is an inline dict literal it has no
+    path to resolve. Rewriting it would corrupt the value."""
+    data = {"initial_state": {"json_db": {"orders": []}}}
+    _rewrite_task_paths(data, tmp_path / "a", tmp_path / "b")
+    assert data["initial_state"]["json_db"] == {"orders": []}
+
+
+# ---------------------------------------------------------------------------
+# load_task_yaml — end-to-end
+# ---------------------------------------------------------------------------
+
+
+class TestLoadTaskYaml:
+    def test_domain_layout_end_to_end(self, tmp_path: Path) -> None:
+        task_path = _make_domain_layout(tmp_path, case="case_a")
+        task, task_dir = load_task_yaml(task_path)
+
+        # Domain-merged values are visible on the validated TaskConfig.
+        assert task.task_id == "demo_case_a"
+        assert task.category == "tool_use"
+
+        # Effective task dir is the domain root, not the case dir.
+        assert task_dir == tmp_path / "demo"
+
+        # Every relative-path field on the returned TaskConfig resolves
+        # cleanly from task_dir — this is the contract test_load_task_yaml
+        # callers (NativeAdapter, validate CLI) rely on.
+        assert task.tools.agent["mcp_server"] == "_shared/mcp_server.py"
+        assert (task_dir / task.tools.agent["mcp_server"]).exists()
+        assert task.system_prompt == "_shared/system_prompt.md"
+        assert (task_dir / task.system_prompt).exists()
+        assert task.initial_state.json_db == "testcases/case_a/initial_state.json"
+        assert (task_dir / task.initial_state.json_db).exists()
+        assert task.grading == "testcases/case_a/grading.yaml"
+        assert (task_dir / task.grading).exists()
+
+    def test_flat_layout_end_to_end(self, tmp_path: Path) -> None:
+        task_path = _make_flat_layout(tmp_path)
+        task, task_dir = load_task_yaml(task_path)
+
+        assert task.task_id == "flat"
+        # Flat layout: task_dir is the task.yaml parent.
+        assert task_dir == tmp_path / "flat_task"
+
+    def test_validation_error_propagates(self, tmp_path: Path) -> None:
+        bad = tmp_path / "task.yaml"
+        bad.write_text("task_id: only_id\n")  # missing required fields
+        with pytest.raises(ValidationError):
+            load_task_yaml(bad)
+
+    def test_non_mapping_yaml_raises_runtime_error(self, tmp_path: Path) -> None:
+        bad = tmp_path / "task.yaml"
+        bad.write_text("- list\n- not\n- mapping\n")
+        with pytest.raises(RuntimeError, match="not a YAML mapping"):
+            load_task_yaml(bad)
+
+    def test_dangling_domain_ref_raises(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "testcases" / "c" / "task.yaml"
+        task_path.parent.mkdir(parents=True)
+        task_path.write_text(
+            yaml.safe_dump(
+                {
+                    "task_id": "x",
+                    "domain": "../../_shared/missing.yaml",
+                }
+            )
+        )
+        with pytest.raises(RuntimeError, match="Domain file referenced"):
+            load_task_yaml(task_path)
+
+
+def test_inline_json_db_dict_survives_load(tmp_path: Path) -> None:
+    """Inline ``json_db`` dict literals must round-trip without rewriting."""
+    domain_path = tmp_path / "demo" / "_shared" / "domain.yaml"
+    _write_yaml(
+        domain_path,
+        {
+            "category": "tool_use",
+            "tools": {"agent": {"enabled": ["t1"]}, "user": {"enabled": []}},
+            "user_simulator": {"mode": "llm", "persona": "cooperative"},
+        },
+    )
+    case_dir = tmp_path / "demo" / "testcases" / "c1"
+    case_dir.mkdir(parents=True)
+    _write_yaml(
+        case_dir / "grading.yaml",
+        {
+            "combine": {
+                "method": "weighted",
+                "weights": {"state_checks": 1.0},
+                "pass_threshold": 1.0,
+            }
+        },
+    )
+    _write_yaml(
+        case_dir / "task.yaml",
+        {
+            "task_id": "inline",
+            "name": "inline",
+            "description": "inline",
+            "domain": "../../_shared/domain.yaml",
+            "initial_state": {"json_db": {"items": [{"id": 1}]}},
+            "grading": "grading.yaml",
+        },
+    )
+    task, _ = load_task_yaml(case_dir / "task.yaml")
+    assert task.initial_state.json_db == {"items": [{"id": 1}]}
+
+
+def test_load_task_yaml_real_example(tmp_path: Path) -> None:
+    """Smoke check: the in-tree ``examples/native_shared_domain`` loads."""
+    repo_root = Path(__file__).resolve().parents[2]
+    case = (
+        repo_root
+        / "examples"
+        / "native_shared_domain"
+        / "dataset"
+        / "notes"
+        / "testcases"
+        / "add_first_note"
+        / "task.yaml"
+    )
+    if not case.exists():
+        pytest.skip(f"example not found at {case}")
+    task, task_dir = load_task_yaml(case)
+    assert task.task_id == "notes_add_first_note"
+    # Effective task dir is <…>/dataset/notes (the domain root).
+    assert task_dir.name == "notes"
+    # Every relative-path field resolves cleanly from task_dir.
+    assert (task_dir / task.tools.agent["mcp_server"]).exists()
+    assert task.system_prompt is not None
+    assert (task_dir / task.system_prompt).exists()
+    json_db_ref = task.initial_state.json_db
+    assert isinstance(json_db_ref, str)
+    initial_state = json.loads((task_dir / json_db_ref).read_text())
+    assert "notes" in initial_state
+    assert (task_dir / task.grading).exists()

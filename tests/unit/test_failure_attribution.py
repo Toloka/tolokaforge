@@ -83,3 +83,56 @@ def test_attribution_summary():
     assert summary["by_failure_class"]["tool_execution"] == 1
     assert summary["by_failure_class"]["model_reasoning"] == 1
     assert summary["by_tool"]["browser"] == 1
+
+
+def test_summary_coverage_is_none_when_no_failures():
+    """0/0 deterministic attribution coverage is meaningless — return None.
+
+    Previously returned 0.0, which the analyze_run.py reporter then
+    formatted as "0.000" alongside successful runs and confused readers.
+    """
+    summary = summarize_failure_attributions([])
+    assert summary["total_failed_attempts"] == 0
+    assert summary["deterministic_attribution_coverage"] is None
+
+
+def test_infrastructure_class_for_connection_errors():
+    """ERR_CONNECTION_REFUSED in messages → infrastructure failure class."""
+    traj = _base_trajectory()
+    traj.messages = [
+        Message(role=MessageRole.USER, content="please check the portal"),
+        Message(
+            role=MessageRole.ASSISTANT,
+            content="The browser returned net::ERR_CONNECTION_REFUSED at http://mock-web:8080",
+        ),
+    ]
+    attribution = attribute_failure(traj)
+    assert attribution["failure_class"] == "infrastructure"
+    assert attribution["deterministic"] is True
+    kinds = {ev["kind"] for ev in attribution["evidence"]}
+    assert "connection_errors" in kinds
+
+
+def test_grade_fail_patterns_extracted_from_reasons_string():
+    traj = _base_trajectory()
+    assert traj.grade is not None
+    traj.grade.reasons = (
+        "Files: PASS: order ref; "
+        "FAIL: must mention compliance escalation; "
+        "FAIL: must mention 7 business days"
+    )
+    attribution = attribute_failure(traj)
+    fail_evidence = [ev for ev in attribution["evidence"] if ev["kind"] == "grade_fail_patterns"]
+    assert len(fail_evidence) == 1
+    assert any("compliance escalation" in p for p in fail_evidence[0]["patterns"])
+
+
+def test_missing_write_file_tool_when_grading_expected_files():
+    traj = _base_trajectory()
+    assert traj.grade is not None
+    traj.grade.reasons = "Files: FAIL: No files match /env/fs/agent-visible/submissions/*"
+    traj.tool_log = [{"tool": "browser", "success": True}]
+    attribution = attribute_failure(traj)
+    missing_tool_evidence = [ev for ev in attribution["evidence"] if ev["kind"] == "missing_tool"]
+    assert len(missing_tool_evidence) == 1
+    assert missing_tool_evidence[0]["tool"] == "write_file"

@@ -1,11 +1,14 @@
-"""Secret providers for the secret management system.
+"""Secret providers — back-ends queried by SecretManager.
 
 This module provides abstract and concrete implementations of secret providers
 that can retrieve secrets from various sources.
 
 Providers:
-    - EnvProvider: Reads secrets from os.environ
-    - DotEnvProvider: Parses a .env file (lazy-loaded, does NOT modify os.environ)
+    - EnvProvider: reads secrets from ``os.environ`` (the only legitimate
+      ``os.environ`` reader for credentials in the codebase)
+    - DotEnvProvider: parses a ``.env`` file lazily — never mutates ``os.environ``
+    - DictProvider: in-memory dict, used inside the runner container to
+      reconstruct a SecretManager from the serialized host payload
 
 Example:
     >>> from tolokaforge.secrets.providers import EnvProvider, DotEnvProvider
@@ -113,7 +116,12 @@ class EnvProvider(SecretProvider):
         return key in os.environ
 
     def list_keys(self) -> list[str]:
-        """Return env var names that look like secrets (API keys, tokens, etc.)."""
+        """Return env var names that look like secrets (API keys, tokens, etc.).
+
+        We can't enumerate every credential the host might hold; instead we
+        match common credential-name patterns. Used by ``SecretManager.serialize``
+        when no explicit key list is supplied.
+        """
         secret_patterns = ("API_KEY", "API_KEYS", "API_BASE", "BASE_URL", "SECRET", "TOKEN")
         return sorted(k for k in os.environ if any(p in k for p in secret_patterns))
 
@@ -310,7 +318,7 @@ class DotEnvProvider(SecretProvider):
         return key in self._secrets
 
     def list_keys(self) -> list[str]:
-        """Return all key names from the .env file."""
+        """Return all key names from the .env file (sorted)."""
         self._load()
         assert self._secrets is not None  # noqa: S101
         return sorted(self._secrets.keys())
@@ -327,27 +335,26 @@ class DotEnvProvider(SecretProvider):
 
 
 class DictProvider(SecretProvider):
-    """Provider backed by a pre-resolved dictionary.
+    """In-memory dict-backed provider.
 
-    Used when secrets are transported as serialized data
-    (e.g., from orchestrator to Runner container via env var).
-
-    This allows the Runner container to have a proper SecretManager
-    without access to the original .env file or host environment.
+    Used inside the runner container to reconstruct a SecretManager from
+    the serialized payload that the orchestrator passed via
+    ``TOLOKAFORGE_SECRETS_JSON``. Has no side effects: never reads
+    ``os.environ`` and never touches the filesystem.
     """
 
     def __init__(self, secrets: dict[str, str]) -> None:
         self._secrets = dict(secrets)
 
+    @property
+    def name(self) -> str:
+        return "DictProvider"
+
     def get_secret(self, key: str) -> str | None:
-        value = self._secrets.get(key)
-        if value is not None:
-            logger.debug("DictProvider: found secret '%s'", key)
-        return value
+        return self._secrets.get(key)
 
     def has_secret(self, key: str) -> bool:
         return key in self._secrets
 
     def list_keys(self) -> list[str]:
-        """Return all available key names."""
         return sorted(self._secrets.keys())

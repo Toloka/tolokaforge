@@ -4,6 +4,7 @@ This service runs in a container with access to the environment network.
 It executes tools against environment services (JSON DB, RAG, mock web, etc).
 """
 
+import inspect
 import json
 import logging
 import time
@@ -14,15 +15,8 @@ import grpc
 
 from tolokaforge.core.env_state import EnvironmentState, InitialStateConfig
 from tolokaforge.executor import executor_pb2, executor_pb2_grpc
-
-# Import all builtin tools
-from tolokaforge.tools.builtin.bash import BashTool
-from tolokaforge.tools.builtin.browser import BrowserTool
-from tolokaforge.tools.builtin.calculator import CalculatorTool
-from tolokaforge.tools.builtin.db_json import DBQueryTool, DBUpdateTool
-from tolokaforge.tools.builtin.files import ListDirTool, ReadFileTool, WriteFileTool
-from tolokaforge.tools.builtin.http_request import HTTPRequestTool
-from tolokaforge.tools.builtin.rag_search import SearchKBTool
+from tolokaforge.secrets import install_global_redactor
+from tolokaforge.tools.builtin import registry as builtin_registry
 from tolokaforge.tools.registry import ToolExecutor, ToolRegistry, ToolResult
 
 logger = logging.getLogger(__name__)
@@ -63,37 +57,97 @@ class ExecutorServiceImpl(executor_pb2_grpc.ExecutorServiceServicer):
             # Create tool registry
             registry = ToolRegistry()
 
-            # Register tools based on request
-            builtin_tool_factories = {
-                "bash": lambda: BashTool(env_state.agent_visible_dir),
-                "read_file": lambda: ReadFileTool(env_state.agent_visible_dir),
-                "write_file": lambda: WriteFileTool(env_state.agent_visible_dir),
-                "list_dir": lambda: ListDirTool(env_state.agent_visible_dir),
-                "calculator": lambda: CalculatorTool(),
-                "db_query": lambda: DBQueryTool(env_state.json_db_url),
-                "db_update": lambda: DBUpdateTool(env_state.json_db_url),
-                "search_kb": lambda: SearchKBTool(env_state.rag_service_url),
-                "http_request": lambda: HTTPRequestTool(),
-                "browser": lambda: BrowserTool(
-                    initial_url=env_state.mock_web_url if env_state.mock_web_url else None,
-                ),
-            }
+            # Per-tool runtime kwargs derived from env_state. Imports come
+            # from the unified builtin registry so adapter, runner, and
+            # executor agree on what's a builtin and where it lives.
+            #
+            # TODO(#123): align with runner WORK_DIR — runner bakes
+            #   /work in BuiltinFileToolWrapper; executor uses
+            #   env_state.agent_visible_dir. Same tool, different
+            #   filesystem context.
+            def _runtime_kwargs(name: str) -> dict:
+                if name == "bash":
+                    return {"workdir": env_state.agent_visible_dir}
+                if name in {"read_file", "write_file", "list_dir"}:
+                    return {"base_path": env_state.agent_visible_dir}
+                if name in {"db_query", "db_update"}:
+                    return {"db_url": env_state.json_db_url}
+                if name == "search_kb":
+                    return {"rag_url": env_state.rag_service_url}
+                return {}
+
+            # Drift-detection: every name the unified registry knows
+            # about must be served. Equality (not subset) — anything
+            # less means an executor-side gap will go unnoticed.
+            executor_supported = builtin_registry.list_builtins()
 
             num_registered = 0
             for tool_def in request.tools:
-                if tool_def.name not in builtin_tool_factories:
+                if tool_def.name not in executor_supported:
                     logger.warning(f"Unknown tool: {tool_def.name}")
                     continue
+
+                # Decode per-task __init__ kwargs from the JSON envelope.
+                # Same shape as runner-side ToolSchema.tool_config (PR #117).
                 try:
-                    registry.register(builtin_tool_factories[tool_def.name]())
+                    tool_config = json.loads(tool_def.config_json) if tool_def.config_json else {}
+                except json.JSONDecodeError as exc:
+                    logger.error(
+                        f"Invalid config_json for tool {tool_def.name}: {exc}",
+                    )
+                    return executor_pb2.RegisterToolsResponse(
+                        success=False,
+                        error=f"Invalid config_json for {tool_def.name}: {exc}",
+                        num_tools_registered=num_registered,
+                    )
+
+                runtime = _runtime_kwargs(tool_def.name)
+                collisions = set(runtime) & set(tool_config)
+                if collisions:
+                    msg = (
+                        f"Tool {tool_def.name} config_json overrides runtime kwargs "
+                        f"{sorted(collisions)}"
+                    )
+                    logger.error(msg)
+                    return executor_pb2.RegisterToolsResponse(
+                        success=False, error=msg, num_tools_registered=num_registered
+                    )
+                merged_kwargs = {**runtime, **tool_config}
+
+                try:
+                    cls = builtin_registry.get_class(tool_def.name)
+                except ImportError as e:
+                    logger.error(f"Optional dependency missing for tool {tool_def.name}: {e}")
+                    return executor_pb2.RegisterToolsResponse(
+                        success=False, error=str(e), num_tools_registered=num_registered
+                    )
+
+                # Validate config_json keys against the tool's __init__,
+                # mirroring BuiltinGenericToolWrapper.__init__ on the
+                # runner side. Unknown keys raise rather than getting
+                # silently dropped (filter would mask YAML typos).
+                valid_kwargs = {
+                    p for p in inspect.signature(cls.__init__).parameters if p != "self"
+                }
+                unknown = set(merged_kwargs) - valid_kwargs
+                if unknown:
+                    msg = (
+                        f"Unknown tool_config keys for '{tool_def.name}': "
+                        f"{sorted(unknown)}; accepted: {sorted(valid_kwargs)}"
+                    )
+                    logger.error(msg)
+                    return executor_pb2.RegisterToolsResponse(
+                        success=False, error=msg, num_tools_registered=num_registered
+                    )
+
+                try:
+                    registry.register(cls(**merged_kwargs))
                     num_registered += 1
                     logger.debug(f"Registered tool: {tool_def.name}")
                 except ImportError as e:
                     logger.error(f"Optional dependency missing for tool {tool_def.name}: {e}")
                     return executor_pb2.RegisterToolsResponse(
-                        success=False,
-                        error=str(e),
-                        num_tools_registered=num_registered,
+                        success=False, error=str(e), num_tools_registered=num_registered
                     )
 
             self.trial_registries[trial_id] = registry
@@ -221,6 +275,7 @@ def main():
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         stream=sys.stdout,
     )
+    install_global_redactor()
 
     # Get bind address from environment or use default
     bind_address = os.environ.get("EXECUTOR_BIND_ADDRESS", "[::]:50051")

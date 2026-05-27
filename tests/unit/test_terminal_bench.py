@@ -37,8 +37,6 @@ class TestAdapterTypeEnum:
         names = {e.value for e in AdapterType}
         assert "terminal_bench" in names
         assert "native" in names
-        assert "tau" in names
-        assert "tlk_mcp_core" in names
 
 
 class TestInvocationStyleEnum:
@@ -454,6 +452,93 @@ class TestCoreStackDinD:
         runner = stack.services["runner"]
         assert runner.resources is not None
         assert runner.resources.cap_drop == [Capability.ALL]
+
+
+class TestCoreStackTerminalBenchMounts:
+    def test_task_pack_mounts_bind_same_absolute_path(self, tmp_path):
+        pack = tmp_path / "pack"
+        pack.mkdir()
+        stack = core_stack(task_pack_mounts=[pack])
+        runner = stack.services["runner"]
+        binds = [m for m in runner.mounts if m.source == str(pack.resolve())]
+        assert binds, "task pack should be bind-mounted at its absolute host path"
+        assert binds[0].target == str(pack.resolve())
+
+    def test_extra_runner_binds_are_applied(self, tmp_path):
+        host = tmp_path / "logs"
+        host.mkdir()
+        stack = core_stack(extra_runner_binds=[(host, "/tmp/tb-logs")])
+        runner = stack.services["runner"]
+        targets = [m.target for m in runner.mounts]
+        assert "/tmp/tb-logs" in targets
+
+    def test_mount_docker_socket_adds_bind_and_relaxes_caps(self):
+        stack = core_stack(mount_docker_socket=True)
+        runner = stack.services["runner"]
+        sock_mounts = [m for m in runner.mounts if m.source == "/var/run/docker.sock"]
+        assert len(sock_mounts) == 1
+        assert sock_mounts[0].target == "/var/run/docker.sock"
+        # Relaxed profile means no explicit cap drop — docker CLI needs extra caps.
+        assert runner.resources is None or runner.resources.cap_drop == []
+
+
+class TestTerminalBenchAdapterDockerStackRequirements:
+    """Adapter declares its host-socket needs through the generic hook."""
+
+    def test_requirements_request_socket_passthrough(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        pack = tmp_path / "pack"
+        pack.mkdir()
+        adapter = TerminalBenchAdapter({"task_packs": [str(pack)]})
+
+        reqs = adapter.docker_stack_requirements()
+
+        assert reqs.mount_docker_socket is True
+        assert pack.resolve() in reqs.task_pack_mounts
+        assert (
+            Path(TerminalBenchAdapter.LOGS_HOST_ROOT),
+            TerminalBenchAdapter.LOGS_HOST_ROOT,
+        ) in reqs.extra_runner_binds
+
+    def test_missing_pack_is_excluded_from_mounts(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        ghost = tmp_path / "missing"
+        adapter = TerminalBenchAdapter({"task_packs": [str(ghost)]})
+
+        reqs = adapter.docker_stack_requirements()
+        assert ghost.resolve() not in reqs.task_pack_mounts
+
+    def test_first_pack_drives_discovery_and_runner_paths(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        pack = tmp_path / "pack"
+        pack.mkdir()
+        adapter = TerminalBenchAdapter({"task_packs": [str(pack)]})
+
+        # Adapter self-resolves its discovery + runner paths from task_packs;
+        # orchestrator no longer needs to set them.
+        assert adapter.terminal_bench_dir == pack.resolve()
+        assert adapter.runner_task_dir == str(pack.resolve())
+        assert adapter.logs_host_root == TerminalBenchAdapter.LOGS_HOST_ROOT
+
+    def test_to_core_stack_kwargs_renders_only_set_fields(self, tmp_path):
+        from tolokaforge.adapters.base import DockerStackRequirements
+
+        empty = DockerStackRequirements().to_core_stack_kwargs()
+        assert empty == {}
+
+        pack = tmp_path / "pack"
+        pack.mkdir()
+        kwargs = DockerStackRequirements(
+            task_pack_mounts=[pack],
+            mount_docker_socket=True,
+        ).to_core_stack_kwargs()
+        assert kwargs == {
+            "task_pack_mounts": [pack],
+            "mount_docker_socket": True,
+        }
 
 
 # =============================================================================

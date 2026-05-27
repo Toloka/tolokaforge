@@ -59,6 +59,19 @@ tests/data/projects/
 
 ## Usage
 
+### Running a Test Project
+
+```bash
+# Run all tasks in a project
+scripts/benchmark/run_test_project.sh food_delivery_2
+
+# Run specific task
+scripts/benchmark/run_test_project.sh food_delivery_2 051fa6cb
+
+# Dry run (see what would execute)
+scripts/benchmark/run_test_project.sh food_delivery_2 --dry-run
+```
+
 ### Using in Tests
 
 ```python
@@ -95,11 +108,11 @@ def test_something(food_delivery_2_initial_state, food_delivery_2_mcp_server):
 - **Tasks**: 3 test tasks
 - **Tools**: None (minimal project for adapter testing)
 - **Structure**: Tau-bench format (tasks_test.py, env.py, wiki.md)
-- **Use Case**: Testing adapter implementation
+- **Use Case**: Testing TauAdapter implementation
 - **Files**:
   - `env.py`: Environment marker file
-  - `types_local.py`: Local Task/Action types (standalone)
-  - `tasks_test.py`: 3 test tasks for adapter testing
+  - `types_local.py`: Local Task/Action types (standalone, no tau_bench dependency)
+  - `tasks_test.py`: 3 test tasks for TauAdapter testing
   - `tools/`: Tool stubs
 
 ## Adding a New Test Project
@@ -165,6 +178,7 @@ def test_something(project_name_initial_state, project_name_mcp_server):
 - ✅ Copy complete projects (all files needed)
 - ✅ Include example output/trajectories for bug reproduction
 - ✅ Keep projects as-is (don't modify)
+- ✅ Use `scripts/benchmark/run_test_project.sh` to regenerate data
 - ✅ Document project purpose in this README
 
 ### DON'T:
@@ -181,6 +195,9 @@ def test_something(project_name_initial_state, project_name_mcp_server):
 ```bash
 # Re-copy from source
 cp -r source/path tests/data/projects/PROJECT_NAME/
+
+# Regenerate test output if needed
+scripts/benchmark/run_test_project.sh PROJECT_NAME TASK_ID
 ```
 
 ### Cleaning Up
@@ -208,5 +225,6 @@ For committed projects:
 ## References
 
 - **Fixtures**: [`tests/utils/project_fixtures.py`](../../utils/project_fixtures.py)
+- **Run Script**: [`scripts/benchmark/run_test_project.sh`](../../../scripts/benchmark/run_test_project.sh)
 - **Test Suite**: [`tests/canonical/`](../../canonical/)
 - **Main Test README**: [`tests/README.md`](../../README.md)

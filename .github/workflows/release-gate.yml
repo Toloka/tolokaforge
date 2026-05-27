@@ -1,0 +1,94 @@
+name: Release Gate
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  release-gate:
+    runs-on: depot-ubuntu-22.04-8
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python 3.10
+        run: uv python install 3.10
+
+
+      - name: Install dependencies
+        run: |
+          uv sync --dev
+
+      - name: Install Playwright browsers
+        run: |
+          uv run python -m playwright install chromium
+
+      - name: Create .env file
+        run: |
+          echo "OPENROUTER_API_KEY=${{ secrets.OPENROUTER_TESTING_TOKEN }}" > .env
+
+      - name: Lint
+        run: |
+          uv run pre-commit run --all-files --show-diff-on-failure
+
+      - name: Validate public example suites
+        run: |
+          uv run tolokaforge validate --tasks "examples/native/*/dataset/**/task.yaml"
+
+
+      - name: Docker task-pack mount smoke
+        run: |
+          scripts/tests/task_pack_docker_smoke.sh
+
+      - name: Run public examples end-to-end
+        run: |
+          scripts/tests/run_public_examples_smoke.sh
+
+      - name: Summarize public examples and enforce thresholds
+        env:
+          PUBLIC_EXAMPLES_MIN_PASS_RATE: ${{ vars.PUBLIC_EXAMPLES_MIN_PASS_RATE || '0.0' }}
+        run: |
+          uv run python scripts/tests/summarize_public_examples.py \
+            --min-pass-rate "${PUBLIC_EXAMPLES_MIN_PASS_RATE}" \
+            --min-completion-rate 1.0
+
+      - name: Run unit tests
+        run: |
+          uv run pytest tests/unit/ -v --tb=short
+
+      - name: Run functional tests
+        run: |
+          uv run pytest tests/functional/ -v --tb=short
+
+      - name: Build Docker images for integration tests
+        run: |
+          docker compose build json-db mock-web rag-service executor
+
+      - name: Run integration tests
+        run: |
+          uv run pytest tests/integration/ -v --tb=short
+
+      - name: Run e2e tests
+        env:
+          E2E_TESTS: "1"
+        run: |
+          scripts/with_env.sh uv run pytest tests/e2e/ -v --tb=short
+
+      - name: Upload release gate summary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-example-summary-release
+          path: |
+            output/public_examples_summary.json
+            output/public_examples_summary.md

@@ -81,6 +81,9 @@ class ToolExecutionError(Exception):
     """Error during tool execution at runtime (e.g., validation failures).
 
     Distinct from ToolReconstructionError which is for setup-time failures.
+    Raising this from a wrapper's execute() lets the runner service record
+    EXECUTION_STATUS_ERROR so tool_success_rate, failure_attribution, and
+    error_count reflect reality.
     """
 
     def __init__(self, tool_name: str, message: str):
@@ -471,7 +474,20 @@ class MCPServerProcess(BaseModel):
         # Read response
         response_line = self.process.stdout.readline()
         if not response_line:
-            raise RuntimeError("MCP server closed connection")
+            # Drain stderr so the actual subprocess crash reason is visible.
+            # Without this the only signal is the empty-stdout symptom and the
+            # real cause (import error, lifespan crash, …) is lost in the pipe.
+            stderr_tail = ""
+            if self.process.stderr is not None:
+                try:
+                    stderr_tail = self.process.stderr.read() or ""
+                except Exception:
+                    pass
+            exit_code = self.process.poll()
+            raise RuntimeError(
+                f"MCP server closed connection (script={self.script_path}, "
+                f"exit_code={exit_code}, stderr_tail={stderr_tail[-2000:]!r})"
+            )
 
         response = json.loads(response_line)
 
@@ -643,12 +659,17 @@ class BuiltinFileToolWrapper(ToolWrapper):
         super().__init__(tool_schema)
         from tolokaforge.tools.builtin.files import ListDirTool, ReadFileTool, WriteFileTool
 
+        # base_path = /work so the file tools target the same directory as
+        # BashTool's workdir and the runner's filesystem-provisioning code
+        # (see service.py RegisterTrial). Without this, read_file looks at
+        # /env/fs/agent-visible/X but the runner wrote to /work/X.
+        WORK_DIR = "/work"
         if tool_schema.name == "read_file":
-            self._tool = ReadFileTool()
+            self._tool = ReadFileTool(base_path=WORK_DIR)
         elif tool_schema.name == "write_file":
-            self._tool = WriteFileTool()
+            self._tool = WriteFileTool(base_path=WORK_DIR)
         elif tool_schema.name == "list_dir":
-            self._tool = ListDirTool()
+            self._tool = ListDirTool(base_path=WORK_DIR)
         else:
             raise ToolConfigurationError(
                 tool_schema.name,
@@ -659,7 +680,14 @@ class BuiltinFileToolWrapper(ToolWrapper):
         result = self._tool.execute(**arguments)
         if result.success:
             return result.output or ""
-        return f"Error: {result.error}"
+        # Raise so the runner service records EXECUTION_STATUS_ERROR,
+        # preserving correct tool_success_rate and failure attribution.
+        # The runner's exception handler sends the error message back to
+        # the LLM, so the agent can still self-correct.
+        raise ToolExecutionError(
+            self.name,
+            result.error or "Tool returned failure with no error message",
+        )
 
 
 # =============================================================================
@@ -667,42 +695,50 @@ class BuiltinFileToolWrapper(ToolWrapper):
 # =============================================================================
 
 
-# Lazy factory registry for builtin tools that are NOT file tools and NOT search_kb.
-# Each entry maps tool_name → (module_path, class_name).
-_BUILTIN_TOOL_FACTORIES: dict[str, tuple[str, str]] = {
-    "bash": ("tolokaforge.tools.builtin.bash", "BashTool"),
-    "calculator": ("tolokaforge.tools.builtin.calculator", "CalculatorTool"),
-    "browser": ("tolokaforge.tools.builtin.browser", "BrowserTool"),
-    "http_request": ("tolokaforge.tools.builtin.http_request", "HTTPRequestTool"),
-    "mobile": ("tolokaforge.tools.builtin.mobile", "MobileTool"),
-    "db_query": ("tolokaforge.tools.builtin.db_json", "DBQueryTool"),
-    "db_update": ("tolokaforge.tools.builtin.db_json", "DBUpdateTool"),
-}
-
-
 class BuiltinGenericToolWrapper(ToolWrapper):
-    """Wrapper for builtin tools loaded by name from the tool registry.
+    """Wrapper for builtin tools loaded by name from the unified registry.
 
     Handles tools like browser, bash, calculator, http_request, mobile, etc.
-    Instantiates the tool class from ``_BUILTIN_TOOL_FACTORIES`` and
-    delegates ``execute()`` to it.
+    Instantiates the tool class via ``tolokaforge.tools.builtin.registry``
+    and delegates ``execute()`` to it. Per-task init kwargs come from
+    ``ToolSchema.tool_config``.
     """
 
     def __init__(self, tool_schema: ToolSchemaModel):
         super().__init__(tool_schema)
-        import importlib
+        import inspect
 
-        entry = _BUILTIN_TOOL_FACTORIES.get(tool_schema.name)
-        if entry is None:
+        from tolokaforge.tools.builtin import registry as builtin_registry
+
+        if not builtin_registry.is_builtin(tool_schema.name):
             raise ToolConfigurationError(
                 tool_schema.name,
                 f"No builtin factory for tool '{tool_schema.name}'",
             )
-        module_path, class_name = entry
         try:
-            mod = importlib.import_module(module_path)
-            cls = getattr(mod, class_name)
-            self._tool = cls()
+            cls = builtin_registry.get_class(tool_schema.name)
+        except Exception as exc:
+            raise ToolConfigurationError(
+                tool_schema.name,
+                f"Failed to import builtin tool '{tool_schema.name}': {exc}",
+            ) from exc
+
+        # Splat ``tool_schema.tool_config`` into the tool's __init__.
+        # Unknown keys raise rather than getting silently dropped (a
+        # filter would mask YAML typos as runtime quirks). The error
+        # enumerates the kwargs the tool actually accepts so the
+        # caller can spot the typo at trial registration.
+        tool_config = tool_schema.tool_config or {}
+        valid_kwargs = {p for p in inspect.signature(cls.__init__).parameters if p != "self"}
+        unknown = set(tool_config) - valid_kwargs
+        if unknown:
+            raise ToolConfigurationError(
+                tool_schema.name,
+                f"Unknown tool_config keys for '{tool_schema.name}': "
+                f"{sorted(unknown)}; accepted: {sorted(valid_kwargs)}",
+            )
+        try:
+            self._tool = cls(**tool_config)
         except Exception as exc:
             raise ToolConfigurationError(
                 tool_schema.name,
@@ -978,16 +1014,25 @@ class DockerComposeExecToolWrapper(ToolWrapper):
 
         self.project_name = project_name
         # Override container_name and log paths for parallel trial isolation.
-        # Log paths must exist on the Docker daemon's filesystem (DinD or host).
-        self.env_vars["T_BENCH_TASK_DOCKER_CLIENT_CONTAINER_NAME"] = f"{project_name}_main"
-        self.env_vars["T_BENCH_TASK_LOGS_PATH"] = f"/workspace/logs/{project_name}"
-        self.env_vars["T_BENCH_TASK_AGENT_LOGS_PATH"] = f"/workspace/agent_logs/{project_name}"
+        # Derive per-trial log dirs from the parents of the task-scoped paths
+        # the adapter provided, so DinD (/workspace) and host-socket
+        # (/tmp/...) setups both work without hardcoding a root here.
+        prev_logs = self.env_vars.get("T_BENCH_TASK_LOGS_PATH", "/workspace/logs/default")
+        prev_agent_logs = self.env_vars.get(
+            "T_BENCH_TASK_AGENT_LOGS_PATH", "/workspace/agent_logs/default"
+        )
+        logs_root = os.path.dirname(prev_logs) or "/workspace/logs"
+        agent_logs_root = os.path.dirname(prev_agent_logs) or "/workspace/agent_logs"
 
-        # Pre-create log dirs.  With DinD, /workspace is a shared volume
-        # between Runner and DinD, so mkdir on Runner's side creates them
-        # on the Docker daemon's filesystem too.
-        os.makedirs(f"/workspace/logs/{project_name}", exist_ok=True)
-        os.makedirs(f"/workspace/agent_logs/{project_name}", exist_ok=True)
+        self.env_vars["T_BENCH_TASK_DOCKER_CLIENT_CONTAINER_NAME"] = f"{project_name}_main"
+        self.env_vars["T_BENCH_TASK_LOGS_PATH"] = os.path.join(logs_root, project_name)
+        self.env_vars["T_BENCH_TASK_AGENT_LOGS_PATH"] = os.path.join(agent_logs_root, project_name)
+
+        # Pre-create log dirs.  Both DinD (shared /workspace volume) and
+        # host-socket (shared /tmp bind-mount) setups make this path visible
+        # to the Docker daemon that runs the task container.
+        os.makedirs(self.env_vars["T_BENCH_TASK_LOGS_PATH"], exist_ok=True)
+        os.makedirs(self.env_vars["T_BENCH_TASK_AGENT_LOGS_PATH"], exist_ok=True)
 
         result = self._run(self._compose_cmd("up", "-d", "--wait"), timeout=300)
         if result.returncode != 0:
@@ -1173,18 +1218,22 @@ class ToolFactory:
             ToolConfigurationError: If tool has no source and is not a built-in
             ToolImportError: If tool module/class cannot be imported
         """
-        # Handle built-in tools (no source)
+        # Handle built-in tools (no source) — dispatch by name through
+        # the unified registry. Eliminates the previous drift between
+        # hardcoded name tuples and a separate factory dict.
         if schema.source is None:
-            # Check if this is a known built-in tool
-            if schema.name == "search_kb":
+            from tolokaforge.tools.builtin import registry as builtin_registry
+
+            if not builtin_registry.is_builtin(schema.name):
+                raise ToolConfigurationError(
+                    schema.name, "Tool has no source configuration, cannot reconstruct"
+                )
+            dispatch = builtin_registry.get_dispatch(schema.name)
+            if dispatch is builtin_registry.Dispatch.RAG:
                 return self._create_rag_search_wrapper(schema)
-            if schema.name in ("read_file", "write_file", "list_dir"):
+            if dispatch is builtin_registry.Dispatch.FILES:
                 return BuiltinFileToolWrapper(schema)
-            if schema.name in _BUILTIN_TOOL_FACTORIES:
-                return BuiltinGenericToolWrapper(schema)
-            raise ToolConfigurationError(
-                schema.name, "Tool has no source configuration, cannot reconstruct"
-            )
+            return BuiltinGenericToolWrapper(schema)
 
         source = schema.source
         style = source.invocation_style

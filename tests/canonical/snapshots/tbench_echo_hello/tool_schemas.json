@@ -24,10 +24,10 @@
           "MEMORY": "512M",
           "T_BENCH_CONTAINER_AGENT_LOGS_PATH": "/logs/agent",
           "T_BENCH_CONTAINER_LOGS_PATH": "/logs",
-          "T_BENCH_TASK_AGENT_LOGS_PATH": "/workspace/agent_logs/echo-hello",
+          "T_BENCH_TASK_AGENT_LOGS_PATH": "/tmp/tolokaforge-tbench-logs/agent_logs/echo-hello",
           "T_BENCH_TASK_DOCKER_CLIENT_CONTAINER_NAME": "tbench_echo-hello_main",
           "T_BENCH_TASK_DOCKER_CLIENT_IMAGE_NAME": "tbench_echo-hello",
-          "T_BENCH_TASK_LOGS_PATH": "/workspace/logs/echo-hello",
+          "T_BENCH_TASK_LOGS_PATH": "/tmp/tolokaforge-tbench-logs/logs/echo-hello",
           "T_BENCH_TEST_DIR": "/tests"
         },
         "service": "main",
@@ -38,6 +38,7 @@
       "module_path": "",
       "toolset": "terminal_bench"
     },
-    "timeout_s": 120.0
+    "timeout_s": 120.0,
+    "tool_config": {}
   }
 ]

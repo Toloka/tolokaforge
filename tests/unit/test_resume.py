@@ -140,6 +140,67 @@ class TestRunStateManager:
             state_file = Path(tmpdir) / "run_state.json"
             assert state_file.exists()
 
+    def test_initialize_run_normalizes_absolute_config_path(self):
+        """Absolute config_path under CWD is stored as a CWD-relative path.
+
+        Regression for the inconsistency between the CLI (which gets a
+        relative path from argparse) and the programmatic API (which often
+        supplies an absolute path from Path(...).resolve()).
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_root = Path(tmpdir)
+            config_file = tmp_root / "configs" / "run.yaml"
+            config_file.parent.mkdir()
+            config_file.write_text("# placeholder\n")
+
+            output_dir = tmp_root / "results" / "run_0"
+
+            cwd = Path.cwd()
+            try:
+                import os
+
+                os.chdir(tmp_root)
+                manager = RunStateManager(output_dir)
+                run_state = manager.initialize_run(
+                    run_id="r0",
+                    config_path=str(config_file.resolve()),
+                    task_ids=["t1"],
+                    repeats=1,
+                )
+            finally:
+                os.chdir(cwd)
+
+            # Both paths should now be relative.
+            assert not Path(run_state.config_path).is_absolute()
+            assert run_state.config_path == "configs/run.yaml"
+            assert not Path(run_state.output_dir).is_absolute()
+            assert run_state.output_dir == "results/run_0"
+
+    def test_initialize_run_keeps_path_outside_cwd_absolute(self):
+        """Path that is not under CWD stays absolute, no exception raised."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            outside = Path(tmpdir) / "elsewhere" / "config.yaml"
+            outside.parent.mkdir()
+            outside.write_text("# placeholder\n")
+
+            with tempfile.TemporaryDirectory() as cwd_tmpdir:
+                cwd = Path.cwd()
+                try:
+                    import os
+
+                    os.chdir(cwd_tmpdir)
+                    manager = RunStateManager(Path(cwd_tmpdir) / "out")
+                    run_state = manager.initialize_run(
+                        run_id="r1",
+                        config_path=str(outside),
+                        task_ids=["t1"],
+                        repeats=1,
+                    )
+                finally:
+                    os.chdir(cwd)
+
+            assert run_state.config_path == str(outside)
+
     def test_load_state(self):
         """Test loading run state from disk"""
         with tempfile.TemporaryDirectory() as tmpdir:

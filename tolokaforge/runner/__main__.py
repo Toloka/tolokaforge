@@ -13,9 +13,14 @@ Environment Variables:
     RAG_SERVICE_URL: URL of the RAG Service (default: http://localhost:8001)
     RUNNER_PORT: gRPC server port (default: 50051)
     LOG_LEVEL: Logging level (default: INFO)
+    TOLOKAFORGE_SECRETS_JSON: JSON-serialized credential map injected by the
+        orchestrator at container start. Bootstraps the SecretManager
+        singleton; after that, all secret access in the runner goes through
+        ``tolokaforge.secrets.get_default()``.
 """
 
 import asyncio
+import json
 import logging
 import os
 import signal
@@ -28,6 +33,7 @@ from tolokaforge.runner import add_RunnerServiceServicer_to_server
 from tolokaforge.runner.db_client import DBServiceClient
 from tolokaforge.runner.rag_client import RAGServiceClient
 from tolokaforge.runner.service import RunnerServiceImpl
+from tolokaforge.secrets import SecretManager, init_default_from, install_global_redactor
 
 # Default configuration
 DEFAULT_DB_SERVICE_URL = "http://localhost:8000"
@@ -48,8 +54,45 @@ def setup_logging(level: str) -> None:
     logging.basicConfig(
         level=log_level,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        handlers=[logging.StreamHandler(sys.stdout)],
+        stream=sys.stdout,
     )
+    install_global_redactor()
+
+
+def _bootstrap_secrets_from_env(payload: str, logger: logging.Logger) -> SecretManager | None:
+    """Bootstrap the SecretManager singleton from a serialized env payload.
+
+    Returns the installed manager, or ``None`` if the payload is empty,
+    not a JSON object, or malformed. On malformed input we log only the
+    parser's structural error fields (line/col + ``exc.msg``) — never
+    ``exc.doc``, which holds the credential payload.
+    """
+    if not payload:
+        logger.info(
+            "Runner bootstrap payload not set; SecretManager will lazy-init "
+            "from EnvProvider/.env on first get_secret() call",
+        )
+        return None
+    try:
+        secrets_dict = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        logger.warning(
+            "Runner bootstrap payload is not valid JSON (line %d, col %d): %s",
+            exc.lineno,
+            exc.colno,
+            exc.msg,
+        )
+        return None
+    if not isinstance(secrets_dict, dict):
+        logger.warning("Runner bootstrap payload is not a JSON object; ignoring")
+        return None
+    manager = init_default_from(SecretManager.from_dict(secrets_dict))
+    manager.export_to_environ(list(secrets_dict.keys()))
+    logger.info(
+        "SecretManager bootstrapped from runner payload (%d entries)",
+        len(secrets_dict),
+    )
+    return manager
 
 
 def get_config() -> dict:
@@ -223,30 +266,11 @@ async def run_server() -> None:
     setup_logging(config["log_level"])
     logger = logging.getLogger(__name__)
 
-    # Initialize SecretManager from serialized secrets (passed by orchestrator)
-    # or fall back to env-only provider chain
-    import json as json_mod
-
-    from tolokaforge.secrets.manager import SecretManager, init_default_from
-
-    secrets_json = os.environ.get("TOLOKAFORGE_SECRETS_JSON")
-    if secrets_json:
-        try:
-            secrets_data = json_mod.loads(secrets_json)
-            sm = SecretManager.from_dict(secrets_data)
-            init_default_from(sm)
-            logger.info(
-                "SecretManager initialized from serialized secrets (%d keys)", len(secrets_data)
-            )
-        except Exception as e:
-            logger.warning("Failed to deserialize secrets, falling back to env: %s", e)
-            from tolokaforge.secrets import init_default
-
-            init_default()
-    else:
-        from tolokaforge.secrets import init_default
-
-        init_default()
+    # Bootstrap SecretManager singleton from the orchestrator-provided
+    # serialized payload. This is the *only* legitimate ``os.environ`` read
+    # for credentials inside the runner container — every later access
+    # routes through ``get_default().get_secret(...)``.
+    _bootstrap_secrets_from_env(os.environ.get("TOLOKAFORGE_SECRETS_JSON", ""), logger)
 
     logger.info("=" * 60)
     logger.info("Tolokaforge Runner Service")

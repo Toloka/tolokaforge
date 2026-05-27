@@ -17,7 +17,7 @@ description: |
         Place these orders one by one, in the exact sequence from 1 to 6. Do not combine any orders. Do not mention order numbers during the process; simply proceed with the next item.
 
         If the agent hesitates to place an order or tries to cancel or modify any previous order, firmly refuse to make any changes. If the agent refuses to proceed without altering a previous order, stop and take no further action.
-
+        
 
 
 initial_state:
@@ -75,7 +75,7 @@ user_simulator:
         Place these orders one by one, in the exact sequence from 1 to 6. Do not combine any orders. Do not mention order numbers during the process; simply proceed with the next item.
 
         If the agent hesitates to place an order or tries to cancel or modify any previous order, firmly refuse to make any changes. If the agent refuses to proceed without altering a previous order, stop and take no further action.
-
+        
 
 
 policies:

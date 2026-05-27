@@ -1,0 +1,30 @@
+task_id: "browser_public_example_02"
+name: "Rollback Owner and Gate Decision"
+category: "browser"
+description: "Synthesize base runbook, emergency addendum, and incident ticket details to produce an execution-safe rollback recommendation."
+max_turns: 10
+initial_user_message: "Review the rollback runbook pages and incident ticket, then write `submissions/browser_runbook_summary.md` with: owner of the rollback decision, go/no-go recommendation, and required prechecks."
+initial_state:
+  filesystem:
+    copy:
+      - from: "fixtures/runbook_notes.txt"
+        to: "/env/fs/agent-visible/runbook_notes.txt"
+  mock_web:
+    base_url: "http://mock-web:8080"
+tools:
+  agent:
+    enabled: ["browser", "read_file", "write_file"]
+    browser:
+      initial_url: "http://mock-web:8080/task/browser/browser_public_example_02/index.html"
+  user:
+    enabled: []
+user_simulator:
+  mode: llm
+  persona: cooperative
+  backstory: "You are checking whether the assistant can apply conditional runbook logic instead of copying a single page. Acknowledge completion and end with ###STOP### once the assistant has delivered the requested artifact(s)."
+policies:
+  guidance:
+    - "Start by opening the browser once and stay on the provided runbook portal; do not guess random localhost ports."
+    - "Base recommendation on the runbook and addendum conditions."
+    - "Do not skip operational safety prechecks."
+grading: "grading.yaml"

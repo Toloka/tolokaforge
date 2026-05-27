@@ -43,9 +43,9 @@ def validate(config_path: str, strict: bool) -> None:
 
     Examples::
 
-        tolokaforge config validate --config config/tau_manufacturing/minimax_27.yaml
-        tolokaforge config validate --config config/tau_manufacturing/
-        tolokaforge config validate --config "config/**/*.yaml"
+        tolokaforge config validate --config examples/native/coding/run_config.yaml
+        tolokaforge config validate --config examples/native/coding/
+        tolokaforge config validate --config "examples/**/*.yaml"
     """
     paths = _resolve_paths(config_path)
 

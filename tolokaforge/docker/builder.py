@@ -28,8 +28,14 @@ from typing import Any
 
 from tolokaforge.docker.image import Image
 from tolokaforge.docker.registry import ImageRegistry
+from tolokaforge.docker.wheel_resolver import resolve_wheel
 
 logger = logging.getLogger(__name__)
+
+
+def repo_root() -> Path:
+    """Repository root, resolved relative to this module — independent of CWD."""
+    return Path(__file__).resolve().parents[2]
 
 
 # =============================================================================
@@ -39,34 +45,17 @@ logger = logging.getLogger(__name__)
 IMAGE_DEFINITIONS: dict[str, dict[str, Any]] = {
     "db-service": {
         "name": "tolokaforge-db-service",
-        "dockerfile": "docker/db_service.Dockerfile",
+        "dockerfile": "tolokaforge/docker/dockerfiles/db_service.Dockerfile",
         "context": ".",
         "context_files": [
             "tolokaforge/env/json_db_service/",
         ],
     },
-    "runner": {
-        "name": "tolokaforge-runner",
-        "dockerfile": "docker/runner.Dockerfile",
-        "context": ".",
-        "context_files": [
-            "pyproject.toml",
-            "README.md",
-            "tolokaforge/",
-            "contrib/tau-bench/",
-            "tasks/telecom/tau_tools/",
-            "tasks/telecom/data/",
-        ],
-    },
-    "rag-service": {
-        "name": "tolokaforge-rag-service",
-        "dockerfile": "docker/rag.Dockerfile",
-        "context": ".",
-        "context_files": [],
-    },
+    # "runner" is resolved dynamically — see get_image_definition().
+    # "rag-service" is also resolved dynamically (needs wheel + service files).
     "mock-web": {
         "name": "tolokaforge-mock-web",
-        "dockerfile": "docker/mock_web.Dockerfile",
+        "dockerfile": "tolokaforge/docker/dockerfiles/mock_web.Dockerfile",
         "context": ".",
         "context_files": [],
     },
@@ -75,6 +64,68 @@ IMAGE_DEFINITIONS: dict[str, dict[str, Any]] = {
 # Service groups for selective building
 CORE_IMAGES: list[str] = ["db-service", "runner"]
 EXTENDED_IMAGES: list[str] = ["rag-service", "mock-web"]
+
+_ALL_KNOWN_SERVICES = {"db-service", "runner", "rag-service", "mock-web"}
+
+
+def _runner_definition() -> dict[str, Any]:
+    """Build the runner image definition dynamically via the wheel resolver.
+
+    The resolver produces a wheel on the host; the Dockerfile installs it.
+    The only file in the build context (besides the Dockerfile) is the wheel.
+    """
+    artifact = resolve_wheel()
+    return {
+        "name": "tolokaforge-runner",
+        "dockerfile": "tolokaforge/docker/dockerfiles/runner.Dockerfile",
+        "context": ".",
+        "context_files": [
+            str(artifact.path),  # absolute path to the .whl
+        ],
+        "build_args": {
+            "WHEEL_FILENAME": artifact.path.name,
+        },
+    }
+
+
+def _rag_definition() -> dict[str, Any]:
+    """Build the rag-service image definition dynamically.
+
+    The rag service needs both the tolokaforge wheel (for
+    ``import tolokaforge.secrets``) and its own service files
+    (``requirements.txt`` + ``app.py``).
+    """
+    artifact = resolve_wheel()
+    return {
+        "name": "tolokaforge-rag-service",
+        "dockerfile": "tolokaforge/docker/dockerfiles/rag.Dockerfile",
+        "context": ".",
+        "context_files": [
+            str(artifact.path),  # wheel (absolute → flat copy)
+            "tolokaforge/env/rag_service/",  # service files (relative)
+        ],
+        "build_args": {
+            "WHEEL_FILENAME": artifact.path.name,
+        },
+    }
+
+
+def get_image_definition(service_name: str) -> dict[str, Any]:
+    """Return the image definition for *service_name*.
+
+    ``runner`` and ``rag-service`` are built dynamically via the wheel
+    resolver; all other entries come from the static dict.
+
+    Raises:
+        KeyError: If *service_name* is not a known service.
+    """
+    if service_name == "runner":
+        return _runner_definition()
+    if service_name == "rag-service":
+        return _rag_definition()
+    if service_name in IMAGE_DEFINITIONS:
+        return IMAGE_DEFINITIONS[service_name]
+    raise KeyError(f"Unknown service '{service_name}'. Available: {sorted(_ALL_KNOWN_SERVICES)}")
 
 
 def build_all_images(
@@ -162,15 +213,37 @@ def build_image(
         >>> image.exists()
         True
     """
-    if service_name not in IMAGE_DEFINITIONS:
-        raise KeyError(
-            f"Unknown service '{service_name}'. Available: {list(IMAGE_DEFINITIONS.keys())}"
-        )
+    definition = get_image_definition(service_name)
+    context_files = definition.get("context_files", [])
 
-    definition = IMAGE_DEFINITIONS[service_name]
+    if context_files:
+        build_context = assemble_build_context(
+            repo_root=repo_root(),
+            dockerfile=definition["dockerfile"],
+            context_files=context_files,
+        )
+        dockerfile_path = build_context / definition["dockerfile"]
+        try:
+            if force:
+                logger.info("Force building image for '%s' with isolated context", service_name)
+                return Image.build(
+                    dockerfile=str(dockerfile_path),
+                    context=str(build_context),
+                    name=definition["name"],
+                )
+
+            if registry is None:
+                registry = ImageRegistry()
+
+            return registry.get_or_build(
+                name=definition["name"],
+                dockerfile=str(dockerfile_path),
+                context=str(build_context),
+            )
+        finally:
+            shutil.rmtree(build_context, ignore_errors=True)
 
     if force:
-        # Force rebuild bypasses registry cache
         logger.info("Force building image for '%s'", service_name)
         return Image.build(
             dockerfile=definition["dockerfile"],
@@ -205,8 +278,11 @@ def assemble_build_context(
         context_files: List of file/directory paths to include (relative to repo_root).
 
     Returns:
-        Path to temporary build directory. Caller is responsible for cleanup
-        (use shutil.rmtree or pass to Image.build which handles it).
+        Path to temporary build directory. The caller owns the directory and
+        must remove it with ``shutil.rmtree`` (typically inside a ``finally``).
+
+    Raises:
+        FileNotFoundError: If a declared file or directory does not exist.
     """
     build_dir = Path(tempfile.mkdtemp(prefix="tolokaforge-build-"))
 
@@ -216,17 +292,38 @@ def assemble_build_context(
     dst_dockerfile.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src_dockerfile, dst_dockerfile)
 
-    # Copy declared context files
-    for rel_path in context_files:
-        src = repo_root / rel_path
-        dst = build_dir / rel_path
-        if src.is_dir():
-            shutil.copytree(src, dst, dirs_exist_ok=True)
-        elif src.is_file():
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dst)
+    # Copy declared context files.
+    # Paths may be relative (resolved against repo_root) or absolute
+    # (e.g. a wheel from the wheel-cache — copied flat into build_dir).
+    for entry in context_files:
+        entry_path = Path(entry)
+        if entry_path.is_absolute():
+            # Absolute path: copy the file flat into the build dir root.
+            if entry_path.is_file():
+                shutil.copy2(entry_path, build_dir / entry_path.name)
+            elif entry_path.is_dir():
+                shutil.copytree(
+                    entry_path,
+                    build_dir / entry_path.name,
+                    dirs_exist_ok=True,
+                )
+            else:
+                shutil.rmtree(build_dir, ignore_errors=True)
+                raise FileNotFoundError(f"Declared absolute context path not found: {entry}")
         else:
-            logger.warning("Context file not found, skipping: %s", src)
+            # Relative path: resolve against repo_root (original behavior).
+            src = repo_root / entry
+            dst = build_dir / entry
+            if src.is_dir():
+                shutil.copytree(src, dst, dirs_exist_ok=True)
+            elif src.is_file():
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+            else:
+                shutil.rmtree(build_dir, ignore_errors=True)
+                raise FileNotFoundError(
+                    f"Declared context path not found: {entry} (resolved to {src})"
+                )
 
     return build_dir
 

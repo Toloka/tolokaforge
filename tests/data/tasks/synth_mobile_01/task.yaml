@@ -1,0 +1,23 @@
+task_id: synth_mobile_01
+name: Synthetic Mobile Task
+category: mobile
+description: test fixture for builtin dispatch
+max_turns: 6
+initial_user_message: hi
+initial_state:
+  json_db: initial_state.json
+  mock_web:
+    base_url: "http://mock-web:8080"
+tools:
+  agent:
+    enabled: ["mobile", "read_file"]
+    mobile:
+      apps:
+        CityMap: "http://mock-web:8080/task/mobile/app_citymap/"
+        Notepad: "http://mock-web:8080/task/mobile/app_notepad/"
+      initial_app: CityMap
+  user:
+    enabled: []
+user_simulator:
+  mode: scripted
+grading: grading.yaml

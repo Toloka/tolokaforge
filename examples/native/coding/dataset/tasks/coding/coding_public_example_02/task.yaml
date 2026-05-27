@@ -1,0 +1,27 @@
+task_id: "coding_public_example_02"
+name: "Robust Count Parser"
+category: "coding"
+description: "Harden a parser against realistic malformed inputs while preserving expected behavior on valid forms."
+max_turns: 10
+initial_user_message: "Please harden `data_parser.py` using the edge cases in the README and write a short compatibility note to `submissions/coding_parser_hardening.md` covering what stays backward-compatible."
+initial_state:
+  filesystem:
+    copy:
+      - from: "fixtures/data_parser.py"
+        to: "/env/fs/agent-visible/data_parser.py"
+      - from: "fixtures/README.md"
+        to: "/env/fs/agent-visible/README.md"
+tools:
+  agent:
+    enabled: ["bash", "read_file", "write_file"]
+  user:
+    enabled: []
+user_simulator:
+  mode: llm
+  persona: cooperative
+  backstory: "You are reviewing whether the parser handles messy production inputs safely without breaking existing integrations. Acknowledge completion and end with ###STOP### once the assistant has delivered the requested artifact(s)."
+policies:
+  guidance:
+    - "Preserve function name and return type."
+    - "Prefer deterministic behavior for malformed input."
+grading: "grading.yaml"

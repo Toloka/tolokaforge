@@ -1,8 +1,10 @@
 """Base adapter class for harness integration"""
 
 import glob as glob_module
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from itertools import product
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -13,6 +15,50 @@ if TYPE_CHECKING:
     from tolokaforge.tools.registry import Tool
 
 logger = get_logger(__name__)
+
+
+@dataclass
+class DockerStackRequirements:
+    """Adapter's declarative needs for the runtime Docker stack.
+
+    The orchestrator composes these into ``core_stack(**kwargs)`` so adapters
+    can opt into non-default mounts, sidecars, or socket access without the
+    orchestrator hard-coding adapter types.
+
+    Attributes:
+        task_pack_mounts: Host directories to bind-mount into the Runner at
+            their absolute path. Used when the Runner spawns sibling
+            containers that must resolve task files at the same path on the
+            host Docker daemon.
+        extra_runner_binds: Additional ``(host_path, container_path)`` bind
+            mounts for the Runner — typically a shared log directory.
+        mount_docker_socket: Bind-mount ``/var/run/docker.sock`` into the
+            Runner so it can drive the host Docker daemon directly.
+        enable_dind: Add a Docker-in-Docker sidecar so the Runner can manage
+            Docker Compose stacks without touching the host daemon.
+    """
+
+    task_pack_mounts: list[Path] = field(default_factory=list)
+    extra_runner_binds: list[tuple[Path, str]] = field(default_factory=list)
+    mount_docker_socket: bool = False
+    enable_dind: bool = False
+
+    def to_core_stack_kwargs(self) -> dict[str, Any]:
+        """Render to ``core_stack()`` kwargs, omitting empty defaults.
+
+        An empty requirements object yields ``{}`` so default callers stay
+        unchanged.
+        """
+        kwargs: dict[str, Any] = {}
+        if self.task_pack_mounts:
+            kwargs["task_pack_mounts"] = list(self.task_pack_mounts)
+        if self.extra_runner_binds:
+            kwargs["extra_runner_binds"] = list(self.extra_runner_binds)
+        if self.mount_docker_socket:
+            kwargs["mount_docker_socket"] = True
+        if self.enable_dind:
+            kwargs["enable_dind"] = True
+        return kwargs
 
 
 @dataclass
@@ -133,17 +179,56 @@ class BaseAdapter(ABC):
         roots = self.task_packs or [self.base_dir]
         return [str((root / pattern).resolve()) for root in roots]
 
+    @staticmethod
+    def _expand_braces(pattern: str) -> list[str]:
+        """Expand bash-style brace patterns like ``{a,b,c}`` into multiple strings.
+
+        Python's :mod:`glob` module does not support brace expansion, so we
+        pre-expand them here.  Supports multiple brace groups and nested-free
+        patterns (e.g. ``tasks/{a,b}/{x,y}/task.yaml``).
+
+        Returns the original pattern unchanged when no braces are present.
+        """
+        # Find all top-level {alt1,alt2,...} groups
+        brace_re = re.compile(r"\{([^{}]+)\}")
+        groups: list[list[str]] = []
+        parts: list[str] = []
+        pos = 0
+        for m in brace_re.finditer(pattern):
+            parts.append(pattern[pos : m.start()])
+            groups.append([alt.strip() for alt in m.group(1).split(",")])
+            pos = m.end()
+        if not groups:
+            return [pattern]
+        parts.append(pattern[pos:])
+
+        # Cartesian product of all brace groups
+        expanded: list[str] = []
+        for combo in product(*groups):
+            result: list[str] = []
+            for i, part in enumerate(parts):
+                result.append(part)
+                if i < len(combo):
+                    result.append(combo[i])
+            expanded.append("".join(result))
+        return expanded
+
     def _iter_glob_matches(self, pattern: str, recursive: bool = True) -> list[Path]:
-        """Return de-duplicated glob matches for a pattern across configured roots."""
+        """Return de-duplicated glob matches for a pattern across configured roots.
+
+        Supports bash-style brace expansion (e.g. ``{a,b,c}``) via
+        :meth:`_expand_braces`.
+        """
         matches: list[Path] = []
         seen: set[Path] = set()
         for resolved_pattern in self._resolve_glob_patterns(pattern):
-            for match in glob_module.glob(resolved_pattern, recursive=recursive):
-                path = Path(match).resolve()
-                if path in seen:
-                    continue
-                seen.add(path)
-                matches.append(path)
+            for expanded in self._expand_braces(resolved_pattern):
+                for match in glob_module.glob(expanded, recursive=recursive):
+                    path = Path(match).resolve()
+                    if path in seen:
+                        continue
+                    seen.add(path)
+                    matches.append(path)
         return matches
 
     def _resolve_path_from_roots(self, value: str | Path, must_exist: bool = False) -> Path:
@@ -312,6 +397,15 @@ class BaseAdapter(ABC):
             NotImplementedError: If adapter does not support Docker runtime
         """
         pass
+
+    def docker_stack_requirements(self) -> DockerStackRequirements:
+        """Declare extra Docker stack needs for this adapter.
+
+        Default returns an empty requirements object — the orchestrator calls
+        ``core_stack()`` with no extra kwargs. Adapters that need bind-mounts,
+        a Docker socket, or a DinD sidecar override this.
+        """
+        return DockerStackRequirements()
 
     def convert_to_native(self, task_id: str) -> NativeTaskBundle:
         """Convert an external task to native TolokaForge format.

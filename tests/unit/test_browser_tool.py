@@ -1,5 +1,8 @@
 """Test browser tool schema and pure-logic helpers (no real browser)."""
 
+import asyncio
+import threading
+
 import pytest
 
 from tolokaforge.tools.builtin.browser import BrowserTool
@@ -39,9 +42,9 @@ def test_browser_schema(browser_tool):
         "drag_and_drop",
     ]
 
-    assert set(actions) == set(expected_actions), (
-        f"Missing actions: {set(expected_actions) - set(actions)}"
-    )
+    assert set(actions) == set(
+        expected_actions
+    ), f"Missing actions: {set(expected_actions) - set(actions)}"
 
 
 def test_grid_to_pixel_conversion(browser_tool):
@@ -101,3 +104,56 @@ def test_missing_required_parameters(browser_tool):
         ]
     )
     assert not result.success
+
+
+def test_resolve_url_passes_docker_hostnames_through_unchanged():
+    """Regression: an earlier ``_resolve_url`` rewrote ``mock-web:8080`` →
+    ``localhost:8080`` on the assumption the browser ran on the host.
+    Once the runner moved fully into Docker, ``localhost:8080`` from
+    inside the runner referred to the runner itself, not mock-web, so
+    every navigate hit ERR_CONNECTION_REFUSED. Service hostnames must
+    pass through unchanged so Docker DNS on ``runner-net`` resolves them.
+    """
+    assert (
+        BrowserTool._resolve_url("http://mock-web:8080/task/x/") == "http://mock-web:8080/task/x/"
+    )
+    assert BrowserTool._resolve_url("http://json-db:8000/items") == "http://json-db:8000/items"
+    assert (
+        BrowserTool._resolve_url("http://rag-service:8001/search")
+        == "http://rag-service:8001/search"
+    )
+    # Unrelated URLs also unchanged.
+    assert BrowserTool._resolve_url("https://example.com/x") == "https://example.com/x"
+
+
+@pytest.mark.asyncio
+async def test_execute_from_running_loop_does_not_raise_loop_conflict(monkeypatch):
+    """Regression: #126 — invoking execute() from inside a running asyncio loop
+    must not raise "Cannot run the event loop while another loop is running".
+
+    The runner schedules every tool call on its persistent loop thread, so
+    BrowserTool must run its Playwright work on a separate dedicated thread.
+    """
+    tool = BrowserTool()
+    caller_thread = threading.get_ident()
+    action_thread: dict[str, int] = {}
+
+    async def fake_execute_actions(actions):
+        action_thread["tid"] = threading.get_ident()
+        # Yield to the loop so we exercise the real scheduling path.
+        await asyncio.sleep(0)
+        return True, "stubbed", ""
+
+    monkeypatch.setattr(tool, "_execute_actions", fake_execute_actions)
+    # visual_mode is False by default, so _capture_screenshot_blocks is not invoked.
+
+    result = tool.execute(actions=[{"type": "navigate", "url": "about:blank"}])
+
+    assert result.success, f"unexpected failure: {result.error}"
+    assert result.output == "stubbed"
+    assert action_thread["tid"] != caller_thread, (
+        "BrowserTool must run its async work on a dedicated loop thread, not "
+        "the caller's thread (which already has a running loop)."
+    )
+
+    tool.close_loop()

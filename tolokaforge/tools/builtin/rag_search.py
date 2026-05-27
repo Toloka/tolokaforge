@@ -1,16 +1,32 @@
 """RAG search tool for knowledge base retrieval"""
 
+import os
 from typing import Any
 
 import httpx
 
 from tolokaforge.tools.registry import Tool, ToolCategory, ToolPolicy, ToolResult
 
+# Runner-side default. ``RAG_SERVICE_URL`` is set in the runner container
+# (see ``tolokaforge/docker/stacks/core.py``) to point at the actual
+# tolokaforge-rag-service network alias on ``runner-net``. Without this
+# env-var fallback the tool defaulted to ``http://rag-service:8001`` —
+# a hostname that has not existed since the docker-compose retirement.
+# See companion fix in ``db_json.py`` (#123).
+_DEFAULT_RAG_URL_ENV = "RAG_SERVICE_URL"
+_DEFAULT_RAG_URL_FALLBACK = "http://rag-service:8001"
+
+
+def _default_rag_url() -> str:
+    return os.environ.get(_DEFAULT_RAG_URL_ENV, _DEFAULT_RAG_URL_FALLBACK)
+
 
 class SearchKBTool(Tool):
     """Search knowledge base using RAG"""
 
-    def __init__(self, rag_url: str = "http://rag-service:8001"):
+    def __init__(self, rag_url: str | None = None):
+        if rag_url is None:
+            rag_url = _default_rag_url()
         policy = ToolPolicy(
             timeout_s=15.0,
             category=ToolCategory.READ,

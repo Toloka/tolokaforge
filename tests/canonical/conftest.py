@@ -1,17 +1,9 @@
-"""Canonization infrastructure: --update-canon flag, canon_snapshot fixture, and project fixtures."""
+"""Canonization infrastructure: --update-canon flag and canon_snapshot fixture."""
 
 import json
 from pathlib import Path
 
 import pytest
-
-# Import food_delivery_2 project fixtures — only used by canonical tests
-from tests.utils.project_fixtures import (  # noqa: F401
-    food_delivery_2_grading_051fa6cb,
-    food_delivery_2_initial_state,
-    food_delivery_2_mcp_server,
-    food_delivery_2_trajectory_051fa6cb,
-)
 
 SNAPSHOT_DIR = Path(__file__).parent / "snapshots"
 
@@ -42,9 +34,9 @@ def canon_snapshot(request):
                     json.dumps(actual, indent=2, sort_keys=True, default=str) + "\n"
                 )
                 return
-            assert golden_path.exists(), (
-                f"Golden snapshot missing: {golden_path}. Run --update-canon"
-            )
+            assert (
+                golden_path.exists()
+            ), f"Golden snapshot missing: {golden_path}. Run --update-canon"
             expected = json.loads(golden_path.read_text())
             assert actual == expected, f"Mismatch with golden {golden_path}"
 
@@ -52,3 +44,20 @@ def canon_snapshot(request):
         return CanonSnapshot(canon_name)
 
     return _factory
+
+
+# ---------------------------------------------------------------------------
+# Task-specific fixtures (convenience wrappers around canonical_task_dir)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def shop_orders_02_task_dir(canonical_task_dir):
+    """Get path to shop_orders_02 test task."""
+    return canonical_task_dir("shop_orders_02")
+
+
+@pytest.fixture(scope="module")
+def terminal_bench_tasks_dir(test_data_dir):
+    """Get path to terminal_bench_tasks test data directory."""
+    return test_data_dir / "terminal_bench_tasks"

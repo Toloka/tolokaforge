@@ -13,7 +13,12 @@ import importlib.metadata
 import logging
 from typing import Any
 
-from tolokaforge.adapters.base import AdapterEnvironment, BaseAdapter, NativeTaskBundle
+from tolokaforge.adapters.base import (
+    AdapterEnvironment,
+    BaseAdapter,
+    DockerStackRequirements,
+    NativeTaskBundle,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,9 +45,6 @@ def _discover_adapters() -> dict[str, type]:
     adapters: dict[str, type] = {"native": NativeAdapter}
 
     # Register built-in frozen adapter (does NOT import mcp_core at module level)
-    from tolokaforge.adapters.frozen_mcp_core import FrozenMcpCoreAdapter
-
-    adapters["frozen_mcp_core"] = FrozenMcpCoreAdapter
 
     for ep in importlib.metadata.entry_points(group="tolokaforge.adapters"):
         try:
@@ -53,6 +55,26 @@ def _discover_adapters() -> dict[str, type]:
             logger.warning("Adapter entry-point %r failed to load: %s", ep.name, exc, exc_info=True)
 
     return adapters
+
+
+def _ensure_adapters_discovered() -> None:
+    """Discover external adapter plugins lazily on first use."""
+    global _ADAPTERS
+
+    if _ADAPTERS:
+        return
+
+    _ADAPTERS = _discover_adapters()
+
+
+def available_adapters() -> list[str]:
+    """Return the names of all registered adapters.
+
+    Triggers lazy discovery of external plugins on first call so callers do
+    not need to know about the discovery mechanism.
+    """
+    _ensure_adapters_discovered()
+    return sorted(_ADAPTERS.keys())
 
 
 def register_adapter(name: str, adapter_cls: type) -> None:
@@ -79,6 +101,8 @@ def get_adapter(adapter_type: str | None, params: dict[str, Any]) -> BaseAdapter
 
         return NativeAdapter(params)
 
+    _ensure_adapters_discovered()
+
     if adapter_type in _ADAPTERS:
         return _ADAPTERS[adapter_type](params)
 
@@ -89,27 +113,24 @@ def get_adapter(adapter_type: str | None, params: dict[str, Any]) -> BaseAdapter
             f"Adapter {adapter_type!r} entry-point was found but failed to load: {original_exc}"
         ) from original_exc
 
-    available = sorted(_ADAPTERS.keys())
     raise ValueError(
         f"Unknown adapter type: {adapter_type!r}. "
-        f"Available adapters: {available}. "
+        f"Available adapters: {available_adapters()}. "
         f"Install the adapter package or check your configuration."
     )
 
 
-# Eagerly discover on import
-_ADAPTERS = _discover_adapters()
-
 # Public imports
-from tolokaforge.adapters.frozen_mcp_core import FrozenMcpCoreAdapter  # noqa: E402
 from tolokaforge.adapters.native import NativeAdapter  # noqa: E402
 
 __all__ = [
     "BaseAdapter",
     "AdapterEnvironment",
+    "DockerStackRequirements",
     "FrozenMcpCoreAdapter",
     "NativeAdapter",
     "NativeTaskBundle",
+    "available_adapters",
     "get_adapter",
     "register_adapter",
 ]

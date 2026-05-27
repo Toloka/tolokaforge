@@ -30,6 +30,19 @@ class TestNormalizeModelName:
     def test_already_prefixed(self):
         assert normalize_model_name("openai/gpt-4o") == "openai/gpt-4o"
 
+    def test_openrouter_prefix_stripped(self):
+        """OpenRouter routing prefix should be stripped before normalization."""
+        assert normalize_model_name("openrouter/openai/gpt-5.4") == "openai/gpt-5.4"
+        assert (
+            normalize_model_name("openrouter/anthropic/claude-sonnet-4.6")
+            == "anthropic/claude-sonnet-4.6"
+        )
+        assert (
+            normalize_model_name("openrouter/google/gemini-3.1-pro-preview")
+            == "google/gemini-3.1-pro-preview"
+        )
+        assert normalize_model_name("openrouter/moonshotai/kimi-k2.6") == "moonshotai/kimi-k2.6"
+
     def test_gpt_prefix(self):
         assert normalize_model_name("gpt-5.4") == "openai/gpt-5.4"
 
@@ -118,12 +131,147 @@ class TestEstimateCost:
         assert cost is not None
         assert cost == 0.0
 
+    def test_claude_sonnet_dash_variants_priced(self):
+        """Dash- and dot-variant model IDs both resolve to a price.
+
+        Some clients normalise periods to dashes (and vice versa) when
+        composing OpenRouter model IDs. The pricing table must answer for
+        both spellings so we don't silently drop costs from analytics.
+        """
+        for model_id in (
+            "anthropic/claude-sonnet-4.6",
+            "anthropic/claude-sonnet-4-6",
+            "anthropic/claude-sonnet-4.5",
+            "anthropic/claude-sonnet-4-5",
+        ):
+            cost = estimate_cost(model_id, input_tokens=1_000_000, output_tokens=0)
+            assert cost is not None, f"Model {model_id} has no pricing entry"
+            # All claude-sonnet variants are priced at $3 / 1M input.
+            assert cost == pytest.approx(3.0, abs=0.01)
+
     def test_claude_opus_46_has_pricing(self):
         """claude-opus-4.6 should have correct pricing (not DEFAULT)."""
         cost = estimate_cost("claude-opus-4.6", input_tokens=1_000_000, output_tokens=0)
         assert cost is not None
         # Starting at $5/M input
         assert cost == pytest.approx(5.0, abs=0.01)
+
+    def test_cache_read_discount_applies(self, tmp_path):
+        """Cache reads should be charged at the configured cache_read rate.
+
+        Uses a hermetic pricing fixture so the assertion isn't coupled to
+        whatever rates ``pricing-updater`` pulled most recently. The
+        formula is what's under test, not the published rates.
+        """
+        fixture = tmp_path / "pricing.json"
+        fixture.write_text(
+            json.dumps(
+                {
+                    "models": {
+                        "anthropic/canon-opus": {
+                            "input": 5.0,
+                            "output": 25.0,
+                            "cache_read": 0.5,
+                            "cache_write": 5.0,
+                        }
+                    }
+                }
+            )
+        )
+        reload_pricing(fixture)
+        try:
+            cost = estimate_cost(
+                "anthropic/canon-opus",
+                input_tokens=1_000_000,
+                output_tokens=0,
+                cache_read_input_tokens=200_000,
+            )
+        finally:
+            reload_pricing()
+        assert cost is not None
+        # Fresh tokens: 800k * 5.0 = 4.0; cached tokens: 200k * 0.5 = 0.1
+        assert cost == pytest.approx(4.1, abs=0.001)
+
+    def test_reasoning_tokens_billed_at_output_rate(self, tmp_path):
+        """Reasoning tokens must be billed at the output rate.
+
+        Every provider that exposes ``reasoning_tokens`` (OpenAI o-series /
+        GPT-5, Anthropic thinking, etc.) charges them at the same per-token
+        rate as ``output_tokens``. Pre-fix, ``estimate_cost`` dropped them
+        silently, understating cost for reasoning-effort comparisons (the
+        bug surfaced when gpt-5.5 medium vs xhigh reports showed an 11% gap
+        instead of the real ~21%).
+        """
+        fixture = tmp_path / "pricing.json"
+        fixture.write_text(
+            json.dumps({"models": {"test/reasoner": {"input": 1.0, "output": 10.0}}})
+        )
+        reload_pricing(fixture)
+        try:
+            cost = estimate_cost(
+                "test/reasoner",
+                input_tokens=0,
+                output_tokens=500_000,
+                reasoning_tokens=500_000,
+            )
+        finally:
+            reload_pricing()
+        assert cost is not None
+        # (500k completion + 500k reasoning) * $10 = $10
+        assert cost == pytest.approx(10.0, abs=0.001)
+
+    def test_cache_creation_uses_cache_write_rate(self, tmp_path):
+        """Cache writes should be charged using the configured cache_write rate.
+
+        Hermetic fixture (see ``test_cache_read_discount_applies``).
+        """
+        fixture = tmp_path / "pricing.json"
+        fixture.write_text(
+            json.dumps(
+                {
+                    "models": {
+                        "anthropic/canon-opus": {
+                            "input": 5.0,
+                            "output": 25.0,
+                            "cache_read": 0.5,
+                            "cache_write": 5.0,
+                        }
+                    }
+                }
+            )
+        )
+        reload_pricing(fixture)
+        try:
+            cost = estimate_cost(
+                "anthropic/canon-opus",
+                input_tokens=1_000_000,
+                output_tokens=0,
+                cache_creation_input_tokens=100_000,
+            )
+        finally:
+            reload_pricing()
+        assert cost is not None
+        # Fresh tokens: 900k * 5.0 = 4.5; cache_write: 100k * 5.0 = 0.5
+        assert cost == pytest.approx(5.0, abs=0.001)
+
+    def test_inconsistent_cache_totals_warn_and_clamp(self, caplog):
+        """Cache totals exceeding ``input_tokens`` is a usage-accounting bug.
+
+        We must log loudly (per AGENTS.md "surface failures") rather than
+        silently swallow the inconsistency. The fresh-input clamp to zero
+        keeps cost bounded; the warning is the contract.
+        """
+        with caplog.at_level("WARNING", logger="tolokaforge.core.pricing"):
+            cost = estimate_cost(
+                "claude-opus-4.6",
+                input_tokens=100_000,
+                output_tokens=0,
+                cache_read_input_tokens=80_000,
+                cache_creation_input_tokens=50_000,  # 80k+50k > 100k
+            )
+        assert cost is not None
+        messages = [rec.message for rec in caplog.records]
+        assert any("inconsistent_cache_usage" in m for m in messages), messages
 
     def test_all_benchmark_models_have_pricing(self):
         """All 10 benchmark models should have pricing entries."""

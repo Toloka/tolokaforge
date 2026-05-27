@@ -22,6 +22,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Minimum length for a secret value to be considered for log redaction.
+# Values shorter than this would over-match in prose (e.g., a 4-char port
+# number colliding with unrelated text) and create noisy false positives.
+_REDACT_MIN_LEN = 8
+
 
 class MissingSecretError(Exception):
     """Raised when a required secret is not found in any provider.
@@ -206,10 +211,15 @@ class SecretManager:
         return env_dict
 
     def export_to_environ(self, keys: list[str]) -> int:
-        """Export resolved secrets to os.environ for third-party library compatibility.
+        """Export resolved secrets to ``os.environ`` for SDKs that read it directly.
 
-        Only sets keys that have values. Uses os.environ.setdefault so
-        existing env vars are NOT overwritten.
+        Many third-party SDKs (notably ``litellm``) look up provider keys via
+        ``os.environ`` rather than accepting them as parameters. We use
+        ``os.environ.setdefault`` so existing env vars are not overwritten —
+        explicit shell exports always win.
+
+        This is the *only* legitimate ``os.environ`` write site for secrets in
+        the codebase. Call it once at the boundary; never sprinkle.
 
         Args:
             keys: Secret key names to export.
@@ -228,25 +238,37 @@ class SecretManager:
         return exported
 
     def list_all_keys(self) -> list[str]:
-        """List all available secret keys across all providers."""
+        """List all available secret keys across all providers (sorted)."""
         keys: set[str] = set()
         for provider in self._providers:
             if hasattr(provider, "list_keys"):
                 keys.update(provider.list_keys())
         return sorted(keys)
 
-    def serialize(self, keys: list[str] | None = None) -> dict[str, str]:
-        """Serialize resolved secrets for transport to containers.
+    def known_values(self) -> frozenset[str]:
+        """Snapshot of resolved secret values long enough to redact safely.
 
-        Resolves secrets by checking providers in order (same as get_secret).
-        Only includes keys that have values.
+        Used by :class:`tolokaforge.secrets.log_filter.RedactingFilter` to
+        scrub secret values out of log records. Values shorter than
+        ``_REDACT_MIN_LEN`` are skipped to avoid false-positive substring
+        replacement.
+        """
+        resolved = self.serialize(self.list_all_keys())
+        return frozenset(v for v in resolved.values() if v and len(v) >= _REDACT_MIN_LEN)
+
+    def serialize(self, keys: list[str] | None = None) -> dict[str, str]:
+        """Serialize resolved secrets for transport (host → container).
+
+        Resolves each key through the provider chain and returns a flat
+        ``dict[str, str]``. Only keys with values are included. The container
+        side reconstructs a SecretManager via :meth:`from_dict`.
 
         Args:
-            keys: Explicit list of keys to serialize. If None, serializes
-                all available keys from all providers.
+            keys: Explicit key list. If ``None``, serialize every key the
+                providers know about (via ``list_all_keys``).
 
         Returns:
-            Dict mapping key names to resolved values.
+            Mapping of key → resolved value.
         """
         if keys is None:
             keys = self.list_all_keys()
@@ -254,17 +276,18 @@ class SecretManager:
 
     @classmethod
     def from_dict(cls, secrets: dict[str, str]) -> SecretManager:
-        """Create a SecretManager from a pre-resolved dict.
+        """Construct a SecretManager from a pre-resolved dict.
 
-        Used in containers where secrets are injected as serialized data.
-        Future: this can be replaced with a GrPCProvider for on-demand
-        secret fetching without changing the SecretManager interface.
+        Used inside the runner container where secrets arrive as a single
+        deserialized payload. Future replacement targets (Vault gRPC,
+        AWS Secrets Manager) plug in as new ``SecretProvider`` subclasses
+        without changing this entrypoint.
 
         Args:
-            secrets: Dict mapping secret key names to values.
+            secrets: Mapping of secret name → value.
 
         Returns:
-            SecretManager backed by a DictProvider.
+            SecretManager backed by a single :class:`DictProvider`.
         """
         from tolokaforge.secrets.providers import DictProvider
 
@@ -313,6 +336,13 @@ class SecretManager:
 # ---------------------------------------------------------------------------
 # Module-level singleton helpers
 # ---------------------------------------------------------------------------
+#
+# `init_default()` is called once at CLI startup; everywhere else uses
+# `get_default()` to fetch the configured manager. Inside the runner
+# container the singleton is reconstructed from `TOLOKAFORGE_SECRETS_JSON`
+# via `init_default_from(SecretManager.from_dict(...))` so the same call
+# site works on both sides of the host→container boundary.
+# ---------------------------------------------------------------------------
 
 _default_manager: SecretManager | None = None
 
@@ -333,7 +363,7 @@ def init_default(config: SecretConfig | None = None) -> SecretManager:
 
 
 def get_default() -> SecretManager:
-    """Get the default SecretManager, auto-initializing with defaults if needed."""
+    """Get the default SecretManager, auto-initializing on first call."""
     global _default_manager
     if _default_manager is None:
         from tolokaforge.secrets.config import SecretConfig
@@ -342,14 +372,25 @@ def get_default() -> SecretManager:
     return _default_manager
 
 
-def init_default_from(manager: SecretManager) -> SecretManager:
-    """Set an existing SecretManager as the default singleton.
+def get_default_or_none() -> SecretManager | None:
+    """Return the default SecretManager iff already initialized, else ``None``.
 
-    Used by the Runner to install a pre-configured SecretManager
-    (e.g., from deserialized secrets).
+    Unlike :func:`get_default`, this never triggers lazy-init from
+    ``SecretConfig.default()`` — safe to call from a logging filter that
+    fires on records emitted before the runner bootstrap completes.
+    """
+    return _default_manager
+
+
+def init_default_from(manager: SecretManager) -> SecretManager:
+    """Replace the default singleton with a pre-built SecretManager.
+
+    Used by the runner-side bootstrap to install a manager built from the
+    deserialized ``TOLOKAFORGE_SECRETS_JSON`` payload before the rest of the
+    runner code reads any credential.
 
     Args:
-        manager: SecretManager instance to use as default.
+        manager: SecretManager instance to install as default.
 
     Returns:
         The same manager instance.

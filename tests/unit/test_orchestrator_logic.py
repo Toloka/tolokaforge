@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import random
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -75,7 +76,7 @@ def _make_trajectory(
             latency_total_s=latency,
             turns=turns,
             tool_calls=tool_calls,
-            cost_usd_est=cost,
+            cost_usd=cost,
         ),
         grade=Grade(
             binary_pass=binary_pass,
@@ -148,6 +149,71 @@ class TestOrchestratorConstruction:
         config = _make_run_config()
         orch = Orchestrator(config, strict=True)
         assert orch.strict is True
+
+    def test_build_pending_trials_default_order_is_lexicographic(self) -> None:
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        config = _make_run_config(orchestrator=OrchestratorConfig(shuffle_trials=False))
+        orch = Orchestrator(config)
+        tasks = [_make_task_config("TASK-1"), _make_task_config("TASK-2")]
+
+        pending = orch._build_pending_trials(tasks, repeats=3)
+
+        assert pending == [
+            ("TASK-1", 0),
+            ("TASK-1", 1),
+            ("TASK-1", 2),
+            ("TASK-2", 0),
+            ("TASK-2", 1),
+            ("TASK-2", 2),
+        ]
+
+    def test_build_pending_trials_shuffle_changes_order(self) -> None:
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        config = _make_run_config(orchestrator=OrchestratorConfig(shuffle_trials=True))
+        orch = Orchestrator(config)
+        # Enough items that an accidental identity permutation is implausible
+        # (10! = 3.6M).
+        tasks = [_make_task_config(f"TASK-{i}") for i in range(5)]
+        lexicographic = [(t.task_id, idx) for t in tasks for idx in range(2)]
+
+        random.seed(0)
+        pending = orch._build_pending_trials(tasks, repeats=2)
+
+        assert sorted(pending) == sorted(lexicographic)
+        assert pending != lexicographic
+
+    def test_build_pending_trials_skip_completed_filters_out_marked(self) -> None:
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        config = _make_run_config()
+        orch = Orchestrator(config)
+        tasks = [_make_task_config("TASK-1"), _make_task_config("TASK-2")]
+        completed: set[tuple[str, int]] = {("TASK-1", 0), ("TASK-2", 1)}
+
+        pending = orch._build_pending_trials(
+            tasks,
+            repeats=2,
+            skip_completed=lambda task_id, trial_idx: (task_id, trial_idx) in completed,
+        )
+
+        assert pending == [("TASK-1", 1), ("TASK-2", 0)]
+
+    def test_build_pending_trials_skip_completed_all_returns_empty(self) -> None:
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        config = _make_run_config()
+        orch = Orchestrator(config)
+        tasks = [_make_task_config("TASK-1")]
+
+        pending = orch._build_pending_trials(
+            tasks,
+            repeats=3,
+            skip_completed=lambda task_id, trial_idx: True,
+        )
+
+        assert pending == []
 
 
 # ===================================================================
@@ -227,6 +293,63 @@ class TestIsRetryableTrajectory:
 
 
 # ===================================================================
+# _cleanup_runner_state_for_retry (issue #132)
+# ===================================================================
+
+
+@pytest.mark.unit
+class TestCleanupRunnerStateForRetry:
+    """Discard the prior attempt's runner-side trial registration before retry.
+
+    Without this, ``RegisterTrial`` on the second attempt fails with
+    ``Trial 'X' already exists`` and every retry burns on the same error.
+    """
+
+    def _make_orchestrator(self) -> Any:
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        return Orchestrator(_make_run_config())
+
+    def test_calls_cleanup_with_canonical_trial_id(self) -> None:
+        orch = self._make_orchestrator()
+        runtime = MagicMock()
+        runtime.executor_client.cleanup_trial.return_value = {"success": True, "error": None}
+
+        orch._cleanup_runner_state_for_retry(runtime, "TASK-001", 3)
+
+        runtime.executor_client.cleanup_trial.assert_called_once_with("TASK-001:3")
+
+    def test_none_runtime_is_noop(self) -> None:
+        """Native (non-Docker) flows have no docker_runtime — cleanup is a no-op."""
+        orch = self._make_orchestrator()
+
+        orch._cleanup_runner_state_for_retry(None, "TASK-001", 0)  # must not raise
+
+    def test_cleanup_exception_is_swallowed(self) -> None:
+        """A stale runner connection must not block the retry attempt itself.
+
+        Re-registration will surface a clearer error if the state is genuinely
+        unrecoverable, but a transient cleanup failure must not promote a
+        retryable failure into a permanent one.
+        """
+        orch = self._make_orchestrator()
+        runtime = MagicMock()
+        runtime.executor_client.cleanup_trial.side_effect = RuntimeError("connection lost")
+
+        orch._cleanup_runner_state_for_retry(runtime, "TASK-001", 0)  # must not raise
+
+    def test_cleanup_non_success_is_swallowed(self) -> None:
+        orch = self._make_orchestrator()
+        runtime = MagicMock()
+        runtime.executor_client.cleanup_trial.return_value = {
+            "success": False,
+            "error": "DB unreachable",
+        }
+
+        orch._cleanup_runner_state_for_retry(runtime, "TASK-001", 0)  # must not raise
+
+
+# ===================================================================
 # _collect_existing_cost (static method)
 # ===================================================================
 
@@ -255,7 +378,7 @@ class TestCollectExistingCost:
         for task_id, trial_idx, cost in [("T1", 0, 0.05), ("T1", 1, 0.03), ("T2", 0, 0.02)]:
             trial_dir = trials_root / task_id / str(trial_idx)
             trial_dir.mkdir(parents=True)
-            (trial_dir / "metrics.yaml").write_text(yaml.dump({"cost_usd_est": cost}))
+            (trial_dir / "metrics.yaml").write_text(yaml.dump({"cost_usd": cost}))
 
         total = Orchestrator._collect_existing_cost(tmp_path)
         assert abs(total - 0.10) < 1e-9
@@ -288,7 +411,7 @@ class TestCollectExistingCost:
 
         trial_dir = tmp_path / "trials" / "T1" / "0"
         trial_dir.mkdir(parents=True)
-        (trial_dir / "metrics.yaml").write_text(yaml.dump({"cost_usd_est": None}))
+        (trial_dir / "metrics.yaml").write_text(yaml.dump({"cost_usd": None}))
 
         assert Orchestrator._collect_existing_cost(tmp_path) == 0.0
 
@@ -582,6 +705,16 @@ class TestCreateAdapter:
         call_args = mock_get_adapter.call_args
         assert call_args[0][1]["tasks_glob"] == "custom/**/task.yaml"
 
+    def test_default_adapter_requires_no_extra_stack_kwargs(self) -> None:
+        from tolokaforge.adapters.base import DockerStackRequirements
+        from tolokaforge.adapters.native import NativeAdapter
+
+        adapter = NativeAdapter({"tasks_glob": "tasks/**/task.yaml"})
+        reqs = adapter.docker_stack_requirements()
+
+        assert isinstance(reqs, DockerStackRequirements)
+        assert reqs.to_core_stack_kwargs() == {}
+
 
 # ===================================================================
 # Report grouping logic (trajectories grouped by task)
@@ -761,3 +894,82 @@ class TestRunConfigConstruction:
         )
         assert config.orchestrator.queue_backend == "sqlite"
         assert config.orchestrator.max_attempt_retries == 3
+
+
+# ---------------------------------------------------------------------------
+# _serialize_model_config
+# ---------------------------------------------------------------------------
+
+
+class TestSerializeModelConfig:
+    """Test model config serialization for trial output.
+
+    The orchestrator crashed with ``'dict' object has no attribute 'agent'``
+    because eval-orchestrator shard configs produce ``config.models`` as a
+    plain dict instead of a ``dict[str, ModelConfig]`` that Pydantic coerces.
+    ``_serialize_model_config()`` must handle both.
+    """
+
+    def test_serialize_with_pydantic_model_configs(self) -> None:
+        """When config.models values are ModelConfig instances, serialization works."""
+        orch = MagicMock()
+        orch.config.models = {
+            "agent": ModelConfig(provider="openrouter", name="openai/gpt-5.4"),
+            "user": ModelConfig(
+                provider="openrouter", name="anthropic/claude-sonnet-4.6", temperature=0.2
+            ),
+        }
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        result = Orchestrator._serialize_model_config(orch)
+
+        assert isinstance(result, dict)
+        assert result["agent"]["provider"] == "openrouter"
+        assert result["agent"]["name"] == "openai/gpt-5.4"
+        assert result["user"]["name"] == "anthropic/claude-sonnet-4.6"
+        assert result["user"]["temperature"] == 0.2
+
+    def test_serialize_with_raw_dicts(self) -> None:
+        """When config.models values are raw dicts (eval-orchestrator shards), no crash."""
+        orch = MagicMock()
+        orch.config.models = {
+            "agent": {"provider": "openrouter", "name": "openai/gpt-5.4", "temperature": 0.6},
+            "user": {"provider": "openrouter", "name": "anthropic/claude-sonnet-4.6"},
+        }
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        result = Orchestrator._serialize_model_config(orch)
+
+        assert isinstance(result, dict)
+        assert result["agent"]["name"] == "openai/gpt-5.4"
+        assert result["agent"]["temperature"] == 0.6
+        assert result["user"]["name"] == "anthropic/claude-sonnet-4.6"
+
+    def test_serialize_without_user(self) -> None:
+        """When user model is absent, result['user'] is None."""
+        orch = MagicMock()
+        orch.config.models = {
+            "agent": {"provider": "openrouter", "name": "openai/gpt-5.4"},
+        }
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        result = Orchestrator._serialize_model_config(orch)
+
+        assert result["agent"]["name"] == "openai/gpt-5.4"
+        assert result["user"] is None
+
+    def test_serialize_mixed_dict_and_pydantic(self) -> None:
+        """When agent is a raw dict but user is a ModelConfig, both are serialized."""
+        orch = MagicMock()
+        orch.config.models = {
+            "agent": {"provider": "openrouter", "name": "openai/gpt-5.4"},
+            "user": ModelConfig(provider="openrouter", name="anthropic/claude-sonnet-4.6"),
+        }
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        result = Orchestrator._serialize_model_config(orch)
+
+        assert isinstance(result["agent"], dict)
+        assert result["agent"]["name"] == "openai/gpt-5.4"
+        assert isinstance(result["user"], dict)
+        assert result["user"]["name"] == "anthropic/claude-sonnet-4.6"

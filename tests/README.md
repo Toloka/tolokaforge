@@ -93,7 +93,7 @@ Use `--update-canon` flag to regenerate snapshots after intentional changes.
 Require Docker daemon, API keys, or both. Auto-skipped when prerequisites are missing.
 
 - Docker container lifecycle and service health
-- End-to-end runner pipeline (native, frozen_mcp_core)
+- End-to-end runner pipeline (tau, tlk_mcp_core, native)
 - LLM-judged grading with real providers
 - Security: container isolation, network segmentation
 

@@ -1,0 +1,44 @@
+{
+  "adapter_settings": null,
+  "adapter_type": "native",
+  "category": "tool_use",
+  "description": "Canonical fixture exercising the shared-domain layout.",
+  "grading": "testcases/case_a/grading.yaml",
+  "initial_state": {
+    "device_overrides": null,
+    "filesystem": null,
+    "initialization_actions": null,
+    "json_db": "testcases/case_a/initial_state.json",
+    "mock_web": null,
+    "rag": null,
+    "system_prompt": null
+  },
+  "initial_user_message": "Echo 'hello'.",
+  "max_turns": null,
+  "metadata": {
+    "complexity": null,
+    "expected_failure_modes": [],
+    "tags": []
+  },
+  "name": "Example domain \u2014 case A",
+  "policies": {},
+  "system_prompt": "_shared/system_prompt.md",
+  "task_id": "example_domain_case_a",
+  "tools": {
+    "agent": {
+      "enabled": [
+        "echo_value"
+      ],
+      "mcp_server": "_shared/mcp_server.py"
+    },
+    "user": {
+      "enabled": []
+    }
+  },
+  "user_simulator": {
+    "backstory": null,
+    "mode": "llm",
+    "persona": "cooperative",
+    "scripted_flow": null
+  }
+}

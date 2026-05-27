@@ -5,6 +5,19 @@ refreshed from the OpenRouter API using the ``pricing-updater`` tool::
 
     uv run pricing-updater update
 
+Values reflect *OpenRouter-routed* rates, which is what every Anthropic-family
+call in this harness is billed at — :class:`LLMClient` always prefixes the
+litellm model id with ``openrouter/`` for ``provider="openrouter"`` model
+configs (see ``_format_model_name``) and sets
+``custom_llm_provider="openrouter"`` (see ``_build_kwargs``); no preset
+configures direct Anthropic API. The OR-discounted Opus 4.5+ tier
+(``$5/$25`` input/output per 1M tokens — verified live against
+``openrouter.ai/api/v1/models``) is therefore the correct billed rate, not a
+data error. If a future preset adds a direct-Anthropic route, the
+``openrouter/`` strip in :func:`normalize_model_name` will need a sibling
+``anthropic_direct/...`` namespace; today the strip is correct because it
+collapses route+model into a single key whose price is unambiguous.
+
 When a model is not found in the pricing table, :func:`estimate_cost` returns
 ``None`` so callers can distinguish *unknown cost* from *zero cost*.
 """
@@ -80,17 +93,40 @@ def estimate_cost(
     model: str,
     input_tokens: int,
     output_tokens: int,
+    cache_read_input_tokens: int = 0,
+    cache_creation_input_tokens: int = 0,
+    reasoning_tokens: int = 0,
 ) -> float | None:
-    """Estimate cost in USD for a model API call.
+    """Estimate cost in USD against the bundled pricing table.
+
+    This is the **fallback** path; runtime cost is sourced from
+    :func:`litellm.completion_cost` (see ``LLMClient.generate``). The bundled
+    table powers offline reanalysis where we have token counts but no live
+    response object.
+
+    ``input_tokens`` is the litellm-normalised prompt total — it already
+    includes ``cache_read_input_tokens`` and ``cache_creation_input_tokens``,
+    matching what ``UsageExtractor`` produces from ``response.usage``.
 
     Parameters
     ----------
     model
         Model identifier (e.g. ``"openai/gpt-4o"``, ``"claude-sonnet-4.6"``).
     input_tokens
-        Number of input tokens.
+        Total prompt tokens (including any cache reads + writes).
     output_tokens
-        Number of output tokens.
+        Completion tokens produced by the call.
+    cache_read_input_tokens
+        Tokens read from prompt cache. Charged at ``cache_read`` if present
+        in the pricing entry; otherwise the input rate (a known overestimate
+        for providers whose cached-read rate is below their input rate — see
+        ``pricing.json`` for which entries carry per-cache rates).
+    cache_creation_input_tokens
+        Tokens written into prompt cache. Charged at ``cache_write``.
+    reasoning_tokens
+        Hidden chain-of-thought tokens. Billed at the output rate by every
+        provider that exposes them (OpenAI o-series / GPT-5, Anthropic
+        thinking, etc.). Summed with ``output_tokens`` before pricing.
 
     Returns
     -------
@@ -109,11 +145,53 @@ def estimate_cost(
         )
         return None
 
-    # Calculate cost (pricing is per 1M tokens)
-    input_cost = (input_tokens / 1_000_000) * pricing["input"]
-    output_cost = (output_tokens / 1_000_000) * pricing["output"]
+    return _compute_cost(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens + reasoning_tokens,
+        cache_read=cache_read_input_tokens,
+        cache_write=cache_creation_input_tokens,
+        pricing=pricing,
+        context=model_key,
+    )
 
-    return input_cost + output_cost
+
+def _compute_cost(
+    *,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read: int,
+    cache_write: int,
+    pricing: dict[str, float],
+    context: str,
+) -> float:
+    """Cache-aware cost formula shared by runtime estimate + offline reanalysis.
+
+    ``context`` is included in the inconsistency warning so a stale or buggy
+    metrics record can be traced back to its source (model id or trial id).
+    """
+    fresh_input = input_tokens - cache_read - cache_write
+    if fresh_input < 0:
+        logger.warning(
+            "inconsistent_cache_usage: cache_read+cache_write (%d+%d) > input_tokens (%d) "
+            "for %s — usage accounting bug; clamping fresh_input to 0",
+            cache_read,
+            cache_write,
+            input_tokens,
+            context,
+        )
+        fresh_input = 0
+
+    input_rate = pricing["input"]
+    output_rate = pricing["output"]
+    cache_read_rate = pricing.get("cache_read", input_rate)
+    cache_write_rate = pricing.get("cache_write", input_rate)
+
+    return (
+        (fresh_input / 1_000_000) * input_rate
+        + (cache_read / 1_000_000) * cache_read_rate
+        + (cache_write / 1_000_000) * cache_write_rate
+        + (output_tokens / 1_000_000) * output_rate
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -130,9 +208,10 @@ def normalize_model_name(model: str) -> str:
     - ``"claude-sonnet-4.5"`` → ``"anthropic/claude-sonnet-4.5"``
     - ``"minimax-m2.7"`` → ``"minimax/minimax-m2.7"``
     - ``"openai/gpt-4o"`` → ``"openai/gpt-4o"`` (no change)
-    - ``"openrouter/anthropic/claude-sonnet-4-6"`` → ``"anthropic/claude-sonnet-4-6"``
+    - ``"openrouter/openai/gpt-4o"`` → ``"openai/gpt-4o"`` (strip routing prefix)
     """
-    # Strip routing provider prefix (openrouter is a proxy, not a model provider)
+    # Strip provider routing prefix added by litellm for OpenRouter calls
+    # e.g. "openrouter/anthropic/claude-sonnet-4.6" → "anthropic/claude-sonnet-4.6"
     if model.startswith("openrouter/"):
         model = model[len("openrouter/") :]
 

@@ -65,8 +65,8 @@ Configuration highlights:
 
 Mock models emit only short acknowledgements. Aggregated metrics therefore show:
 
-- `total_tokens_output`: 300 (≈3 tokens per trial)
-- `total_tokens_input`: 0 (no prompts sent to external APIs)
+- `total_completion_tokens`: 300 (≈3 tokens per trial)
+- `total_prompt_tokens`: 0 (no prompts sent to external APIs)
 - `avg_latency_s`: `1.06e-4` (model loop returns synchronously)
 - `success_rate_micro`: 0.0 (expected—mock agent does not solve task)
 
@@ -74,7 +74,7 @@ These numbers confirm the harness can sustain high throughput even when agent an
 
 ## Historical (Real LLM) Reference
 
-Previous Sonnet 4.5 runs with real API calls (4 workers × telecom slice) produced roughly:
+Previous Sonnet 4.5 runs with real API calls (4 workers on a realistic task slice) produced roughly:
 
 | Metric | Value |
 |--------|-------|

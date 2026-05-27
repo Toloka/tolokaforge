@@ -64,7 +64,7 @@ def consistent_hash(value) -> str:
 ### 2. Golden Set Comparison
 
 **Code path:**
-1. Adapter `grade()` method (e.g., `FrozenMcpCoreAdapter` or `NativeAdapter`)
+1. [`external_adapters/tolokaforge-adapter-tlk-mcp-core/src/tolokaforge_adapter_tlk_mcp_core/adapter.py`](../external_adapters/tolokaforge-adapter-tlk-mcp-core/src/tolokaforge_adapter_tlk_mcp_core/adapter.py) - `grade()` method
 2. [`tolokaforge/core/orchestrator.py`](../tolokaforge/core/orchestrator.py) - `_run_trial()` method
 
 **Flow:**
@@ -81,7 +81,7 @@ def consistent_hash(value) -> str:
 
 ### 3. Score Assignment
 
-**Example hash-based grading logic:**
+**From [`external_adapters/tolokaforge-adapter-tlk-mcp-core/src/tolokaforge_adapter_tlk_mcp_core/adapter.py`](../external_adapters/tolokaforge-adapter-tlk-mcp-core/src/tolokaforge_adapter_tlk_mcp_core/adapter.py:1115-1139):**
 ```python
 def grade(self, task_id, trajectory, final_state, env):
     expected_stable = self._compute_expected_state(task_id)
@@ -132,7 +132,7 @@ state_diff: null
 
 **REWARD=0 (Fail):**
 ```yaml
-# output/sandbox_telecom_field_service_v1_docker_20260308_065713/trials/DC-F-001/0/grade.yaml
+# output/sandbox_example_docker_20260308_065713/trials/DC-F-001/0/grade.yaml
 binary_pass: false
 score: 0.0
 components:

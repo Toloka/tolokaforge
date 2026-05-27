@@ -39,12 +39,16 @@ The following Nova models are supported (as of November 2025):
 - `nova-lite-v2` - Next generation lightweight model
 - `nova-micro-v1` - Ultra-lightweight text-only model
 
+### Specialized Models
 - `nova-orchestrator-v1` - Model that can generate text and images
+- `busan-v1` - Reasoning-focused model
+- `mumbai-flintflex-reasoning-v3` - Advanced reasoning capabilities
+- `rotterdam-flintflex-v2` - Specialized model from Netherlands research
 
 ## Configuration Example
 
 ```yaml
-# config/nova_example.yaml
+# examples/native/coding/run_config.yaml
 models:
   agent:
     provider: "nova"
@@ -77,7 +81,7 @@ Run evaluations with Nova models:
 
 ```bash
 # Run with Nova configuration
-uv run tolokaforge run --config config/nova_example.yaml
+uv run tolokaforge run --config examples/native/coding/run_config.yaml
 ```
 
 ## Model Capabilities
@@ -147,4 +151,5 @@ If you get a "model not found" error:
 
 ## Support
 
+For Nova API support, contact: nova-api-support@amazon.com
 For Tolokaforge integration issues, see the main project documentation.

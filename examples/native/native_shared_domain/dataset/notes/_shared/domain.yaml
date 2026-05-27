@@ -1,0 +1,18 @@
+# Shared domain config for the notes-app example. Every task.yaml under
+# ``testcases/<case>/`` deep-merges this dict in (case fields win on conflict).
+category: "tool_use"
+
+tools:
+  agent:
+    mcp_server: "mcp_server.py"
+    enabled:
+      - list_notes
+      - add_note
+  user:
+    enabled: []
+
+user_simulator:
+  mode: llm
+  persona: cooperative
+
+system_prompt: "system_prompt.md"

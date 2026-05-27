@@ -1,0 +1,15 @@
+{
+  "_comment": "Captured Anthropic response shape (via litellm) showing cache_creation_input_tokens / cache_read_input_tokens + completion_tokens_details.reasoning_tokens. Used by tests/unit/llm/test_usage.py to prove UsageExtractor surfaces every field.",
+  "usage": {
+    "prompt_tokens": 200,
+    "completion_tokens": 100,
+    "cache_creation_input_tokens": 1500,
+    "cache_read_input_tokens": 800,
+    "prompt_tokens_details": {
+      "cached_tokens": 1500
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 250
+    }
+  }
+}

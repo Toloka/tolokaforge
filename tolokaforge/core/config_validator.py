@@ -15,6 +15,7 @@ Usage::
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -81,9 +82,12 @@ _REASONING_SUPPORTED_PREFIXES: set[str] = {
     "openai/o1",
     "openai/o3",
     "openai/o4",
+    "openai/gpt-5",
     "deepseek/deepseek-reasoner",
     "google/gemini-2",
     "google/gemini-3",
+    "qwen/qwen3",
+    "moonshotai/kimi-k2",
 }
 
 # Provider keys expected in the environment per provider name.
@@ -169,8 +173,28 @@ def _validate_model(
         return issues
 
     # --- reasoning compatibility ---
-    reasoning = cfg.get("reasoning", "off")
-    if reasoning and reasoning.lower() not in ("off", ""):
+    # ReasoningConfig must be a struct ({mode: ..., effort_hint: ..., ...}).
+    # Legacy bare strings are rejected by ModelConfig validation, but we
+    # produce a helpful INFO here for dict-sourced configs too.
+    reasoning_raw = cfg.get("reasoning")
+    reasoning_mode: str = "off"
+    if isinstance(reasoning_raw, dict):
+        reasoning_mode = str(reasoning_raw.get("mode", "off") or "off").lower()
+    elif isinstance(reasoning_raw, str):
+        issues.append(
+            ValidationIssue(
+                severity=Severity.ERROR,
+                path=f"{base}.reasoning",
+                message=(
+                    f"reasoning must be a struct ({{mode, effort_hint, ...}}), "
+                    f"got bare string {reasoning_raw!r}"
+                ),
+                hint="Migrate to {mode: adaptive, effort_hint: medium} — see docs/CONFIG.md",
+            )
+        )
+    reasoning_enabled = reasoning_mode not in ("off", "")
+
+    if reasoning_enabled:
         supported = _model_supports_reasoning(name)
         if supported is False:
             issues.append(
@@ -178,10 +202,10 @@ def _validate_model(
                     severity=Severity.WARNING,
                     path=f"{base}.reasoning",
                     message=(
-                        f"reasoning={reasoning!r} is set but model {name!r} "
+                        f"reasoning mode={reasoning_mode!r} is set but model {name!r} "
                         f"is not known to support reasoning effort"
                     ),
-                    hint="Remove 'reasoning' or set to 'off' for this model",
+                    hint="Set reasoning.mode=off for this model",
                 )
             )
         elif supported is None:
@@ -190,7 +214,8 @@ def _validate_model(
                     severity=Severity.INFO,
                     path=f"{base}.reasoning",
                     message=(
-                        f"reasoning={reasoning!r} is set; cannot confirm model {name!r} supports it"
+                        f"reasoning mode={reasoning_mode!r} is set; cannot confirm "
+                        f"model {name!r} supports it"
                     ),
                     hint="Verify with your provider that the model supports reasoning_effort",
                 )
@@ -198,12 +223,7 @@ def _validate_model(
 
     # --- temperature with reasoning ---
     temperature = cfg.get("temperature")
-    if (
-        reasoning
-        and reasoning.lower() not in ("off", "")
-        and temperature is not None
-        and temperature > 0
-    ):
+    if reasoning_enabled and temperature is not None and temperature > 0:
         # Some reasoning models ignore or reject non-zero temperature
         lower_name = name.lower()
         if any(lower_name.startswith(p) for p in ("openai/o1", "openai/o3")):
@@ -255,9 +275,6 @@ def _validate_model(
 
 def _validate_api_keys(raw: dict[str, Any]) -> list[ValidationIssue]:
     """Check that expected API keys are present in the environment."""
-    from tolokaforge.secrets import get_default
-
-    sm = get_default()
     issues: list[ValidationIssue] = []
     models = raw.get("models", {})
     seen_providers: set[str] = set()
@@ -267,7 +284,7 @@ def _validate_api_keys(raw: dict[str, Any]) -> list[ValidationIssue]:
         if provider and provider not in seen_providers:
             seen_providers.add(provider)
             env_keys = _PROVIDER_ENV_KEYS.get(provider, [])
-            if env_keys and not any(sm.has_secret(k) for k in env_keys):
+            if env_keys and not any(os.environ.get(k) for k in env_keys):
                 issues.append(
                     ValidationIssue(
                         severity=Severity.WARNING,

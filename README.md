@@ -1,5 +1,7 @@
 # Tolokaforge
 
+Created by **Renaud de la Gueronniere** | **Toloka AI**
+
 A benchmarking harness for evaluating tool-using LLM agents. Multi-turn agent/user loops, sandboxed execution, deterministic grading, and rich telemetry — across any provider via LiteLLM.
 
 ## Highlights
@@ -35,17 +37,52 @@ See [Python Package Guide](docs/PYTHON_PACKAGE.md) for all extras and programmat
 # 1. Configure provider keys
 cp .env.example .env
 
-# 2. Run an example benchmark (Docker services auto-start)
-scripts/with_env.sh uv run tolokaforge run --config examples/custom_grading/run_config.yaml
+# 2. Run one of the included examples
+uv run tolokaforge run --config examples/native/coding/run_config.yaml
 
 # 3. Check results
-uv run tolokaforge status --run-dir results/custom_grading_<timestamp>
+uv run tolokaforge status --run-dir results/coding_example
+uv run tolokaforge analyze --trajectory results/coding_example/trials/<task_id>/0/trajectory.yaml
 ```
 
-Docker services start automatically via [`auto_start_services`](tolokaforge/core/models.py) (default: `true`).
-No manual `docker compose up` needed.
+That's it. Docker services for browser / mobile / RAG tasks start automatically via
+[`auto_start_services`](tolokaforge/core/models.py) (default: `true`).
 
-For distributed execution, task packs, and advanced workflows see the [Runner Guide](docs/RUNNER.md).
+### What is a run config?
+
+A run config (e.g. `examples/native/coding/run_config.yaml`) is a single YAML file
+that fully specifies an evaluation. The harness reads it and runs the benchmark:
+
+```yaml
+models:                       # which LLM(s) drive the agent + user simulator
+  agent:    {provider: openrouter, name: anthropic/claude-sonnet-4-6, ...}
+  user:     {provider: openrouter, name: anthropic/claude-sonnet-4-6, ...}
+
+orchestrator:                 # how the run is executed
+  workers: 4                  # parallel trials
+  repeats: 1                  # trials per task
+  max_turns: 20
+
+evaluation:                   # what to evaluate
+  tasks_glob: "**/task.yaml"  # which tasks to load (relative to task_packs root or repo)
+  task_packs:                 # optional: directories that contain task.yaml files
+    - "examples/native/coding/dataset"
+  output_dir: "results/coding_example"
+```
+
+To write your own benchmark, copy a working example as a starting point:
+
+```bash
+cp examples/native/coding/run_config.yaml my_run.yaml
+$EDITOR my_run.yaml         # change model, tasks_glob, output_dir
+uv run tolokaforge run --config my_run.yaml
+```
+
+Every example under [`examples/`](examples/) ships a `run_config.yaml` next to its
+task data. There is no global "default" config — the run config and the tasks it
+points at always travel together.
+
+For distributed execution and advanced workflows see the [Runner Guide](docs/RUNNER.md).
 
 ## Project Structure
 
@@ -55,7 +92,13 @@ tolokaforge/          # Installable Python package
 ├── core/             # Orchestration, grading, metrics, queue
 ├── tools/            # Built-in + MCP tool system
 └── env/              # Environment services (JSON DB, mock web, RAG)
-examples/             # Example tasks and run configurations
+examples/             # Reference task layouts with runnable run_config.yaml
+├── native/           # default `native` adapter
+│   ├── browser_task/
+│   ├── coding/
+│   ├── native_shared_domain/
+│   └── tool_use/
+└── terminal_bench/   # `terminal_bench` adapter (Docker compose)
 ```
 
 ## Documentation
@@ -68,11 +111,13 @@ examples/             # Example tasks and run configurations
 | Tool reference | [docs/TOOLS.md](docs/TOOLS.md) |
 | Browser/mobile tools | [docs/BROWSER_TOOLS.md](docs/BROWSER_TOOLS.md) |
 | Runner & distributed execution | [docs/RUNNER.md](docs/RUNNER.md) |
+| Adapter architecture | [docs/ADAPTER_ARCHITECTURE.md](docs/ADAPTER_ARCHITECTURE.md) |
+| Analytics & failure attribution | [docs/ANALYTICS.md](docs/ANALYTICS.md) |
 | Python package API | [docs/PYTHON_PACKAGE.md](docs/PYTHON_PACKAGE.md) |
 | Task packs | [docs/TASK_PACKS.md](docs/TASK_PACKS.md) |
 | Configuration reference | [docs/REFERENCE.md](docs/REFERENCE.md) |
 | Security model | [docs/SECURITY.md](docs/SECURITY.md) |
-| Adapter architecture | [docs/ADAPTER_ARCHITECTURE.md](docs/ADAPTER_ARCHITECTURE.md) |
+| Docker runtime | [docs/BENCHMARK_BACKEND_DESIGNS.md](docs/BENCHMARK_BACKEND_DESIGNS.md) |
 | Benchmark types | [docs/BENCHMARK_TYPES.md](docs/BENCHMARK_TYPES.md) |
 | Testing guide | [tests/README.md](tests/README.md) |
 
@@ -80,11 +125,11 @@ examples/             # Example tasks and run configurations
 
 | Example | Description |
 | --- | --- |
-| [`examples/package_api/`](examples/package_api/) | Programmatic run via Python imports |
-| [`examples/analyze_results/`](examples/analyze_results/) | Metrics and failure attribution analysis |
-| [`examples/distributed_run/`](examples/distributed_run/) | Queue-backed distributed execution |
-| [`examples/custom_grading/`](examples/custom_grading/) | Custom scoring patterns |
-| [`examples/browser_task/`](examples/browser_task/) | Browser task authoring workflow |
+| [`examples/native/coding/`](examples/native/coding/) | Simplest native pattern — file-write grading |
+| [`examples/native/tool_use/`](examples/native/tool_use/) | Structured tool-call grading |
+| [`examples/native/browser_task/`](examples/native/browser_task/) | Browser tool against mock-web fixtures |
+| [`examples/native/native_shared_domain/`](examples/native/native_shared_domain/) | `_shared/domain.yaml` + FastMCP pattern |
+| [`examples/terminal_bench/`](examples/terminal_bench/) | Docker-compose stacks with `terminal_bench` adapter |
 
 ## Testing
 
@@ -98,7 +143,7 @@ See [tests/README.md](tests/README.md) for integration/E2E tests and contributio
 
 ## License
 
-Apache-2.0 — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).
 
 ## Contributing
 

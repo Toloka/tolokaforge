@@ -1,0 +1,17 @@
+[metadata]
+author_name = "mark"
+author_email = "unknown"
+difficulty = "medium"
+category = "software_engineering"
+tags = ["python", "postgresql", "data-pipeline", "machine-learning", "debugging", "rfm-analysis"]
+
+[agent]
+timeout_sec = 1800.0
+
+[verifier]
+timeout_sec = 120.0
+
+[environment]
+cpus = 2
+memory_mb = 4096
+storage_mb = 10240

@@ -1,0 +1,21 @@
+{
+  "_comment": "Realistic OpenRouter-routed Gemini 3.1 Pro Preview response shape against `google/gemini-3.1-pro-preview` with `extra_body.reasoning.effort=high`. Note that unlike the Anthropic OpenRouter shape, Gemini's `reasoning.text` blocks carry NO `signature` field and NO `format` field — Google does not require signed replay. `reasoning_content` is the OpenRouter-normalised string concatenation of all readable thinking blocks. `thinking_blocks` stays None (litellm only populates that for direct-Anthropic transport).",
+  "role": "assistant",
+  "content": "The trains meet at 4:48 PM, 144 miles from Boston. ...",
+  "tool_calls": null,
+  "function_call": null,
+  "reasoning_content": "**Analyzing Train Data**\n\nI'm currently focused on dissecting the provided information.",
+  "thinking_blocks": null,
+  "provider_specific_fields": {
+    "reasoning_details": [
+      {
+        "type": "reasoning.text",
+        "text": "**Analyzing Train Data**\n\nI'm currently focused on dissecting the provided information."
+      },
+      {
+        "type": "reasoning.text",
+        "text": "**Calculating Meeting Time**\n\nI've been working on accounting for the staggered departure times."
+      }
+    ]
+  }
+}
