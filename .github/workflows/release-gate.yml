@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   release-gate:
-    runs-on: depot-ubuntu-22.04-8
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4

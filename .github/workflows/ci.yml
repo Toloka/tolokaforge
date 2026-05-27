@@ -35,7 +35,7 @@ jobs:
   # Lint job - Fast feedback on code quality
   # ============================================================================
   lint:
-    runs-on: depot-ubuntu-22.04-8
+    runs-on: ubuntu-latest
     timeout-minutes: 20
 
     steps:
@@ -62,7 +62,7 @@ jobs:
   # PR smoke tests - fast required gate
   # ============================================================================
   test-smoke:
-    runs-on: depot-ubuntu-22.04-8
+    runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     needs: lint  # Only run tests if linting passes
     timeout-minutes: 45
@@ -142,7 +142,7 @@ jobs:
   # Full test suite - push + nightly confidence
   # ============================================================================
   test-full:
-    runs-on: depot-ubuntu-22.04-8
+    runs-on: ubuntu-latest
     if: github.event_name != 'pull_request'
     needs: [lint]
     timeout-minutes: 120
@@ -238,7 +238,7 @@ jobs:
   # Label-triggered gate - full suite + coverage (add 'ready-to-merge' label)
   # ============================================================================
   test-gate:
-    runs-on: depot-ubuntu-22.04-8
+    runs-on: ubuntu-latest
     if: >-
       github.event_name == 'pull_request' &&
       contains(github.event.pull_request.labels.*.name, 'ready-to-merge')
