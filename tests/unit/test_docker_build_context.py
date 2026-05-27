@@ -261,7 +261,7 @@ def test_start_service_builds_with_isolated_context_when_skipping_build_images(
     svc = ServiceDefinition(
         name="runner",
         image_name="tolokaforge-runner",
-        dockerfile="docker/runner.Dockerfile",
+        dockerfile="tolokaforge/docker/dockerfiles/runner.Dockerfile",
         context=".",
         context_files=["pyproject.toml", "README.md", "tolokaforge/"],
     )
@@ -276,5 +276,5 @@ def test_start_service_builds_with_isolated_context_when_skipping_build_images(
     assert captured["context"] != "."
     assert "tolokaforge-build-" in captured["context"]
     # Dockerfile path is resolved against the temp build dir.
-    assert captured["dockerfile"].endswith("docker/runner.Dockerfile")
+    assert captured["dockerfile"].endswith("tolokaforge/docker/dockerfiles/runner.Dockerfile")
     assert captured["dockerfile"].startswith(captured["context"])

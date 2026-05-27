@@ -40,7 +40,7 @@ def _default_tasks_dir() -> Path:
         if candidate.is_dir():
             return candidate
 
-    # Container fallback used by docker/mock_web.Dockerfile.
+    # Container fallback used by tolokaforge/docker/dockerfiles/mock_web.Dockerfile.
     return Path("/app/tasks")
 
 
