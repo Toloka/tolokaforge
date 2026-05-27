@@ -7,5 +7,5 @@ authors:
   - family-names: "de la Gueronniere"
     given-names: "Renaud"
     affiliation: "Toloka AI"
-repository-code: "https://github.com/toloka-partners/tolokaforge"
+repository-code: "https://github.com/Toloka/tolokaforge"
 license: "MIT"
