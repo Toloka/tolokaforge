@@ -8,4 +8,4 @@ authors:
     given-names: "Renaud"
     affiliation: "Toloka AI"
 repository-code: "https://github.com/Toloka/tolokaforge"
-license: "MIT"
+license: "Apache-2.0"
