@@ -21,10 +21,10 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, cast
 
 import anyio
+import docker
 from docker.errors import APIError, DockerException, NotFound
 from pydantic import BaseModel, Field, PrivateAttr, field_validator
 
-import docker
 from tolokaforge.docker.health import HealthProbe, HealthProbeError, ProbeResult
 from tolokaforge.docker.image import Image
 from tolokaforge.docker.logging import LogRouter
@@ -34,9 +34,9 @@ from tolokaforge.docker.policy import ResourcePolicy
 from tolokaforge.docker.ports import PortConfig, ports_to_docker_format, resolve_ports
 
 if TYPE_CHECKING:
+    from docker import DockerClient
     from docker.models.containers import Container as DockerContainer
 
-    from docker import DockerClient
     from tolokaforge.secrets.manager import SecretManager
 
 logger = logging.getLogger(__name__)

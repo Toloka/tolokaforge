@@ -16,15 +16,13 @@ import logging
 from typing import TYPE_CHECKING, Any, cast
 
 import anyio
+import docker
 from docker.errors import APIError, DockerException, NotFound
 from pydantic import BaseModel, Field, PrivateAttr, field_validator
 
-import docker
-
 if TYPE_CHECKING:
-    from docker.models.networks import Network as DockerNetwork
-
     from docker import DockerClient
+    from docker.models.networks import Network as DockerNetwork
 
 logger = logging.getLogger(__name__)
 

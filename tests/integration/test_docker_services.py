@@ -9,9 +9,9 @@ Run tests with:
 
 import subprocess
 
+import docker
 import pytest
 
-import docker
 from tests.utils.validators import validate_grading_result
 
 pytestmark = pytest.mark.integration

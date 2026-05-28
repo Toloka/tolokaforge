@@ -176,9 +176,8 @@ class TypeSenseServerManager:
             # Pull the image so container creation doesn't fail with 404.
             # Retry on transient registry errors (504 Gateway Timeout, etc.)
             try:
-                from tenacity import retry, stop_after_attempt, wait_exponential
-
                 import docker as docker_sdk
+                from tenacity import retry, stop_after_attempt, wait_exponential
 
                 @retry(
                     stop=stop_after_attempt(5),
