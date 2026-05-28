@@ -104,21 +104,48 @@ class TestNormalizeModelName:
 class TestEstimateCost:
     """Test cost estimation."""
 
-    def test_known_model_returns_float(self):
-        """Known model should return a float cost."""
-        cost = estimate_cost(
-            "minimax/minimax-m2.7", input_tokens=1_000_000, output_tokens=1_000_000
-        )
-        assert cost is not None
-        assert isinstance(cost, float)
-        # minimax-m2.7: $0.30/M input + $1.20/M output = $1.50
-        assert cost == pytest.approx(1.50, abs=0.01)
+    def test_known_model_returns_float(self, tmp_path):
+        """Known model should return a float cost.
 
-    def test_known_model_with_normalization(self):
-        """Model name normalization should allow short names."""
-        cost = estimate_cost("minimax-m2.7", input_tokens=1_000_000, output_tokens=1_000_000)
-        assert cost is not None
-        assert cost == pytest.approx(1.50, abs=0.01)
+        Uses hermetic pricing fixture so the test is stable across pricing updates.
+        """
+        fixture = tmp_path / "pricing.json"
+        fixture.write_text(
+            json.dumps(
+                {"models": {"test/sample-model": {"input": 0.50, "output": 1.00}}}
+            )
+        )
+        reload_pricing(fixture)
+        try:
+            cost = estimate_cost(
+                "test/sample-model", input_tokens=1_000_000, output_tokens=1_000_000
+            )
+            assert cost is not None
+            assert isinstance(cost, float)
+            # $0.50/M input + $1.00/M output = $1.50
+            assert cost == pytest.approx(1.50, abs=0.01)
+        finally:
+            reload_pricing()
+
+    def test_known_model_with_normalization(self, tmp_path):
+        """Model name normalization should allow short names.
+
+        Uses hermetic pricing fixture so the test is stable across pricing updates.
+        """
+        fixture = tmp_path / "pricing.json"
+        fixture.write_text(
+            json.dumps(
+                {"models": {"minimax/minimax-test": {"input": 0.50, "output": 1.00}}}
+            )
+        )
+        reload_pricing(fixture)
+        try:
+            # "minimax-test" should normalize to "minimax/minimax-test"
+            cost = estimate_cost("minimax-test", input_tokens=1_000_000, output_tokens=1_000_000)
+            assert cost is not None
+            assert cost == pytest.approx(1.50, abs=0.01)
+        finally:
+            reload_pricing()
 
     def test_unknown_model_returns_none(self):
         """Unknown model should return None, not a fallback value."""
