@@ -12,7 +12,7 @@ import pytest
 pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[2]  # tests/unit -> repo root
-DOCKER_DIR = REPO_ROOT / "docker"
+DOCKER_DIR = REPO_ROOT / "tolokaforge" / "docker" / "dockerfiles"
 
 
 def parse_copy_sources(dockerfile_path: Path) -> list[tuple[str, int, str]]:
