@@ -186,6 +186,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
     - GradeTrial: Compute grade via golden path comparison
     - GetState: Debug endpoint to inspect state
     - ResetTrial: Reset trial state for retries
+    - CleanupTrial: Forget a trial's registration for retry-after-transient-failure paths
     - HealthCheck: Service health status
 
     The service maintains per-trial runtime state in TrialContextRuntime objects
@@ -473,13 +474,27 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 error=f"DB Service initialization failed: {e}",
             )
 
-        # Provision initial filesystem files (from initial_state.filesystem)
+        # Provision initial filesystem files (from initial_state.filesystem).
+        #
+        # Logical paths from task configs (``/env/fs/agent-visible/X``) are
+        # translated to the runner container's actual agent-visible directory
+        # (``/work/X``) so the agent's bash / read_file / write_file tools all
+        # find the file at the same place. ``/work`` is the BashTool default
+        # workdir and the base_path for the file tools.
         if initial_state.filesystem:
-            base_dir = Path("/env/fs/agent-visible")
+            base_dir = Path("/work")
             for dest_path, content in initial_state.filesystem.items():
-                # dest_path is like "/env/fs/agent-visible/prompt.txt"
-                # Write to the absolute path or resolve relative to base_dir
-                if dest_path.startswith("/env/fs/agent-visible/") or dest_path.startswith("/"):
+                # Translate logical path to runner-local /work/ path.
+                if dest_path.startswith("/env/fs/agent-visible/"):
+                    rel = dest_path[len("/env/fs/agent-visible/") :]
+                    file_path = base_dir / rel
+                elif dest_path == "/env/fs/agent-visible":
+                    # Bare directory — nothing to materialise; skip.
+                    continue
+                elif dest_path.startswith("/work/"):
+                    file_path = Path(dest_path)
+                elif dest_path.startswith("/"):
+                    # Other absolute path — write literally (escape hatch).
                     file_path = Path(dest_path)
                 else:
                     file_path = base_dir / dest_path
@@ -980,16 +995,17 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 f"GradeTrial: {trial_id} - Jsonpath file checks: score={jsonpath_score:.2f}"
             )
 
-        # Parse LLM messages once for both transcript rules and LLM judge
-        llm_messages = []
+        # B) TRANSCRIPT RULES GRADING (if transcript_rules exist)
+        transcript_rules_config = grading_config.transcript_rules
+        # Decode the trajectory once — both transcript-rules and llm-judge use it.
+        llm_messages: list[dict[str, Any]] = []
         if request.llm_messages_json:
             try:
                 llm_messages = json.loads(request.llm_messages_json)
             except json.JSONDecodeError as e:
                 logger.warning(f"GradeTrial: Invalid llm_messages_json: {e}")
+                # Continue with empty messages - tool history may still be useful
 
-        # B) TRANSCRIPT RULES GRADING (if transcript_rules exist)
-        transcript_rules_config = grading_config.transcript_rules
         if transcript_rules_config:
             # Convert tool call history to dicts for grading
             tool_history = [r.model_dump() for r in trial_context.tool_call_history]
@@ -1012,27 +1028,19 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     f"GradeTrial: {trial_id} - Skipping transcript rules (no messages or tool history)"
                 )
 
-        # B.2) LLM JUDGE GRADING (if llm_judge config exists)
+        # B.2) LLM JUDGE GRADING (if llm_judge configured)
         llm_judge_config = grading_config.llm_judge
-        judge_reasons_str: str | None = None
-        judge_cost_usd = 0.0
         if llm_judge_config:
             if llm_messages:
                 logger.info(f"GradeTrial: {trial_id} - Evaluating LLM judge")
-                judge_score, judge_reasons, judge_cost_usd = evaluate_llm_judge(
+                judge_score, judge_reasons = evaluate_llm_judge(
                     llm_judge_config.model_dump(), llm_messages
                 )
                 components.llm_judge_score = judge_score
-                judge_reasons_str = judge_reasons
-                if judge_score >= 0:
-                    logger.info(
-                        f"GradeTrial: {trial_id} - LLM judge: "
-                        f"score={judge_score:.2f}, cost=${judge_cost_usd:.6f}"
-                    )
-                else:
-                    logger.warning(f"GradeTrial: {trial_id} - LLM judge failed: {judge_reasons}")
+                components.llm_judge_reasons = judge_reasons
+                logger.info(f"GradeTrial: {trial_id} - LLM judge: score={judge_score:.2f}")
             else:
-                logger.info(f"GradeTrial: {trial_id} - Skipping LLM judge (no messages)")
+                logger.info(f"GradeTrial: {trial_id} - Skipping LLM judge (no transcript messages)")
 
         # C) COMBINE SCORES
         components_dict = components.model_dump()
@@ -1046,7 +1054,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             components_dict,
             state_diff_dict,
             transcript_result_dict,
-            judge_reasons=judge_reasons_str,
+            judge_reasons=components.llm_judge_reasons or None,
         )
 
         # Append golden action errors if any (critical for debugging golden replay failures)
@@ -1079,7 +1087,6 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 reasons=reasons,
                 state_diff_json=json.dumps(state_diff_dict) if state_diff_dict else "",
             ),
-            judge_cost_usd=judge_cost_usd,
         )
 
     async def _execute_hash_grading(
@@ -1576,6 +1583,47 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         )
 
     # =========================================================================
+    # CleanupTrial - Forget a trial's registration
+    # =========================================================================
+
+    def CleanupTrial(
+        self,
+        request: pb2.CleanupTrialRequest,
+        context: grpc.ServicerContext,
+    ) -> pb2.CleanupTrialResponse:
+        """
+        Forget a trial's registration so the same ``trial_id`` can be re-registered.
+
+        Used by the orchestrator's retry path to discard a prior attempt's
+        runner-side state (``self.trials[trial_id]``, extracted artifacts, and
+        the DB Service trial row) before re-attempting registration. Without
+        this, ``RegisterTrial`` on the second attempt fails with
+        ``Trial 'X' already exists``.
+
+        Idempotent: succeeds with ``success=True`` when ``trial_id`` is unknown.
+        ``ResetTrial`` is not a substitute — it preserves the registration.
+
+        Args:
+            request: CleanupTrialRequest with trial_id
+            context: gRPC context
+
+        Returns:
+            CleanupTrialResponse with success status and any error message.
+        """
+        trial_id = request.trial_id
+        logger.info(f"CleanupTrial: {trial_id}")
+
+        try:
+            self._run_async(self.cleanup_trial(trial_id))
+            return pb2.CleanupTrialResponse(success=True, error="")
+        except Exception as e:
+            logger.error(f"CleanupTrial: Unexpected error: {e}")
+            return pb2.CleanupTrialResponse(
+                success=False,
+                error=f"Unexpected error: {e}",
+            )
+
+    # =========================================================================
     # HealthCheck - Service health status
     # =========================================================================
 
@@ -1646,7 +1694,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         """
         Clean up a trial's resources.
 
-        Removes trial context and deletes trial from DB Service.
+        Removes trial context, extracted tool artifacts, and deletes the trial
+        from DB Service. Idempotent: returns silently when the trial is absent
+        from every store.
 
         Args:
             trial_id: Trial identifier to clean up
@@ -1656,6 +1706,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # Remove from local context
         if trial_id in self.trials:
             del self.trials[trial_id]
+
+        # Drop extracted tool artifacts (no-op if none were extracted)
+        self._cleanup_trial_artifacts(trial_id)
 
         # Delete from DB Service
         try:

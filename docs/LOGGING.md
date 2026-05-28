@@ -148,7 +148,7 @@ tolokaforge run --config config.yaml --verbose --strict
 ### Console Output
 ```
 2025-11-24 15:22:50 - trial-123:0 - INFO - Starting trial execution (task_id=task-123,  trial_index=0, max_turns=50)
-2025-11-24 15:22:51 - trial-123:0 - DEBUG - Agent response received (turn=0, tokens_input=8450, tokens_output=215)
+2025-11-24 15:22:51 - trial-123:0 - DEBUG - Agent response received (turn=0, prompt_tokens=8450, completion_tokens=215, reasoning_tokens=0, cache_read_input_tokens=7800)
 2025-11-24 15:22:52 - trial-123:0 - WARNING - Tool execution failed (tool=get_user, error=not found)
 2025-11-24 15:22:53 - trial-123:0 - INFO - Trial execution finished (status=completed, turns=5, latency_s=3.2)
 ```

@@ -21,10 +21,10 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, cast
 
 import anyio
+import docker
 from docker.errors import APIError, DockerException, NotFound
 from pydantic import BaseModel, Field, PrivateAttr, field_validator
 
-import docker
 from tolokaforge.docker.health import HealthProbe, HealthProbeError, ProbeResult
 from tolokaforge.docker.image import Image
 from tolokaforge.docker.logging import LogRouter
@@ -34,9 +34,9 @@ from tolokaforge.docker.policy import ResourcePolicy
 from tolokaforge.docker.ports import PortConfig, ports_to_docker_format, resolve_ports
 
 if TYPE_CHECKING:
+    from docker import DockerClient
     from docker.models.containers import Container as DockerContainer
 
-    from docker import DockerClient
     from tolokaforge.secrets.manager import SecretManager
 
 logger = logging.getLogger(__name__)
@@ -323,14 +323,14 @@ class Container(BaseModel):
             secret_manager.validate_required(secret_keys)
 
             # Resolve secrets and add to environment
-            secrets_env = secret_manager.to_env_dict(secret_keys)
-            create_kwargs["environment"].update(secrets_env)
+            resolved_env = secret_manager.to_env_dict(secret_keys)
+            create_kwargs["environment"].update(resolved_env)
 
             logger.info(
-                "Resolved %d secrets for container '%s': %s",
-                len(secrets_env),
+                "Injected %d credentials for container '%s': %s",
+                len(resolved_env),
                 name,
-                list(secrets_env.keys()),
+                list(resolved_env.keys()),
             )
 
         # Add privileged mode (required for Docker-in-Docker)

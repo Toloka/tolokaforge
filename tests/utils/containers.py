@@ -10,6 +10,7 @@ Images are auto-built from the project's Dockerfiles when not found locally.
 import logging
 from datetime import timedelta
 
+import docker
 import pytest
 from docker.errors import ImageNotFound
 from testcontainers.core.generic import DockerContainer
@@ -17,8 +18,6 @@ from testcontainers.core.wait_strategies import (
     HttpWaitStrategy,
     LogMessageWaitStrategy,
 )
-
-import docker
 
 logger = logging.getLogger(__name__)
 

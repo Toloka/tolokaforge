@@ -12,6 +12,7 @@ Example:
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Literal
 
 from tolokaforge.docker.config import DockerConfig
@@ -20,6 +21,7 @@ from tolokaforge.docker.mount import Mount
 from tolokaforge.docker.policy import Capability, ResourcePolicy
 from tolokaforge.docker.ports import PortConfig
 from tolokaforge.docker.stack import ServiceDefinition, ServiceStack
+from tolokaforge.docker.wheel_resolver import resolve_wheel
 
 
 def core_stack(
@@ -28,9 +30,9 @@ def core_stack(
     runner_port: int | Literal["auto"] = "auto",
     enable_dind: bool = False,
     enable_playwright: bool = False,
-    enable_mock_web: bool = False,
-    mock_web_port: int | Literal["auto"] = "auto",
-    task_packs: list[str] | None = None,
+    task_pack_mounts: list[Path] | None = None,
+    extra_runner_binds: list[tuple[Path, str]] | None = None,
+    mount_docker_socket: bool = False,
 ) -> ServiceStack:
     """Create a core service stack with DB service and Runner.
 
@@ -45,12 +47,16 @@ def core_stack(
             Runner connects via ``DOCKER_HOST=tcp://dind:2375``.
         enable_playwright: Install Playwright + Chromium in the Runner
             image for browser tool support. Detected automatically from tasks.
-        enable_mock_web: Add mock-web service for browser tasks that
-            need an HTTP server hosting task HTML files.
-        mock_web_port: Host port for mock-web service (default: ``"auto"``).
-        task_packs: Absolute paths to task pack directories. These are
-            bind-mounted into the mock-web container so it can serve
-            static task files (HTML, CSS, etc.).
+        task_pack_mounts: Host directories to bind-mount into the Runner at
+            the same absolute path. Used by the ``terminal_bench`` adapter so
+            the host Docker daemon (reached via a mounted socket) and the
+            Runner both resolve task files from an identical path.
+        extra_runner_binds: Additional ``(host_path, container_path)`` bind
+            mounts for the Runner (e.g. a shared log directory).
+        mount_docker_socket: Bind-mount ``/var/run/docker.sock`` into the
+            Runner so ``docker compose`` inside the Runner can talk to the
+            host Docker daemon. Relaxes the default cap-drop policy because
+            Docker socket access needs additional capabilities.
 
     Returns:
         ServiceStack configured with db-service and runner.
@@ -72,7 +78,7 @@ def core_stack(
     db_service = ServiceDefinition(
         name="db-service",
         image_name="tolokaforge-db-service",
-        dockerfile="docker/db_service.Dockerfile",
+        dockerfile="tolokaforge/docker/dockerfiles/db_service.Dockerfile",
         context=".",
         context_files=[
             "tolokaforge/env/json_db_service/",
@@ -81,6 +87,10 @@ def core_stack(
         environment={"PYTHONUNBUFFERED": "1"},
         health_probe=db_health,
         networks=["runner-net"],
+        # Container is named ``tolokaforge-db-service``; expose the short
+        # ``db-service`` and ``json-db`` aliases so task YAMLs and tools
+        # that hardcode either form resolve correctly via Docker DNS.
+        network_aliases=["db-service", "json-db"],
     )
 
     # Runner — gRPC tool execution + grading
@@ -126,30 +136,50 @@ def core_stack(
         runner_depends.append("dind")
         runner_resources = ResourcePolicy()  # relaxed
 
-    # Serialize all secrets into a single env var for the Runner container.
-    # The Runner will deserialize this into its own SecretManager instance.
+    if task_pack_mounts:
+        for root in task_pack_mounts:
+            abs_root = str(Path(root).resolve())
+            runner_mounts.append(Mount.bind(abs_root, abs_root, read_only=False))
+
+    if extra_runner_binds:
+        for host_path, container_path in extra_runner_binds:
+            runner_mounts.append(Mount.bind(str(Path(host_path).resolve()), container_path))
+
+    if mount_docker_socket:
+        runner_mounts.append(Mount.bind("/var/run/docker.sock", "/var/run/docker.sock"))
+        # Docker socket access requires a looser capability profile.
+        runner_resources = ResourcePolicy()
+
+    # Serialize host-side secrets into a single env var for the runner
+    # container. The runner reads this on startup via __main__.py and
+    # bootstraps its own SecretManager singleton from it. This is the
+    # *only* place credentials cross the host→container boundary —
+    # never via build args, mounts, or image bake-in.
     import json
 
     from tolokaforge.secrets import get_default
 
-    sm = get_default()
-    secrets_data = sm.serialize()
-    if secrets_data:
-        runner_env["TOLOKAFORGE_SECRETS_JSON"] = json.dumps(secrets_data)
+    secrets_payload = get_default().serialize()
+    if secrets_payload:
+        runner_env["TOLOKAFORGE_SECRETS_JSON"] = json.dumps(secrets_payload)
 
-    runner_build_args: dict[str, str] = {}
+    # Resolve the tolokaforge wheel for the runner image.
+    # The wheel is a local file — Docker never needs to reach the network.
+    artifact = resolve_wheel()
+
+    runner_build_args: dict[str, str] = {
+        "WHEEL_FILENAME": artifact.path.name,
+    }
     if enable_playwright:
         runner_build_args["INSTALL_PLAYWRIGHT"] = "true"
 
     runner = ServiceDefinition(
         name="runner",
         image_name="tolokaforge-runner",
-        dockerfile="docker/runner.Dockerfile",
+        dockerfile="tolokaforge/docker/dockerfiles/runner.Dockerfile",
         context=".",
         context_files=[
-            "pyproject.toml",
-            "README.md",
-            "tolokaforge/",
+            str(artifact.path),  # absolute path to the .whl
         ],
         ports=[PortConfig(container_port=50051, host_port=runner_port)],
         environment=runner_env,
@@ -158,47 +188,9 @@ def core_stack(
         resources=runner_resources,
         networks=["runner-net"],
         build_args=runner_build_args,
+        network_aliases=["runner"],
     )
     services.append(runner)
-
-    # Mock Web Service — static file server for browser tasks
-    if enable_mock_web:
-        mock_web_mounts: list[Mount] = []
-        mock_web_env = {
-            "PYTHONUNBUFFERED": "1",
-            "JSON_DB_URL": "http://tolokaforge-db-service:8000",
-        }
-        # Bind-mount each task pack so mock-web can serve static HTML files
-        if task_packs:
-            import os
-
-            resolved_paths: list[str] = []
-            for idx, pack_path in enumerate(task_packs):
-                abs_path = os.path.abspath(pack_path)
-                container_path = f"/app/task_packs/{idx}"
-                mock_web_mounts.append(Mount.bind(abs_path, container_path, read_only=True))
-                resolved_paths.append(container_path)
-            mock_web_env["TASKS_DIRS"] = ",".join(resolved_paths)
-
-        mock_web = ServiceDefinition(
-            name="mock-web",
-            image_name="tolokaforge-mock-web",
-            dockerfile="docker/mock_web.Dockerfile",
-            context=".",
-            context_files=[
-                "tolokaforge/env/mock_web_service/",
-            ],
-            ports=[PortConfig(container_port=8080, host_port=mock_web_port)],
-            environment=mock_web_env,
-            depends_on=["db-service"],
-            mounts=mock_web_mounts,
-            networks=["runner-net"],
-        )
-        services.append(mock_web)
-
-        # Tell the Runner where mock-web lives so it can pass the URL to the
-        # BrowserTool and executor.
-        runner_env["MOCK_WEB_URL"] = "http://tolokaforge-mock-web:8080"
 
     stack.add_services(services)
     return stack

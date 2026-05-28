@@ -1,0 +1,36 @@
+combine:
+  method: weighted
+  weights:
+    state_checks: 0.7
+    transcript_rules: 0.3
+  pass_threshold: 0.8
+state_checks:
+  jsonpaths:
+    - path_glob: "/env/fs/agent-visible/submissions/*"
+      contains_ci: "incident commander"
+      description: "Summary selects addendum owner for active migration scenario"
+    - path_glob: "/env/fs/agent-visible/submissions/*"
+      contains_ci: "hold rollback"
+      description: "Summary recommends no-go pending required prechecks"
+    - path_glob: "/env/fs/agent-visible/submissions/*"
+      contains_ci: "checkpoint validation"
+      description: "Summary includes migration safety requirement"
+    - path_glob: "/env/fs/agent-visible/submissions/*"
+      contains_ci: "dba acknowledgment"
+      description: "Summary includes database owner approval gate"
+transcript_rules:
+  max_turns: 10
+  disallow_regex:
+    - "(?i)(cannot complete|failed to complete|unable to complete)"
+  required_actions:
+    - action_id: "browse_runbook"
+      requestor: assistant
+      name: browser
+      arguments: {}
+      compare_args: []
+    - action_id: "write_runbook_summary"
+      requestor: assistant
+      name: write_file
+      arguments: {}
+      compare_args: []
+  communicate_info: []

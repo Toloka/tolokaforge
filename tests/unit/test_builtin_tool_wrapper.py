@@ -129,3 +129,84 @@ class TestBuiltinFileToolWrapper:
             assert "success" in result.lower() or "written" in result.lower()
             written = (Path(tmpdir) / "test.txt").read_text()
             assert written == "written content"
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_execute_raises_on_tool_failure(self):
+        """Builtin tool failures must raise so the runner records EXECUTION_STATUS_ERROR.
+
+        Previously the wrapper returned ``f"Error: {result.error}"`` on
+        failure, which the runner saw as a success string. That corrupted
+        ``tool_success_rate``, ``failure_attribution``, and ``error_count``.
+        """
+        from tolokaforge.runner.tool_factory import (
+            BuiltinFileToolWrapper,
+            ToolExecutionError,
+        )
+        from tolokaforge.tools.registry import ToolResult
+
+        schema = MagicMock()
+        schema.name = "read_file"
+        wrapper = BuiltinFileToolWrapper(schema)
+
+        # Force the underlying tool to return failure.
+        failing_tool = MagicMock()
+        failing_tool.execute.return_value = ToolResult(
+            success=False, output="", error="Path traversal blocked"
+        )
+        wrapper._tool = failing_tool
+
+        with pytest.raises(ToolExecutionError) as exc_info:
+            await wrapper.execute({"path": "../../etc/passwd"})
+
+        assert exc_info.value.tool_name == "read_file"
+        assert "Path traversal blocked" in exc_info.value.message
+
+    @pytest.mark.unit
+    def test_create_list_dir_wrapper(self):
+        from tolokaforge.runner.tool_factory import BuiltinFileToolWrapper
+
+        schema = MagicMock()
+        schema.name = "list_dir"
+        wrapper = BuiltinFileToolWrapper(schema)
+        assert wrapper._tool.__class__.__name__ == "ListDirTool"
+
+    @pytest.mark.unit
+    def test_runner_file_tools_use_work_base_path(self):
+        """All three file tools must target /work — not the library default of
+        /env/fs/agent-visible — so they see what the runner provisions and what
+        BashTool writes.
+        """
+        from pathlib import Path
+
+        from tolokaforge.runner.tool_factory import BuiltinFileToolWrapper
+
+        for name in ("read_file", "write_file", "list_dir"):
+            schema = MagicMock()
+            schema.name = name
+            wrapper = BuiltinFileToolWrapper(schema)
+            assert wrapper._tool.base_path == Path(
+                "/work"
+            ), f"{name} wrapper must use /work base_path, got {wrapper._tool.base_path}"
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_execute_raises_with_default_message_when_error_missing(self):
+        from tolokaforge.runner.tool_factory import (
+            BuiltinFileToolWrapper,
+            ToolExecutionError,
+        )
+        from tolokaforge.tools.registry import ToolResult
+
+        schema = MagicMock()
+        schema.name = "write_file"
+        wrapper = BuiltinFileToolWrapper(schema)
+
+        failing_tool = MagicMock()
+        failing_tool.execute.return_value = ToolResult(success=False, output="", error="")
+        wrapper._tool = failing_tool
+
+        with pytest.raises(ToolExecutionError) as exc_info:
+            await wrapper.execute({"path": "x", "content": "y"})
+
+        assert "Tool returned failure" in exc_info.value.message

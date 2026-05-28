@@ -2,9 +2,10 @@
 
 This guide walks you through installing Tolokaforge, running a simple evaluation, and understanding the output.
 
-For benchmark types and roadmap, see:
+For roadmap, benchmark-type status, and phased delivery details, see:
+- `docs/OSS_V1_IMPLEMENTATION_PLAN.md`
 - `docs/BENCHMARK_TYPES.md`
-- `docs/FUTURE_DEVELOPMENT.md`
+- `docs/BACKEND_STATUS_MATRIX.md`
 
 ## Prerequisites
 
@@ -42,22 +43,21 @@ OPENROUTER_API_KEY=sk-or-...
 # or OPENAI_API_KEY / ANTHROPIC_API_KEY / GOOGLE_API_KEY
 ```
 
-## Docker Services
+## Start Environment Services (Recommended)
 
-Docker services (db-service, runner) start **automatically** when you run a benchmark.
-The orchestrator's `auto_start_services` setting (default: `true`) handles building images
-and starting containers on the first run.
-
-No manual `docker compose up` is needed. If you prefer manual control, set
-`auto_start_services: false` in your run config and use:
+Browser, JSON DB, and RAG tasks rely on services. Start them with Docker:
 
 ```bash
-uv run tolokaforge docker up --profile core
+docker compose up -d json-db mock-web rag-service
 ```
+
+## Set Up Tasks
+
+Task packs live outside the engine tree. Place your tasks in `tasks/` or use the `task_packs` configuration to point at any directory (see [Task Packs](TASK_PACKS.md)). See `examples/` for the expected layout.
 
 ## Quick Start Run
 
-Use one of the example configs in `examples/` or create a minimal one:
+Use the sample config in `examples/native/coding/run_config.yaml` or create a minimal one:
 
 ```yaml
 models:
@@ -79,14 +79,16 @@ orchestrator:
   max_turns: 20
 
 evaluation:
-  tasks_glob: "examples/browser_task/dataset/tasks/**/task.yaml"
+  task_packs:
+    - "examples/browser_task/dataset"
+  tasks_glob: "**/browser_public_example_01/task.yaml"
   output_dir: "results/quick_start"
 ```
 
 Run it:
 
 ```bash
-uv run tolokaforge run --config examples/browser_task/run_config.yaml
+uv run tolokaforge run --config examples/native/coding/run_config.yaml
 ```
 
 Check run progress/cost at any time:
@@ -114,19 +116,19 @@ Notes:
 
 ```bash
 uv run python scripts/generate_task_pack_compose_override.py \
-  --config my_run_config.yaml \
+  --config examples/native/coding/run_config.yaml \
   --output docker-compose.taskpacks.override.yaml
 ```
 
 For distributed queue workers (shared queue + shared artifacts path), run:
 
 ```bash
-uv run tolokaforge prepare --config my_run_config.yaml --run-dir results/distributed_run --reset-queue
-uv run tolokaforge worker --config my_run_config.yaml --run-dir results/distributed_run
+uv run tolokaforge prepare --config examples/native/coding/run_config.yaml --run-dir results/distributed_run --reset-queue
+uv run tolokaforge worker --config examples/native/coding/run_config.yaml --run-dir results/distributed_run
 ```
 
-For distributed execution with multiple machines, use a shared Postgres queue backend
-by setting `queue_postgres_dsn` in your run config.
+For multi-runner GitHub Actions distributed mode, use a shared Postgres queue backend
+via secret `TOLOKAFORGE_QUEUE_POSTGRES_DSN` (or workflow input `queue_postgres_dsn`).
 
 ## Benchmark Type Requirements
 
@@ -172,6 +174,7 @@ Key files:
 - Read `docs/TOOLS.md` for tool details
 - Read `docs/PYTHON_PACKAGE.md` for import-based usage patterns
 - Read `docs/RUNNER.md` for queue/distributed execution
+- Read `docs/ANALYTICS.md` for metrics and failure attribution
 - Try `python examples/package_api/run_minimal_task_pack.py` for programmatic usage
 - Try `python examples/analyze_results/analyze_run.py --run-dir <run_dir>` for programmatic analysis
 - Use `tolokaforge validate --tasks ".../task.yaml"` to validate tasks

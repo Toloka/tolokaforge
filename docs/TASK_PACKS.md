@@ -58,7 +58,6 @@ Validation commands:
 
 ```bash
 uv run tolokaforge validate --tasks "/abs/path/private-pack/tasks/**/task.yaml"
-scripts/tests/validate_public_examples.sh
 ```
 
 ## Mock-Web Multi-Root
@@ -84,7 +83,7 @@ Use the override generator:
 
 ```bash
 uv run python scripts/generate_task_pack_compose_override.py \
-  --config my_run_config.yaml \
+  --config examples/native/coding/run_config.yaml \
   --output docker-compose.taskpacks.override.yaml
 ```
 

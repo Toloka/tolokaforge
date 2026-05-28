@@ -1,0 +1,19 @@
+{
+  "_comment": "Synthetic fixture modelled on the litellm ModelResponse shape documented at https://docs.litellm.ai/docs/reasoning_content — captures Claude 4.7 running with display='omitted' (default): thinking_blocks carry empty .thinking text but populated .signature bytes; reasoning_content is absent.",
+  "role": "assistant",
+  "content": "Let me check that for you.",
+  "reasoning_content": "",
+  "thinking_blocks": [
+    {
+      "type": "thinking",
+      "thinking": "",
+      "signature": "EqoBCkgIARABGAIiQH/omit47A1bCtH0M9rJj5v7U0l8LkGh3wZ9xP2f4m6nA8rVb/Qs5D2pX0t1+7oG9kQHaY4Lc5r7MgJ2wF+K3p8SDBY8gLmT2aH3jRb+yRoMYlLc6xKq1z7+5ZgFIjCGt9P8aQ0RuUqMnHfYvB7xzVqL4mSu9N2+Xf0pT3Bd8E4kYH5f1Jt0q9ZmC1Xh8vrIRI4k9C"
+    },
+    {
+      "type": "thinking",
+      "thinking": "",
+      "signature": "EqoBCkgIARABGAIiQAKt8f2dWmf7wH1mC9+zKJy4R+G8aXwBeS1R0cC7YqT2mH4kS/+8A6P7yL3dP2+W9K8jR6M5u2N1LpVzGj9Xq+ESDMb1N3wYyK9qf0o6xhoMZu7R8qP5xT0BvJg1IjD4S8c1W0RaCUf8bP7gHm3X2yKzT6nV5rLo4U9M8XhQcYu2PmLa5N1eRq0kN0oBc8gEI"
+    }
+  ],
+  "tool_calls": null
+}

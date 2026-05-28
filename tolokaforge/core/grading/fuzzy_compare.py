@@ -20,7 +20,6 @@ to filter these unstable fields, then hashes the remaining stable state.
 import hashlib
 import json
 import logging
-import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,9 +29,6 @@ logger = logging.getLogger(__name__)
 
 # Add contrib paths for mcp_core imports
 _REPO_ROOT = Path(__file__).parent.parent.parent.parent
-_MCP_CORE_PATH = _REPO_ROOT / "contrib" / "project-m-copilot-mock-tools" / "mcp_core" / "src"
-if _MCP_CORE_PATH.exists() and str(_MCP_CORE_PATH) not in sys.path:
-    sys.path.insert(0, str(_MCP_CORE_PATH))
 
 
 @dataclass
@@ -322,8 +318,7 @@ def get_stable_state(db: Any) -> dict[str, Any]:
         from mcp_core.utils.validation import get_stable_database_state
     except ImportError as e:
         raise ImportError(
-            "mcp_core is required for stable state comparison. "
-            "Ensure contrib/mcp_core is available and mcp_core is installed."
+            "mcp_core is required for stable state comparison. Ensure mcp_core is installed."
         ) from e
 
     return get_stable_database_state(db)
@@ -348,8 +343,7 @@ def calculate_stable_hash(db: Any) -> str:
         from mcp_core.utils.validation import calculate_database_hash
     except ImportError as e:
         raise ImportError(
-            "mcp_core is required for stable hash calculation. "
-            "Ensure contrib/mcp_core is available and mcp_core is installed."
+            "mcp_core is required for stable hash calculation. Ensure mcp_core is installed."
         ) from e
 
     return calculate_database_hash(db, exclude_unstable_fields=True)

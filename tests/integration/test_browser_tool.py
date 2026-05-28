@@ -18,18 +18,15 @@ pytestmark = [pytest.mark.integration, pytest.mark.requires_browser]
 def browser_tool():
     """Create browser tool instance"""
     tool = BrowserTool()
-    yield tool
-    # Cleanup: must run on the SAME event loop where Playwright was started.
-    # asyncio.run() creates a new loop which causes Playwright operations to hang.
-    if tool._loop and not tool._loop.is_closed():
+    try:
+        yield tool
+    finally:
+        # close_loop() runs cleanup() on the dedicated loop thread and
+        # stops the thread. Safe to call when no loop was started.
         try:
-            tool._loop.run_until_complete(tool.cleanup())
-        except Exception:  # noqa: BLE001 - Best-effort Playwright cleanup
-            logger.warning("Failed to clean up Playwright browser", exc_info=True)
-        tool.close_loop()
-    else:
-        # Fallback: no loop was created (e.g., execute() was never called)
-        pass
+            tool.close_loop()
+        except Exception:  # noqa: BLE001 - best-effort Playwright teardown
+            logger.warning("Failed to close BrowserTool loop", exc_info=True)
 
 
 def test_open_and_navigate(browser_tool):

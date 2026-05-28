@@ -1,0 +1,25 @@
+# Native shared-domain example — two notes-app testcases that share one
+# _shared/ directory. Run with:
+#   scripts/with_env.sh uv run tolokaforge run --config examples/native/native_shared_domain/run_config.yaml
+models:
+  agent:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.0
+    max_tokens: 2048
+  user:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.2
+
+orchestrator:
+  workers: 1
+  repeats: 1
+  max_turns: 8
+  queue_backend: sqlite
+
+evaluation:
+  task_packs:
+    - "examples/native/native_shared_domain/dataset"
+  tasks_glob: "**/testcases/**/task.yaml"
+  output_dir: "results/native_shared_domain_example"

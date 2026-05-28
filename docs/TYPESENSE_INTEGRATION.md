@@ -320,7 +320,7 @@ If not using orchestrator-managed server:
 
 3. **Run Tests**:
    ```bash
-   uv run tolokaforge run --config my_run_config.yaml
+   uv run tolokaforge run --config <your_run_config.yaml>
    ```
 
 ### Development Setup (Orchestrator-Managed)

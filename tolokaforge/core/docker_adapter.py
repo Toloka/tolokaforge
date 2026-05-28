@@ -82,7 +82,7 @@ class DockerRunnerAdapter:
             executor=self.executor,
         )
 
-        # Log for metrics (include duration_s for tool_usage aggregation)
+        # Log for metrics
         self.tool_logs.append(
             {
                 "tool_name": tool_name,
@@ -92,7 +92,6 @@ class DockerRunnerAdapter:
                 "success": result.success,
                 "output": result.output if result.success else None,
                 "error": result.error if not result.success else None,
-                "duration_s": result.duration_s,
             }
         )
 
@@ -174,6 +173,18 @@ class DockerRunnerAdapter:
         return self.runner_client.reset_trial(
             trial_id=self.trial_id, execute_init_actions=execute_init_actions
         )
+
+    def cleanup_trial(self) -> dict:
+        """
+        Forget this trial's registration so the same trial_id can be re-registered.
+
+        Used by the orchestrator's retry path before re-attempting registration
+        for a trial that failed transiently. Idempotent on the server side.
+
+        Returns:
+            dict with success, error
+        """
+        return self.runner_client.cleanup_trial(trial_id=self.trial_id)
 
     # Backward compatibility method
     def register_tools(self, tools: list[dict[str, Any]], env_config: dict[str, str]) -> bool:

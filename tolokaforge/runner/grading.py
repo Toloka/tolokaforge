@@ -456,6 +456,7 @@ def evaluate_jsonpath_file_checks(
 
     Returns:
         Tuple of (score, reasons_string) where score is fraction of checks passed.
+        Score is -1.0 (sentinel) when checks list is empty.
     """
     if not checks:
         return -1.0, ""
@@ -473,8 +474,19 @@ def evaluate_jsonpath_file_checks(
             reasons_parts.append(f"SKIP: No path_glob — {description}")
             continue
 
+        # Translate logical /env/fs/agent-visible/ paths to the runner's
+        # actual /work/ tree (matching where the file tools and BashTool
+        # operate). This keeps grading/runtime consistent: the agent
+        # writes via write_file under /work/, and the grader reads from
+        # the same place.
+        resolved_pattern = path_pattern
+        if resolved_pattern.startswith("/env/fs/agent-visible/"):
+            resolved_pattern = "/work/" + resolved_pattern[len("/env/fs/agent-visible/") :]
+        elif resolved_pattern == "/env/fs/agent-visible":
+            resolved_pattern = "/work"
+
         # Glob for matching files on the container filesystem
-        matching_files = glob.glob(path_pattern)
+        matching_files = glob.glob(resolved_pattern)
 
         if not matching_files:
             reasons_parts.append(f"FAIL: No files match {path_pattern} — {description}")
@@ -601,7 +613,7 @@ def combine_grade_components(
             total_weight += weight
 
         if total_weight > 0:
-            final_score = round(weighted_sum / total_weight, 6)
+            final_score = weighted_sum / total_weight
         else:
             final_score = 1.0
 
@@ -636,7 +648,6 @@ def build_grade_reasons(
         components: Component scores dict
         state_diff: State diff if hash comparison failed
         transcript_result: Transcript evaluation result
-        judge_reasons: Reasons string returned by the LLM judge evaluation
 
     Returns:
         Human-readable reasons string
@@ -693,23 +704,30 @@ def build_grade_reasons(
     return " | ".join(reasons) if reasons else "No grading components evaluated"
 
 
+# ---------------------------------------------------------------------------
+# LLM judge evaluator
+# ---------------------------------------------------------------------------
+
+
 def evaluate_llm_judge(
     llm_judge_config: dict[str, Any],
     llm_messages: list[dict[str, Any]],
-) -> tuple[float, str, float]:
-    """Evaluate transcript using LLM judge via litellm.
+) -> tuple[float, str]:
+    """Evaluate a transcript with an LLM-as-judge via litellm.
 
     Args:
-        llm_judge_config: Dict with model_ref, rubric, output_schema keys.
-        llm_messages: Conversation messages from the trial.
+        llm_judge_config: Dict with ``model_ref``, ``rubric``,
+            ``output_schema`` keys (matching ``LLMJudgeConfig``).
+        llm_messages: Conversation messages from the trial — the same
+            list the orchestrator passes to ``GradeTrial``.
 
     Returns:
-        Tuple of (score 0.0-1.0, reasons string, cost_usd).
-        Returns (-1.0, msg, 0.0) only when not configured (no model_ref/rubric).
-        Returns (0.0, error_msg, 0.0) on evaluation failure so the score is
-        included in the weighted grade (penalizing rather than hiding failure).
+        Tuple of (score 0.0–1.0, reasons string). Returns ``(-1.0, msg)``
+        only when the judge is *not configured* (no model_ref / rubric).
+        Evaluation **failures** return ``(0.0, error_msg)`` so the score
+        is included in the weighted grade — penalising rather than hiding
+        the failure.
     """
-
     import litellm
 
     model_ref = llm_judge_config.get("model_ref", "")
@@ -717,9 +735,11 @@ def evaluate_llm_judge(
 
     if not model_ref or not rubric:
         logger.warning("LLM judge not configured (missing model_ref or rubric)")
-        return -1.0, "LLM judge not configured", 0.0
+        return -1.0, "LLM judge not configured"
 
-    # Ensure API keys are in os.environ for litellm compatibility
+    # Mirror resolved secrets to os.environ so litellm finds the provider
+    # API key (litellm reads env directly rather than accepting a secret
+    # manager). This is the legitimate boundary use of export_to_environ.
     from tolokaforge.secrets import get_default
 
     sm = get_default()
@@ -747,46 +767,36 @@ def evaluate_llm_judge(
             temperature=0.0,
         )
 
-        # Extract cost from litellm response
-        judge_cost = 0.0
-        try:
-            judge_cost = litellm.completion_cost(completion_response=response)
-        except Exception:
-            pass  # cost extraction is best-effort
-
         content = response.choices[0].message.content or ""
         if not content.strip():
             logger.error("LLM judge returned empty response")
-            return 0.0, "LLM judge returned empty response", judge_cost
+            return 0.0, "LLM judge returned empty response"
 
         result = _parse_judge_json(content)
         score = max(0.0, min(1.0, float(result.get("score", 0.0))))
         reasons = str(result.get("reasons", result.get("reasoning", "")))
-        logger.info("LLM judge evaluation: score=%.2f, cost=$%.6f", score, judge_cost)
-        return score, reasons, judge_cost
+        logger.info("LLM judge evaluation: score=%.2f", score)
+        return score, reasons
 
     except Exception as e:
         logger.error("LLM judge evaluation failed: %s", e, exc_info=True)
-        # Return 0.0 so the failure IS included in the weighted score.
-        # -1.0 means "not configured" and would be excluded.
-        return 0.0, f"LLM judge failed: {e}", 0.0
+        return 0.0, f"LLM judge failed: {e}"
 
 
 def _parse_judge_json(text: str) -> dict[str, Any]:
-    """Parse JSON from judge response, handling markdown code blocks.
+    """Parse JSON from a judge response — tolerant of code fences and prose.
 
-    Tries direct JSON parse first, then extracts from ```json blocks,
-    then tries to find any JSON object in the text.
+    Tries direct ``json.loads`` first, then a ```json fenced block, then any
+    ``{...}`` substring containing a ``"score"`` key. Raises ``ValueError``
+    if none of those succeed; the caller maps that to ``(0.0, error)``.
     """
     import json as json_mod
 
-    # Try direct parse
     try:
         return json_mod.loads(text)
     except (json_mod.JSONDecodeError, ValueError):
         pass
 
-    # Try extracting from markdown code block
     match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if match:
         try:
@@ -794,7 +804,6 @@ def _parse_judge_json(text: str) -> dict[str, Any]:
         except (json_mod.JSONDecodeError, ValueError):
             pass
 
-    # Try finding any JSON object in the text
     match = re.search(r"\{[^{}]*\"score\"[^{}]*\}", text, re.DOTALL)
     if match:
         try:
@@ -806,16 +815,10 @@ def _parse_judge_json(text: str) -> dict[str, Any]:
 
 
 def _format_transcript_for_judge(messages: list[dict[str, Any]]) -> str:
-    """Format conversation messages into readable transcript for judge.
+    """Format conversation messages into a readable transcript for the judge.
 
-    Includes tool call details so the judge can evaluate tool usage quality.
-
-    Args:
-        messages: List of message dicts with 'role', 'content', optional
-            'tool_calls' and 'tool_call_id' keys.
-
-    Returns:
-        Human-readable transcript string.
+    Includes tool-call details so the judge can evaluate tool usage quality.
+    Tool outputs are truncated at 2000 chars to keep prompts tight.
     """
     parts = []
     for msg in messages:
@@ -824,15 +827,12 @@ def _format_transcript_for_judge(messages: list[dict[str, Any]]) -> str:
         tool_calls = msg.get("tool_calls", [])
         tool_call_id = msg.get("tool_call_id")
 
-        # Tool result messages
         if role == "tool" and tool_call_id:
-            # Truncate long tool outputs for judge
             truncated = content[:2000] + ("..." if len(content) > 2000 else "")
             parts.append(f"[tool result]: {truncated}")
         elif content:
             parts.append(f"[{role}]: {content}")
 
-        # Tool call details
         for tc in tool_calls or []:
             name = tc.get("name", "?")
             args = tc.get("arguments", {})

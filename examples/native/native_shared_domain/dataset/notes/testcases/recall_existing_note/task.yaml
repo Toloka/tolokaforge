@@ -1,0 +1,21 @@
+task_id: "notes_recall_existing_note"
+name: "Notes — recall a saved reminder"
+description: >
+  Agent must list existing notes and report the body of the one the user
+  asks about. No new notes should be created.
+domain: ../../_shared/domain.yaml
+max_turns: 6
+
+initial_user_message: >
+  What did I save earlier about the office Wi-Fi?
+
+initial_state:
+  json_db: "initial_state.json"
+
+user_simulator:
+  backstory: >
+    You earlier saved a note about the office Wi-Fi. You want the assistant
+    to remind you of the password it contains. Once the assistant tells you
+    the password, thank it briefly and stop.
+
+grading: "grading.yaml"

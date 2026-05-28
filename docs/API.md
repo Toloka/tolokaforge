@@ -39,12 +39,33 @@ client = LLMClient(model_config)
 result = client.generate(system="...", messages=[...])
 ```
 
+## ModelCapabilities
+
+```python
+from tolokaforge.core.model_policies import ModelCapabilities
+
+caps = ModelCapabilities.for_model(name="openai/gpt-5.4", provider="openai")
+# Returns resolved capabilities with schema/prompt policies
+```
+
+`tolokaforge.core.model_policies` — Model capability policies (Strategy Pattern) and YAML preset loader. Presets are defined in `tolokaforge/core/data/model_presets.yaml`. Key public symbols:
+
+- `ModelCapabilities` — resolved capability set for a model (schema/prompt policies, feature flags)
+- `DictMapParam` — dataclass describing a detected dict-map parameter (tool name, param name, value schema)
+- `detect_dict_maps(tools)` — shared utility that scans tool definitions for `additionalProperties`-based dict-map parameters; used by both `StrictSchema` and `DictMapHints` policies
+- `StrictSchema` — schema policy that rewrites tool schemas for strict-mode models (GPT-5)
+- `DictMapHints` — prompt policy that appends system-prompt hints for dict-map parameters
+
 ## CLI
 
 ```bash
-uv run tolokaforge run --config examples/browser_task/run_config.yaml
-uv run tolokaforge validate --tasks "examples/**/task.yaml"
+uv run tolokaforge run --config examples/native/coding/run_config.yaml
+uv run tolokaforge validate --tasks "tasks/**/task.yaml"
 uv run tolokaforge analyze --trajectory results/.../trajectory.yaml
 ```
+
+> **Note:** Task packs live outside the engine tree. Point `task_packs`
+> in your config at any directory containing tasks, or place them in
+> `tasks/`. See `examples/` for the expected layout.
 
 See `docs/REFERENCE.md` for schemas and tool definitions.

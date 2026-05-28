@@ -12,11 +12,12 @@ from concurrent import futures
 import grpc
 
 from tolokaforge.agent import agent_pb2, agent_pb2_grpc
-from tolokaforge.core.model_client import LLMClient
+from tolokaforge.core.llm import LLMClient
 from tolokaforge.core.models import Message as CoreMessage
 from tolokaforge.core.models import MessageRole
 from tolokaforge.core.models import ModelConfig as CoreModelConfig
 from tolokaforge.core.models import ToolCall as CoreToolCall
+from tolokaforge.secrets import install_global_redactor
 
 logger = logging.getLogger(__name__)
 
@@ -177,6 +178,7 @@ def main():
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         stream=sys.stdout,
     )
+    install_global_redactor()
 
     # Get bind address from environment or use unix socket default
     import os

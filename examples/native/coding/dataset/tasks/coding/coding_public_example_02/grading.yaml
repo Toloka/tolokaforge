@@ -1,0 +1,40 @@
+combine:
+  method: weighted
+  weights:
+    state_checks: 0.65
+    transcript_rules: 0.35
+  pass_threshold: 0.8
+state_checks:
+  jsonpaths:
+    - path: "$.filesystem['/env/fs/agent-visible/data_parser.py']"
+      contains: "replace(',', '')"
+      description: "Parser normalizes comma-separated numeric input"
+    - path: "$.filesystem['/env/fs/agent-visible/data_parser.py']"
+      contains: "replace('_', '')"
+      description: "Parser normalizes underscore-separated numeric input"
+    - path: "$.filesystem['/env/fs/agent-visible/data_parser.py']"
+      contains: "except (ValueError, TypeError)"
+      description: "Parser handles malformed and null-like input safely"
+    - path_glob: "/env/fs/agent-visible/submissions/*"
+      contains_ci: "backward"
+      description: "Compatibility note explains backward-safe behavior"
+transcript_rules:
+  max_turns: 10
+  disallow_regex:
+    - "(?i)(cannot complete|unable to complete|i refuse)"
+  required_actions:
+    - action_id: "inspect_parser"
+      requestor: assistant
+      name: bash
+      arguments: {}
+      compare_args: []
+    - action_id: "write_parser_note"
+      requestor: assistant
+      name: write_file
+      arguments: {}
+      compare_args: []
+  communicate_info:
+    - info: "compat"
+      required: true
+    - info: "malformed"
+      required: true

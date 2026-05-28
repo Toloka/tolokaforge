@@ -1,0 +1,13 @@
+{
+  "tickets": [
+    {
+      "id": "T-100",
+      "status": "open",
+      "priority": "high",
+      "assignee": "",
+      "service": "billing-api",
+      "summary": "Refund webhooks timing out for enterprise accounts"
+    }
+  ],
+  "audit_log": []
+}

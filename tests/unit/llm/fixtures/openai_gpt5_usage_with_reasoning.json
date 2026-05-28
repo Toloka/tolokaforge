@@ -1,0 +1,13 @@
+{
+  "_comment": "OpenAI GPT-5-class response shape (via litellm) showing prompt_tokens_details.cached_tokens + completion_tokens_details.reasoning_tokens. Anthropic-only cache_*_input_tokens fields are absent.",
+  "usage": {
+    "prompt_tokens": 1600,
+    "completion_tokens": 420,
+    "prompt_tokens_details": {
+      "cached_tokens": 320
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 180
+    }
+  }
+}

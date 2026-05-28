@@ -1,0 +1,17 @@
+{
+  "_comment": "Synthetic fixture modelled on the litellm ModelResponse shape documented at https://docs.litellm.ai/docs/reasoning_content — OpenAI GPT-5 with reasoning_effort='medium' exposes reasoning_content (summary) only; no structured thinking_blocks are emitted. The usage object (not included here — Stage 5 concern) would carry completion_tokens_details.reasoning_tokens > 0.",
+  "role": "assistant",
+  "content": "I'll compute the quarterly totals and return them.",
+  "reasoning_content": "Breaking the problem down: I need to sum revenue across the four quarters, then project an annualised run-rate. The data is grouped by region so I should aggregate before summing. I'll call the analytics.sum tool with the full quarters range.",
+  "thinking_blocks": null,
+  "tool_calls": [
+    {
+      "id": "call_1A2B3C4D5E",
+      "type": "function",
+      "function": {
+        "name": "analytics_sum",
+        "arguments": "{\"field\":\"revenue\",\"quarters\":[\"Q1\",\"Q2\",\"Q3\",\"Q4\"]}"
+      }
+    }
+  ]
+}

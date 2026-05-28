@@ -1,0 +1,5 @@
+Rollback decision intake
+
+You are preparing a recommendation for incident INC-443.
+Do not rely on a single runbook page: use both base and emergency addendum.
+Return owner, go/no-go decision, and missing prechecks.

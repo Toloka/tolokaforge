@@ -21,15 +21,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import anyio
+import docker
 from docker.errors import APIError, BuildError, DockerException, ImageNotFound
 from pydantic import BaseModel, Field, PrivateAttr, field_validator
 
-import docker
-
 if TYPE_CHECKING:
-    from docker.models.images import Image as DockerImage
-
     from docker import DockerClient
+    from docker.models.images import Image as DockerImage
 
 logger = logging.getLogger(__name__)
 

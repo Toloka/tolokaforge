@@ -16,7 +16,8 @@
       "module_path": "mcp_server",
       "toolset": "tool_use"
     },
-    "timeout_s": 30.0
+    "timeout_s": 30.0,
+    "tool_config": {}
   },
   {
     "category": "compute",
@@ -44,7 +45,8 @@
       "module_path": "mcp_server",
       "toolset": "tool_use"
     },
-    "timeout_s": 30.0
+    "timeout_s": 30.0,
+    "tool_config": {}
   },
   {
     "category": "compute",
@@ -108,7 +110,8 @@
       "module_path": "mcp_server",
       "toolset": "tool_use"
     },
-    "timeout_s": 30.0
+    "timeout_s": 30.0,
+    "tool_config": {}
   },
   {
     "category": "compute",
@@ -136,6 +139,7 @@
       "module_path": "mcp_server",
       "toolset": "tool_use"
     },
-    "timeout_s": 30.0
+    "timeout_s": 30.0,
+    "tool_config": {}
   }
 ]

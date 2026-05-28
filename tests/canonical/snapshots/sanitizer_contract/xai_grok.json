@@ -1,0 +1,379 @@
+{
+  "tools": [
+    {
+      "function": {
+        "description": "Plain scalar parameters.",
+        "name": "scalars",
+        "parameters": {
+          "properties": {
+            "count": {
+              "description": "An integer count.",
+              "title": "Count",
+              "type": "integer"
+            },
+            "enabled": {
+              "description": "A boolean flag.",
+              "title": "Enabled",
+              "type": "boolean"
+            },
+            "label": {
+              "description": "A string label.",
+              "title": "Label",
+              "type": "string"
+            },
+            "ratio": {
+              "description": "A floating-point ratio.",
+              "title": "Ratio",
+              "type": "number"
+            }
+          },
+          "required": [
+            "count",
+            "label",
+            "enabled",
+            "ratio"
+          ],
+          "title": "ScalarsInput",
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Monetary amounts with Decimal.",
+        "name": "decimal",
+        "parameters": {
+          "properties": {
+            "amount": {
+              "description": "A monetary amount.",
+              "type": "number"
+            },
+            "tax": {
+              "description": "Sales tax.",
+              "type": "number"
+            }
+          },
+          "required": [
+            "amount",
+            "tax"
+          ],
+          "title": "DecimalInput",
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Timestamps as datetime.",
+        "name": "datetime",
+        "parameters": {
+          "properties": {
+            "due_by": {
+              "description": "Deadline.",
+              "format": "date-time",
+              "title": "Due By",
+              "type": "string"
+            },
+            "occurred_at": {
+              "description": "When it happened.",
+              "format": "date-time",
+              "title": "Occurred At",
+              "type": "string"
+            }
+          },
+          "required": [
+            "occurred_at",
+            "due_by"
+          ],
+          "title": "DateTimeInput",
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Optional/Union/Literal parameters.",
+        "name": "unions",
+        "parameters": {
+          "properties": {
+            "count_or_label": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "description": "Either a count or a label.",
+              "title": "Count Or Label"
+            },
+            "note": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Note"
+            },
+            "status": {
+              "description": "Status.",
+              "enum": [
+                "pending",
+                "active",
+                "closed"
+              ],
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "count_or_label"
+          ],
+          "title": "UnionsInput",
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Typed dict-map parameter.",
+        "name": "dict_map",
+        "parameters": {
+          "properties": {
+            "lines": {
+              "description": "Map of sku_id -> line. Provide as a JSON array of objects, each with a 'key' field as the identifier.",
+              "items": {
+                "properties": {
+                  "key": {
+                    "description": "The map key identifier.",
+                    "type": "string"
+                  },
+                  "quantity": {
+                    "description": "Requested units.",
+                    "minimum": 0,
+                    "title": "Quantity",
+                    "type": "integer"
+                  },
+                  "sku_id": {
+                    "description": "SKU identifier.",
+                    "title": "Sku Id",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "key",
+                  "sku_id",
+                  "quantity"
+                ],
+                "type": "object"
+              },
+              "title": "Lines",
+              "type": "array"
+            }
+          },
+          "required": [
+            "lines"
+          ],
+          "title": "DictMapInput",
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Nested-model parameters.",
+        "name": "nested",
+        "parameters": {
+          "properties": {
+            "contact": {
+              "description": "Contact with nested addresses.",
+              "properties": {
+                "home": {
+                  "description": "Home address.",
+                  "properties": {
+                    "city": {
+                      "description": "City name.",
+                      "title": "City",
+                      "type": "string"
+                    },
+                    "street": {
+                      "description": "Street line.",
+                      "title": "Street",
+                      "type": "string"
+                    },
+                    "zip_code": {
+                      "description": "Postal code.",
+                      "title": "Zip Code",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "street",
+                    "city",
+                    "zip_code"
+                  ],
+                  "title": "Address",
+                  "type": "object"
+                },
+                "name": {
+                  "title": "Name",
+                  "type": "string"
+                },
+                "work": {
+                  "anyOf": [
+                    {
+                      "properties": {
+                        "city": {
+                          "description": "City name.",
+                          "title": "City",
+                          "type": "string"
+                        },
+                        "street": {
+                          "description": "Street line.",
+                          "title": "Street",
+                          "type": "string"
+                        },
+                        "zip_code": {
+                          "description": "Postal code.",
+                          "title": "Zip Code",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "street",
+                        "city",
+                        "zip_code"
+                      ],
+                      "title": "Address",
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "description": "Work address (optional)."
+                }
+              },
+              "required": [
+                "name",
+                "home"
+              ],
+              "title": "Contact",
+              "type": "object"
+            },
+            "primary": {
+              "description": "Primary address.",
+              "properties": {
+                "city": {
+                  "description": "City name.",
+                  "title": "City",
+                  "type": "string"
+                },
+                "street": {
+                  "description": "Street line.",
+                  "title": "Street",
+                  "type": "string"
+                },
+                "zip_code": {
+                  "description": "Postal code.",
+                  "title": "Zip Code",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "street",
+                "city",
+                "zip_code"
+              ],
+              "title": "Address",
+              "type": "object"
+            }
+          },
+          "required": [
+            "primary",
+            "contact"
+          ],
+          "title": "NestedInput",
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "List-of-model parameter.",
+        "name": "list_nested",
+        "parameters": {
+          "properties": {
+            "lines": {
+              "description": "Order lines.",
+              "items": {
+                "properties": {
+                  "quantity": {
+                    "description": "Requested units.",
+                    "minimum": 0,
+                    "title": "Quantity",
+                    "type": "integer"
+                  },
+                  "sku_id": {
+                    "description": "SKU identifier.",
+                    "title": "Sku Id",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "sku_id",
+                  "quantity"
+                ],
+                "title": "OrderLine",
+                "type": "object"
+              },
+              "title": "Lines",
+              "type": "array"
+            }
+          },
+          "required": [
+            "lines"
+          ],
+          "title": "ListInput",
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Explicit Field(pattern=\u2026).",
+        "name": "explicit_pattern",
+        "parameters": {
+          "properties": {
+            "sku": {
+              "description": "SKU identifier matching the canonical pattern.",
+              "pattern": "^SKU-[A-Z0-9]+$",
+              "title": "Sku",
+              "type": "string"
+            }
+          },
+          "required": [
+            "sku"
+          ],
+          "title": "ExplicitPatternInput",
+          "type": "object"
+        }
+      },
+      "type": "function"
+    }
+  ]
+}

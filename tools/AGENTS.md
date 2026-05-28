@@ -8,9 +8,7 @@ Each subdirectory is a **uv workspace member** — an independent Python package
 
 | Tool | Entry Point | Purpose |
 |------|-------------|---------|
-| `demo-recorder` | `demo-recorder` | Generate demo videos from trajectories |
 | `dev-mcp` | `dev-mcp` | Dev MCP server for AI agent interaction (tests, lint, format, etc.) |
-| `eval-orchestrator` | `eval-orchestrator` | Split/merge eval configs for parallel CI |
 | `pricing-updater` | `pricing-updater` | Fetch and update LLM pricing data |
 
 ## Adding a New Tool

@@ -17,6 +17,12 @@ models:
     temperature: 0.0
     max_tokens: 4096
     seed: 42
+    # Reasoning / thinking configuration. Must be a struct — see `reasoning:` below.
+    reasoning:
+      mode: off
+    # Optional: override auto-detected model capabilities
+    capabilities:
+      dict_map_prompt_hints: true
   user:
     provider: "openai"
     name: "gpt-4o-mini"
@@ -55,6 +61,7 @@ evaluation:
 ```
 
 Notes:
+- `models.agent.capabilities` overrides auto-detected model capabilities. Auto-detection (via `ModelCapabilities.for_model()`) covers most models; use overrides for A/B comparisons or to fix edge cases. Available fields: `dict_map_prompt_hints` (inject system prompt hints for dict-map parameters), `supports_typed_dict_maps`, `supports_schema_extras`, `fixed_temperature`, `supports_seed`, `unwrap_input_key`, `reasoning_via_extra_body`. See [Model Capability Presets](#model-capability-presets) below.
 - PyPI wheels exclude `tasks/**`; configure benchmark content via `evaluation.task_packs`.
 - `runtime: docker` is the only supported runtime; it uses the executor service and environment containers.
 - `max_budget_usd` pauses scheduling new trials when cumulative spend reaches the budget.
@@ -68,16 +75,126 @@ Notes:
   - `TASK_PACKS_DIRS` for orchestrator-visible pack roots
   - `TASKS_DIRS` for mock-web task roots (category directories)
 - Recommended: generate compose override from config via
-  `uv run python scripts/generate_task_pack_compose_override.py --config my_run_config.yaml --output docker-compose.taskpacks.override.yaml`
+  `uv run python scripts/generate_task_pack_compose_override.py --config examples/native/coding/run_config.yaml --output docker-compose.taskpacks.override.yaml`
 - For long runs, inspect progress with:
   `tolokaforge status --run-dir <output_dir_timestamped>`
 - For Postgres queue status (no local `run_queue.sqlite`):
-  `tolokaforge status --run-dir <any_existing_dir> --config my_run_config.yaml`
+  `tolokaforge status --run-dir <any_existing_dir> --config examples/native/coding/run_config.yaml`
 - For distributed worker mode:
-  `tolokaforge prepare --config my_run_config.yaml --run-dir <run_dir> --reset-queue`
-  `tolokaforge worker --config my_run_config.yaml --run-dir <run_dir>`
+  `tolokaforge prepare --config examples/native/coding/run_config.yaml --run-dir <run_dir> --reset-queue`
+  `tolokaforge worker --config examples/native/coding/run_config.yaml --run-dir <run_dir>`
 - For multi-runner distributed execution (e.g., GitHub Actions matrix), use
   `queue_backend: postgres` with a shared `queue_postgres_dsn`.
+
+### `reasoning:` — declarative thinking configuration
+
+`reasoning:` is a **struct**, not a bare string. Bare strings (`reasoning: medium`) are rejected at load time with a migration pointer.
+
+Schema:
+
+```yaml
+reasoning:
+  mode: off | adaptive | budget       # default: off
+  budget_tokens: <int>                 # honoured when mode=budget (Anthropic thinking)
+  effort_hint: low | medium | high     # provider-native effort string
+  display: visible | summary | omitted # default: visible
+```
+
+Examples:
+
+```yaml
+# No reasoning requested (default).
+reasoning:
+  mode: off
+
+# Adaptive — forward the native effort hint (Claude 4.5/4.6, OpenRouter
+# `reasoning.effort` dict, OpenAI `reasoning_effort`). NOT accepted on
+# Claude 4.7 — raises ValueError on the `anthropic_claude_4_7` preset.
+reasoning:
+  mode: adaptive
+  effort_hint: medium
+
+# Budget (Anthropic-native) — send the canonical litellm `thinking` kwarg
+# with a concrete token budget. REQUIRED for Claude 4.7 (it ignores the
+# adaptive effort dict). `budget_tokens` is mandatory unless the preset
+# declares `reasoning_budget_default`; the `anthropic_claude_4_7` preset
+# ships `reasoning_budget_default: 8000`, so the bare form is valid for
+# Claude 4.7:
+reasoning:
+  mode: budget
+  budget_tokens: 8000   # explicit — wins over preset default
+
+# Claude 4.7 shortcut — uses the preset-level default (8000 tokens):
+reasoning:
+  mode: budget
+
+# Budget on non-Anthropic presets (OpenAI GPT-5, Grok, Qwen) falls back to
+# the effort-kwarg path — `budget_tokens` is silently unused because no
+# cross-provider canonical budget kwarg exists. Provide `effort_hint` when
+# going through these presets:
+reasoning:
+  mode: budget
+  budget_tokens: 8000
+  effort_hint: high
+```
+
+Preset-driven routing summary (see `docs/LLM_LAYER.md` § `params_policy`
+for the full matrix):
+
+| Preset family | `mode=adaptive` emits | `mode=budget` emits | Sampling dropped when thinking |
+|---|---|---|---|
+| `anthropic_claude_4_7` (Opus/Sonnet 4.7) | **`ValueError`** | top-level `thinking={type, budget_tokens}` | ✅ (`temperature` / `top_p` / `top_k`) |
+| `anthropic` (Claude ≤ 4.6) | `extra_body.reasoning.effort` | effort fallback | ❌ |
+| `openai_gpt5` / `xai_grok` / `qwen` | `reasoning_effort` or `extra_body.reasoning.effort` | effort fallback | ❌ |
+| `default` / `aws_nova` | *(nothing)* | *(nothing)* | ❌ |
+
+Semantics are mapped per-provider by
+[`tolokaforge/core/llm/params_policy.py`](../tolokaforge/core/llm/params_policy.py);
+see [`docs/LLM_LAYER.md`](LLM_LAYER.md) for the full translation table.
+
+### Model Capability Presets
+
+Model capabilities are auto-detected from model name/provider using preset definitions in `tolokaforge/core/data/model_presets.yaml`. Override auto-detected capabilities via the `capabilities` field in model config:
+
+```yaml
+models:
+  agent:
+    name: openai/gpt-5.4
+    capabilities:
+      dict_map_prompt_hints: true  # Inject hints for typed dict-map parameters
+```
+
+Available overrides:
+- `dict_map_prompt_hints` (bool) — enables the `DictMapHints` prompt policy which appends explicit hints to the system prompt about dict-map parameters (`additionalProperties: {schema}`). When enabled together with `StrictSchema` (auto-enabled for GPT-5 models), both schema-level enriched descriptions AND system prompt hints are applied. Dict-map detection uses the shared `detect_dict_maps()` utility in `model_policies.py`.
+- `supports_typed_dict_maps` (bool) — whether model handles typed dict-map schemas natively (without `StrictSchema` rewriting)
+- `supports_schema_extras` (bool) — whether model accepts `title`, `examples`, `minProperties`
+- `fixed_temperature` (float | null) — force specific temperature
+- `supports_seed` (bool) — whether model accepts seed parameter
+- `unwrap_input_key` (bool) — unwrap Nova/Bedrock `{input: args}` wrapper
+- `reasoning_via_extra_body` (bool) — send reasoning via `extra_body` (OpenRouter)
+
+#### Prompt caching (preset-driven only)
+
+Prompt caching (Anthropic ephemeral `cache_control`) is preset-driven, **not**
+a `capabilities:` override in Stage 6. Anthropic-family presets
+(`anthropic`, `anthropic_claude_4_7`) default to
+`cache_policy: anthropic_ephemeral`; every other preset carries `cache_policy: none`.
+To disable caching for an ablation study, edit
+[`tolokaforge/core/data/model_presets.yaml`](../tolokaforge/core/data/model_presets.yaml:22)
+and set `cache_policy: none` on the preset. Observe cache-hit rates via
+`Metrics.usage.cache_read_input_tokens` + `cache_creation_input_tokens` in
+`metrics.yaml`.
+
+To add support for a new model, add an entry to `tolokaforge/core/data/model_presets.yaml`:
+
+```yaml
+presets:
+  my_new_model:
+    match: ["my-provider/my-model*"]
+    schema_sanitizer: strict       # passthrough | strict
+    prompt_policy: dict_map_hints  # none | dict_map_hints
+    cache_policy: none             # none | anthropic_ephemeral (Anthropic only)
+```
 
 ## Task Specification (`task.yaml`)
 
@@ -196,3 +313,4 @@ output_dir/
 
 See `docs/OUTPUT_FORMAT.md` for details.
 For runner operations and queue workflows, see `docs/RUNNER.md`.
+For metrics and attribution interpretation, see `docs/ANALYTICS.md`.

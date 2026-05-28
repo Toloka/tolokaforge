@@ -3,7 +3,9 @@
 import json
 import logging
 import os
+import random
 import socket
+from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime
 from pathlib import Path
@@ -17,13 +19,17 @@ from tolokaforge.core.failure_attribution import (
     is_failed_trajectory,
     summarize_failure_attributions,
 )
+from tolokaforge.core.llm import LLMClient, UserSimulator, build_capabilities
+from tolokaforge.core.llm.presets import (
+    resolve_effective_preset,
+    resolve_policy_names,
+)
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.metrics import (
     calculate_aggregate_metrics,
     calculate_latency_percentiles,
     calculate_task_metrics,
 )
-from tolokaforge.core.model_client import LLMClient, UserSimulator
 from tolokaforge.core.models import (
     Grade,
     GradeComponents,
@@ -35,12 +41,104 @@ from tolokaforge.core.models import (
     TrialStatus,
     TypeSenseConfig,
 )
-from tolokaforge.core.output_writer import OutputWriter
+from tolokaforge.core.output.artifacts import FileArtifactWriter
 from tolokaforge.core.rate_limiter import GlobalRateLimiter
 from tolokaforge.core.resume import RunStateManager
 from tolokaforge.core.run_queue import AttemptLease, create_run_queue
 from tolokaforge.core.runner import TrialRunner
 from tolokaforge.core.stuck import StuckDetector
+
+# Tools that need Playwright + Chromium baked into the runner image. The
+# orchestrator scans the task list before starting the docker stack and
+# enables the ``INSTALL_PLAYWRIGHT`` build arg when any task uses one of
+# them. ``MobileTool`` subclasses ``BrowserTool`` so it has the same
+# Playwright dependency — keeping the list inline (vs. inferring from the
+# class hierarchy) avoids importing the tool modules at orchestrator
+# import time.
+_PLAYWRIGHT_TOOL_NAMES: frozenset[str] = frozenset({"browser", "mobile"})
+
+# Tools / initial-state declarations that require ``full_stack`` (mock-web
+# at port 8080 and rag-service at 8001) on top of the core db-service +
+# runner. ``browser`` and ``mobile`` reach mock-web for app/site URLs;
+# ``search_kb`` reaches rag-service. Tasks may also declare
+# ``initial_state.mock_web`` / ``initial_state.rag`` directly without
+# enabling those tools — both shapes flip the switch.
+#
+# Routing matrix:
+# +------------------------------------+--------------+
+# | Signal in task config              | Stack        |
+# +------------------------------------+--------------+
+# | tools.agent.enabled ∋ browser      | full_stack   |
+# | tools.agent.enabled ∋ mobile       | full_stack   |
+# | tools.agent.enabled ∋ search_kb    | full_stack   |
+# | initial_state.mock_web is truthy   | full_stack   |
+# | initial_state.rag is truthy        | full_stack   |
+# | otherwise                          | core_stack   |
+# +------------------------------------+--------------+
+_FULL_STACK_TOOL_NAMES: frozenset[str] = frozenset({"browser", "mobile", "search_kb"})
+
+
+def _tasks_need_playwright(tasks: list[Any]) -> bool:
+    """Return True iff any task enables a Playwright-dependent tool.
+
+    Used by :class:`Orchestrator` to decide whether to pass
+    ``enable_playwright=True`` to :func:`core_stack`. Pure function so
+    unit tests can construct ``TaskConfig`` instances directly without
+    standing up the docker stack.
+    """
+    for task in tasks:
+        enabled = task.tools.agent.get("enabled", []) if task.tools else []
+        if _PLAYWRIGHT_TOOL_NAMES.intersection(enabled):
+            return True
+    return False
+
+
+def _tasks_need_full_stack(tasks: list[Any]) -> bool:
+    """Return True iff any task needs ``full_stack`` (mock-web / rag).
+
+    See ``_FULL_STACK_TOOL_NAMES`` for the routing matrix. Detection works
+    on both ``ToolsConfig`` / ``InitialStateConfig`` Pydantic models and
+    plain dicts (raw YAML), to keep the unit tests simple.
+    """
+    for task in tasks:
+        enabled = task.tools.agent.get("enabled", []) if task.tools else []
+        if _FULL_STACK_TOOL_NAMES.intersection(enabled):
+            return True
+        initial_state = task.initial_state if task.initial_state is not None else None
+        if initial_state is None:
+            continue
+        mock_web = (
+            initial_state.mock_web
+            if hasattr(initial_state, "mock_web")
+            else initial_state.get("mock_web") if isinstance(initial_state, dict) else None
+        )
+        rag = (
+            initial_state.rag
+            if hasattr(initial_state, "rag")
+            else initial_state.get("rag") if isinstance(initial_state, dict) else None
+        )
+        if mock_web or rag:
+            return True
+    return False
+
+
+def _build_resolved_block(model_config: ModelConfig) -> dict[str, Any]:
+    """Return the Stage 7 ``resolved:`` block for a :class:`ModelConfig`.
+
+    Shape: ``{"effective_preset": ..., "schema_sanitizer": ..., ...}``.
+    See :func:`tolokaforge.core.llm.presets.resolve_policy_names` for the
+    six policy slots included in the fingerprint. Analytics tools diff this
+    across runs to detect preset / capability drift.
+    """
+    capabilities = build_capabilities(
+        model_config.name,
+        model_config.provider,
+        overrides=model_config.capabilities,
+    )
+    return {
+        "effective_preset": resolve_effective_preset(model_config.name, model_config.provider),
+        **resolve_policy_names(capabilities),
+    }
 
 
 class Orchestrator:
@@ -57,6 +155,10 @@ class Orchestrator:
         self.results: list[Trajectory] = []
         self.state_manager: RunStateManager | None = None
         self.adapter: BaseAdapter | None = None
+        # Shared artifact writer — every per-trial write goes through it
+        # so the orchestrator stays decoupled from filesystem details and
+        # alternative writers (in-memory tests, remote stores) can plug in.
+        self._artifact_writer: FileArtifactWriter = FileArtifactWriter()
 
         # Initialize logger
         log_level = logging.DEBUG if verbose else logging.INFO
@@ -121,7 +223,7 @@ class Orchestrator:
             try:
                 with open(metrics_path) as f:
                     metrics = yaml.safe_load(f) or {}
-                total_cost += float(metrics.get("cost_usd_est", 0.0) or 0.0)
+                total_cost += float(metrics.get("cost_usd", 0.0) or 0.0)
             except Exception:
                 continue
         return total_cost
@@ -140,13 +242,66 @@ class Orchestrator:
             return True
         return False
 
-    @staticmethod
-    def _safe_get_pending(run_queue: Any) -> int:
-        """Get pending count from run queue, returning -1 if DB is unreachable."""
+    def _cleanup_runner_state_for_retry(
+        self,
+        docker_runtime: Any,
+        task_id: str,
+        trial_idx: int,
+    ) -> None:
+        """Forget the prior attempt's runner-side trial registration before retry.
+
+        The Runner service tracks each trial in ``self.trials[trial_id]`` plus
+        the DB Service trial row. ``RegisterTrial`` rejects duplicates with
+        ``Trial 'X' already exists``, so re-attempting a transiently-failed
+        trial would otherwise burn every retry on the registration error.
+
+        Idempotent: a stale or already-absent trial is logged and ignored so a
+        failing cleanup never blocks the retry attempt itself (the
+        re-registration will surface a clearer error if state is unrecoverable).
+        """
+        if docker_runtime is None:
+            return
+        trial_id = f"{task_id}:{trial_idx}"
         try:
-            return run_queue.get_counts().get("pending", 0)
-        except Exception:
-            return -1
+            result = docker_runtime.executor_client.cleanup_trial(trial_id)
+        except Exception as e:
+            self.logger.warning(
+                "Cleanup before retry raised; continuing with re-registration",
+                task_id=task_id,
+                trial_index=trial_idx,
+                error=str(e),
+            )
+            return
+        if not result.get("success"):
+            self.logger.warning(
+                "Cleanup before retry returned non-success; continuing with re-registration",
+                task_id=task_id,
+                trial_index=trial_idx,
+                error=result.get("error"),
+            )
+
+    def _build_pending_trials(
+        self,
+        tasks: list[TaskConfig],
+        repeats: int,
+        skip_completed: Callable[[str, int], bool] | None = None,
+    ) -> list[tuple[str, int]]:
+        """Build pending (task_id, trial_index) pairs in enqueue order.
+
+        Order is (task, trial_index) lexicographic. With
+        ``orchestrator.shuffle_trials`` set, the order is randomized —
+        diagnostic only, does not eliminate state leakage between trials.
+        """
+        pending_trials: list[tuple[str, int]] = []
+        for task in tasks:
+            for trial_idx in range(repeats):
+                if skip_completed and skip_completed(task.task_id, trial_idx):
+                    continue
+                pending_trials.append((task.task_id, trial_idx))
+
+        if self.config.orchestrator.shuffle_trials:
+            random.shuffle(pending_trials)
+        return pending_trials
 
     def _ensure_typesense_started(self) -> None:
         """Start TypeSense server if configured for local mode.
@@ -389,37 +544,44 @@ class Orchestrator:
         service_stack = None
         if self.config.orchestrator.auto_start_services:
             try:
-                from tolokaforge.docker.stacks import core_stack
+                from tolokaforge.docker.stacks import core_stack, full_stack
 
                 self.logger.info("Auto-starting Docker services via ServiceStack")
-
-                # Detect required Docker features from task configs
-                needs_playwright = any(
-                    "browser" in (t.tools.agent.get("enabled", []) if t.tools else [])
-                    for t in self.tasks
+                stack_requirements = (
+                    self.adapter.docker_stack_requirements() if self.adapter is not None else None
                 )
-                if needs_playwright:
-                    self.logger.info("Browser tool detected in tasks — enabling Playwright")
-
-                # Detect if any task needs the mock-web service
-                needs_mock_web = any(
-                    t.initial_state.mock_web is not None
-                    and t.initial_state.mock_web.get("base_url")
-                    for t in self.tasks
-                    if t.initial_state
+                core_stack_kwargs = (
+                    stack_requirements.to_core_stack_kwargs() if stack_requirements else {}
                 )
-                if needs_mock_web:
-                    self.logger.info("Mock-web detected in tasks — enabling mock-web service")
-
-                # Collect task pack paths for mock-web file serving
-                task_packs = self.config.evaluation.task_packs if self.config.evaluation else None
-
-                self.logger.info("Creating service stack (db-service + runner)")
-                service_stack = core_stack(
-                    enable_playwright=needs_playwright,
-                    enable_mock_web=needs_mock_web,
-                    task_packs=task_packs,
-                )
+                # Ensure host-side paths for any extra bind mounts exist so
+                # Docker doesn't create them as root-owned at start-up.
+                for host_path, _ in core_stack_kwargs.get("extra_runner_binds", []):
+                    Path(host_path).mkdir(parents=True, exist_ok=True)
+                # Detect required Docker features from task configs.
+                # Both browser and mobile (a BrowserTool subclass) need
+                # Playwright/Chromium baked in; skipping the install for
+                # the common case keeps image builds fast.
+                if _tasks_need_playwright(self.tasks):
+                    self.logger.info(
+                        "Playwright-dependent tool detected in tasks — enabling Playwright"
+                    )
+                    core_stack_kwargs["enable_playwright"] = True
+                # Pick full_stack (db-service + runner + rag-service +
+                # mock-web) when any task talks to mock-web or rag — see
+                # ``_FULL_STACK_TOOL_NAMES`` for the routing matrix.
+                # ``full_stack`` accepts every kwarg ``core_stack`` does,
+                # so the playwright/binds plumbing above still applies.
+                if _tasks_need_full_stack(self.tasks):
+                    self.logger.info(
+                        "Full-stack-dependent task detected (browser/mobile/search_kb or "
+                        "initial_state.mock_web/rag) — using full_stack (db-service + runner "
+                        "+ rag-service + mock-web)"
+                    )
+                    stack_factory = full_stack
+                else:
+                    self.logger.info("Creating service stack (db-service + runner)")
+                    stack_factory = core_stack
+                service_stack = stack_factory(**core_stack_kwargs)
                 self.logger.info(
                     "Building Docker images and starting containers "
                     "(this may take a few minutes on first run)..."
@@ -455,17 +617,13 @@ class Orchestrator:
         self.logger.info("Docker runtime health check", executor_healthy=executor_healthy)
 
         # Build pending task/trial pairs and initialize durable queue.
-        pending_trials: list[tuple[str, int]] = []
         task_by_id = {task.task_id: task for task in self.tasks}
-        for task in self.tasks:
-            for trial_idx in range(self.config.orchestrator.repeats):
-                # Skip if already completed
-                if self.resume and self.state_manager.is_completed(task.task_id, trial_idx):
-                    self.logger.info(
-                        "Skipping completed trial", task_id=task.task_id, trial_index=trial_idx
-                    )
-                    continue
-                pending_trials.append((task.task_id, trial_idx))
+        pending_trials = self._build_pending_trials(
+            self.tasks,
+            self.config.orchestrator.repeats,
+            skip_completed=lambda task_id, trial_idx: self.resume
+            and self.state_manager.is_completed(task_id, trial_idx),
+        )
 
         run_queue = create_run_queue(
             self.config.orchestrator.queue_backend,
@@ -549,7 +707,7 @@ class Orchestrator:
                     try:
                         trajectory = future.result()
                         self.results.append(trajectory)
-                        trial_cost = trajectory.metrics.cost_usd_est or 0.0
+                        trial_cost = trajectory.metrics.cost_usd or 0.0
                         total_cost_usd += trial_cost
 
                         # Retry transient infra failures based on queue retry policy.
@@ -559,21 +717,15 @@ class Orchestrator:
                                 if trajectory.termination_reason
                                 else trajectory.status.value
                             )
-                            try:
-                                should_retry = run_queue.mark_failed(
-                                    lease.id,
-                                    f"Retryable failure: {reason}",
-                                    retryable=True,
-                                )
-                            except Exception as db_err:
-                                self.logger.error(
-                                    "Queue DB error in retryable path; treating as non-retryable",
-                                    task_id=task_id,
-                                    trial_index=trial_idx,
-                                    db_error=str(db_err),
-                                )
-                                should_retry = False
+                            should_retry = run_queue.mark_failed(
+                                lease.id,
+                                f"Retryable failure: {reason}",
+                                retryable=True,
+                            )
                             if should_retry:
+                                self._cleanup_runner_state_for_retry(
+                                    docker_runtime, task_id, trial_idx
+                                )
                                 self.logger.warning(
                                     "Retrying trial after transient failure",
                                     task_id=task_id,
@@ -597,15 +749,7 @@ class Orchestrator:
                                 total_cost_usd=round(total_cost_usd, 6),
                             )
                         else:
-                            try:
-                                run_queue.mark_completed(lease.id, cost_usd=trial_cost)
-                            except Exception as db_err:
-                                self.logger.error(
-                                    "Queue DB error marking completed; run_state still updated",
-                                    task_id=task_id,
-                                    trial_index=trial_idx,
-                                    db_error=str(db_err),
-                                )
+                            run_queue.mark_completed(lease.id, cost_usd=trial_cost)
                             # Update run state
                             if trajectory.grade:
                                 run_state.mark_completed(
@@ -628,17 +772,7 @@ class Orchestrator:
                                 total_cost_usd=round(total_cost_usd, 6),
                             )
                     except Exception as e:
-                        try:
-                            should_retry = run_queue.mark_failed(lease.id, str(e), retryable=True)
-                        except Exception as db_err:
-                            self.logger.error(
-                                "Queue DB error while marking failure; treating as non-retryable",
-                                task_id=task_id,
-                                trial_index=trial_idx,
-                                original_error=str(e),
-                                db_error=str(db_err),
-                            )
-                            should_retry = False
+                        should_retry = run_queue.mark_failed(lease.id, str(e), retryable=True)
                         self.logger.error(
                             "Trial execution exception",
                             task_id=task_id,
@@ -646,7 +780,9 @@ class Orchestrator:
                             error=str(e),
                             will_retry=should_retry,
                         )
-                        if not should_retry:
+                        if should_retry:
+                            self._cleanup_runner_state_for_retry(docker_runtime, task_id, trial_idx)
+                        else:
                             # Mark as failed only when retries are exhausted.
                             run_state.mark_failed(task_id, trial_idx, str(e))
                             self.state_manager.save_state(run_state)
@@ -659,17 +795,14 @@ class Orchestrator:
                                 "Budget limit reached; no new trials will be scheduled",
                                 budget_limit_usd=budget_limit,
                                 total_cost_usd=round(total_cost_usd, 6),
-                                remaining_trials=self._safe_get_pending(run_queue),
+                                remaining_trials=run_queue.get_counts().get("pending", 0),
                             )
                         continue
 
                     while len(active_futures) < self.config.orchestrator.workers and submit_one():
                         pass
 
-        try:
-            counts = run_queue.get_counts()
-        except Exception:
-            counts = {}
+        counts = run_queue.get_counts()
         remaining = counts.get("pending", 0) + counts.get("leased", 0) + counts.get("running", 0)
         if budget_exhausted and remaining > 0:
             self.state_manager.mark_run_paused()
@@ -821,7 +954,7 @@ class Orchestrator:
                         request_limiter=request_limiter,
                     )
                     self.results.append(trajectory)
-                    trial_cost = trajectory.metrics.cost_usd_est or 0.0
+                    trial_cost = trajectory.metrics.cost_usd or 0.0
                     total_cost_usd += trial_cost
 
                     if self._is_retryable_trajectory(trajectory):
@@ -830,43 +963,23 @@ class Orchestrator:
                             if trajectory.termination_reason
                             else trajectory.status.value
                         )
-                        try:
-                            should_retry = run_queue.mark_failed(
-                                lease.id, f"Retryable failure: {reason}", retryable=True
+                        if run_queue.mark_failed(
+                            lease.id, f"Retryable failure: {reason}", retryable=True
+                        ):
+                            self._cleanup_runner_state_for_retry(
+                                docker_runtime, lease.task_id, lease.trial_index
                             )
-                        except Exception as db_err:
-                            self.logger.error(
-                                "Queue DB error in retryable path",
-                                task_id=lease.task_id,
-                                db_error=str(db_err),
-                            )
-                            should_retry = False
-                        if should_retry:
                             requeued += 1
                         else:
                             failed += 1
                     else:
-                        try:
-                            run_queue.mark_completed(lease.id, cost_usd=trial_cost)
-                        except Exception as db_err:
-                            self.logger.error(
-                                "Queue DB error marking completed",
-                                task_id=lease.task_id,
-                                db_error=str(db_err),
-                            )
+                        run_queue.mark_completed(lease.id, cost_usd=trial_cost)
                         completed += 1
                 except Exception as e:
-                    try:
-                        should_retry = run_queue.mark_failed(lease.id, str(e), retryable=True)
-                    except Exception as db_err:
-                        self.logger.error(
-                            "Queue DB error while marking failure; treating as non-retryable",
-                            task_id=lease.task_id,
-                            original_error=str(e),
-                            db_error=str(db_err),
+                    if run_queue.mark_failed(lease.id, str(e), retryable=True):
+                        self._cleanup_runner_state_for_retry(
+                            docker_runtime, lease.task_id, lease.trial_index
                         )
-                        should_retry = False
-                    if should_retry:
                         requeued += 1
                     else:
                         failed += 1
@@ -916,10 +1029,7 @@ class Orchestrator:
         if reset_queue:
             run_queue.clear_all()
 
-        items = []
-        for task in self.tasks:
-            for trial_idx in range(self.config.orchestrator.repeats):
-                items.append((task.task_id, trial_idx))
+        items = self._build_pending_trials(self.tasks, self.config.orchestrator.repeats)
         run_queue.enqueue_many(items)
         counts = run_queue.get_counts()
 
@@ -1359,18 +1469,55 @@ class Orchestrator:
                 reasons="Agent got stuck (repeated actions without progress)",
             )
         else:
-            # Grade via Runner's GradeTrial RPC.
-            # The Runner has direct access to the agent's filesystem and DB state,
-            # supporting hash-based grading, jsonpath file assertions, transcript rules,
-            # and LLM judge evaluation.
-            grade, judge_cost = self._grade_via_runner_rpc(
-                task, trial_idx, docker_runtime, trajectory
-            )
-            # Add judge cost to trial metrics so it appears in cost_usd_est
-            if judge_cost > 0:
-                trajectory.metrics.cost_usd_est = (
-                    trajectory.metrics.cost_usd_est or 0.0
-                ) + judge_cost
+            # Grade trajectory via Runner's GradeTrial RPC
+            # It computes golden hash via DB service
+            trial_id = f"{task.task_id}:{trial_idx}"
+            grade_result = docker_runtime.executor_client.grade_trial(trial_id=trial_id)
+            if grade_result["success"] and grade_result["grade"]:
+                g = grade_result["grade"]
+
+                # Parse state_diff from gRPC JSON for post-mortem diagnostics
+                state_diff_parsed: dict[str, Any] | None = None
+                if g.get("state_diff_json"):
+                    try:
+                        state_diff_parsed = json.loads(g["state_diff_json"])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
+                grade = Grade(
+                    binary_pass=g["binary_pass"],
+                    score=g["score"],
+                    components=GradeComponents(
+                        state_checks=g["components"].get("state_checks", -1.0),
+                        transcript_rules=g["components"].get("transcript_rules", -1.0),
+                        llm_judge=g["components"].get("llm_judge", -1.0),
+                        custom_checks=g["components"].get("custom_checks", -1.0),
+                    ),
+                    reasons=g.get("reasons", ""),
+                    state_diff=state_diff_parsed,
+                )
+                self.logger.info(
+                    "Grading via Runner RPC",
+                    task_id=task.task_id,
+                    trial_index=trial_idx,
+                    score=grade.score,
+                    binary_pass=grade.binary_pass,
+                )
+            else:
+                # Grading RPC failed - fail the trial
+                error_msg = grade_result.get("error", "Unknown grading error")
+                self.logger.error(
+                    "Grading RPC failed",
+                    task_id=task.task_id,
+                    trial_index=trial_idx,
+                    error=error_msg,
+                )
+                grade = Grade(
+                    binary_pass=False,
+                    score=0.0,
+                    components=GradeComponents(state_checks=0.0),
+                    reasons=f"Grading RPC failed: {error_msg}",
+                )
         trajectory.grade = grade
 
         self.logger.info(
@@ -1386,14 +1533,35 @@ class Orchestrator:
         # We don't need explicit cleanup here - it was causing event loop issues.
         # The video file is already being written to the videos directory.
 
-        # Save trial outputs using OutputWriter (split files)
-        # trial_dir was already created earlier for video recording
-        writer = OutputWriter(trial_dir)
+        # Save trial outputs through the shared :class:`FileArtifactWriter`.
+        # ``trial_dir`` was already created earlier for video recording.
+        writer = self._artifact_writer
 
         # Get grading config for output (from adapter)
         grading_config = self.adapter.get_grading_config(task.task_id)
 
-        # Prepare task config for output
+        # Persist the post-policy tool list inside the trial bundle as
+        # ``tools_schemas.yaml``. ``tool_schemas`` is the list handed to the
+        # agent's :class:`LLMClient`; pushing it through the matched
+        # ``schema_sanitizer`` reproduces exactly what the provider saw.
+        # Self-contained per-trial: no dedup, no cross-trial state.
+        agent_config = agent_client.config
+        sanitized = agent_client.capabilities.schema_sanitizer.sanitize(tool_schemas)
+        writer.write_tools_schemas(trial_dir, sanitized)
+
+        # Persist the agent's effective (post-policy) system prompt and
+        # the user simulator's system prompt as ``prompts.yaml`` — kept
+        # separate from ``trajectory.yaml`` so the message trace stays
+        # easy to scan. Both come off the runner as read-only properties
+        # populated during ``run()``.
+        writer.write_prompts(
+            trial_dir,
+            agent_prompt=runner.effective_system_prompt,
+            user_prompt=runner.user_system_prompt,
+        )
+
+        # Prepare task config for output (includes model config snapshot for
+        # reproducibility + Stage 7 resolved preset fingerprint).
         task_config_dict = {
             "task_id": task.task_id,
             "trial_index": trial_idx,
@@ -1402,10 +1570,17 @@ class Orchestrator:
             "grading_config": grading_config.model_dump(mode="json") if grading_config else {},
             "tools": task.tools.model_dump(mode="json"),
             "policies": task.policies,
+            "model_config": self._serialize_model_config(
+                agent_config=agent_config, user_config=user_config
+            ),
         }
 
-        # Write all split output files
-        writer.write_all(trajectory, task_config_dict, final_state, runner.logger)
+        # Write all split output files via the composed writer. The per-trial
+        # :class:`OutputWriter` is cached inside FileArtifactWriter keyed on
+        # ``trial_dir`` so repeated writes don't re-create the directory.
+        writer.write_trial_bundle(
+            trial_dir, trajectory, task_config_dict, final_state, runner.logger
+        )
 
         self.logger.info(
             "Trial output saved",
@@ -1416,103 +1591,56 @@ class Orchestrator:
 
         return trajectory
 
-    def _grade_via_runner_rpc(
+    def _serialize_model_config(
         self,
-        task: TaskConfig,
-        trial_idx: int,
-        docker_runtime: Any,
-        trajectory: Trajectory | None = None,
-    ) -> tuple[Grade, float]:
-        """Grading via Runner's GradeTrial RPC.
+        agent_config: ModelConfig | None = None,
+        user_config: ModelConfig | None = None,
+    ) -> dict[str, Any]:
+        """Serialize model config for trial output.
 
-        Passes the conversation transcript so the Runner can evaluate
-        transcript rules and LLM judge components.
+        Stage 7 (P6): each role's block is extended with a ``resolved:``
+        sub-block carrying the preset fingerprint (effective preset name plus
+        the six registered-policy names from
+        :func:`tolokaforge.core.llm.presets.resolve_policy_names`). Analytics
+        tools diff this across runs to detect config drift without having to
+        re-match the preset YAML.
+
+        When callers (e.g. tests) omit *agent_config* / *user_config*, the
+        method falls back to the values declared on ``self.config.models``.
+        The ``resolved:`` block is computed against the same identity.
         """
-        trial_id = f"{task.task_id}:{trial_idx}"
+        result: dict[str, Any] = {}
 
-        # Serialize transcript messages for the Runner (including tool calls)
-        llm_messages_json: str | None = None
-        if trajectory and trajectory.messages:
-            try:
-                messages_data = []
-                for m in trajectory.messages:
-                    msg_dict: dict[str, Any] = {
-                        "role": m.role.value if hasattr(m.role, "value") else str(m.role),
-                        "content": m.content or "",
-                    }
-                    if m.tool_calls:
-                        msg_dict["tool_calls"] = [
-                            {"name": tc.name, "arguments": tc.arguments} for tc in m.tool_calls
-                        ]
-                    if m.tool_call_id:
-                        msg_dict["tool_call_id"] = m.tool_call_id
-                    messages_data.append(msg_dict)
-                llm_messages_json = json.dumps(messages_data)
-            except Exception as e:
-                self.logger.warning("Failed to serialize messages for grading", error=str(e))
+        resolved_agent_config = agent_config
+        resolved_user_config = user_config
 
-        grade_result = docker_runtime.executor_client.grade_trial(
-            trial_id=trial_id,
-            llm_messages_json=llm_messages_json,
-        )
-        if grade_result["success"] and grade_result["grade"]:
-            g = grade_result["grade"]
-            state_diff_parsed: dict[str, Any] | None = None
-            if g.get("state_diff_json"):
-                try:
-                    state_diff_parsed = json.loads(g["state_diff_json"])
-                except (json.JSONDecodeError, TypeError):
-                    pass
-            grade = Grade(
-                binary_pass=g["binary_pass"],
-                score=g["score"],
-                components=GradeComponents(
-                    state_checks=g["components"].get("state_checks"),
-                    transcript_rules=g["components"].get("transcript_rules"),
-                    llm_judge=g["components"].get("llm_judge"),
-                    custom_checks=g["components"].get("custom_checks"),
-                ),
-                reasons=g.get("reasons", ""),
-                state_diff=state_diff_parsed,
+        models = self.config.models
+        if isinstance(models, dict):
+            agent = models.get("agent", {})
+            user = models.get("user")
+            result["agent"] = agent if isinstance(agent, dict) else agent.model_dump(mode="json")
+            result["user"] = (
+                (user if isinstance(user, dict) else user.model_dump(mode="json")) if user else None
             )
-
-            # Log full grading details for debuggability
-            if grade.reasons:
-                self.logger.info(
-                    "Grading details",
-                    task_id=task.task_id,
-                    trial_index=trial_idx,
-                    reasons=grade.reasons,
-                )
-
-            # Log when judge evaluation failed (0.0) vs not configured (-1.0)
-            llm_judge_score = g["components"].get("llm_judge", -1.0)
-            if llm_judge_score == 0.0:
-                self.logger.warning(
-                    "LLM judge evaluation failed",
-                    task_id=task.task_id,
-                    trial_index=trial_idx,
-                    reasons=grade.reasons,
-                )
-
-            return grade, grade_result.get("judge_cost_usd", 0.0)
+            if resolved_agent_config is None and not isinstance(agent, dict):
+                resolved_agent_config = agent
+            if resolved_user_config is None and user is not None and not isinstance(user, dict):
+                resolved_user_config = user
         else:
-            error_msg = grade_result.get("error", "Unknown grading error")
-            self.logger.error(
-                "Grading RPC failed",
-                task_id=task.task_id,
-                trial_index=trial_idx,
-                error=error_msg,
-            )
-            return (
-                Grade(
-                    binary_pass=False,
-                    score=0.0,
-                    components=GradeComponents(state_checks=0.0),
-                    reasons=f"Grading RPC failed: {error_msg}",
-                ),
-                0.0,
-            )
+            result["agent"] = models.agent.model_dump(mode="json")
+            result["user"] = models.user.model_dump(mode="json") if models.user else None
+            if resolved_agent_config is None:
+                resolved_agent_config = models.agent
+            if resolved_user_config is None and models.user is not None:
+                resolved_user_config = models.user
+
+        # Stage 7 — resolved fingerprint per role.
+        if resolved_agent_config is not None:
+            result["agent"]["resolved"] = _build_resolved_block(resolved_agent_config)
+        if resolved_user_config is not None and result.get("user"):
+            result["user"]["resolved"] = _build_resolved_block(resolved_user_config)
+
+        return result
 
     def _build_system_prompt(
         self, task: TaskConfig, tool_schemas: list[dict[str, Any]], task_dir: Path
@@ -1643,7 +1771,7 @@ Try to be helpful and always follow the policy."""
         parts = ["You are a helpful assistant."]
 
         # Add task guidance from policies
-        guidance = task.policies.get("guidance", [])
+        guidance = task.policies.get("guidance", []) if task.policies else []
         if guidance:
             parts.append("\nGuidance:")
             for g in guidance:
@@ -1737,6 +1865,7 @@ Try to be helpful and always follow the policy."""
         with open(output_dir / "per_task_metrics.json", "w") as f:
             json.dump(all_task_metrics, f, indent=2, default=str)
 
+        aggregate["schema_version"] = 1
         # Save aggregate report
         with open(output_dir / "aggregate.json", "w") as f:
             json.dump(aggregate, f, indent=2, default=str)

@@ -16,15 +16,13 @@ import logging
 from typing import TYPE_CHECKING, Any, cast
 
 import anyio
+import docker
 from docker.errors import APIError, DockerException, NotFound
 from pydantic import BaseModel, Field, PrivateAttr, field_validator
 
-import docker
-
 if TYPE_CHECKING:
-    from docker.models.networks import Network as DockerNetwork
-
     from docker import DockerClient
+    from docker.models.networks import Network as DockerNetwork
 
 logger = logging.getLogger(__name__)
 
@@ -263,19 +261,24 @@ class Network(BaseModel):
             # Treat API errors as "not found" - caller will attempt to create
             return None  # noqa: BLE001 - Lookup function, None is valid "not found"
 
-    def attach(self, container: Any) -> None:
+    def attach(self, container: Any, aliases: list[str] | None = None) -> None:
         """Attach a container to this network.
 
         Args:
             container: Container to attach. Can be a container ID (str),
                 container name (str), or a Docker container object.
+            aliases: Optional DNS aliases the container should be reachable
+                under in addition to its container name. Used so service
+                containers (e.g. ``tolokaforge-mock-web``) also resolve
+                via short aliases (``mock-web``) referenced by task
+                configs.
 
         Raises:
             NetworkError: If attach operation fails.
 
         Example:
             >>> network.attach("my-container")
-            >>> network.attach(container_obj)
+            >>> network.attach(container_obj, aliases=["mock-web"])
         """
         container_id = self._resolve_container_id(container)
 
@@ -283,7 +286,7 @@ class Network(BaseModel):
 
         try:
             docker_network = self._get_docker_network()
-            docker_network.connect(container_id)
+            docker_network.connect(container_id, aliases=aliases or None)
             logger.info(
                 "Successfully attached container '%s' to network '%s'",
                 container_id,

@@ -1,0 +1,41 @@
+combine:
+  method: weighted
+  weights:
+    state_checks: 0.65
+    transcript_rules: 0.35
+  pass_threshold: 0.8
+state_checks:
+  jsonpaths:
+    - path: "$.db.accounts[0].state"
+      equals: "pending_review"
+      description: "Account state transitioned to pending review"
+    - path: "$.db.audit_log[0].action"
+      contains_ci: "pending_review"
+      description: "Audit log entry records pending review transition"
+    - path_glob: "/env/fs/agent-visible/submissions/*"
+      contains_ci: "rollback"
+      description: "Checklist includes rollback step"
+    - path_glob: "/env/fs/agent-visible/submissions/*"
+      contains_ci: "verification"
+      description: "Checklist includes post-update verification"
+transcript_rules:
+  max_turns: 9
+  disallow_regex:
+    - "(?i)(cannot complete|no checklist|skipping details)"
+  required_actions:
+    - action_id: "query_account"
+      requestor: assistant
+      name: db_query
+      arguments: {}
+      compare_args: []
+    - action_id: "update_account"
+      requestor: assistant
+      name: db_update
+      arguments: {}
+      compare_args: []
+    - action_id: "write_checklist"
+      requestor: assistant
+      name: write_file
+      arguments: {}
+      compare_args: []
+  communicate_info: []

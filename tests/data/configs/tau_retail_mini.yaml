@@ -1,0 +1,33 @@
+# Test config for tau_retail_mini adapter test
+# This config tests the TauAdapter with the minimal test project
+
+evaluation:
+  output_dir: output/tau_retail_mini_test
+  harness_adapter:
+    type: tau
+    params:
+      env_path: tests/data/projects/tau_retail_mini
+      task_split: test
+
+models:
+  agent:
+    provider: openrouter
+    name: anthropic/claude-sonnet-4.6
+    temperature: 0.0
+  user:
+    provider: openrouter
+    name: anthropic/claude-sonnet-4.6
+    temperature: 0.0
+
+orchestrator:
+  workers: 1
+  repeats: 1
+  max_turns: 10
+  runtime: docker
+  timeouts:
+    turn_s: 60
+    episode_s: 300
+  stuck_heuristics:
+    enabled: true
+    max_repeated_tool_calls: 3
+    max_idle_turns: 2

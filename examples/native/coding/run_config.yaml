@@ -1,0 +1,25 @@
+# Coding example — small dataset of two public coding tasks. Requires a real
+# LLM provider key in .env (OPENROUTER_API_KEY by default). Run via
+#   scripts/with_env.sh uv run tolokaforge run --config examples/native/coding/run_config.yaml
+models:
+  agent:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.0
+    max_tokens: 4096
+  user:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.2
+
+orchestrator:
+  workers: 1
+  repeats: 1
+  max_turns: 8
+  queue_backend: sqlite
+
+evaluation:
+  task_packs:
+    - "examples/native/coding/dataset"
+  tasks_glob: "**/task.yaml"
+  output_dir: "results/coding_example"

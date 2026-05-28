@@ -93,17 +93,7 @@ class BrowserTool(Tool):
         )
         super().__init__(
             name="browser",
-            description=(
-                "Control a headless browser. Pass an 'actions' array where each action has a "
-                '\'type\' field. Example: {"actions": [{"type": "navigate", '
-                '"url": "http://example.com"}, {"type": "screenshot"}]}. '
-                "Action types: navigate (url), click_at (x,y 0-999 grid), "
-                "type_text_at (x,y,text), screenshot, scroll_document (direction), "
-                "search (query), go_back, go_forward, wait_5_seconds, hover_at (x,y), "
-                "select (x,y,text), key_combination (keys[]), scroll_at (x,y,direction), "
-                "drag_and_drop (x,y,destination_x,destination_y). "
-                "Coordinates use a 0-999 grid mapped to viewport pixels."
-            ),
+            description="Control a headless browser using coordinate-based actions (Gemini Computer Use API)",
             policy=policy,
         )
         self.screenshots_dir = screenshots_dir
@@ -120,7 +110,15 @@ class BrowserTool(Tool):
         self.browser = None
         self.context = None
         self.page = None
-        self._loop = None  # Persistent event loop across tool calls
+        # Playwright pages are bound to the loop they're created on, so the
+        # tool owns a dedicated thread + loop for its entire lifetime. This
+        # also keeps execute() callable from threads that already have a
+        # running asyncio loop (e.g. the runner's gRPC dispatch thread —
+        # otherwise loop.run_until_complete() would raise "Cannot run the
+        # event loop while another loop is running").
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._loop_thread: threading.Thread | None = None
+        self._loop_ready = threading.Event()
         # Coordinate grid is 1000x1000
         self.GRID_SIZE = 1000
 
@@ -183,11 +181,7 @@ class BrowserTool(Tool):
                     "properties": {
                         "actions": {
                             "type": "array",
-                            "description": (
-                                "Required. Array of browser action objects. Each must have a "
-                                '\'type\' field. Example: [{"type": "navigate", '
-                                '"url": "http://localhost:8080"}, {"type": "screenshot"}]'
-                            ),
+                            "description": "Sequence of browser actions to perform (Gemini Computer Use API)",
                             "items": {
                                 "type": "object",
                                 "properties": {
@@ -667,21 +661,16 @@ class BrowserTool(Tool):
 
     @staticmethod
     def _resolve_url(url: str) -> str:
-        """Map short service hostnames to full Docker container names.
+        """Pass-through identity — the runner container resolves Docker
+        service hostnames (``mock-web``, ``json-db``, ``rag-service``)
+        natively via the user-defined ``runner-net`` bridge.
 
-        Task configs use short names (mock-web, json-db) but the actual Docker
-        containers are prefixed (tolokaforge-mock-web, tolokaforge-db-service).
-        Docker DNS on user-defined networks resolves by container name, so we
-        map the short aliases to their full container names.
+        Earlier versions rewrote those hostnames to ``localhost`` on the
+        theory that the browser ran on the host. That broke once the
+        runner-side stack moved fully into Docker: ``localhost:8080``
+        from inside the runner refers to the runner itself, not
+        ``mock-web``, so every navigate hit ERR_CONNECTION_REFUSED.
         """
-        docker_aliases = {
-            "mock-web": "tolokaforge-mock-web",
-            "json-db": "tolokaforge-db-service",
-            "rag-service": "tolokaforge-rag-service",
-        }
-        for short_name, full_name in docker_aliases.items():
-            if short_name in url:
-                return url.replace(short_name, full_name)
         return url
 
     def _normalize_navigation_url(self, url: str) -> str:
@@ -1136,154 +1125,61 @@ class BrowserTool(Tool):
         except Exception as e:
             return False, "", str(e)
 
-    def _ensure_browser_loop(self) -> asyncio.AbstractEventLoop:
-        """Ensure a persistent background event loop for browser operations.
+    def _ensure_loop(self) -> asyncio.AbstractEventLoop:
+        """Lazily start a dedicated thread running an asyncio loop.
 
-        When running inside an existing async event loop (e.g., Runner gRPC service),
-        we create a dedicated thread with its own event loop. Playwright objects are
-        bound to their creation loop, so we must reuse the same loop across calls.
+        Playwright resources bind to the loop they were created on, so the
+        same loop runs every coroutine for this tool's lifetime. The loop
+        lives on a separate thread so execute() can be called from threads
+        that already have a running asyncio loop.
         """
         if self._loop is not None and not self._loop.is_closed():
             return self._loop
 
-        loop = asyncio.new_event_loop()
+        self._loop = asyncio.new_event_loop()
+        self._loop_ready.clear()
 
         def _run_loop() -> None:
-            asyncio.set_event_loop(loop)
-            loop.run_forever()
+            asyncio.set_event_loop(self._loop)
+            self._loop_ready.set()
+            self._loop.run_forever()
 
-        thread = threading.Thread(target=_run_loop, daemon=True, name="browser-event-loop")
-        thread.start()
-        self._loop = loop
-        return loop
+        self._loop_thread = threading.Thread(
+            target=_run_loop,
+            name=f"browser-tool-loop-{id(self):x}",
+            daemon=True,
+        )
+        self._loop_thread.start()
+        self._loop_ready.wait()
+        return self._loop
 
-    def _run_on_browser_loop(self, coro: Any, timeout: float | None = None) -> Any:
-        """Submit a coroutine to the persistent browser event loop and wait for result."""
-        import concurrent.futures
-
-        loop = self._ensure_browser_loop()
+    def _run_on_loop(self, coro, timeout: float | None = None):
+        """Schedule ``coro`` on the dedicated loop and block on the result."""
+        loop = self._ensure_loop()
         future = asyncio.run_coroutine_threadsafe(coro, loop)
-        effective_timeout = timeout if timeout is not None else self.policy.timeout_s
-        try:
-            return future.result(timeout=effective_timeout)
-        except concurrent.futures.TimeoutError as e:
-            future.cancel()
-            raise TimeoutError(f"Browser action timed out after {effective_timeout}s") from e
+        return future.result(timeout=timeout)
 
-    def _execute_in_thread(
-        self, actions: list[dict[str, Any]], has_risky_action: bool
-    ) -> ToolResult:
-        """Run browser operations on the persistent browser event loop.
-
-        This is used when execute() is called from within an existing async event loop
-        (e.g., the Runner gRPC service), where creating a nested event loop would fail.
-        """
-        try:
-            success, output, error = self._run_on_browser_loop(self._execute_actions(actions))
-
-            if not success and self._is_transient_driver_error(error):
-                self._run_on_browser_loop(self._reset_browser_state())
-                success, output, error = self._run_on_browser_loop(self._execute_actions(actions))
-
-            # Capture screenshot in visual_mode
-            content_blocks = None
-            if self.visual_mode and success and self.page:
-                content_blocks = self._run_on_browser_loop(self._capture_screenshot_blocks(output))
-
-            risky_actions_list = [
-                "navigate",
-                "type_text_at",
-                "key_combination",
-                "click_at",
-                "select",
-            ]
-            metadata: dict[str, Any] = {}
-            if has_risky_action:
-                metadata["safety_decision"] = {
-                    "requires_confirmation": True,
-                    "risky_actions": [
-                        a.get("type") for a in actions if a.get("type") in risky_actions_list
-                    ],
-                    "reason": "Actions may modify page state or navigate away",
-                }
-
-            return ToolResult(
-                success=success,
-                output=output,
-                error=error if error else None,
-                metadata=metadata,
-                content_blocks=content_blocks,
-            )
-        except TimeoutError:
-            return ToolResult(
-                success=False,
-                output="",
-                error=f"Browser actions timed out after {self.policy.timeout_s}s",
-            )
-        except Exception as e:
-            return ToolResult(
-                success=False,
-                output="",
-                error=f"Browser execution failed: {e!s}",
-            )
-
-    def execute(self, actions: list[dict[str, Any]] | None = None, **kwargs: Any) -> ToolResult:
-        """Execute browser actions.
-
-        Args:
-            actions: Required. Array of action objects, each with a 'type' field.
-                Example: [{"type": "navigate", "url": "http://example.com"}, {"type": "screenshot"}]
-        """
-        if actions is None:
-            return ToolResult(
-                success=False,
-                output="",
-                error=(
-                    "Missing required 'actions' parameter. "
-                    "Pass an array of action objects, e.g.: "
-                    '{"actions": [{"type": "navigate", "url": "http://example.com"}, '
-                    '{"type": "screenshot"}]}. '
-                    "Supported types: navigate, click_at, type_text_at, screenshot, "
-                    "scroll_document, search, go_back, go_forward, wait_5_seconds, "
-                    "hover_at, select, key_combination, scroll_at, drag_and_drop."
-                ),
-            )
-
+    def execute(self, actions: list[dict[str, Any]]) -> ToolResult:
+        """Execute browser actions"""
         # Check for risky actions and surface safety_decision metadata
         risky_actions = ["navigate", "type_text_at", "key_combination", "click_at", "select"]
         has_risky_action = any(a.get("type") in risky_actions for a in actions)
 
-        # Detect if we're inside an existing async event loop (e.g., Runner gRPC service).
-        # If so, run browser operations in a dedicated thread with its own event loop.
         try:
-            asyncio.get_running_loop()
-            # We're inside an async context — delegate to a thread
-            return self._execute_in_thread(actions, has_risky_action)
-        except RuntimeError:
-            pass  # No running loop — proceed with direct execution
-
-        # Reuse event loop across tool calls to keep browser alive
-        if self._loop is None or self._loop.is_closed():
-            self._loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self._loop)
-
-        try:
-            success, output, error = self._loop.run_until_complete(
+            success, output, error = self._run_on_loop(
                 asyncio.wait_for(self._execute_actions(actions), timeout=self.policy.timeout_s)
             )
 
             if not success and self._is_transient_driver_error(error):
-                self._loop.run_until_complete(self._reset_browser_state())
-                success, output, error = self._loop.run_until_complete(
+                self._run_on_loop(self._reset_browser_state())
+                success, output, error = self._run_on_loop(
                     asyncio.wait_for(self._execute_actions(actions), timeout=self.policy.timeout_s)
                 )
 
             # In visual_mode, capture a screenshot and return as content_blocks
             content_blocks = None
             if self.visual_mode and success and self.page:
-                content_blocks = self._loop.run_until_complete(
-                    self._capture_screenshot_blocks(output)
-                )
+                content_blocks = self._run_on_loop(self._capture_screenshot_blocks(output))
 
             # Surface safety_decision metadata for risky actions
             metadata = {}
@@ -1315,18 +1211,16 @@ class BrowserTool(Tool):
                 output="",
                 error=f"Browser execution failed: {str(e)}",
             )
-        # Note: Don't close loop in finally - we want to keep browser alive for next tool call
+        # Note: Don't shut down the loop in finally - we want to keep the
+        # browser alive for the next tool call. ``close_loop()`` does the
+        # threadsafe shutdown when the trial is done.
 
     async def cleanup(self):
         """Cleanup browser resources.
 
-        Note: This coroutine must be run on the SAME event loop where
-        Playwright was started (self._loop). Playwright's async operations
-        are bound to their creation loop. Calling via asyncio.run() (which
-        creates a new loop) will hang indefinitely.
-
-        The caller is responsible for closing self._loop after this coroutine
-        completes.
+        Must run on the dedicated loop where Playwright was started. Schedule
+        via ``_run_on_loop(self.cleanup())`` rather than calling directly;
+        ``close_loop()`` does this and stops the loop thread.
         """
         if self.page:
             # Capture video path before closing (if video recording was enabled)
@@ -1350,10 +1244,29 @@ class BrowserTool(Tool):
             self.playwright = None
 
     def close_loop(self):
-        """Close the event loop after cleanup. Call this AFTER cleanup() completes."""
-        if self._loop and not self._loop.is_closed():
-            self._loop.close()
+        """Run cleanup on the dedicated loop, then stop the loop thread.
+
+        Idempotent: safe to call when the loop was never started or already
+        closed.
+        """
+        if self._loop is None or self._loop.is_closed():
             self._loop = None
+            self._loop_thread = None
+            return
+
+        loop = self._loop
+        try:
+            future = asyncio.run_coroutine_threadsafe(self.cleanup(), loop)
+            future.result(timeout=30.0)
+        except Exception:  # noqa: BLE001 - best-effort Playwright teardown
+            pass
+
+        loop.call_soon_threadsafe(loop.stop)
+        if self._loop_thread is not None:
+            self._loop_thread.join(timeout=5.0)
+        loop.close()
+        self._loop = None
+        self._loop_thread = None
 
     def get_video_path(self) -> str | None:
         """Get the path to the recorded video (available after cleanup)"""

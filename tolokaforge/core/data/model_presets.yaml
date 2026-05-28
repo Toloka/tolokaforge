@@ -1,0 +1,176 @@
+# Model capability presets — declarative mapping from model/provider
+# to capability policies.
+#
+# Merge order: default → matched model preset → provider override → config.capabilities
+#
+# Policy names map to implementations in tolokaforge.core.llm.*:
+#   schema_sanitizer: passthrough | strict
+#   prompt_policy:    none | dict_map_hints
+#   content_policy:   openai | anthropic | nova
+#   response_policy:  standard | unwrap_input | array_dict_map
+#   reasoning_codec:  none | anthropic | openai
+#   cache_policy:     none | anthropic_ephemeral
+#   params:           dict of GenerationParams kwargs
+#
+# ``content_policy`` also gates ``inject_empty_assistant_filler``:
+#   ``nova`` → True (Bedrock rejects empty assistant content on tool
+#   turns); every other policy → False. Injecting the filler elsewhere
+#   creates a few-shot pattern that Gemini echoes back as its own
+#   response (2026-04-30 OTS regression).
+
+default:
+  schema_sanitizer: passthrough
+  prompt_policy: none
+  content_policy: openai
+  response_policy: standard
+  params:
+    supports_seed: true
+    reasoning_via_extra_body: false
+
+presets:
+  # Claude 4.7 (Opus + Sonnet) — Anthropic's adaptive thinker that ignores
+  # ``reasoning_effort`` and requires the canonical litellm ``thinking=``
+  # kwarg + explicit ``budget_tokens``. Listed BEFORE the generic
+  # ``anthropic`` preset so first-match-wins routing picks it up.
+  anthropic_claude_4_7:
+    match:
+      - "anthropic/claude-opus-4.7*"
+      - "anthropic/claude-sonnet-4.7*"
+      - "*claude-opus-4.7*"
+      - "*claude-sonnet-4.7*"
+    content_policy: anthropic
+    reasoning_codec: anthropic
+    cache_policy: anthropic_ephemeral
+    params:
+      supports_seed: false
+      reasoning_via_thinking_kwarg: true
+      drop_sampling_when_thinking: true
+      reasoning_budget_default: 8000
+
+  anthropic:
+    match:
+      - "anthropic/*"
+      - "*claude*"
+    content_policy: anthropic
+    reasoning_codec: anthropic
+    cache_policy: anthropic_ephemeral
+    params:
+      supports_seed: false
+
+  openai_gpt5:
+    match:
+      - "openai/gpt-5*"
+      - "*gpt-5*"
+    schema_sanitizer: strict
+    response_policy: array_dict_map
+    reasoning_codec: openai
+
+  xai_grok:
+    match:
+      - "x-ai/*"
+      - "xai/*"
+      - "grok*"
+    schema_sanitizer: strict
+    response_policy: array_dict_map
+    reasoning_codec: openai
+
+  qwen:
+    # Qwen 3.x emits dict-map arguments as either native dicts (matching the
+    # task docs + DictMapHints) or stringified JSON. The pre-bugfix ``strict``
+    # schema rewrite to array-of-objects was a no-op (Qwen never picked the
+    # array shape) and contradicted the dict-format hint + task docs. Routing
+    # through ``passthrough`` schema keeps hints/schema/docs aligned;
+    # ``json_coerce`` recovers the stringified-JSON failure mode.
+    match:
+      - "qwen/*"
+      - "qwen3*"
+    schema_sanitizer: passthrough
+    response_policy: json_coerce
+    prompt_policy: dict_map_hints
+    reasoning_codec: openai
+
+  # Open-weights / OpenAI-API-compatible routes whose tool-call adapters
+  # stringify nested object / Dict[str, T] arguments — same failure mode
+  # ``JsonCoerceResponse`` was built for on Qwen.
+  #
+  # Empirical evidence: mimo-v2.5-pro hit 20–25 retries on every
+  # ``zendesk_create_item`` call on a logistics domain evaluation
+  # when ``item`` is a discriminated union (TicketCreate | UserCreate |
+  # OrganizationCreate | CommentCreate). The wire-shape was
+  # ``{"item": "{\"subject\":...}"}`` — a JSON-encoded string instead of a
+  # nested dict. ``JsonCoerceResponse._coerce_json_strings`` decodes that
+  # back to native shape before pydantic validation.
+  # ``DictMapHints`` is also routed because the same models share Qwen's
+  # ``Dict[str, T]`` blind spot (test_dict_map_tool_call).
+  # Reasoning surface format on the OpenRouter wire is not yet codified in
+  # a bespoke codec for these routes; ``openai`` codec is the safe baseline
+  # — it surfaces ``reasoning_content`` summaries via OpenAI-canonical fields
+  # without making structural assumptions.
+  openrouter_dict_stringify_recovery:
+    match:
+      - "xiaomi/mimo*"
+      - "*mimo-v2*"
+      - "moonshotai/kimi-k2*"
+      - "*kimi-k2*"
+      - "deepseek/deepseek-v4*"
+      - "*deepseek-v4*"
+    schema_sanitizer: passthrough
+    response_policy: json_coerce
+    prompt_policy: dict_map_hints
+    reasoning_codec: openai
+
+  aws_nova:
+    match:
+      - "nova*"
+    match_provider:
+      - "nova"
+    content_policy: nova
+    response_policy: unwrap_input
+
+  # Google Gemini family (3.x preview + 3.x GA + 2.5 backstop).
+  # ``GeminiReasoningCodec`` decodes Gemini's OpenRouter
+  # ``provider_specific_fields.reasoning_details`` envelope: handles
+  # both ``reasoning.text`` (Pro lineage, readable thinking) and
+  # ``reasoning.encrypted`` (Flash lineage, opaque payload). The codec
+  # preserves bytes verbatim so subsequent turns can replay
+  # reasoning_details and keep the model's reasoning context intact
+  # across the trial.
+  gemini:
+    match:
+      - "google/gemini-*"
+      - "openrouter/google/gemini-*"
+      - "*gemini-3*"
+      - "*gemini-2.5*"
+    reasoning_codec: gemini
+    # Gemini's tool spec is a JSON-Schema subset (no $defs/$ref, no
+    # oneOf/discriminator, dict-maps via additionalProperties not
+    # robust). ``GeminiSchema`` does StrictSchema's $ref-inlining +
+    # dict-map-to-array transform AND additionally flattens
+    # ``oneOf`` discriminated unions into a single object schema
+    # unioning every branch's properties. Live-verified 2026-05-20
+    # against gemini-3-flash-preview, gemini-3.5-flash,
+    # gemini-3.1-pro-preview: registered field names round-trip
+    # correctly under this routing. See gotcha #21 in AGENTS.md
+    # for the failure surface the routing closes.
+    schema_sanitizer: gemini
+    response_policy: array_dict_map
+
+providers:
+  openrouter:
+    params:
+      reasoning_via_extra_body: true
+
+  # Direct Gemini via litellm ``gemini/*`` provider.
+  # As of litellm v1.83.14 (2026-05-21), passing ``reasoning_effort='medium'``
+  # alongside tool calls produces empty responses for Gemini 3.1 Pro
+  # (BerriAI/litellm#19403-class symptom — finish_reason=stop, zero
+  # completion tokens, no tool_calls emitted). ``low`` and ``high`` work.
+  # We surface this loud per AGENTS.md rule #1 rather than silently mapping
+  # to ``high`` — the caller decides how to react (lower/raise effort,
+  # switch to OpenRouter transport, wait for upstream fix).
+  # The OpenRouter route is unaffected because it sends
+  # ``extra_body.reasoning.effort=medium`` which OpenRouter translates
+  # directly into Google's ``thinking_level=medium``.
+  gemini:
+    params:
+      unsupported_effort_levels: ["medium"]

@@ -4,9 +4,11 @@ from datetime import datetime, timezone
 
 import pytest
 
+from tolokaforge.core.llm.usage import ProviderRawCall, Usage
 from tolokaforge.core.metrics import (
     calculate_latency_percentiles,
     calculate_pass_k,
+    calculate_task_metrics,
     compute_pass_at_k,
 )
 from tolokaforge.core.models import Grade, GradeComponents, Metrics, Trajectory
@@ -126,3 +128,30 @@ class TestExtendedMetrics:
         assert percentiles["latency_p50_s"] == pytest.approx(3.0)
         assert percentiles["latency_p90_s"] > percentiles["latency_p50_s"]
         assert percentiles["latency_p99_s"] >= percentiles["latency_p90_s"]
+
+    def test_api_call_latency_percentiles_aggregated_across_trials(self):
+        """``calculate_task_metrics`` rolls per-call latencies across trials
+        into ``api_call_latency_p{50,90,99}_s``. Latencies live on
+        ``usage.calls[*].latency_s``; without this aggregation, the field
+        is dead data on every trajectory."""
+
+        def _trial(trial_idx: int, api_latencies: list[float]) -> Trajectory:
+            calls = tuple(ProviderRawCall(latency_s=lat) for lat in api_latencies)
+            return Trajectory(
+                task_id="task_api_lat",
+                trial_index=trial_idx,
+                start_ts=datetime.now(tz=timezone.utc),
+                end_ts=datetime.now(tz=timezone.utc),
+                messages=[],
+                metrics=Metrics(latency_total_s=1.0, usage=Usage(calls=calls)),
+                grade=Grade(binary_pass=True, score=1.0, components=GradeComponents()),
+            )
+
+        trajectories = [
+            _trial(0, [1.0, 2.0, 3.0]),
+            _trial(1, [4.0, 5.0]),
+        ]
+        metrics = calculate_task_metrics(trajectories)
+        assert metrics["api_call_latency_p50_s"] == pytest.approx(3.0)
+        assert metrics["api_call_latency_p90_s"] > metrics["api_call_latency_p50_s"]
+        assert metrics["api_call_latency_p99_s"] >= metrics["api_call_latency_p90_s"]

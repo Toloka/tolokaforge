@@ -2,11 +2,10 @@
 
 ## Services Not Running
 
-Docker services auto-start by default (`auto_start_services: true`).
-If they fail to start, try manual startup:
+Browser, JSON DB, and RAG tasks require services:
 
 ```bash
-uv run tolokaforge docker up --profile core
+docker compose up -d json-db mock-web rag-service
 ```
 
 Check health:
@@ -46,7 +45,7 @@ export OPENROUTER_API_KEY=sk-or-...
 ## Task Validation Fails
 
 ```bash
-uv run tolokaforge validate --tasks "examples/**/task.yaml"
+uv run tolokaforge validate --tasks "tasks/**/task.yaml"
 ```
 
 Common causes:

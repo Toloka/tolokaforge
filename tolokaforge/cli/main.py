@@ -13,10 +13,32 @@ from tolokaforge.core.models import RunConfig
 from tolokaforge.core.orchestrator import Orchestrator
 from tolokaforge.core.resume import RunStateManager
 from tolokaforge.core.run_queue import create_run_queue
-from tolokaforge.secrets import init_default
+from tolokaforge.secrets import init_default, install_global_redactor
 
-# Initialize the default SecretManager (replaces load_dotenv)
-init_default()
+# Initialize SecretManager singleton — reads .env via DotEnvProvider, then
+# falls back to os.environ. Must run before any code that needs a credential.
+# After this point, all secret access goes through `get_default()`.
+_secrets = init_default()
+
+# Scrub known secret values out of any log record reaching root's handlers.
+install_global_redactor()
+
+# Many third-party SDKs (litellm in particular) look up provider keys via
+# os.environ directly. Mirror the resolved secrets into os.environ once at
+# CLI startup so those SDKs find them. Use setdefault so explicit shell
+# exports always win.
+_secrets.export_to_environ(
+    [
+        "OPENROUTER_API_KEY",
+        "OPENROUTER_API_KEYS",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "GOOGLE_API_KEY",
+        "GEMINI_API_KEY",
+        "NOVA_API_KEY",
+        "TYPESENSE_API_KEY",
+    ]
+)
 
 console = Console()
 
@@ -311,7 +333,7 @@ def validate(tasks: str):
 
     import glob
 
-    from tolokaforge.core.models import TaskConfig
+    from tolokaforge.adapters._task_loader import load_task_yaml
 
     task_files = glob.glob(tasks, recursive=True)
 
@@ -320,9 +342,10 @@ def validate(tasks: str):
 
     for task_file in task_files:
         try:
-            with open(task_file) as f:
-                task_data = yaml.safe_load(f)
-            TaskConfig(**task_data)
+            # load_task_yaml applies the shared-domain merge (if the task.yaml
+            # carries a ``domain:`` ref) before TaskConfig validation, so this
+            # CLI accepts both flat and shared-domain layouts.
+            load_task_yaml(Path(task_file))
             console.print(f"[green]✓ {task_file}[/green]")
             valid += 1
         except Exception as e:
@@ -333,26 +356,32 @@ def validate(tasks: str):
 
 
 def _collect_run_spend_and_tokens(run_dir: Path) -> tuple[float, int, int]:
-    """Aggregate spend/tokens from per-trial metrics artifacts."""
+    """Aggregate spend / prompt-tokens / completion-tokens from per-trial metrics.
+
+    Reads the Stage-5 ``metrics.yaml`` shape: ``usage.prompt_tokens`` /
+    ``usage.completion_tokens`` (plus cache and reasoning counters, ignored
+    here — they are surfaced by the aggregate reporter under ``tools/``).
+    """
     total_cost = 0.0
-    total_input_tokens = 0
-    total_output_tokens = 0
+    total_prompt_tokens = 0
+    total_completion_tokens = 0
 
     trials_root = run_dir / "trials"
     if not trials_root.exists():
-        return total_cost, total_input_tokens, total_output_tokens
+        return total_cost, total_prompt_tokens, total_completion_tokens
 
     for metrics_path in trials_root.glob("*/*/metrics.yaml"):
         try:
             with open(metrics_path) as f:
                 metrics = yaml.safe_load(f) or {}
-            total_cost += float(metrics.get("cost_usd_est", 0.0) or 0.0)
-            total_input_tokens += int(metrics.get("tokens_input", 0) or 0)
-            total_output_tokens += int(metrics.get("tokens_output", 0) or 0)
+            total_cost += float(metrics.get("cost_usd", 0.0) or 0.0)
+            usage = metrics.get("usage", {}) or {}
+            total_prompt_tokens += int(usage.get("prompt_tokens", 0) or 0)
+            total_completion_tokens += int(usage.get("completion_tokens", 0) or 0)
         except Exception:
             continue
 
-    return total_cost, total_input_tokens, total_output_tokens
+    return total_cost, total_prompt_tokens, total_completion_tokens
 
 
 def _format_eta(seconds: float | None) -> str:

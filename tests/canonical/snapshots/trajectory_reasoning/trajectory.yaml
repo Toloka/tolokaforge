@@ -1,0 +1,36 @@
+task_id: canon-reasoning-001
+trial_index: 0
+simulator_schema_version: 1
+start_ts: '2026-01-01T12:00:00+00:00'
+end_ts: '2026-01-01T12:00:00+00:00'
+status: completed
+termination_reason: null
+messages:
+- role: user
+  content: Hello
+  content_blocks: null
+  tool_calls: null
+  tool_call_id: null
+  reasoning: null
+  ts: '2026-01-01T12:00:00Z'
+- role: assistant
+  content: I'll help with that.
+  content_blocks: null
+  tool_calls: null
+  tool_call_id: null
+  reasoning:
+    blocks:
+    - type: thinking
+      text: Considering the best tool to call.
+      signature: EqoBCkgIARABGAIiQAK+9/o3Zm5/+Qh=nD4=
+      encrypted_data: null
+      extras: []
+    - type: redacted_thinking
+      text: ''
+      signature: null
+      encrypted_data: EvwBCkgIARABGAIiQOpaqueBytes+/AB=
+      extras: []
+    summary: Short summary of the model's private rationale.
+    budget_used: 512
+    transport: null
+  ts: '2026-01-01T12:00:00Z'

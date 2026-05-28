@@ -1,10 +1,11 @@
 """Unit tests for harness adapters."""
 
+import logging
 from pathlib import Path
 
 import pytest
 
-from tolokaforge.adapters import get_adapter
+from tolokaforge.adapters import available_adapters, get_adapter
 from tolokaforge.adapters.base import AdapterEnvironment
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.models import RunConfig
@@ -26,10 +27,61 @@ class TestGetAdapter:
         adapter = get_adapter(None, {"tasks_glob": "tasks/**/*.yaml"})
         assert isinstance(adapter, NativeAdapter)
 
+        assert adapter is not None
+        # Check class name without importing
+
     def test_unknown_adapter_raises_error(self):
         """Test that unknown adapter type raises ValueError."""
         with pytest.raises(ValueError, match="Unknown adapter type"):
             get_adapter("unknown_type", {})
+
+    def test_failed_entry_point_is_reported(self, monkeypatch, caplog):
+        """A failing adapter entry-point surfaces its original import error via get_adapter()."""
+        import tolokaforge.adapters as adapters_module
+
+        class BrokenEntryPoint:
+            name = "broken_adapter"
+
+            def load(self):
+                raise ImportError("missing dependency for broken_adapter")
+
+        monkeypatch.setattr(
+            adapters_module.importlib.metadata,
+            "entry_points",
+            lambda group: [BrokenEntryPoint()],
+        )
+        monkeypatch.setattr(adapters_module, "_ADAPTERS", {})
+        monkeypatch.setattr(adapters_module, "_FAILED_ADAPTERS", {})
+
+        caplog.set_level(logging.WARNING, logger="tolokaforge.adapters")
+
+        # Drive the production path: get_adapter() triggers lazy discovery,
+        # records the failure, and re-raises with the original ImportError chained.
+        with pytest.raises(ValueError, match="entry-point was found but failed to load") as excinfo:
+            get_adapter("broken_adapter", {})
+
+        assert isinstance(excinfo.value.__cause__, ImportError)
+        assert "missing dependency" in str(excinfo.value.__cause__)
+        assert "failed to load" in caplog.text
+
+        # A broken external entry-point must not poison the built-in adapters.
+        names = available_adapters()
+        assert "native" in names
+        assert "broken_adapter" not in names
+
+    def test_available_adapters_lists_builtins(self):
+        """available_adapters() returns built-ins on a cold call without monkeypatching."""
+        names = available_adapters()
+        assert "native" in names
+
+    def test_entry_points_load_without_partial_import_errors(self):
+        """Adapter entry points should load cleanly, even during discovery."""
+        import importlib.metadata
+
+        for ep in importlib.metadata.entry_points(group="tolokaforge.adapters"):
+            cls = ep.load()
+            assert cls is not None
+            assert hasattr(cls, "__name__")
 
 
 class TestNativeAdapter:
@@ -57,12 +109,14 @@ class TestNativeAdapter:
         # Should find tasks in the test project
         assert len(task_ids) > 0
 
-        # Check that task IDs match directory names
-        tasks_dir = test_project_dir / "tasks"
-        expected_ids = [d.name for d in tasks_dir.iterdir() if d.is_dir()]
-
+        # Each discovered task_id corresponds to a real file under tests/data/tasks/.
+        # Flat-layout tasks have task_id == dir name; shared-domain tasks
+        # (``<dom>/testcases/<case>/task.yaml``) name their case independently
+        # of the dir tree, so we just assert the corresponding file exists.
         for task_id in task_ids:
-            assert task_id in expected_ids
+            task_path = native_adapter._task_files[task_id]
+            assert task_path.is_file(), task_id
+            assert task_path.is_relative_to(test_project_dir / "tasks"), task_id
 
     def test_get_task(self, native_adapter: NativeAdapter):
         """Test native adapter loads task config."""
@@ -93,6 +147,9 @@ class TestNativeAdapter:
         assert isinstance(env, AdapterEnvironment)
         assert env.task_dir is not None
 
+    # TestTauAdapter and TestOrchestratorWithTauAdapter live in the
+    # adapter package's own test suite.
+
 
 class TestAdapterConfigParsing:
     """Tests for adapter config parsing from YAML."""
@@ -104,9 +161,9 @@ class TestAdapterConfigParsing:
                 "tasks_glob": "tasks/**/*.yaml",
                 "output_dir": "output/test",
                 "harness_adapter": {
-                    "type": "frozen_mcp_core",
+                    "type": "tau",
                     "params": {
-                        "base_dir": "/tmp/test",
+                        "task_split": "dev",
                     },
                 },
             },
@@ -122,8 +179,8 @@ class TestAdapterConfigParsing:
         run_config = RunConfig(**config_data)
 
         assert run_config.evaluation.harness_adapter is not None
-        assert run_config.evaluation.harness_adapter.type == "frozen_mcp_core"
-        assert run_config.evaluation.harness_adapter.params.get("base_dir") == "/tmp/test"
+        assert run_config.evaluation.harness_adapter.type == "tau"
+        assert run_config.evaluation.harness_adapter.params.get("task_split") == "dev"
 
     def test_no_harness_adapter_defaults_to_none(self):
         """Test missing harness_adapter defaults to None (native)."""

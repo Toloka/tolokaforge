@@ -1,0 +1,37 @@
+# Shared run config for terminal-bench example tasks.
+#
+# Runs every task in this directory. To run just one, use the per-task
+# configs: run_billing_holds.yaml, run_airline_segmentation.yaml.
+#
+# Requirements:
+#   - Docker daemon running (tasks build and execute inside containers)
+#   - Adapter plugin installed:
+#       uv pip install -e external_adapters/tolokaforge-adapter-terminal-bench
+#   - LLM API key in .env (Anthropic, OpenAI, etc.)
+
+models:
+  agent:
+    provider: "anthropic"
+    name: "claude-sonnet-4-6"
+    temperature: 0.0
+    max_tokens: 4096
+  user:
+    provider: "anthropic"
+    name: "claude-sonnet-4-6"
+    temperature: 0.0
+
+orchestrator:
+  workers: 1
+  repeats: 1
+  max_turns: 80
+  queue_backend: sqlite
+
+evaluation:
+  task_packs:
+    - "examples/terminal_bench"
+  tasks_glob: "*/task.yaml"
+  output_dir: "results/terminal_bench"
+  harness_adapter:
+    type: "terminal_bench"
+    params:
+      terminal_bench_dir: "examples/terminal_bench"

@@ -1,0 +1,7 @@
+{
+  "_comment": "Bare litellm usage block — no *_details sub-objects, no cache fields. Exercises UsageExtractor's zero-default path for partial provider responses.",
+  "usage": {
+    "prompt_tokens": 42,
+    "completion_tokens": 17
+  }
+}

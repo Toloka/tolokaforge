@@ -1,0 +1,27 @@
+{
+  "_comment": "Synthetic fixture modelled on the litellm ModelResponse shape documented at https://docs.litellm.ai/docs/reasoning_content — captures message.thinking_blocks (thinking + redacted_thinking) plus message.reasoning_content for a Claude tool-call turn.",
+  "role": "assistant",
+  "content": "I'll look up the customer's outstanding orders now.",
+  "reasoning_content": "The user is asking about outstanding orders, so I should call get_orders with status=open and then summarise the result.",
+  "thinking_blocks": [
+    {
+      "type": "thinking",
+      "thinking": "The user wants a summary of outstanding orders. I should call get_orders with status=open, inspect the result, and produce a short human-readable summary. I'll avoid mentioning internal IDs unless the user asks for them.",
+      "signature": "EqoBCkgIARABGAIiQL2UoU0b1OHYiQoMc8VKfQ3XoJvQxk9cU7RL2xV1q7N4aY5+Zp8S/5uTqkL3F/6uD3dP3u/SgIHwOqX9wS6p2+cSDC4z9ZlPP0m0+sYv/BoM1hQ8c3bSLKqkL7j8IjDJL1c2Rf5H8Yt4B+1mZK9d7N6mQ7c9O8sL2b9p2kR0oKQnY1VZ5xUxX8BQRI4kYz0qEMhJg8EXqNLhI3VpTfGvUjNqB4c="
+    },
+    {
+      "type": "redacted_thinking",
+      "data": "EvwBCkgIARABGAIiQK0P6y8+Pt0GZ5g1CvKYvQ4T8EhRtqA4yS8Rb0sJpP2d7Qmn3aUcYx0wB8Wp1fTqKmX4RxIa8G9tR1v4R+dV7nwSDEG9A1mKz7E6X0pG8/GoMwYoBcC9xYxL9rYVWM0ABoqvIgVsUDKqM9RjY8UrJrLgfRMzG4VkS7B"
+    }
+  ],
+  "tool_calls": [
+    {
+      "id": "toolu_01ABcdEfGhIjKlMnOpQrStUv",
+      "type": "function",
+      "function": {
+        "name": "get_orders",
+        "arguments": "{\"status\":\"open\"}"
+      }
+    }
+  ]
+}

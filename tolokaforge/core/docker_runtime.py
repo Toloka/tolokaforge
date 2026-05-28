@@ -50,6 +50,7 @@ class RunnerClient:
         - grade_trial(): Compute grade for completed trial
         - get_state(): Get current state snapshot (debugging)
         - reset_trial(): Reset trial state to initial
+        - cleanup_trial(): Forget a trial's registration (for retry-after-failure)
         - health_check(): Check service health
     """
 
@@ -245,13 +246,7 @@ class RunnerClient:
             if not success:
                 error = response.error_message or self._status_to_error(response.status)
 
-            duration_s = 0.0
-            if response.metrics:
-                duration_s = response.metrics.latency_seconds
-
-            return ToolResult(
-                success=success, output=response.output, error=error, duration_s=duration_s
-            )
+            return ToolResult(success=success, output=response.output, error=error)
 
         except grpc.RpcError as e:
             logger.error(f"gRPC error in execute_tool: {e}")
@@ -305,7 +300,6 @@ class RunnerClient:
                 "success": response.success,
                 "error": response.error if response.error else None,
                 "grade": None,
-                "judge_cost_usd": response.judge_cost_usd,
             }
 
             if response.success and response.grade:
@@ -457,6 +451,45 @@ class RunnerClient:
             logger.error(f"gRPC error in reset_trial: {e}")
             return {"success": False, "error": f"gRPC error: {str(e)}", "state_hash": None}
 
+    def cleanup_trial(self, trial_id: str) -> dict:
+        """
+        Forget a trial's registration so the same ``trial_id`` can be re-registered.
+
+        Used by the orchestrator's retry path to discard the prior attempt's
+        runner-side state before re-attempting registration. Idempotent on
+        the server side: succeeds when the trial is already absent.
+
+        Args:
+            trial_id: Trial ID to forget
+
+        Returns:
+            dict with keys:
+                - success: bool
+                - error: str | None (gRPC or server-side error message)
+        """
+        if not self.stub:
+            self.connect()
+
+        try:
+            request = runner_pb2.CleanupTrialRequest(trial_id=trial_id)
+            response = self.stub.CleanupTrial(request)
+
+            result = {
+                "success": response.success,
+                "error": response.error if response.error else None,
+            }
+
+            if response.success:
+                logger.info(f"Cleaned up trial {trial_id}")
+            else:
+                logger.warning(f"Cleanup of trial {trial_id} returned error: {response.error}")
+
+            return result
+
+        except grpc.RpcError as e:
+            logger.error(f"gRPC error in cleanup_trial: {e}")
+            return {"success": False, "error": f"gRPC error: {str(e)}"}
+
     def health_check(self) -> bool:
         """Check if Runner service is healthy
 
@@ -470,7 +503,7 @@ class RunnerClient:
             response = self.stub.HealthCheck(runner_pb2.HealthCheckRequest())
             return response.status == "healthy"
         except grpc.RpcError as e:
-            logger.debug(f"Health check failed (will retry): {e}")
+            logger.error(f"Health check failed: {e}")
             return False
 
     def health_check_detailed(self) -> dict:
@@ -492,7 +525,7 @@ class RunnerClient:
                 "available_adapters": list(response.available_adapters),
             }
         except grpc.RpcError as e:
-            logger.debug(f"Health check failed (will retry): {e}")
+            logger.error(f"Health check failed: {e}")
             return {
                 "status": "unhealthy",
                 "version": "",

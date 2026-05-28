@@ -286,7 +286,7 @@ class StateChecker:
             task_dir: Task directory containing data files
             initial_state_path: Path to initial state JSON file (relative to task_dir)
             mcp_server_path: Path to MCP server module (relative to task_dir)
-            task_domain: Domain name (e.g., "airline", "telecom")
+            task_domain: Domain name (e.g., "airline", "retail")
 
         Returns:
             State after executing golden actions
@@ -372,7 +372,7 @@ class StateChecker:
             task_dir: Task directory containing data files
             initial_state_path: Path to initial state JSON file (relative to task_dir)
             mcp_server_path: Path to MCP server module (relative to task_dir)
-            task_domain: Domain name (e.g., "airline", "telecom")
+            task_domain: Domain name (e.g., "airline", "retail")
 
         Returns:
             Expected SHA256 hash of state after executing golden actions
@@ -426,7 +426,7 @@ class StateChecker:
 
         # Extract database state from final state structure
         # Final state has structure: {"agent": {...}, "user": {...}, "db": {...}, ...}
-        # For airline/telecom tasks, we want to hash the "db" key (legacy format) or "agent" key
+        # For airline/retail tasks, we want to hash the "db" key (legacy format) or "agent" key
         # The initial state JSON file contains the raw database state
         db_state = state.get("db", state.get("agent", state))
 

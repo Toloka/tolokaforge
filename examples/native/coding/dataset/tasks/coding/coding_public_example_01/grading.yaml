@@ -1,0 +1,37 @@
+combine:
+  method: weighted
+  weights:
+    state_checks: 0.65
+    transcript_rules: 0.35
+  pass_threshold: 0.8
+state_checks:
+  jsonpaths:
+    - path: "$.filesystem['/env/fs/agent-visible/buggy_math.py']"
+      contains: "amount * (1 + tax_rate)"
+      description: "Tax computation uses additive formulation"
+    - path_glob: "/env/fs/agent-visible/submissions/*"
+      contains_ci: "root cause"
+      description: "Handoff note includes root-cause analysis"
+    - path_glob: "/env/fs/agent-visible/submissions/*"
+      contains_ci: "edge case"
+      description: "Handoff note identifies a risky edge case"
+transcript_rules:
+  max_turns: 10
+  disallow_regex:
+    - "(?i)(cannot complete|unable to complete|i refuse)"
+  required_actions:
+    - action_id: "inspect_code"
+      requestor: assistant
+      name: bash
+      arguments: {}
+      compare_args: []
+    - action_id: "write_handoff"
+      requestor: assistant
+      name: write_file
+      arguments: {}
+      compare_args: []
+  communicate_info:
+    - info: "tax"
+      required: true
+    - info: "root cause"
+      required: true

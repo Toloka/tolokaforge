@@ -1,7 +1,21 @@
 # Future Development Plan
 
-> **Updated:** 2026-04-19
-> **Scope:** Dockerfile cleanup, feature verification, remaining validation gaps, critical bug fixes
+> **Status:** Active
+> **Updated:** 2026-04-02
+> **Scope:** Dockerfile cleanup, end-to-end validation, feature verification, SQLite resilience
+
+---
+
+## Table of Contents
+
+- [Completed Work](#completed-work)
+- [Open Issues](#open-issues)
+- [Stage 9 — Dockerfile Review and Runner Image Cleanup](#stage-9--dockerfile-review-and-runner-image-cleanup)
+- [Stage 11 — End-to-End Adapter and Provider Validation](#stage-11--end-to-end-adapter-and-provider-validation)
+- [Stage 12 — Feature Verification Matrix](#stage-12--feature-verification-matrix)
+- [Stage 14 — SQLite Run Queue Corruption Resilience](#stage-14--sqlite-run-queue-corruption-resilience)
+- [Dependency Graph](#dependency-graph)
+- [Migration Checklist](#migration-checklist)
 
 ---
 
@@ -9,306 +23,595 @@
 
 | Stage | Achievement |
 |-------|------------|
-| 0–6 | Task data separation, Docker Python layer, adapter plugins, native conversion layer, canonical test infrastructure |
-| 7 | Test failures fixed: 31→0, dead-skip tests deleted. Final: 427 passed, 23 skipped |
-| 10 | Test consolidation: 5→3 categories (unit/canonical/integration). 688→449 tests |
-| 13 | `.gitattributes` cleaned, 39 orphaned files removed |
-| FrozenMcpCoreAdapter | Self-contained converted tasks with `_domain/` bundle, `tool_artifacts` delivery, stable hash grading |
-| SecretManager | Universal secret provider via `init_default`/`get_default`. Serialization for Runner (`TOLOKAFORGE_SECRETS_JSON`) |
-| LLM Judge in Runner | Runner evaluates `llm_judge` via litellm. Cost tracking via `judge_cost_usd` proto field. Robust JSON extraction |
-| SQLite resilience (14) | Thread-local connections, retry with backoff, WAL checkpointing, orchestrator exception safety net |
-| Judge cost (15) | Full pipeline from `evaluate_llm_judge()` → proto → orchestrator metrics |
-| Browser tool (16) | Tool schema documented, `execute()` API fixed, mock-web service auto-started, initial_url injected into system prompt, Docker DNS resolution fixed |
-| Health noise (17) | Health check polling failures downgraded to DEBUG |
-| Container reuse | Fixed `attrs` bug in `ServiceStack._start_service` |
-| Pydantic fix (9) | `CommandHealthProbe.command` renamed to `cmd` with alias |
-| Tool duration (10) | `output_writer.py` sums `duration_s` from tool logs |
-| Browser infrastructure | Mock-web auto-starts via `core_stack(enable_mock_web=True)`. Task packs bind-mounted. `_resolve_url()` maps short Docker names to container names. System prompt injects browser URL + task guidance |
-| Grade components | `-1.0` sentinel replaced with `None` for unconfigured components |
-| Failure attribution | Infrastructure errors detected (connection refused, missing tools). Coverage returns `None` for 0/0 |
-| Test suite (current) | 1000 unit + 72 canonical tests passing. 3/3 example task YAMLs valid |
-| E2E runs (2026-04-19) | All 4 examples run with real LLM (OpenRouter/claude-sonnet-4-6). All pass. See [E2E Run Results](#e2e-run-results-2026-04-19) |
-
----
-
-## E2E Run Results (2026-04-19)
-
-All examples executed with real LLM providers (OpenRouter, `anthropic/claude-sonnet-4-6`).
-
-| Example | Tasks | Trials | Pass Rate | Score | Cost | Latency | Notes |
-|---------|-------|--------|-----------|-------|------|---------|-------|
-| `custom_grading` | 1 | 1 | 100% | 0.984 | $0.068 | 47.9s | Weighted: state=1.0, transcript=1.0, judge=0.92 |
-| `package_api` | 1 | 1 | 100% | 1.000 | $0.012 | 8.9s | Programmatic API run |
-| `distributed_run` | 1 | 2 | 100% | 1.000 | $0.026 | 7.7s avg | 2 workers, 2 repeats, parallel execution |
-| `browser_task` | 1 | 1 | 100% | 1.000 | $0.063 | 37.5s | Mock-web + Playwright, 1 tool error recovered |
-| `analyze_results` | — | — | — | — | — | — | Ran on all 4 runs, no crashes |
-
-**Key observations:**
-- All grading methods work: state_checks, transcript_rules, llm_judge, combined weighted
-- Browser tool recovered from initial error (agent sent `{}` instead of `{actions: [...]}`)
-- Docker lifecycle clean: build→start→health→run→stop→destroy with no leaks
-- `tool_success_rate` correctly reflects the browser tool error (0.857 = 6/7)
-- `analyze_results` handles zero-failure runs correctly
-
----
-
-## Resolved Issues (verified 2026-04-19)
-
-### ~~Issue 5 — `analyze_results` example crashes on successful runs~~ → RESOLVED
-
-**Status:** Fixed. The code at `analyze_run.py:161-165` now correctly handles `None` coverage with an explicit `if coverage is None` check. **E2E verified:** `analyze_run.py` ran successfully on all 4 run directories with zero failures.
-
-### ~~Issue 6 — `trajectory.yaml` excludes `tool_log`~~ → RESOLVED
-
-**Status:** Fixed. **E2E verified:** All trial directories include `tool_log` in trajectory.yaml with tool name, success status, output, error, and duration fields. Confirmed in custom_grading (4 tool calls), package_api (2 tool calls), browser_task (7 tool calls).
-
-### ~~Issue 7 — Docker network/container name collisions~~ → RESOLVED
-
-**Status:** Fixed in `tolokaforge/docker/network.py:221-239`. The 409 Conflict race condition is handled. Container stale-removal handled in `container.py:353-375`.
-
-### ~~Issue 10 — BuiltinGenericToolWrapper masks tool failures~~ → RESOLVED
-
-**Status:** Fixed in `tolokaforge/runner/tool_factory.py:712-723`. **E2E verified:** Browser task tool_success_rate=0.857 correctly reflects 1 error out of 7 calls. `tool_usage.error_count=1` for browser tool is accurate.
-
-### ~~Issue 11 — Missing `.env.example`~~ → RESOLVED
-
-**Status:** `.env.example` exists with documented API key placeholders.
-
-### ~~Issue 8 — Tool duration measurements meaningless in Docker mode~~ → RESOLVED
-
-**Status:** Fixed. Server-side measurement via `time.time()` in Runner service. **E2E verified:** tool durations in metrics.yaml are sub-ms for file I/O (read_file: ~0.3ms, write_file: ~0.5ms) and ~100ms for browser actions — consistent with Docker-local execution.
-
-### ~~Issue 13 — `run_state.json` config_path inconsistency~~ → RESOLVED
-
-**Status:** Fixed. **E2E verified:** `run_state.json` shows relative path `results/browser_task` (CLI) and absolute path for programmatic API — both correct.
-
-### ~~Issue 14 — `_grade_via_runner_rpc` incorrect return type annotation~~ → RESOLVED
-
-**Status:** Fixed. At `orchestrator.py:1425`, `_grade_via_runner_rpc` is now annotated `-> tuple[Grade, float]`, matching the actual return type.
-
-### ~~Issue 15 — Invalid `# noqa` directive~~ → RESOLVED
-
-**Status:** Fixed. The `# noqa: WPS433` directive no longer exists in `frozen_mcp_core.py`. The late imports in `adapters/__init__.py` correctly use `# noqa: E402`.
+| 0–6 (Phase 1) | Task data separation, Docker Python layer, adapter plugins, rename to `tlk_mcp_core`, native conversion layer, canonical test infrastructure |
+| 7 | Test failures fixed: 31→0 failures, 708→1 warnings. Dead-skip tests deleted, skips reduced 103→23. Final: 427 passed, 23 skipped, 0 failures |
+| 8 | `contrib/` directories migrated to git submodules (PR #33). `fuzzy_compare.py` path fixed |
+| 10 | Test consolidation: 5→3 categories (unit/canonical/integration). `functional/` and `e2e/` deleted. 688→449 tests |
+| 13 | `.gitattributes` cleaned, 39 orphaned files removed, `.gitignore` updated, 3 unused test utils deleted |
+| PR #33 | FrozenMcpCoreAdapter: self-contained converted tasks with `_domain/` bundle, `tool_artifacts` delivery, stable hash grading. Unit + integration tests |
 
 ---
 
 ## Open Issues
 
-### Issue 16 — `mock_web_url` leaks into ALL env.yaml files (CRITICAL — abstraction leak)
+### Issue 1 — Runner Docker image includes unnecessary domain files ([#36](https://github.com/Toloka/tolokaforge/issues/36))
 
-**File:** `tolokaforge/core/env_state.py:59`
+The Runner Docker image bakes in domain-specific directories that should not be part of the image. This causes:
+- **Unnecessary rebuilds:** touching `contrib/` or `tasks/` triggers a content-hash change and full rebuild
+- **Slow context assembly:** `shutil.copytree` copies ~340 files to a temp directory
+- **Bloated image:** redundant copies of domain code already delivered via `tool_artifacts`
+- **Wrong abstraction:** new domains require modifying Docker infrastructure
 
-**Root cause:** `self.mock_web_url: str = "http://mock-web:8080"` is a **hardcoded non-empty default**. In `get_final_state()` at line 174, `if self.mock_web_url:` is always true because the default is never falsy. This causes `mock_web_url: http://mock-web:8080` to appear in **every** env.yaml, including tasks that never use mock_web.
-
-**E2E evidence:** All 4 runs show `mock_web_url: http://mock-web:8080` in env.yaml — including `custom_grading` and `package_api` which are pure knowledge_reasoning tasks with no browser component.
-
-**Impact:**
-1. Leaks Docker-internal URLs into non-Docker task results
-2. Confuses analysis tools and humans reading results
-3. Violates "don't leak abstractions" principle
-
-**Fix:** Change default from `"http://mock-web:8080"` to `""`. The conditional in `get_final_state()` will then correctly omit the field for tasks that don't configure mock_web. Same fix for `json_db_url` and `rag_service_url` defaults (lines 57-58) — while these don't currently leak into env.yaml, their always-truthy defaults are a latent bug that would bite any code using `if env_state.json_db_url:`.
-
-### Issue 3 — env.yaml does not capture agent-written files (CONFIRMED)
-
-**E2E evidence:** All 4 runs show only initial-state files in env.yaml filesystem:
-- `custom_grading`: only `prompt.txt`, missing `submissions/knowledge_hypothesis_rationale.md`
-- `package_api`: only `problem.txt`, missing `submissions/answer.md`
-- `distributed_run`: only `problem.txt`, missing `submissions/answer.md`
-- `browser_task`: only `policy_brief.txt`, missing `submissions/browser_policy_response.md`
-
-**Root cause:** `sync_filesystem_from_disk()` at `env_state.py:233-252` is dead code — never called. In Docker mode, the orchestrator can't access the Runner container's filesystem (`/work/`). The `GetState` gRPC returns only DB state, not filesystem state.
-
-**Fix options:**
-1. **(Minimal)** For non-Docker mode: call `env_state.sync_filesystem_from_disk()` before `get_final_state()` in the orchestrator.
-2. **(Full)** Extend `GetState` gRPC to include filesystem state from the Runner container, or add a dedicated filesystem sync RPC.
-
-### Issue 1 — Runner Docker image includes unnecessary domain files
-
-The Runner image bakes in domain-specific directories causing unnecessary rebuilds, slow context assembly, and bloated images. Three synchronized locations need cleanup:
+The problem exists in three synchronized locations:
 
 | Location | What it contains |
 |----------|-----------------|
-| `docker/runner.Dockerfile` | COPY commands + PYTHONPATH for domain dirs |
-| `tolokaforge/docker/stacks/core.py` | `context_files` list with domain dirs |
-| `tolokaforge/docker/builder.py` | `IMAGE_DEFINITIONS` with domain dirs |
+| `docker/runner.Dockerfile` lines 34–52 | COPY commands + PYTHONPATH for 6 domain dirs |
+| `tolokaforge/docker/stacks/core.py` lines 75–85 | `context_files` list with same 6 dirs |
+| `tolokaforge/docker/builder.py` lines 53–62 | `IMAGE_DEFINITIONS` with same 6 dirs |
 
-### Issue 2 — `docker/` directory audit needed
+Domain directories currently baked in:
+- `contrib/tau-bench/`
+- `contrib/project-m-copilot-mock-tools/mcp_core/`
+- `tasks/tlk_mcp_core/mcp-tools-library/`
+- `tasks/tlk_mcp_core/external_retail_server_v3/`
+- `tasks/telecom/tau_tools/`
+- `tasks/telecom/data/`
 
-8 Dockerfiles exist. Questions:
-- `json_db.Dockerfile` and `db_service.Dockerfile` may overlap
-- `orchestrator.Dockerfile` and `agent.Dockerfile` may be obsolete
+### Issue 2 — `docker/` directory: still needed?
+
+The `docker/` directory contains 8 Dockerfiles. Questions:
+- Are all 8 Dockerfiles still needed? `json_db.Dockerfile` and `db_service.Dockerfile` may overlap. `orchestrator.Dockerfile` and `agent.Dockerfile` may be obsolete.
 - Should Dockerfiles move inside `tolokaforge/docker/dockerfiles/`?
+- Do Dockerfiles correctly reference the new project structure?
 
-### Issue 12 — Browser task state checks could be more robust (TASK QUALITY)
+### Issue 3 — No end-to-end validation for native and tau adapters
 
-**File:** `examples/browser_task/dataset/tasks/browser/browser_public_example_01/grading.yaml:10`
+We have not:
+- Launched tasks with `native` or `tau` adapters
+- Verified different LLM providers (Anthropic, OpenAI, OpenRouter)
+- Verified the Docker infrastructure works (`tolokaforge docker build`, `tolokaforge docker up`)
 
-The state checks use literal substring matching (`contains_ci: "not permitted"`, `contains_ci: "7 business days"`, etc.). Agents using different wording will fail. Consider regex or `contains_any_ci` for checks where multiple valid phrasings exist.
+Frozen MCP core adapter has been partially validated — converted tasks run successfully via `frozen_mcp_core`. More complex features remain untested.
 
 ### Issue 4 — Feature verification gaps
 
-**Verified (2026-04-19 — E2E with real LLM via OpenRouter):**
-- ✅ LLM judge grading (custom_grading: llm_judge.model_ref + rubric + output_schema, score=0.92)
-- ✅ Combined weighted grading (state 0.6 + transcript 0.2 + judge 0.2 → 0.984)
-- ✅ JSONPath file assertions (contains_ci, path_glob — all 4 checks passed)
-- ✅ Transcript rules with `required_actions` and `disallow_regex`
-- ✅ Browser tool support (mock-web + Playwright, grading via state_checks + transcript_rules)
-- ✅ Multi-turn conversation (scripted user in custom_grading, LLM user in browser_task)
-- ✅ Distributed execution (workers=2, repeats=2, SQLite backend, parallel)
-- ✅ Package API programmatic run (Orchestrator + RunConfig from Python)
-- ✅ Docker auto-start lifecycle (build, start, health check, stop, destroy)
-- ✅ Cost tracking (per-trial and aggregate, including judge cost)
-- ✅ Grade component `None` sentinel (replaces old `-1.0` at proto boundary)
-- ✅ `analyze_results` loads trajectories, computes metrics (pass@k, cost, latency)
-- ✅ `trajectory.yaml` includes full `tool_log` data
-- ✅ BuiltinGenericToolWrapper properly raises on tool failure
-- ✅ Docker network 409 race condition handled
-- ✅ Tool duration uses server-side measurement in Docker mode
-- ✅ Failure attribution coverage returns `None` for 0/0 (no failures)
-- ✅ `tolokaforge status --run-dir` CLI works correctly
-- ✅ metadata_slices.json (by_benchmark_type, by_complexity) generated
-- ✅ run_state.json tracks trial status with timestamps
-- ✅ Unit tests: 1000 passed, 6 skipped
-- ✅ Canonical tests: 72 passed, 1 skipped
-- ✅ Lint: all checks passed
-- ✅ Task validation: 3/3 example tasks valid
+Task/grading features not verified post-refactoring:
+- Unstable fields (excluded from hash comparison)
+- Unstable extra fields (dynamically added by tool execution)
+- Tools initial state + task-specific data patches
+- Different grading methods (hash, transcript, LLM judge, custom checks, combined)
+- User simulator with backstory/context injection
+- Multi-turn conversation tracing
 
-**Open:**
-- Hash-based grading method (end-to-end with real LLM)
-- Custom checks grading method (end-to-end with real LLM)
-- Unstable fields / unstable extra fields
-- Initial state data patches
-- TypeSense RAG search integration
-- Multiple LLM providers (only OpenRouter tested; ANTHROPIC_API_KEY present but not exercised)
-- `tolokaforge docker build` / `tolokaforge docker up` CLI commands
+### Issue 5 — SQLite run queue corruption crashes CI benchmark shards
+
+**Observed:** 2026-04-02, shard-5 of `<your_run_config.yaml>` benchmark run.
+
+After ~6 hours of execution, the `run_queue.sqlite` file becomes corrupted, producing `sqlite3.DatabaseError: file is not a database` when any operation tries to connect. The immediate crash is caused by a **cascading double-fault** in the orchestrator exception handler: when `mark_completed()` fails with a DB error, the `except` block calls `mark_failed()` which also calls `_connect()` and throws the same error — this second exception is unhandled and kills the process.
+
+**Error trace (abbreviated):**
+```
+File "tolokaforge/core/orchestrator.py", line 557, in run
+    run_queue.mark_completed(lease.id, cost_usd=trial_cost)
+  File "tolokaforge/core/run_queue.py", line 185, in mark_completed
+    with self._connect() as conn:
+  File "tolokaforge/core/run_queue.py", line 38, in _connect
+    conn.execute("PRAGMA journal_mode=WAL")
+sqlite3.DatabaseError: file is not a database
+
+During handling of the above exception, another exception occurred:
+
+  File "tolokaforge/core/orchestrator.py", line 580, in run
+    should_retry = run_queue.mark_failed(lease.id, str(e), retryable=True)
+  File "tolokaforge/core/run_queue.py", line 203, in mark_failed
+    with self._connect() as conn:
+  File "tolokaforge/core/run_queue.py", line 38, in _connect
+    conn.execute("PRAGMA journal_mode=WAL")
+sqlite3.DatabaseError: file is not a database
+```
+
+**Contributing factors:**
+1. Every `SqliteRunQueue` operation creates a new `sqlite3.Connection` via `_connect()` — thousands of connect/disconnect cycles over 6+ hours churn WAL/SHM files
+2. No WAL checkpointing — the WAL journal grows unbounded during long runs
+3. Disk pressure on CI runners from trial outputs + Docker images accumulating over hours
+4. No retry logic for transient SQLite errors
+5. No fault tolerance in the orchestrator exception handler — a DB error in the error path is unrecoverable
+
+**Impact:** Process exit code 1, all in-flight trials lost, shard marked as failed in CI.
+
+**See:** [Stage 14](#stage-14--sqlite-run-queue-corruption-resilience) for the fix plan.
 
 ---
 
 ## Stage 9 — Dockerfile Review and Runner Image Cleanup
 
-> **Goal:** Make the Runner Docker image domain-agnostic.
+> **Goal:** Make the Runner Docker image domain-agnostic. Remove domain-specific files from the build context. Audit and consolidate Dockerfiles.  
+> **Tracks:** [#36](https://github.com/Toloka/tolokaforge/issues/36)
 
-### Approach
+### 9.1 Adapter tool delivery analysis
 
-Convert all tasks to frozen format, use `frozen_mcp_core` exclusively for Docker runs. Runner image only contains `tolokaforge/` + `pyproject.toml` + `README.md`.
+The key question for removing baked-in domain files is: how does each adapter deliver tools to the Docker Runner?
 
-### Steps
+| Adapter | Delivery mechanism | Uses `tool_artifacts`? | Needs baked-in files? |
+|---------|--------------------|:----------------------:|:---------------------:|
+| `frozen_mcp_core` | Bundles `_domain/` as base64 in `TaskDescription.tool_artifacts` | ✅ | ❌ |
+| `tau` (live) | `ToolSource(module_path="tau_tools.{name}", style=TAU_SYNC)` | ❌ | ✅ |
+| `tlk_mcp_core` (live) | `ToolSource(module_path="tools.{name}", style=MCP_ASYNC)` | ❌ | ✅ |
+| `native` | MCP server subprocess / file-based | N/A | Depends on tool type |
+
+**Only `frozen_mcp_core`** populates `TaskDescription.tool_artifacts`. Live adapters rely on baked-in filesystem paths inside the Runner container. The Runner's `_extract_tool_artifacts()` (`tolokaforge/runner/service.py:279`) handles extraction + `sys.path` injection, but live adapters' `to_task_description()` never populate `tool_artifacts`.
+
+### 9.2 Solution paths
+
+**Path A — Freeze everything (recommended):**
+- Convert all tasks to frozen format, use `frozen_mcp_core` exclusively for Docker runs
+- Live adapters use in-process runtime only (already works — commit `47c3ede`)
+- Runner image only contains `tolokaforge/` + `pyproject.toml` + `README.md`
+- Zero domain files in Docker context → fast rebuilds, small image, domain-agnostic
+
+**Path B — Add `tool_artifacts` to live adapters:**
+- Make `TauAdapter.to_task_description()` and `TlkMcpCoreAdapter.to_task_description()` bundle tool modules as `tool_artifacts`
+- Mirror `FrozenMcpCoreAdapter._bundle_domain_artifacts()` pattern
+- More work, maintains two code paths for same functionality
+
+### 9.3 Implementation plan (Path A)
 
 1. Strip domain directories from `runner.Dockerfile` COPY commands and PYTHONPATH
 2. Strip domain directories from `core.py` `context_files`
 3. Strip domain directories from `builder.py` `IMAGE_DEFINITIONS`
-4. Audit all 8 Dockerfiles for necessity
-5. Verify `frozen_mcp_core` tasks still work end-to-end with minimal image
+4. Keep only: `pyproject.toml`, `README.md`, `tolokaforge/`
+5. Remove domain-specific `pip install` commands from runner.Dockerfile (lines 56–67)
+6. Verify `frozen_mcp_core` tasks still work end-to-end with minimal image
+7. Document that live adapters require in-process runtime for Docker runs
 
-### Verification
+### 9.4 Audit Dockerfiles
+
+| Dockerfile | Purpose | Status to verify |
+|-----------|---------|-----------------|
+| `db_service.Dockerfile` | JSON DB state service | Needed |
+| `json_db.Dockerfile` | Legacy alias? | May overlap with `db_service.Dockerfile` |
+| `runner.Dockerfile` | gRPC runner service | Needed — simplify per 9.3 |
+| `rag.Dockerfile` | RAG search service | Needed |
+| `mock_web.Dockerfile` | Mock web service | Needed |
+| `executor.Dockerfile` | Tool executor | Verify still used |
+| `orchestrator.Dockerfile` | Orchestrator container | Verify still used |
+| `agent.Dockerfile` | Agent container | Verify still used |
+
+### 9.5 Verification gate
 
 - [ ] Runner image builds with only `tolokaforge/` + `pyproject.toml` + `README.md`
-- [ ] `frozen_mcp_core` tasks execute correctly with minimal image
+- [ ] `frozen_mcp_core` tasks execute correctly with minimal runner image
+- [ ] Content hash depends only on `tolokaforge/` source
 - [ ] No orphaned Dockerfiles
+- [ ] `builder.py` IMAGE_DEFINITIONS matches actual files
 - [ ] `tolokaforge docker build --core` succeeds
-
----
-
-## Stage 10 — Bug Fixes
-
-> **Goal:** Fix bugs discovered during E2E validation.
-
-### Resolved (2026-04-19)
-
-1. **`_grade_via_runner_rpc` return type** (Issue 14) → already correct: `-> tuple[Grade, float]`
-2. **Invalid `# noqa` directive** (Issue 15) → already removed from `frozen_mcp_core.py`
-
-### Bug fixes needed (ASAP)
-
-1. **`EnvironmentState` service URL defaults leak Docker internals** (Issue 16)
-   - Change `mock_web_url` default from `"http://mock-web:8080"` to `""`
-   - Change `json_db_url` default from `"http://json-db:8000"` to `""`
-   - Change `rag_service_url` default from `"http://rag-service:8001"` to `""`
-   - Callers that need these URLs must set them explicitly (already done in `executor/service.py`)
-
-2. **`sync_filesystem_from_disk` dead code** (Issue 3 — partial fix)
-   - Call `sync_filesystem_from_disk()` before `get_final_state()` in orchestrator — non-Docker mode only
-   - Document that Docker mode requires gRPC extension for full fix
-
-### Verification
-
-- [x] `_grade_via_runner_rpc` type annotation matches actual return
-- [x] No ruff warnings about invalid noqa directives
-- [ ] Service URL defaults are empty strings, not Docker-internal URLs
-- [ ] `mock_web_url` absent from env.yaml for non-mock-web tasks
-- [ ] Non-Docker mode env.yaml includes agent-written files
-- [ ] All 1000 unit + 72 canonical tests still pass
 
 ---
 
 ## Stage 11 — End-to-End Adapter and Provider Validation
 
-> **Goal:** Validate full pipeline for each adapter and LLM provider.
-> **Depends on:** Stage 9
+> **Goal:** Validate full pipeline for each adapter. Test LLM provider connectivity.
 
-### Remaining work
+### 11.1 Current validation status
 
-- [ ] FrozenMcpCoreAdapter extended validation (TypeSense, user LLM, data patches)
-- [ ] Other LLM providers tested (OpenAI direct, Anthropic direct, Google)
-- [ ] `tolokaforge docker build` / `tolokaforge docker up` CLI commands tested
+| Adapter | Convert | Run (in-process) | Run (Docker) | Notes |
+|---------|:-------:|:-----------------:|:------------:|-------|
+| `frozen_mcp_core` | ✅ | ✅ partially | Not tested | Converted + ran. Complex features untested |
+| `native` | N/A | Not tested | Not tested | |
+| `tau` | Not tested | Not tested | Not tested | |
+| `tlk_mcp_core` (live) | ✅ | Not tested | Not tested | Conversion works (PR #33) |
+
+### 11.2 NativeAdapter end-to-end
+
+```bash
+# Validate native tasks
+tolokaforge validate --tasks "tasks/**/task.yaml"
+
+# Run a native task
+tolokaforge run --config examples/native/coding/run_config.yaml --limit 1
+```
+
+### 11.3 TauAdapter end-to-end
+
+```bash
+# Convert Tau tasks to native format
+tolokaforge adapter convert --name tau --tasks-glob "tests/data/projects/food_delivery_2" --output /tmp/converted_tau/
+
+# Validate converted output
+tolokaforge validate --tasks "/tmp/converted_tau/**/task.yaml"
+```
+
+### 11.4 FrozenMcpCoreAdapter — extended validation
+
+The basic pipeline works. Next steps:
+- Test tasks with TypeSense search enabled
+- Test tasks with user LLM simulator (not scripted)
+- Test tasks with complex data patches
+- Verify unstable fields are correctly excluded from hash grading
+
+### 11.5 Docker infrastructure validation
+
+```bash
+tolokaforge docker build
+tolokaforge docker up --profile core
+tolokaforge docker status
+tolokaforge docker down
+```
+
+### 11.6 LLM provider connectivity
+
+Test each configured provider:
+- Anthropic (Claude) — `ANTHROPIC_API_KEY`
+- OpenAI — `OPENAI_API_KEY`
+- OpenRouter — `OPENROUTER_API_KEY`
+
+### 11.7 Verification gate
+
+- [ ] NativeAdapter validates all tasks in `tasks/`
+- [ ] TauAdapter converts food_delivery_2 tasks without errors
+- [ ] FrozenMcpCoreAdapter runs tasks with TypeSense, user LLM, data patches
+- [ ] Docker services start and pass health checks
+- [ ] At least one LLM provider can complete a minimal task
 
 ---
 
 ## Stage 12 — Feature Verification Matrix
 
-> **Goal:** Systematically verify every grading/task feature works correctly.
-> **Depends on:** Stage 11
+> **Goal:** Systematically verify every task/grading feature works correctly post-refactoring.
 
-### Remaining features to verify
+### 12.1 Grading method verification
 
-| Feature | How to verify |
-|---------|--------------|
-| Hash-based grading | Run frozen retail task, compare final DB state against golden hash |
-| Custom checks | Run task with `custom_checks.script` Python grading logic |
-| Unstable fields | Create test with `unstable_fields`, verify hash exclusion |
-| Data patches | Verify `data_patch` overrides merge with base state |
-| User simulator context | Verify backstory/context injection across turns |
+| Grading Method | Task to Test | What to Verify |
+|---------------|-------------|----------------|
+| Hash-based | frozen retail tasks | `state_checks.hash` compares final DB state against golden hash |
+| Transcript rules | calc_custom_checks | `transcript_checks.required_phrases` pattern matching |
+| State assertions | tool_use_public_example_01 | `state_checks.assertions` JSONPath checks |
+| LLM judge | (create test task) | `judge` config calls LLM and returns structured score |
+| Custom checks | order_modify_with_checks | `custom_checks.script` executes Python grading logic |
+| Combined grading | (create test task) | Multiple grading methods compose correctly |
+
+### 12.2 Unstable fields verification
+
+- Create a test with `unstable_fields` config
+- Verify fields marked as unstable are excluded from hash comparison
+- Verify `unstable_extra_fields` (fields dynamically added by tools) are handled
+
+### 12.3 Initial state and data patches
+
+- Verify `initial_state.json_db` correctly populates the DB service
+- Verify task-specific `data_patch` overrides merge with base state
+- Verify tools can read/write the populated state
+
+### 12.4 User simulator features
+
+- Verify user simulator receives backstory and context
+- Verify multi-turn conversation tracks context between turns
+- Verify user simulator generates contextually relevant replies
+
+### 12.5 Verification gate
+
+- [ ] Each grading method produces correct pass/fail for known inputs
+- [ ] Unstable fields excluded from hash comparison
+- [ ] Data patches merge correctly
+- [ ] User simulator maintains context across turns
 
 ---
 
-## Stage 13 — Analysis Tooling and Observability
+## Stage 14 — SQLite Run Queue Corruption Resilience
 
-> **Goal:** Fix agent state capture and analysis tooling.
-> **Depends on:** Stage 10
+> **Goal:** Prevent the orchestrator from crashing when the SQLite run queue database becomes corrupted during long CI benchmark runs. Ensure partial results are preserved and the process degrades gracefully.
+> **Tracks:** [Issue 5](#issue-5--sqlite-run-queue-corruption-crashes-ci-benchmark-shards)
+> **Priority:** High — blocks reliable CI benchmark execution
 
-### Work items
+### 14.0 Failure anatomy
 
-- [ ] env.yaml captures agent-written files in Docker mode (Issue 3 — requires gRPC extension)
-- [ ] Add stale results directory cleanup mechanism
+The failure chain has two distinct problems that must be addressed independently:
+
+```mermaid
+flowchart TD
+    A[Trial completes after ~6 hours] --> B[orchestrator.py:557 — run_queue.mark_completed]
+    B --> C[run_queue.py:35 — _connect opens new SQLite connection]
+    C --> D[run_queue.py:38 — PRAGMA journal_mode=WAL fails]
+    D --> E{sqlite3.DatabaseError: file is not a database}
+    E --> F[orchestrator.py:579 — except Exception handler]
+    F --> G[orchestrator.py:580 — run_queue.mark_failed]
+    G --> H[run_queue.py:203 — _connect again]
+    H --> I{Same DatabaseError — unhandled}
+    I --> J[Process crashes with exit code 1]
+    J --> K[All in-flight trials lost]
+    J --> L[Shard marked failed in CI]
+
+    style E fill:#f99,stroke:#333
+    style I fill:#f66,stroke:#333
+    style J fill:#f33,stroke:#fff,color:#fff
+```
+
+**Problem 1 — Root cause: SQLite file corruption.** The database worked for ~6 hours then became unreadable. Contributing factors:
+
+| Factor | Detail |
+|--------|--------|
+| Connection churn | Every `SqliteRunQueue` operation creates a new `sqlite3.Connection`, executes one query, closes it. With 5 workers over 6 hours = thousands of connect/disconnect cycles churning WAL/SHM files |
+| No WAL checkpointing | `PRAGMA journal_mode=WAL` is set on every connect, but `wal_checkpoint` is never called. WAL grows unbounded |
+| CI disk pressure | 5 workers x 5 repeats + Docker containers + trial outputs accumulate over hours on finite runner disk |
+| No retry on transient errors | A brief SQLITE_BUSY or I/O hiccup causes immediate failure with no recovery attempt |
+
+**Problem 2 — Cascading crash: No fault tolerance in exception handler.** When `mark_completed()` throws at `orchestrator.py:557`, the `except` block at line 580 calls `mark_failed()` which also calls `_connect()` — a second unhandled `DatabaseError` kills the process.
+
+### 14.1 Fix 1 — Orchestrator exception handler safety net
+
+**File:** `tolokaforge/core/orchestrator.py`
+**Lines:** 528, 557, 580
+
+Wrap every `run_queue.*` call inside the worker completion loop in a `try/except` so that a broken queue database does not crash the process. When the queue is unreachable, fall back to updating `run_state.json` directly via `StateManager` (which writes to a plain JSON file, independent of SQLite).
+
+**Current code at line 579:**
+```python
+except Exception as e:
+    should_retry = run_queue.mark_failed(lease.id, str(e), retryable=True)
+    self.logger.error(
+        "Trial execution exception",
+        task_id=task_id, trial_index=trial_idx,
+        error=str(e), will_retry=should_retry,
+    )
+    if not should_retry:
+        run_state.mark_failed(task_id, trial_idx, str(e))
+        self.state_manager.save_state(run_state)
+```
+
+**Proposed replacement:**
+```python
+except Exception as e:
+    try:
+        should_retry = run_queue.mark_failed(lease.id, str(e), retryable=True)
+    except Exception as db_err:
+        self.logger.error(
+            "Queue DB error while marking failure; treating as non-retryable",
+            task_id=task_id, trial_index=trial_idx,
+            original_error=str(e), db_error=str(db_err),
+        )
+        should_retry = False
+    self.logger.error(
+        "Trial execution exception",
+        task_id=task_id, trial_index=trial_idx,
+        error=str(e), will_retry=should_retry,
+    )
+    if not should_retry:
+        run_state.mark_failed(task_id, trial_idx, str(e))
+        self.state_manager.save_state(run_state)
+```
+
+Apply the same pattern to:
+- **Line 528:** `run_queue.mark_failed(lease.id, ...)` in the retryable trajectory branch
+- **Line 557:** `run_queue.mark_completed(lease.id, ...)` in the success path
+
+Also wrap `run_queue.get_counts()` at line 608 (post-loop summary) so the cleanup path does not crash either.
+
+### 14.2 Fix 2 — Thread-local connection reuse in SqliteRunQueue
+
+**File:** `tolokaforge/core/run_queue.py`
+**Class:** `SqliteRunQueue`
+
+Replace the create-connect-close-per-operation pattern with thread-local connection caching. This eliminates WAL churn and avoids redundant PRAGMA execution on every call.
+
+**Current `_connect()` at line 35:**
+```python
+def _connect(self) -> sqlite3.Connection:
+    conn = sqlite3.connect(self.db_path, timeout=30.0, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    return conn
+```
+
+**Proposed replacement:**
+```python
+import threading
+
+class SqliteRunQueue:
+    def __init__(self, db_path: Path, max_retries: int = 0):
+        self.db_path = Path(db_path)
+        self.max_retries = max(0, int(max_retries))
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._local = threading.local()
+        self._checkpoint_interval_s = 60.0
+        self._last_checkpoint_at = 0.0
+        self._init_db()
+
+    def _connect(self) -> sqlite3.Connection:
+        # Reuse per-thread connection when available and healthy
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            try:
+                conn.execute("SELECT 1")
+                return conn
+            except sqlite3.Error:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                self._local.conn = None
+
+        # Create new connection with retry
+        conn = self._new_connection()
+        self._local.conn = conn
+        return conn
+
+    def _new_connection(self, retries: int = 3) -> sqlite3.Connection:
+        last_err: Exception | None = None
+        for attempt in range(retries):
+            try:
+                conn = sqlite3.connect(
+                    self.db_path, timeout=30.0, isolation_level=None
+                )
+                conn.row_factory = sqlite3.Row
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA synchronous=NORMAL")
+                conn.execute("PRAGMA busy_timeout=5000")
+                return conn
+            except sqlite3.DatabaseError as e:
+                last_err = e
+                if attempt < retries - 1:
+                    time.sleep(0.5 * (2 ** attempt))  # 0.5s, 1s, 2s
+        raise sqlite3.DatabaseError(
+            f"SQLite connect failed after {retries} attempts: {last_err}"
+        ) from last_err
+```
+
+Key behaviors:
+- `_connect()` returns cached per-thread connection if healthy (verified by `SELECT 1`)
+- On stale/broken connection, creates a new one via `_new_connection()`
+- `_new_connection()` retries up to 3 times with exponential backoff (0.5s, 1s, 2s)
+- `threading.local()` ensures each `ThreadPoolExecutor` worker thread gets its own connection — no cross-thread sharing
+
+### 14.3 Fix 3 — Periodic WAL checkpointing
+
+**File:** `tolokaforge/core/run_queue.py`
+**Class:** `SqliteRunQueue`
+
+Add a `_maybe_checkpoint()` helper called after state-mutating operations (`mark_completed`, `mark_failed`). Uses `PRAGMA wal_checkpoint(PASSIVE)` which does not block readers or writers.
+
+```python
+def _maybe_checkpoint(self, conn: sqlite3.Connection) -> None:
+    """Run passive WAL checkpoint to prevent unbounded WAL growth."""
+    now = time.time()
+    if now - self._last_checkpoint_at < self._checkpoint_interval_s:
+        return
+    try:
+        conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+        self._last_checkpoint_at = now
+    except sqlite3.Error:
+        pass  # best-effort; do not propagate checkpoint failures
+```
+
+Call sites — add at the end of:
+- `mark_completed()` after the UPDATE
+- `mark_failed()` after the UPDATE
+
+Default `_checkpoint_interval_s = 60.0` — at most one checkpoint per minute. The `PASSIVE` mode checkpoints only pages that do not require blocking, so it is safe to call from any thread.
+
+### 14.4 Fix 4 — Retry logic in `_connect()`
+
+This is already included in Fix 2 above via `_new_connection(retries=3)`. The retry handles:
+- `sqlite3.DatabaseError` — covers "file is not a database", corrupt header, I/O errors
+- Exponential backoff — 0.5s, 1s, 2s between attempts
+- Clear error message after exhaustion — includes the original exception via `from last_err`
+
+Note: Retry will NOT fix actual file corruption (the header bytes are wrong). It will help with:
+- Transient `SQLITE_BUSY` that somehow surfaces as `DatabaseError`
+- Brief disk I/O errors that resolve on retry
+- Race conditions during WAL recovery
+
+For true corruption, Fix 1 (orchestrator safety net) is the backstop.
+
+### 14.5 Fix 5 — Unit tests for resilience paths
+
+**File:** `tests/unit/test_run_queue.py` — add tests:
+
+| Test | What it verifies |
+|------|-----------------|
+| `test_connect_retries_on_transient_error` | Mock `sqlite3.connect` to fail twice then succeed; verify 3 attempts, correct backoff sleep calls |
+| `test_connect_raises_after_max_retries` | Mock persistent failure; verify clean error after 3 attempts |
+| `test_thread_local_connection_reuse` | Call `_connect()` twice from same thread; verify same connection object returned |
+| `test_thread_local_isolation` | Call `_connect()` from two threads; verify different connection objects |
+| `test_wal_checkpoint_called_periodically` | Mock time; verify `PRAGMA wal_checkpoint` fires after interval |
+| `test_wal_checkpoint_not_called_too_often` | Verify checkpoint skipped when called within interval |
+| `test_stale_connection_replaced` | Set `_local.conn` to a broken mock; verify `_connect()` creates fresh connection |
+
+**File:** `tests/unit/test_orchestrator_db_resilience.py` (new) — add tests:
+
+| Test | What it verifies |
+|------|-----------------|
+| `test_mark_completed_survives_db_error` | Mock `run_queue.mark_completed` to raise; verify orchestrator logs error, updates `run_state` directly, does not crash |
+| `test_mark_failed_survives_db_error` | Mock `run_queue.mark_failed` to raise; verify orchestrator catches, sets `should_retry=False`, updates `run_state` |
+
+### 14.6 Relevant source code reference
+
+| File | Line | Function/Class | Role in fix |
+|------|------|---------------|-------------|
+| `tolokaforge/core/run_queue.py` | 22 | `SqliteRunQueue` | Connection management, WAL checkpointing, retry logic |
+| `tolokaforge/core/run_queue.py` | 35 | `_connect()` | Primary modification target for Fixes 2-4 |
+| `tolokaforge/core/run_queue.py` | 183 | `mark_completed()` | Add checkpoint call |
+| `tolokaforge/core/run_queue.py` | 200 | `mark_failed()` | Add checkpoint call |
+| `tolokaforge/core/orchestrator.py` | 528 | `run` — retryable branch | Wrap in try/except |
+| `tolokaforge/core/orchestrator.py` | 557 | `run` — success branch | Wrap in try/except |
+| `tolokaforge/core/orchestrator.py` | 580 | `run` — exception handler | Wrap in try/except — critical fix |
+| `tolokaforge/core/orchestrator.py` | 608 | `run` — post-loop counts | Wrap in try/except |
+| `tolokaforge/core/resume.py` | 127 | `save_state()` | Fallback persistence path — writes JSON, independent of SQLite |
+| `tests/unit/test_run_queue.py` | 1 | Existing tests | Add resilience test cases |
+
+### 14.7 Implementation order
+
+1. **Fix 1** — Orchestrator exception handler safety net (prevents cascading crash)
+2. **Fix 2** — Thread-local connection reuse (biggest prevention impact)
+3. **Fix 3** — Periodic WAL checkpointing (prevents WAL bloat)
+4. **Fix 4** — Retry in `_new_connection()` (already part of Fix 2)
+5. **Fix 5** — Unit tests for all above
+
+### 14.8 Verification gate
+
+- [ ] Fix 1: Orchestrator exception handler wraps queue DB calls in try/except
+- [ ] Fix 2: `SqliteRunQueue` uses `threading.local()` for connection caching
+- [ ] Fix 2: `_new_connection()` retries up to 3 times with exponential backoff
+- [ ] Fix 3: `_maybe_checkpoint()` called after `mark_completed` and `mark_failed`
+- [ ] Fix 5: Unit tests pass for retry, thread-local, checkpoint, and orchestrator resilience
+- [ ] Existing `tests/unit/test_run_queue.py` tests still pass
+- [ ] Lint passes: `uv run ruff check tolokaforge tests`
+
+---
+
+## Dependency Graph
+
+```mermaid
+graph TD
+    S9[Stage 9: Dockerfile + Runner Cleanup]
+    S11[Stage 11: E2E Validation]
+    S12[Stage 12: Feature Verification]
+    S14[Stage 14: SQLite Queue Resilience]
+
+    S9 --> S11
+    S11 --> S12
+    S14
+
+    style S9 fill:#ffa,stroke:#333
+    style S11 fill:#ffa,stroke:#333
+    style S12 fill:#bbf,stroke:#333
+    style S14 fill:#f99,stroke:#333
+```
+
+**Execution order:** Stage 14 is independent and can be implemented immediately. Stage 9 → 11 → 12 remain sequential.
 
 ---
 
 ## Migration Checklist
 
 ### Stage 9 — Dockerfile Review + Runner Cleanup
+- [ ] Analyse adapter tool delivery mechanisms
 - [ ] Strip domain directories from runner.Dockerfile, core.py, builder.py
 - [ ] Audit all 8 Dockerfiles for necessity
+- [ ] Remove duplicates and unused Dockerfiles
 - [ ] Verify minimal runner image works with frozen_mcp_core
+- [ ] Update `ImageBuilder` definitions
 
-### Stage 10 — Bug Fixes (ASAP)
-- [x] Fix `_grade_via_runner_rpc` return type annotation (Issue 14) — already correct
-- [x] Fix invalid `# noqa: WPS433` directive (Issue 15) — already removed
-- [ ] Fix `EnvironmentState` service URL defaults (Issue 16) — hardcoded Docker URLs
-- [ ] Call `sync_filesystem_from_disk()` in non-Docker orchestrator path (Issue 3 partial)
-
-### Stage 11 — E2E Validation (remaining)
+### Stage 11 — E2E Validation
+- [x] FrozenMcpCoreAdapter converts and runs tasks (basic pipeline)
 - [ ] FrozenMcpCoreAdapter extended validation (TypeSense, user LLM, data patches)
-- [ ] Other LLM providers tested
-- [ ] Docker CLI commands tested
+- [ ] NativeAdapter validates and runs tasks
+- [ ] TauAdapter converts tasks successfully
+- [ ] Docker services start and health-check
+- [ ] At least one LLM provider completes a task
 
-### Stage 12 — Feature Verification (remaining)
-- [ ] Hash-based grading verified
-- [ ] Custom checks grading verified
+### Stage 12 — Feature Verification
+- [ ] All grading methods verified
 - [ ] Unstable fields work correctly
-- [ ] Data patches work
-- [ ] User simulator context maintenance
+- [ ] Initial state and data patches work
+- [ ] User simulator maintains context
 
-### Stage 13 — Analysis Tooling
-- [ ] env.yaml captures agent-written files in Docker mode (requires gRPC extension)
-- [ ] Stale results directory cleanup
+### Stage 14 — SQLite Run Queue Corruption Resilience
+- [ ] Fix 1: Orchestrator exception handler wraps queue DB calls in try/except
+- [ ] Fix 2: `SqliteRunQueue` uses `threading.local()` for connection caching with retry
+- [ ] Fix 3: Periodic WAL checkpointing via `_maybe_checkpoint()`
+- [ ] Fix 5: Unit tests for retry, thread-local, checkpoint, and orchestrator resilience
+- [ ] All existing `test_run_queue.py` tests still pass
+- [ ] Lint clean

@@ -9,7 +9,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tolokaforge.core.model_client import GenerationResult
+from tolokaforge.core.llm import GenerationResult
+from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.models import (
     MessageRole,
     Metrics,
@@ -53,7 +54,7 @@ def _make_agent_client(responses: list[GenerationResult] | None = None) -> Magic
         client.generate.return_value = GenerationResult(
             text="I've completed the task. ###STOP###",
             tool_calls=[],
-            token_usage={"input": 100, "output": 50},
+            usage=Usage(prompt_tokens=100, completion_tokens=50),
             cost_usd=0.01,
         )
     return client
@@ -307,7 +308,7 @@ class TestTrialRunnerRun:
                 GenerationResult(
                     text="I've completed the task for you.",
                     tool_calls=[],
-                    token_usage={"input": 100, "output": 50},
+                    usage=Usage(prompt_tokens=100, completion_tokens=50),
                     cost_usd=0.01,
                 ),
             ]
@@ -320,8 +321,8 @@ class TestTrialRunnerRun:
         assert traj.trial_index == 0
         assert traj.termination_reason == TerminationReason.USER_STOP
         assert traj.metrics.api_calls == 1
-        assert traj.metrics.tokens_input == 100
-        assert traj.metrics.tokens_output == 50
+        assert traj.metrics.usage.prompt_tokens == 100
+        assert traj.metrics.usage.completion_tokens == 50
 
     def test_user_stop_signal(self) -> None:
         """Agent responds normally, then user sends ###STOP###."""
@@ -330,7 +331,7 @@ class TestTrialRunnerRun:
                 GenerationResult(
                     text="Here is the answer to your question.",
                     tool_calls=[],
-                    token_usage={"input": 50, "output": 25},
+                    usage=Usage(prompt_tokens=50, completion_tokens=25),
                 ),
             ]
         )
@@ -351,7 +352,7 @@ class TestTrialRunnerRun:
                 GenerationResult(
                     text="Done. ###STOP###",
                     tool_calls=[],
-                    token_usage={"input": 10, "output": 5},
+                    usage=Usage(prompt_tokens=10, completion_tokens=5),
                 ),
             ]
         )
@@ -369,7 +370,7 @@ class TestTrialRunnerRun:
                 GenerationResult(
                     text="###STOP###",
                     tool_calls=[],
-                    token_usage={"input": 200, "output": 100},
+                    usage=Usage(prompt_tokens=200, completion_tokens=100),
                     cost_usd=0.05,
                 ),
             ]
@@ -378,9 +379,9 @@ class TestTrialRunnerRun:
         traj = runner.run("System", "Task")
 
         assert traj.metrics.api_calls == 1
-        assert traj.metrics.tokens_input == 200
-        assert traj.metrics.tokens_output == 100
-        assert traj.metrics.cost_usd_est == 0.05
+        assert traj.metrics.usage.prompt_tokens == 200
+        assert traj.metrics.usage.completion_tokens == 100
+        assert traj.metrics.cost_usd == 0.05
         assert traj.metrics.latency_total_s > 0
 
     def test_tool_call_execution(self) -> None:
@@ -390,12 +391,12 @@ class TestTrialRunnerRun:
             GenerationResult(
                 text="Let me search",
                 tool_calls=[tool_call],
-                token_usage={"input": 50, "output": 20},
+                usage=Usage(prompt_tokens=50, completion_tokens=20),
             ),
             GenerationResult(
                 text="Found it. Here is the answer.",
                 tool_calls=[],
-                token_usage={"input": 80, "output": 30},
+                usage=Usage(prompt_tokens=80, completion_tokens=30),
             ),
         ]
         agent = _make_agent_client(agent_responses)
@@ -420,7 +421,7 @@ class TestTrialRunnerRun:
                 GenerationResult(
                     text="Working on it...",
                     tool_calls=[],
-                    token_usage={"input": 10, "output": 5},
+                    usage=Usage(prompt_tokens=10, completion_tokens=5),
                 ),
             ]
         )
@@ -440,7 +441,7 @@ class TestTrialRunnerRun:
             return GenerationResult(
                 text="Still working...",
                 tool_calls=[],
-                token_usage={"input": 10, "output": 5},
+                usage=Usage(prompt_tokens=10, completion_tokens=5),
             )
 
         agent = MagicMock()
@@ -468,7 +469,7 @@ class TestTrialRunnerRun:
                 GenerationResult(
                     text="###STOP###",
                     tool_calls=[],
-                    token_usage={"input": 10, "output": 5},
+                    usage=Usage(prompt_tokens=10, completion_tokens=5),
                 ),
             ]
         )
@@ -505,6 +506,21 @@ class TestTrialRunnerRun:
         assert traj.status == TrialStatus.ERROR
         assert traj.termination_reason == TerminationReason.RATE_LIMIT
 
+    def test_api_timeout_classification(self) -> None:
+        """``LLMApiTimeoutError`` raised by the client → API_TIMEOUT."""
+        from tolokaforge.core.llm.client import LLMApiTimeoutError
+
+        agent = MagicMock()
+        agent.generate.side_effect = LLMApiTimeoutError(
+            "LLM API call timed out after 6 attempts (timeout=120.0s)"
+        )
+
+        runner = _make_runner(agent_client=agent)
+        traj = runner.run("System", "Task")
+
+        assert traj.status == TrialStatus.ERROR
+        assert traj.termination_reason == TerminationReason.API_TIMEOUT
+
     def test_api_error_classification(self) -> None:
         """API-related errors get correct termination reason."""
         agent = MagicMock()
@@ -523,7 +539,7 @@ class TestTrialRunnerRun:
                 GenerationResult(
                     text="###STOP###",
                     tool_calls=[],
-                    token_usage={"input": 10, "output": 5},
+                    usage=Usage(prompt_tokens=10, completion_tokens=5),
                 ),
             ]
         )
@@ -540,7 +556,7 @@ class TestTrialRunnerRun:
                 GenerationResult(
                     text="###STOP###",
                     tool_calls=[],
-                    token_usage={"input": 10, "output": 5},
+                    usage=Usage(prompt_tokens=10, completion_tokens=5),
                 ),
             ]
         )
@@ -555,13 +571,13 @@ class TestTrialRunnerRun:
             GenerationResult(
                 text="Part 1",
                 tool_calls=[ToolCall(id="tc1", name="t", arguments={})],
-                token_usage={"input": 10, "output": 5},
+                usage=Usage(prompt_tokens=10, completion_tokens=5),
                 cost_usd=0.01,
             ),
             GenerationResult(
                 text="Part 2. ###STOP###",
                 tool_calls=[],
-                token_usage={"input": 20, "output": 10},
+                usage=Usage(prompt_tokens=20, completion_tokens=10),
                 cost_usd=0.02,
             ),
         ]
@@ -574,9 +590,9 @@ class TestTrialRunnerRun:
         runner = _make_runner(agent_client=agent, tool_executor=tool_exec)
         traj = runner.run("System", "Task")
 
-        assert traj.metrics.cost_usd_est == pytest.approx(0.03)
-        assert traj.metrics.tokens_input == 30
-        assert traj.metrics.tokens_output == 15
+        assert traj.metrics.cost_usd == pytest.approx(0.03)
+        assert traj.metrics.usage.prompt_tokens == 30
+        assert traj.metrics.usage.completion_tokens == 15
 
 
 # ===================================================================
@@ -595,7 +611,7 @@ class TestUserSimulatorIntegration:
                 GenerationResult(
                     text="###STOP###",
                     tool_calls=[],
-                    token_usage={"input": 10, "output": 5},
+                    usage=Usage(prompt_tokens=10, completion_tokens=5),
                 ),
             ]
         )

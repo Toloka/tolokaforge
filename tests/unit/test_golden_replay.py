@@ -33,7 +33,7 @@ class TestGoldenActionArguments:
     def test_mixed_domain_ids_not_confused(self):
         """IDs from different tool domains should not interfere.
 
-        This tests the scenario that caused the ots_07_logistics_internal bug:
+        This tests the scenario that caused the logistics domain bug:
         hris_get_employee returns {"id": "EMP-00000500"} but golden
         zendesk_update_item expects id="6" — these should never be mixed.
         """

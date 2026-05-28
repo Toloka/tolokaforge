@@ -54,7 +54,7 @@ class ToolSource(BaseModel):
     or mounted in the container.
     """
 
-    toolset: str  # Package/directory: "zendesk", "airline", "telecom"
+    toolset: str  # Package/directory: "zendesk", "airline", "retail"
     module_path: str  # Module within toolset: "tools.create_item"
     class_name: str  # Class/function: "CreateItem", "BookReservation"
     invocation_style: InvocationStyle = InvocationStyle.TAU_SYNC
@@ -81,6 +81,13 @@ class ToolSchema(BaseModel):
 
     # How to reconstruct this tool at runtime
     source: ToolSource | None = None
+
+    # Per-tool init kwargs lifted from ``task.yaml`` ``tools.agent.<name>: {...}``.
+    # The runner splats these into the tool class constructor; unknown keys raise
+    # ``ToolConfigurationError`` at trial registration. Used by builtin tools
+    # whose construction needs task-side data (e.g. ``MobileTool.apps``); MCP
+    # server tools and tau/MCP-async tools leave it empty.
+    tool_config: dict[str, Any] = Field(default_factory=dict)
 
     model_config = {"extra": "forbid"}
 
@@ -324,7 +331,7 @@ class TaskDescription(BaseModel):
     # --- Identity ---
     task_id: str
     name: str
-    category: str  # Domain: "airline", "telecom", "retail"
+    category: str  # Domain: "airline", "retail"
     description: str  # Task description / user goal
     adapter_type: AdapterType
     schema_version: str = "1.0.0"
@@ -667,6 +674,7 @@ class GradeComponents(BaseModel):
     transcript_pass: bool | None = None
     transcript_score: float = -1.0
     llm_judge_score: float = -1.0  # -1.0 means not evaluated
+    llm_judge_reasons: str = ""
 
     model_config = {"extra": "forbid"}
 

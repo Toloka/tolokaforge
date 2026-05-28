@@ -42,7 +42,7 @@ def temp_workdir():
         yield Path(tmpdir)
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def test_data_dir() -> Path:
     """Get tests/data directory for test tasks and fixtures
 
@@ -97,6 +97,54 @@ def test_fixture_path(test_data_dir):
         if not fixture_path.exists():
             pytest.fail(f"Test fixture not found: {fixture_path}")
         return fixture_path
+
+    return _get
+
+
+@pytest.fixture(scope="module")
+def canonical_task_dir(test_data_dir):
+    """Get path to a canonical test task (tests/data/tasks/{task_name})
+
+    Usage:
+        def test_something(canonical_task_dir):
+            task_dir = canonical_task_dir("shop_orders_02")
+
+    Args:
+        task_name: Name of the canonical test task directory
+
+    Returns:
+        Function that returns Path to canonical task directory
+    """
+
+    def _get(task_name: str) -> Path:
+        task_path = test_data_dir / "tasks" / task_name
+        if not task_path.exists():
+            pytest.fail(f"Canonical task not found: {task_path}")
+        return task_path
+
+    return _get
+
+
+@pytest.fixture
+def canonical_project_dir(test_data_dir):
+    """Get path to a canonical test project (tests/data/projects/{project_name})
+
+    Usage:
+        def test_something(canonical_project_dir):
+            project_dir = canonical_project_dir("food_delivery_2")
+
+    Args:
+        project_name: Name of the canonical test project directory
+
+    Returns:
+        Function that returns Path to canonical project directory
+    """
+
+    def _get(project_name: str) -> Path:
+        project_path = test_data_dir / "projects" / project_name
+        if not project_path.exists():
+            pytest.fail(f"Canonical project not found: {project_path}")
+        return project_path
 
     return _get
 

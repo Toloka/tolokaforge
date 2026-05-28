@@ -17,34 +17,12 @@ check_installed uv "Please install uv: https://docs.astral.sh/uv/getting-started
 
 cd "$REPO_DIR"
 
-# ---------------------------------------------------------------------------
-# Guard: detect stale .venv created with a different Python version
-# ---------------------------------------------------------------------------
-# .python-version is the single source of truth for the dev Python version.
-# If the existing .venv was created with a different Python (e.g., uv
-# auto-downloaded 3.14 before we pinned to 3.12), remove it so uv sync
-# recreates it with the correct interpreter.
-if [ -f "${REPO_DIR}/.python-version" ] && [ -f "${REPO_DIR}/.venv/pyvenv.cfg" ]; then
-    EXPECTED_MINOR=$(head -1 "${REPO_DIR}/.python-version" | tr -d '[:space:]')
-    ACTUAL_VERSION=$(grep '^version_info' "${REPO_DIR}/.venv/pyvenv.cfg" | cut -d= -f2 | tr -d '[:space:]')
-    # Compare major.minor (e.g., "3.12" vs "3.14.4" → "3.14")
-    ACTUAL_MINOR="${ACTUAL_VERSION%.*}"
-    if [ -n "$EXPECTED_MINOR" ] && [ -n "$ACTUAL_MINOR" ] && [ "$EXPECTED_MINOR" != "$ACTUAL_MINOR" ]; then
-        log_warning "Existing .venv uses Python ${ACTUAL_VERSION} but .python-version requires ${EXPECTED_MINOR}"
-        log_info "Removing stale .venv to recreate with Python ${EXPECTED_MINOR}..."
-        # Playwright install-deps (sudo) may leave root-owned .pyc files
-        rm -rf "${REPO_DIR}/.venv" 2>/dev/null || sudo rm -rf "${REPO_DIR}/.venv"
-    fi
-fi
-
 # Sync Python dependencies with uv
-# Use --index-strategy unsafe-best-match to allow PyPI fallback when Azure DevOps
 # doesn't have platform-specific wheels (e.g., macOS ARM64)
 log_info "Syncing Python dependencies with uv..."
 if ! uv sync --index-strategy unsafe-best-match 2>&1 | tee /tmp/uv_sync_output.log; then
     # Check if the error is about missing platform wheels
     if grep -q "doesn't have.*wheel for the current platform\|only has wheels for" /tmp/uv_sync_output.log; then
-        log_warning "Some packages don't have wheels for this platform in Azure DevOps"
         log_info "Regenerating lock file to use PyPI fallback for platform-specific packages..."
         # Remove lock file to force fresh resolution from all indexes
         LOCK_BACKUP="${REPO_DIR}/uv.lock.backup"
@@ -68,7 +46,6 @@ if ! uv sync --index-strategy unsafe-best-match 2>&1 | tee /tmp/uv_sync_output.l
                 exit 1
             fi
         else
-            log_error "Failed to regenerate lock file. Please check your network connection and Azure DevOps authentication."
             if [ -f "$LOCK_BACKUP" ]; then
                 mv "$LOCK_BACKUP" "${REPO_DIR}/uv.lock"
                 log_info "Restored original lock file"

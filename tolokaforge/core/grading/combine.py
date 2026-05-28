@@ -45,7 +45,7 @@ class GradingEngine:
         self,
         grading_config: GradingConfig,
         judge_model: ModelConfig | None = None,
-        task_domain: str = "telecom",
+        task_domain: str = "general",
         task_dir: Path | None = None,
         task_initial_state: InitialStateConfig | None = None,
         task_mcp_server: str | None = None,

@@ -10,22 +10,24 @@ from tolokaforge.adapters.native import NativeAdapter
 
 pytestmark = pytest.mark.canonical
 
-TEST_DATA_DIR = Path(__file__).parent.parent / "data"
 SNAPSHOT_DIR = Path(__file__).parent / "snapshots"
-
-_SHOP_SRC = TEST_DATA_DIR / "tasks" / "shop_orders_02"
-_SHOP_SNAP = SNAPSHOT_DIR / "native_shop_orders_02"
 
 
 @pytest.fixture
-def native_adapter() -> NativeAdapter:
+def native_adapter(test_data_dir) -> NativeAdapter:
     """Create NativeAdapter pointed at tests/data/tasks/."""
     return NativeAdapter(
         {
-            "base_dir": str(TEST_DATA_DIR),
+            "base_dir": str(test_data_dir),
             "tasks_glob": "tasks/**/task.yaml",
         }
     )
+
+
+@pytest.fixture
+def shop_orders_02_snapshot_dir():
+    """Get snapshot directory for shop_orders_02."""
+    return SNAPSHOT_DIR / "native_shop_orders_02"
 
 
 class TestNativeAdapterCanon:
@@ -62,6 +64,57 @@ class TestNativeAdapterCanon:
 
         actual = grading.model_dump(mode="json")
         snap.assert_match(actual, "grading_config.json")
+
+
+class TestNativeAdapterDomainCanon:
+    """Canonical tests for the shared-domain layout.
+
+    Fixture: ``tests/data/tasks/example_domain`` — a hermetic 1-tool / 1-case
+    domain with the minimum surface area (no MCP subprocess, no real state)
+    so the snapshots stay tight and any deviation in the merge / path-rewrite
+    pipeline shows up clearly in the diff.
+    """
+
+    def test_domain_layout_task_config(self, native_adapter, canon_snapshot):
+        """Merged TaskConfig surfaces domain-supplied fields with task_root-relative paths.
+
+        Regression net for F1 (unreachable ``_task_roots`` assignment) and F3
+        (path-field coverage). If either bug returns, the snapshot diff
+        immediately points at it: F1 makes ``system_prompt`` flip back to
+        ``../../_shared/system_prompt.md``, F3 makes a missed field stay
+        unrewritten.
+        """
+        task = native_adapter.get_task("example_domain_case_a")
+        snap = canon_snapshot("native_example_domain_case_a")
+        snap.assert_match(task.model_dump(mode="json"), "task_config.json")
+
+    def test_domain_layout_task_dir_is_domain_root(self, native_adapter, test_data_dir):
+        """Effective task dir is ``<dom>``, not the case dir.
+
+        This is the contract :meth:`NativeAdapter._bundle_task_artifacts`
+        relies on to bundle ``_shared/`` siblings.
+        """
+        actual = native_adapter.get_task_dir("example_domain_case_a")
+        assert actual == test_data_dir / "tasks" / "example_domain"
+
+    def test_domain_layout_grading_config(self, native_adapter, canon_snapshot):
+        """GradingConfig loads via the case-relative grading.yaml."""
+        grading = native_adapter.get_grading_config("example_domain_case_a")
+        snap = canon_snapshot("native_example_domain_case_a")
+        snap.assert_match(grading.model_dump(mode="json"), "grading_config.json")
+
+    def test_domain_layout_bundle_artifact_keys(self, native_adapter, canon_snapshot):
+        """Bundle keys cover both ``_shared/`` and ``testcases/<case>/`` files
+        with stable, domain-root-relative paths.
+
+        Snapshots only the *sorted key list* — not the base64 payload — so
+        the canonical file stays small and a missed file shows up as a
+        textual key delta, not a binary diff.
+        """
+        task_dir = native_adapter.get_task_dir("example_domain_case_a")
+        artifacts = native_adapter._bundle_task_artifacts(task_dir)
+        snap = canon_snapshot("native_example_domain_case_a")
+        snap.assert_match({"keys": sorted(artifacts.keys())}, "bundle_artifact_keys.json")
 
 
 class TestShopOrders02Canon:
@@ -129,15 +182,19 @@ class TestShopOrders02SnapshotIntegrity:
     the adapter, so they act as an independent oracle.
     """
 
-    def test_initial_state_snapshot_mirrors_source(self):
+    def test_initial_state_snapshot_mirrors_source(
+        self, shop_orders_02_task_dir, shop_orders_02_snapshot_dir
+    ):
         """Snapshot tables must be byte-for-byte derivable from initial_state.json.
 
         If this test fails while TestShopOrders02Canon.test_initial_state_tables
         passes, the adapter introduced a transformation that diverges from the
         source data.
         """
-        source = json.loads((_SHOP_SRC / "initial_state.json").read_text())
-        snapshot = json.loads((_SHOP_SNAP / "initial_state_tables.json").read_text())
+        source = json.loads((shop_orders_02_task_dir / "initial_state.json").read_text())
+        snapshot = json.loads(
+            (shop_orders_02_snapshot_dir / "initial_state_tables.json").read_text()
+        )
 
         tables = snapshot["tables"]
 
@@ -148,21 +205,23 @@ class TestShopOrders02SnapshotIntegrity:
             "Snapshot products differ from initial_state.json — "
             "run --update-canon only if initial_state.json was intentionally changed"
         )
-        assert by_id(tables["customers"]) == by_id(source["customers"]), (
-            "Snapshot customers differ from initial_state.json"
-        )
-        assert tables["orders"] == source["orders"], (
-            "Snapshot orders differ from initial_state.json"
-        )
+        assert by_id(tables["customers"]) == by_id(
+            source["customers"]
+        ), "Snapshot customers differ from initial_state.json"
+        assert (
+            tables["orders"] == source["orders"]
+        ), "Snapshot orders differ from initial_state.json"
 
-    def test_grading_snapshot_mirrors_source(self):
+    def test_grading_snapshot_mirrors_source(
+        self, shop_orders_02_task_dir, shop_orders_02_snapshot_dir
+    ):
         """Snapshot grading_config must faithfully reflect grading.yaml without adapter.
 
         Checks combine weights, golden_actions, jsonpaths, and communicate_info so
         that a silent adapter serialisation bug cannot hide here.
         """
-        source = yaml.safe_load((_SHOP_SRC / "grading.yaml").read_text())
-        snapshot = json.loads((_SHOP_SNAP / "grading_config.json").read_text())
+        source = yaml.safe_load((shop_orders_02_task_dir / "grading.yaml").read_text())
+        snapshot = json.loads((shop_orders_02_snapshot_dir / "grading_config.json").read_text())
 
         assert snapshot["combine"]["weights"] == source["combine"]["weights"]
         assert snapshot["combine"]["pass_threshold"] == pytest.approx(
@@ -171,35 +230,37 @@ class TestShopOrders02SnapshotIntegrity:
 
         snap_actions = snapshot["state_checks"]["hash"]["golden_actions"]
         src_actions = source["state_checks"]["hash"]["golden_actions"]
-        assert len(snap_actions) == len(src_actions), (
-            f"golden_actions count: snapshot={len(snap_actions)}, source={len(src_actions)}"
-        )
+        assert len(snap_actions) == len(
+            src_actions
+        ), f"golden_actions count: snapshot={len(snap_actions)}, source={len(src_actions)}"
         for snap_act, src_act in zip(snap_actions, src_actions):
             assert snap_act["name"] == src_act["name"]
             assert snap_act["kwargs"] == src_act["kwargs"]
 
         snap_paths = {jp["path"]: jp["equals"] for jp in snapshot["state_checks"]["jsonpaths"]}
         src_paths = {jp["path"]: jp["equals"] for jp in source["state_checks"]["jsonpaths"]}
-        assert set(snap_paths.keys()) == set(src_paths.keys()), (
-            "jsonpath keys differ between snapshot and grading.yaml"
-        )
+        assert set(snap_paths.keys()) == set(
+            src_paths.keys()
+        ), "jsonpath keys differ between snapshot and grading.yaml"
         for path, expected in src_paths.items():
             if isinstance(expected, float):
-                assert abs(snap_paths[path] - expected) < 1e-9, (
-                    f"jsonpath {path}: snapshot={snap_paths[path]}, source={expected}"
-                )
+                assert (
+                    abs(snap_paths[path] - expected) < 1e-9
+                ), f"jsonpath {path}: snapshot={snap_paths[path]}, source={expected}"
             else:
-                assert snap_paths[path] == expected, (
-                    f"jsonpath {path}: snapshot={snap_paths[path]!r}, source={expected!r}"
-                )
+                assert (
+                    snap_paths[path] == expected
+                ), f"jsonpath {path}: snapshot={snap_paths[path]!r}, source={expected!r}"
 
         snap_info = {ci["info"] for ci in snapshot["transcript_rules"]["communicate_info"]}
         src_info = {ci["info"] for ci in source["transcript_rules"]["communicate_info"]}
-        assert snap_info == src_info, (
-            f"communicate_info mismatch: snapshot={snap_info}, source={src_info}"
-        )
+        assert (
+            snap_info == src_info
+        ), f"communicate_info mismatch: snapshot={snap_info}, source={src_info}"
 
-    def test_tool_schemas_snapshot_respects_enabled_order(self):
+    def test_tool_schemas_snapshot_respects_enabled_order(
+        self, shop_orders_02_task_dir, shop_orders_02_snapshot_dir
+    ):
         """Snapshot tool list must contain exactly the tools from task.yaml `enabled`, in order.
 
         Two invariants:
@@ -208,13 +269,14 @@ class TestShopOrders02SnapshotIntegrity:
         2. Descriptions and parameter schemas match tools.json verbatim — the
            adapter must not silently alter what the agent sees.
         """
-        task_cfg = yaml.safe_load((_SHOP_SRC / "task.yaml").read_text())
+        task_cfg = yaml.safe_load((shop_orders_02_task_dir / "task.yaml").read_text())
         enabled: list[str] = task_cfg["tools"]["agent"]["enabled"]
 
         source_tools = {
-            t["name"]: t for t in json.loads((_SHOP_SRC / "fixtures" / "tools.json").read_text())
+            t["name"]: t
+            for t in json.loads((shop_orders_02_task_dir / "fixtures" / "tools.json").read_text())
         }
-        snapshot_tools = json.loads((_SHOP_SNAP / "tool_schemas.json").read_text())
+        snapshot_tools = json.loads((shop_orders_02_snapshot_dir / "tool_schemas.json").read_text())
 
         snapshot_names = [t["name"] for t in snapshot_tools]
         assert snapshot_names == enabled, (
@@ -224,17 +286,17 @@ class TestShopOrders02SnapshotIntegrity:
 
         for snap_tool in snapshot_tools:
             name = snap_tool["name"]
-            assert name in source_tools, (
-                f"Snapshot contains tool '{name}' not present in fixtures/tools.json"
-            )
-            assert snap_tool["description"] == source_tools[name]["description"], (
-                f"Tool '{name}' description mismatch between snapshot and tools.json"
-            )
-            assert snap_tool["parameters"] == source_tools[name]["parameters"], (
-                f"Tool '{name}' parameter schema mismatch between snapshot and tools.json"
-            )
+            assert (
+                name in source_tools
+            ), f"Snapshot contains tool '{name}' not present in fixtures/tools.json"
+            assert (
+                snap_tool["description"] == source_tools[name]["description"]
+            ), f"Tool '{name}' description mismatch between snapshot and tools.json"
+            assert (
+                snap_tool["parameters"] == source_tools[name]["parameters"]
+            ), f"Tool '{name}' parameter schema mismatch between snapshot and tools.json"
 
-    def test_grading_arithmetic_consistency(self):
+    def test_grading_arithmetic_consistency(self, shop_orders_02_task_dir):
         """Expected final values in grading.yaml must be arithmetically derivable from initial_state.json.
 
         This test uses no adapter and no snapshot — it verifies the source files
@@ -247,8 +309,8 @@ class TestShopOrders02SnapshotIntegrity:
             balance_after = customer.balance - order_total
             stock_after[P] = product.stock - qty_ordered[P]
         """
-        initial = json.loads((_SHOP_SRC / "initial_state.json").read_text())
-        grading = yaml.safe_load((_SHOP_SRC / "grading.yaml").read_text())
+        initial = json.loads((shop_orders_02_task_dir / "initial_state.json").read_text())
+        grading = yaml.safe_load((shop_orders_02_task_dir / "grading.yaml").read_text())
 
         products = {p["id"]: p for p in initial["products"]}
         customers = {c["id"]: c for c in initial["customers"]}
@@ -288,9 +350,9 @@ class TestShopOrders02SnapshotIntegrity:
             product_idx = next(i for i, p in enumerate(product_list) if p["id"] == pid)
             expected_stock = products[pid]["stock"] - item["quantity"]
             stock_path = f"$.db.products[{product_idx}].stock"
-            assert stock_path in jsonpaths, (
-                f"grading.yaml has no jsonpath for {pid} stock (expected path: {stock_path})"
-            )
+            assert (
+                stock_path in jsonpaths
+            ), f"grading.yaml has no jsonpath for {pid} stock (expected path: {stock_path})"
             assert abs(jsonpaths[stock_path] - expected_stock) < 0.001, (
                 f"Stock for {pid}: grading.yaml says {jsonpaths[stock_path]}, "
                 f"computed {expected_stock} "

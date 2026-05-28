@@ -99,6 +99,12 @@ service RunnerService {
   // Reset trial state to initial - for retries
   rpc ResetTrial(ResetTrialRequest) returns (ResetTrialResponse);
 
+  // Forget a trial's registration entirely - for retry-after-transient-failure paths
+  // Idempotent: succeeds when the trial is not registered.
+  // Distinct from ResetTrial: ResetTrial keeps the registration and resets state;
+  // CleanupTrial removes the registration so the same trial_id can be re-registered.
+  rpc CleanupTrial(CleanupTrialRequest) returns (CleanupTrialResponse);
+
   // Health check
   rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
 }
@@ -391,6 +397,23 @@ message ResetTrialResponse {
 
   // State hash after reset
   string state_hash = 3;
+}
+
+// =============================================================================
+// CleanupTrial - Forget a trial's registration
+// =============================================================================
+
+message CleanupTrialRequest {
+  // Trial identifier
+  string trial_id = 1;
+}
+
+message CleanupTrialResponse {
+  // Whether cleanup succeeded. Idempotent: true when trial was already absent.
+  bool success = 1;
+
+  // Error message if cleanup failed
+  string error = 2;
 }
 
 // =============================================================================

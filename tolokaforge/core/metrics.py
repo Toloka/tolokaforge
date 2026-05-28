@@ -167,15 +167,24 @@ def calculate_task_metrics(trajectories: list[Trajectory]) -> dict[str, any]:
     metrics["avg_tool_calls"] = (
         sum(t.metrics.tool_calls for t in trajectories) / n_total if n_total > 0 else 0.0
     )
-    metrics["avg_tokens_input"] = (
-        sum(t.metrics.tokens_input for t in trajectories) / n_total if n_total > 0 else 0.0
+    # Per-task token/cache/reasoning averages. Pulled from the full Usage
+    # object on each trajectory so Anthropic cache counters + reasoning
+    # budgets are first-class citizens (Stage 5 / P7).
+    _usage_fields = (
+        "prompt_tokens",
+        "completion_tokens",
+        "reasoning_tokens",
+        "cached_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
     )
-    metrics["avg_tokens_output"] = (
-        sum(t.metrics.tokens_output for t in trajectories) / n_total if n_total > 0 else 0.0
-    )
-    known_costs = [
-        t.metrics.cost_usd_est for t in trajectories if t.metrics.cost_usd_est is not None
-    ]
+    for _field in _usage_fields:
+        metrics[f"avg_{_field}"] = (
+            sum(getattr(t.metrics.usage, _field) for t in trajectories) / n_total
+            if n_total > 0
+            else 0.0
+        )
+    known_costs = [t.metrics.cost_usd for t in trajectories if t.metrics.cost_usd is not None]
     metrics["total_cost_usd"] = sum(known_costs) if known_costs else None
     metrics["avg_cost_usd"] = (
         metrics["total_cost_usd"] / n_total
@@ -184,6 +193,14 @@ def calculate_task_metrics(trajectories: list[Trajectory]) -> dict[str, any]:
     )
 
     metrics.update(calculate_latency_percentiles([t.metrics.latency_total_s for t in trajectories]))
+
+    # Per-API-call latency percentiles aggregated across every call in
+    # every trial. Useful for diagnosing upstream tail latency separately
+    # from per-trial wall time, which also includes tool execution.
+    api_call_latencies = [call.latency_s for t in trajectories for call in t.metrics.usage.calls]
+    api_call_percentiles = calculate_latency_percentiles(api_call_latencies)
+    for key, value in api_call_percentiles.items():
+        metrics[f"api_call_{key}"] = value
 
     # Stuck detection rate
     metrics["stuck_rate"] = (
@@ -265,19 +282,25 @@ def calculate_aggregate_metrics(
     )
     agg["stuck_rate"] = sum(m["stuck_rate"] for m in task_metrics) / n_tasks if n_tasks > 0 else 0.0
 
-    # Token usage totals
-    agg["total_tokens_input"] = sum(
-        m.get("avg_tokens_input", 0) * m["total_trials"] for m in task_metrics
+    # Token / cache / reasoning aggregates (Stage 5 / P7 — the flat
+    # tokens_input / tokens_output were removed; every field of the Usage
+    # dataclass is exposed here so analytics can audit cache hit-rate and
+    # reasoning-budget spend.)
+    _agg_usage_fields = (
+        "prompt_tokens",
+        "completion_tokens",
+        "reasoning_tokens",
+        "cached_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
     )
-    agg["total_tokens_output"] = sum(
-        m.get("avg_tokens_output", 0) * m["total_trials"] for m in task_metrics
-    )
-    agg["avg_tokens_input"] = (
-        sum(m.get("avg_tokens_input", 0) for m in task_metrics) / n_tasks if n_tasks > 0 else 0.0
-    )
-    agg["avg_tokens_output"] = (
-        sum(m.get("avg_tokens_output", 0) for m in task_metrics) / n_tasks if n_tasks > 0 else 0.0
-    )
+    for _field in _agg_usage_fields:
+        agg[f"total_{_field}"] = sum(
+            m.get(f"avg_{_field}", 0) * m["total_trials"] for m in task_metrics
+        )
+        agg[f"avg_{_field}"] = (
+            sum(m.get(f"avg_{_field}", 0) for m in task_metrics) / n_tasks if n_tasks > 0 else 0.0
+        )
     _known_total_costs = [
         m.get("total_cost_usd") for m in task_metrics if m.get("total_cost_usd") is not None
     ]

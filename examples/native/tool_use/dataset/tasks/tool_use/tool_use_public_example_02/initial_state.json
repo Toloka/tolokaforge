@@ -1,0 +1,11 @@
+{
+  "accounts": [
+    {
+      "id": "A-77",
+      "name": "Northwind Clinical",
+      "state": "active",
+      "risk_tier": "high"
+    }
+  ],
+  "audit_log": []
+}

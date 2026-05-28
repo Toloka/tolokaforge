@@ -1,0 +1,91 @@
+{
+  "function": {
+    "description": "Create a new production order.",
+    "name": "tau_manufacturing_create_order",
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {
+        "lines": {
+          "description": "Map of sku_id -> line. Provide as a JSON array of objects, each with a 'key' field as the identifier.",
+          "examples": [
+            {
+              "SKU-3A9E4": {
+                "allocated_quantity": 0,
+                "requested_quantity": 200
+              }
+            }
+          ],
+          "items": {
+            "properties": {
+              "allocated_quantity": {
+                "description": "Allocated quantity.",
+                "minimum": 0,
+                "title": "Allocated Quantity",
+                "type": "number"
+              },
+              "key": {
+                "description": "The map key identifier.",
+                "type": "string"
+              },
+              "requested_quantity": {
+                "description": "Requested quantity.",
+                "minimum": 0,
+                "title": "Requested Quantity",
+                "type": "number"
+              }
+            },
+            "required": [
+              "key",
+              "requested_quantity",
+              "allocated_quantity"
+            ],
+            "type": "object"
+          },
+          "title": "Lines",
+          "type": "array"
+        },
+        "produced_quantity": {
+          "description": "Quantity to produce.",
+          "examples": [
+            200
+          ],
+          "minimum": 0,
+          "title": "Produced Quantity",
+          "type": "number"
+        },
+        "produced_sku_id": {
+          "description": "SKU ID to produce.",
+          "examples": [
+            "SKU-7F2C1"
+          ],
+          "title": "Produced Sku Id",
+          "type": "string"
+        },
+        "status": {
+          "description": "Status of the order.",
+          "enum": [
+            "pending",
+            "in_progress",
+            "on_hold",
+            "completed",
+            "closed"
+          ],
+          "examples": [
+            "pending"
+          ],
+          "title": "OrderStatus",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "lines",
+        "produced_sku_id",
+        "produced_quantity"
+      ],
+      "title": "CreateOrderInput",
+      "type": "object"
+    }
+  },
+  "type": "function"
+}

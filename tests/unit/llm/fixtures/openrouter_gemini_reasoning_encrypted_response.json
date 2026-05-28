@@ -1,0 +1,17 @@
+{
+  "_comment": "Realistic OpenRouter-routed Gemini 3 Flash Preview response shape against `google/gemini-3-flash-preview`. Flash's reasoning is opaque — Google returns a single `reasoning.encrypted` block carrying a `data` field with an opaque payload (similar in semantics to Anthropic's `redacted_thinking`). `text` is empty. `reasoning_content` is None on this transport (no readable summary). The encrypted blob has been truncated for fixture brevity; bytes-preservation is asserted by the unit test.",
+  "role": "assistant",
+  "content": "To find where and when the two trains meet, ...",
+  "tool_calls": null,
+  "function_call": null,
+  "reasoning_content": null,
+  "thinking_blocks": null,
+  "provider_specific_fields": {
+    "reasoning_details": [
+      {
+        "type": "reasoning.encrypted",
+        "data": "AY89a19BVQB/jChlkks1SkUzClSOLkqVFJoFO4PyeGraOMj1d18Q24yWZqfpvMCGuGpmNjNP8WajWUhPcGlukDiWzgaK3MfOpWJ7pmFz0FJX1n/n"
+      }
+    ]
+  }
+}

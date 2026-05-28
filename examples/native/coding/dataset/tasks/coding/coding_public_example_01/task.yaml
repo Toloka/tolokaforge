@@ -1,0 +1,27 @@
+task_id: "coding_public_example_01"
+name: "Invoice Tax Drift Fix"
+category: "coding"
+description: "Investigate and patch a subtle invoice total drift bug while preserving compatibility with existing callers."
+max_turns: 10
+initial_user_message: "We are seeing invoice totals drift in production for some tax rates. Please patch `buggy_math.py` and write an engineering handoff note to `submissions/coding_tax_fix.md` describing root cause, fix strategy, and one high-risk edge case."
+initial_state:
+  filesystem:
+    copy:
+      - from: "fixtures/buggy_math.py"
+        to: "/env/fs/agent-visible/buggy_math.py"
+      - from: "fixtures/README.md"
+        to: "/env/fs/agent-visible/README.md"
+tools:
+  agent:
+    enabled: ["bash", "read_file", "write_file"]
+  user:
+    enabled: []
+user_simulator:
+  mode: llm
+  persona: cooperative
+  backstory: "You are a staff engineer reviewing a patch for a billing regression. Ask clarifying follow-ups only when needed and stop when the fix and handoff are complete. Acknowledge completion and end with ###STOP### once the assistant has delivered the requested artifact(s)."
+policies:
+  guidance:
+    - "Do not change the public function signature."
+    - "Prefer minimal, auditable edits over broad refactors."
+grading: "grading.yaml"

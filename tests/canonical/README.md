@@ -26,12 +26,17 @@ uv run pytest tests/canonical/ -v
 tests/canonical/
 ├── conftest.py                    # --update-canon flag + canon_snapshot fixture
 ├── snapshots/                     # Golden data (committed to git)
+│   ├── golden_set_execution/      # Project golden action execution results
+│   │   └── food_delivery_2_golden_execution.json
+│   ├── golden_set_bug_reproduction/   # Hash-mismatch comparison snapshots
+│   │   └── food_delivery_2_hash_comparison.json
 │   ├── native_minimal_calc/
 │   │   ├── task_config.json
 │   │   └── grading_config.json
 │   └── ...
 ├── test_native_adapter_canon.py   # Adapter output canonization
 ├── test_grading_canon.py          # Grading output canonization
+├── test_golden_set_canon.py       # Project golden set canonization
 └── test_conversion_canon.py       # Conversion output canonization
 ```
 
@@ -47,3 +52,10 @@ tests/canonical/
 
 If a code change intentionally alters output, re-run `--update-canon`,
 review the diff, and commit the updated snapshots alongside the code change.
+
+## Project canonical tests
+
+Some canonical tests verify outputs from test projects (in `tests/data/projects/`).
+These tests use the `--update-canon` flag to update canonical snapshots when
+project outputs change, allowing agents to maintain up-to-date golden data
+for project-based functionality.

@@ -30,13 +30,17 @@ def _make_config(
     **overrides: object,
 ) -> dict:
     """Build a minimal valid RunConfig dict."""
+    if agent_reasoning.lower() in ("off", ""):
+        reasoning_block: dict = {"mode": "off"}
+    else:
+        reasoning_block = {"mode": "adaptive", "effort_hint": agent_reasoning}
     base = {
         "models": {
             "agent": {
                 "provider": agent_provider,
                 "name": agent_name,
                 "temperature": 0.6,
-                "reasoning": agent_reasoning,
+                "reasoning": reasoning_block,
             },
             "user": {
                 "provider": user_provider,
@@ -156,16 +160,22 @@ class TestModelSupportsReasoning:
         [
             ("anthropic/claude-opus-4.6", True),
             ("anthropic/claude-sonnet-4.6", True),
+            ("anthropic/claude-opus-4.7", True),
             ("openai/o3-mini", True),
             ("openai/o1-preview", True),
+            ("openai/gpt-5.4", True),
+            ("openai/gpt-5.4-pro", True),
+            ("openai/gpt-5.5", True),
             ("google/gemini-3-flash-preview", True),
             ("google/gemini-2.0-flash", True),
             ("deepseek/deepseek-reasoner", True),
+            ("qwen/qwen3.6-plus", True),
+            ("moonshotai/kimi-k2.6", True),
+            ("moonshotai/kimi-k2.5", True),
             ("minimax/minimax-m2.7", False),
             ("meta-llama/llama-3-70b", False),
             ("mistral/mistral-large", False),
             ("x-ai/grok-4.20", None),  # unknown
-            ("openai/gpt-5.4-pro", None),  # unknown
         ],
     )
     def test_known_models(self, model: str, expected: bool | None):

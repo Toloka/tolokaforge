@@ -5,7 +5,7 @@ import grpc
 
 from tolokaforge.runner import runner_pb2 as runner__pb2
 
-GRPC_GENERATED_VERSION = "1.78.1"
+GRPC_GENERATED_VERSION = "1.80.0"
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -69,6 +69,12 @@ class RunnerServiceStub:
             response_deserializer=runner__pb2.ResetTrialResponse.FromString,
             _registered_method=True,
         )
+        self.CleanupTrial = channel.unary_unary(
+            "/tolokaforge.runner.RunnerService/CleanupTrial",
+            request_serializer=runner__pb2.CleanupTrialRequest.SerializeToString,
+            response_deserializer=runner__pb2.CleanupTrialResponse.FromString,
+            _registered_method=True,
+        )
         self.HealthCheck = channel.unary_unary(
             "/tolokaforge.runner.RunnerService/HealthCheck",
             request_serializer=runner__pb2.HealthCheckRequest.SerializeToString,
@@ -120,6 +126,16 @@ class RunnerServiceServicer:
         context.set_details("Method not implemented!")
         raise NotImplementedError("Method not implemented!")
 
+    def CleanupTrial(self, request, context):
+        """Forget a trial's registration entirely - for retry-after-transient-failure paths
+        Idempotent: succeeds when the trial is not registered.
+        Distinct from ResetTrial: ResetTrial keeps the registration and resets state;
+        CleanupTrial removes the registration so the same trial_id can be re-registered.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
+
     def HealthCheck(self, request, context):
         """Health check"""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
@@ -153,6 +169,11 @@ def add_RunnerServiceServicer_to_server(servicer, server):
             servicer.ResetTrial,
             request_deserializer=runner__pb2.ResetTrialRequest.FromString,
             response_serializer=runner__pb2.ResetTrialResponse.SerializeToString,
+        ),
+        "CleanupTrial": grpc.unary_unary_rpc_method_handler(
+            servicer.CleanupTrial,
+            request_deserializer=runner__pb2.CleanupTrialRequest.FromString,
+            response_serializer=runner__pb2.CleanupTrialResponse.SerializeToString,
         ),
         "HealthCheck": grpc.unary_unary_rpc_method_handler(
             servicer.HealthCheck,
@@ -314,6 +335,36 @@ class RunnerService:
             "/tolokaforge.runner.RunnerService/ResetTrial",
             runner__pb2.ResetTrialRequest.SerializeToString,
             runner__pb2.ResetTrialResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True,
+        )
+
+    @staticmethod
+    def CleanupTrial(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            "/tolokaforge.runner.RunnerService/CleanupTrial",
+            runner__pb2.CleanupTrialRequest.SerializeToString,
+            runner__pb2.CleanupTrialResponse.FromString,
             options,
             channel_credentials,
             insecure,

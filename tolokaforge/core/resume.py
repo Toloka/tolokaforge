@@ -89,11 +89,14 @@ class RunStateManager:
         Ensures consistent paths in run_state.json regardless of whether the
         run was started via CLI (relative paths) or programmatic API (often
         absolute paths from Path.resolve()).
+
+        Both the input and CWD are resolved to handle platform symlinks
+        (e.g. macOS ``/var`` → ``/private/var``).
         """
         p = Path(path_str)
         if p.is_absolute():
             try:
-                return str(p.relative_to(Path.cwd()))
+                return str(p.resolve().relative_to(Path.cwd().resolve()))
             except ValueError:
                 return path_str  # Path not under CWD, keep absolute
         return path_str

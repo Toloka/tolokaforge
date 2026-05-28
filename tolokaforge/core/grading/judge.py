@@ -24,7 +24,7 @@ from typing import Any
 
 from jsonschema import validate
 
-from tolokaforge.core.model_client import LLMClient
+from tolokaforge.core.llm import LLMClient
 from tolokaforge.core.models import Message, ModelConfig
 
 logger = logging.getLogger(__name__)

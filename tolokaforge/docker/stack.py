@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import logging
 import shutil
-from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field, PrivateAttr
@@ -119,6 +118,13 @@ class ServiceDefinition(BaseModel):
         default_factory=list,
         description="Network names to attach to",
     )
+    network_aliases: list[str] = Field(
+        default_factory=list,
+        description="DNS aliases under which this container is reachable on its "
+        "primary network in addition to its container name. Used so service "
+        "containers (e.g. 'tolokaforge-mock-web') also resolve via short "
+        "names ('mock-web') referenced in task YAMLs.",
+    )
     command: str | list[str] | None = Field(
         default=None,
         description="Container command override",
@@ -143,10 +149,6 @@ class ServiceDefinition(BaseModel):
     privileged: bool = Field(
         default=False,
         description="Run in privileged mode (required for Docker-in-Docker).",
-    )
-    secret_keys: list[str] = Field(
-        default_factory=list,
-        description="Secret env var names to resolve via SecretManager and inject into the container.",
     )
 
     model_config = {
@@ -275,74 +277,88 @@ class ServiceStack(BaseModel):
         """
         logger.info("Building images for %d services", len(self.services))
         images: dict[str, Image] = {}
-        temp_dirs_to_clean: list[Path] = []
 
-        try:
-            for name, svc in self.services.items():
-                if svc.use_prebuilt_image:
-                    # Use prebuilt image — create Image object without building
-                    logger.info(
-                        "Using prebuilt image '%s:%s' for service '%s'",
-                        svc.image_name,
-                        svc.prebuilt_tag,
-                        name,
-                    )
-                    image = Image(
-                        name=svc.image_name,
-                        tag=svc.prebuilt_tag,
-                        dockerfile=svc.dockerfile or "prebuilt",
-                        context=svc.context,
-                        context_hash="prebuilt",
-                    )
-                    images[name] = image
-                elif svc.dockerfile:
-                    logger.info("Building image for service '%s'", name)
-
-                    # Determine build context and dockerfile path
-                    if svc.context_files:
-                        from tolokaforge.docker.builder import assemble_build_context
-
-                        repo_root = Path(svc.context).resolve()
-                        build_context = assemble_build_context(
-                            repo_root=repo_root,
-                            dockerfile=svc.dockerfile,
-                            context_files=svc.context_files,
-                        )
-                        temp_dirs_to_clean.append(build_context)
-                        build_dockerfile = str(build_context / svc.dockerfile)
-                        build_context_str = str(build_context)
-                    else:
-                        build_dockerfile = svc.dockerfile
-                        build_context_str = svc.context
-
-                    if force:
-                        # Force rebuild by building directly
-                        image = Image.build(
-                            dockerfile=build_dockerfile,
-                            context=build_context_str,
-                            build_args=svc.build_args,
-                            name=svc.image_name,
-                        )
-                    else:
-                        image = self._registry.get_or_build(
-                            name=svc.image_name,
-                            dockerfile=build_dockerfile,
-                            context=build_context_str,
-                            build_args=svc.build_args,
-                        )
-                    images[name] = image
-                else:
-                    logger.warning(
-                        "Service '%s' has no dockerfile and use_prebuilt_image=False; skipping",
-                        name,
-                    )
-        finally:
-            for d in temp_dirs_to_clean:
-                shutil.rmtree(d, ignore_errors=True)
+        for name, svc in self.services.items():
+            image = self._build_one_image(svc, force=force)
+            if image is not None:
+                images[name] = image
 
         self._images = images
         logger.info("Built %d images", len(images))
         return images
+
+    def _build_one_image(self, svc: ServiceDefinition, force: bool = False) -> Image | None:
+        """Build (or fetch) a single service's image.
+
+        Honors ``svc.context_files`` by assembling an isolated temp build
+        directory and cleaning it up after the build. Returns ``None`` only
+        when the service has neither a dockerfile nor a prebuilt image (a
+        misconfiguration the caller logs and skips).
+        """
+        if svc.use_prebuilt_image:
+            logger.info(
+                "Using prebuilt image '%s:%s' for service '%s'",
+                svc.image_name,
+                svc.prebuilt_tag,
+                svc.name,
+            )
+            return Image(
+                name=svc.image_name,
+                tag=svc.prebuilt_tag,
+                dockerfile=svc.dockerfile or "prebuilt",
+                context=svc.context,
+                context_hash="prebuilt",
+            )
+
+        if not svc.dockerfile:
+            logger.warning(
+                "Service '%s' has no dockerfile and use_prebuilt_image=False; skipping",
+                svc.name,
+            )
+            return None
+
+        logger.info("Building image for service '%s'", svc.name)
+
+        if svc.context_files:
+            from tolokaforge.docker.builder import assemble_build_context, repo_root
+
+            build_context = assemble_build_context(
+                repo_root=repo_root(),
+                dockerfile=svc.dockerfile,
+                context_files=svc.context_files,
+            )
+            try:
+                build_dockerfile = str(build_context / svc.dockerfile)
+                build_context_str = str(build_context)
+                if force:
+                    return Image.build(
+                        dockerfile=build_dockerfile,
+                        context=build_context_str,
+                        build_args=svc.build_args,
+                        name=svc.image_name,
+                    )
+                return self._registry.get_or_build(
+                    name=svc.image_name,
+                    dockerfile=build_dockerfile,
+                    context=build_context_str,
+                    build_args=svc.build_args,
+                )
+            finally:
+                shutil.rmtree(build_context, ignore_errors=True)
+
+        if force:
+            return Image.build(
+                dockerfile=svc.dockerfile,
+                context=svc.context,
+                build_args=svc.build_args,
+                name=svc.image_name,
+            )
+        return self._registry.get_or_build(
+            name=svc.image_name,
+            dockerfile=svc.dockerfile,
+            context=svc.context,
+            build_args=svc.build_args,
+        )
 
     # ── Network Management ──────────────────────────────────────────────
 
@@ -644,58 +660,46 @@ class ServiceStack(BaseModel):
         """
         name = svc.name
 
-        # ── Build / fetch image first (need tag for container naming) ──
+        # ── Build / fetch image first (need tag for reuse comparison) ──
         if name not in self._images:
-            if svc.use_prebuilt_image:
-                image = Image(
-                    name=svc.image_name,
-                    tag=svc.prebuilt_tag,
-                    dockerfile=svc.dockerfile or "prebuilt",
-                    context=svc.context,
-                    context_hash="prebuilt",
-                )
-                self._images[name] = image
-            elif svc.dockerfile:
-                image = self._registry.get_or_build(
-                    name=svc.image_name,
-                    dockerfile=svc.dockerfile,
-                    context=svc.context,
-                    build_args=svc.build_args,
-                )
-                self._images[name] = image
-            else:
+            built = self._build_one_image(svc)
+            if built is None:
                 raise ValueError(f"Service '{name}' has no image built and no dockerfile specified")
+            self._images[name] = built
 
         image = self._images[name]
-
-        # Container name includes image tag to prevent reusing containers
-        # from a different image (e.g., with vs without Playwright).
         container_name = f"{self.prefix}-{name}"
 
         # ── Try to reuse an existing healthy container ──────────────
+        # Verify the running container's image tag matches the freshly-built
+        # tag; otherwise we'd silently keep a stale container after a build_arg
+        # change (e.g., enable_playwright on/off).
         existing = self._try_reuse_existing(container_name, svc)
         if existing:
-            # Verify the existing container uses the same image
-            running_image = existing.image_tag or ""
-            expected_image = image.full_tag
-            if running_image != expected_image:
-                logger.info(
-                    "Existing container '%s' uses image '%s' but expected '%s' — recreating",
-                    container_name,
-                    running_image,
-                    expected_image,
-                )
+            try:
+                running_image = existing.image_tag or ""
+                expected_image = image.full_tag
+                if running_image and running_image != expected_image:
+                    logger.info(
+                        "Existing container '%s' uses image '%s' but expected '%s' — recreating",
+                        container_name,
+                        running_image,
+                        expected_image,
+                    )
+                    existing.destroy()
+                else:
+                    self._containers[name] = existing
+                    logger.info("Reusing existing healthy container '%s'", container_name)
+                    if svc.ports:
+                        port_map = self._extract_ports_from_container(container_name, svc)
+                        self._resolved_ports[name] = port_map
+                    return
+            except Exception as exc:
+                logger.warning("Failed to verify container image, recreating: %s", exc)
                 try:
-                    existing.remove(force=True)
+                    existing.destroy()
                 except Exception:
                     pass
-            else:
-                self._containers[name] = existing
-                logger.info("Reusing existing healthy container '%s'", container_name)
-                if svc.ports:
-                    port_map = self._extract_ports_from_container(container_name, svc)
-                    self._resolved_ports[name] = port_map
-                return
 
         # ── Determine network ───────────────────────────────────────
         network = None
@@ -720,18 +724,25 @@ class ServiceStack(BaseModel):
             image.full_tag,
         )
 
+        # When the service declares network aliases, defer the primary
+        # network attachment so we can pass aliases to the connect call
+        # (Docker's high-level container.create has no aliases parameter).
+        primary_network = None if svc.network_aliases else network
+
         container = Container.create(
             image=image,
             name=container_name,
             mounts=svc.mounts if svc.mounts else None,
-            network=network,
+            network=primary_network,
             resources=svc.resources,
             environment=svc.environment if svc.environment else None,
             command=svc.command,
             ports=resolved_port_configs if resolved_port_configs else None,
             privileged=svc.privileged,
-            secret_keys=svc.secret_keys if svc.secret_keys else None,
         )
+
+        if svc.network_aliases and network is not None:
+            network.attach(container.container_id, aliases=list(svc.network_aliases))
 
         # Attach to additional networks
         if network and len(svc.networks) > 1:

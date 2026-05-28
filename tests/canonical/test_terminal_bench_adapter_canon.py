@@ -5,13 +5,11 @@ import re
 from pathlib import Path
 
 import pytest
-
 from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
 
 pytestmark = pytest.mark.canonical
 
-TEST_DATA_DIR = Path(__file__).parent.parent / "data"
-TBENCH_TASKS_DIR = TEST_DATA_DIR / "terminal_bench_tasks"
+SNAPSHOT_DIR = Path(__file__).parent / "snapshots"
 
 
 def _normalize_paths(obj):
@@ -32,11 +30,12 @@ def _normalize_paths(obj):
 
 
 @pytest.fixture
-def tbench_adapter() -> TerminalBenchAdapter:
+def tbench_adapter(test_data_dir) -> TerminalBenchAdapter:
     """Create TerminalBenchAdapter pointed at tests/data/terminal_bench_tasks/."""
+    tbench_tasks_dir = test_data_dir / "terminal_bench_tasks"
     return TerminalBenchAdapter(
         {
-            "terminal_bench_dir": str(TBENCH_TASKS_DIR),
+            "terminal_bench_dir": str(tbench_tasks_dir),
         }
     )
 
@@ -85,10 +84,10 @@ class TestTerminalBenchAdapterCanon:
 class TestTerminalBenchAdapterIntegrity:
     """Validate adapter output against source files without snapshots."""
 
-    def test_instruction_matches_task_yaml(self, tbench_adapter):
+    def test_instruction_matches_task_yaml(self, tbench_adapter, terminal_bench_tasks_dir):
         """Instruction in TaskConfig matches task.yaml content."""
         task = tbench_adapter.get_task("echo-hello")
-        task_yaml_path = TBENCH_TASKS_DIR / "echo-hello" / "task.yaml"
+        task_yaml_path = terminal_bench_tasks_dir / "echo-hello" / "task.yaml"
 
         import yaml
 
@@ -126,21 +125,21 @@ class TestTerminalBenchAdapterIntegrity:
         assert "shell" in td.metadata["tags"]
         assert td.metadata["verifier_timeout_sec"] == 30.0
 
-    def test_task_id_filter(self):
+    def test_task_id_filter(self, terminal_bench_tasks_dir):
         """task_ids param filters discovered tasks."""
         adapter = TerminalBenchAdapter(
             {
-                "terminal_bench_dir": str(TBENCH_TASKS_DIR),
+                "terminal_bench_dir": str(terminal_bench_tasks_dir),
                 "task_ids": ["nonexistent"],
             }
         )
         assert adapter.get_task_ids() == []
 
-    def test_runner_task_dir_override(self):
+    def test_runner_task_dir_override(self, terminal_bench_tasks_dir):
         """runner_task_dir param overrides task_dir in ToolSource.extra."""
         adapter = TerminalBenchAdapter(
             {
-                "terminal_bench_dir": str(TBENCH_TASKS_DIR),
+                "terminal_bench_dir": str(terminal_bench_tasks_dir),
                 "runner_task_dir": "/mounted/tasks",
             }
         )

@@ -1,5 +1,6 @@
 """Native adapter for file-based TolokaForge tasks"""
 
+import base64
 import glob as glob_module
 import json
 from pathlib import Path
@@ -7,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
+from tolokaforge.adapters._task_loader import _detect_task_root, load_task_yaml
 from tolokaforge.adapters.base import AdapterEnvironment, BaseAdapter
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import GradingConfig, TaskConfig
@@ -16,34 +18,34 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-# Map of builtin tool names → lazy loaders that return (description, parameters).
-# We avoid importing the tool classes at module level to keep the adapter lightweight.
-_BUILTIN_TOOL_CLASSES: dict[str, tuple[str, str]] = {
-    "read_file": ("tolokaforge.tools.builtin.files", "ReadFileTool"),
-    "write_file": ("tolokaforge.tools.builtin.files", "WriteFileTool"),
-    "bash": ("tolokaforge.tools.builtin.bash", "BashTool"),
-}
 
-
-def _builtin_tool_schemas(tool_names: list[str]) -> dict[str, dict]:
+def _builtin_tool_schemas(
+    tool_names: list[str], tool_configs: dict[str, dict] | None = None
+) -> dict[str, dict]:
     """Return rich schemas for known builtin tools.
 
-    For each tool name in *tool_names* that corresponds to a builtin
-    implementation, instantiate the tool and extract its ``get_schema()``
-    information so the LLM gets proper parameter descriptions.
-    """
-    import importlib
+    For each tool name in *tool_names* that the unified builtin registry
+    knows about, instantiate the tool with kwargs from
+    ``tool_configs[name]`` (e.g. ``MobileTool(apps={...})``) and extract
+    its ``get_schema()`` information so the LLM gets proper parameter
+    descriptions. Tools whose schema depends on construction args
+    (``MobileTool.apps`` populates ``actions[].app_name.enum``) need the
+    config; tools that take no args (bash, calculator) ignore it.
 
+    Tools requiring runtime context that's only available on the runner
+    side (file tools' ``base_path``, search_kb's RAG client) are skipped
+    quietly — the runner provides their schemas via its own machinery.
+    """
+    from tolokaforge.tools.builtin import registry
+
+    configs = tool_configs or {}
     schemas: dict[str, dict] = {}
     for name in tool_names:
-        entry = _BUILTIN_TOOL_CLASSES.get(name)
-        if entry is None:
+        if not registry.is_builtin(name):
             continue
-        module_path, class_name = entry
         try:
-            mod = importlib.import_module(module_path)
-            cls = getattr(mod, class_name)
-            tool = cls()
+            cls = registry.get_class(name)
+            tool = cls(**configs.get(name, {}))
             raw = tool.get_schema()
             # get_schema() returns {"type": "function", "function": {…}}
             func_def = raw.get("function", raw)
@@ -94,8 +96,16 @@ class NativeAdapter(BaseAdapter):
                 f"got absolute path: {self.tasks_glob}"
             )
 
-        # Cached data
-        self._task_files: dict[str, Path] = {}  # task_id -> task.yaml path
+        # task_id -> task.yaml path. Populated in _discover_tasks.
+        self._task_files: dict[str, Path] = {}
+        # task_id -> effective task directory. For shared-domain tasks
+        # (<dom>/testcases/<case>/task.yaml) this is <dom>; for flat-layout
+        # tasks it is the task.yaml parent. Populated in _discover_tasks
+        # alongside _task_files so callers asking only for the dir don't
+        # incur a TaskConfig validation pass.
+        self._task_roots: dict[str, Path] = {}
+        # task_id -> validated TaskConfig. Populated lazily on first
+        # get_task() call via :func:`load_task_yaml`.
         self._tasks: dict[str, TaskConfig] = {}
 
     def _discover_tasks(self) -> None:
@@ -114,28 +124,44 @@ class NativeAdapter(BaseAdapter):
             self._discover_from_pattern(pattern)
 
     def _discover_from_pattern(self, pattern: str) -> None:
-        """Discover tasks matching a specific glob pattern."""
-        for task_file in glob_module.glob(pattern, recursive=True):
-            task_path = Path(task_file)
-            try:
-                with open(task_path) as f:
-                    task_data = yaml.safe_load(f)
-            except Exception:
-                logger.warning(f"Invalid task file; skipping: {task_path}")
-                continue
+        """Discover tasks matching a specific glob pattern.
 
-            if not isinstance(task_data, dict):
-                logger.warning(f"Invalid task file; skipping: {task_path}")
-                continue
+        Supports bash-style brace expansion (e.g. ``{a,b,c}``) via
+        :meth:`BaseAdapter._expand_braces`.
+        """
+        for expanded_pattern in self._expand_braces(pattern):
+            for task_file in glob_module.glob(expanded_pattern, recursive=True):
+                self._process_discovered_task_file(Path(task_file))
 
-            task_id = task_data.get("task_id")
-            if not task_id:
-                logger.warning(f"Task file missing task_id; skipping: {task_path}")
-                continue
+    def _process_discovered_task_file(self, task_path: Path) -> None:
+        """Index a discovered task file by its task_id.
 
-            # First match wins for duplicate task_ids
-            if task_id not in self._task_files:
-                self._task_files[task_id] = task_path
+        Validation and the shared-domain merge happen lazily in
+        :func:`load_task_yaml` on first :meth:`get_task` call. We only need
+        ``task_id`` here to build the discovery index — reading the full file
+        and merging the domain dict for every glob match would be wasteful
+        when the caller only wants a list of IDs.
+        """
+        try:
+            with open(task_path) as f:
+                task_data = yaml.safe_load(f)
+        except Exception:
+            logger.warning(f"Invalid task file; skipping: {task_path}")
+            return
+
+        if not isinstance(task_data, dict):
+            logger.warning(f"Invalid task file; skipping: {task_path}")
+            return
+
+        task_id = task_data.get("task_id")
+        if not task_id:
+            logger.warning(f"Task file missing task_id; skipping: {task_path}")
+            return
+
+        # First match wins for duplicate task_ids
+        if task_id not in self._task_files:
+            self._task_files[task_id] = task_path
+            self._task_roots[task_id] = _detect_task_root(task_path)
 
     def get_task_ids(self) -> list[str]:
         """Get list of discovered task IDs"""
@@ -143,57 +169,77 @@ class NativeAdapter(BaseAdapter):
         return list(self._task_files.keys())
 
     def get_task(self, task_id: str) -> TaskConfig:
-        """Load task configuration from YAML file"""
+        """Load and validate task configuration, applying any shared-domain merge."""
         self._discover_tasks()
 
-        if task_id in self._tasks:
-            return self._tasks[task_id]
+        cached = self._tasks.get(task_id)
+        if cached is not None:
+            return cached
 
         if task_id not in self._task_files:
             raise ValueError(f"Task {task_id} not found")
 
         task_path = self._task_files[task_id]
-        with open(task_path) as f:
-            task_data = yaml.safe_load(f)
-
-        task = TaskConfig(**task_data)
+        task, task_dir = load_task_yaml(task_path)
         self._tasks[task_id] = task
+        # Loader is the authority on the effective task dir; refresh the cache
+        # populated by _discover_tasks so the two stay consistent. (They agree
+        # by construction unless _detect_task_root semantics ever drift.)
+        self._task_roots[task_id] = task_dir
         return task
 
     def get_task_dir(self, task_id: str) -> Path:
-        """Get directory containing task files"""
+        """Get effective task directory.
+
+        For shared-domain tasks (``<dom>/testcases/<case>/task.yaml``) this is
+        the domain root so that downstream consumers — notably
+        :meth:`_bundle_task_artifacts` — pick up ``_shared/`` siblings.
+
+        Pure path lookup: never triggers TaskConfig validation. Callers that
+        need the merged config call :meth:`get_task` separately.
+        """
         self._discover_tasks()
-        if task_id not in self._task_files:
+        if task_id not in self._task_roots:
             raise ValueError(f"Task {task_id} not found")
-        return self._task_files[task_id].parent
+        return self._task_roots[task_id]
 
     def create_environment(self, task_id: str) -> AdapterEnvironment:
-        """
-        Create environment from task's initial_state config.
+        """Create environment from task's initial_state config.
 
-        Loads JSON DB, filesystem, etc. based on task configuration.
+        Raises:
+            RuntimeError: when ``initial_state.json_db`` is a string path that
+                does not exist, or when ``system_prompt`` is set but the
+                referenced file is missing. The previous silent fallback to an
+                empty dict / empty wiki masked path-rewrite bugs as
+                "agent-acted-on-empty-state" trial failures.
         """
         task = self.get_task(task_id)
         task_dir = self.get_task_dir(task_id)
 
-        # Load initial data
         data: dict[str, Any] = {}
         if task.initial_state.json_db:
             json_db = task.initial_state.json_db
             if isinstance(json_db, str):
                 json_db_path = task_dir / json_db
-                if json_db_path.exists():
-                    with open(json_db_path) as f:
-                        data = json.load(f)
+                if not json_db_path.exists():
+                    raise RuntimeError(
+                        f"initial_state.json_db file not found for task {task_id!r}: "
+                        f"{json_db_path} (ref: {json_db!r} relative to {task_dir})"
+                    )
+                with open(json_db_path) as f:
+                    data = json.load(f)
             elif isinstance(json_db, dict):
                 data = json_db
 
-        # Load wiki/system prompt
         wiki = ""
         if task.system_prompt:
             system_prompt_path = task_dir / task.system_prompt
-            if system_prompt_path.exists():
-                wiki = system_prompt_path.read_text()
+            if not system_prompt_path.exists():
+                raise RuntimeError(
+                    f"system_prompt file not found for task {task_id!r}: "
+                    f"{system_prompt_path} (ref: {task.system_prompt!r} relative to {task_dir})"
+                )
+            wiki = system_prompt_path.read_text()
 
         return AdapterEnvironment(
             data=data,
@@ -225,16 +271,27 @@ class NativeAdapter(BaseAdapter):
         return []
 
     def get_system_prompt(self, task_id: str) -> str:
-        """Get system prompt from task's system_prompt file"""
+        """Get system prompt from task's system_prompt file.
+
+        Raises ``RuntimeError`` when ``system_prompt`` is set in the task
+        config but the file does not exist. Returns ``""`` only when the task
+        legitimately has no system prompt — same reason as
+        :meth:`create_environment`: silent empty-string masks path-rewrite
+        bugs as "agent ignored its instructions" failures.
+        """
         task = self.get_task(task_id)
         task_dir = self.get_task_dir(task_id)
 
-        if task.system_prompt:
-            system_prompt_path = task_dir / task.system_prompt
-            if system_prompt_path.exists():
-                return system_prompt_path.read_text()
+        if not task.system_prompt:
+            return ""
 
-        return ""
+        system_prompt_path = task_dir / task.system_prompt
+        if not system_prompt_path.exists():
+            raise RuntimeError(
+                f"system_prompt file not found for task {task_id!r}: "
+                f"{system_prompt_path} (ref: {task.system_prompt!r} relative to {task_dir})"
+            )
+        return system_prompt_path.read_text()
 
     def get_grading_config(self, task_id: str) -> GradingConfig:
         """Load grading configuration from task's grading file"""
@@ -360,6 +417,27 @@ class NativeAdapter(BaseAdapter):
                 if not mcp_server_path.exists():
                     raise RuntimeError(f"MCP server script not found: {mcp_server_path}")
 
+            # Build tool schemas for enabled agent tools
+            enabled_tools = task.tools.agent.get("enabled", [])
+
+            # Lift per-tool kwargs from ``tools.agent.<name>: {...}`` blocks so
+            # they reach the runner via ``ToolSchema.tool_config`` and the
+            # adapter's own schema-enrichment pass instantiates each builtin
+            # with the right kwargs (``MobileTool(apps={...})``). Non-mapping
+            # values are user typos — surface them here, not at trial
+            # registration as a confusing TypeError.
+            tool_configs: dict[str, dict] = {}
+            for tool_name in enabled_tools:
+                raw = task.tools.agent.get(tool_name)
+                if raw is None:
+                    continue
+                if not isinstance(raw, dict):
+                    raise ValueError(
+                        f"tools.agent.{tool_name} must be a mapping of init kwargs "
+                        f"(got {type(raw).__name__}={raw!r}) in task {task.task_id!r}"
+                    )
+                tool_configs[tool_name] = dict(raw)
+
             # Load rich schemas from fixtures/tools.json or via live MCP query.
             # This populates real descriptions and parameter schemas (including
             # required fields) so the LLM receives accurate tool definitions.
@@ -369,17 +447,15 @@ class NativeAdapter(BaseAdapter):
             else:
                 # No MCP server — pull parameter schemas from builtin tool
                 # implementations so the LLM receives proper descriptions.
-                enabled_tools_list = task.tools.agent.get("enabled", [])
-                rich_schemas = _builtin_tool_schemas(enabled_tools_list)
+                rich_schemas = _builtin_tool_schemas(enabled_tools, tool_configs)
 
-            # Build tool schemas for enabled agent tools
-            enabled_tools = task.tools.agent.get("enabled", [])
             for tool_name in enabled_tools:
                 rich = rich_schemas.get(tool_name, {})
                 # Only wire up MCP_SERVER source when the task provides an mcp_server
                 # script. Builtin tools (read_file, write_file, bash, …) have no
-                # script — the runner resolves them via its builtin registry when
-                # source is None.
+                # script and no ToolSource — the runner's source-less dispatch
+                # arm routes them by name via the unified builtin registry, and
+                # ``tool_config`` carries any per-task init kwargs.
                 source = (
                     ToolSource(
                         toolset=task.category or "native",
@@ -399,6 +475,7 @@ class NativeAdapter(BaseAdapter):
                     category="compute",
                     timeout_s=30.0,
                     source=source,
+                    tool_config=tool_configs.get(tool_name, {}),
                 )
                 agent_tools.append(tool_schema)
 
@@ -568,7 +645,8 @@ class NativeAdapter(BaseAdapter):
             ),
         )
 
-        # Build filesystem state from initial_state.filesystem.copy
+        # Build filesystem state from initial_state.filesystem.copy so the
+        # Runner can provision agent-visible files at RegisterTrial time.
         initial_filesystem: dict[str, str] = {}
         if task.initial_state and task.initial_state.filesystem:
             copy_spec = task.initial_state.filesystem.get("copy", [])
@@ -576,7 +654,6 @@ class NativeAdapter(BaseAdapter):
                 src_path = task_dir / file_spec["from"]
                 dest_path = file_spec["to"]
                 if src_path.exists():
-                    # Read file content and map destination path → content
                     content = src_path.read_text(encoding="utf-8")
                     initial_filesystem[dest_path] = content
                 else:
@@ -607,6 +684,26 @@ class NativeAdapter(BaseAdapter):
         # The Runner runs in a separate container without access to the host
         # filesystem, so we transfer all necessary files via gRPC/TaskDescription.
         tool_artifacts = self._bundle_task_artifacts(task_dir) if mcp_server_ref else {}
+
+        # mcp_server.py loads its initial state from ``initial_state.json``
+        # next to itself (see ``create_server`` in tools_interface.py). For the
+        # shared-domain layout the mcp_server lives under ``_shared/`` while
+        # each testcase ships its own per-case state file — copy that
+        # per-case JSON to ``<mcp_dir>/initial_state.json`` so the per-trial
+        # subprocess loads the right state.
+        if mcp_server_ref and task.initial_state and isinstance(task.initial_state.json_db, str):
+            json_db_rel = task.initial_state.json_db
+            json_db_abs = task_dir / json_db_rel
+            mcp_dir_rel = Path(mcp_server_ref).parent
+            target_rel = (
+                f"{mcp_dir_rel.as_posix()}/initial_state.json"
+                if mcp_dir_rel != Path(".")
+                else "initial_state.json"
+            )
+            if json_db_abs.exists() and target_rel != json_db_rel:
+                tool_artifacts[target_rel] = base64.b64encode(json_db_abs.read_bytes()).decode(
+                    "ascii"
+                )
 
         # Create TaskDescription
         task_description = TaskDescription(
@@ -666,41 +763,64 @@ class NativeAdapter(BaseAdapter):
 
         Returns:
             Dict mapping tool_name → ``{"name", "description", "parameters"}``.
-            Returns empty dict on any error so callers can fall back gracefully.
-        """
-        try:
-            from tolokaforge.runner.tool_factory import MCPServerProcess
 
+        Raises:
+            RuntimeError: if the server fails to start, the handshake fails,
+                ``tools/list`` errors, or the server returns no tools. The
+                previous silent ``return {}`` masked broken schemas as
+                "agent-reasoning bugs" — surfacing the real cause is cheaper
+                than letting the LLM run with parameter-less tool stubs.
+        """
+        from tolokaforge.runner.tool_factory import MCPServerProcess
+
+        try:
             server = MCPServerProcess(script_path=str(mcp_server_path))
-            try:
-                server.start()
-                result = server.send_request("tools/list", {})
-                tools_list = result.get("tools", [])
-                schemas: dict[str, dict] = {}
-                for tool in tools_list:
-                    name = tool.get("name", "")
-                    if not name:
-                        continue
-                    schemas[name] = {
-                        "name": name,
-                        "description": tool.get("description", f"Tool: {name}"),
-                        "parameters": tool.get("inputSchema", {"type": "object", "properties": {}}),
-                    }
-                logger.info(
-                    "Fetched MCP tool schemas",
-                    count=len(schemas),
-                    server=str(mcp_server_path),
-                )
-                return schemas
-            finally:
-                server.stop()
         except Exception as exc:
-            logger.warning(
-                "Could not fetch MCP tool schemas; falling back to empty schemas",
-                server=str(mcp_server_path),
-                error=str(exc),
+            raise RuntimeError(
+                f"Failed to construct MCPServerProcess for {mcp_server_path}: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+
+        try:
+            server.start()
+            result = server.send_request("tools/list", {})
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to query tools/list from MCP server {mcp_server_path}: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+        finally:
+            try:
+                server.stop()
+            except Exception as stop_exc:
+                logger.warning(
+                    "MCP server stop failed after tools/list query",
+                    server=str(mcp_server_path),
+                    error=str(stop_exc),
+                )
+
+        tools_list = result.get("tools", [])
+        schemas: dict[str, dict] = {}
+        for tool in tools_list:
+            name = tool.get("name", "")
+            if not name:
+                continue
+            schemas[name] = {
+                "name": name,
+                "description": tool.get("description", f"Tool: {name}"),
+                "parameters": tool.get("inputSchema", {"type": "object", "properties": {}}),
+            }
+        if not schemas:
+            raise RuntimeError(
+                f"MCP server {mcp_server_path} returned no tools from tools/list "
+                f"(response keys: {list(result.keys())!r})"
             )
-            return {}
+        logger.info(
+            "Fetched MCP tool schemas",
+            count=len(schemas),
+            server=str(mcp_server_path),
+        )
+        return schemas
 
     def _load_rich_tool_schemas(self, task_dir: Path, mcp_server_path: Path) -> dict[str, dict]:
         """Load rich tool schemas, preferring a static ``fixtures/tools.json``.
@@ -769,46 +889,51 @@ class NativeAdapter(BaseAdapter):
     def _bundle_task_artifacts(self, task_dir: Path) -> dict[str, str]:
         """Bundle task directory files as base64-encoded artifacts.
 
-        Reads Python sources, JSON/YAML data files, and Markdown files from
-        *task_dir* and encodes them so the Docker Runner can extract them into
-        a temporary directory and launch ``mcp_server.py`` as a subprocess
-        without requiring host filesystem access.
+        Reads Python sources, JSON/YAML data files, Markdown, and plain text
+        from *task_dir* (recursively) and encodes them so the Docker Runner
+        can extract them into a temporary directory and launch
+        ``mcp_server.py`` as a subprocess without requiring host filesystem
+        access.
 
         The keys are relative paths (e.g. ``"mcp_server.py"``,
-        ``"tools/orders.py"``) and the values are base64-encoded file contents.
-        The Runner reconstructs the same layout in a temp directory and passes
-        the resolved absolute path to :class:`MCPServerToolWrapper`.
+        ``"tools/orders.py"``, ``"_shared/system_prompt.md"``) and the values
+        are base64-encoded file contents. The Runner reconstructs the same
+        layout in a temp directory and passes the resolved absolute path to
+        :class:`MCPServerToolWrapper`.
+
+        Recursive globs (``**/*``) are required by the shared-domain layout
+        where ``task_dir`` is the domain root and the actual files live under
+        ``_shared/`` and ``testcases/<case>/``.
 
         Returns:
             dict mapping relative path → base64-encoded content.
         """
-        import base64
-
         artifacts: dict[str, str] = {}
 
-        for pattern in ["*.py", "**/*.py"]:
+        for pattern in (
+            "*.py",
+            "**/*.py",
+            "*.json",
+            "**/*.json",
+            "*.yaml",
+            "**/*.yaml",
+            "*.yml",
+            "**/*.yml",
+            "*.md",
+            "**/*.md",
+            "*.txt",
+            "**/*.txt",
+        ):
             for file_path in task_dir.glob(pattern):
-                if file_path.is_file():
-                    rel_path = file_path.relative_to(task_dir).as_posix()
-                    if rel_path not in artifacts:
-                        try:
-                            artifacts[rel_path] = base64.b64encode(file_path.read_bytes()).decode(
-                                "ascii"
-                            )
-                        except Exception as e:
-                            logger.warning("Could not bundle artifact", path=rel_path, error=str(e))
-
-        for pattern in ["*.json", "*.yaml", "*.yml", "*.md", "*.txt"]:
-            for file_path in task_dir.glob(pattern):
-                if file_path.is_file():
-                    rel_path = file_path.relative_to(task_dir).as_posix()
-                    if rel_path not in artifacts:
-                        try:
-                            artifacts[rel_path] = base64.b64encode(file_path.read_bytes()).decode(
-                                "ascii"
-                            )
-                        except Exception as e:
-                            logger.warning("Could not bundle artifact", path=rel_path, error=str(e))
+                if not file_path.is_file():
+                    continue
+                rel_path = file_path.relative_to(task_dir).as_posix()
+                if rel_path in artifacts:
+                    continue
+                try:
+                    artifacts[rel_path] = base64.b64encode(file_path.read_bytes()).decode("ascii")
+                except Exception as e:
+                    logger.warning("Could not bundle artifact", path=rel_path, error=str(e))
 
         logger.info("Bundled task artifacts", count=len(artifacts), task_dir=str(task_dir))
         return artifacts

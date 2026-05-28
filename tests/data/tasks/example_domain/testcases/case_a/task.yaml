@@ -1,0 +1,11 @@
+task_id: "example_domain_case_a"
+name: "Example domain — case A"
+description: "Canonical fixture exercising the shared-domain layout."
+domain: ../../_shared/domain.yaml
+
+initial_state:
+  json_db: "initial_state.json"
+
+initial_user_message: "Echo 'hello'."
+
+grading: "grading.yaml"

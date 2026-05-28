@@ -107,3 +107,4 @@ orch.run()
 2. Browser/mobile tools require the `browser` extra.
 3. Docker is the only supported runtime; install the `docker` extra (`pip install "tolokaforge[docker]"`).
 4. For queue/distributed execution details, see `docs/RUNNER.md`.
+5. For metric definitions and failure attribution interpretation, see `docs/ANALYTICS.md`.

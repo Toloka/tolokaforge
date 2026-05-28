@@ -1,0 +1,22 @@
+{
+  "_comment": "REAL OpenRouter-routed Claude Opus 4.7 response shape captured 2026-04-27. OpenRouter does NOT populate `thinking_blocks` (litellm only fills that for the direct-Anthropic transport). Instead the structured reasoning lives under `provider_specific_fields.reasoning_details`, with `format: anthropic-claude-v1` and a `signature` per block — the bytes the model needs echoed back on the next turn for interleaved-thinking continuity. The top-level `reasoning_content` is OpenRouter's normalised string summary across all blocks.",
+  "role": "assistant",
+  "content": "17 is prime because no integer between 2 and 4 divides it evenly.",
+  "tool_calls": null,
+  "function_call": null,
+  "reasoning_content": " I need to check if 17 is prime by testing divisibility against primes up to its square root, which means checking 2 and 3. Since neither divides evenly into 17, it's prime.",
+  "thinking_blocks": null,
+  "provider_specific_fields": {
+    "refusal": null,
+    "reasoning": " I need to check if 17 is prime by testing divisibility against primes up to its square root, which means checking 2 and 3. Since neither divides evenly into 17, it's prime.",
+    "reasoning_details": [
+      {
+        "type": "reasoning.text",
+        "text": " I need to check if 17 is prime by testing divisibility against primes up to its square root, which means checking 2 and 3. Since neither divides evenly into 17, it's prime.",
+        "format": "anthropic-claude-v1",
+        "index": 0,
+        "signature": "ErcBCkgIBxgCKkBjlbXrqM3T0wTJ9bF1n4bA9zV0iA4hC9k0aT2/8I3Q9pV+oRkLxh3Q9KqLfVYdJqXr0aKrXh8Y6yL2YzD7vJWvEgwXyL3qB7VRxJZK0aoaDDSExampleSig=="
+      }
+    ]
+  }
+}

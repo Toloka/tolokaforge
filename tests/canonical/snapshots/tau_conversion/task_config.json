@@ -1,0 +1,28 @@
+{
+  "category": "tau_retail_mini",
+  "description": "You are John Doe. You want to check your order status for order #W1234567.",
+  "grading": "grading.yaml",
+  "initial_state": {
+    "json_db": "initial_state.json"
+  },
+  "name": "test_001",
+  "system_prompt": "system_prompt.md",
+  "task_id": "test_001",
+  "tools": {
+    "agent": {
+      "enabled": [
+        "lookup_user",
+        "get_user_orders",
+        "send_message"
+      ]
+    },
+    "user": {
+      "enabled": []
+    }
+  },
+  "user_simulator": {
+    "backstory": "You are John Doe. You want to check your order status for order #W1234567.",
+    "mode": "llm",
+    "persona": "customer"
+  }
+}

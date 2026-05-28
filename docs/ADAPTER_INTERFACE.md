@@ -77,7 +77,7 @@ Adapters should fail fast with specific errors for:
 ## Reference Implementations
 
 1. `NativeAdapter` (`tolokaforge.adapters.native`): canonical `task.yaml` + `grading.yaml` path. Built-in.
-2. `FrozenMcpCoreAdapter` (`tolokaforge.adapters.frozen_mcp_core`): converted tasks with `_domain/` bundle. Built-in.
-3. `TerminalBenchAdapter` (`tolokaforge_adapter_terminal_bench`): Docker Compose terminal tasks. Plugin package.
+2. `TauAdapter` (`tolokaforge_adapter_tau`): Tau-bench format. Plugin package.
+3. `TlkMcpCoreAdapter` (`tolokaforge_adapter_tlk_mcp_core`): MCP Core JSON format. Plugin package.
 
 See also: `docs/ADAPTER_ARCHITECTURE.md`.

@@ -14,7 +14,7 @@ from tolokaforge.tools.registry import Tool, ToolResult, sanitize_tool_schema
 class CheckDeviceLightsTool(Tool):
     """User tool to check status lights on a device
 
-    Example: In telecom scenarios, user can check if lights are blinking
+    Example: User can check if lights are blinking
     indicating network connectivity issues.
     """
 

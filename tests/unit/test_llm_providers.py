@@ -9,7 +9,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tolokaforge.core.model_client import GenerationResult, LLMClient, UserSimulator
+from tolokaforge.core.llm import GenerationResult, LLMClient, UserSimulator
+from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.models import Message, MessageRole, ModelConfig, ToolCall
 
 pytestmark = pytest.mark.unit
@@ -18,12 +19,22 @@ pytestmark = pytest.mark.unit
 class TestMessageConversion:
     """Test message conversion for provider compatibility.
 
-    These tests verify that empty content handling works correctly for AWS
-    Bedrock/Nova compatibility, which rejects messages with blank content blocks.
+    Empty-content handling is gated by
+    :attr:`~tolokaforge.core.llm.content_policy.ToolContentPolicy.inject_empty_assistant_filler`.
+    Nova/Bedrock keeps the substitution on (the original reason the filler
+    exists — Bedrock rejects empty assistant content alongside ``tool_calls``);
+    every other preset is off (the universal substitution caused Gemini to
+    echo the filler back as its own content — 2026-04-30 OTS regression).
+
+    These tests pin BOTH branches: filler when policy says yes, empty
+    string when policy says no. The TOOL ``"{}"`` and USER
+    ``"Please continue."`` substitutions are unconditional (no provider
+    rejects empty user content; tool ``"{}"`` is harmless JSON-null).
     """
 
-    def test_empty_assistant_content_gets_fallback(self):
-        """AWS Bedrock rejects empty content blocks. Verify fallback is applied."""
+    def test_empty_assistant_content_gets_fallback_on_nova(self):
+        """Nova/Bedrock keeps the filler — empty assistant content with
+        ``tool_calls`` is rejected by Bedrock validation."""
         config = ModelConfig(provider="nova", name="test-model")
         client = LLMClient(config)
 
@@ -40,6 +51,26 @@ class TestMessageConversion:
         # Should have fallback content instead of empty string
         assert converted[0]["content"] != ""
         assert converted[0]["content"] == "I'll help you with that."
+
+    def test_empty_assistant_content_stays_empty_off_nova(self):
+        """Every non-Nova preset leaves empty content empty. Injecting the
+        filler universally is what created the Gemini echo regression — see
+        :class:`~tolokaforge.core.llm.content_policy.ToolContentPolicy`."""
+        # ``openai/gpt-4o`` falls through to the ``default`` preset →
+        # ``OpenAIContent`` with ``inject_empty_assistant_filler=False``.
+        config = ModelConfig(provider="openrouter", name="openai/gpt-4o")
+        client = LLMClient(config)
+
+        messages = [
+            Message(
+                role=MessageRole.ASSISTANT,
+                content="",
+                tool_calls=[ToolCall(id="tc1", name="some_tool", arguments={"arg": "value"})],
+            )
+        ]
+
+        converted = client._convert_messages(None, messages)
+        assert converted[0]["content"] == ""
 
     def test_empty_user_content_gets_fallback(self):
         """Verify USER messages with empty content get fallback."""
@@ -127,7 +158,7 @@ class TestUserSimulatorMessageOrdering:
         # Create mock LLM client
         mock_llm = MagicMock()
         mock_llm.generate.return_value = GenerationResult(
-            text="Hello", tool_calls=[], token_usage={"input": 10, "output": 5}
+            text="Hello", tool_calls=[], usage=Usage(prompt_tokens=10, completion_tokens=5)
         )
 
         config = ModelConfig(provider="nova", name="test-model")
@@ -161,18 +192,18 @@ class TestNovaProviderConfiguration:
 
     def test_nova_uses_correct_provider_setting(self):
         """Nova should be recognized as nova provider."""
-        config = ModelConfig(provider="nova", name="Nova Pro v3")
+        config = ModelConfig(provider="nova", name="busan-v1")
         client = LLMClient(config)
 
         assert client.provider == "nova"
 
     def test_nova_model_name_formatting(self):
         """Nova model names should not have extra prefixes."""
-        config = ModelConfig(provider="nova", name="Nova Pro v3")
+        config = ModelConfig(provider="nova", name="busan-v1")
         client = LLMClient(config)
 
         # Model name should be unchanged for Nova
-        assert client.model_name == "Nova Pro v3"
+        assert client.model_name == "busan-v1"
 
 
 class TestProviderBaseUrlIsolation:
@@ -192,7 +223,7 @@ class TestProviderBaseUrlIsolation:
 
         try:
             # Create a Nova client
-            nova_config = ModelConfig(provider="nova", name="Nova Pro v3")
+            nova_config = ModelConfig(provider="nova", name="busan-v1")
             LLMClient(nova_config)
 
             # litellm.api_base should still be None (Nova base URL is set per-request)
@@ -211,7 +242,7 @@ class TestProviderBaseUrlIsolation:
 
         try:
             # Create Nova client first (simulates config with Nova agent + OpenRouter user)
-            nova_config = ModelConfig(provider="nova", name="Nova Pro v3")
+            nova_config = ModelConfig(provider="nova", name="busan-v1")
             LLMClient(nova_config)
 
             # Now create OpenRouter client
@@ -219,9 +250,9 @@ class TestProviderBaseUrlIsolation:
             LLMClient(openrouter_config)
 
             # litellm.api_base should NOT point to Nova
-            assert litellm.api_base != "https://api.nova.amazon.com/v1", (
-                "OpenRouter client should not inherit Nova's api_base"
-            )
+            assert (
+                litellm.api_base != "https://api.nova.amazon.com/v1"
+            ), "OpenRouter client should not inherit Nova's api_base"
         finally:
             # Restore original
             litellm.api_base = original_api_base
@@ -258,9 +289,10 @@ class TestReasoningParameter:
         """Create an LLMClient and inspect the kwargs it would build.
 
         We monkey-patch the module-level ``completion`` reference inside
-        ``tolokaforge.core.model_client`` to capture the kwargs.
+        ``tolokaforge.core.llm.client`` to capture the kwargs.
         """
-        import tolokaforge.core.model_client as mc_module
+        import tolokaforge.core.llm.client as mc_module
+        from tolokaforge.core.llm.reasoning import ReasoningConfig
 
         captured: dict = {}
 
@@ -270,12 +302,18 @@ class TestReasoningParameter:
             mock_resp.choices = [MagicMock()]
             mock_resp.choices[0].message.content = "ok"
             mock_resp.choices[0].message.tool_calls = None
+            mock_resp.choices[0].message.reasoning_content = None
+            mock_resp.choices[0].message.thinking_blocks = None
             mock_resp.usage = MagicMock()
             mock_resp.usage.prompt_tokens = 10
             mock_resp.usage.completion_tokens = 5
             return mock_resp
 
-        config = ModelConfig(provider=provider, name=name, reasoning=reasoning)
+        if reasoning.lower() == "off":
+            reasoning_cfg = ReasoningConfig(mode="off")
+        else:
+            reasoning_cfg = ReasoningConfig(mode="adaptive", effort_hint=reasoning.lower())
+        config = ModelConfig(provider=provider, name=name, reasoning=reasoning_cfg)
         client = LLMClient(config)
 
         original = mc_module.completion
@@ -330,6 +368,6 @@ class TestReasoningParameter:
         assert "reasoning" not in extra
 
     def test_default_reasoning_is_off(self):
-        """ModelConfig default reasoning must be 'off' (opt-in)."""
+        """ModelConfig default reasoning must have ``mode='off'`` (opt-in)."""
         config = ModelConfig(provider="openrouter", name="test/model")
-        assert config.reasoning == "off"
+        assert config.reasoning.mode == "off"

@@ -1,0 +1,290 @@
+# Adding a New Model
+
+Six-step process. No PR merges a model change without all six passing.
+
+## Pre-flight: 30-second checklist
+
+Before writing any code, verify the model exists and decide where each
+change belongs:
+
+```bash
+# 1. Confirm the OpenRouter slug actually exists.
+curl -s https://openrouter.ai/api/v1/models | \
+  python3 -c "import json, sys; print('\n'.join(m['id'] for m in json.load(sys.stdin)['data'] if '<vendor>' in m['id']))"
+```
+
+| File / dir | Branch | Reason |
+|---|---|---|
+| `tolokaforge/core/data/pricing.json` | **main** | Shared cost catalog |
+| `tests/integration/llm/registry.py` | **main** | Capability certificate is shared |
+| `tolokaforge/core/data/model_presets.yaml` | **main** | Only if new preset needed |
+
+Evaluation-specific configs **must not land on `main`** — see
+`AGENTS.md` § "No Project-Specific Content on main".
+
+## 1. Add pricing
+
+Append an entry to [`tolokaforge/core/data/pricing.json`](../tolokaforge/core/data/pricing.json).
+Use current OpenRouter / Nova / direct-provider pricing; document the
+capture date in the adjacent comment. Schema: `{input, output}` per
+1M tokens, USD.
+
+```jsonc
+"openrouter/x-ai/grok-4": {
+  "input": 3.00,         // per 1M prompt tokens (captured 2026-04-15)
+  "output": 15.00        // per 1M completion tokens
+}
+```
+
+**Auto-fetch alternative.** `uv run pricing-updater update` reads the
+OpenRouter `/api/v1/models` endpoint and merges any newly-priced
+models into `pricing.json`. Use this when refreshing a batch of
+prices; for a single new model the hand-edit above is cleaner and
+keeps the diff minimal. Either way **verify the resulting numbers
+match the OpenRouter API response** — a mis-priced model corrupts
+every cost report that touches it.
+
+**Both `input` and `output` are per-1M tokens, not per-token.** A
+common bug is to copy the `pricing.prompt` field from the OpenRouter
+API response verbatim (it's per-token, scientific notation, e.g.
+`"0.0000015"`) and forget the ×1,000,000 conversion.
+## 2. Add a preset (or confirm fallthrough is OK)
+
+[`tolokaforge/core/data/model_presets.yaml`](../tolokaforge/core/data/model_presets.yaml)
+owns every **non-default** policy combination. If the model needs
+specialised schema sanitisation / cache policy / reasoning codec /
+prompt hints, add a new entry with explicit `match:` globs. If the
+generic defaults are correct, skip — the fallthrough `default` preset
+applies.
+
+Presets resolve via **first-match-wins** ordering. Anthropic 4.7 is
+listed before the generic `anthropic` preset so its `thinking`-kwarg
+routing takes precedence — see [`AGENTS.md`](../AGENTS.md) gotcha #15.
+
+Available policy slots (see
+[`docs/LLM_LAYER.md`](LLM_LAYER.md) for the authoritative spec):
+
+| Slot | Default | Alternatives |
+|---|---|---|
+| `schema_sanitizer` | `passthrough` | `strict` |
+| `prompt_policy` | `none` | `dict_map_hints` |
+| `content_policy` | `openai` | `anthropic` |
+| `response_policy` | `standard` | `unwrap_input`, `array_dict_map` |
+| `reasoning_codec` | `none` | `anthropic`, `openai` |
+| `cache_policy` | `none` | `anthropic_ephemeral` |
+| `params` | — | arbitrary dict — see `GenerationParams` |
+
+## 3. Add a ModelCertificate
+
+Append to `ALL_MODELS` in
+[`tests/integration/llm/registry.py`](../tests/integration/llm/registry.py).
+Pick `required` and `known_unsupported` from the
+[`Capability`](../tests/integration/llm/_capability.py) enum.
+
+**Rules (non-negotiable):**
+
+- **Be honest.** `required` means "the model MUST pass this capability
+  or the PR is blocked". `known_unsupported` means "the model can't do
+  this; we're certain; the capability test auto-skips".
+- **Take a position on every core capability.** The canonical test
+  [`tests/canonical/test_capability_registry.py`](../tests/canonical/test_capability_registry.py)
+  rejects certificates that silently omit `BASIC_COMPLETION`,
+  `SIMPLE_TOOL_CALL`, `MULTI_TURN_TOOL_USE`,
+  `USAGE_METRICS_POPULATED`, `COST_USD_POPULATED`, or
+  `REQUIRED_FIELDS_COMPLETE`.
+- **Slug discipline.** `model_id` MUST equal
+  `model_id_slug(provider, name)` from
+  [`tolokaforge/core/output/artifacts.py`](../tolokaforge/core/output/artifacts.py).
+  The canonical test pins this so per-trial
+  `results/tools_schemas/<task>__<model_id>.json` sidecars share the
+  same identifier as the registry.
+- **Overlap is a bug.** Listing the same capability in both `required`
+  and `known_unsupported` raises `ValueError` at construction time.
+
+**Anti-pattern: copying a sibling cert verbatim.**
+
+When a new variant ships in an existing family (e.g. Gemini 3.5 Flash
+after 3-flash-preview), it's tempting to copy the sibling's
+`known_unsupported` set wholesale. **Don't.** Every entry in
+`known_unsupported` is a hypothesis that must be re-tested against
+the new variant. Vendors silently fix regressions between versions,
+and a stale `known_unsupported` mis-credits the new model.
+
+The disciplined flow:
+
+1. Copy the sibling cert as a *starting hypothesis*.
+2. Tentatively flip every `known_unsupported` entry to `required`.
+3. Run `pytest tests/integration/llm/ -k <model_id> -v`.
+4. Move back to `known_unsupported` only the capabilities that
+   *actually* failed live. The PR diff records exactly which
+   regressions persisted vs which were silently fixed.
+
+When a `known_unsupported` declaration stays, leave a code comment
+naming the specific failure mode and the date you verified it (e.g.
+"emits ``quantity`` instead of registered ``qty`` — verified live
+2026-05-20"). That comment is your falsifiable record.
+
+Example:
+
+```python
+MC(
+    model_id="openrouter__newvendor_new-model-1",
+    provider="openrouter",
+    name="newvendor/new-model-1",
+    env_key="OPENROUTER_API_KEY",
+    required=frozenset({
+        C.BASIC_COMPLETION,
+        C.SIMPLE_TOOL_CALL,
+        C.MULTI_TURN_TOOL_USE,
+        C.USAGE_METRICS_POPULATED,
+    }),
+    known_unsupported=frozenset({
+        C.DICT_MAP_TOOL_CALL,        # No strict schema support yet
+        C.DECIMAL_FIELD_TOOL_CALL,
+        C.THINKING_EMITS_BLOCKS,
+        C.THINKING_REPLAY_ROUNDTRIP,
+        C.PROMPT_CACHING,
+    }),
+),
+```
+
+## 4. Run the capability suite locally
+
+```bash
+scripts/with_env.sh uv run pytest tests/integration/llm/ \
+    -k <your_model_id> -v --tb=short
+```
+
+Substitute the last slug component of your `model_id`, e.g.
+`-k grok-4` or `-k new-model-1`.
+
+**Paste the green output verbatim into the PR description. PRs without
+this block do not merge.** The maintainer uses the output to confirm
+which capabilities passed live, which were skipped with
+`known_unsupported`, and which (if any) skipped because they weren't
+declared — the last case is a contributor bug.
+
+**Synthetic-vs-production capability asymmetry.** A capability test
+that fails synthetically can still pass in production, and vice
+versa. Examples observed in this codebase:
+
+- `IMPLICIT_PROMPT_CACHING` — the synthetic probe uses an 8 k-token
+  system prompt, comfortably above the OpenAI / DeepSeek auto-cache
+  minimum (~1 k tokens). Gemini 3.5 Flash's auto-cache requires a
+  larger minimum; production runs with 13 k+ token prompts show 56 %
+  cache hit rates, but the synthetic test returns
+  `cached_tokens: 0`. The cert honestly declares
+  `known_unsupported` and the comment cites the production
+  evidence.
+- `REQUIRED_FIELDS_COMPLETE` is `_CORE_CAPABILITIES`-exempt because
+  every model passes the single-turn baseline, but multi-turn /
+  heavy-context evals surface field-omission failures the synthetic
+  probe doesn't catch (gotcha #22 in `AGENTS.md`).
+
+**The cert MUST follow the synthetic test result, not your production
+hunch.** If you observe a capability in production that the synthetic
+test misses, file the asymmetry in the cert comment and consider
+ratcheting the synthetic probe to be more demanding — don't fudge
+the cert.
+
+**Field-rename failures are a schema-dialect symptom, not a model
+flaw.** If `test_dict_map_tool_call` or `test_discriminated_union_tool_call`
+fails with the model emitting "natural English" keys (e.g.
+`quantity` for `qty`, `title` for `subject`), the provider almost
+certainly does not support some construct in the schema you sent —
+typically `$defs`/`$ref`, `oneOf`/`discriminator`, or
+`additionalProperties:{schema}`. Bisect by hitting the provider's
+REST endpoint directly with a hand-built schema: replace each
+suspect construct with explicit `properties` and watch for the
+property names to start round-tripping. The fix belongs in a new
+[`ToolSchemaSanitizer`](../tolokaforge/core/llm/schema_sanitizer.py)
+subclass (see `GeminiSchema` for the worked example) — never in
+prompt engineering or in renaming task-pack fields to match the
+model's preference.
+
+## 4a. Run a smoke eval before declaring the model ready
+
+The capability suite checks per-request invariants; it does not catch
+emergent multi-turn issues like field-omission, looping, or
+defensive over-population of optional fields. Before opening a PR
+that adds configs across the eval fleet, run **one sampled domain**
+through the orchestrator end-to-end (pick the most regression-prone
+domain available) and skim the trajectories for:
+
+- Tool calls succeeding then immediately re-firing with identical
+  args (the loop pattern guarded by
+  `Capability.PROGRESS_AFTER_SUCCESS`).
+- Repeated `MULTI_TURN_ERROR_RECOVERY` triggers — if the model
+  needs the same tool-error correction loop more than once per
+  trial, the production capability is weaker than the synthetic
+  test suggests.
+- `tool_success_rate < 0.9` per trial.
+- `cost_source != 'litellm'` in any `metrics.yaml` — that means
+  litellm doesn't know this model and we're falling back to
+  `pricing.json`. The fallback works but indicates the pricing layer
+  isn't optimal.
+
+## 5. For new reasoning models
+
+If the model exposes reasoning in a new format (not OpenAI
+`reasoning_content` summary nor Anthropic `thinking_blocks`):
+
+1. Extend or introduce a
+   [`ReasoningCodec`](../tolokaforge/core/llm/reasoning_codec.py)
+   subclass.
+2. Register it on the preset via the `reasoning_codec:` YAML key.
+3. Add a unit-test fixture under
+   [`tests/unit/llm/fixtures/`](../tests/unit/llm/fixtures/) capturing
+   a real response shape — so the codec round-trip is unit-testable
+   without burning provider spend.
+
+## 6. For new non-OpenRouter providers
+
+If the model lives on a provider that isn't already routed through
+`LLMClient` (not OpenRouter, not Anthropic direct, not OpenAI direct):
+
+1. Add any extra routing branches in `LLMClient._prepare_request` (if
+   needed). **Never** branch on literal model-name substrings outside
+   the preset registry — per
+   [`AGENTS.md`](../AGENTS.md) § "Adding a new model / provider" rule #3.
+2. Declare the new `env_key` on the certificate (e.g.
+   `env_key="NOVA_API_KEY"`). The shared `live_client` fixture reads
+   this at test-collection time.
+3. Add a `@pytest.mark.<provider>` marker to the capability tests you
+   expect to run against that provider only — optional.
+4. Consider whether the provider deserves its own bespoke test file
+   alongside the capability suite (see
+   [`tests/integration/llm/test_nova_api.py`](../tests/integration/llm/test_nova_api.py)
+   for the Nova precedent — provider-scoped, NOT capability-scoped).
+
+## Capability definitions
+
+| Capability | Guards | Test file |
+|---|---|---|
+| `basic_completion` | Model returns non-empty text for a simple turn. | [`test_basic_completion.py`](../tests/integration/llm/test_basic_completion.py) |
+| `simple_tool_call` | Model emits a valid structured tool call when offered a calculator + distractor pair. | [`test_simple_tool_call.py`](../tests/integration/llm/test_simple_tool_call.py) |
+| `multi_turn_tool_use` | Two-turn flow: tool call → tool result → final answer OR chained tool call. | [`test_multi_turn_tool_use.py`](../tests/integration/llm/test_multi_turn_tool_use.py) |
+| `dict_map_tool_call` | Typed `Dict[str, T]` parameters round-trip as native dicts. | [`test_dict_map_tool_call.py`](../tests/integration/llm/test_dict_map_tool_call.py) |
+| `decimal_field_tool_call` | Pydantic `Decimal` fields don't trip the provider's regex validator. | [`test_decimal_field_tool_call.py`](../tests/integration/llm/test_decimal_field_tool_call.py) |
+| `thinking_emits_blocks` | Provider surfaces structured thinking blocks, not a concatenated summary. | [`test_thinking_emits_blocks.py`](../tests/integration/llm/test_thinking_emits_blocks.py) |
+| `thinking_replay_roundtrip` | Signed thinking blocks from turn 1 echo back verbatim on turn 2. | [`test_thinking_replay_roundtrip.py`](../tests/integration/llm/test_thinking_replay_roundtrip.py) |
+| `prompt_caching` | Second identical call hits the provider-side ephemeral cache. | [`test_prompt_caching.py`](../tests/integration/llm/test_prompt_caching.py) |
+| `usage_metrics_populated` | `result.usage.prompt_tokens`, `.completion_tokens`, and `.provider_raw` populated. | [`test_usage_metrics_populated.py`](../tests/integration/llm/test_usage_metrics_populated.py) |
+| `tool_name_discipline` | Model echoes the EXACT registered tool name even when it contains repeated `_`-segments (e.g. `workday_api_workday_api_get_employee`). Catches the Gemini 3.1 Pro `:` substitution regression. | [`test_tool_name_discipline.py`](../tests/integration/llm/test_tool_name_discipline.py) |
+| `lexical_tool_invention` | Model does NOT fabricate a plausible-but-nonexistent tool name from the system-prompt vocabulary (e.g. inventing `knowledge_base_search_policy` when the registered tool is `typesense_search_policy`). | [`test_lexical_tool_invention.py`](../tests/integration/llm/test_lexical_tool_invention.py) |
+| `required_fields_complete` | Single-turn baseline: when a tool's schema marks N fields as `required` and the user provides values for every one, the model emits all N. **Core capability** — every modern function-calling model passes. | [`test_required_fields_complete.py`](../tests/integration/llm/test_required_fields_complete.py) |
+| `unsigned_thinking_replay` | Reasoning *text* from turn 1 round-trips into turn 2's request payload via the codec's `encode_for_replay` path, even when blocks lack signatures. Gemini-Pro-applicable variant of `thinking_replay_roundtrip`. | [`test_unsigned_thinking_replay.py`](../tests/integration/llm/test_unsigned_thinking_replay.py) |
+| `progress_after_success` | Single-turn baseline: after a successful tool call + acknowledgment from the user, the model does NOT re-emit the same tool call with the same arguments. **Core capability** — every modern function-calling model passes the synthetic probe. Catches the grok-4.3 production loop pattern (re-calling `salesforce_create_case` 17× after success) at its single-turn surface. | [`test_progress_after_success.py`](../tests/integration/llm/test_progress_after_success.py) |
+
+## Related reading
+
+- [`AGENTS.md`](../AGENTS.md) § "Adding a new model / provider" —
+  non-negotiable merge rules.
+- [`docs/LLM_LAYER.md`](LLM_LAYER.md) — policy slot contracts +
+  implementation notes.
+- The Gemini certificates in
+  [`tests/integration/llm/registry.py`](../tests/integration/llm/registry.py)
+  are a worked example of an entire model family registered with
+  asymmetric postures across variants (Flash `required` vs Pro
+  `known_unsupported` for the same capability) — useful when a new
+  family ships with a known open regression.

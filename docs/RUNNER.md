@@ -61,16 +61,16 @@ uv run tolokaforge docker status
 ## Local Queue Run (SQLite)
 
 ```bash
-uv run tolokaforge prepare --config my_run_config.yaml --run-dir results/queue_run --reset-queue
-uv run tolokaforge worker --config my_run_config.yaml --run-dir results/queue_run
+uv run tolokaforge prepare --config examples/native/coding/run_config.yaml --run-dir results/queue_run --reset-queue
+uv run tolokaforge worker --config examples/native/coding/run_config.yaml --run-dir results/queue_run
 uv run tolokaforge status --run-dir results/queue_run
 ```
 
 Run multiple local workers on one machine:
 
 ```bash
-uv run tolokaforge worker --config my_run_config.yaml --run-dir results/queue_run &
-uv run tolokaforge worker --config my_run_config.yaml --run-dir results/queue_run &
+uv run tolokaforge worker --config examples/native/coding/run_config.yaml --run-dir results/queue_run &
+uv run tolokaforge worker --config examples/native/coding/run_config.yaml --run-dir results/queue_run &
 wait
 ```
 
@@ -89,20 +89,27 @@ orchestrator:
 2. Prepare queue once:
 
 ```bash
-uv run tolokaforge prepare --config my_run_config.yaml --run-dir results/distributed_run --reset-queue
+uv run tolokaforge prepare --config examples/native/coding/run_config.yaml --run-dir results/distributed_run --reset-queue
 ```
 
 3. Start N workers (on any machines with access to the same Postgres):
 
 ```bash
-uv run tolokaforge worker --config my_run_config.yaml --run-dir results/distributed_run
+uv run tolokaforge worker --config examples/native/coding/run_config.yaml --run-dir results/distributed_run
 ```
 
 4. Monitor:
 
 ```bash
-uv run tolokaforge status --run-dir results/distributed_run --config my_run_config.yaml
+uv run tolokaforge status --run-dir results/distributed_run --config examples/native/coding/run_config.yaml
 ```
+
+### GitHub Actions
+
+For multi-runner GitHub Actions, use `.github/workflows/distributed-workers.yml`.
+It requires a shared Postgres DSN via either:
+- workflow input `queue_postgres_dsn`, or
+- repo secret `TOLOKAFORGE_QUEUE_POSTGRES_DSN`.
 
 ## Retries, Rate Limits, and Budget
 
@@ -145,20 +152,6 @@ queue = create_run_queue(
 )
 ```
 
-## LLM Judge Evaluation
-
-The Runner evaluates `llm_judge` grading inline during trial execution. API keys required by the judge model are injected into the Runner container via `ServiceDefinition.secret_keys`.
-
-**How secrets flow:**
-
-1. Orchestrator reads `grading.yaml` → extracts `llm_judge.model_ref`
-2. `model_ref` is mapped to the required API key (e.g., `openrouter/...` → `OPENROUTER_API_KEY`)
-3. `SecretManager.to_env_dict()` resolves the key values from `.env` / environment
-4. Keys are passed to the Runner container as environment variables during `Container.create()`
-5. Runner calls litellm with the judge model to score the agent's transcript
-
-Only the specific keys needed for the judge model are injected — not all available secrets. See [SECURITY.md](SECURITY.md) for the security model.
-
 ## Output Artifacts
 
 Queue state + per-attempt artifacts are written under `run_dir`:
@@ -172,3 +165,4 @@ Queue state + per-attempt artifacts are written under `run_dir`:
 - `metadata_slices.json`
 - `failure_attribution.json`
 
+See [ANALYTICS.md](ANALYTICS.md) for interpretation.

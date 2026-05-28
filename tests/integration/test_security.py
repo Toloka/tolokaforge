@@ -6,9 +6,8 @@ network isolation within the test to verify the runner cannot reach the
 external internet.
 """
 
-import pytest
-
 import docker
+import pytest
 
 pytestmark = pytest.mark.integration
 

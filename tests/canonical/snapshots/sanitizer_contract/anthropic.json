@@ -1,0 +1,373 @@
+{
+  "tools": [
+    {
+      "function": {
+        "description": "Plain scalar parameters.",
+        "name": "scalars",
+        "parameters": {
+          "description": "Plain scalar tool parameters \u2014 nothing to strip.",
+          "properties": {
+            "count": {
+              "description": "An integer count.",
+              "title": "Count",
+              "type": "integer"
+            },
+            "enabled": {
+              "description": "A boolean flag.",
+              "title": "Enabled",
+              "type": "boolean"
+            },
+            "label": {
+              "description": "A string label.",
+              "title": "Label",
+              "type": "string"
+            },
+            "ratio": {
+              "description": "A floating-point ratio.",
+              "title": "Ratio",
+              "type": "number"
+            }
+          },
+          "required": [
+            "count",
+            "label",
+            "enabled",
+            "ratio"
+          ],
+          "title": "ScalarsInput",
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Monetary amounts with Decimal.",
+        "name": "decimal",
+        "parameters": {
+          "description": "Pydantic Decimal idiom (primary P1 target).",
+          "properties": {
+            "amount": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                }
+              ],
+              "description": "A monetary amount.",
+              "title": "Amount"
+            },
+            "tax": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                }
+              ],
+              "description": "Sales tax.",
+              "title": "Tax"
+            }
+          },
+          "required": [
+            "amount",
+            "tax"
+          ],
+          "title": "DecimalInput",
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Timestamps as datetime.",
+        "name": "datetime",
+        "parameters": {
+          "description": "``format: date-time`` hints on string fields.",
+          "properties": {
+            "due_by": {
+              "description": "Deadline.",
+              "format": "date-time",
+              "title": "Due By",
+              "type": "string"
+            },
+            "occurred_at": {
+              "description": "When it happened.",
+              "format": "date-time",
+              "title": "Occurred At",
+              "type": "string"
+            }
+          },
+          "required": [
+            "occurred_at",
+            "due_by"
+          ],
+          "title": "DateTimeInput",
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Optional/Union/Literal parameters.",
+        "name": "unions",
+        "parameters": {
+          "description": "``Optional`` / ``Union`` / ``Literal`` unions \u2014 non-Decimal ``anyOf``.",
+          "properties": {
+            "count_or_label": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "description": "Either a count or a label.",
+              "title": "Count Or Label"
+            },
+            "note": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Note"
+            },
+            "status": {
+              "description": "Status.",
+              "enum": [
+                "pending",
+                "active",
+                "closed"
+              ],
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "count_or_label"
+          ],
+          "title": "UnionsInput",
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Typed dict-map parameter.",
+        "name": "dict_map",
+        "parameters": {
+          "$defs": {
+            "OrderLine": {
+              "properties": {
+                "quantity": {
+                  "description": "Requested units.",
+                  "minimum": 0,
+                  "title": "Quantity",
+                  "type": "integer"
+                },
+                "sku_id": {
+                  "description": "SKU identifier.",
+                  "title": "Sku Id",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "sku_id",
+                "quantity"
+              ],
+              "title": "OrderLine",
+              "type": "object"
+            }
+          },
+          "description": "Typed dict-map (``additionalProperties: {schema}``).",
+          "properties": {
+            "lines": {
+              "additionalProperties": {
+                "$ref": "#/$defs/OrderLine"
+              },
+              "description": "Map of sku_id -> line.",
+              "title": "Lines",
+              "type": "object"
+            }
+          },
+          "required": [
+            "lines"
+          ],
+          "title": "DictMapInput",
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Nested-model parameters.",
+        "name": "nested",
+        "parameters": {
+          "$defs": {
+            "Address": {
+              "properties": {
+                "city": {
+                  "description": "City name.",
+                  "title": "City",
+                  "type": "string"
+                },
+                "street": {
+                  "description": "Street line.",
+                  "title": "Street",
+                  "type": "string"
+                },
+                "zip_code": {
+                  "description": "Postal code.",
+                  "title": "Zip Code",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "street",
+                "city",
+                "zip_code"
+              ],
+              "title": "Address",
+              "type": "object"
+            },
+            "Contact": {
+              "properties": {
+                "home": {
+                  "$ref": "#/$defs/Address",
+                  "description": "Home address."
+                },
+                "name": {
+                  "title": "Name",
+                  "type": "string"
+                },
+                "work": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/Address"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "description": "Work address (optional)."
+                }
+              },
+              "required": [
+                "name",
+                "home"
+              ],
+              "title": "Contact",
+              "type": "object"
+            }
+          },
+          "description": "One- and two-level nested models.",
+          "properties": {
+            "contact": {
+              "$ref": "#/$defs/Contact",
+              "description": "Contact with nested addresses."
+            },
+            "primary": {
+              "$ref": "#/$defs/Address",
+              "description": "Primary address."
+            }
+          },
+          "required": [
+            "primary",
+            "contact"
+          ],
+          "title": "NestedInput",
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "List-of-model parameter.",
+        "name": "list_nested",
+        "parameters": {
+          "$defs": {
+            "OrderLine": {
+              "properties": {
+                "quantity": {
+                  "description": "Requested units.",
+                  "minimum": 0,
+                  "title": "Quantity",
+                  "type": "integer"
+                },
+                "sku_id": {
+                  "description": "SKU identifier.",
+                  "title": "Sku Id",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "sku_id",
+                "quantity"
+              ],
+              "title": "OrderLine",
+              "type": "object"
+            }
+          },
+          "description": "``List[SomeModel]`` of nested models.",
+          "properties": {
+            "lines": {
+              "description": "Order lines.",
+              "items": {
+                "$ref": "#/$defs/OrderLine"
+              },
+              "title": "Lines",
+              "type": "array"
+            }
+          },
+          "required": [
+            "lines"
+          ],
+          "title": "ListInput",
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Explicit Field(pattern=\u2026).",
+        "name": "explicit_pattern",
+        "parameters": {
+          "description": "Explicit ``Field(pattern=\u2026)`` \u2014 non-Decimal regex annotation.",
+          "properties": {
+            "sku": {
+              "description": "SKU identifier matching the canonical pattern.",
+              "pattern": "^SKU-[A-Z0-9]+$",
+              "title": "Sku",
+              "type": "string"
+            }
+          },
+          "required": [
+            "sku"
+          ],
+          "title": "ExplicitPatternInput",
+          "type": "object"
+        }
+      },
+      "type": "function"
+    }
+  ]
+}
