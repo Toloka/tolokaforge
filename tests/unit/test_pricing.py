@@ -111,9 +111,7 @@ class TestEstimateCost:
         """
         fixture = tmp_path / "pricing.json"
         fixture.write_text(
-            json.dumps(
-                {"models": {"test/sample-model": {"input": 0.50, "output": 1.00}}}
-            )
+            json.dumps({"models": {"test/sample-model": {"input": 0.50, "output": 1.00}}})
         )
         reload_pricing(fixture)
         try:
@@ -134,9 +132,7 @@ class TestEstimateCost:
         """
         fixture = tmp_path / "pricing.json"
         fixture.write_text(
-            json.dumps(
-                {"models": {"minimax/minimax-test": {"input": 0.50, "output": 1.00}}}
-            )
+            json.dumps({"models": {"minimax/minimax-test": {"input": 0.50, "output": 1.00}}})
         )
         reload_pricing(fixture)
         try:
