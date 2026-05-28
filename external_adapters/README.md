@@ -7,8 +7,6 @@ with entry-point registration for `tolokaforge.adapters` discovery.
 
 | Package | Entry-Point Name | Adapter Class | Source |
 |---------|-----------------|---------------|--------|
-| `tolokaforge-adapter-tau` | `tau` | `TauAdapter` | Tau-bench environments |
-| `tolokaforge-adapter-tlk-mcp-core` | `tlk_mcp_core` | `TlkMcpCoreAdapter` | MCP-core based environments |
 | `tolokaforge-adapter-terminal-bench` | `terminal_bench` | `TerminalBenchAdapter` | Terminal-bench Docker Compose tasks |
 
 ## How It Works
@@ -17,29 +15,16 @@ Each package declares an entry-point in its `pyproject.toml`:
 
 ```toml
 [project.entry-points."tolokaforge.adapters"]
-tau = "tolokaforge_adapter_tau:TauAdapter"
+terminal_bench = "tolokaforge_adapter_terminal_bench:TerminalBenchAdapter"
 ```
 
 The core `tolokaforge` package discovers these at runtime via `importlib.metadata.entry_points()`.
 
 ## Installation
 
-Via the root `pyproject.toml` optional dependencies:
+Install individually:
 
 ```bash
-# Install specific adapter
-uv sync --extra tau
-uv sync --extra tlk_mcp_core
-
-# Install all adapters
-uv sync --extra adapters
-```
-
-Or install individually:
-
-```bash
-uv pip install -e external_adapters/tolokaforge-adapter-tau
-uv pip install -e external_adapters/tolokaforge-adapter-tlk-mcp-core
 uv pip install -e external_adapters/tolokaforge-adapter-terminal-bench
 ```
 
