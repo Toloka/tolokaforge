@@ -65,7 +65,7 @@ flowchart TB
     Evaluator -->|runs benchmarks| Forge
     TaskAuthor -->|authors| TaskPacks
     Forge -->|loads via adapter| TaskPacks
-    Forge <-->|tool execution, state, grading<br/>(Docker mode only)| Docker
+    Forge <-->|"tool execution, state, grading<br/>(Docker mode only)"| Docker
     Forge <-->|completions, tool schemas| LiteLLM
     Forge -->|writes| Results
     Forge <-->|durable attempts, leases| Queue
