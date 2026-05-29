@@ -18,7 +18,7 @@ Tolokaforge is a benchmarking harness for evaluating tool-using LLM agents. It r
 |---|---|
 | **Determinism** | Same task + same model + same seed should yield the same verdict. State hashes, snapshot grading, transcript rules. |
 | **Provider-agnostic** | Any LLM reachable via LiteLLM is a first-class citizen. Provider-specific quirks are isolated in per-preset capability policies. |
-| **Isolation** | Tool calls can run in a separate process (and on a separate host) in Docker mode, with the agent loop never touching tool state directly. |
+| **Isolation** | Tool calls always execute in a separate process — a Docker-hosted Runner gRPC service — so the agent loop never touches tool state directly. |
 | **Honesty over convenience** | Failures surface explicitly. No silent fallbacks; no defaults that hide configuration mistakes. |
 | **Extensibility** | New benchmark formats plug in as adapters without touching the core. |
 
@@ -36,9 +36,9 @@ Tolokaforge is a benchmarking harness for evaluating tool-using LLM agents. It r
 
 - **Language**: Python (managed via `uv`).
 - **LLM access**: routed through [LiteLLM](https://github.com/BerriAI/litellm) — provider-specific glue is kept out of the core. Per-provider differences live in the LLM-layer preset registry (`tolokaforge/core/llm/presets.py`).
-- **Tools**: in-process tool registry plus [Model Context Protocol](https://modelcontextprotocol.io) servers loaded from task packs.
-- **Environment services** (optional, started by `make docker-up`): JSON state DB, mock web, RAG indexer — each one a separate container.
-- **Trial-loop transport**: the agent–user loop runs **in-process** inside the orchestrator (`tolokaforge/core/runner.py:TrialRunner`). When the orchestrator runs in Docker mode, tool execution, environment state, and grading are delegated to a single **Runner gRPC service** (`tolokaforge/runner/service.py`).
+- **Tools**: built-in Python tools plus [Model Context Protocol](https://modelcontextprotocol.io) servers loaded from task packs. All tool code runs inside the Runner container; the orchestrator only sees the gRPC interface.
+- **Docker is required.** Tool execution, environment state, and grading always run inside a Docker stack containing a **Runner gRPC service** (`tolokaforge/runner/service.py`) and supporting environment services (JSON state DB, plus optional RAG indexer / mock web). The orchestrator auto-starts this stack on `tolokaforge run` (`auto_start_services: true` by default) — there is no in-process tool-execution path.
+- **In-process loop, remote tools.** The agent–user message loop itself (`tolokaforge/core/runner.py:TrialRunner`) and the LLM calls run inside the orchestrator process; every tool call from that loop is dispatched as a gRPC `ExecuteTool` RPC to the Runner service.
 - **Durable attempt queue**: SQLite for single-host runs, optional Postgres for multi-host workers (`tolokaforge/core/run_queue.py`).
 
 ### Organisational
@@ -58,14 +58,14 @@ flowchart TB
     Forge["Tolokaforge<br/>(benchmarking harness)"]
     LiteLLM["LLM Providers via LiteLLM<br/>OpenAI · Anthropic · Google · Bedrock · OpenRouter · ..."]
     TaskPacks["Task Packs<br/>(external repos, glob-loaded)"]
-    Docker["Docker Engine<br/>(optional: env services + Runner sandbox)"]
+    Docker["Docker Engine<br/>(Runner gRPC + env services)"]
     Results["Result Artifacts<br/>(trajectories, metrics, schemas)"]
-    Queue[("Attempt Queue<br/>(SQLite local / Postgres distributed)")]
+    Queue[("Attempt Queue<br/>SQLite or Postgres")]
 
     Evaluator -->|runs benchmarks| Forge
     TaskAuthor -->|authors| TaskPacks
     Forge -->|loads via adapter| TaskPacks
-    Forge <-->|"tool execution, state, grading<br/>(Docker mode only)"| Docker
+    Forge <-->|tool execution, state, grading| Docker
     Forge <-->|completions, tool schemas| LiteLLM
     Forge -->|writes| Results
     Forge <-->|durable attempts, leases| Queue
@@ -84,7 +84,7 @@ flowchart TB
 | Decision | Rationale | Detail |
 |---|---|---|
 | **Adapter plugin architecture for benchmark formats** | Lets external task formats (`native` built-in, `terminal_bench` and other plugins) plug in without forking the core. | [`docs/ADAPTER_ARCHITECTURE.md`](../ADAPTER_ARCHITECTURE.md) |
-| **In-process agent–user loop, Docker-delegated tool execution** | Keeping the loop in-process keeps the trial control flow debuggable; Docker delegation via the Runner gRPC service gives sandbox isolation when needed without forcing a service-mesh on local users. | [`docs/RUNNER.md`](../RUNNER.md) · [`docs/GRPC_PROTOCOL.md`](../GRPC_PROTOCOL.md) |
+| **In-process agent–user loop, Docker-delegated tools/state/grading** | The trial control flow (agent prompt assembly, LLM calls, user simulator, message accumulation) stays in the orchestrator process so it can be debugged and instrumented with normal Python tooling. Everything that touches task state — tool execution, env services, grading — runs inside a Docker stack reached over gRPC, giving sandbox isolation and the same code path on every host. | [`docs/RUNNER.md`](../RUNNER.md) · [`docs/GRPC_PROTOCOL.md`](../GRPC_PROTOCOL.md) |
 | **Provider-agnostic LLM layer with per-preset capability policies** | LiteLLM normalises envelopes, but providers diverge on schema dialects, reasoning encodings, caching, and tool naming. A preset registry keeps the quirks out of the orchestrator. | [`docs/LLM_LAYER.md`](../LLM_LAYER.md) |
 | **Single secret abstraction** | One audited code path for every credential read; CI-enforced via static grep. | [AGENTS.md § Secrets](../../AGENTS.md#secrets--single-abstraction) |
 | **Deterministic grading by default; LLM judges opt-in** | Deterministic verdicts are reproducible and cheap; judge calls are reserved for cases that genuinely need them. | [`docs/GRADING.md`](../GRADING.md) |
@@ -96,23 +96,20 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    subgraph Process["Orchestrator process (always in-process)"]
+    subgraph Process["Orchestrator process"]
         Adapter["Adapter Layer"]
         Loop["Orchestrator + TrialRunner<br/>(agent–user loop)"]
         LLM["LLM Layer<br/>(LiteLLM + presets)"]
-        Local["Local Tool Executor"]
     end
 
-    subgraph DockerStack["Docker stack (Docker mode only)"]
+    subgraph DockerStack["Docker stack (required)"]
         Runner["Runner Service<br/>(gRPC)"]
-        Env["db-service<br/>+ rag-service · mock-web"]
+        Env["db-service<br/>+ optional rag-service · mock-web"]
     end
 
     Adapter --> Loop
     Loop --> LLM
-    Loop -- "local mode" --> Local
-    Loop -- "Docker mode" --> Runner
-    Local <--> Env
+    Loop -->|gRPC| Runner
     Runner <--> Env
 ```
 
@@ -124,12 +121,11 @@ Component-level detail (CLI commands, the run-queue client, SecretManager, indiv
 |---|---|---|---|
 | **CLI** | User-facing commands. `run` executes locally end-to-end; `prepare` + `worker` split a run for distributed execution. | `tolokaforge/cli` | — |
 | **Orchestrator + Core** | Loads run config, instantiates the adapter, builds the task list, manages the attempt queue, runs trials, aggregates grades and metrics, writes artifacts. | `tolokaforge/core` (`orchestrator.py`, `grading/`, `metrics.py`, `search/`) | [`docs/RUNNER.md`](../RUNNER.md) |
-| **TrialRunner** | One instance per trial. Owns the agent–user message loop, calls the LLM for both agent and user simulator turns, dispatches tool calls. | `tolokaforge/core/runner.py` | — |
+| **TrialRunner** | One instance per trial. Owns the agent–user message loop, calls the LLM for both agent and user simulator turns, and dispatches every tool call as a gRPC `ExecuteTool` RPC to the Runner service. | `tolokaforge/core/runner.py` | — |
 | **Adapter Layer** | Resolves a benchmark format into `(TaskConfig, tools, grading, environment, docker_stack_requirements, task_description)`. Built-in `native` plus plugins discovered via the `tolokaforge.adapters` entry-point group. | `tolokaforge/adapters` + `external_adapters/` | [`docs/ADAPTER_ARCHITECTURE.md`](../ADAPTER_ARCHITECTURE.md) |
 | **LLM Layer** | Provider-agnostic completion API on top of LiteLLM. Per-provider presets carry capability policies for schema dialect, reasoning encoding, parameter handling, caching, tool-name discipline. Used by both agent and user-simulator turns. | `tolokaforge/core/llm` | [`docs/LLM_LAYER.md`](../LLM_LAYER.md) |
-| **Tool Registry + Executor (local)** | In-process tool registry and executor used in local (non-Docker) mode. Registers built-in tools and loads MCP servers declared by tasks. | `tolokaforge/tools` | [`docs/TOOLS.md`](../TOOLS.md) |
-| **Runner Service (gRPC)** | Docker-mode delegate: owns per-trial state, reconstructs tools from a `TaskDescription`, executes tool calls, runs grading. Single service — not split into "agent" and "executor" services. | `tolokaforge/runner` | [`docs/RUNNER.md`](../RUNNER.md) · [`docs/GRPC_PROTOCOL.md`](../GRPC_PROTOCOL.md) |
-| **db-service** | JSON state DB accessed over HTTP by tools (both local and Docker mode). Namespaced per `(task_id, trial_index)` for parallel isolation. | `tolokaforge/env/json_db_service` | — |
+| **Runner Service (gRPC)** | The sole tool-execution path. Owns per-trial state, reconstructs tools from a `TaskDescription`, executes tool calls, runs grading. A single service — not split into separate "agent" and "executor" services. Auto-started by the orchestrator (`auto_start_services: true`). | `tolokaforge/runner` | [`docs/RUNNER.md`](../RUNNER.md) · [`docs/GRPC_PROTOCOL.md`](../GRPC_PROTOCOL.md) |
+| **db-service** | JSON state DB accessed by the Runner over HTTP. Namespaced per `(task_id, trial_index)` for parallel isolation. | `tolokaforge/env/json_db_service` | — |
 | **rag-service / mock-web** | Optional support services for RAG tasks and browser-style tasks. | `tolokaforge/env/rag_service`, `tolokaforge/env/mock_web_service` | [`docs/BROWSER_TOOLS.md`](../BROWSER_TOOLS.md) |
 | **SecretManager** | Single read path for every credential (API keys, DB URLs, OAuth, signing keys). Subprocess export is the only sanctioned `os.environ` mutation, scoped narrowly. | `tolokaforge/secrets` | [AGENTS.md § Secrets](../../AGENTS.md#secrets--single-abstraction) |
 | **Run-queue client** | Durable attempt queue. SQLite for single-host runs, Postgres for distributed worker pools. | `tolokaforge/core/run_queue.py` | — |
@@ -178,23 +174,23 @@ sequenceDiagram
     participant CLI
     participant Loop as Orchestrator + TrialRunner
     participant LLM as LiteLLM
-    participant Tools as Tool Executor or Runner gRPC
-    participant G as Grader
+    participant Runner as Runner Service (gRPC)
 
     CLI->>Loop: run config + tasks
+    Loop->>Runner: RegisterTrial(task_description)
     loop agent–user loop
         Loop->>LLM: agent completion
         LLM-->>Loop: response + tool calls
-        Loop->>Tools: execute tool call
-        Tools-->>Loop: tool result
+        Loop->>Runner: ExecuteTool
+        Runner-->>Loop: tool result
         Loop->>LLM: user simulator reply
         LLM-->>Loop: user turn
     end
-    Loop->>G: grade trajectory
-    G-->>Loop: verdict + metrics
+    Loop->>Runner: GradeTrial
+    Runner-->>Loop: verdict + metrics
 ```
 
-The `Tools` lane is the in-process `ToolExecutor` in local mode and the Runner gRPC service (in a separate container) in Docker mode. The agent loop, the user-simulator loop, and the LLM calls always happen in the orchestrator process regardless of mode. Setup steps (loading config, resolving tasks via the adapter, enqueueing attempts, writing artifacts) bracket the loop but are omitted from the diagram for clarity.
+The agent loop, the user-simulator loop, and the LLM calls all happen inside the orchestrator process; every tool call and the final grade go over gRPC to the Runner service. Setup steps (loading config, resolving tasks via the adapter, enqueueing attempts, writing artifacts) bracket the loop but are omitted from the diagram for clarity.
 
 ---
 
@@ -202,24 +198,15 @@ The `Tools` lane is the in-process `ToolExecutor` in local mode and the Runner g
 
 ```mermaid
 flowchart TB
-    subgraph Local["Local mode"]
-        L_Orch["Orchestrator process"]
-        L_Q[("Attempt queue · SQLite")]
-        L_Env["docker-compose<br/>db-service + optional rag/mock-web"]
-        L_Orch --> L_Q
-        L_Orch <--> L_Env
-    end
+    Orch["Orchestrator process<br/>(TrialRunner + LLM client)"]
+    Q[("Attempt queue · SQLite or Postgres")]
+    Stack["Docker stack on the same host<br/>runner + db-service<br/>+ optional rag-service · mock-web · dind"]
 
-    subgraph DockerMode["Docker mode"]
-        D_Orch["Orchestrator process"]
-        D_Q[("Attempt queue · SQLite or Postgres")]
-        D_Stack["Docker stack<br/>runner + db-service<br/>+ optional rag/mock-web/dind"]
-        D_Orch --> D_Q
-        D_Orch <-->|gRPC + HTTP| D_Stack
-    end
+    Orch --> Q
+    Orch <-->|gRPC + HTTP| Stack
 ```
 
-**Distributed runs** share the queue across hosts: one host runs `tolokaforge prepare` to populate a Postgres attempt queue; one or more hosts run `tolokaforge worker`, each instantiating a full orchestrator process. Workers independently choose local or Docker mode. There is no central scheduler — coordination is entirely through the queue. See [`docs/RUNNER.md`](../RUNNER.md) for the distributed contract.
+The orchestrator process and the Docker stack live on the same host. There is no in-process tool path — Docker is always required. **Distributed runs** share the attempt queue across hosts: one host runs `tolokaforge prepare` to populate a Postgres queue; one or more hosts run `tolokaforge worker`, each instantiating a full orchestrator + Docker stack. There is no central scheduler — coordination is entirely through the queue. See [`docs/RUNNER.md`](../RUNNER.md) for the distributed contract.
 
 ---
 
@@ -264,8 +251,8 @@ See [`adr/README.md`](adr/README.md) for the process and [`adr/0000-template.md`
 | **Task pack** | A directory tree of tasks resolved by an adapter (`task.yaml` for native; format varies per adapter). |
 | **Trial** | One attempt at one task with one model configuration. A run produces `N_tasks × repeats` trials. |
 | **Trajectory** | The full message + tool-call log for one trial, written as `trajectory.yaml`. |
-| **TrialRunner** | The in-process Python class (`tolokaforge/core/runner.py`) that owns one trial's agent–user loop. |
-| **Runner Service** | The gRPC service (`tolokaforge/runner/service.py`) that the orchestrator delegates to in Docker mode for tool execution, state, and grading. Distinct from `TrialRunner`. |
+| **TrialRunner** | The in-process Python class (`tolokaforge/core/runner.py`) that owns one trial's agent–user loop and dispatches every tool call to the Runner Service over gRPC. |
+| **Runner Service** | The gRPC service (`tolokaforge/runner/service.py`) that owns tool execution, environment state, and grading. Runs in a Docker container; always required. Distinct from `TrialRunner`. |
 | **Preset** | Per-provider capability bundle (schema sanitizer, reasoning codec, params policy, cache policy, tool-content policy). |
 | **Grading config** | Declarative spec of how a trajectory and final state are turned into a pass/fail verdict. |
 | **Attempt queue** | Durable record of pending and in-flight trial attempts (SQLite single-host or Postgres distributed); leased by workers. |
