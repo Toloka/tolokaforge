@@ -28,6 +28,25 @@ default:
     reasoning_via_extra_body: false
 
 presets:
+  # Claude 4.8 (Opus + Sonnet) — same adaptive-thinker contract as 4.7:
+  # ignores ``reasoning_effort``, requires the canonical litellm ``thinking=``
+  # kwarg + explicit ``budget_tokens``. Listed FIRST so first-match-wins
+  # routing picks the version-specific preset before the generic ``anthropic``.
+  anthropic_claude_4_8:
+    match:
+      - "anthropic/claude-opus-4.8*"
+      - "anthropic/claude-sonnet-4.8*"
+      - "*claude-opus-4.8*"
+      - "*claude-sonnet-4.8*"
+    content_policy: anthropic
+    reasoning_codec: anthropic
+    cache_policy: anthropic_ephemeral
+    params:
+      supports_seed: false
+      reasoning_via_thinking_kwarg: true
+      drop_sampling_when_thinking: true
+      reasoning_budget_default: 8000
+
   # Claude 4.7 (Opus + Sonnet) — Anthropic's adaptive thinker that ignores
   # ``reasoning_effort`` and requires the canonical litellm ``thinking=``
   # kwarg + explicit ``budget_tokens``. Listed BEFORE the generic

@@ -204,6 +204,77 @@ _ALL: list[MC] = [
             }
         ),
     ),
+    # Opus 4.8 — Anthropic adaptive thinker. Live-certified 2026-05-29 via
+    # ``pytest tests/integration/llm/ -k claude-opus-4.8`` (OpenRouter route).
+    # This is NOT a copy of the 4.7 posture: per the runbook anti-pattern
+    # (docs/ADD_NEW_MODEL.md § "copying a sibling cert verbatim"), every 4.7
+    # ``known_unsupported`` entry was flipped to ``required`` and re-run live.
+    # The 4.8 results diverge from 4.7 in two ways:
+    #
+    #   * DICT_MAP_TOOL_CALL + DECIMAL_FIELD_TOOL_CALL now PASS under
+    #     Anthropic's PassthroughSchema — 4.6/4.7 declared them unsupported,
+    #     4.8 handles them natively. Promoted to ``required``.
+    #   * DISCRIMINATED_UNION_TOOL_CALL still FAILS the explicit_discriminator
+    #     variant. Stays ``known_unsupported`` (see per-entry note).
+    #
+    # IMPLICIT_PROMPT_CACHING and UNSIGNED_THINKING_REPLAY also pass the
+    # synthetic probe live, but are kept ``known_unsupported`` deliberately —
+    # the probes are satisfied by an artifact / wrong-shape, not by the
+    # contract they name. Each entry documents why (verified 2026-05-29).
+    MC(
+        model_id="openrouter__anthropic_claude-opus-4.8",
+        provider="openrouter",
+        name="anthropic/claude-opus-4.8",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.THINKING_EMITS_BLOCKS,
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.PROMPT_CACHING,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+                # Promoted from 4.6/4.7's known_unsupported — 4.8 passes both
+                # live under Anthropic PassthroughSchema (verified 2026-05-29);
+                # the 4.7 "strict-trio only" rationale no longer holds for 4.8.
+                C.DICT_MAP_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # explicit_discriminator variant emits ``item`` as a
+                # JSON-encoded string instead of a nested dict (bare_union
+                # passes); no JsonCoerce recovery on the Anthropic passthrough
+                # route. Verified live 2026-05-29.
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                # Passes the synthetic probe live, kept unsupported on purpose:
+                # the probe only fires because our anthropic_ephemeral
+                # cache_policy injects explicit cache_control markers, so it is
+                # really measuring EXPLICIT caching (covered by PROMPT_CACHING,
+                # required above). The test's own docstring lists anthropic as
+                # known_unsupported — Anthropic has no implicit auto-cache
+                # surface. Pass-but-artifact, verified 2026-05-29.
+                C.IMPLICIT_PROMPT_CACHING,
+                # Passes the synthetic probe live, kept unsupported on purpose:
+                # test_unsigned_thinking_replay asserts the Gemini-lineage
+                # reasoning_details/reasoning.text replay shape. Anthropic's
+                # real replay contract is the SIGNED variant
+                # (THINKING_REPLAY_ROUNDTRIP, required above). Kept consistent
+                # with opus-4.6/4.7. Pass-but-wrong-shape, verified 2026-05-29.
+                C.UNSIGNED_THINKING_REPLAY,
+            }
+        ),
+    ),
     # -----------------------------------------------------------------
     # Qwen — preset routes it through the same strict trio as GPT-5.
     # Reasoning surface is OpenAI-style summary only, no signed blocks,

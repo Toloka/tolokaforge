@@ -187,6 +187,12 @@
       "cache_read": 3.0,
       "cache_write": 37.5
     },
+    "anthropic/claude-opus-4.8": {
+      "input": 5.0,
+      "output": 25.0,
+      "cache_read": 0.5,
+      "cache_write": 6.25
+    },
     "anthropic/claude-sonnet-4": {
       "input": 3.0,
       "output": 15.0,
