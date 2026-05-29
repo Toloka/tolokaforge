@@ -96,38 +96,27 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    subgraph Orchestrator["Orchestrator Process (single host)"]
-        CLI["CLI<br/>(run · prepare · worker · validate · status · analyze)"]
-        Core["Orchestrator + Core<br/>(orchestration · grading combine · metrics · search)"]
-        TR["TrialRunner<br/>(in-process agent–user loop)"]
-        Adapters["Adapter Layer<br/>(BaseAdapter · NativeAdapter · entry-point plugins)"]
-        LLMLayer["LLM Layer<br/>(LiteLLM client · presets · schema sanitizers · reasoning codecs · cache policy)"]
-        ToolsLocal["Tool Registry + Executor<br/>(built-ins + MCP, in-process)"]
-        Secrets["SecretManager"]
-        QueueLib["Run-queue client<br/>(SqliteRunQueue · PostgresRunQueue)"]
+    subgraph Process["Orchestrator process (always in-process)"]
+        Adapter["Adapter Layer"]
+        Loop["Orchestrator + TrialRunner<br/>(agent–user loop)"]
+        LLM["LLM Layer<br/>(LiteLLM + presets)"]
+        Local["Local Tool Executor"]
     end
 
-    subgraph DockerOpt["Docker stack (Docker mode only)"]
-        RunnerSvc["Runner Service<br/>(gRPC: RegisterTrial · ExecuteTool · GradeTrial · GetState · ResetTrial · CleanupTrial)"]
-        DBSvc["db-service<br/>(JSON state DB)"]
-        RAGSvc["rag-service<br/>(optional)"]
-        MockWeb["mock-web<br/>(optional)"]
+    subgraph DockerStack["Docker stack (Docker mode only)"]
+        Runner["Runner Service<br/>(gRPC)"]
+        Env["db-service<br/>+ rag-service · mock-web"]
     end
 
-    CLI --> Core
-    Core --> Adapters
-    Core --> TR
-    Core --> QueueLib
-    TR --> LLMLayer
-    TR -- "local mode" --> ToolsLocal
-    TR -- "Docker mode" --> RunnerSvc
-    LLMLayer --> Secrets
-    RunnerSvc <--> DBSvc
-    RunnerSvc <--> RAGSvc
-    ToolsLocal <--> DBSvc
-    ToolsLocal <--> RAGSvc
-    ToolsLocal <--> MockWeb
+    Adapter --> Loop
+    Loop --> LLM
+    Loop -- "local mode" --> Local
+    Loop -- "Docker mode" --> Runner
+    Local <--> Env
+    Runner <--> Env
 ```
+
+Component-level detail (CLI commands, the run-queue client, SecretManager, individual env services) is described in the table below rather than spelled out in the diagram, to keep the container view at C4 Level 2.
 
 ### Block responsibilities
 
@@ -183,73 +172,29 @@ These four contracts are the entire integration surface. Anything an external ta
 
 ## 6. Runtime View — One Trial
 
-### Local mode (default)
-
 ```mermaid
 sequenceDiagram
     autonumber
-    participant U as User
     participant CLI
-    participant O as Orchestrator
-    participant A as Adapter
-    participant Q as RunQueue (SQLite)
-    participant TR as TrialRunner (in-process)
+    participant Loop as Orchestrator + TrialRunner
     participant LLM as LiteLLM
-    participant TE as Tool Executor (in-process)
-    participant DB as db-service / rag-service (HTTP)
-    participant G as GradingEngine
+    participant Tools as Tool Executor or Runner gRPC
+    participant G as Grader
 
-    U->>CLI: tolokaforge run --config run.yaml
-    CLI->>O: load config + resolve task list
-    O->>A: get_task · create_environment · get_registry_tools
-    A-->>O: TaskConfig + tools + initial state
-    O->>Q: enqueue (task_id, trial_index)
-    Q-->>O: lease
-    O->>TR: run trial
-    loop until done, error, or max_turns
-        TR->>LLM: agent.completion(messages, tool_schemas)
-        LLM-->>TR: response (+ tool_calls)
-        TR->>TE: execute(tool_call)
-        TE<->>DB: state read/write
-        TE-->>TR: tool_result
-        TR->>LLM: user_simulator.reply(messages)
-        LLM-->>TR: user turn
+    CLI->>Loop: run config + tasks
+    loop agent–user loop
+        Loop->>LLM: agent completion
+        LLM-->>Loop: response + tool calls
+        Loop->>Tools: execute tool call
+        Tools-->>Loop: tool result
+        Loop->>LLM: user simulator reply
+        LLM-->>Loop: user turn
     end
-    TR-->>O: trajectory + final_state
-    O->>G: grade(trajectory, final_state, env)
-    G-->>O: verdict + metrics
-    O-->>CLI: write artifacts (trajectory.yaml, metrics.yaml, ...)
+    Loop->>G: grade trajectory
+    G-->>Loop: verdict + metrics
 ```
 
-### Docker mode
-
-The flow is identical except every interaction between TrialRunner and the tool/state/grading stack goes over gRPC to the Runner service:
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant TR as TrialRunner (in orchestrator process)
-    participant LLM as LiteLLM
-    participant RC as RunnerClient (gRPC)
-    participant RS as Runner Service (gRPC, separate container)
-    participant DB as db-service (HTTP)
-
-    Note over TR,RS: Setup: orchestrator calls RegisterTrial(task_description)
-    loop until done, error, or max_turns
-        TR->>LLM: agent.completion(...)
-        LLM-->>TR: response (+ tool_calls)
-        TR->>RC: ExecuteTool(trial_id, tool_call)
-        RC->>RS: ExecuteTool RPC
-        RS<->>DB: state read/write
-        RS-->>RC: tool_result
-        RC-->>TR: tool_result
-    end
-    TR->>RC: GradeTrial(trial_id)
-    RC->>RS: GradeTrial RPC
-    RS-->>RC: verdict + metrics
-```
-
-The agent loop and the LLM calls always happen in the orchestrator process. Only tool execution, environment state, and grading move to the Runner service when Docker mode is active.
+The `Tools` lane is the in-process `ToolExecutor` in local mode and the Runner gRPC service (in a separate container) in Docker mode. The agent loop, the user-simulator loop, and the LLM calls always happen in the orchestrator process regardless of mode. Setup steps (loading config, resolving tasks via the adapter, enqueueing attempts, writing artifacts) bracket the loop but are omitted from the diagram for clarity.
 
 ---
 
@@ -257,42 +202,24 @@ The agent loop and the LLM calls always happen in the orchestrator process. Only
 
 ```mermaid
 flowchart TB
-    subgraph Local["Local single-host, in-process"]
-        L_CLI["tolokaforge CLI"]
-        L_Orch["Orchestrator process<br/>(TrialRunner + LLM client + in-process tools)"]
-        L_SQLite[("SQLite<br/>(attempt queue)")]
-        L_DB["docker-compose: db-service<br/>(+ rag-service, mock-web optional)"]
-        L_CLI --> L_Orch
-        L_Orch --> L_SQLite
-        L_Orch <--> L_DB
+    subgraph Local["Local mode"]
+        L_Orch["Orchestrator process"]
+        L_Q[("Attempt queue · SQLite")]
+        L_Env["docker-compose<br/>db-service + optional rag/mock-web"]
+        L_Orch --> L_Q
+        L_Orch <--> L_Env
     end
 
-    subgraph Docker["Single-host Docker mode"]
-        D_CLI["tolokaforge CLI"]
-        D_Orch["Orchestrator process<br/>(TrialRunner + LLM client)"]
-        D_Runner["runner container<br/>(Runner gRPC service)"]
-        D_DB["db-service container"]
-        D_Extras["optional:<br/>rag-service · mock-web · dind"]
-        D_SQLite[("SQLite<br/>(attempt queue)")]
-        D_CLI --> D_Orch
-        D_Orch --> D_SQLite
-        D_Orch <-->|gRPC| D_Runner
-        D_Runner <--> D_DB
-        D_Runner <--> D_Extras
-    end
-
-    subgraph Dist["Distributed (prepare + worker)"]
-        D2_Prep["tolokaforge prepare<br/>(host: any)"]
-        D2_PG[("Postgres<br/>(shared attempt queue)")]
-        D2_W1["tolokaforge worker<br/>(host A)<br/>orchestrator + optional local Runner"]
-        D2_W2["tolokaforge worker<br/>(host B)<br/>orchestrator + optional local Runner"]
-        D2_Prep --> D2_PG
-        D2_W1 <--> D2_PG
-        D2_W2 <--> D2_PG
+    subgraph DockerMode["Docker mode"]
+        D_Orch["Orchestrator process"]
+        D_Q[("Attempt queue · SQLite or Postgres")]
+        D_Stack["Docker stack<br/>runner + db-service<br/>+ optional rag/mock-web/dind"]
+        D_Orch --> D_Q
+        D_Orch <-->|gRPC + HTTP| D_Stack
     end
 ```
 
-The same orchestrator binary drives all three modes. Workers in distributed mode each contain a full orchestrator process and can independently run in local or Docker mode. Coordination happens entirely through the shared attempt queue — there is no central scheduler service. See [`docs/RUNNER.md`](../RUNNER.md) for the distributed contract.
+**Distributed runs** share the queue across hosts: one host runs `tolokaforge prepare` to populate a Postgres attempt queue; one or more hosts run `tolokaforge worker`, each instantiating a full orchestrator process. Workers independently choose local or Docker mode. There is no central scheduler — coordination is entirely through the queue. See [`docs/RUNNER.md`](../RUNNER.md) for the distributed contract.
 
 ---
 
