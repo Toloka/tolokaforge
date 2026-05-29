@@ -103,6 +103,7 @@ examples/             # Reference task layouts with runnable run_config.yaml
 
 | Topic | Link |
 | --- | --- |
+| Architecture overview | [docs/architecture/README.md](docs/architecture/README.md) |
 | Getting started | [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) |
 | Task authoring | [docs/TASKS.md](docs/TASKS.md) |
 | Grading system | [docs/GRADING.md](docs/GRADING.md) |
