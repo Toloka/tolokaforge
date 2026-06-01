@@ -42,11 +42,11 @@ def compute_stable_hash(state: dict, unstable_fields: list[str] | None = None) -
     return hashlib.sha256(json_str.encode("utf-8")).hexdigest()
 ```
 
-**Tau-bench compatible algorithm** (used by StateChecker):
+**Algorithm compatible with standard deterministic state hashing** (used by StateChecker):
 ```python
 # From tolokaforge/core/grading/state_checks.py
 def to_hashable(item):
-    """Convert to hashable representation (tau-bench compatible)"""
+    """Convert to hashable representation (compatible with standard deterministic state hashing)"""
     if isinstance(item, dict):
         return tuple((key, to_hashable(value)) for key, value in sorted(item.items()))
     elif isinstance(item, list):
@@ -64,7 +64,7 @@ def consistent_hash(value) -> str:
 ### 2. Golden Set Comparison
 
 **Code path:**
-1. [`external_adapters/tolokaforge-adapter-tlk-mcp-core/src/tolokaforge_adapter_tlk_mcp_core/adapter.py`](../external_adapters/tolokaforge-adapter-tlk-mcp-core/src/tolokaforge_adapter_tlk_mcp_core/adapter.py) - `grade()` method
+1. The environment adapter's `grade()` method computes the expected and actual stable hashes and compares them.
 2. [`tolokaforge/core/orchestrator.py`](../tolokaforge/core/orchestrator.py) - `_run_trial()` method
 
 **Flow:**
@@ -81,7 +81,7 @@ def consistent_hash(value) -> str:
 
 ### 3. Score Assignment
 
-**From [`external_adapters/tolokaforge-adapter-tlk-mcp-core/src/tolokaforge_adapter_tlk_mcp_core/adapter.py`](../external_adapters/tolokaforge-adapter-tlk-mcp-core/src/tolokaforge_adapter_tlk_mcp_core/adapter.py:1115-1139):**
+**The environment adapter's `grade()` method assigns the score by comparing stable-state hashes:**
 ```python
 def grade(self, task_id, trajectory, final_state, env):
     expected_stable = self._compute_expected_state(task_id)

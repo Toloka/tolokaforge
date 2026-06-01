@@ -20,7 +20,7 @@ This document defines the gRPC protocol for communication between the **Host** (
 │                            RUNNER CONTAINER                                   │
 │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────────────┐   │
 │  │ Adapter Runtime │  │ Tool Execution  │  │ Grading Engine              │   │
-│  │ - Tool Reconstr │  │ - MCP/Tau/Native│  │ - Golden Path Execution     │   │
+│  │ - Tool Reconstr │  │ - MCP/Native    │  │ - Golden Path Execution     │   │
 │  │ - Schema Gen    │  │ - State Mutation│  │ - Hash Comparison           │   │
 │  └────────┬────────┘  └────────┬────────┘  └──────────────┬──────────────┘   │
 │           │                    │                          │                   │
@@ -252,7 +252,7 @@ message GradeTrialRequest {
 
   // Optional: LLM messages for transcript rules grading
   // Only needed if grading config includes transcript_rules (must_contain, required_actions, etc.)
-  // For hash-only grading (TlkMcpCore, Tau), this can be omitted - Runner has tool call history
+  // For hash-only grading, this can be omitted - Runner has tool call history
   // Contains: messages array with role, content (assistant/user text only, not tool results)
   string llm_messages_json = 2;
 
@@ -452,7 +452,7 @@ The `task_description_json` field contains the full [`TaskDescription`](docs/TAS
   "name": "Book Flight",
   "category": "airline",
   "description": "Book a flight from NYC to Seattle",
-  "adapter_type": "tau",
+  "adapter_type": "native",
   "schema_version": "1.0.0",
   "system_prompt": "You are a customer service agent...",
   "agent_tools": [
@@ -461,10 +461,10 @@ The `task_description_json` field contains the full [`TaskDescription`](docs/TAS
       "description": "Book a new flight reservation",
       "parameters": {"type": "object", "properties": {...}},
       "source": {
-        "toolset": "airline",
-        "module_path": "tau_tools.book_reservation",
+        "toolset": "example",
+        "module_path": "example_tools.book_reservation",
         "class_name": "BookReservation",
-        "invocation_style": "tau_sync"
+        "invocation_style": "mcp_server"
       }
     }
   ],
@@ -641,7 +641,7 @@ The Runner needs to:
 1. **Parse TaskDescription**: Deserialize JSON and validate against schema
 2. **Initialize DB Service**: Send initial_state, schemas, unstable_fields
 3. **Reconstruct tools**: Use `ToolSource` to import and instantiate tools
-4. **Execute tools**: Route to appropriate adapter (tau_sync, mcp_async, mcp_server)
+4. **Execute tools**: Route to the appropriate invocation style (mcp_server, mcp_async, docker_compose_exec)
 5. **Implement grading**: Execute golden path, compute hashes, compare states
 
 ### DB Service API

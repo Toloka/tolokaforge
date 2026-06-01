@@ -194,7 +194,7 @@ uv run pytest -v 2>&1 | tee /tmp/test-output.log
 | `tolokaforge/runner` | gRPC runner service (DB client, tool factory, LLM judge) |
 | `tolokaforge/executor` | gRPC executor service |
 | `tolokaforge/agent` | gRPC agent service |
-| `tolokaforge/adapters` | Benchmark adapters (native, tau, tlk_mcp_core) |
+| `tolokaforge/adapters` | Benchmark adapters (native built-in, terminal_bench, external plugins) |
 | `tolokaforge/secrets` | Secret management (SecretManager, providers, config) |
 | `tolokaforge/tools` | Tool registry and builtin tools |
 | `tolokaforge/env` | Local environment services (JSON DB, mock web, RAG) |
@@ -207,7 +207,7 @@ uv run pytest -v 2>&1 | tee /tmp/test-output.log
 - **Runner** (`tolokaforge/runner`): gRPC service managing benchmark execution, database clients, tool instantiation, and LLM-as-judge evaluation (when `grading.yaml` configures `llm_judge`).
 - **Executor** (`tolokaforge/executor`): gRPC service that executes individual agent steps in isolated environments.
 - **Agent** (`tolokaforge/agent`): gRPC service wrapping LLM agent interactions.
-- **Adapters** (`tolokaforge/adapters`): Translate between task formats — native (built-in), tau-bench, and tlk_mcp_core.
+- **Adapters** (`tolokaforge/adapters`): Translate between task formats — native (built-in), terminal_bench, and external adapter plugins.
 - **Secrets** (`tolokaforge/secrets`): Universal secret management. `SecretManager` reads `.env` via `DotEnvProvider` then falls back to `os.environ` via `EnvProvider`; never pollutes `os.environ` itself. `tolokaforge run` calls `init_default()` once at startup; the runner container reconstructs the singleton from `TOLOKAFORGE_SECRETS_JSON`. See the **Secrets — single abstraction** rule below for the contract.
 - **Tools** (`tolokaforge/tools`): Registry of builtin tools available to agents during benchmark runs.
 - **Environment Services** (`tolokaforge/env`): JSON DB state service, mock web service, and RAG service for local development.
@@ -279,9 +279,9 @@ Recommended MCP servers for AI agents working on this project:
 
 ### Protected Directories
 
-> **DO NOT MODIFY ANYTHING IN `contrib/` DIRECTORY.**
+> **Do not modify vendored or externally-managed code in place.**
 >
-> This directory contains external/vendored code. Any changes must go through proper vendoring/update processes.
+> Such code must change through its proper vendoring/update process, not by direct edits in this repo.
 
 ### Preferred Libraries
 
@@ -391,7 +391,7 @@ No scripts, data files, temporary documents, or logs in root.
 - `plans/` is gitignored — local planning only
 - Use `docs/` for permanent development plans
 - Never commit: log files, JSON data dumps, build outputs, scratch documents
-- Data files belong in `tests/data/`, `contrib/`, or task fixture directories
+- Data files belong in `tests/data/` or task fixture directories
 
 ### No Project-Specific Content on main
 
@@ -442,7 +442,7 @@ Full six-step process: [`docs/ADD_NEW_MODEL.md`](docs/ADD_NEW_MODEL.md).
 21. **Gemini's tool spec is a JSON-Schema SUBSET — `$defs`/`$ref`/`oneOf`/`discriminator` aren't supported and `additionalProperties:{schema}` silently flattens** — when Pydantic emits any of these (default behaviour for nested models, discriminated unions, and `dict[str, T]` parameters), property names inside the unsupported construct never reach the model. The wire-level symptom looks like "Gemini renames `qty` → `quantity`" / "`subject` → `title`"; the actual cause is schema-loss in transit. Fix lives in [`GeminiSchema`](tolokaforge/core/llm/schema_sanitizer.py) (extends `StrictSchema` with `flatten_oneof_discriminator=True`), routed via `schema_sanitizer: gemini` + `response_policy: array_dict_map` on the `gemini` preset. `prompt_policy: dict_map_hints` does NOT mitigate (the schema info is already gone before the prompt is read). When a new provider exhibits field-rename symptoms, suspect this class of bug *first* — see also rule #4 under "Adding a new model / provider".
 22. **Field-omission failures observed in multi-turn evaluations are not single-turn-deterministic** — every registered model (including Gemini 3.1 Pro) passes the synthetic single-turn `test_required_fields_complete` test. The capability is `_CORE_CAPABILITIES`-exempt because every model passes the single-turn baseline; reproducing the multi-turn regression in a synthetic probe needs a multi-turn / heavy-context test variant that does not exist yet.
 23. **Empty-content filler injection is a `ToolContentPolicy` capability** — `_convert_messages` substitutes `"I'll help you with that."` for empty assistant content alongside `tool_calls` ONLY when the active `ToolContentPolicy.inject_empty_assistant_filler == True`. Only the Nova `aws_nova` preset opts in (Bedrock rejects empty assistant content on tool turns; commit `73e01e9e6`). Every other preset — `default`, `anthropic*`, `openai_gpt5`, `xai_grok`, `qwen`, `gemini` — leaves the content empty. **Why this matters**: the substitution used to be unconditional. The 2026-04-30 OTS regression analysis showed Gemini pattern-matches the filler in past assistant turns and echoes `"I'll help you with that."` back as its own response content (~26-38% of trials). Live probes confirmed: 2/5 Gemini calls echo the filler when it's in context, 0/5 echo with empty content. Routing pinned by `tests/canonical/test_content_policy_filler_routing.py`.
-24. **Task-pack `dict[str, Any]` parameters defeat schema enforcement** — when a tool parameter is declared `dict[str, Any]` in its task-pack Pydantic model (e.g. `tasks/ots_19_airlines/_domain/tools/mcp_tools_library/ots_19_airlines/zendesk/tools/create_item.py:31` `item: dict[str, Any]`), Pydantic generates `{type: object, additionalProperties: true}` with no inner `properties` / `required` list. `StrictSchema` does NOT rewrite `additionalProperties: true` (only `additionalProperties: <schema>`), so every model — including GPT-5.5 — receives the same permissive schema and must rely on system-prompt policy alone to know which inner fields are required. Field-omission failures (e.g. Gemini Pro forgetting `booking_channel` in 188/550 OTS trials) correlate with this shape. **Fix lives in the task pack** (declare a strict inner Pydantic model with explicit fields), not in the harness. See [`docs/LLM_LAYER.md`](docs/LLM_LAYER.md) § `schema_sanitizer`.
+24. **Task-pack `dict[str, Any]` parameters defeat schema enforcement** — when a tool parameter is declared `dict[str, Any]` in its task-pack Pydantic model (e.g. an `item: dict[str, Any]` field on a task-pack tool), Pydantic generates `{type: object, additionalProperties: true}` with no inner `properties` / `required` list. `StrictSchema` does NOT rewrite `additionalProperties: true` (only `additionalProperties: <schema>`), so every model — including GPT-5.5 — receives the same permissive schema and must rely on system-prompt policy alone to know which inner fields are required. Field-omission failures correlate with this shape. **Fix lives in the task pack** (declare a strict inner Pydantic model with explicit fields), not in the harness. See [`docs/LLM_LAYER.md`](docs/LLM_LAYER.md) § `schema_sanitizer`.
 
 ## Detailed Documentation
 
@@ -456,6 +456,5 @@ Full six-step process: [`docs/ADD_NEW_MODEL.md`](docs/ADD_NEW_MODEL.md).
 | Configuration | `docs/CONFIG.md` |
 | Docker / Runner | `docs/RUNNER.md` |
 | Adapters | `docs/ADAPTERS.md` |
-| Future plans | `docs/FUTURE_DEVELOPMENT.md` |
 | API reference | `docs/API.md` |
 | Troubleshooting | `docs/TROUBLESHOOTING.md` |

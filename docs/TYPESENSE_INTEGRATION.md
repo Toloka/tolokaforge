@@ -4,9 +4,9 @@ TolokaForge provides full TypeSense support for semantic search over knowledge b
 
 ## Overview
 
-The TypeSense integration bridges TolokaForge adapters with the `mcp_core` TypeSense infrastructure:
+The TypeSense integration provides semantic search over a domain's knowledge-base documents:
 
-- **Standalone Feature**: Can be used by any adapter (Native, internal MCP JSON, Tau)
+- **Standalone Feature**: Can be used by any adapter
 - **Automatic Indexing**: Documents in `docindex/` directories are automatically indexed
 - **Semantic Search**: Supports both vector and text-based search
 - **Graceful Degradation**: Falls back to stub behavior when TypeSense server is unavailable
@@ -17,10 +17,10 @@ The TypeSense integration bridges TolokaForge adapters with the `mcp_core` TypeS
 
 ```
 ┌─────────────────┐    ┌──────────────────────┐    ┌─────────────────────┐
-│   Adapter       │    │  TypeSenseProvider   │    │   mcp_core          │
+│   Adapter       │    │  TypeSenseProvider   │    │   Search backend    │
 │                 │    │                      │    │                     │
-│ _init_typesense │────┤ ensure_domain_init   ├────┤ TypesenseIndex     │
-│ (cached)        │    │ (coordinated)        │    │ universal_search_*  │
+│ _init_typesense │────┤ ensure_domain_init   ├────┤ index               │
+│ (cached)        │    │ (coordinated)        │    │ search()            │
 │                 │    │ search               │    │                     │
 └─────────────────┘    └──────────────────────┘    └─────────────────────┘
          │                      │
@@ -187,7 +187,7 @@ TypeSense is typically used through `search_policy` tools:
 ### Example Tool Implementation
 
 ```python
-from mcp_core.search import get_typesense_for_domain
+# get_typesense_for_domain is provided by the search layer
 
 class SearchPolicyTool(Tool):
     def _get_typesense_client(self, db: InMemoryDatabase):
@@ -417,5 +417,4 @@ Enable debug logging to troubleshoot issues:
 import logging
 logging.getLogger("tolokaforge.core.search.typesense_provider").setLevel(logging.DEBUG)
 logging.getLogger("tolokaforge.core.search.typesense_server").setLevel(logging.DEBUG)
-logging.getLogger("mcp_core.search").setLevel(logging.DEBUG)
 ```

@@ -729,5 +729,5 @@ carrying `text`, `tool_calls`, `usage: Usage`, `latency_s`, `cost_usd`,
 `reasoning: StructuredReasoning | None`, and `effective_system_prompt`.
 See § `usage` above for the full Usage schema and accumulation contract.
 
-`UserSimulator` wraps `LLMClient` for tau-bench-style user simulation with
+`UserSimulator` wraps `LLMClient` for standard user simulation with
 `scripted` or `llm` modes.

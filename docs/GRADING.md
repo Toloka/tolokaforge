@@ -10,7 +10,7 @@ Scores are weighted and combined into a final score. See [REFERENCE.md](REFERENC
 
 ---
 
-## Hash-Based Grading (Tau-Bench Compatible)
+## Hash-Based Grading
 
 Hash grading compares SHA256 of final state against a pre-computed golden hash.
 
@@ -24,7 +24,7 @@ ToHashable = Union[str, int, float, Dict[str, "ToHashable"], List["ToHashable"],
 Hashable = Union[str, int, float, Tuple["Hashable"], Tuple[Tuple[str, "Hashable"]]]
 
 def to_hashable(item: ToHashable) -> Hashable:
-    """Convert to hashable representation (tau-bench compatible)"""
+    """Convert to hashable representation (compatible with standard deterministic state hashing)"""
     if isinstance(item, dict):
         return tuple((key, to_hashable(value)) for key, value in sorted(item.items()))
     elif isinstance(item, list):
@@ -118,7 +118,7 @@ binary_pass = (final_score >= pass_threshold)
 
 ### Weighting Strategies
 
-**Strict deterministic (tau-bench):**
+**Strict deterministic:**
 ```yaml
 combine:
   weights: { state_checks: 1.0 }

@@ -19,9 +19,9 @@ For contributor-facing contract details, see `docs/ADAPTER_INTERFACE.md`.
 │                      Run Configuration                          │
 │  ┌─────────────────────────────────────────────────────────┐   │
 │  │  evaluation:                                             │   │
-│  │    tasks_glob: "tasks/tau/food_delivery"                  │   │
+│  │    tasks_glob: "tasks/**/task.yaml"                       │   │
 │  │  harness_adapter:                                        │   │
-│  │    type: "tau"  # or "native" (default) or "tlk_mcp_core"│   │
+│  │    type: "terminal_bench"  # or "native" (default)        │   │
 │  └─────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────┘
                                 │
@@ -30,7 +30,7 @@ For contributor-facing contract details, see `docs/ADAPTER_INTERFACE.md`.
 │                    Entry-Point Discovery                        │
 │  importlib.metadata.entry_points(group="tolokaforge.adapters") │
 │  ┌──────────────┐  ┌──────────────┐  ┌───────────────────┐     │
-│  │   native     │  │     tau      │  │   tlk_mcp_core    │     │
+│  │   native     │  │terminal_bench│  │     example       │     │
 │  │  (built-in)  │  │  (plugin)    │  │    (plugin)       │     │
 │  └──────────────┘  └──────────────┘  └───────────────────┘     │
 └─────────────────────────────────────────────────────────────────┘
@@ -46,9 +46,9 @@ For contributor-facing contract details, see `docs/ADAPTER_INTERFACE.md`.
 │  ┌────────┴────────┬──────────────────┬──────────────────┐     │
 │  ▼                 ▼                  ▼                   │     │
 │  ┌──────────────┐  ┌──────────────┐  ┌────────────────┐  │     │
-│  │NativeAdapter │  │ TauAdapter   │  │TlkMcpCoreAdptr │  │     │
-│  │ (task.yaml)  │  │ (env.py)     │  │(testcase.json) │  │     │
-│  │  [built-in]  │  │  [plugin]    │  │   [plugin]     │  │     │
+│  │NativeAdapter │  │TerminalBench │  │ ExampleAdapter │  │     │
+│  │ (task.yaml)  │  │  Adapter     │  │  (plugin)      │  │     │
+│  │  [built-in]  │  │  [plugin]    │  │                │  │     │
 │  └──────────────┘  └──────────────┘  └────────────────┘  │     │
 └─────────────────────────────────────────────────────────────────┘
                                 │
@@ -72,9 +72,9 @@ them automatically at import time.
 Each adapter package declares an entry-point in its `pyproject.toml`:
 
 ```toml
-# In external_adapters/tolokaforge-adapter-tau/pyproject.toml
+# In tolokaforge-adapter-example/pyproject.toml
 [project.entry-points."tolokaforge.adapters"]
-tau = "tolokaforge_adapter_tau:TauAdapter"
+example = "tolokaforge_adapter_example.adapter:ExampleAdapter"
 ```
 
 ### Discovery Mechanism
@@ -97,8 +97,8 @@ def _discover_adapters() -> dict[str, type]:
 
 ```bash
 # Install specific adapter
-uv sync --extra tau
-uv sync --extra tlk_mcp_core
+uv sync --extra terminal_bench
+uv sync --extra example
 
 # Install all adapters
 uv sync --extra adapters
@@ -112,19 +112,13 @@ tolokaforge/adapters/
 ├── base.py            # BaseAdapter abstract class, AdapterEnvironment
 └── native.py          # NativeAdapter for file-based tasks (built-in)
 
-external_adapters/
-├── tolokaforge-adapter-tau/           # Tau-bench adapter plugin
-│   ├── pyproject.toml                 # Entry-point: tau
-│   └── src/tolokaforge_adapter_tau/
-│       ├── __init__.py
-│       ├── adapter.py                 # TauAdapter
-│       └── import_hook.py            # TauBenchImportFinder
-└── tolokaforge-adapter-tlk-mcp-core/  # MCP Core adapter plugin
-    ├── pyproject.toml                 # Entry-point: tlk_mcp_core
-    └── src/tolokaforge_adapter_tlk_mcp_core/
-        ├── __init__.py
-        ├── adapter.py                 # TlkMcpCoreAdapter
-        └── testcase.py               # TlkMcpCoreTestCase
+# External adapter plugins live in their own packages, for example:
+tolokaforge-adapter-example/           # Example external adapter plugin
+├── pyproject.toml                     # Entry-point: example
+└── src/tolokaforge_adapter_example/
+    ├── __init__.py
+    ├── adapter.py                     # ExampleAdapter
+    └── data.py                        # Plugin-specific data/tool loading
 ```
 
 ## BaseAdapter Interface
@@ -154,22 +148,25 @@ All adapters implement these core methods:
 - **Grading**: Uses `grading.yaml` with state checks, transcript rules, LLM judge
 - **Package**: Built into `tolokaforge` core
 
-### TauAdapter (plugin: `tolokaforge-adapter-tau`)
+### TerminalBenchAdapter (plugin: `terminal_bench`)
 
-- **Detection**: Directory containing `env.py`
-- **Tools**: Loaded from `tools/__init__.py` with `ALL_TOOLS` list
-- **Data**: Loaded from `data/__init__.py` with `load_data()` function
-- **Grading**: Hash-based comparison after executing `golden_actions`
-- **Install**: `uv sync --extra tau`
+- **Detection**: Terminal Bench task layout discovered via `tasks_glob`
+- **Tools**: Provided by the plugin package for the Terminal Bench environment
+- **Data**: Loaded from the benchmark's own task definitions
+- **Grading**: Uses the benchmark's verification/grading logic
+- **Install**: `uv sync --extra terminal_bench`
 
-### TlkMcpCoreAdapter (plugin: `tolokaforge-adapter-tlk-mcp-core`)
+### Example external adapter (plugin: `tolokaforge-adapter-example`)
 
-- **Detection**: Glob pattern matching `testcases/*.json`
-- **Tools**: Loaded from `mcp-tools-library` package
-- **Data**: `mcp_core.InMemoryDatabase` with `data_patch` overlays
-- **Grading**: Stable hash comparison (excludes `UnstableField` annotations)
-- **TypeSense**: Automatic indexing of `docindex/*.md` for knowledge base search
-- **Install**: `uv sync --extra tlk_mcp_core`
+Any third-party adapter follows the same contract. A hypothetical
+`example` plugin illustrates the concepts a plugin typically wires up:
+
+- **Detection**: Glob pattern matching the plugin's task files
+- **Tools**: Loaded from the plugin package and exposed as `Tool` instances
+- **Data**: Loaded from the plugin's own data definitions, optionally with
+  per-task overlays
+- **Grading**: Hash-based or rule-based comparison defined by the plugin
+- **Install**: `uv sync --extra example`
 
 ## Configuration Examples
 
@@ -183,30 +180,28 @@ evaluation:
 # No harness_adapter = uses NativeAdapter automatically
 ```
 
-### Tau-format Environment
+### Terminal Bench Environment
 
 ```yaml
 evaluation:
-  tasks_glob: "tasks/tau/food_delivery"
-  output_dir: "output/tau_food_delivery"
+  tasks_glob: "tasks/terminal_bench/**/task.yaml"
+  output_dir: "output/terminal_bench"
 
 harness_adapter:
-  type: "tau"
-  params:
-    task_split: "test"
+  type: "terminal_bench"
 ```
 
-### TLK MCP Core Environment
+### External Plugin Adapter
 
 ```yaml
 evaluation:
-  tasks_glob: "contrib/project-m-copilot-mock-tools/mcp_servers/*/src/domains/*/testcases/*.json"
-  output_dir: "output/tlk_mcp_core_retail"
+  tasks_glob: "path/to/tasks/**/testcases/*.json"
+  output_dir: "output/example"
 
 harness_adapter:
-  type: "tlk_mcp_core"
+  type: "example"  # or "native"
   params:
-    tools_library: "contrib/project-m-copilot-mock-tools/mcp-tools-library"
+    tools_library: "path/to/tools-library"
     use_full_instruction: false
 ```
 

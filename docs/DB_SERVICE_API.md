@@ -11,7 +11,7 @@ the Docker architecture's trial isolation and grading requirements.
 │                            RUNNER CONTAINER                                  │
 │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────────────┐   │
 │  │ Adapter Runtime │  │ Tool Execution  │  │ Grading Engine              │   │
-│  │ - Tool Reconstr │  │ - MCP/Tau/Native│  │ - Golden Path Execution     │   │
+│  │ - Tool Reconstr │  │ - MCP/Native    │  │ - Golden Path Execution     │   │
 │  │ - Schema Gen    │  │ - State Mutation│  │ - Hash Comparison           │   │
 │  └────────┬────────┘  └────────┬────────┘  └──────────────┬──────────────┘   │
 │           │                    │                          │                   │
@@ -34,7 +34,7 @@ the Docker architecture's trial isolation and grading requirements.
 1. **Trial Isolation** — Each trial has isolated state, schemas, and snapshots
 2. **Schema-Aware** — Stores table schemas for validation and type inference
 3. **Unstable Field Filtering** — Explicit field exclusion for deterministic hashing
-4. **Tau/TlkMcpCore Compatible** — Hash algorithm matches existing implementations
+4. **Compatible with standard deterministic state hashing** — Hash algorithm matches the canonical hash algorithm
 5. **Snapshot/Restore** — Supports golden path execution during grading
 
 ---
@@ -226,7 +226,7 @@ Get SHA-256 hash of the stable state. This is the primary endpoint for grading c
 
 #### Hash Computation Algorithm
 
-The hash is computed to match the existing Tau/TlkMcpCore implementation:
+The hash is computed to be compatible with standard deterministic state hashing and matches the canonical hash algorithm:
 
 ```python
 def compute_stable_hash(state: Dict, unstable_fields: List[UnstableFieldSpec]) -> str:
@@ -250,7 +250,7 @@ def compute_stable_hash(state: Dict, unstable_fields: List[UnstableFieldSpec]) -
     return hashlib.sha256(json_str.encode("utf-8")).hexdigest()
 ```
 
-**CRITICAL:** The hash algorithm must match the canonical algorithm defined in [`TASK_DESCRIPTION_SCHEMA.md`](TASK_DESCRIPTION_SCHEMA.md#canonical-hash-algorithm) and [`calculate_database_hash()`](../contrib/mcp_core/src/mcp_core/utils/validation.py:74) from mcp_core:
+**CRITICAL:** The hash algorithm must match the canonical algorithm defined in [`TASK_DESCRIPTION_SCHEMA.md`](TASK_DESCRIPTION_SCHEMA.md#canonical-hash-algorithm):
 - `sort_keys=True` for deterministic key ordering
 - `separators=(",", ":")` for compact JSON (no spaces) — NOT default `(", ", ": ")`
 - `encode("utf-8")` — explicit UTF-8 encoding
@@ -573,7 +573,7 @@ def get_stable_state(trial: TrialState) -> Dict[str, List[Dict[str, Any]]]:
     """
     Filter out unstable fields from state.
     
-    Matches mcp_core.utils.validation.get_stable_database_state()
+    Matches the canonical stable-state algorithm
     """
     stable_state = {}
     
@@ -613,14 +613,14 @@ def convert_datetime_to_str(data: Any) -> Any:
 
 ## Hash Computation Algorithm
 
-The hash must be compatible with existing Tau/TlkMcpCore implementations:
+The hash must be compatible with standard deterministic state hashing and match the canonical hash algorithm:
 
 ```python
 def compute_stable_hash(trial: TrialState) -> str:
     """
     Compute SHA-256 hash of stable state.
     
-    MUST match mcp_core.utils.validation.calculate_database_hash()
+    MUST match the canonical hash algorithm
     """
     # Get stable state (unstable fields filtered)
     stable_state = get_stable_state(trial)

@@ -17,7 +17,7 @@ Host (Loader)                    Runner Container (Runtime)         DB Service C
 
 1. **Pure Data** — no Python callables, class references, or live objects
 2. **Self-Contained** — all information needed to run and grade a task
-3. **Adapter-Agnostic** — single schema supports Native, Tau, and TlkMcpCore
+3. **Adapter-Agnostic** — single schema supports the native adapter and external adapter plugins
 4. **Unstable Fields as Data** — field stability metadata is explicit, not Python annotations
 5. **Reconstructable** — `ToolSource` provides enough info to reconstruct tools at runtime
 6. **Canonical Hash Algorithm** — all components use identical JSON-based SHA-256 hashing
@@ -40,14 +40,13 @@ from pydantic import BaseModel, Field
 class AdapterType(str, Enum):
     """Source adapter that produced this description."""
     NATIVE = "native"
-    TAU = "tau"
-    TLK_MCP_CORE = "tlk_mcp_core"
+    # external adapter plugins register their own type
 
 
 class InvocationStyle(str, Enum):
     """How the runtime invokes this tool."""
-    TAU_SYNC = "tau_sync"          # Tau: Tool.invoke(data, **kwargs)
-    MCP_ASYNC = "mcp_async"        # TlkMcpCore: asyncio.run(tool.run(db, kwargs))
+    SYNC = "sync"                  # external sync tool adapters: Tool.invoke(data, **kwargs)
+    MCP_ASYNC = "mcp_async"        # external async tool adapters: asyncio.run(tool.run(db, kwargs))
     MCP_SERVER = "mcp_server"      # Native: MCP server subprocess
 
 
@@ -66,7 +65,7 @@ class ToolSource(BaseModel):
     toolset: str                                  # Package/directory: e.g. "zendesk", "airline", "retail"
     module_path: str                              # Module within toolset: "tools.create_item"
     class_name: str                               # Class/function: "CreateItem", "BookReservation"
-    invocation_style: InvocationStyle = InvocationStyle.TAU_SYNC
+    invocation_style: InvocationStyle = InvocationStyle.SYNC
     
     # For MCP server tools only
     mcp_server_script: Optional[str] = None       # Relative path: "mcp_server.py"
@@ -99,8 +98,8 @@ class UnstableFieldSpec(BaseModel):
     filter them out when computing stable state.
     
     IMPORTANT: All adapters MUST provide unstable field specs:
-    - TlkMcpCore: Extracted from UnstableField annotations in Pydantic models
-    - Tau: Loaded from unstable_fields.yaml in environment directory
+    - External adapters: Extracted from field annotations in their source models,
+      or loaded from adapter-specific config files
     - Native: Defined in task.yaml or grading.yaml
     """
     table_name: str                               # "zendesk_tickets", "reservations"
@@ -156,10 +155,10 @@ class UserSimulatorConfig(BaseModel):
     persona: str = "cooperative"
     backstory: str = ""                           # User instruction/context
     
-    # First message to start conversation (TlkMcpCore)
+    # First message to start conversation (external adapters)
     first_message: Optional[str] = None
     
-    # User context data injected into conversation (TlkMcpCore)
+    # User context data injected into conversation (external adapters)
     user_context: Optional[Dict[str, Any]] = None
     
     # For scripted mode
@@ -310,7 +309,7 @@ class TaskDescription(BaseModel):
 
 ## Examples
 
-### TlkMcpCore
+### External adapter (example)
 
 ```json
 {
@@ -318,7 +317,7 @@ class TaskDescription(BaseModel):
   "name": "ST006-001",
   "category": "external_retail_v3",
   "description": "Customer wants to return a DSLR camera for a refund",
-  "adapter_type": "tlk_mcp_core",
+  "adapter_type": "native",
   "schema_version": "1.0.0",
 
   "system_prompt": "# External Retail Customer Service\n\nYou are a customer service agent...",
@@ -409,7 +408,7 @@ class TaskDescription(BaseModel):
   "search": {
     "enabled": true,
     "domain_name": "external_retail_v3",
-    "documents_path": "tasks/tlk_mcp_core/external_retail_server_v3/src/domains/external_retail_v3/docindex"
+    "documents_path": "path/to/tasks/external_retail_server_v3/src/domains/external_retail_v3/docindex"
   },
 
   "grading": {
@@ -426,9 +425,9 @@ class TaskDescription(BaseModel):
   },
 
   "source_files": {
-    "testcase": "tasks/tlk_mcp_core/.../testcases/ST006-001.json",
-    "instruction": "tasks/tlk_mcp_core/.../instruction.md",
-    "tools_library": "tasks/tlk_mcp_core/mcp-tools-library"
+    "testcase": "path/to/tasks/.../testcases/ST006-001.json",
+    "instruction": "path/to/tasks/.../instruction.md",
+    "tools_library": "path/to/tasks/tools-library"
   },
   "metadata": {
     "domain": "external_retail_v3"
@@ -436,7 +435,7 @@ class TaskDescription(BaseModel):
 }
 ```
 
-### Tau
+### External adapter (sync tools example)
 
 ```json
 {
@@ -444,7 +443,7 @@ class TaskDescription(BaseModel):
   "name": "Airline Task 1",
   "category": "airline",
   "description": "Book a flight from New York to Seattle",
-  "adapter_type": "tau",
+  "adapter_type": "native",
   "schema_version": "1.0.0",
 
   "system_prompt": "# Airline Booking System\n\nYou are a customer service agent...",
@@ -464,9 +463,9 @@ class TaskDescription(BaseModel):
       },
       "source": {
         "toolset": "airline",
-        "module_path": "tau_tools.book_reservation",
+        "module_path": "sync_tools.book_reservation",
         "class_name": "BookReservation",
-        "invocation_style": "tau_sync"
+        "invocation_style": "sync"
       }
     }
   ],
@@ -551,7 +550,7 @@ class TaskDescription(BaseModel):
         "toolset": "example_user",
         "module_path": "user_device",
         "class_name": "toggle_airplane_mode",
-        "invocation_style": "tau_sync"
+        "invocation_style": "sync"
       }
     }
   ],
@@ -617,13 +616,13 @@ The runtime uses `ToolSource` to reconstruct tools:
 def reconstruct_tool(tool: ToolSchema, db_client: DBServiceClient) -> callable:
     source = tool.source
 
-    if source.invocation_style == "tau_sync":
+    if source.invocation_style == "sync":
         module = importlib.import_module(f"{source.toolset}.{source.module_path}")
         tool_class = getattr(module, source.class_name)
-        return TauToolWrapper(tool.name, tool_class, db_client)
+        return SyncToolWrapper(tool.name, tool_class, db_client)
 
     elif source.invocation_style == "mcp_async":
-        module = importlib.import_module(f"mcp_tools_library.{source.toolset}.{source.module_path}")
+        module = importlib.import_module(f"tools_library.{source.toolset}.{source.module_path}")
         tool_class = getattr(module, source.class_name)
         return MCPAsyncToolWrapper(tool.name, tool_class, db_client)
 
@@ -664,8 +663,8 @@ def compute_stable_hash(state: Dict[str, Any]) -> str:
     
     This algorithm MUST be used by:
     - DB Service /state/hash endpoint
-    - TlkMcpCore adapter grading
-    - Tau adapter grading
+    - External adapter grading
+    - Native adapter grading
     - Any other component computing state hashes
     
     Algorithm:
@@ -685,7 +684,7 @@ def compute_stable_hash(state: Dict[str, Any]) -> str:
 - `encode("utf-8")` — explicit UTF-8 encoding
 - `default=str` — handle datetime and other non-JSON types
 
-**Reference Implementation:** [`mcp_core.utils.validation.calculate_database_hash()`](../contrib/mcp_core/src/mcp_core/utils/validation.py)
+**Reference Implementation:** the canonical algorithm above — JSON serialize with `sort_keys=True` and compact `separators=(",", ":")`, UTF-8 encode, then SHA-256 hexdigest. All adapters and the DB Service must implement it identically.
 
 ---
 
@@ -693,6 +692,6 @@ def compute_stable_hash(state: Dict[str, Any]) -> str:
 
 | Adapter | Reads | Key Transformations |
 |---------|-------|-------------------|
-| TlkMcpCore | testcase.json, internal_data.json, instruction.md, mcp-tools-library, Pydantic models | Extracts `UnstableField` annotations → `unstable_fields` list. Converts async tool classes → `ToolSource` with `mcp_async`. |
-| Tau | tasks_test.py, tools/, data/, wiki.md | Extracts task.actions → `golden_actions`. Converts tool classes → `ToolSource` with `tau_sync`. Calls `load_data()` → `initial_state.tables`. |
+| External (async tools) | testcase.json, internal_data.json, instruction.md, tools-library, source models | Extracts unstable-field annotations → `unstable_fields` list. Converts async tool classes → `ToolSource` with `mcp_async`. |
+| External (sync tools) | task definitions, tools/, data/, wiki.md | Extracts task.actions → `golden_actions`. Converts tool classes → `ToolSource` with `sync`. Calls `load_data()` → `initial_state.tables`. |
 | Native | task.yaml, grading.yaml, system_prompt.md, initial_state.json | Queries MCP server for tool schemas → `ToolSource` with `mcp_server`. Copies grading.yaml content → `GradingConfig`. |

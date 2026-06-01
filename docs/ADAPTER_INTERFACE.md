@@ -77,7 +77,7 @@ Adapters should fail fast with specific errors for:
 ## Reference Implementations
 
 1. `NativeAdapter` (`tolokaforge.adapters.native`): canonical `task.yaml` + `grading.yaml` path. Built-in.
-2. `TauAdapter` (`tolokaforge_adapter_tau`): Tau-bench format. Plugin package.
-3. `TlkMcpCoreAdapter` (`tolokaforge_adapter_tlk_mcp_core`): MCP Core JSON format. Plugin package.
+2. `terminal_bench` (`tolokaforge_adapter_terminal_bench`): terminal-bench format. Plugin package.
+3. External adapter plugins: additional task formats supplied as separately installed plugin packages.
 
 See also: `docs/ADAPTER_ARCHITECTURE.md`.
