@@ -36,15 +36,12 @@ _FAILED_ADAPTERS: dict[str, Exception] = {}
 def _discover_adapters() -> dict[str, type]:
     """Discover adapter plugins via importlib.metadata entry-points.
 
-    Always includes NativeAdapter and FrozenMcpCoreAdapter (built-in).
-    External adapters are loaded from the ``tolokaforge.adapters``
-    entry-point group.
+    NativeAdapter is the only built-in adapter; all others are entry-point
+    plugins loaded from the ``tolokaforge.adapters`` group.
     """
     from tolokaforge.adapters.native import NativeAdapter
 
     adapters: dict[str, type] = {"native": NativeAdapter}
-
-    # Register built-in frozen adapter (does NOT import mcp_core at module level)
 
     for ep in importlib.metadata.entry_points(group="tolokaforge.adapters"):
         try:
@@ -127,7 +124,6 @@ __all__ = [
     "BaseAdapter",
     "AdapterEnvironment",
     "DockerStackRequirements",
-    "FrozenMcpCoreAdapter",
     "NativeAdapter",
     "NativeTaskBundle",
     "available_adapters",
