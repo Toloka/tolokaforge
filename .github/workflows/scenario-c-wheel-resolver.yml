@@ -1,0 +1,58 @@
+name: wheel-resolver — git install + relocated uv cache (issue #27)
+
+# Regression guard for the "Scenario C" wheel-resolver bug: when the engine is
+# installed from a git source and astral-sh/setup-uv relocates the uv cache via
+# UV_CACHE_DIR, the host-side wheel resolver must still find the uv-built wheel.
+#
+# This reproduces the exact failing environment cheaply (no Docker, no LLM): it
+# installs the engine from THIS commit via git (=> PEP 610 vcs_info, no source
+# tree, so only the pip-cache provider can succeed) under setup-uv's relocated
+# cache, then asserts resolve_wheel() returns a wheel. Pre-fix this raised
+# NoWheelError.
+
+on:
+  pull_request:
+    paths:
+      - "tolokaforge/docker/wheel_resolver.py"
+      - ".github/workflows/scenario-c-wheel-resolver.yml"
+  workflow_dispatch:
+
+jobs:
+  scenario-c:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install uv (setup-uv relocates UV_CACHE_DIR)
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Reproduce Scenario C and assert the wheel resolves
+        env:
+          REF: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          echo "UV_CACHE_DIR=${UV_CACHE_DIR:-<unset>}"
+
+          work="$(mktemp -d)"
+          cd "$work"
+          uv venv --python 3.12
+
+          # Install the engine from git => real vcs_info install, no source tree.
+          uv pip install "git+https://github.com/${GITHUB_REPOSITORY}.git@${REF}"
+
+          .venv/bin/python - <<'PY'
+          import importlib.metadata as md
+          import json
+          from pathlib import Path
+
+          du = json.loads(md.distribution("tolokaforge").read_text("direct_url.json"))
+          assert "vcs_info" in du, f"expected a git install (vcs_info), got: {du}"
+          print("git install confirmed:", du.get("url"))
+
+          from tolokaforge.docker.wheel_resolver import resolve_wheel
+
+          art = resolve_wheel(Path("wheel-cache"))
+          print(f"RESOLVED: {art.path} (provider={art.provider_name}, version={art.version})")
+          assert art.path.is_file(), f"resolver returned a non-existent path: {art.path}"
+          PY
