@@ -20,12 +20,6 @@ on:
 jobs:
   scenario-c:
     runs-on: ubuntu-latest
-    env:
-      # Relocate the uv cache away from ~/.cache/uv. This is exactly what
-      # astral-sh/setup-uv does in CI (it sets UV_CACHE_DIR), and is the
-      # condition that triggered issue #27. Set it explicitly so the repro
-      # is deterministic and needs no lockfile/project for cache restore.
-      UV_CACHE_DIR: ${{ runner.temp }}/relocated-uv-cache
     steps:
       - name: Install uv
         uses: astral-sh/setup-uv@v4
@@ -37,9 +31,14 @@ jobs:
           REF: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
-          echo "UV_CACHE_DIR=${UV_CACHE_DIR:-<unset>}"
 
           work="$(mktemp -d)"
+          # Relocate the uv cache away from ~/.cache/uv. This is exactly what
+          # astral-sh/setup-uv does in CI (it sets UV_CACHE_DIR), and is the
+          # condition that triggered issue #27.
+          export UV_CACHE_DIR="$work/uvcache"
+          echo "UV_CACHE_DIR=$UV_CACHE_DIR"
+
           cd "$work"
           uv venv --python 3.12
 
