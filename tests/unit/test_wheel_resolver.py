@@ -22,7 +22,9 @@ from tolokaforge.docker.wheel_resolver import (
     WheelResolver,
     _hash_file,
     _is_engine_pyproject,
+    _pip_wheel_cache_bases,
     _read_pyproject_version,
+    _uv_cache_bases,
     _uv_cache_dir_from_cli,
     _walk_pip_wheel_caches,
     _wheel_matches_version,
@@ -390,6 +392,79 @@ class TestUvCacheDirFromCli:
             assert _uv_cache_dir_from_cli() is None
 
 
+class TestUvCacheBasesPrecedence:
+    """Lock the precedence: `uv cache dir` (authoritative) > UV_CACHE_DIR env > default.
+
+    The full matrix of {uv present / uv unavailable} x {UV_CACHE_DIR set / unset}.
+    Behavior must be equivalent to the pre-tweak version in every cell (env and
+    `uv cache dir` never disagree when both are available, because `uv cache dir`
+    itself honors UV_CACHE_DIR).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _home(self, monkeypatch, tmp_path):
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: home)
+        self.default = home / ".cache" / "uv"
+        monkeypatch.delenv("UV_CACHE_DIR", raising=False)
+
+    def _set_cli(self, monkeypatch, value):
+        monkeypatch.setattr(
+            "tolokaforge.docker.wheel_resolver._uv_cache_dir_from_cli", lambda: value
+        )
+
+    def test_cli_present_env_unset(self, tmp_path, monkeypatch):
+        x = tmp_path / "x"
+        self._set_cli(monkeypatch, x)
+        assert _uv_cache_bases() == [x, self.default]
+
+    def test_cli_wins_over_env(self, tmp_path, monkeypatch):
+        # uv is authoritative; when present, the UV_CACHE_DIR env value is NOT
+        # added as a separate root (uv cache dir already reflects it).
+        x = tmp_path / "x"
+        y = tmp_path / "y"
+        self._set_cli(monkeypatch, x)
+        monkeypatch.setenv("UV_CACHE_DIR", str(y))
+        bases = _uv_cache_bases()
+        assert bases == [x, self.default]
+        assert y not in bases
+
+    def test_env_fallback_when_cli_unavailable(self, tmp_path, monkeypatch):
+        y = tmp_path / "y"
+        self._set_cli(monkeypatch, None)
+        monkeypatch.setenv("UV_CACHE_DIR", str(y))
+        assert _uv_cache_bases() == [y, self.default]
+
+    def test_default_only_when_nothing_available(self, monkeypatch):
+        self._set_cli(monkeypatch, None)
+        assert _uv_cache_bases() == [self.default]
+
+    def test_cli_equals_env_dedups(self, tmp_path, monkeypatch):
+        x = tmp_path / "x"
+        self._set_cli(monkeypatch, x)
+        monkeypatch.setenv("UV_CACHE_DIR", str(x))
+        assert _uv_cache_bases() == [x, self.default]
+
+
+class TestPipWheelCacheBases:
+    @pytest.fixture(autouse=True)
+    def _home(self, monkeypatch, tmp_path):
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: home)
+        self.default = home / ".cache" / "pip" / "wheels"
+        monkeypatch.delenv("PIP_CACHE_DIR", raising=False)
+
+    def test_default_only(self):
+        assert _pip_wheel_cache_bases() == [self.default]
+
+    def test_env_then_default(self, tmp_path, monkeypatch):
+        p = tmp_path / "pipcache"
+        monkeypatch.setenv("PIP_CACHE_DIR", str(p))
+        assert _pip_wheel_cache_bases() == [p / "wheels", self.default]
+
+
 class TestWalkPipWheelCaches:
     """The walk must find the wheel wherever the cache actually lives."""
 
@@ -449,6 +524,20 @@ class TestWalkPipWheelCaches:
         )
         results = _walk_pip_wheel_caches()
         assert results.count(whl) == 1
+
+    def test_cli_location_searched_even_when_env_points_elsewhere(self, tmp_path, monkeypatch):
+        # Wheel lives only in the authoritative (uv cache dir) location; the
+        # UV_CACHE_DIR env points at a different, empty dir. The walk must still
+        # find it because uv-cache-dir wins.
+        cli_root = tmp_path / "cli"
+        env_root = tmp_path / "env"
+        whl = _write_uv_wheel(cli_root)
+        env_root.mkdir()
+        monkeypatch.setenv("UV_CACHE_DIR", str(env_root))
+        monkeypatch.setattr(
+            "tolokaforge.docker.wheel_resolver._uv_cache_dir_from_cli", lambda: cli_root
+        )
+        assert whl in _walk_pip_wheel_caches()
 
 
 class TestScenarioCResolution:

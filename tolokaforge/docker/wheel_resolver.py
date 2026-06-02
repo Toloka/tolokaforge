@@ -328,22 +328,23 @@ def _uv_cache_dir_from_cli() -> Path | None:
 
 
 def _uv_cache_bases() -> list[Path]:
-    """uv cache roots to search, most-specific first, de-duplicated.
+    """uv cache roots to search, de-duplicated, in precedence order.
 
-    This is *location* discovery, not layout: it honors ``UV_CACHE_DIR`` and
-    ``uv cache dir`` (which also covers ``XDG_CACHE_HOME`` / uv config), falling
-    back to the default ``~/.cache/uv``.  CI tools such as ``astral-sh/setup-uv``
-    relocate the cache via ``UV_CACHE_DIR``, so a hard-coded ``~/.cache/uv`` is
-    not sufficient.  The on-disk *layout* within a root is uv-internal and is
-    handled by :func:`_walk_pip_wheel_caches`.
+    Prefer ``uv cache dir`` — it is authoritative and already honors
+    ``UV_CACHE_DIR``, ``XDG_CACHE_HOME``, and uv config. Fall back to the
+    ``UV_CACHE_DIR`` env var only when the ``uv`` binary is unavailable, then the
+    default ``~/.cache/uv``. CI tools such as ``astral-sh/setup-uv`` relocate the
+    cache via ``UV_CACHE_DIR``, so a hard-coded ``~/.cache/uv`` is not sufficient.
+
+    This is *location* discovery — the on-disk *layout* within a root is
+    uv-internal and handled by :func:`_walk_pip_wheel_caches`.
     """
     candidates: list[Path] = []
-    env = os.environ.get("UV_CACHE_DIR")
-    if env:
-        candidates.append(Path(env))
     cli = _uv_cache_dir_from_cli()
     if cli is not None:
         candidates.append(cli)
+    elif env := os.environ.get("UV_CACHE_DIR"):
+        candidates.append(Path(env))
     candidates.append(Path.home() / ".cache" / "uv")
     return _dedup_paths(candidates)
 
