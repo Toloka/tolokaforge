@@ -32,6 +32,14 @@ from tolokaforge.docker.wheel_resolver import (
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def _clear_uv_cache_dir_cli_cache():
+    """`_uv_cache_dir_from_cli` is lru_cached — keep tests independent."""
+    _uv_cache_dir_from_cli.cache_clear()
+    yield
+    _uv_cache_dir_from_cli.cache_clear()
+
+
 # ===================================================================
 # Fixtures
 # ===================================================================

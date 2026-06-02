@@ -20,6 +20,11 @@ on:
 jobs:
   scenario-c:
     runs-on: ubuntu-latest
+    # Skip on fork PRs: the job installs the engine from this repo at the PR
+    # head SHA, which only exists on the base repo for same-repo branches.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - name: Install uv
         uses: astral-sh/setup-uv@v4

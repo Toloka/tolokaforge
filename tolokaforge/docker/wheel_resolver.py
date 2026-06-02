@@ -39,6 +39,7 @@ import sys
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, distribution, version
 from pathlib import Path
 
@@ -300,6 +301,7 @@ def _dedup_paths(paths: list[Path]) -> list[Path]:
     return out
 
 
+@lru_cache(maxsize=1)
 def _uv_cache_dir_from_cli() -> Path | None:
     """Ask ``uv`` for its cache directory (authoritative location).
 
