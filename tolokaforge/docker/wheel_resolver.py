@@ -31,6 +31,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -38,6 +39,7 @@ import sys
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, distribution, version
 from pathlib import Path
 
@@ -286,27 +288,107 @@ def _newest_whl(directory: Path, prefix: str) -> Path | None:
 # ---------------------------------------------------------------------------
 
 
+def _dedup_paths(paths: list[Path]) -> list[Path]:
+    """De-duplicate paths (after ``expanduser``), preserving first-seen order."""
+    seen: set[str] = set()
+    out: list[Path] = []
+    for p in paths:
+        ep = p.expanduser()
+        key = str(ep)
+        if key not in seen:
+            seen.add(key)
+            out.append(ep)
+    return out
+
+
+@lru_cache(maxsize=1)
+def _uv_cache_dir_from_cli() -> Path | None:
+    """Ask ``uv`` for its cache directory (authoritative location).
+
+    ``uv cache dir`` honors ``UV_CACHE_DIR``, ``XDG_CACHE_HOME``, and uv config,
+    so it covers relocations (e.g. ``astral-sh/setup-uv`` in CI) that the
+    hard-coded default would miss.  Returns ``None`` if ``uv`` is unavailable or
+    the call fails — callers fall back to the default location.
+    """
+    if shutil.which("uv") is None:
+        return None
+    try:
+        result = subprocess.run(
+            ["uv", "cache", "dir"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    out = result.stdout.strip()
+    return Path(out) if out else None
+
+
+def _uv_cache_bases() -> list[Path]:
+    """uv cache roots to search, de-duplicated, in precedence order.
+
+    Prefer ``uv cache dir`` — it is authoritative and already honors
+    ``UV_CACHE_DIR``, ``XDG_CACHE_HOME``, and uv config. Fall back to the
+    ``UV_CACHE_DIR`` env var only when the ``uv`` binary is unavailable, then the
+    default ``~/.cache/uv``. CI tools such as ``astral-sh/setup-uv`` relocate the
+    cache via ``UV_CACHE_DIR``, so a hard-coded ``~/.cache/uv`` is not sufficient.
+
+    This is *location* discovery — the on-disk *layout* within a root is
+    uv-internal and handled by :func:`_walk_pip_wheel_caches`.
+    """
+    candidates: list[Path] = []
+    cli = _uv_cache_dir_from_cli()
+    if cli is not None:
+        candidates.append(cli)
+    elif env := os.environ.get("UV_CACHE_DIR"):
+        candidates.append(Path(env))
+    candidates.append(Path.home() / ".cache" / "uv")
+    return _dedup_paths(candidates)
+
+
+def _pip_wheel_cache_bases() -> list[Path]:
+    """pip wheel-cache roots to search, de-duplicated.
+
+    Honors ``PIP_CACHE_DIR`` (pip stores built wheels under ``<cache>/wheels``)
+    then the default ``~/.cache/pip/wheels``.
+    """
+    candidates: list[Path] = []
+    env = os.environ.get("PIP_CACHE_DIR")
+    if env:
+        candidates.append(Path(env) / "wheels")
+    candidates.append(Path.home() / ".cache" / "pip" / "wheels")
+    return _dedup_paths(candidates)
+
+
 def _walk_pip_wheel_caches() -> list[Path]:
-    """Find all tolokaforge wheels in pip and uv caches.
+    """Find all tolokaforge wheels in the pip and uv caches.
 
-    uv stores built wheels under versioned directories:
-    - ``~/.cache/uv/sdists-v*/``  — wheels built from source/git installs
-    - ``~/.cache/uv/wheels-v*/``  — pre-built wheels from indices
-    - ``~/.cache/uv/built-wheels-v*/`` — (older uv versions)
+    *Where* to look is discovered dynamically — ``UV_CACHE_DIR`` / ``uv cache dir``
+    and ``PIP_CACHE_DIR``, plus the ``~/.cache`` defaults (see
+    :func:`_uv_cache_bases` / :func:`_pip_wheel_cache_bases`) — because CI tools
+    such as ``astral-sh/setup-uv`` relocate the cache.
 
-    pip uses ``~/.cache/pip/wheels/``.
+    *How* uv lays wheels out within a cache root is uv-internal:
+    - ``<uv-cache>/sdists-v*/``       — wheels built from source/git installs
+    - ``<uv-cache>/wheels-v*/``       — pre-built wheels from indices
+    - ``<uv-cache>/built-wheels-v*/`` — (older uv versions)
+    pip uses ``<pip-cache>/wheels/``.
     """
     results: list[Path] = []
     whl_glob = f"{_ENGINE_PKG}-*.whl"
 
-    # pip cache
-    pip_cache = Path.home() / ".cache" / "pip" / "wheels"
-    if pip_cache.is_dir():
-        results.extend(pip_cache.rglob(whl_glob))
+    # pip caches
+    for pip_cache in _pip_wheel_cache_bases():
+        if pip_cache.is_dir():
+            results.extend(pip_cache.rglob(whl_glob))
 
-    # uv caches — search all versioned directories
-    uv_base = Path.home() / ".cache" / "uv"
-    if uv_base.is_dir():
+    # uv caches — search the versioned layout dirs within each cache root
+    for uv_base in _uv_cache_bases():
+        if not uv_base.is_dir():
+            continue
         for pattern in ("sdists-v*", "wheels-v*", "built-wheels-v*"):
             for versioned_dir in uv_base.glob(pattern):
                 for whl in versioned_dir.rglob(whl_glob):
@@ -315,7 +397,7 @@ def _walk_pip_wheel_caches() -> list[Path]:
                     if "/editable/" not in str(whl):
                         results.append(whl)
 
-    return results
+    return _dedup_paths(results)
 
 
 # ---------------------------------------------------------------------------
@@ -605,10 +687,15 @@ class WheelResolver:
                 )
                 return artifact
 
+        searched = ", ".join(str(p) for p in (*_uv_cache_bases(), *_pip_wheel_cache_bases()))
+        uv_env = "set" if os.environ.get("UV_CACHE_DIR") else "unset"
+        pip_env = "set" if os.environ.get("PIP_CACHE_DIR") else "unset"
         raise NoWheelError(
             f"No provider could produce a tolokaforge wheel.  "
-            f"Tried: {', '.join(attempted)}.  "
-            f"Either clone the repo or install via pip/uv."
+            f"Tried providers: {', '.join(attempted)}.  "
+            f"Searched wheel caches: {searched} "
+            f"(UV_CACHE_DIR={uv_env}, PIP_CACHE_DIR={pip_env}).  "
+            f"Set UV_CACHE_DIR/PIP_CACHE_DIR, clone the repo, or install via pip/uv."
         )
 
     def _sort(self) -> None:

@@ -5,6 +5,7 @@ All tests are synthetic — no Docker daemon, no network, no real wheel builds.
 
 from __future__ import annotations
 
+import subprocess
 import textwrap
 from pathlib import Path
 from unittest.mock import patch
@@ -21,12 +22,24 @@ from tolokaforge.docker.wheel_resolver import (
     WheelResolver,
     _hash_file,
     _is_engine_pyproject,
+    _pip_wheel_cache_bases,
     _read_pyproject_version,
+    _uv_cache_bases,
+    _uv_cache_dir_from_cli,
+    _walk_pip_wheel_caches,
     _wheel_matches_version,
     resolve_wheel,
 )
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _clear_uv_cache_dir_cli_cache():
+    """`_uv_cache_dir_from_cli` is lru_cached — keep tests independent."""
+    _uv_cache_dir_from_cli.cache_clear()
+    yield
+    _uv_cache_dir_from_cli.cache_clear()
 
 
 # ===================================================================
@@ -311,6 +324,287 @@ class TestPipCacheWheelProvider:
             return_value=None,
         ):
             assert provider.provide(cache_dir) is None
+
+
+# ===================================================================
+# Cache discovery — _uv_cache_dir_from_cli + _walk_pip_wheel_caches
+# ===================================================================
+
+
+def _write_uv_wheel(uv_root: Path, *, version: str = "0.3.0", editable: bool = False) -> Path:
+    """Create a wheel under a uv-style ``sdists-v0`` layout inside *uv_root*."""
+    sub = uv_root / "sdists-v0" / "tolokaforge"
+    if editable:
+        sub = sub / "editable"
+    sub.mkdir(parents=True, exist_ok=True)
+    whl = sub / f"tolokaforge-{version}-py3-none-any.whl"
+    whl.write_bytes(b"PK\x03\x04test")
+    return whl
+
+
+def _write_pip_wheel(pip_root: Path, *, version: str = "0.3.0") -> Path:
+    """Create a wheel under ``<pip_root>/wheels/...``."""
+    sub = pip_root / "wheels" / "ab" / "cd"
+    sub.mkdir(parents=True, exist_ok=True)
+    whl = sub / f"tolokaforge-{version}-py3-none-any.whl"
+    whl.write_bytes(b"PK\x03\x04test")
+    return whl
+
+
+class TestUvCacheDirFromCli:
+    def test_returns_path_from_uv(self, tmp_path: Path):
+        root = tmp_path / "uvcache"
+        with (
+            patch("tolokaforge.docker.wheel_resolver.shutil.which", return_value="/usr/bin/uv"),
+            patch(
+                "tolokaforge.docker.wheel_resolver.subprocess.run",
+                return_value=subprocess.CompletedProcess(
+                    args=["uv", "cache", "dir"], returncode=0, stdout=f"{root}\n", stderr=""
+                ),
+            ),
+        ):
+            assert _uv_cache_dir_from_cli() == root
+
+    def test_uv_absent_returns_none(self):
+        with patch("tolokaforge.docker.wheel_resolver.shutil.which", return_value=None):
+            assert _uv_cache_dir_from_cli() is None
+
+    def test_nonzero_exit_returns_none(self):
+        with (
+            patch("tolokaforge.docker.wheel_resolver.shutil.which", return_value="/usr/bin/uv"),
+            patch(
+                "tolokaforge.docker.wheel_resolver.subprocess.run",
+                return_value=subprocess.CompletedProcess(
+                    args=["uv", "cache", "dir"], returncode=1, stdout="", stderr="boom"
+                ),
+            ),
+        ):
+            assert _uv_cache_dir_from_cli() is None
+
+    def test_subprocess_error_returns_none(self):
+        with (
+            patch("tolokaforge.docker.wheel_resolver.shutil.which", return_value="/usr/bin/uv"),
+            patch(
+                "tolokaforge.docker.wheel_resolver.subprocess.run",
+                side_effect=OSError("nope"),
+            ),
+        ):
+            assert _uv_cache_dir_from_cli() is None
+
+
+class TestUvCacheBasesPrecedence:
+    """Lock the precedence: `uv cache dir` (authoritative) > UV_CACHE_DIR env > default.
+
+    The full matrix of {uv present / uv unavailable} x {UV_CACHE_DIR set / unset}.
+    Behavior must be equivalent to the pre-tweak version in every cell (env and
+    `uv cache dir` never disagree when both are available, because `uv cache dir`
+    itself honors UV_CACHE_DIR).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _home(self, monkeypatch, tmp_path):
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: home)
+        self.default = home / ".cache" / "uv"
+        monkeypatch.delenv("UV_CACHE_DIR", raising=False)
+
+    def _set_cli(self, monkeypatch, value):
+        monkeypatch.setattr(
+            "tolokaforge.docker.wheel_resolver._uv_cache_dir_from_cli", lambda: value
+        )
+
+    def test_cli_present_env_unset(self, tmp_path, monkeypatch):
+        x = tmp_path / "x"
+        self._set_cli(monkeypatch, x)
+        assert _uv_cache_bases() == [x, self.default]
+
+    def test_cli_wins_over_env(self, tmp_path, monkeypatch):
+        # uv is authoritative; when present, the UV_CACHE_DIR env value is NOT
+        # added as a separate root (uv cache dir already reflects it).
+        x = tmp_path / "x"
+        y = tmp_path / "y"
+        self._set_cli(monkeypatch, x)
+        monkeypatch.setenv("UV_CACHE_DIR", str(y))
+        bases = _uv_cache_bases()
+        assert bases == [x, self.default]
+        assert y not in bases
+
+    def test_env_fallback_when_cli_unavailable(self, tmp_path, monkeypatch):
+        y = tmp_path / "y"
+        self._set_cli(monkeypatch, None)
+        monkeypatch.setenv("UV_CACHE_DIR", str(y))
+        assert _uv_cache_bases() == [y, self.default]
+
+    def test_default_only_when_nothing_available(self, monkeypatch):
+        self._set_cli(monkeypatch, None)
+        assert _uv_cache_bases() == [self.default]
+
+    def test_cli_equals_env_dedups(self, tmp_path, monkeypatch):
+        x = tmp_path / "x"
+        self._set_cli(monkeypatch, x)
+        monkeypatch.setenv("UV_CACHE_DIR", str(x))
+        assert _uv_cache_bases() == [x, self.default]
+
+
+class TestPipWheelCacheBases:
+    @pytest.fixture(autouse=True)
+    def _home(self, monkeypatch, tmp_path):
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: home)
+        self.default = home / ".cache" / "pip" / "wheels"
+        monkeypatch.delenv("PIP_CACHE_DIR", raising=False)
+
+    def test_default_only(self):
+        assert _pip_wheel_cache_bases() == [self.default]
+
+    def test_env_then_default(self, tmp_path, monkeypatch):
+        p = tmp_path / "pipcache"
+        monkeypatch.setenv("PIP_CACHE_DIR", str(p))
+        assert _pip_wheel_cache_bases() == [p / "wheels", self.default]
+
+
+class TestWalkPipWheelCaches:
+    """The walk must find the wheel wherever the cache actually lives."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, monkeypatch, tmp_path):
+        # Baseline: no env overrides, no uv CLI, empty HOME. Each test opts in.
+        monkeypatch.delenv("UV_CACHE_DIR", raising=False)
+        monkeypatch.delenv("PIP_CACHE_DIR", raising=False)
+        monkeypatch.setattr(
+            "tolokaforge.docker.wheel_resolver._uv_cache_dir_from_cli",
+            lambda: None,
+        )
+        empty_home = tmp_path / "home"
+        empty_home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: empty_home)
+
+    def test_uv_cache_dir_env_honored(self, tmp_path, monkeypatch):
+        root = tmp_path / "relocated-uv"
+        whl = _write_uv_wheel(root)
+        monkeypatch.setenv("UV_CACHE_DIR", str(root))
+        assert whl in _walk_pip_wheel_caches()
+
+    def test_uv_cache_dir_from_cli_honored(self, tmp_path, monkeypatch):
+        root = tmp_path / "cli-uv"
+        whl = _write_uv_wheel(root)
+        monkeypatch.setattr(
+            "tolokaforge.docker.wheel_resolver._uv_cache_dir_from_cli",
+            lambda: root,
+        )
+        assert whl in _walk_pip_wheel_caches()
+
+    def test_pip_cache_dir_env_honored(self, tmp_path, monkeypatch):
+        root = tmp_path / "relocated-pip"
+        whl = _write_pip_wheel(root)
+        monkeypatch.setenv("PIP_CACHE_DIR", str(root))
+        assert whl in _walk_pip_wheel_caches()
+
+    def test_default_home_uv_cache(self, tmp_path, monkeypatch):
+        home = tmp_path / "home2"
+        whl = _write_uv_wheel(home / ".cache" / "uv")
+        monkeypatch.setattr(Path, "home", lambda: home)
+        assert whl in _walk_pip_wheel_caches()
+
+    def test_editable_wheels_skipped(self, tmp_path, monkeypatch):
+        root = tmp_path / "uv-editable"
+        whl = _write_uv_wheel(root, editable=True)
+        monkeypatch.setenv("UV_CACHE_DIR", str(root))
+        assert whl not in _walk_pip_wheel_caches()
+
+    def test_dedup_when_env_and_cli_overlap(self, tmp_path, monkeypatch):
+        root = tmp_path / "shared-uv"
+        whl = _write_uv_wheel(root)
+        monkeypatch.setenv("UV_CACHE_DIR", str(root))
+        monkeypatch.setattr(
+            "tolokaforge.docker.wheel_resolver._uv_cache_dir_from_cli",
+            lambda: root,
+        )
+        results = _walk_pip_wheel_caches()
+        assert results.count(whl) == 1
+
+    def test_cli_location_searched_even_when_env_points_elsewhere(self, tmp_path, monkeypatch):
+        # Wheel lives only in the authoritative (uv cache dir) location; the
+        # UV_CACHE_DIR env points at a different, empty dir. The walk must still
+        # find it because uv-cache-dir wins.
+        cli_root = tmp_path / "cli"
+        env_root = tmp_path / "env"
+        whl = _write_uv_wheel(cli_root)
+        env_root.mkdir()
+        monkeypatch.setenv("UV_CACHE_DIR", str(env_root))
+        monkeypatch.setattr(
+            "tolokaforge.docker.wheel_resolver._uv_cache_dir_from_cli", lambda: cli_root
+        )
+        assert whl in _walk_pip_wheel_caches()
+
+
+class TestGitInstallRelocatedCacheResolution:
+    """End-to-end resolver behavior for a git install with a relocated uv cache.
+
+    Reproduces issue #27 at the `WheelResolver.resolve()` level: for a git
+    install, `local-source` has no tree and `pip-download` skips git installs,
+    so `pip-cache` is the only viable provider. If the relocated cache isn't
+    discovered, every provider misses -> NoWheelError (the bug). Once
+    the cache is discovered, `pip-cache` finds the wheel (the fix).
+    """
+
+    def _git_install(self):
+        """Patches that make the engine look git-installed with no source tree."""
+        return (
+            patch(
+                "tolokaforge.docker.wheel_resolver._installed_version",
+                return_value="0.3.0",
+            ),
+            patch(
+                "tolokaforge.docker.wheel_resolver._find_engine_source_root",
+                return_value=None,
+            ),
+            patch(
+                "tolokaforge.docker.wheel_resolver._read_direct_url",
+                return_value={"vcs_info": {"vcs": "git"}},
+            ),
+        )
+
+    def test_relocated_cache_advertised_resolves_via_pip_cache(
+        self, tmp_path, monkeypatch, cache_dir
+    ):
+        uv_root = tmp_path / "setup-uv-cache"
+        _write_uv_wheel(uv_root, version="0.3.0")
+        monkeypatch.setenv("UV_CACHE_DIR", str(uv_root))
+        monkeypatch.delenv("PIP_CACHE_DIR", raising=False)
+        monkeypatch.setattr(
+            "tolokaforge.docker.wheel_resolver._uv_cache_dir_from_cli", lambda: None
+        )
+        empty_home = tmp_path / "empty-home"
+        empty_home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: empty_home)
+
+        p1, p2, p3 = self._git_install()
+        with p1, p2, p3:
+            artifact = WheelResolver().resolve(cache_dir)
+
+        assert artifact.version == "0.3.0"
+        assert artifact.provider_name == "pip-cache"
+
+    def test_relocated_cache_not_advertised_raises(self, tmp_path, monkeypatch, cache_dir):
+        # The wheel exists only in a cache we never advertise (env unset, no CLI,
+        # empty HOME) — this is the pre-fix failure mode.
+        hidden = tmp_path / "hidden-cache"
+        _write_uv_wheel(hidden, version="0.3.0")
+        monkeypatch.delenv("UV_CACHE_DIR", raising=False)
+        monkeypatch.delenv("PIP_CACHE_DIR", raising=False)
+        monkeypatch.setattr(
+            "tolokaforge.docker.wheel_resolver._uv_cache_dir_from_cli", lambda: None
+        )
+        empty_home = tmp_path / "empty-home2"
+        empty_home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: empty_home)
+
+        p1, p2, p3 = self._git_install()
+        with p1, p2, p3, pytest.raises(NoWheelError, match="UV_CACHE_DIR"):
+            WheelResolver().resolve(cache_dir)
 
 
 # ===================================================================
