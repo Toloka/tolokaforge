@@ -540,14 +540,14 @@ class TestWalkPipWheelCaches:
         assert whl in _walk_pip_wheel_caches()
 
 
-class TestScenarioCResolution:
+class TestGitInstallRelocatedCacheResolution:
     """End-to-end resolver behavior for a git install with a relocated uv cache.
 
     Reproduces issue #27 at the `WheelResolver.resolve()` level: for a git
     install, `local-source` has no tree and `pip-download` skips git installs,
     so `pip-cache` is the only viable provider. If the relocated cache isn't
     discovered, every provider misses -> NoWheelError (the bug). Once
-    `UV_CACHE_DIR` advertises the cache, `pip-cache` finds the wheel (the fix).
+    the cache is discovered, `pip-cache` finds the wheel (the fix).
     """
 
     def _git_install(self):
