@@ -146,6 +146,25 @@ presets:
     content_policy: nova
     response_policy: unwrap_input
 
+  # Amazon Nova via OpenRouter arrives org-prefixed as ``amazon/nova-*``
+  # (e.g. ``amazon/nova-2-lite-v1``) with provider ``openrouter``, which
+  # matches NEITHER ``aws_nova``'s ``nova*`` name glob NOR its
+  # ``match_provider: [nova]``, so it fell through to ``default``
+  # (``content_policy: openai`` -> ``inject_empty_assistant_filler`` OFF).
+  # Bedrock-behind-OpenRouter then 400s on blank-content assistant tool
+  # turns ("The text field in the ContentBlock ... is blank"), crashing
+  # multi-turn domains (ots_08_travel_internal scored 0%). Turn the filler
+  # ON via ``content_policy: nova`` while KEEPING ``response_policy:
+  # standard``: the OpenRouter route emits clean native-dict tool args that
+  # round-trip under ``standard``; ``unwrap_input`` (used by direct
+  # ``aws_nova``) is not a no-op on them. Declared AFTER ``aws_nova`` so the
+  # direct-Nova path keeps winning first-match.
+  aws_nova_openrouter:
+    match:
+      - "*amazon/nova*"
+    content_policy: nova
+    response_policy: standard
+
   # Google Gemini family (3.x preview + 3.x GA + 2.5 backstop).
   # ``GeminiReasoningCodec`` decodes Gemini's OpenRouter
   # ``provider_specific_fields.reasoning_details`` envelope: handles
