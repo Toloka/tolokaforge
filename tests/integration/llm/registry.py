@@ -802,6 +802,80 @@ _ALL: list[MC] = [
             }
         ),
     ),
+    # -----------------------------------------------------------------
+    # DeepSeek V3.2-Exp (TECHDEL-334) experimental V3.2 reasoning line on
+    # the OpenRouter route. Live-certified 2026-06-03 via
+    # ``pytest tests/integration/llm/ -k deepseek-v3.2-exp`` (14 passed,
+    # 6 skipped). Routes through the dedicated ``deepseek_v32`` preset
+    # (OpenAI reasoning codec only): unlike the deepseek-v4-pro sibling it
+    # round-trips dict-map and discriminated-union calls on the *standard*
+    # response policy, so it needs neither json_coerce nor dict_map_hints,
+    # only the codec so its reasoning_content summary lands in the
+    # trajectory logs like every other reasoning route. Reasoning is
+    # requested as ``extra_body.reasoning.effort`` via the openrouter
+    # provider overlay (eval configs use reasoning: adaptive).
+    # -----------------------------------------------------------------
+    MC(
+        model_id="openrouter__deepseek_deepseek-v3.2-exp",
+        provider="openrouter",
+        name="deepseek/deepseek-v3.2-exp",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DICT_MAP_TOOL_CALL,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # Tool-call reliability on a registered Decimal field is
+                # flaky: 1 pass / 5 fails across 6 live calls on
+                # 2026-06-03, every failure being "no tool call returned"
+                # (the model answers in prose instead of invoking the
+                # tool). Same posture as the deepseek-v4-pro sibling; a
+                # ``required`` capability must pass reliably, so Decimal
+                # stays ``known_unsupported`` until the route stabilises.
+                C.DECIMAL_FIELD_TOOL_CALL,
+                # OpenRouter surfaces only a ``reasoning_content`` summary,
+                # which OpenAIReasoningCodec yields as a single
+                # ``summary_text`` block, never the structured signed
+                # thinking blocks this capability requires. Same posture as
+                # the deepseek-v4-pro sibling under the identical OpenAI
+                # codec and the GPT-5 family. Verified live 2026-06-03.
+                C.THINKING_EMITS_BLOCKS,
+                # OpenAI-route reasoning has no replay path:
+                # ``OpenAIReasoningCodec.encode_for_replay`` returns ``{}``
+                # and DeepSeek does not accept echoed reasoning on later
+                # turns, exactly like the deepseek-v4-pro sibling. Verified
+                # live 2026-06-03.
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.UNSIGNED_THINKING_REPLAY,
+                # No Anthropic-style ephemeral cache: the first call created
+                # 0 cache_creation_input_tokens. Verified live 2026-06-03.
+                C.PROMPT_CACHING,
+                # OpenRouter auto-cache not reproducible in a clean 2-call
+                # 8 k-token probe (``cached_tokens=0`` on both calls),
+                # exactly like deepseek-v4-pro; production large-prompt runs
+                # may still cache in aggregate. Paired with the ratchet in
+                # ``test_implicit_prompt_caching_unsupported_ratchet`` (which
+                # passes), so the day a 2-call probe observes caching it
+                # flips back to ``required``. Verified live 2026-06-03.
+                C.IMPLICIT_PROMPT_CACHING,
+            }
+        ),
+    ),
     MC(
         model_id="openrouter__xiaomi_mimo-v2.5-pro",
         provider="openrouter",
