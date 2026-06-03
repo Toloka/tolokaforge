@@ -1,0 +1,38 @@
+{
+  "name": "tolokaforge",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    "ghcr.io/devcontainers/features/git-lfs:1": {}
+  },
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "remoteUser": "vscode",
+  "forwardPorts": [8000, 8080, 8001],
+  "portsAttributes": {
+    "8000": { "label": "json-db" },
+    "8080": { "label": "mock-web" },
+    "8001": { "label": "rag" }
+  },
+  "secrets": {
+    "OPENROUTER_API_KEY": {
+      "description": "OpenRouter API key used by the example evals. Set it as a Codespaces secret (or add it to .env after the container starts)."
+    },
+    "ANTHROPIC_API_KEY": {
+      "description": "Optional Anthropic API key (used when a model config sets provider=anthropic)."
+    }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "charliermarsh.ruff",
+        "ms-python.python",
+        "eamodio.gitlens",
+        "github.vscode-github-actions",
+        "anthropic.claude-code"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": ".venv/bin/python"
+      }
+    }
+  }
+}

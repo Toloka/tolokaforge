@@ -89,7 +89,7 @@ uv pip list
 
 **Troubleshooting `uv` availability:** If you get `command not found: uv`, use `scripts/with_env.sh uv ...` — it loads the shell profile correctly in addition to `.env` variables.
 
-**Installing additional tools/packages:** Install them locally for immediate use, then also add the installation to `.devcontainer/Dockerfile` so the devcontainer stays reproducible.
+**Installing additional tools/packages:** Install them locally for immediate use. To keep the dev container reproducible, add OS-level tools via a [feature](https://containers.dev/features) in `.devcontainer/devcontainer.json` (or a step in `.devcontainer/post-create.sh`), and Python dependencies via `pyproject.toml` + `uv sync`.
 
 ### Linting and Formatting
 

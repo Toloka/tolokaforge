@@ -29,6 +29,23 @@ uv sync
 
 See [Python Package Guide](docs/PYTHON_PACKAGE.md) for all extras and programmatic API usage.
 
+## Dev container / GitHub Codespaces
+
+The fastest way to run an evaluation with zero local setup. Open the repo in a
+[dev container](https://containers.dev) (VS Code: **Reopen in Container**) or in
+**GitHub Codespaces**. The container provisions Python 3.12 + `uv`, installs the
+project (`uv sync` + Playwright), and enables **Docker-in-Docker** so `tolokaforge run`
+can build and run the sandboxed runner.
+
+Add an LLM key — set a Codespaces secret named `OPENROUTER_API_KEY` (it is written
+into `.env` automatically on first start) or edit `.env` directly — then run an example:
+
+```bash
+scripts/with_env.sh uv run tolokaforge run --config examples/native/coding/run_config.yaml
+```
+
+The first run builds the runner image inside the container (slower); later runs reuse it.
+
 ## Quick Start
 
 ```bash
