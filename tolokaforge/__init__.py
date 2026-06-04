@@ -1,6 +1,6 @@
 """Universal LLM Tool-Use Benchmarking Harness (ULB-H)"""
 
-__version__ = "0.2.1"
+__version__ = "0.2.3"
 
 # ---------------------------------------------------------------------------
 # Lazy public API — symbols are loaded on first access, not at import time.
