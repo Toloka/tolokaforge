@@ -272,7 +272,8 @@ version_provider = "pep621"          # read/write [project] version in place —
 tag_format = "v$version"             # matches the v* triggers in publish/release-gate workflows
 update_changelog_on_bump = true
 changelog_incremental = true         # only prepend new sections; never rewrite hand-written history
-major_version_zero = false           # feat: from 0.2.x -> 0.3.0 (real semver, not 0.2.x)
+major_version_zero = true            # project is pre-1.0/unstable: breaking changes bump the minor
+                                     # (0.2.x -> 0.3.0) and stay in 0.x until we deliberately cut 1.0.0
 bump_message = "chore(release): bump version to $new_version"
 annotated_tag = true
 
