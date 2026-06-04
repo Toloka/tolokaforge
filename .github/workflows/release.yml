@@ -81,13 +81,31 @@ jobs:
         run: |
           uv run cz bump --dry-run --yes ${{ steps.incr.outputs.arg }}
 
+      # `update_changelog_on_bump = true` (pyproject) regenerates CHANGELOG.md as
+      # part of the bump, so no separate --changelog flag is needed. If `auto`
+      # finds nothing to release (NO_COMMITS_FOUND=3 / NO_INCREMENT=21), exit
+      # cleanly instead of failing the run.
       - name: Bump version + changelog, commit + tag
+        id: bump
         if: ${{ !inputs.dry_run }}
         run: |
-          uv run cz bump --yes --changelog ${{ steps.incr.outputs.arg }}
+          set +e
+          uv run cz bump --yes ${{ steps.incr.outputs.arg }}
+          code=$?
+          set -e
+          if [ "$code" -eq 3 ] || [ "$code" -eq 21 ]; then
+            echo "::notice::No releasable commits since the last tag — nothing to release."
+            echo "released=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          [ "$code" -eq 0 ] || exit "$code"
+          echo "released=true" >> "$GITHUB_OUTPUT"
+          echo "new_tag=v$(uv run cz version -p)" >> "$GITHUB_OUTPUT"
 
+      # Push the bump commit and its tag in a single atomic update: both refs
+      # land or neither does. Avoids leaving a release commit on main with no tag
+      # (which would trigger nothing downstream) if the tag push were rejected.
       - name: Push commit + tag
-        if: ${{ !inputs.dry_run }}
+        if: ${{ !inputs.dry_run && steps.bump.outputs.released == 'true' }}
         run: |
-          git push origin HEAD:main
-          git push origin --tags
+          git push --atomic origin HEAD:main "refs/tags/${{ steps.bump.outputs.new_tag }}"

@@ -7,6 +7,9 @@ from importlib.metadata import version as _pkg_version
 # (bumped by `cz bump`); we read it back from the installed distribution
 # metadata so this can never drift out of sync. Falls back gracefully when
 # running from a bare source checkout that has not been installed.
+# Note: this reflects the *installed* metadata, so in an editable dev env a
+# version bump is only visible after the next `uv sync`; the built/published
+# wheel always reports the correct version.
 try:
     __version__ = _pkg_version("tolokaforge")
 except PackageNotFoundError:  # pragma: no cover - source checkout without an install
