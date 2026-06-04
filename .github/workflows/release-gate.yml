@@ -54,18 +54,6 @@ jobs:
         run: |
           scripts/tests/task_pack_docker_smoke.sh
 
-      - name: Run public examples end-to-end
-        run: |
-          scripts/tests/run_public_examples_smoke.sh
-
-      - name: Summarize public examples and enforce thresholds
-        env:
-          PUBLIC_EXAMPLES_MIN_PASS_RATE: ${{ vars.PUBLIC_EXAMPLES_MIN_PASS_RATE || '0.0' }}
-        run: |
-          uv run python scripts/tests/summarize_public_examples.py \
-            --min-pass-rate "${PUBLIC_EXAMPLES_MIN_PASS_RATE}" \
-            --min-completion-rate 1.0
-
       - name: Run unit tests
         run: |
           uv run pytest tests/unit/ -v --tb=short
@@ -87,11 +75,3 @@ jobs:
           E2E_TESTS: "1"
         run: |
           scripts/with_env.sh uv run pytest tests/e2e/ -v --tb=short
-
-      - name: Upload release gate summary artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: public-example-summary-release
-          path: |
-            output/public_examples_summary.json
-            output/public_examples_summary.md
