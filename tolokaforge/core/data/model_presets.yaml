@@ -138,6 +138,22 @@ presets:
     prompt_policy: dict_map_hints
     reasoning_codec: openai
 
+  # DeepSeek V3.2-Exp (TECHDEL-334) experimental V3.2 reasoning route.
+  # Unlike the V4 line (openrouter_dict_stringify_recovery, above) it
+  # round-trips dict-map and discriminated-union tool calls cleanly on
+  # the standard response policy, so it needs neither json_coerce nor
+  # dict_map_hints. The one non-default policy it needs is the OpenAI
+  # reasoning codec, so its OpenRouter reasoning_content summary surfaces
+  # in the trajectory logs like every other reasoning route here. The
+  # codec's replay is a no-op on the OpenAI route, so this is
+  # observability only; it does not change tool-calling or the
+  # deterministic scoring. Live-certified 2026-06-03 (see registry.py).
+  deepseek_v32:
+    match:
+      - "deepseek/deepseek-v3.2-exp*"
+      - "*deepseek-v3.2-exp*"
+    reasoning_codec: openai
+
   aws_nova:
     match:
       - "nova*"
