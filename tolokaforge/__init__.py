@@ -1,6 +1,19 @@
 """Universal LLM Tool-Use Benchmarking Harness (ULB-H)"""
 
-__version__ = "0.2.3"
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
+
+# Single source of truth: the version literal lives only in pyproject.toml
+# (bumped by `cz bump`); we read it back from the installed distribution
+# metadata so this can never drift out of sync. Falls back gracefully when
+# running from a bare source checkout that has not been installed.
+# Note: this reflects the *installed* metadata, so in an editable dev env a
+# version bump is only visible after the next `uv sync`; the built/published
+# wheel always reports the correct version.
+try:
+    __version__ = _pkg_version("tolokaforge")
+except PackageNotFoundError:  # pragma: no cover - source checkout without an install
+    __version__ = "0.0.0+unknown"
 
 # ---------------------------------------------------------------------------
 # Lazy public API — symbols are loaded on first access, not at import time.

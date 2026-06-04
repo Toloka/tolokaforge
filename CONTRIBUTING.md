@@ -33,3 +33,6 @@ uv run pytest tests/unit/ -v
 2. Add/adjust tests with behavior changes.
 3. Update docs when user-facing behavior changes.
 4. Do not include private/internal benchmark content in this repository.
+5. Use [Conventional Commits](https://www.conventionalcommits.org/) for commit
+   and PR titles (`feat(scope): …`, `fix(scope): …`, `chore: …`). The release
+   tooling derives the version bump and CHANGELOG from these.

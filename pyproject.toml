@@ -260,6 +260,24 @@ warn_unused_configs = true
 disallow_untyped_defs = true
 
 # =============================================================================
+# Release tooling (commitizen) — drives the `Release (cz bump)` workflow.
+# `cz bump` reads/writes the single version literal in [project] version,
+# regenerates CHANGELOG.md from Conventional Commits, commits, and tags vX.Y.Z.
+# See CONTRIBUTING.md ("Cutting a Release").
+# =============================================================================
+
+[tool.commitizen]
+name = "cz_conventional_commits"
+version_provider = "pep621"          # read/write [project] version in place — single source of truth
+tag_format = "v$version"             # matches the v* triggers in publish/release-gate workflows
+update_changelog_on_bump = true
+changelog_incremental = true         # only prepend new sections; never rewrite hand-written history
+major_version_zero = true            # project is pre-1.0/unstable: breaking changes bump the minor
+                                     # (0.2.x -> 0.3.0) and stay in 0.x until we deliberately cut 1.0.0
+bump_message = "chore(release): bump version to $new_version"
+annotated_tag = true
+
+# =============================================================================
 # Development Dependencies (PEP 735)
 # =============================================================================
 
@@ -286,6 +304,7 @@ dev = [
     "rank-bm25>=0.2.2",
     "mcp>=0.1.0",
     "build>=1.0.0",
+    "commitizen>=4.0.0",
     "psycopg[binary]>=3.2.0",
     "tolokaforge-adapter-terminal-bench",
     "dev-mcp",

@@ -1,0 +1,111 @@
+name: Release (cz bump)
+
+# Human-initiated release. Pick the increment and run it — commitizen bumps the
+# version in pyproject.toml, regenerates CHANGELOG.md from the Conventional
+# Commit history, commits, and pushes a vX.Y.Z tag. That tag then triggers
+# publish-tolokaforge.yml (PyPI trusted publishing + GitHub Release) and
+# release-gate.yml. No manual version/changelog edits required.
+#
+# See CONTRIBUTING.md ("Cutting a Release").
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version increment"
+        required: true
+        default: auto
+        type: choice
+        options:
+          - auto      # derive from commits: fix->patch, feat->minor, feat!/BREAKING CHANGE->major
+          - patch
+          - minor
+          - major
+      dry_run:
+        description: "Dry run (compute the bump + changelog, do not commit/tag/push)"
+        required: false
+        default: false
+        type: boolean
+
+# Never run two releases at once; do not cancel an in-flight release.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # push the bump commit + tag back to main
+
+jobs:
+  release:
+    name: Bump version, changelog, tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0      # full history + tags so commitizen can derive the bump
+          ref: main           # always release from main
+          # If a branch/tag protection rule blocks the github-actions bot from
+          # pushing to main, provide a repo-scoped token here and configure a
+          # ruleset bypass for it (see CONTRIBUTING.md):
+          # token: ${{ secrets.RELEASE_PAT }}
+
+      - name: Guard — main must be clean
+        run: |
+          test -z "$(git status --porcelain)" || { echo "Working tree not clean"; exit 1; }
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Install Python
+        run: uv python install 3.12
+
+      - name: Install commitizen
+        run: uv sync --group dev
+
+      - name: Configure git identity
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Compute increment argument
+        id: incr
+        run: |
+          if [ "${{ inputs.bump }}" = "auto" ]; then
+            echo "arg=" >> "$GITHUB_OUTPUT"
+          else
+            echo "arg=--increment ${{ inputs.bump }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Dry run (preview only)
+        if: ${{ inputs.dry_run }}
+        run: |
+          uv run cz bump --dry-run --yes ${{ steps.incr.outputs.arg }}
+
+      # `update_changelog_on_bump = true` (pyproject) regenerates CHANGELOG.md as
+      # part of the bump, so no separate --changelog flag is needed. If `auto`
+      # finds nothing to release (NO_COMMITS_FOUND=3 / NO_INCREMENT=21), exit
+      # cleanly instead of failing the run.
+      - name: Bump version + changelog, commit + tag
+        id: bump
+        if: ${{ !inputs.dry_run }}
+        run: |
+          set +e
+          uv run cz bump --yes ${{ steps.incr.outputs.arg }}
+          code=$?
+          set -e
+          if [ "$code" -eq 3 ] || [ "$code" -eq 21 ]; then
+            echo "::notice::No releasable commits since the last tag — nothing to release."
+            echo "released=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          [ "$code" -eq 0 ] || exit "$code"
+          echo "released=true" >> "$GITHUB_OUTPUT"
+          echo "new_tag=v$(uv run cz version -p)" >> "$GITHUB_OUTPUT"
+
+      # Push the bump commit and its tag in a single atomic update: both refs
+      # land or neither does. Avoids leaving a release commit on main with no tag
+      # (which would trigger nothing downstream) if the tag push were rejected.
+      - name: Push commit + tag
+        if: ${{ !inputs.dry_run && steps.bump.outputs.released == 'true' }}
+        run: |
+          git push --atomic origin HEAD:main "refs/tags/${{ steps.bump.outputs.new_tag }}"
