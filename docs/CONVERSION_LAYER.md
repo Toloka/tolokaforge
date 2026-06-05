@@ -4,8 +4,9 @@
 
 ## Overview
 
-The conversion layer allows external adapter formats (Tau-bench, TLK MCP Core)
-to be converted into native TolokaForge format on disk.  This enables:
+The conversion layer allows an external task format — read by an installed
+conversion adapter — to be converted into native TolokaForge format on disk.
+This enables:
 
 1. **Debuggability** — inspect exactly what the orchestrator sees for any task.
 2. **Caching** — pre-generate converted tasks to avoid runtime adapter loading.
@@ -16,23 +17,18 @@ to be converted into native TolokaForge format on disk.  This enables:
 ## CLI Usage
 
 ```bash
-# Convert Tau-bench tasks to native format
+# Convert an external task set to native format using an installed
+# conversion adapter (registered via the tolokaforge.adapters entry-point group)
 tolokaforge adapter convert \
-    --name tau \
-    --tasks-glob "contrib/tau-bench/tau_bench/envs/retail" \
-    --output converted/retail/
-
-# Convert TLK MCP Core testcases to native format
-tolokaforge adapter convert \
-    --name tlk_mcp_core \
-    --tasks-glob "contrib/project-m-copilot-mock-tools/mcp_servers/.../testcases/*.json" \
-    --output converted/logistics/
+    --name <adapter-name> \
+    --tasks-glob "path/to/source/tasks/**" \
+    --output converted/example/
 
 # With validation (checks that converted task.yaml is parsable as TaskConfig)
 tolokaforge adapter convert \
-    --name tau \
-    --tasks-glob "contrib/tau-bench/tau_bench/envs/retail" \
-    --output converted/retail/ \
+    --name <adapter-name> \
+    --tasks-glob "path/to/source/tasks/**" \
+    --output converted/example/ \
     --validate
 ```
 
@@ -40,8 +36,8 @@ tolokaforge adapter convert \
 
 | Flag | Required | Description |
 |------|----------|-------------|
-| `--name` | Yes | Adapter name: `tau`, `tlk_mcp_core` |
-| `--tasks-glob` | Yes | Glob pattern for source tasks (or env path for Tau) |
+| `--name` | Yes | Adapter name (`native`, `terminal_bench`, or an installed conversion adapter) |
+| `--tasks-glob` | Yes | Glob pattern for source tasks (interpretation is adapter-specific) |
 | `--output` | Yes | Output directory |
 | `--adapter-params` | No | JSON string of extra adapter params |
 | `--validate` | No | Run validation pass on converted output |
@@ -173,7 +169,7 @@ bundle = NativeTaskBundle(
 ### convert_to_native()
 
 ```python
-adapter = get_adapter("tau", {"env_path": "path/to/env"})
+adapter = get_adapter("<adapter-name>", {"tasks_glob": "path/to/source/**"})
 task_ids = adapter.get_task_ids()
 bundle = adapter.convert_to_native(task_ids[0])
 ```
@@ -191,7 +187,7 @@ task_dir = write_bundle(bundle, output_dir=Path("converted"), task_id="task-001"
 The conversion layer extracts **tool schemas only** — it does not produce
 runtime tool wrappers.  Converted `fixtures/tools.json` contains the
 name/description/parameters for each tool, but the actual tool implementation
-stays in the adapter backend (`contrib/tau-bench` or `mcp-tools-library`).
+stays in the adapter backend that owns the tool implementations.
 
 This means:
 
@@ -203,9 +199,12 @@ This means:
 
 | Adapter | Source Format | Notes |
 |---------|--------------|-------|
-| `tau` | Tau-bench Python env directory | Reads tasks_test.py, data/, tools/, wiki |
-| `tlk_mcp_core` | MCP Core JSON testcases | Reads testcase JSON, domain config, tools library |
 | `native` | Already native | `convert_to_native()` raises `NotImplementedError` |
+
+Conversion-capable adapters are distributed as separate installable plugins,
+registered via the `tolokaforge.adapters` entry-point group. Install one to
+convert its source format; an adapter that produces shared, cross-task resources
+emits them by overriding `BaseAdapter.write_shared_resources()`.
 
 ## See Also
 
