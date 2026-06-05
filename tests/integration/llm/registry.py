@@ -806,12 +806,14 @@ _ALL: list[MC] = [
     # DeepSeek V4-Flash — lighter/cheaper sibling of deepseek-v4-pro on
     # the OpenRouter route, shares the existing ``*deepseek-v4*`` preset
     # (openrouter_dict_stringify_recovery). Live-certified 2026-06-05 via
-    # ``pytest tests/integration/llm/ -k deepseek-v4-flash`` (17 required
-    # passed, 3 known_unsupported). STRICTLY STRONGER than the v4-pro
-    # sibling: it additionally passes DECIMAL_FIELD_TOOL_CALL,
-    # THINKING_EMITS_BLOCKS and IMPLICIT_PROMPT_CACHING live, which v4-pro
-    # marks known_unsupported — re-tested per docs/ADD_NEW_MODEL.md (the
-    # caching ratchet forced the implicit-cache promotion), not copied.
+    # ``pytest tests/integration/llm/ -k deepseek-v4-flash`` (16 required,
+    # 4 known_unsupported). Stronger than the v4-pro sibling on
+    # DECIMAL_FIELD_TOOL_CALL and THINKING_EMITS_BLOCKS (both pass reliably
+    # here, both known_unsupported on v4-pro) — re-tested per
+    # docs/ADD_NEW_MODEL.md, not copied. Caching matches v4-pro (both ku):
+    # an initial warm probe promoted IMPLICIT_PROMPT_CACHING, but a clean
+    # cold 2-call probe reads 0, so it stays known_unsupported with the
+    # ratchet guarding it.
     # -----------------------------------------------------------------
     MC(
         model_id="openrouter__deepseek_deepseek-v4-flash",
@@ -830,13 +832,6 @@ _ALL: list[MC] = [
                 C.DISCRIMINATED_UNION_TOOL_CALL,
                 C.DECIMAL_FIELD_TOOL_CALL,
                 C.THINKING_EMITS_BLOCKS,
-                # Implicit auto-cache IS observable on this route: a warm
-                # 2-call ~8 k-token probe reported cache_read_input_tokens
-                # =8192 on call 2 (cold call 1 = 0). Promoted to required
-                # per test_implicit_prompt_caching_unsupported_ratchet;
-                # DeepSeek caches in aggregate (~80%) in production. Cold
-                # single-shot probes may read 0. Verified live 2026-06-05.
-                C.IMPLICIT_PROMPT_CACHING,
                 C.USAGE_METRICS_POPULATED,
                 C.COST_USD_POPULATED,
                 C.TOOL_NAME_DISCIPLINE,
@@ -857,11 +852,18 @@ _ALL: list[MC] = [
                 C.UNSIGNED_THINKING_REPLAY,
                 # No Anthropic-style ephemeral cache: call 1 created 0
                 # cache_creation_input_tokens (the OpenRouter DeepSeek
-                # route exposes no explicit cache-control markers). This
-                # is distinct from IMPLICIT_PROMPT_CACHING (provider
-                # auto-cache), which IS observable and is declared
-                # ``required`` above. Verified live 2026-06-05.
+                # route exposes no explicit cache-control markers).
                 C.PROMPT_CACHING,
+                # Implicit auto-cache is NOT reliably observable on a clean
+                # 2-call ~8 k-token probe: a cold run reads
+                # cache_read_input_tokens=0 (an earlier warm probe read
+                # 8192, but that was contaminated by back-to-back runs).
+                # DeepSeek caches in aggregate (~80%) in production. Same
+                # posture as the v4-pro sibling; paired with
+                # test_implicit_prompt_caching_unsupported_ratchet, which
+                # flips it back to required the day a clean 2-call probe
+                # observes caching. Verified live cold 2026-06-05.
+                C.IMPLICIT_PROMPT_CACHING,
             }
         ),
     ),
