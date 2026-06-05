@@ -153,7 +153,7 @@ presets:
     prompt_policy: dict_map_hints
     reasoning_codec: openai
 
-  # DeepSeek V3.2-Exp (TECHDEL-334) experimental V3.2 reasoning route.
+  # DeepSeek V3.2-Exp experimental V3.2 reasoning route.
   # Unlike the V4 line (openrouter_dict_stringify_recovery, above) it
   # round-trips dict-map and discriminated-union tool calls cleanly on
   # the standard response policy, so it needs neither json_coerce nor

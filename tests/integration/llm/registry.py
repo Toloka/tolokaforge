@@ -868,7 +868,7 @@ _ALL: list[MC] = [
         ),
     ),
     # -----------------------------------------------------------------
-    # DeepSeek V3.2-Exp (TECHDEL-334) experimental V3.2 reasoning line on
+    # DeepSeek V3.2-Exp experimental V3.2 reasoning line on
     # the OpenRouter route. Live-certified 2026-06-03 via
     # ``pytest tests/integration/llm/ -k deepseek-v3.2-exp`` (14 passed,
     # 6 skipped). Routes through the dedicated ``deepseek_v32`` preset
