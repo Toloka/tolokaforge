@@ -1610,9 +1610,9 @@
       "output": 0.57
     },
     "tencent/hy3-preview": {
-      "input": 0.066,
-      "output": 0.26,
-      "cache_read": 0.029
+      "input": 0.063,
+      "output": 0.21,
+      "cache_read": 0.021
     },
     "thedrummer/cydonia-24b-v4.1": {
       "input": 0.3,

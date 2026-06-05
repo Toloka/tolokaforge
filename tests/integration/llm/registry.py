@@ -803,6 +803,71 @@ _ALL: list[MC] = [
         ),
     ),
     # -----------------------------------------------------------------
+    # DeepSeek V4-Flash — lighter/cheaper sibling of deepseek-v4-pro on
+    # the OpenRouter route, shares the existing ``*deepseek-v4*`` preset
+    # (openrouter_dict_stringify_recovery). Live-certified 2026-06-05 via
+    # ``pytest tests/integration/llm/ -k deepseek-v4-flash`` (16 required,
+    # 4 known_unsupported). Stronger than the v4-pro sibling on
+    # DECIMAL_FIELD_TOOL_CALL and THINKING_EMITS_BLOCKS (both pass reliably
+    # here, both known_unsupported on v4-pro) — re-tested per
+    # docs/ADD_NEW_MODEL.md, not copied. Caching matches v4-pro (both ku):
+    # an initial warm probe promoted IMPLICIT_PROMPT_CACHING, but a clean
+    # cold 2-call probe reads 0, so it stays known_unsupported with the
+    # ratchet guarding it.
+    # -----------------------------------------------------------------
+    MC(
+        model_id="openrouter__deepseek_deepseek-v4-flash",
+        provider="openrouter",
+        name="deepseek/deepseek-v4-flash",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DICT_MAP_TOOL_CALL,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.THINKING_EMITS_BLOCKS,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # Reasoning surfaces as an UNSIGNED summary on the
+                # OpenRouter route: signed-block replay has no source ("no
+                # signed blocks on turn 1") and the unsigned codec's
+                # ``encode_for_replay`` path is not wired for the v4 route
+                # (assistant dict carries no ``reasoning_details``). Same
+                # posture as the v4-pro sibling. Verified live 2026-06-05.
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.UNSIGNED_THINKING_REPLAY,
+                # No Anthropic-style ephemeral cache: call 1 created 0
+                # cache_creation_input_tokens (the OpenRouter DeepSeek
+                # route exposes no explicit cache-control markers).
+                C.PROMPT_CACHING,
+                # Implicit auto-cache is NOT reliably observable on a clean
+                # 2-call ~8 k-token probe: a cold run reads
+                # cache_read_input_tokens=0 (an earlier warm probe read
+                # 8192, but that was contaminated by back-to-back runs).
+                # DeepSeek caches in aggregate (~80%) in production. Same
+                # posture as the v4-pro sibling; paired with
+                # test_implicit_prompt_caching_unsupported_ratchet, which
+                # flips it back to required the day a clean 2-call probe
+                # observes caching. Verified live cold 2026-06-05.
+                C.IMPLICIT_PROMPT_CACHING,
+            }
+        ),
+    ),
+    # -----------------------------------------------------------------
     # DeepSeek V3.2-Exp (TECHDEL-334) experimental V3.2 reasoning line on
     # the OpenRouter route. Live-certified 2026-06-03 via
     # ``pytest tests/integration/llm/ -k deepseek-v3.2-exp`` (14 passed,
@@ -1002,6 +1067,308 @@ _ALL: list[MC] = [
                 # No implicit upstream cache surfaced on the OpenRouter
                 # google/gemini-* routes — same as Flash.
                 C.IMPLICIT_PROMPT_CACHING,
+            }
+        ),
+    ),
+    # =================================================================
+    # Arena lineup refresh (2026-06). Six models, live-certified
+    # 2026-06-05 via ``pytest tests/integration/llm/ -k <model>``.
+    # Per-model preset routing lives in model_presets.yaml; each entry
+    # documents which capabilities were demoted to ``known_unsupported``
+    # and why. The universal demotions across this cohort are PROMPT_
+    # CACHING (no Anthropic-style ephemeral cache on these OpenRouter
+    # routes) and the signed/unsigned thinking-replay pair (OpenAI-codec
+    # routes have a no-op replay path).
+    # =================================================================
+    # GLM-5.1 (Zhipu / Z.AI via OpenRouter). Routes through the shared
+    # ``openrouter_dict_stringify_recovery`` preset: it stringified the
+    # discriminated-union ``item`` on the default route, which json_coerce
+    # decodes, and the openai codec surfaces its reasoning summary so
+    # THINKING_EMITS_BLOCKS passes. Implicit auto-cache observed cold.
+    # 17 required / 3 known_unsupported. Live-certified 2026-06-05.
+    MC(
+        model_id="openrouter__z-ai_glm-5.1",
+        provider="openrouter",
+        name="z-ai/glm-5.1",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DICT_MAP_TOOL_CALL,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.THINKING_EMITS_BLOCKS,
+                C.IMPLICIT_PROMPT_CACHING,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # No Anthropic-style ephemeral cache markers on this route.
+                C.PROMPT_CACHING,
+                # Reasoning surfaces only as an unsigned summary via the
+                # openai codec: no signed blocks to replay, and the codec's
+                # replay path is a no-op. Verified live 2026-06-05.
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.UNSIGNED_THINKING_REPLAY,
+            }
+        ),
+    ),
+    # Mistral-Medium-3.5 (Mistral AI via OpenRouter). Clean tool-caller on
+    # the default route — dict-map, discriminated-union, decimal all
+    # round-trip natively, so no preset is needed. It is a NON-reasoning
+    # model (0 reasoning tokens live), so the thinking capabilities are
+    # genuinely out of scope. 15 required / 5 known_unsupported.
+    # Live-certified 2026-06-05.
+    MC(
+        model_id="openrouter__mistralai_mistral-medium-3-5",
+        provider="openrouter",
+        name="mistralai/mistral-medium-3-5",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DICT_MAP_TOOL_CALL,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # Non-reasoning model: emits no structured reasoning at
+                # all (0 reasoning tokens live 2026-06-05), so neither the
+                # emit nor the replay capabilities apply.
+                C.THINKING_EMITS_BLOCKS,
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.UNSIGNED_THINKING_REPLAY,
+                # No ephemeral cache markers and the 2-call ~8 k-token
+                # auto-cache probe read cached_tokens=0 on both calls.
+                C.PROMPT_CACHING,
+                C.IMPLICIT_PROMPT_CACHING,
+            }
+        ),
+    ),
+    # Gemma-4-31B-IT (Google open-weights via OpenRouter). Routes through
+    # the ``gemma`` preset (Gemini *schema* sanitizer, no gemini reasoning
+    # codec): the dict-map-to-array transform fixes DICT_MAP_TOOL_CALL,
+    # but the discriminated union still fails because the model substitutes
+    # ``title`` for the registered ``subject`` even on the flattened
+    # schema — a field-name-adherence gap, not a schema-construct one, so
+    # it stays known_unsupported. Non-reasoning model. 14 required /
+    # 6 known_unsupported. Live-certified 2026-06-05.
+    MC(
+        model_id="openrouter__google_gemma-4-31b-it",
+        provider="openrouter",
+        name="google/gemma-4-31b-it",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DICT_MAP_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # Emits ``title`` instead of the registered ``subject`` on
+                # the union branch even under the flattened Gemini schema —
+                # genuine field-name gap, not a construct the sanitizer can
+                # rewrite. Verified live 2026-06-05.
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                # Non-reasoning model (0 reasoning tokens live).
+                C.THINKING_EMITS_BLOCKS,
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.UNSIGNED_THINKING_REPLAY,
+                # No ephemeral cache markers; auto-cache probe read 0.
+                C.PROMPT_CACHING,
+                C.IMPLICIT_PROMPT_CACHING,
+            }
+        ),
+    ),
+    # Nemotron-3-Super-120B-A12B (NVIDIA via OpenRouter). Routes through
+    # the shared ``openrouter_dict_stringify_recovery`` preset: it emits
+    # the discriminated-union ``item`` as a native dict on some calls and a
+    # JSON-encoded string on others (live 2026-06-05), so it needs
+    # json_coerce to make DISCRIMINATED_UNION_TOOL_CALL reliable. It is an
+    # adaptive reasoner that intermittently returns no reasoning at all
+    # (``reasoning=None`` on a re-run), so THINKING_EMITS_BLOCKS is not
+    # reliable enough for ``required`` — the openai codec still surfaces
+    # the summary in logs when it does reason. 15 required /
+    # 5 known_unsupported. Live-certified 2026-06-05.
+    MC(
+        model_id="openrouter__nvidia_nemotron-3-super-120b-a12b",
+        provider="openrouter",
+        name="nvidia/nemotron-3-super-120b-a12b",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DICT_MAP_TOOL_CALL,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # Adaptive reasoner: returns no structured reasoning on
+                # some calls (reasoning=None live 2026-06-05), so emit is
+                # not reliable. Replay is a no-op on the openai codec.
+                C.THINKING_EMITS_BLOCKS,
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.UNSIGNED_THINKING_REPLAY,
+                # No ephemeral cache markers; auto-cache probe read 0.
+                C.PROMPT_CACHING,
+                C.IMPLICIT_PROMPT_CACHING,
+            }
+        ),
+    ),
+    # GPT-OSS-120B (OpenAI open-weights via OpenRouter). The ``gpt_oss``
+    # preset adds only the openai reasoning codec (THINKING_EMITS_BLOCKS
+    # passes). It substitutes synonyms for registered field names
+    # (``title`` for ``subject``, ``quantity`` for ``qty``) that persists
+    # even under the Gemini schema sanitizer's oneOf-flatten +
+    # dict-map-to-array, so both schema caps are genuine model gaps, not
+    # construct gaps — declared known_unsupported rather than papered over
+    # with a sanitizer that gives no lift. 14 required / 6 known_unsupported.
+    # Live-certified 2026-06-05.
+    MC(
+        model_id="openrouter__openai_gpt-oss-120b",
+        provider="openrouter",
+        name="openai/gpt-oss-120b",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.THINKING_EMITS_BLOCKS,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # Emits ``quantity`` for ``qty`` / ``title`` for
+                # ``subject`` — synonym substitution that survives the
+                # Gemini schema flatten. Genuine field-name gap. Verified
+                # live 2026-06-05.
+                C.DICT_MAP_TOOL_CALL,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                # openai-codec reasoning is an unsigned summary, no-op
+                # replay.
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.UNSIGNED_THINKING_REPLAY,
+                # No ephemeral cache markers; auto-cache probe read 0.
+                C.PROMPT_CACHING,
+                C.IMPLICIT_PROMPT_CACHING,
+            }
+        ),
+    ),
+    # HY3-Preview (Tencent Hunyuan 3 via OpenRouter). Routes through the
+    # shared ``openrouter_dict_stringify_recovery`` preset (json_coerce
+    # decodes its stringified tool args; the openai codec surfaces its
+    # reasoning summary so THINKING_EMITS_BLOCKS passes reliably). Two
+    # tool-call capabilities are intermittently unreliable across repeated
+    # live runs (2026-06-05), so they are known_unsupported rather than a
+    # flaky merge gate. 14 required / 6 known_unsupported.
+    MC(
+        model_id="openrouter__tencent_hy3-preview",
+        provider="openrouter",
+        name="tencent/hy3-preview",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DICT_MAP_TOOL_CALL,
+                C.THINKING_EMITS_BLOCKS,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # Intermittently answers in prose instead of emitting the
+                # tool call ("no tool call returned" on ~2 of 5 live runs
+                # 2026-06-05) — same unreliable posture as the DeepSeek
+                # Decimal route. Not a reliable required gate.
+                C.DECIMAL_FIELD_TOOL_CALL,
+                # Mostly round-trips the union (json_coerce handles the
+                # stringified calls) but intermittently renames the branch
+                # field (``title`` for the registered ``subject``) the way
+                # gpt-oss / gemma do — a field-name gap json_coerce cannot
+                # fix, on ~1 of 5 live runs 2026-06-05. Not reliable.
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                # No ephemeral cache markers, and the 2-call ~8 k-token
+                # auto-cache probe read cached_tokens=0 cold. Paired with
+                # test_implicit_prompt_caching_unsupported_ratchet, which
+                # promotes IMPLICIT_PROMPT_CACHING the day a 2-call probe
+                # observes caching. Verified live 2026-06-05.
+                C.PROMPT_CACHING,
+                C.IMPLICIT_PROMPT_CACHING,
+                # openai-codec reasoning is an unsigned summary, no-op
+                # replay.
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.UNSIGNED_THINKING_REPLAY,
             }
         ),
     ),

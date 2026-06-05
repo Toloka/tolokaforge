@@ -125,6 +125,15 @@ presets:
   # a bespoke codec for these routes; ``openai`` codec is the safe baseline
   # — it surfaces ``reasoning_content`` summaries via OpenAI-canonical fields
   # without making structural assumptions.
+  # z-ai/glm-5.1, tencent/hy3-preview and nvidia/nemotron-3-super join
+  # this preset (arena lineup refresh 2026-06): each emits the
+  # discriminated-union ``item`` as a JSON-encoded string that
+  # JsonCoerceResponse decodes — glm/hy3 every call, nemotron
+  # intermittently (native dict on some calls, stringified on others;
+  # without json_coerce the stringified calls fail, so it needs this
+  # preset to make the capability reliable). All three also surface a
+  # reasoning_content summary the ``openai`` codec lands in the logs.
+  # Live 2026-06-05.
   openrouter_dict_stringify_recovery:
     match:
       - "xiaomi/mimo*"
@@ -133,6 +142,12 @@ presets:
       - "*kimi-k2*"
       - "deepseek/deepseek-v4*"
       - "*deepseek-v4*"
+      - "z-ai/glm-5*"
+      - "*glm-5*"
+      - "tencent/hy3*"
+      - "*hy3-preview*"
+      - "nvidia/nemotron*"
+      - "*nemotron-*"
     schema_sanitizer: passthrough
     response_policy: json_coerce
     prompt_policy: dict_map_hints
@@ -206,6 +221,36 @@ presets:
     # gemini-3.1-pro-preview: registered field names round-trip
     # correctly under this routing. See gotcha #21 in AGENTS.md
     # for the failure surface the routing closes.
+    schema_sanitizer: gemini
+    response_policy: array_dict_map
+
+  # ---- Arena lineup refresh (2026-06) ----------------------------------
+  # GPT-OSS 120B (OpenAI open-weights via OpenRouter) — NOT the GPT-5 API
+  # line, so it does not match ``openai_gpt5``. Only non-default policy is
+  # the ``openai`` reasoning codec so its reasoning_content summary lands
+  # in the trajectory logs (observability only). It substitutes synonyms
+  # for registered field names (``title`` for ``subject``, ``quantity``
+  # for ``qty``) and this persists even under the Gemini schema
+  # sanitizer's oneOf-flatten + dict-map-to-array (verified live
+  # 2026-06-05), so that is a genuine model gap, NOT a schema-construct
+  # one: DICT_MAP_TOOL_CALL + DISCRIMINATED_UNION_TOOL_CALL are declared
+  # ``known_unsupported`` in registry.py rather than papered over with a
+  # sanitizer that gives no lift but risks regressing the calls that pass.
+  gpt_oss:
+    match:
+      - "openai/gpt-oss*"
+      - "*gpt-oss*"
+    reasoning_codec: openai
+
+  # Gemma 4 (Google open-weights via OpenRouter) — NOT the Gemini API line
+  # (no reasoning_details envelope), so it borrows the Gemini *schema*
+  # sanitizer (oneOf-flatten + $ref-inline + dict-map-to-array) WITHOUT the
+  # gemini reasoning codec. Gemma surfaces no structured reasoning, so no
+  # reasoning_codec is set. Live 2026-06-05.
+  gemma:
+    match:
+      - "google/gemma*"
+      - "*gemma-*"
     schema_sanitizer: gemini
     response_policy: array_dict_map
 
