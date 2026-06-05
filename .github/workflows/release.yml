@@ -44,10 +44,12 @@ jobs:
         with:
           fetch-depth: 0      # full history + tags so commitizen can derive the bump
           ref: main           # always release from main
-          # If a branch/tag protection rule blocks the github-actions bot from
-          # pushing to main, provide a repo-scoped token here and configure a
-          # ruleset bypass for it (see CONTRIBUTING.md):
-          # token: ${{ secrets.RELEASE_PAT }}
+          # The `main` branch ruleset requires a PR + 1 approval for every push and
+          # only allows a *deploy key* to bypass it. `ssh-key` makes actions/checkout
+          # set `origin` to the SSH URL and authenticate as the deploy key, so the
+          # bump commit + tag can be pushed straight to main. See CONTRIBUTING.md and
+          # the PR that introduced this for the full rationale.
+          ssh-key: ${{ secrets.RELEASE_SSH_KEY }}
 
       - name: Guard — main must be clean
         run: |
