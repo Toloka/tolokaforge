@@ -90,3 +90,58 @@ Every P# in [`plans/llm_reasoning_and_observability_fix.md`](plans/llm_reasoning
 ### Security
 
 1. Public export flow now strips internal-only integrations and scans for forbidden internal URL patterns.
+
+## v0.2.4 (2026-06-05)
+
+### Feat
+
+- **llm**: register 7 arena-lineup models with preset routing (#46)
+- **release**: automate releases with commitizen (cz bump) (#41)
+
+## v0.2.3 (2026-06-04)
+
+### Feat
+
+- **llm**: register deepseek/deepseek-v3.2-exp (#36)
+
+## v0.2.2 (2026-06-03)
+
+### Fix
+
+- **presets**: enable empty-assistant filler for OpenRouter Amazon Nova (#35)
+- **docker**: resolve the engine wheel under a relocated uv cache (#28)
+- **adapters**: drop stale FrozenMcpCoreAdapter export and docstring (#14)
+
+## v0.2.1 (2026-05-29)
+
+### Feat
+
+- **llm**: register anthropic claude-opus-4.8 (#10)
+
+## v0.2.0 (2026-05-28)
+
+### Feat
+
+- Major engine cleanup for open-source release (#6)
+- add stub mode to publish workflows for PyPI name reservation
+- SecretManager as universal source + LLM Judge in Runner
+- add food_delivery_2 test project data and canonical tests
+- add PyPI publishing workflows and package metadata
+
+### Fix
+
+- stop leaking Docker-internal service URLs into env.yaml
+- resolve Issues 13-15, update FUTURE_DEVELOPMENT.md with audit findings
+- tool failure masking, brittle browser check, missing .env.example
+- add file debugging and explicit dist path to publish jobs
+- bump stub version to 0.0.2 (0.0.1 filename was used on TestPyPI)
+- build wheel-only in stub mode to avoid leaking repo source in sdist
+- use minimal stub README instead of full repo README in stub mode
+- 3 critical bugs from example analysis
+- browser task infrastructure + grading + failure attribution
+- resolve FUTURE_DEVELOPMENT.md issues (Stages 14-17, Issues 5-10)
+- container image mismatch detection + remove legacy context_files
+- grading checks, scripted user case sensitivity, task-level Docker features detector
+- examples pipeline — filesystem provisioning, Runner-side grading, tool factory, pricing
+- refusal task grading — empty golden_actions no longer silently pass
+- resolve 25 test failures and 14 false skips
