@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.2.5 (2026-06-08)
+
+### Fix
+
+- **adapters**: restore bundle_writer so `adapter convert` works (#48)
+
 ## v0.2.4 (2026-06-05)
 
 ### Feat
