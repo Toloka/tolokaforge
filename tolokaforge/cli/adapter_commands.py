@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import logging
 import sys
-from datetime import datetime
 from pathlib import Path
 
 import click
@@ -25,7 +24,11 @@ def adapter():
 
 
 @adapter.command()
-@click.option("--name", required=True, help="Adapter name (tau, tlk_mcp_core)")
+@click.option(
+    "--name",
+    required=True,
+    help="Adapter name (e.g. native, terminal_bench, or an installed conversion adapter)",
+)
 @click.option("--tasks-glob", required=True, help="Glob pattern for source tasks")
 @click.option("--output", required=True, type=click.Path(), help="Output directory")
 @click.option("--adapter-params", default="{}", help="JSON string of extra adapter params")
@@ -44,7 +47,7 @@ def convert(
         logging.basicConfig(level=logging.DEBUG, stream=sys.stderr)
 
     from tolokaforge.adapters import get_adapter
-    from tolokaforge.adapters.bundle_writer import write_bundle, write_domain_bundle
+    from tolokaforge.adapters.bundle_writer import write_bundle
 
     # Parse extra adapter params
     try:
@@ -89,27 +92,15 @@ def convert(
         try:
             bundle = adapter_inst.convert_to_native(task_id)
 
-            # Write shared domain bundle once (from first task's metadata)
-            if not domain_written and bundle.metadata.get("source_adapter") == "tlk_mcp_core":
+            # Write any shared, cross-task resources once. Adapters opt in by
+            # overriding write_shared_resources (default is a no-op); e.g. a
+            # conversion adapter may emit a shared _domain/ bundle here.
+            # Non-fatal: a failure warns but does not abort the conversion.
+            if not domain_written:
                 try:
-                    docindex_path = bundle.metadata.get("docindex_path", "")
-                    write_domain_bundle(
-                        mcp_core_src=Path(bundle.metadata["mcp_core_src"]),
-                        tools_library_src=Path(bundle.metadata["tools_library_src"]),
-                        tool_registry=bundle.metadata["tool_registry"],
-                        system_prompt=bundle.metadata.get("system_prompt", ""),
-                        domain_manifest={
-                            "domain": bundle.metadata.get("domain"),
-                            "adapter": "tlk_mcp_core",
-                            "converted_at": datetime.now().isoformat(),
-                        },
-                        output_dir=output_path / "_domain",
-                        allowed_toolsets=set(bundle.metadata.get("allowed_toolsets", [])) or None,
-                        docindex_src=Path(docindex_path) if docindex_path else None,
-                    )
-                    console.print("  ✓ _domain/ (shared resources)", style="blue")
+                    adapter_inst.write_shared_resources(output_path, bundle)
                 except Exception as exc:
-                    console.print(f"  ⚠ _domain/ write failed: {exc}", style="yellow")
+                    console.print(f"  ⚠ shared resources write failed: {exc}", style="yellow")
                     if verbose:
                         import traceback
 

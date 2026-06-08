@@ -410,7 +410,7 @@ class BaseAdapter(ABC):
     def convert_to_native(self, task_id: str) -> NativeTaskBundle:
         """Convert an external task to native TolokaForge format.
 
-        External adapters (Tau, TlkMcpCore, …) override this to produce a
+        Conversion adapters override this to produce a
         :class:`NativeTaskBundle` that can be written to disk with
         :func:`tolokaforge.adapters.bundle_writer.write_bundle`.
 
@@ -429,6 +429,28 @@ class BaseAdapter(ABC):
             NotImplementedError: If the adapter does not support conversion.
         """
         raise NotImplementedError(f"{self.__class__.__name__} does not support convert_to_native()")
+
+    def write_shared_resources(self, output_dir: Path, bundle: NativeTaskBundle) -> None:
+        """Write any shared, cross-task resources to *output_dir*.
+
+        Called once per ``tolokaforge adapter convert`` run, with the first
+        task's :class:`NativeTaskBundle`. The default is a **no-op** — most
+        adapters emit nothing shared.
+
+        Conversion adapters that produce shared resources (for example a
+        ``_domain/`` bundle of libraries, a tool registry, or a knowledge base)
+        override this to materialise them under *output_dir*. The
+        implementation should be idempotent, since it may run alongside
+        per-task :func:`bundle_writer.write_bundle` output in the same
+        directory.
+
+        Args:
+            output_dir: The conversion output root (the same directory that
+                receives the per-task ``{task_id}/`` folders).
+            bundle: The first task's converted bundle, whose ``metadata`` an
+                adapter can use to locate the resources to copy.
+        """
+        return None
 
     def grade(
         self,
