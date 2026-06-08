@@ -254,6 +254,24 @@ presets:
     schema_sanitizer: gemini
     response_policy: array_dict_map
 
+  # MiniMax-M3 (MiniMax via OpenRouter): reasoning model on the M-series
+  # 1M-context line. Codec-only, like ``gpt_oss``: the only non-default
+  # policy is the ``openai`` reasoning codec so the reasoning_content summary
+  # lands in the trajectory logs (observability only; replay is a no-op on
+  # the OpenAI route). It intermittently mis-shapes typed Dict[str, T] /
+  # discriminated unions (native array under a literal "item" key; turn-2
+  # prose instead of the union call): a genuine model gap, NOT
+  # stringification, so the ``json_coerce`` path of
+  # ``openrouter_dict_stringify_recovery`` does not apply and its
+  # dict_map_hints gave no reliability lift (DICT_MAP still flaky ~6/10 live
+  # under it). Both are declared known_unsupported in registry.py rather than
+  # papered over. Live 2026-06-08.
+  minimax:
+    match:
+      - "minimax/minimax-m3*"
+      - "*minimax-m3*"
+    reasoning_codec: openai
+
 providers:
   openrouter:
     params:
