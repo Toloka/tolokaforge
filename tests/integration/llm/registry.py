@@ -1372,6 +1372,87 @@ _ALL: list[MC] = [
             }
         ),
     ),
+    # ------------------------------------------------------------------
+    # MiniMax-M3 (MiniMax via OpenRouter): reasoning model on the M-series
+    # 1M-context line (arena lineup refresh 2026-06). A solid baseline
+    # tool-caller: basic / simple / multi-turn, error-recovery, decimal,
+    # enum-slash, re2, tool-name discipline, lexical invention,
+    # required-fields and progress-after-success all pass live. Routed
+    # codec-only (the ``minimax`` preset sets only the openai reasoning
+    # codec) so its reasoning_content summary lands in the trajectory logs.
+    # Implicit auto-cache is reliable (cache_read priced on OpenRouter; 4/4
+    # clean 2-call probes 2026-06-08), so IMPLICIT_PROMPT_CACHING stays
+    # required (unlike the warmth-dependent DeepSeek route). Like gpt_oss it
+    # has a genuine structured-tool-call gap: it intermittently mis-shapes
+    # typed Dict[str, T] and declines the turn-2 discriminated-union call
+    # (details below), and that gap is NOT schema/stringify-fixable, so both
+    # are known_unsupported rather than papered over. 15 required / 5
+    # known_unsupported. Live-certified 2026-06-08 (pytest
+    # tests/integration/llm/ -k minimax-m3: 15 passed, 6 skipped; the 5
+    # known_unsupported caps yield 6 skips since discriminated_union has 2
+    # parametrisations).
+    # ------------------------------------------------------------------
+    MC(
+        model_id="openrouter__minimax_minimax-m3",
+        provider="openrouter",
+        name="minimax/minimax-m3",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.THINKING_EMITS_BLOCKS,
+                C.IMPLICIT_PROMPT_CACHING,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # Typed Dict[str, T] tool args are flaky: the model
+                # intermittently emits an array under a literal "item" key
+                # ({"item": [{"sku": ...}, ...]}) instead of a dict keyed by
+                # the map key. Live 2026-06-08: 2/10 fail codec-only, 4/10
+                # fail under openrouter_dict_stringify_recovery, i.e. its
+                # dict_map_hints gave NO reliability lift, and the failure is
+                # native mis-shaping not stringification (json_coerce N/A). So,
+                # like gpt_oss, it routes codec-only and this stays
+                # known_unsupported rather than papered over with a sanitizer
+                # that gives no lift.
+                C.DICT_MAP_TOOL_CALL,
+                # Two-turn discriminated-union calls are likewise unreliable:
+                # 1 of the 2 parametrisations fails on every one of 5 live
+                # runs 2026-06-08 (5/10 param-runs), always "turn 2 returned
+                # no tool call": the model answers turn 2 in prose ("Comment
+                # posted on TCK-...") instead of emitting the union call. A
+                # turn-2 tool-invocation gap, not a schema-dialect one (no
+                # preset fixes it).
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                # No Anthropic-style ephemeral cache markers on this route;
+                # explicit cache_control is not wired for non-Anthropic
+                # OpenRouter routes. The auto-cache surface
+                # (IMPLICIT_PROMPT_CACHING) IS required (see header).
+                # Verified live 2026-06-08.
+                C.PROMPT_CACHING,
+                # Reasoning surfaces only as an unsigned reasoning_content
+                # summary via the openai codec: no signed blocks to replay
+                # and the codec's encode_for_replay path is a no-op. Same
+                # posture as the glm-5.1 / deepseek-v3.2-exp siblings.
+                # Verified live 2026-06-08.
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.UNSIGNED_THINKING_REPLAY,
+            }
+        ),
+    ),
 ]
 
 
