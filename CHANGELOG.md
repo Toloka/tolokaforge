@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.2.6 (2026-06-08)
+
+### Feat
+
+- **llm**: register minimax/minimax-m3 with codec-only preset (#51)
+
 ## v0.2.5 (2026-06-08)
 
 ### Fix
