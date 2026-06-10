@@ -139,6 +139,12 @@
       "cache_read": 0.3,
       "cache_write": 3.75
     },
+    "anthropic/claude-fable-5": {
+      "input": 10.0,
+      "output": 50.0,
+      "cache_read": 1.0,
+      "cache_write": 12.5
+    },
     "anthropic/claude-haiku-4.5": {
       "input": 1.0,
       "output": 5.0,

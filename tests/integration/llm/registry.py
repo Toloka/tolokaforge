@@ -275,6 +275,97 @@ _ALL: list[MC] = [
             }
         ),
     ),
+    # claude-fable-5 - Anthropic adaptive thinker. Live-certified 2026-06-10 via
+    # ``pytest tests/integration/llm/ -k claude-fable-5`` (OpenRouter route;
+    # final posture 16 required / 4 known_unsupported). This is NOT a copy of
+    # the opus-4.8 posture: per docs/ADD_NEW_MODEL.md § "copying a sibling cert
+    # verbatim", every opus-4.8 ``known_unsupported`` entry was flipped to
+    # ``required`` and re-run live, then only the entries that actually failed
+    # (or failed unreliably) were moved back. fable-5 differs from opus-4.8 in
+    # two ways worth recording:
+    #
+    #   * It surfaces structured thinking blocks + signed replay through the
+    #     GENERIC ``anthropic`` preset (reasoning_codec: anthropic, reasoning
+    #     delivered via the OpenRouter extra_body.reasoning overlay), so it
+    #     needs NO version-specific preset with the litellm thinking= kwarg the
+    #     way opus-4.7/4.8 do. THINKING_EMITS_BLOCKS + THINKING_REPLAY_ROUNDTRIP
+    #     pass reliably (3/3 repeated runs 2026-06-10).
+    #   * PROMPT_CACHING is demoted (see per-entry note): the cache WRITE fires
+    #     every call, but the back-to-back call-2 read-back misses ~2/11 live
+    #     runs on this OpenRouter route, which is too flaky for a merge gate.
+    #     opus-4.8 keeps it required; fable-5's route does not pass reliably.
+    #
+    # DICT_MAP_TOOL_CALL + DECIMAL_FIELD_TOOL_CALL pass under Anthropic's
+    # PassthroughSchema, same as opus-4.8.
+    MC(
+        model_id="openrouter__anthropic_claude-fable-5",
+        provider="openrouter",
+        name="anthropic/claude-fable-5",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.THINKING_EMITS_BLOCKS,
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+                # Round-trip cleanly under Anthropic PassthroughSchema (verified
+                # live 2026-06-10), same posture as the opus-4.8 sibling.
+                C.DICT_MAP_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # explicit_discriminator variant emits ``item`` as a
+                # JSON-encoded string instead of a nested dict (bare_union
+                # passes); no JsonCoerce recovery on the Anthropic passthrough
+                # route. Reliably reproduced 3/3 runs 2026-06-10 (string body
+                # ``{"kind": "ticket", "subject": ...}``). Identical failure mode
+                # to the opus-4.8 sibling.
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                # The EXPLICIT-cache contract is unreliable on this OpenRouter
+                # route: the cache WRITE fires every call
+                # (cache_creation_input_tokens / cache_write_tokens > 0 on call
+                # 1, 11/11 runs), but the back-to-back call-2 read-back reads
+                # cache_read_input_tokens=0 on 2 of 11 isolated runs 2026-06-10
+                # (~82% pass), an OpenRouter cache-propagation race on the
+                # immediate follow-up, not a model incapability. A required cap
+                # must pass reliably and yield a green cert block, and ~18%
+                # flakiness fails that bar (cf. the grok-4.3
+                # MULTI_TURN_ERROR_RECOVERY demotion at 83%). Direct-Anthropic
+                # opus-4.6/4.7/4.8 keep this required; fable-5's route does not.
+                # Flip back to required if/when the read-back stabilises.
+                C.PROMPT_CACHING,
+                # Passes the synthetic probe live, kept unsupported on purpose:
+                # the probe only fires because our anthropic_ephemeral
+                # cache_policy injects explicit cache_control markers, so it is
+                # really measuring EXPLICIT caching (the PROMPT_CACHING contract,
+                # itself demoted above only for read-back flakiness, not absence
+                # of caching). The test's own docstring lists anthropic as
+                # known_unsupported (Anthropic has no implicit auto-cache
+                # surface). Pass-but-artifact, verified 2026-06-10.
+                C.IMPLICIT_PROMPT_CACHING,
+                # Passes the synthetic probe live, kept unsupported on purpose:
+                # test_unsigned_thinking_replay asserts the Gemini-lineage
+                # reasoning_details/reasoning.text replay shape. Anthropic's
+                # real replay contract is the SIGNED variant
+                # (THINKING_REPLAY_ROUNDTRIP, required above). Kept consistent
+                # with opus-4.6/4.7/4.8. Pass-but-wrong-shape, verified
+                # 2026-06-10.
+                C.UNSIGNED_THINKING_REPLAY,
+            }
+        ),
+    ),
     # -----------------------------------------------------------------
     # Qwen — preset routes it through the same strict trio as GPT-5.
     # Reasoning surface is OpenAI-style summary only, no signed blocks,
