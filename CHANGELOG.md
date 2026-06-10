@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.2.7 (2026-06-10)
+
+### Feat
+
+- **llm**: register anthropic/claude-fable-5 (#52)
+
 ## v0.2.6 (2026-06-08)
 
 ### Feat
