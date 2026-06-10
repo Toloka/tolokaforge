@@ -322,6 +322,13 @@ _ALL: list[MC] = [
                 # live 2026-06-10), same posture as the opus-4.8 sibling.
                 C.DICT_MAP_TOOL_CALL,
                 C.DECIMAL_FIELD_TOOL_CALL,
+                # Explicit Anthropic-ephemeral cache: both the write (call 1)
+                # and the immediate read-back (call 2) fire reliably (8/8
+                # isolated runs 2026-06-10, matching the opus-4.8 baseline which
+                # was also 8/8). An earlier 2-of-11 read-back miss was a
+                # transient OpenRouter cache-propagation blip, not a model gap,
+                # so this is required like the opus siblings.
+                C.PROMPT_CACHING,
             }
         ),
         known_unsupported=frozenset(
@@ -333,27 +340,13 @@ _ALL: list[MC] = [
                 # ``{"kind": "ticket", "subject": ...}``). Identical failure mode
                 # to the opus-4.8 sibling.
                 C.DISCRIMINATED_UNION_TOOL_CALL,
-                # The EXPLICIT-cache contract is unreliable on this OpenRouter
-                # route: the cache WRITE fires every call
-                # (cache_creation_input_tokens / cache_write_tokens > 0 on call
-                # 1, 11/11 runs), but the back-to-back call-2 read-back reads
-                # cache_read_input_tokens=0 on 2 of 11 isolated runs 2026-06-10
-                # (~82% pass), an OpenRouter cache-propagation race on the
-                # immediate follow-up, not a model incapability. A required cap
-                # must pass reliably and yield a green cert block, and ~18%
-                # flakiness fails that bar (cf. the grok-4.3
-                # MULTI_TURN_ERROR_RECOVERY demotion at 83%). Direct-Anthropic
-                # opus-4.6/4.7/4.8 keep this required; fable-5's route does not.
-                # Flip back to required if/when the read-back stabilises.
-                C.PROMPT_CACHING,
                 # Passes the synthetic probe live, kept unsupported on purpose:
                 # the probe only fires because our anthropic_ephemeral
                 # cache_policy injects explicit cache_control markers, so it is
                 # really measuring EXPLICIT caching (the PROMPT_CACHING contract,
-                # itself demoted above only for read-back flakiness, not absence
-                # of caching). The test's own docstring lists anthropic as
-                # known_unsupported (Anthropic has no implicit auto-cache
-                # surface). Pass-but-artifact, verified 2026-06-10.
+                # which is required above). The test's own docstring lists
+                # anthropic as known_unsupported (Anthropic has no implicit
+                # auto-cache surface). Pass-but-artifact, verified 2026-06-10.
                 C.IMPLICIT_PROMPT_CACHING,
                 # Passes the synthetic probe live, kept unsupported on purpose:
                 # test_unsigned_thinking_replay asserts the Gemini-lineage
