@@ -340,13 +340,15 @@ _ALL: list[MC] = [
                 # ``{"kind": "ticket", "subject": ...}``). Identical failure mode
                 # to the opus-4.8 sibling.
                 C.DISCRIMINATED_UNION_TOOL_CALL,
-                # Passes the synthetic probe live, kept unsupported on purpose:
-                # the probe only fires because our anthropic_ephemeral
-                # cache_policy injects explicit cache_control markers, so it is
-                # really measuring EXPLICIT caching (the PROMPT_CACHING contract,
-                # which is required above). The test's own docstring lists
-                # anthropic as known_unsupported (Anthropic has no implicit
-                # auto-cache surface). Pass-but-artifact, verified 2026-06-10.
+                # Flakily passes the synthetic probe (3/5 live 2026-06-10), kept
+                # unsupported on purpose: the probe only fires because our
+                # anthropic_ephemeral cache_policy injects explicit cache_control
+                # markers, so it is really measuring EXPLICIT caching (the same
+                # flaky call-2 read-back as the PROMPT_CACHING contract, which is
+                # required above). The test's own docstring lists anthropic as
+                # known_unsupported (Anthropic has no implicit auto-cache
+                # surface), so the classification holds regardless of the
+                # synthetic pass/fail. Verified 2026-06-10.
                 C.IMPLICIT_PROMPT_CACHING,
                 # Passes the synthetic probe live, kept unsupported on purpose:
                 # test_unsigned_thinking_replay asserts the Gemini-lineage
