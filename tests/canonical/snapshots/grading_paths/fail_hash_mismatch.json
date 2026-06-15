@@ -1,0 +1,10 @@
+{
+  "binary_pass": false,
+  "components": {
+    "custom_checks": null,
+    "llm_judge": null,
+    "state_checks": 0.0,
+    "transcript_rules": null
+  },
+  "score": 0.0
+}
