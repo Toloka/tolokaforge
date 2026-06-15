@@ -53,7 +53,7 @@ jobs:
 
 
     - name: Install dependencies
-      run: uv sync --dev
+      run: uv sync --dev --locked
 
     - name: Run pre-commit checks
       run: uv run pre-commit run --all-files --show-diff-on-failure
@@ -87,7 +87,7 @@ jobs:
 
     - name: Install dependencies
       run: |
-        uv sync --dev
+        uv sync --dev --locked
 
     - name: Install Playwright browsers
       run: |
@@ -167,7 +167,7 @@ jobs:
 
     - name: Install dependencies
       run: |
-        uv sync --dev
+        uv sync --dev --locked
 
     - name: Install Playwright browsers
       run: |
@@ -265,7 +265,7 @@ jobs:
 
     - name: Install dependencies
       run: |
-        uv sync --dev
+        uv sync --dev --locked
 
     - name: Install Playwright browsers
       run: |

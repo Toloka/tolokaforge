@@ -277,6 +277,17 @@ major_version_zero = true            # project is pre-1.0/unstable: breaking cha
 bump_message = "chore(release): bump version to $new_version"
 annotated_tag = true
 
+# Keep uv.lock's own `tolokaforge` package version in step with [project] version.
+# cz bump rewrites [project] version but does NOT relock; without this the lockfile
+# would pin the previous version every release. pre_bump_hooks run after the version
+# is written and before cz's commit, so we relock and stage uv.lock — cz then folds
+# it into the same release commit. (cz only auto-stages its own version files, so the
+# explicit `git add` is required.)
+pre_bump_hooks = [
+    "uv lock",
+    "git add -- uv.lock",
+]
+
 # =============================================================================
 # Development Dependencies (PEP 735)
 # =============================================================================

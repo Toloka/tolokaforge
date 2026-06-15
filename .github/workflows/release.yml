@@ -104,6 +104,13 @@ jobs:
           echo "released=true" >> "$GITHUB_OUTPUT"
           echo "new_tag=v$(uv run cz version -p)" >> "$GITHUB_OUTPUT"
 
+      # Belt-and-suspenders: the cz pre_bump_hook (pyproject [tool.commitizen])
+      # relocks uv.lock to the new version and folds it into the bump commit. Assert
+      # there's no leftover drift before we publish the tag.
+      - name: Assert uv.lock is consistent with the bump
+        if: ${{ !inputs.dry_run && steps.bump.outputs.released == 'true' }}
+        run: uv lock --check
+
       # Push the bump commit and its tag in a single atomic update: both refs
       # land or neither does. Avoids leaving a release commit on main with no tag
       # (which would trigger nothing downstream) if the tag push were rejected.
