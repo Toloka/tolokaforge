@@ -107,6 +107,17 @@ class TestItemRecursiveUnwrap:
         out = policy.parse_arguments(_update_call(None))
         assert out["updates"]["tags"] is None
 
+    def test_deep_nesting_capped_no_recursion_error(self) -> None:
+        """Pathological ``{"item": {"item": ...}}`` nesting beyond the depth cap
+        is returned without fully unwrapping, instead of raising RecursionError
+        (which un-capped recursion would at this depth)."""
+        deep: object = "x"
+        for _ in range(2000):
+            deep = {"item": deep}
+        policy = ItemRecursiveUnwrapResponse()
+        out = policy.parse_arguments(_update_call(deep))  # must not raise
+        assert isinstance(out["updates"]["tags"], list)
+
 
 # ---------------------------------------------------------------------------
 # JsonRecursiveCoerceResponse — stringified list + empty string (23 %)
@@ -235,6 +246,21 @@ class TestComposite:
         assert out["id"] == "TCK-00000004"
         assert out["updates"]["status"] == "solved"
         assert out["updates"]["resolution_outcome"] == "Resolved"
+
+    def test_composite_order_recovers_stringified_item_wrap(self) -> None:
+        """coerce-before-unwrap is load-bearing: a stringified ``{"item": X}``
+        is JSON-decoded to a dict first, then unwrapped to a list. The reverse
+        order would leave it as a non-list ``{"item": X}`` dict."""
+        policy = MinimaxM3TagRecoveryResponse()
+        out = policy.parse_arguments(_update_call('{"item": "receipt-issued"}'))
+        assert out["updates"]["tags"] == ["receipt-issued"]
+
+    def test_list_elements_not_recursed(self) -> None:
+        """Unwrap does not descend into list elements: a stringified list whose
+        only element is itself an ``{"item": X}`` dict is left flat, not rewritten."""
+        policy = MinimaxM3TagRecoveryResponse()
+        out = policy.parse_arguments(_update_call('[{"item": "a"}]'))
+        assert out["updates"]["tags"] == [{"item": "a"}]
 
 
 # ---------------------------------------------------------------------------

@@ -350,6 +350,12 @@ def _recover_json_string_at_tags_site(value: Any) -> Any:
 
     Any other value (real list, ``None``, scalar string, number) passes
     through unchanged.
+
+    Note: the site allowlist is keyed on the field *name* (``tags``), not a
+    verified declared type. It assumes ``updates.tags`` / ``item.tags`` is
+    always a declared array (true for the current mock-tools domains); a
+    future domain declaring a *scalar* field literally named ``tags`` under
+    one of these parents would be mis-coerced.
     """
     if value == "" and isinstance(value, str):
         return []
@@ -358,7 +364,15 @@ def _recover_json_string_at_tags_site(value: Any) -> Any:
     return _coerce_json_strings({"tags": value})["tags"]
 
 
-def _unwrap_item_value(value: Any) -> Any:
+# Bound the ``{"item": {"item": ...}}`` unwrap recursion. The observed M3
+# census tops out at one nesting level; greater depth only comes from
+# pathological / adversarial input, so past the cap the value is returned
+# unchanged (refuse to recover rather than raise RecursionError at the
+# tool-call assembly site).
+_MAX_UNWRAP_DEPTH = 64
+
+
+def _unwrap_item_value(value: Any, _depth: int = 0) -> Any:
     """Recursively unwrap the ``{"item": X}`` XML repeated-element artefact.
 
     Rule (per spec): a single-key dict ``{"item": X}`` normalises to a list —
@@ -369,7 +383,9 @@ def _unwrap_item_value(value: Any) -> Any:
     """
     if not isinstance(value, dict) or set(value.keys()) != {"item"}:
         return value
-    inner = _unwrap_item_value(value["item"])
+    if _depth >= _MAX_UNWRAP_DEPTH:
+        return value
+    inner = _unwrap_item_value(value["item"], _depth + 1)
     return inner if isinstance(inner, list) else [inner]
 
 
