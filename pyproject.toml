@@ -277,6 +277,17 @@ major_version_zero = true            # project is pre-1.0/unstable: breaking cha
 bump_message = "chore(release): bump version to $new_version"
 annotated_tag = true
 
+# Keep uv.lock's own `tolokaforge` package version in step with [project] version.
+# cz bump rewrites [project] version but does NOT relock; without this the lockfile
+# would pin the previous version every release. pre_bump_hooks run after the version
+# is written and before cz's commit, so we relock and stage uv.lock — cz then folds
+# it into the same release commit. (cz only auto-stages its own version files, so the
+# explicit `git add` is required.)
+pre_bump_hooks = [
+    "uv lock",
+    "git add -- uv.lock",
+]
+
 # =============================================================================
 # Development Dependencies (PEP 735)
 # =============================================================================
@@ -315,6 +326,14 @@ dev = [
 # =============================================================================
 # uv is the recommended package manager for this project
 # See: https://docs.astral.sh/uv/
+
+[tool.uv]
+# Keep everyone (CI + every laptop) on a compatible uv so the committed uv.lock is
+# reproducible. uv refuses to run outside this range and tells the dev to align,
+# which prevents "I relocked and now CI's `uv sync --locked` rejects my lock"
+# surprises. A narrow range (not one exact version) avoids forcing a reinstall on
+# every uv patch; the CI pin in .github/workflows/ci.yml lives inside this range.
+required-version = ">=0.9.5,<0.10"
 
 [tool.uv.workspace]
 members = [
