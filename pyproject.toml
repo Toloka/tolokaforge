@@ -327,6 +327,14 @@ dev = [
 # uv is the recommended package manager for this project
 # See: https://docs.astral.sh/uv/
 
+[tool.uv]
+# Keep everyone (CI + every laptop) on a compatible uv so the committed uv.lock is
+# reproducible. uv refuses to run outside this range and tells the dev to align,
+# which prevents "I relocked and now CI's `uv sync --locked` rejects my lock"
+# surprises. A narrow range (not one exact version) avoids forcing a reinstall on
+# every uv patch; the CI pin in .github/workflows/ci.yml lives inside this range.
+required-version = ">=0.9.5,<0.10"
+
 [tool.uv.workspace]
 members = [
     "tools/dev-mcp",
