@@ -42,7 +42,10 @@ from tolokaforge.core.llm.reasoning_codec import (
 )
 from tolokaforge.core.llm.response_policy import (
     ArrayDictMapResponse,
+    ItemRecursiveUnwrapResponse,
     JsonCoerceResponse,
+    JsonRecursiveCoerceResponse,
+    MinimaxM3TagRecoveryResponse,
     ResponsePolicy,
     StandardResponse,
     UnwrapInputResponse,
@@ -119,6 +122,9 @@ __all__ = [
     "UnwrapInputResponse",
     "JsonCoerceResponse",
     "ArrayDictMapResponse",
+    "JsonRecursiveCoerceResponse",
+    "ItemRecursiveUnwrapResponse",
+    "MinimaxM3TagRecoveryResponse",
     "ParamPolicy",
     "GenerationParams",
     # Capabilities + presets (lazy)

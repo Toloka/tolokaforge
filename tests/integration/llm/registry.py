@@ -1463,20 +1463,29 @@ _ALL: list[MC] = [
     # 1M-context line (arena lineup refresh 2026-06). A solid baseline
     # tool-caller: basic / simple / multi-turn, error-recovery, decimal,
     # enum-slash, re2, tool-name discipline, lexical invention,
-    # required-fields and progress-after-success all pass live. Routed
-    # codec-only (the ``minimax`` preset sets only the openai reasoning
-    # codec) so its reasoning_content summary lands in the trajectory logs.
-    # Implicit auto-cache is reliable (cache_read priced on OpenRouter; 4/4
-    # clean 2-call probes 2026-06-08), so IMPLICIT_PROMPT_CACHING stays
-    # required (unlike the warmth-dependent DeepSeek route). Like gpt_oss it
-    # has a genuine structured-tool-call gap: it intermittently mis-shapes
-    # typed Dict[str, T] and declines the turn-2 discriminated-union call
-    # (details below), and that gap is NOT schema/stringify-fixable, so both
-    # are known_unsupported rather than papered over. 15 required / 5
-    # known_unsupported. Live-certified 2026-06-08 (pytest
-    # tests/integration/llm/ -k minimax-m3: 15 passed, 6 skipped; the 5
+    # required-fields and progress-after-success all pass live. The
+    # ``minimax`` preset sets the openai reasoning codec (so its
+    # reasoning_content summary lands in the trajectory logs) plus the
+    # ``minimax_m3_tags`` response policy (PR #55). That policy is a
+    # tags-site-scoped, eval-time recovery of M3's XML -> JSON ``tags``
+    # corruption at ``updates.tags`` / ``item.tags`` only; it does NOT
+    # touch the synthetic capability probes (none exercise those sites), so
+    # the live cert posture is unchanged by it. Implicit auto-cache is
+    # reliable (cache_read priced on OpenRouter; 4/4 clean 2-call probes
+    # 2026-06-08), so IMPLICIT_PROMPT_CACHING stays required (unlike the
+    # warmth-dependent DeepSeek route). Like gpt_oss it has a genuine
+    # structured-tool-call gap: it intermittently mis-shapes typed
+    # Dict[str, T] and declines the turn-2 discriminated-union call (details
+    # below), and that gap is NOT schema/stringify-fixable. The
+    # ``minimax_m3_tags`` policy is tags-site-scoped and explicitly does NOT
+    # address it, so DICT_MAP_TOOL_CALL / DISCRIMINATED_UNION_TOOL_CALL stay
+    # known_unsupported rather than being papered over. 15 required / 5
+    # known_unsupported. Live-certified 2026-06-08 (codec-only preset);
+    # re-certified 2026-06-15 on the PR #55 branch with the
+    # ``minimax_m3_tags`` policy active (pytest tests/integration/llm/ -k
+    # minimax-m3: 15 passed, 6 skipped on two consecutive runs; the 5
     # known_unsupported caps yield 6 skips since discriminated_union has 2
-    # parametrisations).
+    # parametrisations). Posture identical to the 2026-06-08 cert.
     # ------------------------------------------------------------------
     MC(
         model_id="openrouter__minimax_minimax-m3",
