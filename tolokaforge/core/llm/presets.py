@@ -45,6 +45,7 @@ from tolokaforge.core.llm.reasoning_codec import (
 from tolokaforge.core.llm.response_policy import (
     ArrayDictMapResponse,
     JsonCoerceResponse,
+    MinimaxM3TagRecoveryResponse,
     ResponsePolicy,
     StandardResponse,
     UnwrapInputResponse,
@@ -89,6 +90,7 @@ _RESPONSE_POLICIES: dict[str, type[ResponsePolicy]] = {
     "unwrap_input": UnwrapInputResponse,
     "json_coerce": JsonCoerceResponse,
     "array_dict_map": ArrayDictMapResponse,
+    "minimax_m3_tags": MinimaxM3TagRecoveryResponse,
 }
 
 _REASONING_CODECS: dict[str, type[ReasoningCodec]] = {

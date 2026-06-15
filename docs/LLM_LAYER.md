@@ -631,6 +631,20 @@ Implementations:
 * `ArrayDictMapResponse` — composes `JsonCoerceResponse` plus the reverse
   pivot of `StrictSchema`'s dict-map → array conversion. Used by
   `openai_gpt5` and `xai_grok` presets.
+* `MinimaxM3TagRecoveryResponse` — composite for the MiniMax-M3 `tags`
+  corruption (`minimax` preset, registry name `minimax_m3_tags`). M3's
+  XML → JSON tool-call conversion mangles the `tags` array on every emission
+  (`{"item": X}` 76 %, JSON-encoded / empty string 23 %). The composite
+  chains `JsonRecursiveCoerceResponse` (stringified-list → list, `''` → `[]`)
+  then `ItemRecursiveUnwrapResponse` (`{"item": X}` → list, recursing into the
+  parent so `{"item": {"item": "a"}}` flattens to `["a"]`). Both recurse into
+  the `updates` / `item` parent but are scoped to the `ARRAY_SITES` allowlist
+  (`updates.tags`, `item.tags`) — the empty-string → `[]` coercion is tied to
+  those declared-array sites so it can never fire on a scalar field. Scalar
+  strings are never promoted, `None` is never touched, multi-key dicts are
+  left unchanged, and already-valid `list[str]` tags pass through unchanged
+  (zero false positives). M2.7 emits native `tags` lists and is not in this
+  preset. See AGENTS.md gotcha #25.
 
 `param_types` is a `Mapping[str, str]` from root-level parameter name to
 its post-sanitised JSON-Schema `type`. `LLMClient._assemble_result` builds
