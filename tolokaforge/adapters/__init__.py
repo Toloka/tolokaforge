@@ -19,8 +19,12 @@ from tolokaforge.adapters.base import (
     DockerStackRequirements,
     NativeTaskBundle,
 )
+from tolokaforge.runner.models import AdapterType
 
 logger = logging.getLogger(__name__)
+
+# Canonical name of the only built-in adapter (kept as a constant, not a literal).
+_NATIVE = AdapterType.NATIVE.value
 
 # ---------------------------------------------------------------------------
 # Adapter registry
@@ -41,7 +45,7 @@ def _discover_adapters() -> dict[str, type]:
     """
     from tolokaforge.adapters.native import NativeAdapter
 
-    adapters: dict[str, type] = {"native": NativeAdapter}
+    adapters: dict[str, type] = {_NATIVE: NativeAdapter}
 
     for ep in importlib.metadata.entry_points(group="tolokaforge.adapters"):
         try:
@@ -79,6 +83,24 @@ def register_adapter(name: str, adapter_cls: type) -> None:
     _ADAPTERS[name] = adapter_cls
 
 
+def ensure_registered_adapter(adapter_type: str) -> None:
+    """Host-side guard: assert ``adapter_type`` is a registered adapter.
+
+    The adapter set is open and discovered at runtime (entry-point plugins), so
+    ``TaskDescription.adapter_type`` is an open string. Validate it here — on the
+    host, where the registry is authoritative — to catch typos/misconfig early with
+    a clear error. This is intentionally **not** a Pydantic validator: the runner
+    deserializes ``TaskDescription`` and must stay permissive (it is
+    adapter-agnostic and may not have a given adapter plugin installed).
+    """
+    known = available_adapters()
+    if adapter_type not in known:
+        raise ValueError(
+            f"Unknown adapter type: {adapter_type!r}. Available adapters: {known}. "
+            "Install the adapter package or check the adapter configuration."
+        )
+
+
 def get_adapter(adapter_type: str | None, params: dict[str, Any]) -> BaseAdapter:
     """
     Get adapter instance based on type.
@@ -93,7 +115,7 @@ def get_adapter(adapter_type: str | None, params: dict[str, Any]) -> BaseAdapter
     Raises:
         ValueError: If the requested adapter type is unknown or not installed.
     """
-    if adapter_type is None or adapter_type == "native":
+    if adapter_type is None or adapter_type == _NATIVE:
         from tolokaforge.adapters.native import NativeAdapter
 
         return NativeAdapter(params)

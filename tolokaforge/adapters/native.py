@@ -384,7 +384,9 @@ class NativeAdapter(BaseAdapter):
             UserSimulatorConfig as RunnerUserSimulatorConfig,
         )
 
-        logger.info("Building TaskDescription", task_id=task_id, adapter_type="native")
+        logger.info(
+            "Building TaskDescription", task_id=task_id, adapter_type=AdapterType.NATIVE.value
+        )
 
         # Ensure tasks are discovered
         self._discover_tasks()

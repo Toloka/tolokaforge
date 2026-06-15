@@ -38,7 +38,15 @@ from pydantic import BaseModel, Field
 # =============================================================================
 
 class AdapterType(str, Enum):
-    """Source adapter that produced this description."""
+    """Canonical constants for well-known built-in adapter names.
+
+    NOTE: ``TaskDescription.adapter_type`` is an open ``str`` from the adapter
+    registry, not a closed enum. Entry-point/third-party adapters round-trip
+    with their own names (e.g. an adapter installed via
+    ``pip install some-adapter-pkg``) without any engine edit. This enum
+    provides typed constants for the built-ins; the ``adapter_type`` field
+    accepts any name present in the registry at runtime.
+    """
     NATIVE = "native"
     TAU = "tau"
     TLK_MCP_CORE = "tlk_mcp_core"
@@ -275,7 +283,7 @@ class TaskDescription(BaseModel):
     name: str
     category: str                                 # Domain: e.g. "airline", "retail"
     description: str                              # Task description / user goal
-    adapter_type: AdapterType
+    adapter_type: str                             # Open string from the adapter registry; use AdapterType.* constants for the built-ins
     schema_version: str = "1.0.0"
     
     # --- System Prompt ---

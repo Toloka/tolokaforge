@@ -18,6 +18,7 @@ from tolokaforge.runner.tool_factory import (
     DockerComposeExecToolWrapper,
     ToolConfigurationError,
     ToolFactory,
+    ToolLifecycleContext,
 )
 
 pytestmark = pytest.mark.unit
@@ -180,7 +181,7 @@ class TestDockerComposeExecWrapperStart:
         mock_run.return_value = subprocess.CompletedProcess(
             args=[], returncode=0, stdout="", stderr=""
         )
-        wrapper.start("tbench_task_0")
+        wrapper.start(ToolLifecycleContext(trial_id="task_0"))
         assert wrapper.project_name == "tbench_task_0"
         assert wrapper._started is True
 
@@ -194,7 +195,7 @@ class TestDockerComposeExecWrapperStart:
         mock_run.return_value = subprocess.CompletedProcess(
             args=[], returncode=0, stdout="", stderr=""
         )
-        wrapper.start("tbench_mytask_2")
+        wrapper.start(ToolLifecycleContext(trial_id="mytask_2"))
         assert (
             wrapper.env_vars["T_BENCH_TASK_DOCKER_CLIENT_CONTAINER_NAME"] == "tbench_mytask_2_main"
         )
@@ -209,7 +210,7 @@ class TestDockerComposeExecWrapperStart:
         mock_run.return_value = subprocess.CompletedProcess(
             args=[], returncode=0, stdout="", stderr=""
         )
-        wrapper.start("tbench_task_1")
+        wrapper.start(ToolLifecycleContext(trial_id="task_1"))
         assert wrapper.env_vars["T_BENCH_TASK_LOGS_PATH"] == "/workspace/logs/tbench_task_1"
         assert (
             wrapper.env_vars["T_BENCH_TASK_AGENT_LOGS_PATH"]
@@ -223,7 +224,7 @@ class TestDockerComposeExecWrapperStart:
             args=[], returncode=1, stdout="", stderr="Error: service failed"
         )
         with pytest.raises(RuntimeError, match="docker compose up failed"):
-            wrapper.start("tbench_fail_0")
+            wrapper.start(ToolLifecycleContext(trial_id="fail_0"))
 
     @patch("subprocess.run")
     @patch("os.makedirs")
@@ -233,7 +234,7 @@ class TestDockerComposeExecWrapperStart:
         mock_run.return_value = subprocess.CompletedProcess(
             args=[], returncode=0, stdout="", stderr=""
         )
-        wrapper.start("tbench_copy_0")
+        wrapper.start(ToolLifecycleContext(trial_id="copy_0"))
         # Should have: compose up, cp tests, cp run-tests.sh, mkdir logs
         assert mock_run.call_count >= 4
 

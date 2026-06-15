@@ -50,7 +50,6 @@ from tolokaforge.runner.grading import (
     evaluate_transcript_rules,
 )
 from tolokaforge.runner.models import (
-    AdapterType,
     GoldenAction,
     GradeComponents,
     HashGradingResult,
@@ -68,6 +67,7 @@ from tolokaforge.runner.tool_factory import (
     DockerComposeExecToolWrapper,
     MCPServerToolWrapper,
     ToolFactory,
+    ToolLifecycleContext,
     ToolReconstructionError,
 )
 
@@ -208,7 +208,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         self.db_client = db_client
         self.rag_client = rag_client
         self.trials: dict[str, TrialContextRuntime] = {}
-        self._available_adapters = ["tau", "mcp", "native"]  # TODO: detect dynamically
+        # Report the adapters actually registered (built-in + entry-point plugins),
+        # not a hardcoded list, so capabilities reflect what's installed.
+        from tolokaforge.adapters import available_adapters
+
+        self._available_adapters = available_adapters()
         self._artifact_dirs: dict[str, Path] = {}  # trial_id -> temp dir for cleanup
 
         # Create a dedicated event loop thread for async operations.
@@ -591,22 +595,23 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # Store trial context
         self.trials[trial_id] = trial_context
 
-        # Terminal-bench: start Docker Compose stack for this trial
-        if task_description.adapter_type == AdapterType.TERMINAL_BENCH:
-            project_name = f"tbench_{trial_id.replace(':', '_')}"
-            for tool in trial_context.agent_tools.values():
-                if isinstance(tool, DockerComposeExecToolWrapper):
-                    # Resolve __artifacts__ task_dir to actual extraction path
-                    if tool.task_dir == "__artifacts__" and artifacts_dir is not None:
-                        tool.task_dir = str(artifacts_dir)
-                    try:
-                        tool.start(project_name)
-                    except Exception as e:
-                        logger.error(f"RegisterTrial: Failed to start compose stack: {e}")
-                        return pb2.RegisterTrialResponse(
-                            success=False,
-                            error=f"Docker Compose start failed: {e}",
-                        )
+        # Start any tools that manage per-trial resources. Driven by the tool's
+        # ``has_lifecycle`` capability, not by adapter identity, so any lifecycle
+        # tool (e.g. a compose-backed sandbox) is provisioned the same way.
+        lifecycle_ctx = ToolLifecycleContext(
+            trial_id=trial_id,
+            artifacts_dir=str(artifacts_dir) if artifacts_dir is not None else None,
+        )
+        for tool in trial_context.agent_tools.values():
+            if getattr(tool, "has_lifecycle", False):
+                try:
+                    tool.start(lifecycle_ctx)
+                except Exception as e:
+                    logger.error(f"RegisterTrial: Failed to start tool lifecycle: {e}")
+                    return pb2.RegisterTrialResponse(
+                        success=False,
+                        error=f"Tool lifecycle start failed: {e}",
+                    )
 
         # Build tool schemas for response
         tool_schemas = []
@@ -916,14 +921,13 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         trial_id = request.trial_id
         trial_context = self.trials[trial_id]
 
-        # Terminal-bench: run test.sh inside compose container instead of hash grading
-        if (
-            trial_context.task_description
-            and trial_context.task_description.adapter_type == AdapterType.TERMINAL_BENCH
-        ):
-            return await self._grade_terminal_bench(trial_id, trial_context)
-
         grading_config = trial_context.grading_config
+
+        # Declarative grading-method dispatch (no adapter identity): a task can request
+        # test-execution grading — run a reference suite in the env and score it —
+        # instead of the default state/transcript/judge combination.
+        if grading_config and grading_config.grading_method == "test_execution":
+            return await self._grade_via_test_execution(trial_id, trial_context)
 
         # Initialize grading components
         components = GradeComponents()
@@ -1421,17 +1425,21 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
     # Terminal-bench grading
     # =========================================================================
 
-    async def _grade_terminal_bench(
+    async def _grade_via_test_execution(
         self,
         trial_id: str,
         trial_context: "TrialContextRuntime",
     ) -> "pb2.GradeTrialResponse":
-        """Grade a terminal-bench trial by running test.sh inside the compose container.
+        """Grade by running a reference test suite inside the trial's env container.
+
+        Selected declaratively via ``grading.grading_method == "test_execution"`` —
+        no adapter identity involved.
 
         1. Execute ``test.sh`` (pytest + reward calculation) in the task container.
         2. Read the reward float from ``/logs/verifier/reward.txt``.
         3. Return a ``GradeTrialResponse`` with the reward as score.
         """
+        # Find an exec-capable lifecycle tool to run the suite in the env.
         bash_tool: DockerComposeExecToolWrapper | None = None
         for tool in trial_context.agent_tools.values():
             if isinstance(tool, DockerComposeExecToolWrapper):
@@ -1439,15 +1447,22 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 break
 
         if bash_tool is None:
-            return pb2.GradeTrialResponse(
-                success=False,
-                error="Terminal-bench grading: no DockerComposeExecToolWrapper found",
+            # Actionable for the adapter author: they asked for test-execution
+            # grading but didn't ship a tool that can run the suite inside the env.
+            error_msg = (
+                "test-execution grading was requested (grading_method='test_execution') "
+                "but no exec-capable env tool was found in this trial. Include an "
+                "exec-capable lifecycle tool (e.g. DockerComposeExecToolWrapper) in "
+                "TaskDescription.agent_tools so the runner can execute the test suite "
+                "inside the trial environment."
             )
+            logger.error(f"GradeTrial(test-execution): {trial_id} - {error_msg}")
+            return pb2.GradeTrialResponse(success=False, error=error_msg)
 
         loop = asyncio.get_event_loop()
 
         # Run test.sh
-        logger.info(f"GradeTrial(terminal-bench): {trial_id} - running test.sh")
+        logger.info(f"GradeTrial(test-execution): {trial_id} - running test.sh")
         try:
             test_output = await loop.run_in_executor(
                 None,
@@ -1456,7 +1471,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 300.0,  # verifier timeout
             )
         except Exception as e:
-            logger.error(f"GradeTrial(terminal-bench): test.sh failed: {e}")
+            logger.error(f"GradeTrial(test-execution): test.sh failed: {e}")
             return pb2.GradeTrialResponse(
                 success=True,
                 error="",
@@ -1481,7 +1496,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         except (ValueError, IndexError):
             reward = 0.0
 
-        logger.info(f"GradeTrial(terminal-bench): {trial_id} - reward={reward:.4f}")
+        logger.info(f"GradeTrial(test-execution): {trial_id} - reward={reward:.4f}")
 
         return pb2.GradeTrialResponse(
             success=True,
@@ -1491,7 +1506,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 score=reward,
                 components=pb2.GradeComponents(custom_checks=reward),
                 reasons=(
-                    f"terminal-bench reward: {reward:.4f}\n\n"
+                    f"test-execution reward: {reward:.4f}\n\n"
                     f"test output (truncated):\n{test_output[:2000]}"
                 ),
             ),
@@ -1556,17 +1571,14 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             trial_context = self.trials[trial_id]
             trial_context.clear_history()
 
-            # Terminal-bench: stop Docker Compose stack
-            if (
-                trial_context.task_description
-                and trial_context.task_description.adapter_type == AdapterType.TERMINAL_BENCH
-            ):
-                for tool in trial_context.agent_tools.values():
-                    if isinstance(tool, DockerComposeExecToolWrapper):
-                        try:
-                            tool.stop()
-                        except Exception as e:
-                            logger.warning(f"ResetTrial: Failed to stop compose: {e}")
+            # Stop any per-trial lifecycle tools started during registration.
+            # Capability-driven (has_lifecycle), not adapter identity.
+            for tool in trial_context.agent_tools.values():
+                if getattr(tool, "has_lifecycle", False):
+                    try:
+                        tool.stop()
+                    except Exception as e:
+                        logger.warning(f"ResetTrial: Failed to stop tool lifecycle: {e}")
 
         # TODO: Phase 3b — Re-execute initialization_actions if requested
         # if request.execute_init_actions:

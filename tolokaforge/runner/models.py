@@ -23,7 +23,15 @@ from pydantic import BaseModel, Field
 
 
 class AdapterType(str, Enum):
-    """Source adapter that produced this description."""
+    """Well-known adapter names produced by built-in/first-party adapters.
+
+    This enum is **not** an exhaustive, closed set: ``TaskDescription.adapter_type``
+    is a free ``str`` sourced from the adapter registry, so entry-point / third-party
+    adapters round-trip with their own names and need no engine edit. These members
+    are the canonical constants for the built-in adapter names — first-party engine
+    code should reference them (e.g. ``AdapterType.NATIVE``) instead of raw
+    adapter-name string literals.
+    """
 
     NATIVE = "native"
     TAU = "tau"
@@ -308,6 +316,24 @@ class GradingConfig(BaseModel):
     weights: dict[str, float] = Field(default_factory=lambda: {"state_checks": 1.0})
     pass_threshold: float = 0.8
 
+    # Declarative grading dispatch — adapters tell the runner *how* to grade in data,
+    # so the runner never infers it from the adapter's identity.
+    #
+    # Values:
+    #   ``None`` (default)
+    #     Standard grading: combine state checks / transcript rules / LLM judge
+    #     using ``weights`` and ``pass_threshold``. Most adapters want this.
+    #   ``"test_execution"``
+    #     Run a reference test suite inside the trial env via an exec-capable
+    #     lifecycle tool (today: ``DockerComposeExecToolWrapper``) and score by
+    #     reading the reward written to ``/logs/verifier/reward.txt``. Requires
+    #     such a tool to be present in ``TaskDescription.agent_tools`` — without
+    #     one the runner returns a clear error at ``GradeTrial`` time.
+    #   ``"hash"`` / ``"transcript"`` / ``"llm"``
+    #     Reserved names for future single-method dispatch; not currently used
+    #     for dispatch (today their behaviour is part of the default path).
+    grading_method: Literal["hash", "test_execution", "transcript", "llm"] | None = None
+
     state_checks: StateChecksConfig | None = None
     transcript_rules: TranscriptRulesConfig | None = None
     llm_judge: LLMJudgeConfig | None = None
@@ -333,7 +359,10 @@ class TaskDescription(BaseModel):
     name: str
     category: str  # Domain: "airline", "retail"
     description: str  # Task description / user goal
-    adapter_type: AdapterType
+    # Open/extensible: the adapter name from the registry (entry-point or built-in).
+    # Not constrained to AdapterType so third-party adapters round-trip with no engine
+    # edit; see AdapterType for the well-known built-in names.
+    adapter_type: str
     schema_version: str = "1.0.0"
 
     # --- System Prompt ---

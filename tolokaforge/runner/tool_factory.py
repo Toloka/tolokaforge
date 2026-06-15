@@ -27,6 +27,7 @@ import subprocess
 import sys
 import time
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -97,12 +98,32 @@ class ToolExecutionError(Exception):
 # =============================================================================
 
 
+@dataclass
+class ToolLifecycleContext:
+    """Per-trial context passed to a tool's ``start()``.
+
+    Carries only what a lifecycle tool may need to provision its per-trial
+    resources, so the runner can drive lifecycle generically without knowing any
+    specific tool or adapter.
+    """
+
+    trial_id: str
+    artifacts_dir: str | None = None
+
+
 class ToolWrapper(ABC):
     """
     Base class for tool wrappers.
 
     All wrappers must implement the execute() method with the same interface.
     """
+
+    # Whether the runner manages this tool's per-trial lifecycle via start()/stop()
+    # in RegisterTrial/ResetTrial. Default False: most tools have no per-trial
+    # resources to provision. Lifecycle tools (e.g. a compose-backed sandbox)
+    # override this to True. This keeps the runner adapter-agnostic — it drives
+    # lifecycle off this capability, never off the adapter type.
+    has_lifecycle: bool = False
 
     def __init__(self, tool_schema: ToolSchemaModel):
         self.tool_schema = tool_schema
@@ -125,6 +146,14 @@ class ToolWrapper(ABC):
     async def __call__(self, arguments: dict[str, Any]) -> str:
         """Allow calling the wrapper directly."""
         return await self.execute(arguments)
+
+    def start(self, ctx: "ToolLifecycleContext") -> None:  # noqa: B027
+        """Provision per-trial resources (override in lifecycle tools)."""
+        pass
+
+    def stop(self) -> None:  # noqa: B027
+        """Tear down resources provisioned by start() (override if needed)."""
+        pass
 
     def cleanup(self) -> None:  # noqa: B027
         """Clean up any resources (override in subclasses if needed)."""
@@ -964,6 +993,9 @@ class DockerComposeExecToolWrapper(ToolWrapper):
     Uses host Docker daemon via mounted socket.
     """
 
+    # Runner-managed per-trial lifecycle (compose up on RegisterTrial, down on reset).
+    has_lifecycle = True
+
     def __init__(
         self,
         tool_schema: ToolSchemaModel,
@@ -1005,13 +1037,20 @@ class DockerComposeExecToolWrapper(ToolWrapper):
 
     # -- lifecycle ------------------------------------------------------------
 
-    def start(self, project_name: str) -> None:
+    def start(self, ctx: "ToolLifecycleContext") -> None:
         """Build/pull images, start the compose stack, and copy tests in.
 
-        Called once per trial from ``RegisterTrial``.
+        Called once per trial from ``RegisterTrial`` for any lifecycle tool. Owns
+        its own per-trial naming and ``__artifacts__`` resolution so the runner
+        stays generic.
         """
         import os
 
+        # Resolve the deferred artifacts task_dir to the real extraction path.
+        if self.task_dir == "__artifacts__" and ctx.artifacts_dir is not None:
+            self.task_dir = str(ctx.artifacts_dir)
+
+        project_name = f"tbench_{ctx.trial_id.replace(':', '_')}"
         self.project_name = project_name
         # Override container_name and log paths for parallel trial isolation.
         # Derive per-trial log dirs from the parents of the task-scoped paths
