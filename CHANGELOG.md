@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.2.8 (2026-06-16)
+
+### Feat
+
+- **llm**: recover MiniMax-M3 tag-conversion corruption (#55)
+
 ## v0.2.7 (2026-06-10)
 
 ### Feat
