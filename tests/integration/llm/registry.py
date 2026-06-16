@@ -1351,6 +1351,54 @@ _ALL: list[MC] = [
             }
         ),
     ),
+    # Nemotron-3-Ultra-550B-A55B (NVIDIA via OpenRouter). Same Nemotron-3
+    # family and architecture as nemotron-3-super above (MoE, scaled up:
+    # 550B-A55B vs 120B-A12B), matched by the same ``nvidia/nemotron*`` glob
+    # so it routes through the shared ``openrouter_dict_stringify_recovery``
+    # preset — json_coerce makes DISCRIMINATED_UNION_TOOL_CALL /
+    # DICT_MAP_TOOL_CALL reliable and the openai codec surfaces reasoning.
+    # NOT yet live-certified: the shared OpenRouter pool 429-rate-limits NVIDIA
+    # Nemotron (see super), so the live cert + the eval both wait on a BYOK
+    # key; the capability split is mirrored from nemotron-3-super pending that
+    # verification. 15 required / 5 known_unsupported.
+    MC(
+        model_id="openrouter__nvidia_nemotron-3-ultra-550b-a55b",
+        provider="openrouter",
+        name="nvidia/nemotron-3-ultra-550b-a55b",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DICT_MAP_TOOL_CALL,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # Adaptive reasoner like super: returns no structured reasoning
+                # on some calls, so emit is not reliable; replay is a no-op on
+                # the openai codec.
+                C.THINKING_EMITS_BLOCKS,
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.UNSIGNED_THINKING_REPLAY,
+                # No ephemeral cache markers; auto-cache probe reads 0.
+                C.PROMPT_CACHING,
+                C.IMPLICIT_PROMPT_CACHING,
+            }
+        ),
+    ),
     # GPT-OSS-120B (OpenAI open-weights via OpenRouter). The ``gpt_oss``
     # preset adds only the openai reasoning codec (THINKING_EMITS_BLOCKS
     # passes). It substitutes synonyms for registered field names

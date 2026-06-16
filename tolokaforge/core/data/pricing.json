@@ -971,6 +971,10 @@
       "input": 0.09,
       "output": 0.45
     },
+    "nvidia/nemotron-3-ultra-550b-a55b": {
+      "input": 0.5,
+      "output": 2.5
+    },
     "nvidia/nemotron-nano-12b-v2-vl": {
       "input": 0.2,
       "output": 0.6
