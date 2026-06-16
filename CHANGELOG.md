@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.2.9 (2026-06-16)
+
+### Feat
+
+- **llm**: register nemotron-3-ultra-550b-a55b (cert + pricing) (#65)
+
 ## v0.2.8 (2026-06-16)
 
 ### Feat
