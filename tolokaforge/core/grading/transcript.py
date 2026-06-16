@@ -80,13 +80,16 @@ class TranscriptChecker:
             missing = set(required_tools) - tools_used
             if missing:
                 score *= 0.5
-                reasons.append(f"Missing required tools: {missing}")
+                # Sort so the reason text is reproducible across runs — Python set
+                # repr ordering is not stable, which made these reasons drift
+                # spuriously across machines / processes.
+                reasons.append(f"Missing required tools: {', '.join(sorted(missing))}")
 
         if disallowed_tools:
             violations = tools_used & set(disallowed_tools)
             if violations:
                 score = 0.0
-                reasons.append(f"Used disallowed tools: {violations}")
+                reasons.append(f"Used disallowed tools: {', '.join(sorted(violations))}")
 
         return score, reasons
 

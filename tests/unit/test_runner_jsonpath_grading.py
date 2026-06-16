@@ -161,3 +161,42 @@ def test_build_reasons_includes_jsonpath_when_score_set():
     }
     text = build_grade_reasons(components)
     assert "Files: PASS: A; FAIL: B" in text
+
+
+class TestRunnerSideAssertionsWithoutPathGlobFailLoud:
+    """Pins the contract: runner-side jsonpath evaluator fails loudly with an
+    actionable reason when an assertion doesn't carry ``path_glob``. Previously
+    such assertions were silently skipped (presented as ``SKIP: No path_glob``
+    while not counting as passed) — misrouted ``path:``-style assertions vanished
+    from grading visibility, the symptom that surfaced on internal tasks with
+    rich \\$.db.X jsonpaths.
+    """
+
+    def test_path_only_assertion_fails_loud_and_names_the_routing(self):
+        """An assertion using ``path:`` (env-state JSONPath, host-side) gets a
+        FAIL reason naming the wrong-evaluator routing — not a silent SKIP."""
+        checks = [
+            {
+                "path": "$.db.orders[0].id",
+                "equals": "O-001",
+                "description": "First order is assigned ID O-001",
+            }
+        ]
+        score, reasons = evaluate_jsonpath_file_checks(checks)
+        # 0/1 — was effectively 0/1 before too, but is now explicit.
+        assert score == 0.0
+        # Old wording must be gone; new wording must explain what's wrong.
+        assert "SKIP: No path_glob" not in reasons
+        assert "FAIL" in reasons
+        assert "graded host-side" in reasons
+        assert "First order is assigned ID O-001" in reasons
+
+    def test_truly_missing_target_still_fails_loud(self):
+        """Assertion with neither ``path:`` nor ``path_glob:`` — generic
+        actionable error pointing the author at the supported keys."""
+        checks = [{"contains_ci": "x", "description": "no target"}]
+        score, reasons = evaluate_jsonpath_file_checks(checks)
+        assert score == 0.0
+        assert "FAIL" in reasons
+        assert "path_glob" in reasons
+        assert "no target" in reasons

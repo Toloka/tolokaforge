@@ -6,12 +6,10 @@ combine:
   pass_threshold: 0.8
 
 state_checks:
-  jsonpaths:
-    - path: "$.counter"
-      op: "gte"
-      expected: 5
-      required: true
-      reason: "Counter should be at least 5"
+  # No jsonpaths — counter_reached_target() in checks.py owns the "counter >= 5"
+  # assertion (the engine has no gte operator; an `equals: 5` here would tighten
+  # the original "at least 5" semantic).
+  jsonpaths: []
 
 custom_checks:
   enabled: true

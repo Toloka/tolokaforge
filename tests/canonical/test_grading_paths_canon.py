@@ -178,11 +178,39 @@ def _scenario_fail_hash_mismatch():
     return config, traj, final_env_state
 
 
+def _scenario_jsonpath_unknown_operator_fails_loud():
+    """End-to-end exercise of the fail-loud branch through GradingEngine: an
+    assertion with `op: gte / expected: 5` (legacy shape, no recognized
+    operator) used to silently satisfy as long as the path existed. Now the
+    engine returns state_checks=0.0 and binary_pass=False even though the
+    JSONPath exists and would have matched the wished-for `gte` semantic.
+    """
+    config = {
+        "combine": {"method": "weighted", "weights": {"state_checks": 1.0}, "pass_threshold": 0.5},
+        "state_checks": {
+            "jsonpaths": [
+                {
+                    "path": "$.db.counter",
+                    "op": "gte",  # unrecognized — used to silently pass
+                    "expected": 5,
+                    "description": "Counter should be at least 5",
+                }
+            ],
+        },
+    }
+    traj = _trajectory([Message(role=MessageRole.USER, content="go")])
+    # counter=7 would have satisfied `gte 5` if it were a real operator; it
+    # used to silently pass for path-existence. Must now fail.
+    final_env_state = {"db": {"counter": 7}}
+    return config, traj, final_env_state
+
+
 _SCENARIOS = {
     "jsonpath_partial": _scenario_jsonpath_partial,
     "transcript_actions_and_info": _scenario_transcript_actions_and_info,
     "weighted_combine": _scenario_weighted_combine,
     "fail_hash_mismatch": _scenario_fail_hash_mismatch,
+    "jsonpath_unknown_operator_fails_loud": _scenario_jsonpath_unknown_operator_fails_loud,
 }
 
 
