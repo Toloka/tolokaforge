@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.2.10 (2026-06-17)
+
+### Feat
+
+- **presets**: operator-overridable preset overlay file (#69)
+- **llm**: add OpenRouter provider routing to ModelConfig (#68)
+
+### Fix
+
+- **grading**: make unknown jsonpath operators fail loud + deterministic reasons (#66)
+
+### Refactor
+
+- **adapters**: make the runner adapter-agnostic (plugin-first) (#61)
+
 ## v0.2.9 (2026-06-16)
 
 ### Feat
