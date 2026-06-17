@@ -14,6 +14,10 @@ import yaml
 from rich.console import Console
 
 from tolokaforge.core.config_validator import Severity, validate_run_config
+from tolokaforge.core.llm.presets import (
+    resolve_overlay_path,
+    validate_overlay_file,
+)
 
 console = Console()
 
@@ -35,7 +39,18 @@ def config():
     is_flag=True,
     help="Exit with non-zero status on warnings (not just errors).",
 )
-def validate(config_path: str, strict: bool) -> None:
+@click.option(
+    "--presets-file",
+    "presets_file",
+    type=click.Path(dir_okay=False),
+    default=None,
+    help=(
+        "Path to a model-presets overlay YAML; validated for schema and "
+        "policy-name correctness before the run config is checked. "
+        "Precedence: this flag > engine.presets_file in the run config."
+    ),
+)
+def validate(config_path: str, strict: bool, presets_file: str | None) -> None:
     """Validate run configuration files.
 
     Checks schema, model parameter compatibility, API key presence,
@@ -46,6 +61,7 @@ def validate(config_path: str, strict: bool) -> None:
         tolokaforge config validate --config examples/native/coding/run_config.yaml
         tolokaforge config validate --config examples/native/coding/
         tolokaforge config validate --config "examples/**/*.yaml"
+        tolokaforge config validate --config run.yaml --presets-file overlay.yaml
     """
     paths = _resolve_paths(config_path)
 
@@ -71,6 +87,25 @@ def validate(config_path: str, strict: bool) -> None:
             console.print("  [red]✗ YAML root must be a mapping[/red]")
             total_errors += 1
             continue
+
+        # Resolve + validate preset overlay (if any) before the rest of the
+        # config — an unreadable / malformed overlay would crash the engine at
+        # startup, so we surface it here for the same loud-fail discipline as
+        # ``tolokaforge run``.
+        config_overlay = (
+            (raw.get("engine") or {}).get("presets_file")
+            if isinstance(raw.get("engine"), dict)
+            else None
+        )
+        resolved_overlay = resolve_overlay_path(cli_value=presets_file, config_value=config_overlay)
+        if resolved_overlay:
+            try:
+                validate_overlay_file(resolved_overlay)
+                console.print(f"  [green]✓ Preset overlay OK: {resolved_overlay}[/green]")
+            except (FileNotFoundError, ValueError) as exc:
+                console.print(f"  [red]✗ Preset overlay {resolved_overlay!r}: {exc}[/red]")
+                total_errors += 1
+                continue
 
         result = validate_run_config(raw)
 

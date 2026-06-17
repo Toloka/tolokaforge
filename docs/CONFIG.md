@@ -196,6 +196,46 @@ presets:
     cache_policy: none             # none | anthropic_ephemeral (Anthropic only)
 ```
 
+### Preset overlay file (no engine release required)
+
+For models that reuse existing policy classes, you don't need to release the
+engine to add or adjust a preset. Point TolokaForge at a second YAML file that
+gets merged onto the bundled `model_presets.yaml` at startup. See
+[ADR 0002 — External model registry](architecture/adr/0002-external-model-registry.md)
+for the rationale and [`docs/ADD_NEW_MODEL.md`](ADD_NEW_MODEL.md) for a
+walkthrough.
+
+Set the overlay path two ways; precedence is **CLI flag > config field**:
+
+1. CLI flag: `--presets-file overlay.yaml` on `run`, `prepare`, `worker`, and
+   `config validate`. Use this for one-off overlays — smoke-eval iterations,
+   ablations, anything you don't want to commit alongside the run config.
+2. Run-config field — commit the overlay path next to the run definition
+   when an overlay is part of *what this benchmark is*:
+
+   ```yaml
+   engine:
+     presets_file: ./overlay.yaml   # relative to the working directory
+   ```
+
+The overlay file uses the same schema as `model_presets.yaml`. Overlay
+presets are prepended to the iteration order so first-match-wins lets you
+shadow a bundled preset. Same-named overlay presets *replace* the bundled
+entry (logged at INFO so the replacement is visible). Policy-name strings
+(`schema_sanitizer`, `prompt_policy`, etc.) must resolve to a class already
+shipped in the engine — overlays can compose existing policies but cannot
+introduce new classes. Unknown names raise `ValueError` at startup naming
+both the overlay file and the offending key.
+
+#### Distributed-worker propagation
+
+`tolokaforge prepare --presets-file overlay.yaml ...` persists the resolved
+overlay path into `engine_run_state.json` alongside the run queue. Worker
+subprocesses launched later from the same `--run-dir` pick it up
+automatically — you don't have to thread the flag through every
+`tolokaforge worker` invocation. A worker-side `--presets-file` flag still
+wins over the persisted value when both are set.
+
 ## Task Specification (`task.yaml`)
 
 ```yaml

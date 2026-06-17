@@ -81,6 +81,47 @@ Available policy slots (see
 > Slugs are case-sensitive OpenRouter provider names. This is a per-model routing
 > knob, separate from the preset policy above.
 
+### Adding a model without an engine release — preset overlay
+
+If the model reuses existing policy classes (which is the common case), you
+don't need to cut a new wheel. Put the same preset entry in a separate YAML
+file and point the engine at it:
+
+```yaml
+# my_overlay.yaml — same schema as model_presets.yaml
+presets:
+  my_provider_new_model:
+    match: ["my-provider/new-model*"]
+    content_policy: anthropic
+    reasoning_codec: anthropic
+    cache_policy: anthropic_ephemeral
+```
+
+Then run:
+
+```bash
+tolokaforge run --config run.yaml --presets-file my_overlay.yaml
+```
+
+Or set the overlay declaratively in `run.yaml` under `engine.presets_file`.
+Precedence is CLI > config field. See
+[`docs/CONFIG.md`](CONFIG.md#preset-overlay-file-no-engine-release-required)
+and [ADR 0002 — External model registry](architecture/adr/0002-external-model-registry.md).
+
+A few rules the overlay enforces (loud-fail at engine startup, naming the
+overlay path and the offending key):
+
+- Policy-name strings must resolve to existing classes shipped in the engine.
+  Adding a brand-new policy class still requires an engine release.
+- Overlay presets are prepended to the iteration order, so overlapping
+  `match:` globs let you shadow a bundled preset.
+- Same-named overlay presets replace the bundled entry (logged at INFO so the
+  swap is visible).
+
+For distributed runs, the overlay path passed to `tolokaforge prepare` is
+persisted into the run queue's state file. Subsequent `tolokaforge worker`
+invocations pick it up automatically without re-specifying `--presets-file`.
+
 ## 3. Add a ModelCertificate
 
 Append to `ALL_MODELS` in

@@ -22,7 +22,7 @@ for the design rationale and the canonical litellm surface.
 | [`content_policy.py`](../tolokaforge/core/llm/content_policy.py) | Tool-result content format (OpenAI / Anthropic) |
 | [`response_policy.py`](../tolokaforge/core/llm/response_policy.py) | Tool-call argument post-processing |
 | [`capabilities.py`](../tolokaforge/core/llm/capabilities.py) | `ModelCapabilities` frozen dataclass |
-| [`presets.py`](../tolokaforge/core/llm/presets.py) | YAML preset loader → `ModelCapabilities` |
+| [`presets.py`](../tolokaforge/core/llm/presets.py) | YAML preset loader → `ModelCapabilities`. Also implements the **operator-overridable preset overlay** (`--presets-file`, `engine.presets_file`) so new model registrations don't require an engine release — see [ADR 0002](architecture/adr/0002-external-model-registry.md) and [`docs/CONFIG.md` § Preset overlay file](CONFIG.md#preset-overlay-file-no-engine-release-required). |
 | [`client.py`](../tolokaforge/core/llm/client.py) | `LLMClient`, `GenerationResult`, `UserSimulator` |
 
 ## `reasoning`

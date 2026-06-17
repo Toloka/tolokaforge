@@ -9,6 +9,12 @@ import click
 import yaml
 from rich.console import Console
 
+from tolokaforge.core.engine_run_state import read_persisted_presets_file
+from tolokaforge.core.llm.presets import (
+    resolve_overlay_path,
+    set_overlay_path,
+    validate_overlay_file,
+)
 from tolokaforge.core.models import RunConfig
 from tolokaforge.core.orchestrator import Orchestrator
 from tolokaforge.core.resume import RunStateManager
@@ -71,6 +77,47 @@ DEFAULT_USER_MODEL_PROVIDER = "openrouter"
 DEFAULT_USER_MODEL_TEMPERATURE = 0.2
 
 
+def _activate_presets_overlay(
+    cli_presets_file: str | None,
+    run_config: RunConfig,
+    run_dir: Path | None = None,
+) -> str | None:
+    """Resolve preset-overlay precedence and install the overlay.
+
+    Precedence (highest to lowest):
+
+    1. ``cli_presets_file`` — ``--presets-file`` flag on the current command.
+    2. ``run_dir / engine_run_state.json`` — the path persisted by
+       ``tolokaforge prepare`` so worker subprocesses inherit the operator's
+       overlay choice without threading the flag through manually. Only
+       consulted when *run_dir* is given (the worker / queue-backed paths).
+    3. ``engine.presets_file`` in the run config.
+
+    Returns the resolved path (or ``None`` if no overlay is configured). The
+    install side-effect is :func:`tolokaforge.core.llm.presets.set_overlay_path`,
+    after which any later call to ``build_capabilities`` etc. reads the merged
+    registry. Must run **before** the ``Orchestrator`` is constructed so that
+    capability resolution at trial setup sees the overlay.
+
+    When an overlay is resolved, this also **eagerly validates it** via
+    :func:`validate_overlay_file`. ``set_overlay_path`` itself is lazy by
+    contract (so tests can install paths cheaply), but at the CLI boundary
+    we want a typo'd overlay to fail *here* — before the orchestrator is
+    constructed, ``load_tasks()`` walks the task tree, or the Docker stack
+    auto-starts.
+    """
+    config_value = run_config.engine.presets_file if run_config.engine else None
+    queue_state_value = read_persisted_presets_file(run_dir) if run_dir is not None else None
+    # Queue-state value (if any) sits above ``engine.presets_file`` because
+    # ``prepare`` was the most recent operator decision. CLI still wins.
+    effective_config_value = queue_state_value or config_value
+    resolved = resolve_overlay_path(cli_value=cli_presets_file, config_value=effective_config_value)
+    set_overlay_path(resolved)
+    if resolved is not None:
+        validate_overlay_file(resolved)
+    return resolved
+
+
 @cli.command()
 @click.option(
     "--config", required=True, type=click.Path(exists=True), help="Path to run config YAML"
@@ -83,7 +130,25 @@ DEFAULT_USER_MODEL_TEMPERATURE = 0.2
     default=None,
     help="Override user simulator model (e.g., anthropic/claude-sonnet-4.6). Uses OpenRouter as provider.",
 )
-def run(config: str, resume: bool, verbose: bool, strict: bool, user_model: str | None):
+@click.option(
+    "--presets-file",
+    "presets_file",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help=(
+        "Path to a model-presets overlay YAML merged onto the bundled "
+        "model_presets.yaml. Precedence: this flag > engine.presets_file in "
+        "the run config. See docs/CONFIG.md."
+    ),
+)
+def run(
+    config: str,
+    resume: bool,
+    verbose: bool,
+    strict: bool,
+    user_model: str | None,
+    presets_file: str | None,
+):
     """Run benchmark with specified configuration"""
     console.print(f"[bold blue]Loading configuration from {config}...[/bold blue]")
 
@@ -115,6 +180,13 @@ def run(config: str, resume: bool, verbose: bool, strict: bool, user_model: str 
         console.print("[yellow]Verbose mode enabled (DEBUG logging)[/yellow]")
     if strict:
         console.print("[yellow]Strict mode enabled (will raise on errors)[/yellow]")
+
+    # Install preset overlay (if any) before constructing the orchestrator so
+    # build_capabilities() sees the merged registry. Triggers loud-fail
+    # validation on the overlay file at this point.
+    overlay_path = _activate_presets_overlay(presets_file, run_config)
+    if overlay_path:
+        console.print(f"[cyan]Preset overlay: {overlay_path}[/cyan]")
 
     # Create orchestrator with flags
     orchestrator = Orchestrator(run_config, resume=resume, verbose=verbose, strict=strict)
@@ -156,12 +228,34 @@ def run(config: str, resume: bool, verbose: bool, strict: bool, user_model: str 
 @click.option("--reset-queue", is_flag=True, help="Clear existing queue entries before enqueueing")
 @click.option("--verbose", is_flag=True, help="Enable DEBUG level logging")
 @click.option("--strict", is_flag=True, help="Raise error immediately on logging ERROR level")
-def prepare(config: str, run_dir: str, reset_queue: bool, verbose: bool, strict: bool):
+@click.option(
+    "--presets-file",
+    "presets_file",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help=(
+        "Path to a model-presets overlay YAML; persisted into the queue "
+        "run-state so worker subprocesses inherit it. Precedence: this flag > "
+        "engine.presets_file."
+    ),
+)
+def prepare(
+    config: str,
+    run_dir: str,
+    reset_queue: bool,
+    verbose: bool,
+    strict: bool,
+    presets_file: str | None,
+):
     """Prepare a queue-backed run directory for distributed workers."""
     console.print(f"[bold blue]Preparing run from config {config}...[/bold blue]")
     with open(config) as f:
         config_data = yaml.safe_load(f)
     run_config = RunConfig(**config_data)
+
+    overlay_path = _activate_presets_overlay(presets_file, run_config)
+    if overlay_path:
+        console.print(f"[cyan]Preset overlay: {overlay_path}[/cyan]")
 
     orchestrator = Orchestrator(run_config, resume=False, verbose=verbose, strict=strict)
     orchestrator.load_tasks()
@@ -190,12 +284,36 @@ def prepare(config: str, run_dir: str, reset_queue: bool, verbose: bool, strict:
 @click.option("--max-attempts", type=int, default=None, help="Optional max attempts to process")
 @click.option("--verbose", is_flag=True, help="Enable DEBUG level logging")
 @click.option("--strict", is_flag=True, help="Raise error immediately on logging ERROR level")
-def worker(config: str, run_dir: str, max_attempts: int | None, verbose: bool, strict: bool):
+@click.option(
+    "--presets-file",
+    "presets_file",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help=(
+        "Path to a model-presets overlay YAML. If unset, the worker reads the "
+        "overlay path persisted by ``prepare`` from the queue run-state, then "
+        "falls back to engine.presets_file."
+    ),
+)
+def worker(
+    config: str,
+    run_dir: str,
+    max_attempts: int | None,
+    verbose: bool,
+    strict: bool,
+    presets_file: str | None,
+):
     """Run a queue worker process (distributed execution mode)."""
     console.print(f"[bold blue]Loading worker config from {config}...[/bold blue]")
     with open(config) as f:
         config_data = yaml.safe_load(f)
     run_config = RunConfig(**config_data)
+
+    # Worker overlay precedence: --presets-file > ``prepare``-persisted queue
+    # state > engine.presets_file.
+    overlay_path = _activate_presets_overlay(presets_file, run_config, run_dir=Path(run_dir))
+    if overlay_path:
+        console.print(f"[cyan]Preset overlay: {overlay_path}[/cyan]")
 
     orchestrator = Orchestrator(run_config, resume=False, verbose=verbose, strict=strict)
     orchestrator.load_tasks()
