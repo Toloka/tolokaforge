@@ -1094,6 +1094,12 @@ class LLMClient:
                 extra_headers.update(existing_extra)
             kwargs["extra_headers"] = extra_headers
             kwargs.setdefault("custom_llm_provider", self.provider.split("/")[0])
+            or_cfg = self.config.openrouter
+            if or_cfg and or_cfg.provider_order:
+                kwargs.setdefault("extra_body", {})["provider"] = {
+                    "order": list(or_cfg.provider_order),
+                    "allow_fallbacks": or_cfg.allow_fallbacks,
+                }
 
         return kwargs
 

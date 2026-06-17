@@ -11,7 +11,7 @@ import pytest
 
 from tolokaforge.core.llm import GenerationResult, LLMClient, UserSimulator
 from tolokaforge.core.llm.usage import Usage
-from tolokaforge.core.models import Message, MessageRole, ModelConfig, ToolCall
+from tolokaforge.core.models import Message, MessageRole, ModelConfig, OpenRouterConfig, ToolCall
 
 pytestmark = pytest.mark.unit
 
@@ -371,3 +371,79 @@ class TestReasoningParameter:
         """ModelConfig default reasoning must have ``mode='off'`` (opt-in)."""
         config = ModelConfig(provider="openrouter", name="test/model")
         assert config.reasoning.mode == "off"
+
+
+class TestProviderRouting:
+    """``ModelConfig.provider_order`` pins OpenRouter requests to specific upstream providers."""
+
+    def _capture_kwargs(
+        self,
+        provider: str,
+        name: str,
+        provider_order: list[str] | None = None,
+        allow_fallbacks: bool = True,
+    ) -> dict:
+        import tolokaforge.core.llm.client as mc_module
+
+        captured: dict = {}
+
+        def fake_completion(**kwargs):
+            captured.update(kwargs)
+            mock_resp = MagicMock()
+            mock_resp.choices = [MagicMock()]
+            mock_resp.choices[0].message.content = "ok"
+            mock_resp.choices[0].message.tool_calls = None
+            mock_resp.choices[0].message.reasoning_content = None
+            mock_resp.choices[0].message.thinking_blocks = None
+            mock_resp.usage = MagicMock()
+            mock_resp.usage.prompt_tokens = 10
+            mock_resp.usage.completion_tokens = 5
+            return mock_resp
+
+        or_block = (
+            OpenRouterConfig(provider_order=provider_order, allow_fallbacks=allow_fallbacks)
+            if provider_order is not None
+            else None
+        )
+        config = ModelConfig(provider=provider, name=name, openrouter=or_block)
+        client = LLMClient(config)
+
+        original = mc_module.completion
+        mc_module.completion = fake_completion
+        try:
+            client.generate(
+                system="test",
+                messages=[Message(role=MessageRole.USER, content="hello")],
+            )
+        finally:
+            mc_module.completion = original
+        return captured
+
+    def test_provider_order_sets_extra_body_provider(self):
+        """provider_order pins the request to the listed upstream provider(s)."""
+        kwargs = self._capture_kwargs(
+            "openrouter",
+            "nvidia/nemotron-3-ultra-550b-a55b",
+            provider_order=["Together"],
+            allow_fallbacks=False,
+        )
+        assert kwargs.get("extra_body", {}).get("provider") == {
+            "order": ["Together"],
+            "allow_fallbacks": False,
+        }
+
+    def test_no_provider_order_means_no_routing(self):
+        """Without provider_order, no provider routing is sent (back-compat)."""
+        kwargs = self._capture_kwargs("openrouter", "nvidia/nemotron-3-ultra-550b-a55b")
+        assert "provider" not in kwargs.get("extra_body", {})
+
+    def test_openrouter_block_rejected_for_native_provider(self):
+        """An openrouter block on a non-openrouter provider is a config error."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            ModelConfig(
+                provider="anthropic",
+                name="claude-opus-4.6",
+                openrouter=OpenRouterConfig(provider_order=["Together"]),
+            )
