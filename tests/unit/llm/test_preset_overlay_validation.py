@@ -14,21 +14,21 @@ silent runtime hole.
 
 from __future__ import annotations
 
-import inspect
 from pathlib import Path
 
 import pytest
 
+from tolokaforge.core.llm import presets as presets_module
 from tolokaforge.core.llm.presets import (
     _CACHE_POLICIES,
     _CONTENT_POLICIES,
+    _POLICY_REGISTRIES,
     _PROMPT_POLICIES,
     _REASONING_CODECS,
     _RESPONSE_POLICIES,
     _SCHEMA_SANITIZERS,
     _load_overlay_file,
     _load_presets,
-    _validate_overlay,
     set_overlay_path,
 )
 
@@ -126,42 +126,82 @@ class TestOverlayParamsValidation:
             _load_overlay_file(str(path))
 
 
+def _discover_policy_registries() -> dict[str, dict]:
+    """Find every module-level ``dict[str, type]`` in ``presets`` — i.e. every
+    policy-name → class registry, by structural shape rather than naming
+    convention. Used by ``TestValidatorRegistrySync`` so that adding a new
+    registry without listing it in ``_POLICY_REGISTRIES`` is a test failure
+    (which is what the PR description promises).
+    """
+    discovered: dict[str, dict] = {}
+    for attr_name, value in vars(presets_module).items():
+        if attr_name == "_POLICY_REGISTRIES":
+            continue
+        if not isinstance(value, dict) or not value:
+            continue
+        if not all(isinstance(k, str) for k in value):
+            continue
+        if not all(isinstance(v, type) for v in value.values()):
+            continue
+        discovered[attr_name] = value
+    return discovered
+
+
 class TestValidatorRegistrySync:
-    """Pin the invariant: every in-engine policy registry must be referenced
-    by ``_validate_overlay``. Adding a new registry without updating the
-    validator → silent overlay-validation gap. Catching it here saves a
-    runtime debugging session.
+    """Pin the invariant: every in-engine policy registry must be wired into
+    ``_POLICY_REGISTRIES`` so ``_validate_overlay`` checks it. Adding a new
+    ``dict[str, type]`` registry without listing it here is a silent overlay-
+    validation gap; this test fails when that happens.
+
+    Mechanism: introspect the ``presets`` module for *all* module-level
+    ``dict[str, type]`` constants (the structural shape of every existing
+    policy registry — ``_SCHEMA_SANITIZERS`` etc.). Every such dict must be a
+    value in ``_POLICY_REGISTRIES``. A new registry that bypasses this fails
+    here, regardless of naming convention.
     """
 
-    def test_validator_references_every_registry(self) -> None:
-        source = inspect.getsource(_validate_overlay)
-        # Each registry constant name must appear in the validator's source.
-        for registry_name in [
+    def test_every_module_registry_is_wired_into_policy_registries(self) -> None:
+        discovered = _discover_policy_registries()
+        registered_ids = {id(d) for d in _POLICY_REGISTRIES.values()}
+        unwired = {name: dct for name, dct in discovered.items() if id(dct) not in registered_ids}
+        assert not unwired, (
+            f"presets module contains policy registries not listed in "
+            f"_POLICY_REGISTRIES: {sorted(unwired.keys())}. Add them to "
+            f"_POLICY_REGISTRIES so _validate_overlay checks them, or this "
+            f"becomes a silent overlay-validation gap."
+        )
+
+    def test_baseline_six_registries_are_present(self) -> None:
+        # Belt-and-braces: pin the known-as-of-this-PR set so a *removal* also
+        # surfaces, not just an addition. Six registries today; if you
+        # consolidate or rename one, update this set.
+        baseline_names = {
             "_SCHEMA_SANITIZERS",
             "_PROMPT_POLICIES",
             "_CONTENT_POLICIES",
             "_RESPONSE_POLICIES",
             "_REASONING_CODECS",
             "_CACHE_POLICIES",
-        ]:
-            assert registry_name in source, (
-                f"_validate_overlay must reference {registry_name!r}; if a new "
-                f"registry was added, extend the validator to check it."
-            )
+        }
+        discovered = set(_discover_policy_registries().keys())
+        missing = baseline_names - discovered
+        assert not missing, (
+            f"baseline registries missing from the presets module: " f"{sorted(missing)}"
+        )
 
-    def test_validator_references_every_policy_slot_key(self) -> None:
-        source = inspect.getsource(_validate_overlay)
-        for slot in [
+    def test_policy_registries_keys_match_slot_names(self) -> None:
+        # The string keys in _POLICY_REGISTRIES are the YAML slot names
+        # operators write in overlay files. They must include every slot
+        # _validate_overlay handles via its block-check helper.
+        expected_slots = {
             "schema_sanitizer",
             "prompt_policy",
             "content_policy",
             "response_policy",
             "reasoning_codec",
             "cache_policy",
-        ]:
-            assert (
-                f'"{slot}"' in source or f"'{slot}'" in source
-            ), f"_validate_overlay must check the {slot!r} slot."
+        }
+        assert set(_POLICY_REGISTRIES.keys()) == expected_slots
 
 
 class TestSetOverlayPathDefersFileRead:

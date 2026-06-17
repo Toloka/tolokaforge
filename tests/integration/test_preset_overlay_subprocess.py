@@ -87,38 +87,63 @@ def _run_resolver(
     return json.loads(proc.stdout.strip().splitlines()[-1])
 
 
+def _write_empty_overlay(tmp_path: Path, name: str) -> str:
+    """Write a minimal valid overlay so the CLI's eager validation passes.
+
+    Resolution-precedence tests only care about *which* file the resolver
+    picked, not what's in it. An empty YAML body is a valid overlay (the
+    loader treats it as the default empty registry) and lets the CLI's
+    eager ``validate_overlay_file`` call succeed.
+    """
+    path = tmp_path / name
+    path.write_text("")
+    return str(path)
+
+
 class TestSubprocessInheritance:
     """Parent writes ``engine_run_state.json``; subprocess reads it without
     any other channel. Proves the file is the actual cross-process carrier.
+
+    Each test materialises real (minimal but valid) overlay files because
+    ``_activate_presets_overlay`` now eagerly validates every resolved
+    overlay — a CLI-boundary improvement that catches typo'd paths before
+    Docker auto-starts.
     """
 
     def test_subprocess_reads_queue_state_overlay(self, tmp_path: Path) -> None:
-        write_engine_run_state(tmp_path, presets_file="/from/queue.yaml")
+        queue_overlay = _write_empty_overlay(tmp_path, "queue.yaml")
+        write_engine_run_state(tmp_path, presets_file=queue_overlay)
         result = _run_resolver(run_dir=tmp_path, cli_value=None, config_value=None)
-        assert result["resolved"] == "/from/queue.yaml"
-        assert result["installed"] == "/from/queue.yaml"
+        assert result["resolved"] == queue_overlay
+        assert result["installed"] == queue_overlay
 
     def test_subprocess_cli_flag_beats_queue_state(self, tmp_path: Path) -> None:
-        write_engine_run_state(tmp_path, presets_file="/from/queue.yaml")
-        result = _run_resolver(run_dir=tmp_path, cli_value="/from/cli.yaml", config_value=None)
-        assert result["resolved"] == "/from/cli.yaml"
+        queue_overlay = _write_empty_overlay(tmp_path, "queue.yaml")
+        cli_overlay = _write_empty_overlay(tmp_path, "cli.yaml")
+        write_engine_run_state(tmp_path, presets_file=queue_overlay)
+        result = _run_resolver(run_dir=tmp_path, cli_value=cli_overlay, config_value=None)
+        assert result["resolved"] == cli_overlay
 
     def test_subprocess_queue_state_beats_config_field(self, tmp_path: Path) -> None:
-        write_engine_run_state(tmp_path, presets_file="/from/queue.yaml")
-        result = _run_resolver(run_dir=tmp_path, cli_value=None, config_value="/from/config.yaml")
-        assert result["resolved"] == "/from/queue.yaml"
+        queue_overlay = _write_empty_overlay(tmp_path, "queue.yaml")
+        config_overlay = _write_empty_overlay(tmp_path, "config.yaml")
+        write_engine_run_state(tmp_path, presets_file=queue_overlay)
+        result = _run_resolver(run_dir=tmp_path, cli_value=None, config_value=config_overlay)
+        assert result["resolved"] == queue_overlay
 
     def test_subprocess_no_queue_state_falls_through_to_config(self, tmp_path: Path) -> None:
         # No engine_run_state.json written.
-        result = _run_resolver(run_dir=tmp_path, cli_value=None, config_value="/from/config.yaml")
-        assert result["resolved"] == "/from/config.yaml"
+        config_overlay = _write_empty_overlay(tmp_path, "config.yaml")
+        result = _run_resolver(run_dir=tmp_path, cli_value=None, config_value=config_overlay)
+        assert result["resolved"] == config_overlay
 
     def test_subprocess_persisted_none_falls_through_to_config(self, tmp_path: Path) -> None:
         # ``prepare`` ran without an overlay → persisted as null →
         # subprocess falls through to engine.presets_file.
+        config_overlay = _write_empty_overlay(tmp_path, "config.yaml")
         write_engine_run_state(tmp_path, presets_file=None)
-        result = _run_resolver(run_dir=tmp_path, cli_value=None, config_value="/from/config.yaml")
-        assert result["resolved"] == "/from/config.yaml"
+        result = _run_resolver(run_dir=tmp_path, cli_value=None, config_value=config_overlay)
+        assert result["resolved"] == config_overlay
 
     def test_subprocess_no_overlay_anywhere_yields_none(self) -> None:
         result = _run_resolver(run_dir=None, cli_value=None, config_value=None)

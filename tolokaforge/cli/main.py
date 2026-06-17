@@ -10,7 +10,11 @@ import yaml
 from rich.console import Console
 
 from tolokaforge.core.engine_run_state import read_persisted_presets_file
-from tolokaforge.core.llm.presets import resolve_overlay_path, set_overlay_path
+from tolokaforge.core.llm.presets import (
+    resolve_overlay_path,
+    set_overlay_path,
+    validate_overlay_file,
+)
 from tolokaforge.core.models import RunConfig
 from tolokaforge.core.orchestrator import Orchestrator
 from tolokaforge.core.resume import RunStateManager
@@ -94,6 +98,13 @@ def _activate_presets_overlay(
     after which any later call to ``build_capabilities`` etc. reads the merged
     registry. Must run **before** the ``Orchestrator`` is constructed so that
     capability resolution at trial setup sees the overlay.
+
+    When an overlay is resolved, this also **eagerly validates it** via
+    :func:`validate_overlay_file`. ``set_overlay_path`` itself is lazy by
+    contract (so tests can install paths cheaply), but at the CLI boundary
+    we want a typo'd overlay to fail *here* — before the orchestrator is
+    constructed, ``load_tasks()`` walks the task tree, or the Docker stack
+    auto-starts.
     """
     config_value = run_config.engine.presets_file if run_config.engine else None
     queue_state_value = read_persisted_presets_file(run_dir) if run_dir is not None else None
@@ -102,6 +113,8 @@ def _activate_presets_overlay(
     effective_config_value = queue_state_value or config_value
     resolved = resolve_overlay_path(cli_value=cli_presets_file, config_value=effective_config_value)
     set_overlay_path(resolved)
+    if resolved is not None:
+        validate_overlay_file(resolved)
     return resolved
 
 

@@ -10,13 +10,19 @@ import yaml
 from tolokaforge.core.llm.presets import set_overlay_path
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def overlay_isolation():
     """Guard module-level preset-overlay state against test leakage.
 
-    Any test that calls :func:`tolokaforge.core.llm.presets.set_overlay_path`
-    (directly or transitively via ``build_capabilities`` / the CLI helper)
-    must take this fixture so the next test starts from a clean slate.
+    Autouse: every test in the suite gets the teardown, regardless of whether
+    the test author remembered to take the fixture. The preset overlay path
+    lives in module state (:data:`tolokaforge.core.llm.presets._OVERLAY_PATH`),
+    so a test that installs an overlay and forgets to reset would silently
+    leak into the next test in collection order — a classic discipline-based
+    isolation footgun.
+
+    Teardown cost for tests that never touch the overlay is negligible: one
+    function call that sets a module global to ``None``.
     """
     yield
     set_overlay_path(None)

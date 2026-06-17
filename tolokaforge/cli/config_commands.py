@@ -15,8 +15,8 @@ from rich.console import Console
 
 from tolokaforge.core.config_validator import Severity, validate_run_config
 from tolokaforge.core.llm.presets import (
-    _load_overlay_file,
     resolve_overlay_path,
+    validate_overlay_file,
 )
 
 console = Console()
@@ -100,7 +100,7 @@ def validate(config_path: str, strict: bool, presets_file: str | None) -> None:
         resolved_overlay = resolve_overlay_path(cli_value=presets_file, config_value=config_overlay)
         if resolved_overlay:
             try:
-                _load_overlay_file(resolved_overlay)
+                validate_overlay_file(resolved_overlay)
                 console.print(f"  [green]✓ Preset overlay OK: {resolved_overlay}[/green]")
             except (FileNotFoundError, ValueError) as exc:
                 console.print(f"  [red]✗ Preset overlay {resolved_overlay!r}: {exc}[/red]")

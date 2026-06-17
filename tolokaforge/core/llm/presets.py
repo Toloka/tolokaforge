@@ -65,6 +65,7 @@ __all__ = [
     "set_overlay_path",
     "get_overlay_path",
     "resolve_overlay_path",
+    "validate_overlay_file",
 ]
 
 
@@ -113,6 +114,22 @@ _CACHE_POLICIES: dict[str, type[CachePolicy]] = {
 }
 
 
+#: Mapping from preset *slot name* to the in-engine registry of allowed
+#: classes. Single source of truth used both by :func:`_validate_overlay`
+#: (host-boundary loud-fail on unknown names) and by the unit test that
+#: pins the validator-versus-registry sync invariant. Adding a new
+#: registry without listing it here is a test failure, not a runtime hole
+#: — see ``tests/unit/llm/test_preset_overlay_validation.py``.
+_POLICY_REGISTRIES: dict[str, dict[str, type[Any]]] = {
+    "schema_sanitizer": _SCHEMA_SANITIZERS,
+    "prompt_policy": _PROMPT_POLICIES,
+    "content_policy": _CONTENT_POLICIES,
+    "response_policy": _RESPONSE_POLICIES,
+    "reasoning_codec": _REASONING_CODECS,
+    "cache_policy": _CACHE_POLICIES,
+}
+
+
 _DEFAULT_PRESET_DATA: dict[str, Any] = {"default": {}, "presets": {}, "providers": {}}
 
 
@@ -143,8 +160,9 @@ _VALID_PARAMS_KEYS: frozenset[str] = frozenset(
 
 #: Module-level overlay path. ``None`` → bundled-only (today's behaviour).
 #: Mutated only via :func:`set_overlay_path` so cache invalidation has one
-#: choke point. Tests must call ``set_overlay_path(None)`` in teardown — the
-#: ``overlay_isolation`` fixture in ``tests/unit/llm/conftest.py`` handles this.
+#: choke point. The autouse ``overlay_isolation`` fixture in
+#: ``tests/conftest.py`` calls ``set_overlay_path(None)`` after every test so
+#: module state cannot leak between cases.
 _OVERLAY_PATH: str | None = None
 
 #: Memoised merged preset data. Cleared by :func:`set_overlay_path`.
@@ -239,6 +257,19 @@ def _load_overlay_file(path: str) -> dict[str, Any]:
     return data
 
 
+def validate_overlay_file(path: str) -> None:
+    """Public host-boundary check for an overlay file.
+
+    Raises :class:`FileNotFoundError` if the file is absent, or
+    :class:`ValueError` on any recognised schema / policy-name
+    misconfiguration. Errors always name the file path so the operator
+    can find the offending file. Used by ``tolokaforge config validate``
+    and by the ``run`` / ``prepare`` / ``worker`` CLIs to fail eagerly
+    before any orchestrator / Docker startup work is done.
+    """
+    _load_overlay_file(path)
+
+
 def _validate_overlay(data: dict[str, Any], path: str) -> None:
     """Host-boundary validation for an overlay's contents.
 
@@ -260,22 +291,13 @@ def _validate_overlay(data: dict[str, Any], path: str) -> None:
             f"{sorted(unknown_top)}. Allowed: {sorted(_OVERLAY_TOP_LEVEL_KEYS)}."
         )
 
-    registries: dict[str, dict[str, type[Any]]] = {
-        "schema_sanitizer": _SCHEMA_SANITIZERS,
-        "prompt_policy": _PROMPT_POLICIES,
-        "content_policy": _CONTENT_POLICIES,
-        "response_policy": _RESPONSE_POLICIES,
-        "reasoning_codec": _REASONING_CODECS,
-        "cache_policy": _CACHE_POLICIES,
-    }
-
     def _check_block(block: dict[str, Any], where: str) -> None:
         if not isinstance(block, dict):
             raise ValueError(
                 f"Preset overlay {path!r} at {where}: expected a mapping, "
                 f"got {type(block).__name__}."
             )
-        for slot, registry in registries.items():
+        for slot, registry in _POLICY_REGISTRIES.items():
             if slot not in block:
                 continue
             name = block[slot]
