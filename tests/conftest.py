@@ -1,8 +1,38 @@
 """Pytest configuration and shared fixtures for test suite."""
 
 import os
+from collections.abc import Callable
+from pathlib import Path
 
 import pytest
+import yaml
+
+from tolokaforge.core.llm.presets import set_overlay_path
+
+
+@pytest.fixture
+def overlay_isolation():
+    """Guard module-level preset-overlay state against test leakage.
+
+    Any test that calls :func:`tolokaforge.core.llm.presets.set_overlay_path`
+    (directly or transitively via ``build_capabilities`` / the CLI helper)
+    must take this fixture so the next test starts from a clean slate.
+    """
+    yield
+    set_overlay_path(None)
+
+
+@pytest.fixture
+def write_overlay(tmp_path: Path) -> Callable[[dict], str]:
+    """Return a writer that materialises an overlay dict to a temp YAML file
+    and returns the path (the shape ``set_overlay_path`` consumes)."""
+
+    def _write(data: dict, name: str = "overlay.yaml") -> str:
+        path = tmp_path / name
+        path.write_text(yaml.safe_dump(data))
+        return str(path)
+
+    return _write
 
 
 def pytest_collection_modifyitems(config, items):

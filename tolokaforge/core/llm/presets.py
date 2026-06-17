@@ -10,8 +10,10 @@ resolution order.
 from __future__ import annotations
 
 import fnmatch
+import inspect
+import logging
+import os
 from collections.abc import Iterator
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -61,7 +63,18 @@ __all__ = [
     "build_capabilities",
     "resolve_policy_names",
     "resolve_effective_preset",
+    "set_overlay_path",
+    "get_overlay_path",
+    "resolve_overlay_path",
 ]
+
+
+logger = logging.getLogger(__name__)
+
+
+#: Env-var consulted by :func:`resolve_overlay_path` when no explicit path is
+#: supplied. Documented in ``docs/CONFIG.md``.
+OVERLAY_ENV_VAR = "TOLOKAFORGE_PRESETS_FILE"
 
 
 # ---------------------------------------------------------------------------
@@ -109,14 +122,290 @@ _CACHE_POLICIES: dict[str, type[CachePolicy]] = {
 _DEFAULT_PRESET_DATA: dict[str, Any] = {"default": {}, "presets": {}, "providers": {}}
 
 
-@lru_cache(maxsize=1)
-def _load_presets() -> dict[str, Any]:
-    """Load model capability presets from YAML. Cached after first call."""
+# ---------------------------------------------------------------------------
+# Overlay registry — operator-overridable preset data
+# ---------------------------------------------------------------------------
+#
+# The bundled ``model_presets.yaml`` is shipped inside the wheel and ties model
+# registrations to the engine release cadence. An operator-supplied overlay
+# file (CLI ``--presets-file`` / env ``TOLOKAFORGE_PRESETS_FILE`` /
+# ``RunConfig.engine.presets_file``) lifts that constraint: the engine merges
+# the overlay onto the bundled data at startup. See
+# [ADR 0002](../../../docs/architecture/adr/0002-external-model-registry.md).
+#
+# Validation runs at load time and is loud (``ValueError``) on any policy-name
+# string that does not resolve in the in-engine registries — mirrors the
+# ``ensure_registered_adapter`` host-boundary pattern in
+# ``tolokaforge.adapters``.
+
+#: Top-level keys allowed in an overlay (and the bundled file).
+_OVERLAY_TOP_LEVEL_KEYS: frozenset[str] = frozenset({"default", "presets", "providers"})
+
+#: Valid ``params:`` block keys — introspected from ``GenerationParams.__init__``
+#: so adding a new kwarg to ``GenerationParams`` automatically extends overlay
+#: validation. Keep ``GenerationParams`` the authoritative source.
+_VALID_PARAMS_KEYS: frozenset[str] = frozenset(
+    p for p in inspect.signature(GenerationParams.__init__).parameters if p != "self"
+)
+
+#: Module-level overlay path. ``None`` → bundled-only (today's behaviour).
+#: Mutated only via :func:`set_overlay_path` so cache invalidation has one
+#: choke point. Tests must call ``set_overlay_path(None)`` in teardown — the
+#: ``overlay_isolation`` fixture in ``tests/unit/llm/conftest.py`` handles this.
+_OVERLAY_PATH: str | None = None
+
+#: Memoised merged preset data. Cleared by :func:`set_overlay_path`.
+_CACHED_PRESETS: dict[str, Any] | None = None
+
+
+def set_overlay_path(path: str | None) -> None:
+    """Set (or clear) the active preset overlay file path.
+
+    Called once at engine startup by the CLI / orchestrator after resolving
+    precedence (CLI flag > env var > ``RunConfig.engine.presets_file``).
+    Idempotent: calling with ``None`` clears the overlay; calling with the
+    same path twice is a no-op-with-cache-clear.
+
+    The first subsequent call to :func:`_load_presets` re-reads the bundled
+    YAML and merges in the overlay (if any). Validation errors raise
+    ``ValueError`` from :func:`_load_presets`, not from this function, so
+    that callers can defer the file-read until the engine actually needs it.
+    """
+    global _OVERLAY_PATH, _CACHED_PRESETS
+    _OVERLAY_PATH = path
+    _CACHED_PRESETS = None
+
+
+def get_overlay_path() -> str | None:
+    """Return the active overlay path, or ``None`` if no overlay is installed.
+
+    Read-only accessor — :func:`set_overlay_path` is the sole mutator.
+    Useful for orchestrator code that wants to persist the active overlay
+    into queue run-state so worker subprocesses can inherit it.
+    """
+    return _OVERLAY_PATH
+
+
+def resolve_overlay_path(
+    cli_value: str | None = None,
+    config_value: str | None = None,
+) -> str | None:
+    """Resolve the overlay path with precedence ``cli > env > config``.
+
+    Returns the first non-empty value, or ``None`` if all three are unset.
+    Exists as a shared helper so the CLI, the config validator, and the
+    orchestrator all agree on precedence semantics.
+    """
+    if cli_value:
+        return cli_value
+    env_value = os.environ.get(OVERLAY_ENV_VAR)
+    if env_value:
+        return env_value
+    if config_value:
+        return config_value
+    return None
+
+
+def _load_bundled_presets() -> dict[str, Any]:
+    """Load the bundled ``model_presets.yaml`` from inside the wheel."""
     preset_path = Path(__file__).parent.parent / "data" / "model_presets.yaml"
     if not preset_path.exists():
         return _DEFAULT_PRESET_DATA
     with open(preset_path) as f:
         return yaml.safe_load(f) or _DEFAULT_PRESET_DATA
+
+
+def _load_overlay_file(path: str) -> dict[str, Any]:
+    """Read + parse + validate an operator-supplied overlay file.
+
+    Loud-fail on every recognised mis-configuration: missing file, malformed
+    YAML, non-mapping top-level, unknown top-level keys, unknown policy-name
+    strings, unknown ``params:`` keys. The error message always names the
+    overlay path so the operator can find the offending file.
+    """
+    overlay_path = Path(path)
+    if not overlay_path.exists():
+        raise FileNotFoundError(
+            f"Preset overlay file not found: {path!r}. "
+            f"Check the value of --presets-file, ${OVERLAY_ENV_VAR}, or "
+            f"engine.presets_file in the run config."
+        )
+    try:
+        with open(overlay_path) as f:
+            data = yaml.safe_load(f)
+    except yaml.YAMLError as exc:
+        raise ValueError(f"Preset overlay {path!r} failed to parse as YAML: {exc}") from exc
+
+    if data is None:
+        # Empty file is allowed and is equivalent to the default-empty registry.
+        return dict(_DEFAULT_PRESET_DATA)
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"Preset overlay {path!r} must be a YAML mapping at the top level, "
+            f"got {type(data).__name__}."
+        )
+
+    _validate_overlay(data, path)
+    return data
+
+
+def _validate_overlay(data: dict[str, Any], path: str) -> None:
+    """Host-boundary validation for an overlay's contents.
+
+    Every policy-name string in the overlay must resolve in the in-engine
+    registries (``_SCHEMA_SANITIZERS`` … ``_CACHE_POLICIES``); unknown names
+    raise ``ValueError`` with the file path and the offending key. Mirrors
+    ``ensure_registered_adapter()`` in ``tolokaforge.adapters``.
+
+    A new policy class added to the engine must also be added to the
+    appropriate registry (it would not be reachable from YAML otherwise);
+    overlay validation then accepts it automatically. The
+    ``test_preset_overlay_validator_registry_sync`` unit test pins this
+    invariant.
+    """
+    unknown_top = set(data.keys()) - _OVERLAY_TOP_LEVEL_KEYS
+    if unknown_top:
+        raise ValueError(
+            f"Preset overlay {path!r} has unknown top-level keys: "
+            f"{sorted(unknown_top)}. Allowed: {sorted(_OVERLAY_TOP_LEVEL_KEYS)}."
+        )
+
+    registries: dict[str, dict[str, type[Any]]] = {
+        "schema_sanitizer": _SCHEMA_SANITIZERS,
+        "prompt_policy": _PROMPT_POLICIES,
+        "content_policy": _CONTENT_POLICIES,
+        "response_policy": _RESPONSE_POLICIES,
+        "reasoning_codec": _REASONING_CODECS,
+        "cache_policy": _CACHE_POLICIES,
+    }
+
+    def _check_block(block: dict[str, Any], where: str) -> None:
+        if not isinstance(block, dict):
+            raise ValueError(
+                f"Preset overlay {path!r} at {where}: expected a mapping, "
+                f"got {type(block).__name__}."
+            )
+        for slot, registry in registries.items():
+            if slot not in block:
+                continue
+            name = block[slot]
+            if name not in registry:
+                raise ValueError(
+                    f"Preset overlay {path!r} at {where}: unknown "
+                    f"{slot} {name!r}. Available: {sorted(registry.keys())}. "
+                    f"New policy classes require an engine release; "
+                    f"overlays can only reference existing ones."
+                )
+        params = block.get("params")
+        if params:
+            if not isinstance(params, dict):
+                raise ValueError(
+                    f"Preset overlay {path!r} at {where}.params: "
+                    f"expected a mapping, got {type(params).__name__}."
+                )
+            unknown_params = set(params) - _VALID_PARAMS_KEYS
+            if unknown_params:
+                raise ValueError(
+                    f"Preset overlay {path!r} at {where}.params: "
+                    f"unknown keys {sorted(unknown_params)}. "
+                    f"Allowed: {sorted(_VALID_PARAMS_KEYS)}."
+                )
+
+    if "default" in data:
+        _check_block(data["default"] or {}, "default")
+
+    for preset_name, preset in (data.get("presets") or {}).items():
+        _check_block(preset or {}, f"presets.{preset_name}")
+
+    for provider_name, provider_cfg in (data.get("providers") or {}).items():
+        _check_block(provider_cfg or {}, f"providers.{provider_name}")
+
+
+def _merge_overlay(
+    bundled: dict[str, Any], overlay: dict[str, Any], overlay_path: str
+) -> dict[str, Any]:
+    """Merge ``overlay`` onto ``bundled``.
+
+    - ``default:`` shallow merge; overlay wins; nested ``params`` merges
+      deeply.
+    - ``presets:`` overlay entries are **prepended** to iteration order so
+      first-match-wins lets operators shadow a bundled preset. Same-named
+      overlay entries replace the bundled entry; the replacement is logged
+      at INFO so the operator can confirm it took effect.
+    - ``providers:`` shallow merge per provider key; overlay wins; nested
+      ``params`` merges deeply.
+    """
+    merged: dict[str, Any] = {}
+
+    # default block
+    default_bundled = bundled.get("default") or {}
+    default_overlay = overlay.get("default") or {}
+    merged_default = dict(default_bundled)
+    for key, value in default_overlay.items():
+        if key == "params" and isinstance(merged_default.get("params"), dict):
+            merged_default["params"] = {**merged_default["params"], **value}
+        else:
+            merged_default[key] = value
+    merged["default"] = merged_default
+
+    # presets block — overlay first (iteration order matters for first-match-wins),
+    # then bundled minus shadowed names.
+    bundled_presets = bundled.get("presets") or {}
+    overlay_presets = overlay.get("presets") or {}
+    new_presets: dict[str, Any] = {}
+    for name, preset in overlay_presets.items():
+        if name in bundled_presets:
+            logger.info(
+                "preset overlay %r shadows bundled preset %r",
+                overlay_path,
+                name,
+            )
+        new_presets[name] = preset
+    for name, preset in bundled_presets.items():
+        if name in overlay_presets:
+            continue  # already inserted from overlay
+        new_presets[name] = preset
+    merged["presets"] = new_presets
+
+    # providers block
+    bundled_providers = bundled.get("providers") or {}
+    overlay_providers = overlay.get("providers") or {}
+    new_providers: dict[str, Any] = {}
+    for name in list(bundled_providers) + [
+        n for n in overlay_providers if n not in bundled_providers
+    ]:
+        b = bundled_providers.get(name) or {}
+        o = overlay_providers.get(name) or {}
+        merged_p = dict(b)
+        for key, value in o.items():
+            if key == "params" and isinstance(merged_p.get("params"), dict):
+                merged_p["params"] = {**merged_p["params"], **value}
+            else:
+                merged_p[key] = value
+        new_providers[name] = merged_p
+    merged["providers"] = new_providers
+
+    return merged
+
+
+def _load_presets() -> dict[str, Any]:
+    """Load model capability presets — bundled YAML merged with overlay if set.
+
+    Module-level cached. Invalidate via :func:`set_overlay_path`. The cache
+    is process-local; subprocess workers re-run this fresh on first call.
+    """
+    global _CACHED_PRESETS
+    if _CACHED_PRESETS is not None:
+        return _CACHED_PRESETS
+
+    bundled = _load_bundled_presets()
+    if _OVERLAY_PATH is None:
+        _CACHED_PRESETS = bundled
+        return _CACHED_PRESETS
+
+    overlay = _load_overlay_file(_OVERLAY_PATH)
+    _CACHED_PRESETS = _merge_overlay(bundled, overlay, _OVERLAY_PATH)
+    return _CACHED_PRESETS
 
 
 def _iter_preset_matches(

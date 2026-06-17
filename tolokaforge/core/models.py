@@ -430,12 +430,34 @@ class EvaluationConfig(BaseModel):
     harness_adapter: HarnessAdapterConfig | None = None
 
 
+class EngineConfig(BaseModel):
+    """Engine-wide configuration that lives outside per-trial/per-model surface.
+
+    Holds operator-level knobs that change *which engine extensions* a run
+    picks up at startup — distinct from ``OrchestratorConfig`` (per-run
+    execution semantics) and ``ModelConfig`` (per-model overrides).
+    """
+
+    presets_file: str | None = Field(
+        default=None,
+        description=(
+            "Path to an additional model-presets YAML overlay. Merged onto "
+            "the bundled tolokaforge/core/data/model_presets.yaml at startup "
+            "so operators can register or shadow presets without an engine "
+            "release. CLI flag --presets-file and env var "
+            "TOLOKAFORGE_PRESETS_FILE take precedence over this field. "
+            "See docs/CONFIG.md and ADR 0002."
+        ),
+    )
+
+
 class RunConfig(BaseModel):
     """Complete run configuration"""
 
     models: dict[str, ModelConfig]
     orchestrator: OrchestratorConfig
     evaluation: EvaluationConfig
+    engine: EngineConfig | None = None
 
 
 # Task Configuration Models

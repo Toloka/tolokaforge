@@ -13,6 +13,7 @@ from typing import Any
 
 from tolokaforge.adapters import BaseAdapter, ensure_registered_adapter, get_adapter
 from tolokaforge.adapters.native import NativeAdapter
+from tolokaforge.core.engine_run_state import write_engine_run_state
 from tolokaforge.core.env_state import EnvironmentState
 from tolokaforge.core.failure_attribution import (
     attribute_failure,
@@ -21,6 +22,7 @@ from tolokaforge.core.failure_attribution import (
 )
 from tolokaforge.core.llm import LLMClient, UserSimulator, build_capabilities
 from tolokaforge.core.llm.presets import (
+    get_overlay_path,
     resolve_effective_preset,
     resolve_policy_names,
 )
@@ -1033,6 +1035,12 @@ class Orchestrator:
         items = self._build_pending_trials(self.tasks, self.config.orchestrator.repeats)
         run_queue.enqueue_many(items)
         counts = run_queue.get_counts()
+
+        # Persist engine-level run state for subprocess workers (the preset
+        # overlay path is the only field today). Worker CLIs read this so the
+        # overlay set at ``prepare`` time propagates without the operator
+        # threading --presets-file through every ``worker`` invocation.
+        write_engine_run_state(output_dir, presets_file=get_overlay_path())
 
         summary = {
             "queued_attempts": len(items),
