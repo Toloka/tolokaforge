@@ -444,9 +444,8 @@ class EngineConfig(BaseModel):
             "Path to an additional model-presets YAML overlay. Merged onto "
             "the bundled tolokaforge/core/data/model_presets.yaml at startup "
             "so operators can register or shadow presets without an engine "
-            "release. CLI flag --presets-file and env var "
-            "TOLOKAFORGE_PRESETS_FILE take precedence over this field. "
-            "See docs/CONFIG.md and ADR 0002."
+            "release. The --presets-file CLI flag takes precedence over this "
+            "field. See docs/CONFIG.md and ADR 0002."
         ),
     )
 

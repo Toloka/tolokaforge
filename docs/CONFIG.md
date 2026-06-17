@@ -205,12 +205,13 @@ gets merged onto the bundled `model_presets.yaml` at startup. See
 for the rationale and [`docs/ADD_NEW_MODEL.md`](ADD_NEW_MODEL.md) for a
 walkthrough.
 
-Set the overlay path three ways; precedence is **CLI flag > env var > config field**:
+Set the overlay path two ways; precedence is **CLI flag > config field**:
 
 1. CLI flag: `--presets-file overlay.yaml` on `run`, `prepare`, `worker`, and
-   `config validate`.
-2. Env var: `TOLOKAFORGE_PRESETS_FILE=/path/to/overlay.yaml`.
-3. Run-config field:
+   `config validate`. Use this for one-off overlays — smoke-eval iterations,
+   ablations, anything you don't want to commit alongside the run config.
+2. Run-config field — commit the overlay path next to the run definition
+   when an overlay is part of *what this benchmark is*:
 
    ```yaml
    engine:
@@ -232,9 +233,8 @@ both the overlay file and the offending key.
 overlay path into `engine_run_state.json` alongside the run queue. Worker
 subprocesses launched later from the same `--run-dir` pick it up
 automatically — you don't have to thread the flag through every
-`tolokaforge worker` invocation. A worker-side `--presets-file` flag (or
-`$TOLOKAFORGE_PRESETS_FILE`) still wins over the persisted value when both
-are set.
+`tolokaforge worker` invocation. A worker-side `--presets-file` flag still
+wins over the persisted value when both are set.
 
 ## Task Specification (`task.yaml`)
 

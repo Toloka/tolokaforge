@@ -47,8 +47,7 @@ def config():
     help=(
         "Path to a model-presets overlay YAML; validated for schema and "
         "policy-name correctness before the run config is checked. "
-        "Precedence: this flag > $TOLOKAFORGE_PRESETS_FILE > "
-        "engine.presets_file in the run config."
+        "Precedence: this flag > engine.presets_file in the run config."
     ),
 )
 def validate(config_path: str, strict: bool, presets_file: str | None) -> None:

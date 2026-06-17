@@ -12,7 +12,6 @@ from __future__ import annotations
 import fnmatch
 import inspect
 import logging
-import os
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -72,11 +71,6 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 
-#: Env-var consulted by :func:`resolve_overlay_path` when no explicit path is
-#: supplied. Documented in ``docs/CONFIG.md``.
-OVERLAY_ENV_VAR = "TOLOKAFORGE_PRESETS_FILE"
-
-
 # ---------------------------------------------------------------------------
 # Policy-name → class registries
 # ---------------------------------------------------------------------------
@@ -128,10 +122,9 @@ _DEFAULT_PRESET_DATA: dict[str, Any] = {"default": {}, "presets": {}, "providers
 #
 # The bundled ``model_presets.yaml`` is shipped inside the wheel and ties model
 # registrations to the engine release cadence. An operator-supplied overlay
-# file (CLI ``--presets-file`` / env ``TOLOKAFORGE_PRESETS_FILE`` /
-# ``RunConfig.engine.presets_file``) lifts that constraint: the engine merges
-# the overlay onto the bundled data at startup. See
-# [ADR 0002](../../../docs/architecture/adr/0002-external-model-registry.md).
+# file (CLI ``--presets-file`` / ``RunConfig.engine.presets_file``) lifts that
+# constraint: the engine merges the overlay onto the bundled data at startup.
+# See [ADR 0002](../../../docs/architecture/adr/0002-external-model-registry.md).
 #
 # Validation runs at load time and is loud (``ValueError``) on any policy-name
 # string that does not resolve in the in-engine registries — mirrors the
@@ -162,9 +155,9 @@ def set_overlay_path(path: str | None) -> None:
     """Set (or clear) the active preset overlay file path.
 
     Called once at engine startup by the CLI / orchestrator after resolving
-    precedence (CLI flag > env var > ``RunConfig.engine.presets_file``).
-    Idempotent: calling with ``None`` clears the overlay; calling with the
-    same path twice is a no-op-with-cache-clear.
+    precedence (CLI flag > ``RunConfig.engine.presets_file``). Idempotent:
+    calling with ``None`` clears the overlay; calling with the same path
+    twice is a no-op-with-cache-clear.
 
     The first subsequent call to :func:`_load_presets` re-reads the bundled
     YAML and merges in the overlay (if any). Validation errors raise
@@ -190,17 +183,14 @@ def resolve_overlay_path(
     cli_value: str | None = None,
     config_value: str | None = None,
 ) -> str | None:
-    """Resolve the overlay path with precedence ``cli > env > config``.
+    """Resolve the overlay path with precedence ``cli > config``.
 
-    Returns the first non-empty value, or ``None`` if all three are unset.
+    Returns the first non-empty value, or ``None`` if both are unset.
     Exists as a shared helper so the CLI, the config validator, and the
     orchestrator all agree on precedence semantics.
     """
     if cli_value:
         return cli_value
-    env_value = os.environ.get(OVERLAY_ENV_VAR)
-    if env_value:
-        return env_value
     if config_value:
         return config_value
     return None
@@ -227,8 +217,8 @@ def _load_overlay_file(path: str) -> dict[str, Any]:
     if not overlay_path.exists():
         raise FileNotFoundError(
             f"Preset overlay file not found: {path!r}. "
-            f"Check the value of --presets-file, ${OVERLAY_ENV_VAR}, or "
-            f"engine.presets_file in the run config."
+            f"Check the value of --presets-file or engine.presets_file in the "
+            f"run config."
         )
     try:
         with open(overlay_path) as f:

@@ -1,7 +1,7 @@
 """Worker propagation — ``prepare`` persists the overlay path to the queue
 state file; the worker CLI's overlay resolution prefers that value over
 ``engine.presets_file`` (because ``prepare`` reflects the operator's most
-recent intent) while still letting ``--presets-file`` / env overrides win.
+recent intent) while still letting ``--presets-file`` override it.
 
 These are unit tests for the persistence + resolution mechanism. The
 end-to-end worker path (subprocess actually consuming the persisted overlay)
@@ -22,7 +22,7 @@ from tolokaforge.core.engine_run_state import (
     read_persisted_presets_file,
     write_engine_run_state,
 )
-from tolokaforge.core.llm.presets import OVERLAY_ENV_VAR, get_overlay_path
+from tolokaforge.core.llm.presets import get_overlay_path
 from tolokaforge.core.models import EngineConfig, RunConfig
 
 pytestmark = pytest.mark.unit
@@ -69,13 +69,10 @@ class TestEngineRunStatePersistence:
 
 class TestWorkerOverlayResolution:
     """The worker CLI calls ``_activate_presets_overlay(cli, run_config, run_dir)``.
-    The resolution precedence is CLI > env > queue-state > engine.presets_file.
+    The resolution precedence is CLI > queue-state > engine.presets_file.
     """
 
-    def test_queue_state_beats_engine_config(
-        self, tmp_path: Path, overlay_isolation, monkeypatch
-    ) -> None:
-        monkeypatch.delenv(OVERLAY_ENV_VAR, raising=False)
+    def test_queue_state_beats_engine_config(self, tmp_path: Path, overlay_isolation) -> None:
         write_engine_run_state(tmp_path, presets_file="/from/queue.yaml")
         run_config = _minimal_run_config(presets_file="/from/config.yaml")
         resolved = _activate_presets_overlay(
@@ -84,8 +81,7 @@ class TestWorkerOverlayResolution:
         assert resolved == "/from/queue.yaml"
         assert get_overlay_path() == "/from/queue.yaml"
 
-    def test_cli_beats_queue_state(self, tmp_path: Path, overlay_isolation, monkeypatch) -> None:
-        monkeypatch.delenv(OVERLAY_ENV_VAR, raising=False)
+    def test_cli_beats_queue_state(self, tmp_path: Path, overlay_isolation) -> None:
         write_engine_run_state(tmp_path, presets_file="/from/queue.yaml")
         resolved = _activate_presets_overlay(
             cli_presets_file="/from/cli.yaml",
@@ -94,20 +90,9 @@ class TestWorkerOverlayResolution:
         )
         assert resolved == "/from/cli.yaml"
 
-    def test_env_beats_queue_state(self, tmp_path: Path, overlay_isolation, monkeypatch) -> None:
-        monkeypatch.setenv(OVERLAY_ENV_VAR, "/from/env.yaml")
-        write_engine_run_state(tmp_path, presets_file="/from/queue.yaml")
-        resolved = _activate_presets_overlay(
-            cli_presets_file=None,
-            run_config=_minimal_run_config(),
-            run_dir=tmp_path,
-        )
-        assert resolved == "/from/env.yaml"
-
     def test_no_queue_state_falls_through_to_engine_config(
-        self, tmp_path: Path, overlay_isolation, monkeypatch
+        self, tmp_path: Path, overlay_isolation
     ) -> None:
-        monkeypatch.delenv(OVERLAY_ENV_VAR, raising=False)
         # No engine_run_state.json in tmp_path.
         run_config = _minimal_run_config(presets_file="/from/config.yaml")
         resolved = _activate_presets_overlay(
@@ -116,12 +101,11 @@ class TestWorkerOverlayResolution:
         assert resolved == "/from/config.yaml"
 
     def test_persisted_none_falls_through_to_engine_config(
-        self, tmp_path: Path, overlay_isolation, monkeypatch
+        self, tmp_path: Path, overlay_isolation
     ) -> None:
         # ``prepare`` ran without an overlay → persisted value is None →
         # fall through to engine.presets_file rather than treating the file's
         # presence as "no overlay".
-        monkeypatch.delenv(OVERLAY_ENV_VAR, raising=False)
         write_engine_run_state(tmp_path, presets_file=None)
         run_config = _minimal_run_config(presets_file="/from/config.yaml")
         resolved = _activate_presets_overlay(

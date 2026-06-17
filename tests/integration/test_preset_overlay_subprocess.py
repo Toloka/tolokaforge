@@ -16,7 +16,6 @@ overlay path and prints it.
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 import textwrap
@@ -27,7 +26,6 @@ import pytest
 from tolokaforge.core.engine_run_state import (
     write_engine_run_state,
 )
-from tolokaforge.core.llm.presets import OVERLAY_ENV_VAR
 
 pytestmark = pytest.mark.integration
 
@@ -63,18 +61,12 @@ def _run_resolver(
     run_dir: Path | None,
     cli_value: str | None,
     config_value: str | None,
-    env_value: str | None = None,
 ) -> dict:
     """Spawn a clean subprocess that drives the worker's overlay resolution.
 
     Returns the resolver's JSON output as a dict, so tests can assert both
     the resolved path and the actually-installed path inside the subprocess.
     """
-    env = os.environ.copy()
-    env.pop(OVERLAY_ENV_VAR, None)
-    if env_value is not None:
-        env[OVERLAY_ENV_VAR] = env_value
-
     proc = subprocess.run(
         [
             sys.executable,
@@ -86,7 +78,6 @@ def _run_resolver(
         ],
         capture_output=True,
         text=True,
-        env=env,
         check=False,
     )
     assert proc.returncode == 0, (
@@ -111,16 +102,6 @@ class TestSubprocessInheritance:
         write_engine_run_state(tmp_path, presets_file="/from/queue.yaml")
         result = _run_resolver(run_dir=tmp_path, cli_value="/from/cli.yaml", config_value=None)
         assert result["resolved"] == "/from/cli.yaml"
-
-    def test_subprocess_env_beats_queue_state(self, tmp_path: Path) -> None:
-        write_engine_run_state(tmp_path, presets_file="/from/queue.yaml")
-        result = _run_resolver(
-            run_dir=tmp_path,
-            cli_value=None,
-            config_value=None,
-            env_value="/from/env.yaml",
-        )
-        assert result["resolved"] == "/from/env.yaml"
 
     def test_subprocess_queue_state_beats_config_field(self, tmp_path: Path) -> None:
         write_engine_run_state(tmp_path, presets_file="/from/queue.yaml")

@@ -89,11 +89,20 @@ The overlay file:
 - Has no effect when unconfigured: behaviour is bit-identical to today, no
   new code paths run.
 
-The overlay path is resolved with precedence `--presets-file` CLI flag > env
-var `TOLOKAFORGE_PRESETS_FILE` > optional `engine.presets_file` field on
-`RunConfig`. Distributed workers inherit it implicitly — `prepare` persists
-the resolved path into the queue run-state, so `worker` subprocesses pick it
-up without the operator threading the flag manually.
+The overlay path is resolved with precedence `--presets-file` CLI flag >
+optional `engine.presets_file` field on `RunConfig`. The CLI flag covers
+one-off overlays (smoke iterations, ablations); the config field covers
+overlays that are part of a benchmark's committed definition. An env-var
+fallback (`TOLOKAFORGE_PRESETS_FILE`) was considered and dropped — its
+primary use case (a fleet of subprocesses sharing one overlay) is already
+covered by `prepare`'s queue-state persistence; the two surviving paths
+cover the rest. If a future workflow surfaces a real need (e.g. CI matrix
+steps that need a session-scoped overlay without threading flags), add it
+then.
+
+Distributed workers inherit it implicitly — `prepare` persists the resolved
+path into the queue run-state, so `worker` subprocesses pick it up without
+the operator threading the flag manually.
 
 ## Consequences
 

@@ -83,12 +83,11 @@ def _activate_presets_overlay(
     Precedence (highest to lowest):
 
     1. ``cli_presets_file`` — ``--presets-file`` flag on the current command.
-    2. ``$TOLOKAFORGE_PRESETS_FILE``.
-    3. ``run_dir / engine_run_state.json`` — the path persisted by
+    2. ``run_dir / engine_run_state.json`` — the path persisted by
        ``tolokaforge prepare`` so worker subprocesses inherit the operator's
        overlay choice without threading the flag through manually. Only
        consulted when *run_dir* is given (the worker / queue-backed paths).
-    4. ``engine.presets_file`` in the run config.
+    3. ``engine.presets_file`` in the run config.
 
     Returns the resolved path (or ``None`` if no overlay is configured). The
     install side-effect is :func:`tolokaforge.core.llm.presets.set_overlay_path`,
@@ -99,7 +98,7 @@ def _activate_presets_overlay(
     config_value = run_config.engine.presets_file if run_config.engine else None
     queue_state_value = read_persisted_presets_file(run_dir) if run_dir is not None else None
     # Queue-state value (if any) sits above ``engine.presets_file`` because
-    # ``prepare`` was the most recent operator decision. CLI/env still win.
+    # ``prepare`` was the most recent operator decision. CLI still wins.
     effective_config_value = queue_state_value or config_value
     resolved = resolve_overlay_path(cli_value=cli_presets_file, config_value=effective_config_value)
     set_overlay_path(resolved)
@@ -125,8 +124,8 @@ def _activate_presets_overlay(
     default=None,
     help=(
         "Path to a model-presets overlay YAML merged onto the bundled "
-        "model_presets.yaml. Precedence: this flag > $TOLOKAFORGE_PRESETS_FILE "
-        "> engine.presets_file in the run config. See docs/CONFIG.md."
+        "model_presets.yaml. Precedence: this flag > engine.presets_file in "
+        "the run config. See docs/CONFIG.md."
     ),
 )
 def run(
@@ -224,7 +223,7 @@ def run(
     help=(
         "Path to a model-presets overlay YAML; persisted into the queue "
         "run-state so worker subprocesses inherit it. Precedence: this flag > "
-        "$TOLOKAFORGE_PRESETS_FILE > engine.presets_file."
+        "engine.presets_file."
     ),
 )
 def prepare(
@@ -280,7 +279,7 @@ def prepare(
     help=(
         "Path to a model-presets overlay YAML. If unset, the worker reads the "
         "overlay path persisted by ``prepare`` from the queue run-state, then "
-        "falls back to $TOLOKAFORGE_PRESETS_FILE / engine.presets_file."
+        "falls back to engine.presets_file."
     ),
 )
 def worker(
@@ -297,8 +296,8 @@ def worker(
         config_data = yaml.safe_load(f)
     run_config = RunConfig(**config_data)
 
-    # Worker overlay precedence: --presets-file > $TOLOKAFORGE_PRESETS_FILE >
-    # ``prepare``-persisted queue state > engine.presets_file.
+    # Worker overlay precedence: --presets-file > ``prepare``-persisted queue
+    # state > engine.presets_file.
     overlay_path = _activate_presets_overlay(presets_file, run_config, run_dir=Path(run_dir))
     if overlay_path:
         console.print(f"[cyan]Preset overlay: {overlay_path}[/cyan]")
