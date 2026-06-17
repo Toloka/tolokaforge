@@ -1094,6 +1094,16 @@ class LLMClient:
                 extra_headers.update(existing_extra)
             kwargs["extra_headers"] = extra_headers
             kwargs.setdefault("custom_llm_provider", self.provider.split("/")[0])
+            if self.config.provider_order:
+                provider_pref = {
+                    "order": list(self.config.provider_order),
+                    "allow_fallbacks": self.config.allow_fallbacks,
+                }
+                extra_body = kwargs.get("extra_body")
+                if isinstance(extra_body, dict):
+                    extra_body.setdefault("provider", provider_pref)
+                else:
+                    kwargs["extra_body"] = {"provider": provider_pref}
 
         return kwargs
 

@@ -303,6 +303,9 @@ class ModelConfig(BaseModel):
     reasoning: ReasoningConfig = Field(default_factory=ReasoningConfig)
     top_p: float | None = None  # Nucleus sampling parameter (0.0-1.0)
     capabilities: dict[str, Any] | None = None  # Override auto-detected model capabilities
+    # OpenRouter provider routing (pin to specific upstream providers); ignored for other providers.
+    provider_order: list[str] | None = None
+    allow_fallbacks: bool = True
 
     @field_validator("reasoning", mode="before")
     @classmethod

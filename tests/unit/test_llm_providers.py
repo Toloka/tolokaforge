@@ -371,3 +371,78 @@ class TestReasoningParameter:
         """ModelConfig default reasoning must have ``mode='off'`` (opt-in)."""
         config = ModelConfig(provider="openrouter", name="test/model")
         assert config.reasoning.mode == "off"
+
+
+class TestProviderRouting:
+    """``ModelConfig.provider_order`` pins OpenRouter requests to specific upstream providers."""
+
+    def _capture_kwargs(
+        self,
+        provider: str,
+        name: str,
+        provider_order: list[str] | None = None,
+        allow_fallbacks: bool = True,
+    ) -> dict:
+        import tolokaforge.core.llm.client as mc_module
+
+        captured: dict = {}
+
+        def fake_completion(**kwargs):
+            captured.update(kwargs)
+            mock_resp = MagicMock()
+            mock_resp.choices = [MagicMock()]
+            mock_resp.choices[0].message.content = "ok"
+            mock_resp.choices[0].message.tool_calls = None
+            mock_resp.choices[0].message.reasoning_content = None
+            mock_resp.choices[0].message.thinking_blocks = None
+            mock_resp.usage = MagicMock()
+            mock_resp.usage.prompt_tokens = 10
+            mock_resp.usage.completion_tokens = 5
+            return mock_resp
+
+        config = ModelConfig(
+            provider=provider,
+            name=name,
+            provider_order=provider_order,
+            allow_fallbacks=allow_fallbacks,
+        )
+        client = LLMClient(config)
+
+        original = mc_module.completion
+        mc_module.completion = fake_completion
+        try:
+            client.generate(
+                system="test",
+                messages=[Message(role=MessageRole.USER, content="hello")],
+            )
+        finally:
+            mc_module.completion = original
+        return captured
+
+    def test_provider_order_sets_extra_body_provider(self):
+        """provider_order pins the request to the listed upstream provider(s)."""
+        kwargs = self._capture_kwargs(
+            "openrouter",
+            "nvidia/nemotron-3-ultra-550b-a55b",
+            provider_order=["Together"],
+            allow_fallbacks=False,
+        )
+        assert kwargs.get("extra_body", {}).get("provider") == {
+            "order": ["Together"],
+            "allow_fallbacks": False,
+        }
+
+    def test_no_provider_order_means_no_routing(self):
+        """Without provider_order, no provider routing is sent (back-compat)."""
+        kwargs = self._capture_kwargs("openrouter", "nvidia/nemotron-3-ultra-550b-a55b")
+        assert "provider" not in kwargs.get("extra_body", {})
+
+    def test_provider_order_ignored_for_native_provider(self):
+        """provider_order is OpenRouter-only; native providers ignore it."""
+        kwargs = self._capture_kwargs(
+            "anthropic",
+            "claude-opus-4.6",
+            provider_order=["Together"],
+            allow_fallbacks=False,
+        )
+        assert "provider" not in kwargs.get("extra_body", {})
