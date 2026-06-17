@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from tolokaforge.adapters import BaseAdapter, get_adapter
+from tolokaforge.adapters import BaseAdapter, ensure_registered_adapter, get_adapter
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.env_state import EnvironmentState
 from tolokaforge.core.failure_attribution import (
@@ -47,6 +47,7 @@ from tolokaforge.core.resume import RunStateManager
 from tolokaforge.core.run_queue import AttemptLease, create_run_queue
 from tolokaforge.core.runner import TrialRunner
 from tolokaforge.core.stuck import StuckDetector
+from tolokaforge.runner.models import AdapterType
 
 # Tools that need Playwright + Chromium baked into the runner image. The
 # orchestrator scans the task list before starting the docker stack and
@@ -188,7 +189,7 @@ class Orchestrator:
             adapter_type = adapter_config.type
             params = adapter_config.params.copy()
         else:
-            adapter_type = "native"
+            adapter_type = AdapterType.NATIVE
             params = {}
 
         # Add tasks_glob to params for both native and other adapters
@@ -1238,6 +1239,10 @@ class Orchestrator:
 
         # Get TaskDescription from adapter and register trial
         task_desc = self.adapter.to_task_description(task.task_id)
+        # Host-side guard: adapter_type is an open string (the adapter set is
+        # entry-point-discovered). Validate against the registry here (authoritative
+        # on the host) to catch typos/misconfig early.
+        ensure_registered_adapter(task_desc.adapter_type)
         task_desc_json = task_desc.model_dump_json()
 
         register_result = tool_executor.register_trial(task_description_json=task_desc_json)

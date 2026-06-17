@@ -236,6 +236,9 @@ class TerminalBenchAdapter(BaseAdapter):
                 combine_method="weighted",
                 weights={"custom_checks": 1.0},
                 pass_threshold=0.5,
+                # Score by running the reference test suite in the env container.
+                # The runner dispatches on this method, not on the adapter name.
+                grading_method="test_execution",
             ),
             tool_artifacts=artifacts,
             metadata={
