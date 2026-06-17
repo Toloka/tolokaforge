@@ -13,7 +13,7 @@ from tolokaforge.adapters import (
     ensure_registered_adapter,
     register_adapter,
 )
-from tolokaforge.runner.models import GradingConfig, TaskDescription
+from tolokaforge.runner.models import AdapterType, GradingConfig, TaskDescription
 from tolokaforge.runner.tool_factory import (
     DockerComposeExecToolWrapper,
     ToolLifecycleContext,
@@ -41,6 +41,26 @@ class TestOpenAdapterType:
         assert td.adapter_type == "some_third_party_adapter"
         reloaded = TaskDescription.model_validate_json(td.model_dump_json())
         assert reloaded.adapter_type == "some_third_party_adapter"
+
+    def test_migration_bench_constant_exists(self):
+        """``migration_bench`` is one of the canonical built-in names exposed
+        as a typed constant on ``AdapterType`` and round-trips through
+        ``TaskDescription`` unchanged.
+        """
+        assert AdapterType.MIGRATION_BENCH == "migration_bench"
+        assert AdapterType.MIGRATION_BENCH.value == "migration_bench"
+
+        td = TaskDescription(
+            task_id="t1",
+            name="t1",
+            category="general",
+            description="d",
+            adapter_type=AdapterType.MIGRATION_BENCH,
+            system_prompt="sp",
+        )
+        assert td.adapter_type == "migration_bench"
+        reloaded = TaskDescription.model_validate_json(td.model_dump_json())
+        assert reloaded.adapter_type == "migration_bench"
 
 
 class TestDeclarativeGradingMethod:

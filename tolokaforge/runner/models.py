@@ -37,6 +37,7 @@ class AdapterType(str, Enum):
     TAU = "tau"
     TLK_MCP_CORE = "tlk_mcp_core"
     TERMINAL_BENCH = "terminal_bench"
+    MIGRATION_BENCH = "migration_bench"
 
 
 class InvocationStyle(str, Enum):
