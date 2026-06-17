@@ -72,7 +72,24 @@ class StateChecker:
         self, state: dict[str, Any], assertions: list[dict[str, Any]]
     ) -> tuple[float, list[str]]:
         """
-        Check JSONPath assertions against state
+        Check JSONPath assertions against state.
+
+        Each assertion is a dict with one of:
+
+        - ``path``: a JSONPath expression evaluated against ``state``
+        - ``path_glob``: a glob evaluated against ``state["filesystem"]``
+
+        plus exactly one of these recognized comparison operators:
+
+        - ``equals``: exact equality
+        - ``equals_ci``: case-insensitive string equality
+        - ``contains``: substring (case-sensitive)
+        - ``contains_ci``: substring (case-insensitive)
+
+        Assertions with an unrecognized operator (e.g. ``op: gte`` /
+        ``expected: 5``) are treated as **failed** with an actionable reason —
+        previously they silently satisfied as long as the path existed, turning
+        strict-looking assertions into no-ops.
 
         Args:
             state: Final environment state
@@ -199,9 +216,21 @@ class StateChecker:
                         )
 
                 else:
-                    # No operator specified, just check path exists
-                    found_match = True
-                    satisfied += 1
+                    # No recognized operator — treat as FAILED with an actionable
+                    # reason. Previously this branch silently satisfied any assertion
+                    # whose JSONPath existed, so a misspelled or unsupported operator
+                    # (e.g. ``op: gte`` / ``expected: 5``) turned a strict-looking
+                    # assertion into a no-op. Fail loud and name which operators the
+                    # checker actually consumes so the author can fix it.
+                    unknown_keys = sorted(
+                        k for k in assertion if k not in {"path", "path_glob", "description"}
+                    )
+                    suffix = f" ({description})" if description else ""
+                    reasons.append(
+                        f"Assertion at {target} has no recognized operator "
+                        f"(got keys: {unknown_keys}); supported operators are "
+                        f"'equals', 'equals_ci', 'contains', 'contains_ci'{suffix}"
+                    )
 
             except Exception as e:
                 reasons.append(f"Error checking {path}: {str(e)} ({description})")

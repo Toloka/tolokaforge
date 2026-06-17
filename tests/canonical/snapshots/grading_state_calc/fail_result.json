@@ -1,4 +1,4 @@
 {
-  "reasons": "",
-  "score": 1.0
+  "reasons": "Path $.counter: expected 5, got 0 (Counter should be 5)",
+  "score": 0.0
 }

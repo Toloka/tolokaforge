@@ -317,3 +317,103 @@ class TestCombinedGrading:
             hash_weight=0.5,
         )
         assert score == pytest.approx(0.5)
+
+
+@pytest.mark.unit
+class TestUnknownOperatorFailsLoud:
+    """Pins the contract: an assertion with no recognized operator must FAIL
+    (with an actionable reason), not silently satisfy on path-existence.
+
+    Recognized operators are ``equals``, ``equals_ci``, ``contains``,
+    ``contains_ci``. Anything else (``op: gte``, typo like ``eqaul``, no operator
+    at all) used to be a silent no-op — this class regression-pins the
+    loud-failure behaviour.
+    """
+
+    @pytest.fixture
+    def checker(self):
+        return StateChecker()
+
+    def test_unknown_operator_keys_fail_with_actionable_reason(self, checker):
+        """An assertion with ``op``/``expected`` (unsupported by the engine)
+        previously satisfied silently as long as the path existed. Now it fails."""
+        state = {"counter": 0}
+        assertions = [
+            {
+                "path": "$.counter",
+                "op": "gte",
+                "expected": 5,
+                "description": "Counter should be at least 5",
+            }
+        ]
+        score, reasons = checker.check_jsonpaths(state, assertions)
+        assert score == 0.0
+        assert len(reasons) == 1
+        r = reasons[0]
+        assert "no recognized operator" in r
+        assert "'equals'" in r and "'contains'" in r
+        assert "op" in r and "expected" in r  # offending keys are surfaced
+
+    def test_no_operator_at_all_fails(self, checker):
+        """An assertion that only specifies ``path`` (no operator) used to
+        silently satisfy; it now fails loudly."""
+        state = {"counter": 0}
+        assertions = [{"path": "$.counter", "description": "exists"}]
+        score, reasons = checker.check_jsonpaths(state, assertions)
+        assert score == 0.0
+        assert "no recognized operator" in reasons[0]
+
+    def test_typo_in_operator_name_fails(self, checker):
+        """A misspelled operator key (``eqaul`` for ``equals``) fails — the
+        check is by exact key name, not heuristic, so typos are caught."""
+        state = {"x": "hello"}
+        assertions = [{"path": "$.x", "eqaul": "hello", "description": "typo"}]
+        score, reasons = checker.check_jsonpaths(state, assertions)
+        assert score == 0.0
+        assert "eqaul" in reasons[0]
+
+    def test_partial_credit_with_one_unknown_one_valid(self, checker):
+        """A mix of one valid (passing) and one unknown-operator assertion
+        gives partial credit — confirms per-assertion handling, not early-exit."""
+        state = {"a": 1, "b": 2}
+        assertions = [
+            {"path": "$.a", "equals": 1, "description": "valid passing"},
+            {"path": "$.b", "op": "gte", "expected": 2, "description": "unknown op"},
+        ]
+        score, reasons = checker.check_jsonpaths(state, assertions)
+        assert score == pytest.approx(0.5)
+        assert any("no recognized operator" in r for r in reasons)
+
+    def test_pre_fix_silent_pass_scenario_now_fails(self, checker):
+        """Regression pin for the exact silent-pass scenario: the path EXISTS
+        and the unrecognized operator's ``expected`` value would NOT match —
+        before the fix this satisfied 1/1 (score 1.0). It must now be 0/1."""
+        state = {"counter": 0}  # NOT 5
+        assertions = [
+            {"path": "$.counter", "op": "eq", "expected": 5, "description": "uses op:eq"},
+        ]
+        score, _ = checker.check_jsonpaths(state, assertions)
+        assert score == 0.0, "Unrecognized operator must not silently satisfy"
+
+    def test_path_glob_with_unknown_operator_fails(self, checker):
+        """The fail-loud branch applies to ``path_glob`` assertions too, and the
+        reason names the glob target (not just ``path``)."""
+        state = {"filesystem": {"/agent/out.txt": "data"}}
+        assertions = [
+            {"path_glob": "/agent/*", "op": "matches", "expected": "data"},
+        ]
+        score, reasons = checker.check_jsonpaths(state, assertions)
+        assert score == 0.0
+        # Target is the glob string, not None.
+        assert "/agent/*" in reasons[0]
+        assert "no recognized operator" in reasons[0]
+
+    def test_actionable_reason_has_no_empty_parens_when_no_description(self, checker):
+        """Cosmetic: when description is omitted, the reason must not end with
+        a stray ``()`` — keeps the failure message clean for downstream parsing."""
+        state = {"counter": 0}
+        assertions = [{"path": "$.counter", "op": "gte", "expected": 5}]
+        score, reasons = checker.check_jsonpaths(state, assertions)
+        assert score == 0.0
+        assert not reasons[0].rstrip().endswith("()"), reasons[0]
+        assert "()" not in reasons[0]

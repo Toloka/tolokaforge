@@ -219,3 +219,53 @@ class TestTranscriptGrading:
             disallowed_tools=[],
         )
         assert score < 1.0
+
+
+@pytest.mark.unit
+class TestToolExpectationsReasonsAreDeterministic:
+    """Pins the contract: tool-expectation reason strings are sorted/stable so
+    they don't drift run-to-run from Python set repr ordering. Snapshot tests
+    (and downstream parsing) rely on this stability.
+    """
+
+    @pytest.fixture
+    def checker(self):
+        return TranscriptChecker()
+
+    def test_missing_tools_reason_is_sorted(self, checker):
+        """Reason text lists missing tools in alphabetical order — same across runs."""
+        score, reasons = checker.check_tool_expectations(
+            tool_log=[],
+            required_tools=["zebra_tool", "alpha_tool", "mango_tool"],
+            disallowed_tools=None,
+        )
+        assert len(reasons) == 1
+        # Sorted alphabetically.
+        assert reasons[0] == "Missing required tools: alpha_tool, mango_tool, zebra_tool"
+        # No set-repr punctuation leaks.
+        assert "{" not in reasons[0] and "}" not in reasons[0]
+        assert "'" not in reasons[0]
+
+    def test_violations_reason_is_sorted(self, checker):
+        """Reason text lists disallowed-tool violations in alphabetical order."""
+        tool_log = [{"tool": "zeta"}, {"tool": "alpha"}, {"tool": "mike"}]
+        score, reasons = checker.check_tool_expectations(
+            tool_log=tool_log,
+            required_tools=None,
+            disallowed_tools=["mike", "alpha", "zeta"],
+        )
+        assert len(reasons) == 1
+        assert reasons[0] == "Used disallowed tools: alpha, mike, zeta"
+        assert "{" not in reasons[0] and "}" not in reasons[0]
+
+    def test_reasons_are_stable_across_repeated_calls(self, checker):
+        """Calling the same scenario twice must yield byte-identical reasons,
+        regardless of underlying set iteration order."""
+        kwargs = {
+            "tool_log": [],
+            "required_tools": ["b_tool", "a_tool", "c_tool"],
+            "disallowed_tools": None,
+        }
+        _, r1 = checker.check_tool_expectations(**kwargs)
+        _, r2 = checker.check_tool_expectations(**kwargs)
+        assert r1 == r2

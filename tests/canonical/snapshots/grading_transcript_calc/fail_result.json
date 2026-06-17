@@ -1,4 +1,4 @@
 {
-  "reasons": "Missing required tools: {'write_file'}",
+  "reasons": "Missing required tools: write_file",
   "score": 0.875
 }

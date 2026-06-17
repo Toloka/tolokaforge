@@ -19,10 +19,8 @@ class TestStateCheckerCanon:
         jsonpath_assertions = [
             {
                 "path": "$.counter",
-                "op": "eq",
-                "expected": 5,
-                "required": True,
-                "reason": "Counter should be 5",
+                "equals": 5,
+                "description": "Counter should be 5",
             },
         ]
 
@@ -43,10 +41,8 @@ class TestStateCheckerCanon:
         jsonpath_assertions = [
             {
                 "path": "$.counter",
-                "op": "eq",
-                "expected": 5,
-                "required": True,
-                "reason": "Counter should be 5",
+                "equals": 5,
+                "description": "Counter should be 5",
             },
         ]
 

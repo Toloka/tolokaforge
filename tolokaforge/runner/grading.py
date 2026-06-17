@@ -446,6 +446,13 @@ def evaluate_jsonpath_file_checks(
     """
     Evaluate jsonpath file assertions against the Runner container's filesystem.
 
+    This evaluator only understands ``path_glob:`` + ``contains_ci:`` (file-content
+    checks). It does not handle ``path:``-style JSONPath assertions on env state
+    (those are evaluated host-side by ``StateChecker.check_jsonpaths``). An
+    assertion missing ``path_glob:`` is treated as **failed** with an actionable
+    reason — previously such assertions were silently skipped, which made
+    misrouted assertions vanish from grading without notice.
+
     Each check has:
     - path_glob: glob pattern for files (e.g., "/env/fs/agent-visible/submissions/*")
     - contains_ci: case-insensitive substring to find in file content
@@ -471,7 +478,22 @@ def evaluate_jsonpath_file_checks(
         description = check.get("description", f"Check: {contains_ci}")
 
         if not path_pattern:
-            reasons_parts.append(f"SKIP: No path_glob — {description}")
+            # Fail loud — historically this branch silently skipped (effectively
+            # counting as not-passed in the score, but presenting as SKIP in
+            # the reasons text, so misrouted assertions were invisible). Name
+            # what the evaluator actually accepts so the author can fix it.
+            other_path = check.get("path")
+            if other_path:
+                reasons_parts.append(
+                    f"FAIL: assertion uses 'path' (env-state JSONPath) but this "
+                    f"runner-side evaluator only supports 'path_glob' (file glob); "
+                    f"path-style assertions are graded host-side — {description}"
+                )
+            else:
+                reasons_parts.append(
+                    f"FAIL: assertion missing 'path_glob' (runner-side jsonpath "
+                    f"evaluator only supports path_glob + contains_ci) — {description}"
+                )
             continue
 
         # Translate logical /env/fs/agent-visible/ paths to the runner's
