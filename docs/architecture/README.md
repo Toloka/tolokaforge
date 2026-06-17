@@ -89,6 +89,7 @@ flowchart TB
 | **Single secret abstraction** | One audited code path for every credential read; CI-enforced via static grep. | [AGENTS.md § Secrets](../../AGENTS.md#secrets--single-abstraction) |
 | **Deterministic grading by default; LLM judges opt-in** | Deterministic verdicts are reproducible and cheap; judge calls are reserved for cases that genuinely need them. | [`docs/GRADING.md`](../GRADING.md) |
 | **Durable attempt queue (SQLite / Postgres) with worker leases** | Lets long runs survive crashes and lets `prepare` + `worker` commands split a run across hosts. | `tolokaforge/core/run_queue.py` |
+| **Search subsystem split: engine owns container + primitives, adapters own provider** | The TypeSense container lifecycle and a small set of primitives (thread-safe domain-init coordination, result envelopes) live in the engine. The per-benchmark provider — which tends to drag in benchmark-specific dependencies — lives in the adapter. Adapters use the `typesense` Python package directly; the engine does not ship a `TypeSenseClient` abstraction. | [`docs/TYPESENSE_INTEGRATION.md`](../TYPESENSE_INTEGRATION.md) · [ADR 0003](adr/0003-search-subsystem-engine-adapter-split.md) |
 
 ---
 

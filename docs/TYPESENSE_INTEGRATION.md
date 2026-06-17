@@ -1,421 +1,116 @@
 # TypeSense Integration
 
-TolokaForge provides full TypeSense support for semantic search over knowledge base documents. This feature enables agents to search policy documents, knowledge bases, and other textual content using natural language queries.
+TolokaForge ships the engine-side machinery for running TypeSense-backed search inside a benchmark run. This document describes the **engine/adapter split** for search and the **supported adapter-facing contract**.
 
-## Overview
+## TL;DR
 
-The TypeSense integration bridges TolokaForge adapters with the `mcp_core` TypeSense infrastructure:
+- **The engine owns**: the TypeSense container lifecycle (start, health-check, network-bridge, stop) and a set of small primitives adapters reuse (thread-safe domain-init coordination, result data classes).
+- **Adapters own**: the *provider* — how documents are sourced, what a "domain" means for a given benchmark, and any benchmark-specific dependencies (schemas, registries, etc.).
+- **The engine does not ship a real `TypeSenseClient` abstraction.** Adapters that need a client use the [`typesense`](https://pypi.org/project/typesense/) Python package directly (already a hard dependency of the engine).
 
-- **Standalone Feature**: Can be used by any adapter (Native, internal MCP JSON, Tau)
-- **Automatic Indexing**: Documents in `docindex/` directories are automatically indexed
-- **Semantic Search**: Supports both vector and text-based search
-- **Graceful Degradation**: Falls back to stub behavior when TypeSense server is unavailable
-- **Orchestrator-Managed Server**: Automatic Docker container lifecycle management
-- **Configurable**: Via run config with auto port selection and API key generation
+This split exists because the per-benchmark indexing logic tends to drag in benchmark-specific dependencies (domain registries, schema generators, document loaders). Keeping the provider adapter-side prevents those dependencies from leaking into the public engine.
 
-## Architecture
+## The supported public contract
 
-```
-┌─────────────────┐    ┌──────────────────────┐    ┌─────────────────────┐
-│   Adapter       │    │  TypeSenseProvider   │    │   mcp_core          │
-│                 │    │                      │    │                     │
-│ _init_typesense │────┤ ensure_domain_init   ├────┤ TypesenseIndex     │
-│ (cached)        │    │ (coordinated)        │    │ universal_search_*  │
-│                 │    │ search               │    │                     │
-└─────────────────┘    └──────────────────────┘    └─────────────────────┘
-         │                      │
-         │                      ▼
-         │             ┌──────────────────────┐
-         │             │  DomainStateManager  │
-         │             │  - Per-domain state  │
-         │             │  - Thread-safe       │
-         │             │  - Wait coordination │
-         │             └──────────────────────┘
-         │                      │
-         ▼                      ▼
-       ┌────────────────────────────────────────────────┐
-       │           TypeSense Server                      │
-       │                                                │
-       │  ┌──────────────────────────────────────────┐  │
-       │  │ TypeSenseServerManager (local mode)       │  │
-       │  │ - Auto port selection                    │  │
-       │  │ - Docker foundation layer (ServiceStack) │  │
-       │  │ - Auto API key generation                │  │
-       │  └──────────────────────────────────────────┘  │
-       │                    OR                          │
-       │  ┌──────────────────────────────────────────┐  │
-       │  │ External TypeSense (remote mode)         │  │
-       │  │ - Pre-configured server                  │  │
-       │  └──────────────────────────────────────────┘  │
-       └────────────────────────────────────────────────┘
-```
+The names re-exported by `tolokaforge.core.search` are the **adapter-facing contract**. Removing or renaming one is a breaking change. The current shape:
 
-## Implementation
+| Symbol | Module | Purpose |
+|---|---|---|
+| `DomainState` | `tolokaforge.core.search.domain_state` | Per-domain state object with a thread-safe init claim. |
+| `DomainStateManager` | `tolokaforge.core.search.domain_state` | Get-or-create registry over `DomainState`. |
+| `DomainStatus` | `tolokaforge.core.search.domain_state` | Enum: `PENDING`, `INITIALIZING`, `READY`, `FAILED`. |
+| `SearchResponse` | `tolokaforge.core.search.typesense` | Result envelope (hits, total, query, timing). |
+| `SearchResult` | `tolokaforge.core.search.typesense` | Single hit (id, score, content, highlights). |
 
-### Core Components
+A contract test (`tests/unit/test_search_contract.py`) pins this set; CI fails if a name is removed or renamed without updating the contract.
 
-1. **`tolokaforge/core/search/typesense_provider.py`** - Main TypeSense provider with domain-level caching
-2. **`tolokaforge/core/search/domain_state.py`** - Domain state management for coordinated initialization
-3. **`tolokaforge/core/search/typesense.py`** - Stub interface (backward compatibility)
-4. **`tolokaforge/core/search/__init__.py`** - Module exports
+The **container lifecycle primitives** are in `tolokaforge.core.search.typesense_server` (`TypeSenseServerManager`, `create_typesense_server`) and `tolokaforge.docker.stacks.typesense` (`typesense_service`). These are also part of the supported surface — adapters generally do not start the container themselves (the orchestrator does), but the manager is the canonical entry point for tests and for setups that bypass the orchestrator.
 
-### Provider Configuration
+## Container lifecycle (engine-owned)
+
+The orchestrator owns the TypeSense container per run:
+
+1. On `tolokaforge run`, `Orchestrator._ensure_typesense_started()` calls `create_typesense_server(...)` → `TypeSenseServerManager.start()`.
+2. The manager pulls the image, starts the container via the `tolokaforge.docker` foundation layer (`ServiceStack` + `typesense_service`), and waits for the health endpoint.
+3. The manager bridges the container onto the Runner's Docker network so the Runner can reach it as `typesense:8108` via DNS.
+4. On teardown, `Orchestrator.teardown()` calls `self._typesense_server.stop()` to remove the container and clean up the network bridge.
+
+Adapters do not need to start the container themselves; the orchestrator passes the resolved `host`, `port`, and `api_key` to the adapter via run config.
+
+## How to build a provider (adapter-side)
+
+A provider is whatever the adapter needs to put on top of `core/search/*`. The engine offers two things you usually want to reuse:
+
+1. **`DomainStateManager`** if the provider must coordinate concurrent initialization of the same domain (typical for thread-pooled trial runs).
+2. **`SearchResponse` / `SearchResult`** if the provider exposes results in a structured form rather than passing raw `typesense` dicts up.
+
+For the search client itself, use the [`typesense`](https://pypi.org/project/typesense/) package directly:
 
 ```python
-from tolokaforge.core.search.typesense_provider import create_typesense_provider
+import typesense
 
-provider = create_typesense_provider(
-    enabled=True,              # Enable/disable TypeSense
-    host="127.0.0.1",         # TypeSense server host
-    port=8108,                # TypeSense server port
-    api_key=None,             # API key (uses TYPESENSE_API_KEY env var if None)
-    timeout=30.0,             # Connection timeout
-    use_stub=False            # Force stub implementation
-)
+from tolokaforge.core.search import DomainStateManager, SearchResponse, SearchResult
+from tolokaforge.core.search.typesense_server import TypeSenseServerManager
+
+
+def build_client(host: str, port: int, api_key: str) -> typesense.Client:
+    return typesense.Client({
+        "nodes": [{"host": host, "port": port, "protocol": "http"}],
+        "api_key": api_key,
+        "connection_timeout_seconds": 5,
+    })
 ```
 
-### Document Loading
+A worked end-to-end example — start the manager, build the client, create a collection, index documents, search — lives in [`tests/integration/test_search_no_mcp_core.py`](../tests/integration/test_search_no_mcp_core.py). That test deliberately avoids importing anything benchmark-specific; it is the canonical reference for "what does the minimum integration look like."
 
-Documents are automatically loaded from `docindex/` directories:
+## Concurrency: avoiding duplicate initialization
 
-```
-domain/
-├── docindex/
-│   ├── order_management.md    # ← Indexed automatically  
-│   ├── shipping_returns.md    # ← Indexed automatically
-│   └── customer_service.md    # ← Indexed automatically
-└── testcases/
-    └── *.json
-```
-
-### Search Interface
+If multiple trials run concurrently and each initializes the same domain, you'll race on `create_collection`. The provider should coordinate via `DomainStateManager`:
 
 ```python
-# Initialize for domain
-success = provider.initialize_for_domain("retail_domain", documents)
-
-# Search documents  
-response = provider.search(
-    domain="retail_domain",
-    query="how to return a product", 
-    max_results=5
-)
-
-# Response format
-{
-    "hits": [
-        {
-            "document_id": "returns_policy",
-            "score": 0.95,
-            "content": {
-                "source": "returns_policy.md",
-                "text": "To return a product...",
-                "vector_distance": 0.12
-            }
-        }
-    ],
-    "total_hits": 3,
-    "query": "how to return a product",
-    "search_time_ms": 15.0
-}
+state, _created = manager.get_or_create(domain)
+if state.claim_initialization():
+    try:
+        # only one thread reaches here per domain
+        _index_documents(domain, client)
+        state.set_ready()
+    except Exception:
+        state.set_failed()
+        raise
+state.wait_ready(timeout=30.0)
 ```
 
-## Internal MCP Integration
+`DomainState` handles the `PENDING → INITIALIZING → READY/FAILED` state machine and the wait/notify around it.
 
-The internal MCP adapter automatically initializes TypeSense during environment creation with **domain-level caching**:
+## Why no engine-side `TypeSenseClient`
 
-### Domain-Level Caching
+Prior versions of the engine shipped an abstract `TypeSenseClient` and a `TypeSenseStub` that silently returned empty results. We removed both:
 
-TypeSense initialization is cached per domain to avoid redundant document indexing when running multiple tasks from the same domain:
+- No real implementation existed in-tree, and no adapter implemented the abstract.
+- The stub-returning-empty pattern violates the project's "honesty over convenience" stance — a search that silently returns no results corrupts evaluation rather than failing loudly.
 
-- **Provider Caching**: A single `TypeSenseProvider` instance is cached per adapter
-- **Domain State Coordination**: Uses `DomainStateManager` to ensure only one initialization per domain
-- **Thread-Safe**: Multiple concurrent task executions safely share the cached state
+Adapters that need a real client should use the `typesense` package directly. Adapters that need to test against a fake should mock the `typesense.Client` interface they actually use, not an engine-side abstract.
 
-```python
-# In the internal MCP adapter
-def _get_typesense_provider(self) -> Optional[TypeSenseProvider]:
-    """Get or create TypeSense provider (cached at adapter level)."""
-    with self._provider_lock:
-        if self._typesense_provider is None:
-            self._typesense_provider = create_typesense_provider()
-        return self._typesense_provider
+## Configuration
 
-def _init_typesense(self, task_id: str) -> None:
-    """Initialize TypeSense for knowledge base search (domain-level caching)."""
-    provider = self._get_typesense_provider()
-    if provider is None:
-        return
-    
-    # ensure_domain_initialized handles coordination:
-    # - Only the first caller does actual initialization
-    # - Subsequent callers wait for completion and reuse the result
-    provider.ensure_domain_initialized(
-        domain=self._domain_name,
-        docindex_path=self._domain_path / "docindex",
-    )
-```
-
-### Domain State Lifecycle
-
-The domain initialization follows a state machine:
-
-```
-PENDING → INITIALIZING → READY (success)
-                      → FAILED (error)
-```
-
-- **PENDING**: Initial state, domain not yet initialized
-- **INITIALIZING**: First task is indexing documents
-- **READY**: Documents indexed, subsequent tasks skip re-indexing
-- **FAILED**: Initialization failed, error is propagated
-
-### Database Domain Assignment
-
-For tools to access TypeSense, the database must have a domain attribute:
-
-```python
-# Create database and set domain for TypeSense access
-db = InMemoryDatabase(additional_sources=additional_sources)
-db.domain = self._domain_name  # Required for search_policy tools
-```
-
-## Tool Integration
-
-TypeSense is typically used through `search_policy` tools:
-
-### Example Tool Implementation
-
-```python
-from mcp_core.search import get_typesense_for_domain
-
-class SearchPolicyTool(Tool):
-    def _get_typesense_client(self, db: InMemoryDatabase):
-        """Get TypeSense client for database domain."""
-        domain = getattr(db, 'domain', None)
-        return get_typesense_for_domain(domain) if domain else None
-    
-    async def run(self, db: InMemoryDatabase, request: SearchPolicyInput):
-        client = self._get_typesense_client(db)
-        if client:
-            results = client.universal_search_with_full_text(request.query, [])
-            return SearchPolicyOutput(snippets=results[:request.max_results])
-        else:
-            return SearchPolicyOutput(snippets=[])  # Fallback
-```
-
-## Testing
-
-### Unit Tests
-
-```python
-# tests/unit/test_typesense_provider.py
-def test_document_loading():
-    provider = create_typesense_provider(use_stub=True)
-    documents = provider.load_documents_from_directory(docs_dir)
-    assert len(documents) > 0
-
-def test_search_functionality():
-    provider = create_typesense_provider(use_stub=True) 
-    provider.initialize_for_domain("test", ["sample document"])
-    response = provider.search("test", "sample query")
-    assert response.total_hits >= 0
-```
-
-### Functional Tests
-
-```python
-# tests/functional/test_internal_mcp_typesense.py
-def test_internal_mcp_typesense_integration():
-    adapter = InternalMcpAdapter(params)
-    task_config = adapter.get_task("TC-001")
-    env = adapter.create_environment("TC-001")
-    
-    # Verify TypeSense tools work
-    tools = adapter.get_registry_tools("TC-001", env)
-    search_tool = next(t for t in tools if "search_policy" in t.name)
-    result = search_tool.execute(query="test query")
-    assert result.success
-```
-
-## Server Configuration
-
-TypeSense server can be configured in the run config YAML file under `orchestrator.typesense`:
-
-### Configuration Options
+The orchestrator's TypeSense config is set per run:
 
 ```yaml
 orchestrator:
   typesense:
-    enabled: true          # Enable/disable TypeSense (default: true)
-    mode: local            # "local", "remote", or "disabled"
-    host: "127.0.0.1"      # TypeSense server host (default: 127.0.0.1)
-    port: "auto"           # Port or "auto" for auto-selection (default: "auto")
-    api_key: null          # API key (auto-generated if null for local mode)
-    data_dir: ".cache/typesense"  # Data directory (default: .cache/typesense)
-    image: "typesense/typesense:26.0"  # Docker image (local mode)
-    container_name: "tolokaforge-typesense"  # Container name
-    timeout: 30.0          # Connection timeout in seconds
-    cleanup_on_exit: true  # Remove container on exit (local mode)
+    enabled: true
+    mode: local          # "local" (engine starts a container) | "external"
+    host: 127.0.0.1      # for "external" mode; ignored in "local"
+    port: auto           # "auto" picks a free port and bridges to the runner net
+    api_key: null        # null → engine generates one for "local"
+    timeout: 30.0
 ```
 
-### Mode Options
+Adapters read these from the run config and use them when constructing their provider/client.
 
-- **`local`**: Orchestrator manages a Docker container (auto start/stop)
-- **`remote`**: Connect to an external TypeSense server
-- **`disabled`**: TypeSense is disabled, search_policy returns empty results
+## See also
 
-### Example Configurations
-
-#### Local Mode (Recommended for Development)
-
-```yaml
-orchestrator:
-  typesense:
-    mode: local
-    port: "auto"  # Finds available port automatically
-    # api_key auto-generated
-```
-
-#### Remote Mode (Production)
-
-```yaml
-orchestrator:
-  typesense:
-    mode: remote
-    host: "typesense.example.com"
-    port: 443
-    api_key: "${TYPESENSE_API_KEY}"  # From environment variable
-```
-
-#### Disabled Mode
-
-```yaml
-orchestrator:
-  typesense:
-    enabled: false  # Or mode: disabled
-```
-
-## Deployment
-
-### Development Setup (Manual)
-
-If not using orchestrator-managed server:
-
-1. **Start TypeSense Server**:
-   ```bash
-   docker run -d -p 8108:8108 \
-     -v$(pwd)/typesense-data:/data \
-     typesense/typesense:26.0 \
-     --data-dir /data \
-     --api-key=xyz \
-     --listen-port 8108 \
-     --enable-cors
-   ```
-
-2. **Set API Key**:
-   ```bash
-   export TYPESENSE_API_KEY=xyz
-   ```
-
-3. **Run Tests**:
-   ```bash
-   uv run tolokaforge run --config <your_run_config.yaml>
-   ```
-
-### Development Setup (Orchestrator-Managed)
-
-With `mode: local`, the orchestrator handles everything automatically:
-
-1. **Configure** `.cache/typesense` data directory (added to `.gitignore`)
-2. **Start run** - TypeSense container starts automatically
-3. **Run completes** - Container is cleaned up (if `cleanup_on_exit: true`)
-
-### Production Setup
-
-For production, configure TypeSense server with:
-- Persistent data volumes
-- Proper API key management
-- Network security
-- Backup/restore procedures
-
-## Server Management API
-
-The `TypeSenseServerManager` class provides programmatic control:
-
-```python
-from tolokaforge.core.search.typesense_server import (
-    TypeSenseServerManager,
-    create_typesense_server,
-    find_free_port,
-    generate_api_key,
-)
-
-# Create server manager
-server = create_typesense_server(
-    port="auto",           # Auto-select available port
-    api_key=None,          # Auto-generate API key
-    data_dir=".cache/typesense",
-    container_name="my-typesense",
-)
-
-# Start server
-if server.start():
-    print(f"TypeSense running on {server.host}:{server.port}")
-    print(f"API Key: {server.api_key}")
-    
-    # ... use TypeSense ...
-    
-    # Stop server
-    server.stop()
-
-# Or use as context manager
-with create_typesense_server() as server:
-    # Server is running
-    print(f"Port: {server.port}, Key: {server.api_key}")
-# Server automatically stopped
-```
-
-## Troubleshooting
-
-### Common Issues
-
-1. **"Connection refused" errors**:
-   - Ensure TypeSense server is running on 127.0.0.1:8108
-   - Check Docker container status: `docker ps`
-
-2. **"Forbidden" API key errors**:
-   - Set TYPESENSE_API_KEY environment variable
-   - Ensure key matches server configuration
-
-3. **"Database has no domain" errors**:
-   - Ensure adapter sets `db.domain` attribute
-   - Check that domain name is properly inferred
-
-4. **Empty search results**:
-   - Verify documents exist in `docindex/` directory
-   - Check TypeSense initialization logs
-   - Confirm documents are .md files with content
-
-5. **Docker not available**:
-   - Docker SDK error: Install with `pip install docker` or `uv add docker`
-   - Docker daemon not running: Start Docker service
-   - Permission issues: Ensure user has Docker access
-
-6. **Port conflicts**:
-   - Use `port: "auto"` to auto-select available port
-   - Check for running TypeSense containers: `docker ps | grep typesense`
-
-7. **Container cleanup issues**:
-   - If container is not removed, manually clean up: `docker rm -f tolokaforge-typesense`
-
-### Logging
-
-Enable debug logging to troubleshoot issues:
-
-```python
-import logging
-logging.getLogger("tolokaforge.core.search.typesense_provider").setLevel(logging.DEBUG)
-logging.getLogger("tolokaforge.core.search.typesense_server").setLevel(logging.DEBUG)
-logging.getLogger("mcp_core.search").setLevel(logging.DEBUG)
-```
+- [`tests/integration/test_search_no_mcp_core.py`](../tests/integration/test_search_no_mcp_core.py) — end-to-end smoke test, no benchmark deps.
+- [`tests/unit/test_search_contract.py`](../tests/unit/test_search_contract.py) — contract pin.
+- [`tolokaforge/core/search/__init__.py`](../tolokaforge/core/search/__init__.py) — the exported surface.
+- [`tolokaforge/core/search/typesense_server.py`](../tolokaforge/core/search/typesense_server.py) — container lifecycle manager.

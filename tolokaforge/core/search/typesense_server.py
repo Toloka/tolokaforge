@@ -70,13 +70,16 @@ class TypeSenseServerManager:
 
     Example:
         ```python
+        import typesense
+
         with TypeSenseServerManager(port="auto") as server:
-            # Server is running, use server.port and server.api_key
-            provider = create_typesense_provider(
-                port=server.port,
-                api_key=server.api_key
-            )
-        # Server automatically stopped
+            client = typesense.Client({
+                "nodes": [{"host": server.host, "port": server.port, "protocol": "http"}],
+                "api_key": server.api_key,
+                "connection_timeout_seconds": 5,
+            })
+            # ... create collections, index documents, search ...
+        # Server automatically stopped on context exit
         ```
 
     Attributes:
