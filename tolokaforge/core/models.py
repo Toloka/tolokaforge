@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Literal, get_args
 
-from pydantic import BaseModel, Field, field_serializer, field_validator
+from pydantic import BaseModel, Field, field_serializer, field_validator, model_validator
 
 from tolokaforge.core.llm.reasoning import ReasoningConfig, StructuredReasoning
 from tolokaforge.core.llm.usage import CostSource, ProviderRawCall, Usage
@@ -289,6 +289,19 @@ class Trajectory(BaseModel):
 # Configuration Models
 
 
+class OpenRouterConfig(BaseModel):
+    """OpenRouter provider-routing knobs (https://openrouter.ai/docs/features/provider-routing).
+
+    ``provider_order`` lists case-sensitive OpenRouter provider slugs in priority
+    order, e.g. ``["Together"]`` or ``["DeepInfra", "Nebius"]``. With
+    ``allow_fallbacks=False`` the request is restricted to those providers, which
+    is how a model pins around a rate-limited default provider.
+    """
+
+    provider_order: list[str] | None = None
+    allow_fallbacks: bool = True
+
+
 class ModelConfig(BaseModel):
     """LLM model configuration"""
 
@@ -303,9 +316,17 @@ class ModelConfig(BaseModel):
     reasoning: ReasoningConfig = Field(default_factory=ReasoningConfig)
     top_p: float | None = None  # Nucleus sampling parameter (0.0-1.0)
     capabilities: dict[str, Any] | None = None  # Override auto-detected model capabilities
-    # OpenRouter provider routing (pin to specific upstream providers); ignored for other providers.
-    provider_order: list[str] | None = None
-    allow_fallbacks: bool = True
+    # OpenRouter-only provider routing; rejected for other providers by the validator below.
+    openrouter: OpenRouterConfig | None = None
+
+    @model_validator(mode="after")
+    def _reject_openrouter_on_other_providers(self) -> "ModelConfig":
+        if self.openrouter is not None and not self.provider.startswith("openrouter"):
+            raise ValueError(
+                f"`openrouter:` routing is only valid for openrouter models, "
+                f"but provider is {self.provider!r}."
+            )
+        return self
 
     @field_validator("reasoning", mode="before")
     @classmethod

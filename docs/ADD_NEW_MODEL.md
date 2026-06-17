@@ -74,6 +74,13 @@ Available policy slots (see
 | `cache_policy` | `none` | `anthropic_ephemeral` |
 | `params` | — | arbitrary dict — see `GenerationParams` |
 
+> **Rate-limited model?** If OpenRouter's default provider 429s the eval
+> (`is_byok:false`, "rate-limited upstream"), pin the model to a provider that
+> has capacity with an `openrouter:` block in the model config (OpenRouter-only,
+> validated): `openrouter: {provider_order: ["Together"], allow_fallbacks: false}`.
+> Slugs are case-sensitive OpenRouter provider names. This is a per-model routing
+> knob, separate from the preset policy above.
+
 ## 3. Add a ModelCertificate
 
 Append to `ALL_MODELS` in

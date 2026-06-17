@@ -11,7 +11,7 @@ import pytest
 
 from tolokaforge.core.llm import GenerationResult, LLMClient, UserSimulator
 from tolokaforge.core.llm.usage import Usage
-from tolokaforge.core.models import Message, MessageRole, ModelConfig, ToolCall
+from tolokaforge.core.models import Message, MessageRole, ModelConfig, OpenRouterConfig, ToolCall
 
 pytestmark = pytest.mark.unit
 
@@ -400,12 +400,12 @@ class TestProviderRouting:
             mock_resp.usage.completion_tokens = 5
             return mock_resp
 
-        config = ModelConfig(
-            provider=provider,
-            name=name,
-            provider_order=provider_order,
-            allow_fallbacks=allow_fallbacks,
+        or_block = (
+            OpenRouterConfig(provider_order=provider_order, allow_fallbacks=allow_fallbacks)
+            if provider_order is not None
+            else None
         )
+        config = ModelConfig(provider=provider, name=name, openrouter=or_block)
         client = LLMClient(config)
 
         original = mc_module.completion
@@ -437,12 +437,13 @@ class TestProviderRouting:
         kwargs = self._capture_kwargs("openrouter", "nvidia/nemotron-3-ultra-550b-a55b")
         assert "provider" not in kwargs.get("extra_body", {})
 
-    def test_provider_order_ignored_for_native_provider(self):
-        """provider_order is OpenRouter-only; native providers ignore it."""
-        kwargs = self._capture_kwargs(
-            "anthropic",
-            "claude-opus-4.6",
-            provider_order=["Together"],
-            allow_fallbacks=False,
-        )
-        assert "provider" not in kwargs.get("extra_body", {})
+    def test_openrouter_block_rejected_for_native_provider(self):
+        """An openrouter block on a non-openrouter provider is a config error."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            ModelConfig(
+                provider="anthropic",
+                name="claude-opus-4.6",
+                openrouter=OpenRouterConfig(provider_order=["Together"]),
+            )
