@@ -15,13 +15,19 @@ These tests pin both ends of that contract:
 
 from __future__ import annotations
 
+import sys
+import textwrap
 import types
 from unittest.mock import MagicMock
 
 import pytest
 
 from tolokaforge.runner.models import InvocationStyle, ToolSchema, ToolSource
-from tolokaforge.runner.tool_factory import ToolFactory, ToolImportError
+from tolokaforge.runner.tool_factory import (
+    MCPAsyncToolWrapper,
+    ToolFactory,
+    ToolImportError,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -161,3 +167,97 @@ class TestModelsRegistrationImportPath:
 
         with pytest.raises(ImportError, match="simulated missing transitive dep"):
             factory._register_toolset_models("my_adapter_pkg.zendesk")
+
+
+class TestMcpAsyncEndToEnd:
+    """End-to-end: a real Python package on disk + sys.path + ``importlib``,
+    with no mocks of the import machinery. Proves the engine can load an
+    MCP_ASYNC tool from an adapter-supplied package path without any prefix
+    coupling — the contract this PR establishes, exercised against real code
+    rather than monkeypatched ``import_module``.
+    """
+
+    def test_real_package_loads_with_no_prefix(self, factory, tmp_path, monkeypatch):
+        # Build a tiny tool package on disk:
+        #   tmp/pkg_root/my_adapter_under_test/zendesk/__init__.py
+        #   tmp/pkg_root/my_adapter_under_test/zendesk/tools/__init__.py
+        #   tmp/pkg_root/my_adapter_under_test/zendesk/tools/create_item.py  (class CreateItem)
+        #   tmp/pkg_root/my_adapter_under_test/zendesk/models.py             (no model classes)
+        pkg_root = tmp_path / "pkg_root"
+        zendesk = pkg_root / "my_adapter_under_test" / "zendesk"
+        (zendesk / "tools").mkdir(parents=True)
+        (pkg_root / "my_adapter_under_test" / "__init__.py").write_text("")
+        (zendesk / "__init__.py").write_text("")
+        (zendesk / "tools" / "__init__.py").write_text("")
+        (zendesk / "tools" / "create_item.py").write_text(
+            textwrap.dedent(
+                """
+                class CreateItem:
+                    pass
+                """
+            )
+        )
+        (zendesk / "models.py").write_text("")  # empty: registration is a no-op
+
+        monkeypatch.syspath_prepend(str(pkg_root))
+
+        schema = _schema(
+            style=InvocationStyle.MCP_ASYNC,
+            toolset="my_adapter_under_test.zendesk",
+            module_path="tools.create_item",
+            class_name="CreateItem",
+        )
+        wrapper = factory._create_wrapper(schema)
+
+        # Engine loaded the adapter-supplied path verbatim (no prefix), found
+        # the class, and built a real wrapper.
+        assert isinstance(wrapper, MCPAsyncToolWrapper)
+        assert wrapper.tool_class.__name__ == "CreateItem"
+        assert wrapper.tool_class.__module__ == "my_adapter_under_test.zendesk.tools.create_item"
+
+    def test_no_engine_prefix_means_old_bare_subpackage_now_fails_loudly(
+        self, factory, tmp_path, monkeypatch
+    ):
+        """Pre-PR private adapters set toolset=\"zendesk\" relying on the
+        engine to prepend a private root. After this PR the bare name is
+        imported as-is; if it doesn't exist on sys.path the engine raises
+        ToolImportError naming the exact missing path — the clear signal for
+        adapter authors to migrate. This test pins the failure mode.
+        """
+        # Build the package only under a (real) parent; the bare name "zendesk"
+        # alone is NOT importable.
+        pkg_root = tmp_path / "pkg_root"
+        zendesk = pkg_root / "my_adapter_under_test" / "zendesk"
+        (zendesk / "tools").mkdir(parents=True)
+        (pkg_root / "my_adapter_under_test" / "__init__.py").write_text("")
+        (zendesk / "__init__.py").write_text("")
+        (zendesk / "tools" / "__init__.py").write_text("")
+        (zendesk / "tools" / "create_item.py").write_text("class CreateItem: pass\n")
+        monkeypatch.syspath_prepend(str(pkg_root))
+
+        # Sanity: the qualified name imports
+        import importlib
+
+        importlib.import_module("my_adapter_under_test.zendesk.tools.create_item")
+        # Sanity: the bare name does not
+        with pytest.raises(ModuleNotFoundError):
+            importlib.import_module("zendesk.tools.create_item")
+        # Drop any stale cache entry for the bare name from prior test runs.
+        sys.modules.pop("zendesk", None)
+        sys.modules.pop("zendesk.tools", None)
+        sys.modules.pop("zendesk.tools.create_item", None)
+
+        # The engine: bare-name adapter shape now fails loudly with the exact
+        # path the adapter supplied — so the author knows what to update.
+        schema = _schema(
+            style=InvocationStyle.MCP_ASYNC,
+            toolset="zendesk",
+            module_path="tools.create_item",
+            class_name="CreateItem",
+        )
+        with pytest.raises(ToolImportError) as exc_info:
+            factory._create_wrapper(schema)
+        msg = str(exc_info.value)
+        assert "zendesk.tools.create_item" in msg
+        for forbidden in FORBIDDEN_PRIVATE_NAMES:
+            assert forbidden not in msg
