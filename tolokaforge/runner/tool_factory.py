@@ -1296,10 +1296,11 @@ class ToolFactory:
 
         FAIL FAST: Raises ToolImportError if module/class cannot be imported.
 
-        Import path: {source.toolset}.{source.module_path}
+        Import path: ``{source.toolset}.{source.module_path}`` — the adapter
+        supplies the fully-qualified package; the runner does no prefixing.
         """
+        module_path = f"{source.toolset}.{source.module_path}"
         try:
-            module_path = f"{source.toolset}.{source.module_path}"
             module = importlib.import_module(module_path)
             tool_class = getattr(module, source.class_name)
 
@@ -1309,14 +1310,11 @@ class ToolFactory:
                 db_proxy=self._sync_proxy,
             )
         except ImportError as e:
-            raise ToolImportError(
-                schema.name, f"Cannot import module '{source.toolset}.{source.module_path}': {e}"
-            )
+            raise ToolImportError(schema.name, f"Cannot import module '{module_path}': {e}")
         except AttributeError as e:
             raise ToolImportError(
                 schema.name,
-                f"Class '{source.class_name}' not found in module "
-                f"'{source.toolset}.{source.module_path}': {e}",
+                f"Class '{source.class_name}' not found in module '{module_path}': {e}",
             )
 
     def _create_mcp_async_wrapper(
@@ -1543,8 +1541,13 @@ class ToolFactory:
             self._registered_toolsets.add(toolset)
             logger.info(f"Registered models for toolset '{toolset}'")
 
-        except ImportError:
-            # No models module - that's OK, some toolsets may not have models
+        except ModuleNotFoundError:
+            # No models module — that's OK, some toolsets may not have one.
+            # Note: ``ModuleNotFoundError`` is a subclass of ``ImportError`` raised
+            # only when the module itself cannot be located. A genuine import error
+            # *inside* an existing models module (e.g. a missing transitive dep)
+            # raises plain ``ImportError`` and will propagate — surfacing the bug
+            # instead of being silently logged at debug level.
             logger.debug(f"No models module found for toolset '{toolset}'")
             self._registered_toolsets.add(toolset)
 
