@@ -317,7 +317,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         if extract_str not in sys.path:
             sys.path.insert(0, extract_str)
 
-        # Also add tools/ subdirectory if it exists (for mcp_tools_library)
+        # Also add tools/ subdirectory if it exists (some adapter layouts place
+        # their tool packages under a 'tools/' folder rather than the artifact root)
         tools_dir = extract_dir / "tools"
         if tools_dir.exists():
             tools_str = str(tools_dir)
