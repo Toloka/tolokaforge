@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.2.11 (2026-06-18)
+
+### Feat
+
+- **adapters**: register migration_bench constant in AdapterType (#71)
+- **llm**: register z-ai/glm-5.2 and moonshotai/kimi-k2.7-code (cert + pricing) (#72)
+
 ## v0.2.10 (2026-06-17)
 
 ### Feat
