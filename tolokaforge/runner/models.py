@@ -63,7 +63,10 @@ class ToolSource(BaseModel):
     or mounted in the container.
     """
 
-    toolset: str  # Package/directory: "zendesk", "airline", "retail"
+    # Import-rooted Python package name. The runner imports
+    # ``{toolset}.{module_path}`` as-is — the adapter must supply the full
+    # package path (e.g. "my_adapter_pkg.zendesk"); the runner adds no prefix.
+    toolset: str
     module_path: str  # Module within toolset: "tools.create_item"
     class_name: str  # Class/function: "CreateItem", "BookReservation"
     invocation_style: InvocationStyle = InvocationStyle.TAU_SYNC

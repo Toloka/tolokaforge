@@ -1327,7 +1327,8 @@ class ToolFactory:
 
         FAIL FAST: Raises ToolImportError if module/class cannot be imported.
 
-        Import path: mcp_tools_library.{source.toolset}.{source.module_path}
+        Import path: ``{source.toolset}.{source.module_path}`` — the adapter
+        supplies the fully-qualified package; the runner does no prefixing.
 
         Note: MCP tools call db methods synchronously inside their async run()
         method, so we pass SyncDBServiceProxy instead of DBServiceProxy.
@@ -1335,8 +1336,8 @@ class ToolFactory:
         Also registers model classes from the toolset with namespaced table names
         so that db.create(Ticket(...)) maps to 'zendesk_tickets' table.
         """
+        module_path = f"{source.toolset}.{source.module_path}"
         try:
-            module_path = f"mcp_tools_library.{source.toolset}.{source.module_path}"
             module = importlib.import_module(module_path)
             tool_class = getattr(module, source.class_name)
 
@@ -1350,15 +1351,11 @@ class ToolFactory:
                 db_proxy=self._sync_proxy,  # MCP tools need sync proxy!
             )
         except ImportError as e:
-            raise ToolImportError(
-                schema.name,
-                f"Cannot import module 'mcp_tools_library.{source.toolset}.{source.module_path}': {e}",
-            )
+            raise ToolImportError(schema.name, f"Cannot import module '{module_path}': {e}")
         except AttributeError as e:
             raise ToolImportError(
                 schema.name,
-                f"Class '{source.class_name}' not found in module "
-                f"'mcp_tools_library.{source.toolset}.{source.module_path}': {e}",
+                f"Class '{source.class_name}' not found in module '{module_path}': {e}",
             )
 
     def _get_id_field_name(self, model_cls: type) -> str | None:
@@ -1430,7 +1427,7 @@ class ToolFactory:
 
         try:
             # Try to import the models module from the toolset
-            models_module_path = f"mcp_tools_library.{toolset}.models"
+            models_module_path = f"{toolset}.models"
             models_module = importlib.import_module(models_module_path)
 
             # Collect all model classes from the module
