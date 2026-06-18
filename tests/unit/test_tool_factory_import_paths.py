@@ -15,6 +15,7 @@ These tests pin both ends of that contract:
 
 from __future__ import annotations
 
+import json
 import sys
 import textwrap
 import types
@@ -214,6 +215,83 @@ class TestMcpAsyncEndToEnd:
         assert isinstance(wrapper, MCPAsyncToolWrapper)
         assert wrapper.tool_class.__name__ == "CreateItem"
         assert wrapper.tool_class.__module__ == "my_adapter_under_test.zendesk.tools.create_item"
+
+    async def test_full_pipeline_loads_and_invokes_tool_with_no_engine_prefix(
+        self, factory, tmp_path, monkeypatch
+    ):
+        """The most honest in-repo signal for this PR's change. Build a real
+        adapter-style tool package, route a serialized TaskDescription tool
+        block through ``ToolFactory.reconstruct_tools`` (the public engine
+        entry point), and then **invoke** the resulting wrapper through the
+        live ``MCPAsyncToolWrapper.execute`` path. Surfaces touched, no mocks:
+
+          * pydantic ``ToolSchema`` validation
+          * ``_create_wrapper`` dispatch
+          * ``_create_mcp_async_wrapper`` (real ``importlib.import_module``)
+          * ``_register_toolset_models`` (real importlib; hits the
+            fail-quiet ``ModuleNotFoundError`` branch tightened in this PR
+            because the test package ships no ``models.py``)
+          * ``MCPAsyncToolWrapper`` construction
+          * ``MCPAsyncToolWrapper.execute`` (live, awaited)
+          * the test tool class's real ``run_with_validation``
+
+        Only ``db_client`` is mocked, because the test tool deliberately does
+        not touch the DB. After this PR, the engine constructs the import
+        path verbatim from the adapter-supplied ``toolset`` (no prefix); if
+        the change ever regresses, this test fails at the wrapper step.
+        """
+        # Real MCP-style tool package: my_e2e_adapter_pkg/zendesk_e2e/tools/echo.py
+        pkg_root = tmp_path / "pkg"
+        zendesk = pkg_root / "my_e2e_adapter_pkg" / "zendesk_e2e"
+        (zendesk / "tools").mkdir(parents=True)
+        (pkg_root / "my_e2e_adapter_pkg" / "__init__.py").write_text("")
+        (zendesk / "__init__.py").write_text("")
+        (zendesk / "tools" / "__init__.py").write_text("")
+        (zendesk / "tools" / "echo.py").write_text(
+            textwrap.dedent(
+                """
+                class Echo:
+                    async def run_with_validation(self, db, arguments):
+                        # Mirrors the real MCP runtime contract: take a kwargs
+                        # dict, return a JSON-serializable dict. No DB use, so
+                        # the mocked db_proxy is irrelevant here.
+                        return {"echoed": arguments.get("message"), "count": len(arguments)}
+                """
+            )
+        )
+        # Deliberately NO models.py — exercises the fail-quiet
+        # ``ModuleNotFoundError`` branch that this PR narrowed (improvement #2).
+        monkeypatch.syspath_prepend(str(pkg_root))
+
+        # Serialized TaskDescription tool block, fully-qualified toolset
+        # per the post-PR engine contract.
+        tool_dict = {
+            "name": "echo",
+            "description": "Echo arguments back",
+            "parameters": {
+                "type": "object",
+                "properties": {"message": {"type": "string"}},
+            },
+            "source": {
+                "toolset": "my_e2e_adapter_pkg.zendesk_e2e",
+                "module_path": "tools.echo",
+                "class_name": "Echo",
+                "invocation_style": "mcp_async",
+            },
+        }
+
+        # The actual engine pipeline — no mocks of dispatch, import, or
+        # wrapper construction.
+        reconstructed = factory.reconstruct_tools(agent_tools=[tool_dict])
+
+        assert "echo" in reconstructed.agent_tools
+        wrapper = reconstructed.agent_tools["echo"]
+        assert isinstance(wrapper, MCPAsyncToolWrapper)
+        assert wrapper.tool_class.__module__ == ("my_e2e_adapter_pkg.zendesk_e2e.tools.echo")
+
+        # Live invocation — exercises MCPAsyncToolWrapper.execute end-to-end.
+        output = await wrapper.execute({"message": "hello", "extra": 42})
+        assert json.loads(output) == {"echoed": "hello", "count": 2}
 
     def test_no_engine_prefix_means_old_bare_subpackage_now_fails_loudly(
         self, factory, tmp_path, monkeypatch
