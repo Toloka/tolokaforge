@@ -841,6 +841,51 @@ _ALL: list[MC] = [
             }
         ),
     ),
+    # Kimi-K2.7-Code (Moonshot AI via OpenRouter). Same moonshotai/kimi-k2
+    # family + shared ``openrouter_dict_stringify_recovery`` preset as kimi-k2.6,
+    # so this cert MIRRORS the kimi-k2.6 sibling (13 required / 7
+    # known_unsupported) as the integration starting point. NOT yet
+    # live-certified: the code-specialised variant may behave differently
+    # (tool-call or reasoning surface), so verify against the live route and
+    # promote/demote what it refutes when the model is first evaluated (same
+    # approach as the nemotron-3-ultra integration, #65).
+    MC(
+        model_id="openrouter__moonshotai_kimi-k2.7-code",
+        provider="openrouter",
+        name="moonshotai/kimi-k2.7-code",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DICT_MAP_TOOL_CALL,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.THINKING_EMITS_BLOCKS,
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.UNSIGNED_THINKING_REPLAY,
+                C.PROMPT_CACHING,
+                C.IMPLICIT_PROMPT_CACHING,
+                # kimi-k2.6 emits the discriminated-union arg shape correctly as
+                # a native dict but does not follow a turn-2 switch to a different
+                # variant; mirrored here pending the k2.7-code live check.
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+            }
+        ),
+    ),
     MC(
         model_id="openrouter__deepseek_deepseek-v4-pro",
         provider="openrouter",
@@ -1205,6 +1250,49 @@ _ALL: list[MC] = [
                 # Reasoning surfaces only as an unsigned summary via the
                 # openai codec: no signed blocks to replay, and the codec's
                 # replay path is a no-op. Verified live 2026-06-05.
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.UNSIGNED_THINKING_REPLAY,
+            }
+        ),
+    ),
+    # GLM-5.2 (Zhipu / Z.AI via OpenRouter). Same z-ai/glm-5 family + shared
+    # ``openrouter_dict_stringify_recovery`` preset as glm-5.1, so this cert
+    # MIRRORS the glm-5.1 sibling (17 required / 3 known_unsupported) as the
+    # integration starting point. NOT yet live-certified: verify against the
+    # live route, and demote any capability it refutes, when the model is
+    # first evaluated (same approach as the nemotron-3-ultra integration, #65).
+    MC(
+        model_id="openrouter__z-ai_glm-5.2",
+        provider="openrouter",
+        name="z-ai/glm-5.2",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DICT_MAP_TOOL_CALL,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.THINKING_EMITS_BLOCKS,
+                C.IMPLICIT_PROMPT_CACHING,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # No Anthropic-style ephemeral cache markers on this route.
+                C.PROMPT_CACHING,
+                # Reasoning surfaces only as an unsigned summary via the openai
+                # codec (no signed blocks to replay; the codec replay is a no-op).
                 C.THINKING_REPLAY_ROUNDTRIP,
                 C.UNSIGNED_THINKING_REPLAY,
             }

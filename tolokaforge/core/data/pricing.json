@@ -871,6 +871,11 @@
       "output": 3.49,
       "cache_read": 0.25
     },
+    "moonshotai/kimi-k2.7-code": {
+      "input": 0.74,
+      "output": 3.5,
+      "cache_read": 0.15
+    },
     "morph/morph-v3-fast": {
       "input": 0.8,
       "output": 1.2
@@ -1807,6 +1812,11 @@
       "input": 0.98,
       "output": 3.08,
       "cache_read": 0.182
+    },
+    "z-ai/glm-5.2": {
+      "input": 1.4,
+      "output": 4.4,
+      "cache_read": 0.26
     },
     "z-ai/glm-5v-turbo": {
       "input": 1.2,
