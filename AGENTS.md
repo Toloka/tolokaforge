@@ -290,6 +290,26 @@ Recommended MCP servers for AI agents working on this project:
 | CLI argument parsing | `typer` |
 | Retry logic | `tenacity` |
 
+### Type system choices
+
+Pick by what the type is *for*, not by habit. Pydantic is for cross-boundary data — using it for in-process values or behavioural contracts adds validation overhead with no payoff.
+
+| Use case | Choice |
+|---|---|
+| Polymorphism / behaviour contract (anything that "implements this can plug in") | `typing.Protocol` (preferred — duck-typed) or `abc.ABC` |
+| Internal value object passed between methods in one process | `@dataclasses.dataclass(frozen=True)` |
+| Enumeration of named values | `class Foo(str, Enum)` |
+| Data that crosses a serialisation boundary (gRPC, JSON file, YAML config, output bundle, snapshot) | Pydantic v2 `BaseModel` with `model_config = {"extra": "forbid"}` |
+
+How this looks in the engine today:
+
+- `BaseAdapter`, `ToolWrapper`, the LLM policy interfaces (`SystemPromptPolicy`, `ToolSchemaSanitizer`, `ResponsePolicy`, `ReasoningCodec`, …), `RunQueue` — `Protocol` or `ABC`.
+- `ToolLifecycleContext`, `AttemptLease` — `@dataclass(frozen=True)`.
+- `AdapterType`, `InvocationStyle`, `TrialStatus`, `ExecutionStatus` — `str, Enum`.
+- `TaskDescription`, `ToolSchema`, `ToolSource`, `ModelConfig`, `Trajectory`, `Grade`, `Metrics`, `GradingConfig`, `TrialSpec`, `TrialResult` — Pydantic `BaseModel` (`extra="forbid"`).
+
+When extending an existing contract, follow the existing choice unless you have an explicit reason to change it (e.g. a previously in-process value object now needs to serialise — promote it to Pydantic in a dedicated PR with the rationale).
+
 ### uv Workspace Rules
 
 - **DO NOT** use `[project.optional-dependencies]` in workspace member packages
