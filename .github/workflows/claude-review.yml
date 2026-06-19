@@ -31,6 +31,7 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          claude_args: '--model claude-opus-4-8'
           direct_prompt: |
             Review this PR against the project's AGENTS.md rules. Flag any
             violation with file path, line number, and a concrete suggested
