@@ -7,14 +7,16 @@ orchestrator's retry path can re-issue ``RegisterTrial`` for the same
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import pytest
 
 pytestmark = pytest.mark.unit
 
+from tolokaforge.core.models import ModelConfig
+from tolokaforge.core.trial import TrialSpec
 from tolokaforge.runner import runner_pb2 as pb2
+from tolokaforge.runner.models import TaskDescription
 
 
 @pytest.fixture
@@ -45,9 +47,15 @@ def task_description() -> dict[str, Any]:
 
 
 def _register(runner_service, mock_grpc_context, trial_id: str, td: dict[str, Any]):
+    spec = TrialSpec(
+        trial_id=trial_id,
+        run_id="test_run",
+        task=TaskDescription.model_validate(td),
+        agent_model_config=ModelConfig(name="test-model", provider="test"),
+    )
     request = pb2.RegisterTrialRequest(
         trial_id=trial_id,
-        trial_spec_json=json.dumps({"task": td}),
+        trial_spec_json=spec.model_dump_json(),
         default_tool_timeout_s=30.0,
     )
     return runner_service.RegisterTrial(request, mock_grpc_context)

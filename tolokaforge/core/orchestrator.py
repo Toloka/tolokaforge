@@ -695,6 +695,8 @@ class Orchestrator:
                     output_dir,
                     docker_runtime,
                     request_limiter,
+                    attempt_id=lease.retry_count,
+                    worker_id=lease_owner,
                 )
                 active_futures[future] = lease
                 return True
@@ -957,6 +959,8 @@ class Orchestrator:
                         output_dir=output_dir,
                         docker_runtime=docker_runtime,
                         request_limiter=request_limiter,
+                        attempt_id=lease.retry_count,
+                        worker_id=lease_owner,
                     )
                     trajectory = trial_result.trajectory
                     self.results.append(trajectory)
@@ -1062,6 +1066,9 @@ class Orchestrator:
         output_dir: Path,
         docker_runtime: Any,
         request_limiter: GlobalRateLimiter | None = None,
+        *,
+        attempt_id: int = 0,
+        worker_id: str | None = None,
     ) -> TrialResult:
         """Run a single trial with environment state and grading.
 
@@ -1070,6 +1077,12 @@ class Orchestrator:
         and retry classification) read ``result.trajectory`` directly; the
         wrapper costs them one attribute lookup and gives the seam a typed
         outbound shape for later stages to extend.
+
+        ``attempt_id`` and ``worker_id`` flow from the queue lease and the
+        owning process into the built ``TrialSpec`` so retries and worker
+        attribution are first-class on the trial seam. In single-process
+        orchestrator mode ``worker_id`` reflects the orchestrator process;
+        in distributed worker mode it carries the worker's identity.
         """
         assert self.adapter is not None
 
@@ -1269,8 +1282,8 @@ class Orchestrator:
         spec = TrialSpec(
             trial_id=trial_id,
             run_id=output_dir.name,
-            attempt_id=0,
-            worker_id=None,
+            attempt_id=attempt_id,
+            worker_id=worker_id,
             task=task_desc,
             agent_model_config=agent_client.config,
             user_model_config=user_config,

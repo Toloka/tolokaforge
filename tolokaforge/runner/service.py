@@ -31,7 +31,9 @@ from pathlib import Path
 from typing import Any
 
 import grpc
+from pydantic import ValidationError
 
+from tolokaforge.core.trial import TrialSpec
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner import runner_pb2_grpc
 from tolokaforge.runner.db_client import (
@@ -413,36 +415,23 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         trial_id = request.trial_id
         logger.info(f"RegisterTrial: {trial_id}")
 
-        # Parse the TrialSpec wire payload and extract the embedded
-        # TaskDescription. The runner only consumes spec.task at this seam —
-        # the rest of the spec (run_id, model configs, env_endpoints,
-        # runtime_context) carries context that other RPCs / future seams use.
+        # Parse and validate the full TrialSpec wire payload. The runner only
+        # consumes ``spec.task`` at this seam today — the rest of the spec
+        # (run_id, model configs, env_endpoints, runtime_context) carries
+        # context that other RPCs / future seams use — but validating the
+        # whole shape here keeps the wire contract symmetric: producer-side
+        # ``extra='forbid'`` strictness is matched by consumer-side strictness.
         # Fail fast on malformed payloads per AGENTS.md; no fallbacks.
         try:
-            spec_dict = json.loads(request.trial_spec_json)
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse trial_spec_json: {e}")
+            trial_spec = TrialSpec.model_validate_json(request.trial_spec_json)
+        except ValidationError as e:
+            logger.error(f"Failed to validate trial_spec_json: {e}")
             return pb2.RegisterTrialResponse(
                 success=False,
                 error=f"Invalid trial_spec_json: {e}",
             )
 
-        task_dict = spec_dict.get("task")
-        if not isinstance(task_dict, dict):
-            logger.error("trial_spec_json missing required 'task' object")
-            return pb2.RegisterTrialResponse(
-                success=False,
-                error="trial_spec_json missing required 'task' object",
-            )
-
-        try:
-            task_description = TaskDescription.model_validate(task_dict)
-        except Exception as e:
-            logger.error(f"Failed to validate TaskDescription: {e}")
-            return pb2.RegisterTrialResponse(
-                success=False,
-                error=f"Invalid TaskDescription: {e}",
-            )
+        task_description = trial_spec.task
 
         # Extract tool artifacts to temp directory if present
         artifacts_dir = None

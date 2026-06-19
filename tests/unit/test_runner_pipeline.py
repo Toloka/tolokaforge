@@ -17,7 +17,26 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
+from tolokaforge.core.models import ModelConfig
+from tolokaforge.core.trial import TrialSpec
 from tolokaforge.runner import runner_pb2 as pb2
+from tolokaforge.runner.models import TaskDescription
+
+
+def _trial_spec_json(task_dict: dict[str, Any], trial_id: str = "test:0") -> str:
+    """Build a valid ``TrialSpec`` JSON wrapping ``task_dict``.
+
+    The runner-side ``RegisterTrial`` handler validates the full ``TrialSpec``
+    (not just ``spec.task``), so tests must construct a complete spec rather
+    than a minimal ``{"task": ...}`` wrapper. This helper keeps the call
+    sites compact: a single function call replaces ``json.dumps(...)``.
+    """
+    return TrialSpec(
+        trial_id=trial_id,
+        run_id="test_run",
+        task=TaskDescription.model_validate(task_dict),
+        agent_model_config=ModelConfig(name="test-model", provider="test"),
+    ).model_dump_json()
 
 
 class TestRunnerPipeline:
@@ -93,7 +112,7 @@ class TestRunnerPipeline:
         # Create request
         request = pb2.RegisterTrialRequest(
             trial_id=trial_id,
-            trial_spec_json=json.dumps({"task": simple_task_description}),
+            trial_spec_json=_trial_spec_json(simple_task_description, trial_id=trial_id),
             default_tool_timeout_s=30.0,
         )
 
@@ -143,7 +162,7 @@ class TestRunnerPipeline:
         # First register the trial
         register_request = pb2.RegisterTrialRequest(
             trial_id=trial_id,
-            trial_spec_json=json.dumps({"task": simple_task_description}),
+            trial_spec_json=_trial_spec_json(simple_task_description, trial_id=trial_id),
         )
         register_response = runner_service.RegisterTrial(register_request, mock_grpc_context)
         assert register_response.success is True, f"Registration failed: {register_response.error}"
@@ -169,7 +188,7 @@ class TestRunnerPipeline:
         # Register the trial
         register_request = pb2.RegisterTrialRequest(
             trial_id=trial_id,
-            trial_spec_json=json.dumps({"task": simple_task_description}),
+            trial_spec_json=_trial_spec_json(simple_task_description, trial_id=trial_id),
         )
         register_response = runner_service.RegisterTrial(register_request, mock_grpc_context)
         assert register_response.success is True, f"Registration failed: {register_response.error}"
@@ -224,7 +243,7 @@ class TestRunnerPipeline:
         # Register trial
         register_request = pb2.RegisterTrialRequest(
             trial_id=trial_id,
-            trial_spec_json=json.dumps({"task": task_description}),
+            trial_spec_json=_trial_spec_json(task_description, trial_id=trial_id),
         )
         runner_service.RegisterTrial(register_request, mock_grpc_context)
 
@@ -256,7 +275,7 @@ class TestRunnerPipeline:
         # Register trial
         register_request = pb2.RegisterTrialRequest(
             trial_id=trial_id,
-            trial_spec_json=json.dumps({"task": simple_task_description}),
+            trial_spec_json=_trial_spec_json(simple_task_description, trial_id=trial_id),
         )
         runner_service.RegisterTrial(register_request, mock_grpc_context)
 
@@ -283,7 +302,7 @@ class TestRunnerPipeline:
         # Register trial
         register_request = pb2.RegisterTrialRequest(
             trial_id=trial_id,
-            trial_spec_json=json.dumps({"task": simple_task_description}),
+            trial_spec_json=_trial_spec_json(simple_task_description, trial_id=trial_id),
         )
         runner_service.RegisterTrial(register_request, mock_grpc_context)
 
@@ -317,7 +336,7 @@ class TestRunnerPipeline:
         # 1. Register trial
         register_request = pb2.RegisterTrialRequest(
             trial_id=trial_id,
-            trial_spec_json=json.dumps({"task": simple_task_description}),
+            trial_spec_json=_trial_spec_json(simple_task_description, trial_id=trial_id),
         )
         register_response = runner_service.RegisterTrial(register_request, mock_grpc_context)
 
