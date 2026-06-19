@@ -1072,17 +1072,9 @@ class Orchestrator:
     ) -> TrialResult:
         """Run a single trial with environment state and grading.
 
-        Returns a ``TrialResult`` wrapping the underlying ``Trajectory``.
-        Callers that need the trajectory (today: the in-memory results list
-        and retry classification) read ``result.trajectory`` directly; the
-        wrapper costs them one attribute lookup and gives the seam a typed
-        outbound shape for later stages to extend.
-
-        ``attempt_id`` and ``worker_id`` flow from the queue lease and the
-        owning process into the built ``TrialSpec`` so retries and worker
-        attribution are first-class on the trial seam. In single-process
-        orchestrator mode ``worker_id`` reflects the orchestrator process;
-        in distributed worker mode it carries the worker's identity.
+        ``attempt_id`` is the queue lease's retry count (0 on first attempt);
+        ``worker_id`` identifies the owning process (the orchestrator itself
+        in single-process mode, the worker's host:pid in distributed mode).
         """
         assert self.adapter is not None
 
@@ -1268,11 +1260,6 @@ class Orchestrator:
             runner_client=docker_runtime.executor_client, trial_id=trial_id
         )
 
-        # Get TaskDescription from adapter and register trial via the typed
-        # TrialSpec seam. The orchestrator builds one spec per trial here and
-        # the runner reads spec.task on the other side; future seams (env
-        # endpoints, runtime backend, conductor) read from spec.<field>
-        # instead of inventing their own ad-hoc kwargs.
         task_desc = self.adapter.to_task_description(task.task_id)
         # Host-side guard: adapter_type is an open string (the adapter set is
         # entry-point-discovered). Validate against the registry here (authoritative

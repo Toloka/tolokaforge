@@ -415,13 +415,6 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         trial_id = request.trial_id
         logger.info(f"RegisterTrial: {trial_id}")
 
-        # Parse and validate the full TrialSpec wire payload. The runner only
-        # consumes ``spec.task`` at this seam today — the rest of the spec
-        # (run_id, model configs, env_endpoints, runtime_context) carries
-        # context that other RPCs / future seams use — but validating the
-        # whole shape here keeps the wire contract symmetric: producer-side
-        # ``extra='forbid'`` strictness is matched by consumer-side strictness.
-        # Fail fast on malformed payloads per AGENTS.md; no fallbacks.
         try:
             trial_spec = TrialSpec.model_validate_json(request.trial_spec_json)
         except ValidationError as e:

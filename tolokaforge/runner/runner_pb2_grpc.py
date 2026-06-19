@@ -3,7 +3,7 @@
 
 import grpc
 
-from . import runner_pb2 as runner__pb2
+from tolokaforge.runner import runner_pb2 as runner__pb2
 
 GRPC_GENERATED_VERSION = "1.80.0"
 GRPC_VERSION = grpc.__version__
