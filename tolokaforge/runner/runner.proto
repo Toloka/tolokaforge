@@ -54,10 +54,10 @@ message RegisterTrialRequest {
   string trial_id = 1;
 
   // Full TrialSpec as JSON string. See tolokaforge/core/trial.py for the
-  // Pydantic model and docs/adr/0001-trial-spec-and-trial-result.md for the
-  // rationale. The TrialSpec embeds a TaskDescription at spec.task plus the
-  // per-trial execution context (run_id, attempt_id, model configs, env
-  // endpoints, runtime context).
+  // Pydantic model and docs/architecture/adr/0003-trial-spec-and-trial-result.md
+  // for the rationale. The TrialSpec embeds a TaskDescription at spec.task
+  // plus the per-trial execution context (run_id, attempt_id, model configs,
+  // env endpoints, runtime context).
   string trial_spec_json = 2;
 
   // Optional: Override timeout for tool execution (seconds).
