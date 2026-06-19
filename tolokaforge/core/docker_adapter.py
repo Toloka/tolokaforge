@@ -105,22 +105,22 @@ class DockerRunnerAdapter:
         """Clear tool execution logs"""
         self.tool_logs = []
 
-    def register_trial(
-        self, task_description_json: str, default_tool_timeout_s: float = 30.0
-    ) -> dict:
+    def register_trial(self, trial_spec_json: str, default_tool_timeout_s: float = 30.0) -> dict:
         """
-        Register trial with Runner service
+        Register a trial with the runner service.
 
         Args:
-            task_description_json: Full TaskDescription as JSON string
-            default_tool_timeout_s: Default timeout for tool execution
+            trial_spec_json: ``TrialSpec`` as JSON string (see
+                ``tolokaforge/core/trial.py``). The runner reads ``spec.task``
+                for tool reconstruction.
+            default_tool_timeout_s: Default timeout for tool execution.
 
         Returns:
             dict with success, error, tool_schemas, num_agent_tools, num_user_tools
         """
         return self.runner_client.register_trial(
             trial_id=self.trial_id,
-            task_description_json=task_description_json,
+            trial_spec_json=trial_spec_json,
             default_tool_timeout_s=default_tool_timeout_s,
         )
 

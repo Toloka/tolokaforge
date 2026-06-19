@@ -47,7 +47,7 @@ def task_description() -> dict[str, Any]:
 def _register(runner_service, mock_grpc_context, trial_id: str, td: dict[str, Any]):
     request = pb2.RegisterTrialRequest(
         trial_id=trial_id,
-        task_description_json=json.dumps(td),
+        trial_spec_json=json.dumps({"task": td}),
         default_tool_timeout_s=30.0,
     )
     return runner_service.RegisterTrial(request, mock_grpc_context)

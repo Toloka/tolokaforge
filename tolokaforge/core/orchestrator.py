@@ -49,6 +49,7 @@ from tolokaforge.core.resume import RunStateManager
 from tolokaforge.core.run_queue import AttemptLease, create_run_queue
 from tolokaforge.core.runner import TrialRunner
 from tolokaforge.core.stuck import StuckDetector
+from tolokaforge.core.trial import TrialResult, TrialSpec
 from tolokaforge.runner.models import AdapterType
 
 # Tools that need Playwright + Chromium baked into the runner image. The
@@ -708,7 +709,8 @@ class Orchestrator:
                     task_id = lease.task_id
                     trial_idx = lease.trial_index
                     try:
-                        trajectory = future.result()
+                        trial_result = future.result()
+                        trajectory = trial_result.trajectory
                         self.results.append(trajectory)
                         trial_cost = trajectory.metrics.cost_usd or 0.0
                         total_cost_usd += trial_cost
@@ -947,7 +949,7 @@ class Orchestrator:
                 run_queue.mark_running(lease.id, lease_owner)
 
                 try:
-                    trajectory = self._run_trial(
+                    trial_result = self._run_trial(
                         task=task,
                         trial_idx=lease.trial_index,
                         agent_client=agent_client,
@@ -956,6 +958,7 @@ class Orchestrator:
                         docker_runtime=docker_runtime,
                         request_limiter=request_limiter,
                     )
+                    trajectory = trial_result.trajectory
                     self.results.append(trajectory)
                     trial_cost = trajectory.metrics.cost_usd or 0.0
                     total_cost_usd += trial_cost
@@ -1059,8 +1062,15 @@ class Orchestrator:
         output_dir: Path,
         docker_runtime: Any,
         request_limiter: GlobalRateLimiter | None = None,
-    ) -> Trajectory:
-        """Run a single trial with environment state and grading"""
+    ) -> TrialResult:
+        """Run a single trial with environment state and grading.
+
+        Returns a ``TrialResult`` wrapping the underlying ``Trajectory``.
+        Callers that need the trajectory (today: the in-memory results list
+        and retry classification) read ``result.trajectory`` directly; the
+        wrapper costs them one attribute lookup and gives the seam a typed
+        outbound shape for later stages to extend.
+        """
         assert self.adapter is not None
 
         # Get task directory from adapter (supports both native and tau)
@@ -1245,15 +1255,30 @@ class Orchestrator:
             runner_client=docker_runtime.executor_client, trial_id=trial_id
         )
 
-        # Get TaskDescription from adapter and register trial
+        # Get TaskDescription from adapter and register trial via the typed
+        # TrialSpec seam. The orchestrator builds one spec per trial here and
+        # the runner reads spec.task on the other side; future seams (env
+        # endpoints, runtime backend, conductor) read from spec.<field>
+        # instead of inventing their own ad-hoc kwargs.
         task_desc = self.adapter.to_task_description(task.task_id)
         # Host-side guard: adapter_type is an open string (the adapter set is
         # entry-point-discovered). Validate against the registry here (authoritative
         # on the host) to catch typos/misconfig early.
         ensure_registered_adapter(task_desc.adapter_type)
-        task_desc_json = task_desc.model_dump_json()
 
-        register_result = tool_executor.register_trial(task_description_json=task_desc_json)
+        spec = TrialSpec(
+            trial_id=trial_id,
+            run_id=output_dir.name,
+            attempt_id=0,
+            worker_id=None,
+            task=task_desc,
+            agent_model_config=agent_client.config,
+            user_model_config=user_config,
+            max_turns=task.max_turns,
+            default_tool_timeout_s=30.0,
+        )
+
+        register_result = tool_executor.register_trial(trial_spec_json=spec.model_dump_json())
         if not register_result["success"]:
             error = register_result.get("error", "Unknown error")
             raise RuntimeError(
@@ -1602,7 +1627,7 @@ class Orchestrator:
             output_dir=str(trial_dir),
         )
 
-        return trajectory
+        return TrialResult.from_trajectory(trial_id=trial_id, trajectory=trajectory)
 
     def _serialize_model_config(
         self,

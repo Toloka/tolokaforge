@@ -93,7 +93,7 @@ class TestRunnerPipeline:
         # Create request
         request = pb2.RegisterTrialRequest(
             trial_id=trial_id,
-            task_description_json=json.dumps(simple_task_description),
+            trial_spec_json=json.dumps({"task": simple_task_description}),
             default_tool_timeout_s=30.0,
         )
 
@@ -113,13 +113,13 @@ class TestRunnerPipeline:
         """Test RegisterTrial handles invalid JSON gracefully."""
         request = pb2.RegisterTrialRequest(
             trial_id="invalid_json_test:0",
-            task_description_json="not valid json {{{",
+            trial_spec_json="not valid json {{{",
         )
 
         response = runner_service.RegisterTrial(request, mock_grpc_context)
 
         assert response.success is False
-        assert "Invalid task_description_json" in response.error
+        assert "Invalid trial_spec_json" in response.error
 
     def test_execute_tool_trial_not_found(self, runner_service, mock_grpc_context):
         """Test ExecuteTool returns error for non-existent trial."""
@@ -143,7 +143,7 @@ class TestRunnerPipeline:
         # First register the trial
         register_request = pb2.RegisterTrialRequest(
             trial_id=trial_id,
-            task_description_json=json.dumps(simple_task_description),
+            trial_spec_json=json.dumps({"task": simple_task_description}),
         )
         register_response = runner_service.RegisterTrial(register_request, mock_grpc_context)
         assert register_response.success is True, f"Registration failed: {register_response.error}"
@@ -169,7 +169,7 @@ class TestRunnerPipeline:
         # Register the trial
         register_request = pb2.RegisterTrialRequest(
             trial_id=trial_id,
-            task_description_json=json.dumps(simple_task_description),
+            trial_spec_json=json.dumps({"task": simple_task_description}),
         )
         register_response = runner_service.RegisterTrial(register_request, mock_grpc_context)
         assert register_response.success is True, f"Registration failed: {register_response.error}"
@@ -224,7 +224,7 @@ class TestRunnerPipeline:
         # Register trial
         register_request = pb2.RegisterTrialRequest(
             trial_id=trial_id,
-            task_description_json=json.dumps(task_description),
+            trial_spec_json=json.dumps({"task": task_description}),
         )
         runner_service.RegisterTrial(register_request, mock_grpc_context)
 
@@ -256,7 +256,7 @@ class TestRunnerPipeline:
         # Register trial
         register_request = pb2.RegisterTrialRequest(
             trial_id=trial_id,
-            task_description_json=json.dumps(simple_task_description),
+            trial_spec_json=json.dumps({"task": simple_task_description}),
         )
         runner_service.RegisterTrial(register_request, mock_grpc_context)
 
@@ -283,7 +283,7 @@ class TestRunnerPipeline:
         # Register trial
         register_request = pb2.RegisterTrialRequest(
             trial_id=trial_id,
-            task_description_json=json.dumps(simple_task_description),
+            trial_spec_json=json.dumps({"task": simple_task_description}),
         )
         runner_service.RegisterTrial(register_request, mock_grpc_context)
 
@@ -317,7 +317,7 @@ class TestRunnerPipeline:
         # 1. Register trial
         register_request = pb2.RegisterTrialRequest(
             trial_id=trial_id,
-            task_description_json=json.dumps(simple_task_description),
+            trial_spec_json=json.dumps({"task": simple_task_description}),
         )
         register_response = runner_service.RegisterTrial(register_request, mock_grpc_context)
 

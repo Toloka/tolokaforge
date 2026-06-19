@@ -404,7 +404,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         4. Return tool schemas for LLM configuration
 
         Args:
-            request: RegisterTrialRequest with trial_id and task_description_json
+            request: RegisterTrialRequest with trial_id and trial_spec_json
             context: gRPC context
 
         Returns:
@@ -413,16 +413,30 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         trial_id = request.trial_id
         logger.info(f"RegisterTrial: {trial_id}")
 
-        # Parse TaskDescription JSON into Pydantic model (fail fast)
+        # Parse the TrialSpec wire payload and extract the embedded
+        # TaskDescription. The runner only consumes spec.task at this seam —
+        # the rest of the spec (run_id, model configs, env_endpoints,
+        # runtime_context) carries context that other RPCs / future seams use.
+        # Fail fast on malformed payloads per AGENTS.md; no fallbacks.
         try:
-            task_dict = json.loads(request.task_description_json)
-            task_description = TaskDescription.model_validate(task_dict)
+            spec_dict = json.loads(request.trial_spec_json)
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse task_description_json: {e}")
+            logger.error(f"Failed to parse trial_spec_json: {e}")
             return pb2.RegisterTrialResponse(
                 success=False,
-                error=f"Invalid task_description_json: {e}",
+                error=f"Invalid trial_spec_json: {e}",
             )
+
+        task_dict = spec_dict.get("task")
+        if not isinstance(task_dict, dict):
+            logger.error("trial_spec_json missing required 'task' object")
+            return pb2.RegisterTrialResponse(
+                success=False,
+                error="trial_spec_json missing required 'task' object",
+            )
+
+        try:
+            task_description = TaskDescription.model_validate(task_dict)
         except Exception as e:
             logger.error(f"Failed to validate TaskDescription: {e}")
             return pb2.RegisterTrialResponse(
