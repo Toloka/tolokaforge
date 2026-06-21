@@ -39,7 +39,7 @@ from tolokaforge.core.output_writer import OutputWriter
 
 if TYPE_CHECKING:  # pragma: no cover — type-only imports
     from tolokaforge.core.logging import StructuredLogger
-    from tolokaforge.core.models import Grade, Trajectory
+    from tolokaforge.core.models import Grade, Metrics, Trajectory
 
 __all__ = [
     "FileArtifactWriter",
@@ -342,12 +342,16 @@ class TrialArtifactBundle:
     Each attribute holds the most recent value written for that artifact
     name, or ``None`` if the corresponding ``write_*`` method has not been
     called for this trial.
+
+    ``write_trial_bundle`` populates ``task``, ``trajectory``, ``env``,
+    ``metrics``, ``grade``, and ``logs``. ``tools_schemas`` and ``prompts``
+    are only populated by their own per-piece write methods.
     """
 
     trajectory: Trajectory | None = None
     task: dict[str, Any] | None = None
     env: dict[str, Any] | None = None
-    metrics: Trajectory | None = None
+    metrics: Metrics | None = None
     grade: Grade | None = None
     logs: StructuredLogger | None = None
     tools_schemas: list[dict[str, Any]] | None = None
@@ -365,6 +369,14 @@ class InMemoryArtifactWriter:
     copied. Mutating them after the write call is observable through
     :attr:`trials` (matching how :class:`FileArtifactWriter` would serialise
     whatever state existed at write time).
+
+    The bundle key is ``Path(trial_dir)`` as supplied — *not* ``.resolve()``-d.
+    The disk-backed writer resolves trial paths against the filesystem;
+    this writer doesn't touch the filesystem, so two surface forms of the
+    same logical path (``Path("a/b")`` vs ``Path("./a/b")``) bucket into
+    separate trials here even though they'd share an :class:`OutputWriter`
+    cache slot on disk. Tests should pass canonical paths (typically
+    ``tmp_path / ...``) so the divergence doesn't surface.
     """
 
     def __init__(self) -> None:
@@ -390,7 +402,7 @@ class InMemoryArtifactWriter:
         self._bundle(trial_dir).env = env_state
 
     def write_metrics(self, trial_dir: Path, trajectory: Trajectory) -> None:
-        self._bundle(trial_dir).metrics = trajectory
+        self._bundle(trial_dir).metrics = trajectory.metrics
 
     def write_grade(self, trial_dir: Path, grade: Grade) -> None:
         self._bundle(trial_dir).grade = grade
@@ -432,6 +444,6 @@ class InMemoryArtifactWriter:
         bundle.task = task_snapshot
         bundle.trajectory = trajectory
         bundle.env = env_state
-        bundle.metrics = trajectory
+        bundle.metrics = trajectory.metrics
         bundle.grade = trajectory.grade
         bundle.logs = logger

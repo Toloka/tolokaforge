@@ -178,7 +178,8 @@ class TestInMemoryWriterBundleSemantics:
         assert bundle.task is snapshot
         assert bundle.trajectory is trajectory
         assert bundle.env is env
-        assert bundle.metrics is trajectory
+        assert bundle.metrics is trajectory.metrics
+        assert isinstance(bundle.metrics, Metrics)
         assert bundle.grade is trajectory.grade
         assert bundle.logs is logger
 
@@ -198,3 +199,26 @@ class TestInMemoryWriterBundleSemantics:
         writer.write_task(Path("x:0"), snapshot)
         snapshot["task_id"] = "y"
         assert writer.trials[Path("x:0")].task["task_id"] == "y"
+
+    def test_write_metrics_stores_metrics_extract_not_whole_trajectory(self) -> None:
+        """``write_metrics`` mirrors the disk-backed writer's behaviour:
+        ``metrics.yaml`` is serialised from ``trajectory.metrics``, so the
+        in-memory bundle stores that same :class:`Metrics` extract, not the
+        whole :class:`Trajectory`."""
+        writer = InMemoryArtifactWriter()
+        trajectory = _make_trajectory()
+        writer.write_metrics(Path("x:0"), trajectory)
+        stored = writer.trials[Path("x:0")].metrics
+        assert isinstance(stored, Metrics)
+        assert stored is trajectory.metrics
+
+    def test_surface_path_forms_bucket_separately(self) -> None:
+        """The in-memory writer keys on ``Path(trial_dir)`` as supplied — it
+        does not ``.resolve()`` (it does not touch the filesystem). Two
+        surface forms of the same logical path bucket into separate trials.
+        Pinned so a future "normalise the key" change has to update this
+        test deliberately."""
+        writer = InMemoryArtifactWriter()
+        writer.write_trajectory(Path("a/b"), _make_trajectory())
+        writer.write_trajectory(Path("./a/b"), _make_trajectory())
+        assert set(writer.trials.keys()) == {Path("a/b"), Path("./a/b")}

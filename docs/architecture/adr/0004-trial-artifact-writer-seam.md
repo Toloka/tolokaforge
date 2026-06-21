@@ -16,6 +16,8 @@ The engine's architecture has three planes:
 
 Each plane should sit behind a named, typed seam so implementations can swap without engine edits. The control↔trial seam is being typed by `TrialSpec` / `TrialResult` (ADR-0003 lineage); a remote conductor in a different process will read the same payload the in-process one reads today.
 
+> **Numbering note.** ADR-0003 is reserved for the in-review `TrialSpec` / `TrialResult` decision. If that ADR lands under a different number, this file must be renumbered and the index in `README.md` updated.
+
 The data-plane seam is partially built. `tolokaforge/core/output/artifacts.py` already declares `TrialArtifactWriter` as a `typing.Protocol`, and `FileArtifactWriter` is its disk-backed implementation. Several gaps prevent the seam from playing the architectural role the other two planes' contracts do:
 
 1. The Protocol is **not `@runtime_checkable`** — `isinstance(writer, TrialArtifactWriter)` raises `TypeError` even when the writer satisfies every method signature. Other Protocols in the engine (the LLM policy chain — `SystemPromptPolicy`, `ResponsePolicy`, `ReasoningCodec`, …) are runtime-checkable; this one is the outlier.
