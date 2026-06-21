@@ -1,15 +1,17 @@
 """Trial artifact writer — Protocol + disk-backed implementation.
 
 The writer composes :class:`tolokaforge.core.output_writer.OutputWriter`
-for the seven per-trial YAML files that make up a trial bundle:
+for the eight per-trial YAML files that make up a trial bundle:
 
 * ``task.yaml`` — frozen task identity + resolved preset fingerprint
 * ``trajectory.yaml`` — full message trace incl. reasoning blocks
 * ``env.yaml`` — final env state snapshot
 * ``metrics.yaml`` — usage / latency / tool-call metrics
-* ``grade.yaml`` — pass / fail + score components
+* ``grade.yaml`` — pass / fail + score components (omitted when the
+  trial has no grade)
 * ``logs.yaml`` — structured trial logs
 * ``tools_schemas.yaml`` — post-policy tool list, what the provider saw
+* ``prompts.yaml`` — per-trial agent + user-simulator system prompts
 
 Every artifact is YAML, every artifact is per-trial — a trial bundle is
 self-contained, no sidecar lookup needed for audit. Disk overhead is
@@ -178,10 +180,10 @@ class TrialArtifactWriter(Protocol):
         env_state: dict[str, Any],
         logger: StructuredLogger,
     ) -> None:
-        """Write the six per-trial bundle artifacts for a trial in one call:
+        """Write the per-trial bundle artifacts for a trial in one call:
         ``task.yaml``, ``trajectory.yaml``, ``env.yaml``, ``metrics.yaml``,
-        ``grade.yaml``, ``logs.yaml``. Convenience for the common orchestrator
-        path; equivalent to calling the six individual writers in sequence.
+        ``grade.yaml`` (when ``trajectory.grade`` is non-``None``), and
+        ``logs.yaml``. Convenience for the common orchestrator path.
         """
         ...
 
@@ -445,5 +447,6 @@ class InMemoryArtifactWriter:
         bundle.trajectory = trajectory
         bundle.env = env_state
         bundle.metrics = trajectory.metrics
-        bundle.grade = trajectory.grade
+        if trajectory.grade is not None:
+            bundle.grade = trajectory.grade
         bundle.logs = logger

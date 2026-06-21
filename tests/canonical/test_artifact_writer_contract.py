@@ -212,6 +212,23 @@ class TestInMemoryWriterBundleSemantics:
         assert isinstance(stored, Metrics)
         assert stored is trajectory.metrics
 
+    def test_write_trial_bundle_skips_grade_when_trajectory_has_none(self) -> None:
+        """Mirrors the disk-backed writer (``OutputWriter.write_all``), which
+        only emits ``grade.yaml`` when ``trajectory.grade`` is non-``None``.
+        The in-memory bundle must leave its ``grade`` slot untouched in the
+        same case so the two writers agree on observable behaviour."""
+        writer = InMemoryArtifactWriter()
+        trajectory = _make_trajectory()
+        trajectory.grade = None
+        writer.write_trial_bundle(
+            Path("x:0"),
+            trajectory,
+            _make_task_snapshot(),
+            _make_env_state(),
+            _FakeStructuredLogger(),  # type: ignore[arg-type]
+        )
+        assert writer.trials[Path("x:0")].grade is None
+
     def test_surface_path_forms_bucket_separately(self) -> None:
         """The in-memory writer keys on ``Path(trial_dir)`` as supplied — it
         does not ``.resolve()`` (it does not touch the filesystem). Two
