@@ -15,6 +15,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from jsonpath_ng.ext import parse
+
 from tolokaforge.runner.models import (
     StateDiff,
     TableDiff,
@@ -536,6 +538,154 @@ def evaluate_jsonpath_file_checks(
     return score, reasons
 
 
+def _contains(haystack: Any, needle: Any, ci: bool = False) -> bool:
+    if isinstance(haystack, str) and isinstance(needle, str):
+        return needle.casefold() in haystack.casefold() if ci else needle in haystack
+    if isinstance(haystack, list | tuple | set):
+        return any(_contains(item, needle, ci=ci) for item in haystack)
+    if isinstance(haystack, dict):
+        return any(_contains(value, needle, ci=ci) for value in haystack.values())
+    if ci and isinstance(haystack, str) and isinstance(needle, str):
+        return haystack.casefold() == needle.casefold()
+    return haystack == needle
+
+
+def evaluate_jsonpath_state_checks(
+    checks: list[dict[str, Any]],
+    state: dict[str, Any],
+) -> tuple[float, str]:
+    """
+    Evaluate JSONPath assertions against the trial's structured DB state.
+
+    This is the state-oriented counterpart to evaluate_jsonpath_file_checks().
+    It supports the same JSONPath assertion shape used by the core native
+    grader: path + one of equals, equals_ci, contains, contains_ci.
+    """
+    if not checks:
+        return -1.0, ""
+
+    passed = 0
+    total = len(checks)
+    reasons_parts: list[str] = []
+
+    for check in checks:
+        path = check.get("path")
+        description = check.get("description", path or "JSONPath state check")
+        if not path:
+            reasons_parts.append(f"FAIL: Missing path — {description}")
+            continue
+
+        operators = [
+            ("equals", check.get("equals")),
+            ("equals_ci", check.get("equals_ci")),
+            ("contains", check.get("contains")),
+            ("contains_ci", check.get("contains_ci")),
+        ]
+        active = [(name, expected) for name, expected in operators if expected is not None]
+        if len(active) > 1:
+            reasons_parts.append(f"FAIL: Multiple operators at {path} — {description}")
+            continue
+
+        try:
+            matches = [match.value for match in parse(path).find(state)]
+        except Exception as exc:
+            reasons_parts.append(f"FAIL: Invalid JSONPath {path}: {exc} — {description}")
+            continue
+
+        if not matches:
+            reasons_parts.append(f"FAIL: Path not found {path} — {description}")
+            continue
+
+        if not active:
+            passed += 1
+            reasons_parts.append(f"PASS: {description}")
+            continue
+
+        op_name, expected = active[0]
+        found = False
+        for value in matches:
+            if op_name == "equals" and value == expected:
+                found = True
+                break
+            if op_name == "equals_ci" and isinstance(value, str) and isinstance(expected, str):
+                if value.casefold() == expected.casefold():
+                    found = True
+                    break
+            if op_name == "contains" and _contains(value, expected):
+                found = True
+                break
+            if op_name == "contains_ci" and _contains(value, expected, ci=True):
+                found = True
+                break
+
+        if found:
+            passed += 1
+            reasons_parts.append(f"PASS: {description}")
+        else:
+            reasons_parts.append(
+                f"FAIL: {description} ({path}: expected {op_name} {expected!r}, got {matches[0]!r})"
+            )
+
+    score = passed / total if total > 0 else 0.0
+    reasons = "; ".join(reasons_parts)
+    return score, reasons
+
+
+def evaluate_jsonpath_checks(
+    checks: list[dict[str, Any]],
+    state: dict[str, Any] | None = None,
+) -> tuple[float, str]:
+    """
+    Evaluate mixed JSONPath checks.
+
+    Checks with path_glob remain file-content checks for backwards
+    compatibility. Checks with path are evaluated against structured DB state.
+    """
+    if not checks:
+        return -1.0, ""
+
+    file_checks: list[dict[str, Any]] = []
+    state_checks: list[dict[str, Any]] = []
+    invalid_checks: list[dict[str, Any]] = []
+
+    for check in checks:
+        if check.get("path_glob") is not None and check.get("path") is None:
+            file_checks.append(check)
+        elif check.get("path") is not None:
+            state_checks.append(check)
+        else:
+            invalid_checks.append(check)
+
+    passed = 0.0
+    total = len(checks)
+    reasons_parts: list[str] = []
+
+    if file_checks:
+        file_score, file_reasons = evaluate_jsonpath_file_checks(file_checks)
+        if file_score >= 0:
+            passed += file_score * len(file_checks)
+        if file_reasons:
+            reasons_parts.append(f"Files: {file_reasons}")
+
+    if state_checks:
+        if state is None:
+            reasons_parts.append("State: FAIL: DB state unavailable for JSONPath checks")
+        else:
+            state_score, state_reasons = evaluate_jsonpath_state_checks(state_checks, state)
+            if state_score >= 0:
+                passed += state_score * len(state_checks)
+            if state_reasons:
+                reasons_parts.append(f"State: {state_reasons}")
+
+    for check in invalid_checks:
+        description = check.get("description", "JSONPath check")
+        reasons_parts.append(f"FAIL: Missing path/path_glob — {description}")
+
+    score = passed / total if total > 0 else 0.0
+    reasons = "; ".join(reasons_parts)
+    return score, reasons
+
+
 def combine_grade_components(
     components: dict[str, Any], grading_config: dict[str, Any]
 ) -> tuple[float, bool]:
@@ -692,11 +842,11 @@ def build_grade_reasons(
     if jsonpath_score >= 0:
         jsonpath_reasons = components.get("jsonpath_reasons", "")
         if jsonpath_reasons:
-            reasons.append(f"Files: {jsonpath_reasons}")
+            reasons.append(f"JSONPath: {jsonpath_reasons}")
         elif jsonpath_score == 1.0:
-            reasons.append("Files: all jsonpath checks passed")
+            reasons.append("JSONPath: all checks passed")
         else:
-            reasons.append(f"Files: jsonpath score={jsonpath_score:.2f}")
+            reasons.append(f"JSONPath: score={jsonpath_score:.2f}")
 
     # Transcript rules reason
     transcript_score = components.get("transcript_score", -1.0)

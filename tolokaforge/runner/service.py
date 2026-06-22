@@ -45,7 +45,7 @@ from tolokaforge.runner.grading import (
     build_grade_reasons,
     combine_grade_components,
     compute_state_diff,
-    evaluate_jsonpath_file_checks,
+    evaluate_jsonpath_checks,
     evaluate_llm_judge,
     evaluate_transcript_rules,
 )
@@ -985,19 +985,25 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     error=f"Hash grading failed: {type(e).__name__}: {str(e)}",
                 )
 
-        # A.2) JSONPATH FILE ASSERTIONS (if jsonpath_checks exist)
+        # A.2) JSONPATH ASSERTIONS (if jsonpath_checks exist)
         if state_checks_config and state_checks_config.jsonpath_checks:
             logger.info(
                 f"GradeTrial: {trial_id} - Evaluating "
-                f"{len(state_checks_config.jsonpath_checks)} jsonpath file checks"
+                f"{len(state_checks_config.jsonpath_checks)} jsonpath checks"
             )
-            jsonpath_score, jsonpath_reasons = evaluate_jsonpath_file_checks(
-                state_checks_config.jsonpath_checks
+            stable_state_response = await self.db_client.get_stable_state(trial_id)
+            jsonpath_state = {
+                "db": stable_state_response.data,
+                "tables": stable_state_response.data,
+            }
+            jsonpath_score, jsonpath_reasons = evaluate_jsonpath_checks(
+                state_checks_config.jsonpath_checks,
+                state=jsonpath_state,
             )
             components.jsonpath_score = jsonpath_score
             components.jsonpath_reasons = jsonpath_reasons
             logger.info(
-                f"GradeTrial: {trial_id} - Jsonpath file checks: score={jsonpath_score:.2f}"
+                f"GradeTrial: {trial_id} - Jsonpath checks: score={jsonpath_score:.2f}"
             )
 
         # B) TRANSCRIPT RULES GRADING (if transcript_rules exist)
