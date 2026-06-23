@@ -77,6 +77,9 @@ RUN /devcontainer_bootstrap/setup_terminal.sh
 # Pin uv to match the version CI uses (.github/workflows/ci.yml) and stay within
 # [tool.uv] required-version in pyproject.toml. An unpinned install grabs "latest",
 # which drifts outside that range and makes uv refuse to run in the container.
+# Note: ~/.local is overlaid by the ${localWorkspaceFolderBasename}-local named
+# volume at runtime, so bumping this pin requires removing that volume to take
+# effect on an existing container (a fresh rebuild alone won't).
 RUN curl -LsSf https://astral.sh/uv/0.9.5/install.sh | sh
 
 # Install Claude Code CLI as the non-root user via the native installer.
