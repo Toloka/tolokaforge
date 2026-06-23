@@ -179,6 +179,29 @@ def test_state_jsonpath_checks_fail_on_wrong_value():
     assert "FAIL: order is confirmed" in reasons
 
 
+def test_state_jsonpath_unknown_operator_fails_loud():
+    """Parity with the core native grader (PR #66): a ``path:`` assertion with
+    no recognized operator (here a typo'd ``op:``/``expected:``) must FAIL with
+    an actionable reason, not silently pass as an existence check."""
+    state = {"db": {"orders": [{"status": "cancelled"}]}}
+    checks = [
+        {
+            "path": "$.db.orders[-1].status",
+            "op": "gte",
+            "expected": 5,
+            "description": "bogus operator",
+        }
+    ]
+
+    score, reasons = evaluate_jsonpath_state_checks(checks, state)
+
+    assert score == 0.0
+    assert "no recognized operator" in reasons
+    assert "bogus operator" in reasons
+    # The supported operators are named so the author can fix the assertion.
+    assert "equals" in reasons
+
+
 def test_mixed_jsonpath_checks_keep_file_compatibility(tmp_path: Path):
     target = tmp_path / "answer.md"
     target.write_text("approved")

@@ -545,8 +545,6 @@ def _contains(haystack: Any, needle: Any, ci: bool = False) -> bool:
         return any(_contains(item, needle, ci=ci) for item in haystack)
     if isinstance(haystack, dict):
         return any(_contains(value, needle, ci=ci) for value in haystack.values())
-    if ci and isinstance(haystack, str) and isinstance(needle, str):
-        return haystack.casefold() == needle.casefold()
     return haystack == needle
 
 
@@ -597,8 +595,20 @@ def evaluate_jsonpath_state_checks(
             continue
 
         if not active:
-            passed += 1
-            reasons_parts.append(f"PASS: {description}")
+            # Fail loud — mirrors the core native grader's contract: an
+            # assertion with no recognized operator (a typo'd or unsupported
+            # operator such as ``op:``/``expected:``, or a bare ``path:`` with
+            # no comparison) is an author error, not a passing existence check.
+            # Silently passing it would turn a strict-looking assertion into a
+            # no-op and diverge from host-side grading.
+            unknown_keys = sorted(
+                key for key in check if key not in {"path", "path_glob", "description"}
+            )
+            reasons_parts.append(
+                f"FAIL: no recognized operator at {path} (got keys: {unknown_keys}); "
+                f"supported operators are 'equals', 'equals_ci', 'contains', "
+                f"'contains_ci' — {description}"
+            )
             continue
 
         op_name, expected = active[0]

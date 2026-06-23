@@ -991,20 +991,25 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 f"GradeTrial: {trial_id} - Evaluating "
                 f"{len(state_checks_config.jsonpath_checks)} jsonpath checks"
             )
-            stable_state_response = await self.db_client.get_stable_state(trial_id)
-            jsonpath_state = {
-                "db": stable_state_response.data,
-                "tables": stable_state_response.data,
-            }
+            # Only fetch DB state when at least one assertion targets it via
+            # ``path:``. File-only (``path_glob:``) checks never needed the DB,
+            # so fetching unconditionally would add a round-trip and a new
+            # failure mode for tasks that previously graded without it.
+            jsonpath_checks = state_checks_config.jsonpath_checks
+            jsonpath_state = None
+            if any(check.get("path") is not None for check in jsonpath_checks):
+                stable_state_response = await self.db_client.get_stable_state(trial_id)
+                jsonpath_state = {
+                    "db": stable_state_response.data,
+                    "tables": stable_state_response.data,
+                }
             jsonpath_score, jsonpath_reasons = evaluate_jsonpath_checks(
-                state_checks_config.jsonpath_checks,
+                jsonpath_checks,
                 state=jsonpath_state,
             )
             components.jsonpath_score = jsonpath_score
             components.jsonpath_reasons = jsonpath_reasons
-            logger.info(
-                f"GradeTrial: {trial_id} - Jsonpath checks: score={jsonpath_score:.2f}"
-            )
+            logger.info(f"GradeTrial: {trial_id} - Jsonpath checks: score={jsonpath_score:.2f}")
 
         # B) TRANSCRIPT RULES GRADING (if transcript_rules exist)
         transcript_rules_config = grading_config.transcript_rules
