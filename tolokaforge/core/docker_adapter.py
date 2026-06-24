@@ -12,6 +12,7 @@ import logging
 from typing import Any
 
 from tolokaforge.core.docker_runtime import RunnerClient
+from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S
 from tolokaforge.tools.registry import ToolResult
 
 logger = logging.getLogger(__name__)
@@ -106,21 +107,23 @@ class DockerRunnerAdapter:
         self.tool_logs = []
 
     def register_trial(
-        self, task_description_json: str, default_tool_timeout_s: float = 30.0
+        self, trial_spec_json: str, default_tool_timeout_s: float = DEFAULT_TOOL_TIMEOUT_S
     ) -> dict:
         """
-        Register trial with Runner service
+        Register a trial with the runner service.
 
         Args:
-            task_description_json: Full TaskDescription as JSON string
-            default_tool_timeout_s: Default timeout for tool execution
+            trial_spec_json: ``TrialSpec`` as JSON string (see
+                ``tolokaforge/core/trial.py``). The runner reads ``spec.task``
+                for tool reconstruction.
+            default_tool_timeout_s: Default timeout for tool execution.
 
         Returns:
             dict with success, error, tool_schemas, num_agent_tools, num_user_tools
         """
         return self.runner_client.register_trial(
             trial_id=self.trial_id,
-            task_description_json=task_description_json,
+            trial_spec_json=trial_spec_json,
             default_tool_timeout_s=default_tool_timeout_s,
         )
 
@@ -192,8 +195,9 @@ class DockerRunnerAdapter:
         DEPRECATED: Use register_trial() instead.
 
         This method is kept for backward compatibility but will raise
-        a deprecation warning. The new architecture uses TaskDescription
-        JSON instead of separate tools and env_config.
+        a deprecation warning. The new architecture uses a serialised
+        ``TrialSpec`` (which embeds the ``TaskDescription`` at ``spec.task``)
+        instead of separate tools and env_config.
 
         Args:
             tools: List of tool definitions (ignored)
@@ -205,13 +209,13 @@ class DockerRunnerAdapter:
         import warnings
 
         warnings.warn(
-            "register_tools() is deprecated. Use register_trial() with TaskDescription JSON instead.",
+            "register_tools() is deprecated. Use register_trial() with a TrialSpec JSON instead.",
             DeprecationWarning,
             stacklevel=2,
         )
         logger.warning(
             "register_tools() called but is deprecated. "
-            "Use register_trial() with TaskDescription JSON instead."
+            "Use register_trial() with a TrialSpec JSON instead."
         )
         return False
 

@@ -47,7 +47,7 @@ sequenceDiagram
     participant R as Runner
     participant DB as DB Service
 
-    H->>R: RegisterTrial - task_description_json
+    H->>R: RegisterTrial - trial_spec_json
     R->>DB: Initialize state + schemas + unstable_fields
     R-->>H: TrialReady - tool_schemas for LLM
 
@@ -81,8 +81,8 @@ option go_package = "tolokaforge/runner";
 // =============================================================================
 
 service RunnerService {
-  // Register a new trial with full task description
-  // Host sends TaskDescription JSON, Runner initializes environment
+  // Register a new trial with a typed TrialSpec payload
+  // Host sends TrialSpec JSON; Runner reads spec.task to initialise environment
   rpc RegisterTrial(RegisterTrialRequest) returns (RegisterTrialResponse);
 
   // Execute a tool call from the LLM
@@ -110,19 +110,22 @@ service RunnerService {
 }
 
 // =============================================================================
-// RegisterTrial - Initialize trial with full TaskDescription
+// RegisterTrial - Initialise trial with a TrialSpec payload
 // =============================================================================
 
 message RegisterTrialRequest {
   // Unique identifier for this trial instance
   // Format: "{task_id}:{trial_index}" e.g. "airline_task_001:0"
+  // Redundant with TrialSpec.trial_id; kept top-level so routing/lookups
+  // don't need to parse the JSON payload.
   string trial_id = 1;
 
-  // Full TaskDescription as JSON string
-  // See docs/TASK_DESCRIPTION_SCHEMA.md for schema
-  // Contains: task_id, system_prompt, agent_tools, user_tools,
-  //           initial_state, grading config, user_simulator config
-  string task_description_json = 2;
+  // Full TrialSpec as JSON string. See tolokaforge/core/trial.py for the
+  // Pydantic model and docs/architecture/adr/0003-trial-spec-and-trial-result.md
+  // for the rationale. The TrialSpec embeds a TaskDescription at spec.task
+  // (see docs/TASK_DESCRIPTION_SCHEMA.md) plus the per-trial execution context
+  // (run_id, attempt_id, model configs, env endpoints, runtime context).
+  string trial_spec_json = 2;
 
   // Optional: Override timeout for tool execution (seconds)
   double default_tool_timeout_s = 3;
@@ -444,7 +447,7 @@ message HealthCheckResponse {
 
 ### RegisterTrialRequest
 
-The `task_description_json` field contains the full [`TaskDescription`](docs/TASK_DESCRIPTION_SCHEMA.md) schema:
+The `trial_spec_json` field contains a serialised [`TrialSpec`](../tolokaforge/core/trial.py), which embeds the full [`TaskDescription`](docs/TASK_DESCRIPTION_SCHEMA.md) schema at `spec.task` (shown below) alongside the per-trial execution context (`run_id`, `attempt_id`, model configs, `env_endpoints`, `runtime_context`):
 
 ```json
 {

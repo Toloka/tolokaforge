@@ -18,6 +18,7 @@ from typing import Any
 
 import grpc
 
+from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S
 from tolokaforge.runner import (
     ExecutionStatus,
     runner_pb2,
@@ -131,15 +132,21 @@ class RunnerClient:
         self.close()
 
     def register_trial(
-        self, trial_id: str, task_description_json: str, default_tool_timeout_s: float = 30.0
+        self,
+        trial_id: str,
+        trial_spec_json: str,
+        default_tool_timeout_s: float = DEFAULT_TOOL_TIMEOUT_S,
     ) -> dict:
         """
-        Register a new trial with full TaskDescription
+        Register a new trial by sending a serialised TrialSpec to the runner.
 
         Args:
-            trial_id: Unique identifier for this trial (format: "{task_id}:{trial_index}")
-            task_description_json: Full TaskDescription as JSON string
-            default_tool_timeout_s: Default timeout for tool execution
+            trial_id: Unique identifier for this trial (format: "{task_id}:{trial_index}").
+            trial_spec_json: ``TrialSpec`` as JSON string (see
+                ``tolokaforge/core/trial.py``). The runner reads ``spec.task``
+                for tool reconstruction and uses the rest of the spec for
+                per-trial execution context.
+            default_tool_timeout_s: Default timeout for tool execution.
 
         Returns:
             dict with keys:
@@ -155,7 +162,7 @@ class RunnerClient:
         try:
             request = runner_pb2.RegisterTrialRequest(
                 trial_id=trial_id,
-                task_description_json=task_description_json,
+                trial_spec_json=trial_spec_json,
                 default_tool_timeout_s=default_tool_timeout_s,
             )
 
