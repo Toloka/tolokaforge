@@ -1,15 +1,17 @@
 """Trial artifact writer — Protocol + disk-backed implementation.
 
 The writer composes :class:`tolokaforge.core.output_writer.OutputWriter`
-for the seven per-trial YAML files that make up a trial bundle:
+for the eight per-trial YAML files that make up a trial bundle:
 
 * ``task.yaml`` — frozen task identity + resolved preset fingerprint
 * ``trajectory.yaml`` — full message trace incl. reasoning blocks
 * ``env.yaml`` — final env state snapshot
 * ``metrics.yaml`` — usage / latency / tool-call metrics
-* ``grade.yaml`` — pass / fail + score components
+* ``grade.yaml`` — pass / fail + score components (omitted when the
+  trial has no grade)
 * ``logs.yaml`` — structured trial logs
 * ``tools_schemas.yaml`` — post-policy tool list, what the provider saw
+* ``prompts.yaml`` — per-trial agent + user-simulator system prompts
 
 Every artifact is YAML, every artifact is per-trial — a trial bundle is
 self-contained, no sidecar lookup needed for audit. Disk overhead is
@@ -29,8 +31,9 @@ authoritative on-disk contract.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import yaml
 
@@ -38,11 +41,13 @@ from tolokaforge.core.output_writer import OutputWriter
 
 if TYPE_CHECKING:  # pragma: no cover — type-only imports
     from tolokaforge.core.logging import StructuredLogger
-    from tolokaforge.core.models import Grade, Trajectory
+    from tolokaforge.core.models import Grade, Metrics, Trajectory
 
 __all__ = [
     "FileArtifactWriter",
+    "InMemoryArtifactWriter",
     "TrialArtifactWriter",
+    "TrialArtifactBundle",
     "model_id_slug",
 ]
 
@@ -103,12 +108,11 @@ def model_id_slug(provider: str, name: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+@runtime_checkable
 class TrialArtifactWriter(Protocol):
-    """Writes per-trial artifacts + per-(task, model) sidecars.
-
-    The orchestrator depends on this Protocol, not
-    :class:`FileArtifactWriter`. Alternative implementations (in-memory for
-    tests, remote-object-store for production, …) satisfy the same contract.
+    """Writes per-trial artifacts. The orchestrator depends on this Protocol;
+    alternative implementations (in-memory, remote object store, …) satisfy
+    the same contract.
     """
 
     def write_trajectory(self, trial_dir: Path, trajectory: Trajectory) -> None:
@@ -165,6 +169,21 @@ class TrialArtifactWriter(Protocol):
         ``Trajectory.system_prompt`` / ``Trajectory.user_system_prompt``
         keys so analytics tools that already read those names keep
         working — only the file moved.
+        """
+        ...
+
+    def write_trial_bundle(
+        self,
+        trial_dir: Path,
+        trajectory: Trajectory,
+        task_snapshot: dict[str, Any],
+        env_state: dict[str, Any],
+        logger: StructuredLogger,
+    ) -> None:
+        """Write the per-trial bundle artifacts for a trial in one call:
+        ``task.yaml``, ``trajectory.yaml``, ``env.yaml``, ``metrics.yaml``,
+        ``grade.yaml`` (when ``trajectory.grade`` is non-``None``), and
+        ``logs.yaml``. Convenience for the common orchestrator path.
         """
         ...
 
@@ -311,3 +330,126 @@ class FileArtifactWriter:
                 allow_unicode=True,
                 default_flow_style=False,
             )
+
+
+# ---------------------------------------------------------------------------
+# InMemoryArtifactWriter — non-disk implementation, test fixture
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class TrialArtifactBundle:
+    """The artifacts an :class:`InMemoryArtifactWriter` records for one trial.
+
+    Each attribute holds the most recent value written for that artifact
+    name, or ``None`` if the corresponding ``write_*`` method has not been
+    called for this trial.
+
+    ``write_trial_bundle`` populates ``task``, ``trajectory``, ``env``,
+    ``metrics``, ``grade``, and ``logs``. ``tools_schemas`` and ``prompts``
+    are only populated by their own per-piece write methods.
+    """
+
+    trajectory: Trajectory | None = None
+    task: dict[str, Any] | None = None
+    env: dict[str, Any] | None = None
+    metrics: Metrics | None = None
+    grade: Grade | None = None
+    logs: StructuredLogger | None = None
+    tools_schemas: list[dict[str, Any]] | None = None
+    prompts: dict[str, str | None] | None = None
+
+
+class InMemoryArtifactWriter:
+    """In-memory :class:`TrialArtifactWriter`.
+
+    Stores each trial's artifacts in ``self.trials`` keyed by ``trial_dir``.
+    Use as a test fixture when code requires a writer but the assertion is
+    about what was written, not about a filesystem layout.
+
+    The Pydantic / dataclass objects passed in are stored by reference, not
+    copied. Mutating them after the write call is observable through
+    :attr:`trials` (matching how :class:`FileArtifactWriter` would serialise
+    whatever state existed at write time).
+
+    The bundle key is ``Path(trial_dir)`` as supplied — *not* ``.resolve()``-d.
+    The disk-backed writer resolves trial paths against the filesystem;
+    this writer doesn't touch the filesystem, so two surface forms of the
+    same logical path (``Path("a/b")`` vs ``Path("./a/b")``) bucket into
+    separate trials here even though they'd share an :class:`OutputWriter`
+    cache slot on disk. Tests should pass canonical paths (typically
+    ``tmp_path / ...``) so the divergence doesn't surface.
+    """
+
+    def __init__(self) -> None:
+        self.trials: dict[Path, TrialArtifactBundle] = {}
+
+    def _bundle(self, trial_dir: Path) -> TrialArtifactBundle:
+        key = Path(trial_dir)
+        if key not in self.trials:
+            self.trials[key] = TrialArtifactBundle()
+        return self.trials[key]
+
+    # ------------------------------------------------------------------
+    # Per-piece writes
+    # ------------------------------------------------------------------
+
+    def write_trajectory(self, trial_dir: Path, trajectory: Trajectory) -> None:
+        self._bundle(trial_dir).trajectory = trajectory
+
+    def write_task(self, trial_dir: Path, task_snapshot: dict[str, Any]) -> None:
+        self._bundle(trial_dir).task = task_snapshot
+
+    def write_env(self, trial_dir: Path, env_state: dict[str, Any]) -> None:
+        self._bundle(trial_dir).env = env_state
+
+    def write_metrics(self, trial_dir: Path, trajectory: Trajectory) -> None:
+        self._bundle(trial_dir).metrics = trajectory.metrics
+
+    def write_grade(self, trial_dir: Path, grade: Grade) -> None:
+        self._bundle(trial_dir).grade = grade
+
+    def write_logs(self, trial_dir: Path, logger: StructuredLogger) -> None:
+        self._bundle(trial_dir).logs = logger
+
+    def write_tools_schemas(
+        self,
+        trial_dir: Path,
+        schemas: list[dict[str, Any]],
+    ) -> None:
+        self._bundle(trial_dir).tools_schemas = schemas
+
+    def write_prompts(
+        self,
+        trial_dir: Path,
+        agent_prompt: str | None,
+        user_prompt: str | None,
+    ) -> None:
+        self._bundle(trial_dir).prompts = {
+            "system_prompt": agent_prompt,
+            "user_system_prompt": user_prompt,
+        }
+
+    # ------------------------------------------------------------------
+    # Bundle write
+    # ------------------------------------------------------------------
+
+    def write_trial_bundle(
+        self,
+        trial_dir: Path,
+        trajectory: Trajectory,
+        task_snapshot: dict[str, Any],
+        env_state: dict[str, Any],
+        logger: StructuredLogger,
+    ) -> None:
+        bundle = self._bundle(trial_dir)
+        bundle.task = task_snapshot
+        bundle.trajectory = trajectory
+        bundle.env = env_state
+        bundle.metrics = trajectory.metrics
+        # Mirror the disk path's guard exactly (``OutputWriter.write_all``,
+        # output_writer.py) — truthiness, not ``is not None`` — so a future
+        # falsy-but-non-``None`` Grade can't make the two writers diverge.
+        if trajectory.grade:
+            bundle.grade = trajectory.grade
+        bundle.logs = logger
