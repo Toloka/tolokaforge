@@ -447,6 +447,9 @@ class InMemoryArtifactWriter:
         bundle.trajectory = trajectory
         bundle.env = env_state
         bundle.metrics = trajectory.metrics
-        if trajectory.grade is not None:
+        # Mirror the disk path's guard exactly (``OutputWriter.write_all``,
+        # output_writer.py) — truthiness, not ``is not None`` — so a future
+        # falsy-but-non-``None`` Grade can't make the two writers diverge.
+        if trajectory.grade:
             bundle.grade = trajectory.grade
         bundle.logs = logger

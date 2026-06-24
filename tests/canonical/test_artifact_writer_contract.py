@@ -161,7 +161,7 @@ class TestInMemoryWriterBundleSemantics:
         assert set(writer.trials.keys()) == {Path("a:0"), Path("b:0")}
         assert isinstance(writer.trials[Path("a:0")], TrialArtifactBundle)
 
-    def test_write_trial_bundle_populates_six_artifacts(self) -> None:
+    def test_write_trial_bundle_populates_bundle_artifacts(self) -> None:
         writer = InMemoryArtifactWriter()
         trajectory = _make_trajectory()
         snapshot = _make_task_snapshot()
