@@ -18,6 +18,7 @@ from typing import Any
 
 import grpc
 
+from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S
 from tolokaforge.runner import (
     ExecutionStatus,
     runner_pb2,
@@ -131,7 +132,10 @@ class RunnerClient:
         self.close()
 
     def register_trial(
-        self, trial_id: str, trial_spec_json: str, default_tool_timeout_s: float = 30.0
+        self,
+        trial_id: str,
+        trial_spec_json: str,
+        default_tool_timeout_s: float = DEFAULT_TOOL_TIMEOUT_S,
     ) -> dict:
         """
         Register a new trial by sending a serialised TrialSpec to the runner.

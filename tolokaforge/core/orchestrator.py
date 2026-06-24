@@ -49,7 +49,7 @@ from tolokaforge.core.resume import RunStateManager
 from tolokaforge.core.run_queue import AttemptLease, create_run_queue
 from tolokaforge.core.runner import TrialRunner
 from tolokaforge.core.stuck import StuckDetector
-from tolokaforge.core.trial import TrialResult, TrialSpec
+from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, TrialResult, TrialSpec
 from tolokaforge.runner.models import AdapterType
 
 # Tools that need Playwright + Chromium baked into the runner image. The
@@ -1275,10 +1275,15 @@ class Orchestrator:
             agent_model_config=agent_client.config,
             user_model_config=user_config,
             max_turns=task.max_turns,
-            default_tool_timeout_s=30.0,
+            default_tool_timeout_s=DEFAULT_TOOL_TIMEOUT_S,
         )
 
-        register_result = tool_executor.register_trial(trial_spec_json=spec.model_dump_json())
+        # The spec is the single source of truth for the timeout; the proto
+        # field is filled from it so the two cannot diverge silently.
+        register_result = tool_executor.register_trial(
+            trial_spec_json=spec.model_dump_json(),
+            default_tool_timeout_s=spec.default_tool_timeout_s or DEFAULT_TOOL_TIMEOUT_S,
+        )
         if not register_result["success"]:
             error = register_result.get("error", "Unknown error")
             raise RuntimeError(

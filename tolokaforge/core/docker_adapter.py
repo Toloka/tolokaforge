@@ -12,6 +12,7 @@ import logging
 from typing import Any
 
 from tolokaforge.core.docker_runtime import RunnerClient
+from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S
 from tolokaforge.tools.registry import ToolResult
 
 logger = logging.getLogger(__name__)
@@ -105,7 +106,9 @@ class DockerRunnerAdapter:
         """Clear tool execution logs"""
         self.tool_logs = []
 
-    def register_trial(self, trial_spec_json: str, default_tool_timeout_s: float = 30.0) -> dict:
+    def register_trial(
+        self, trial_spec_json: str, default_tool_timeout_s: float = DEFAULT_TOOL_TIMEOUT_S
+    ) -> dict:
         """
         Register a trial with the runner service.
 
@@ -192,8 +195,9 @@ class DockerRunnerAdapter:
         DEPRECATED: Use register_trial() instead.
 
         This method is kept for backward compatibility but will raise
-        a deprecation warning. The new architecture uses TaskDescription
-        JSON instead of separate tools and env_config.
+        a deprecation warning. The new architecture uses a serialised
+        ``TrialSpec`` (which embeds the ``TaskDescription`` at ``spec.task``)
+        instead of separate tools and env_config.
 
         Args:
             tools: List of tool definitions (ignored)
@@ -205,7 +209,7 @@ class DockerRunnerAdapter:
         import warnings
 
         warnings.warn(
-            "register_tools() is deprecated. Use register_trial() with TaskDescription JSON instead.",
+            "register_tools() is deprecated. Use register_trial() with a TrialSpec JSON instead.",
             DeprecationWarning,
             stacklevel=2,
         )

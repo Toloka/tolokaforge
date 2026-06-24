@@ -9,6 +9,12 @@ from pydantic import BaseModel, Field
 from tolokaforge.core.models import ModelConfig, Trajectory
 from tolokaforge.runner.models import TaskDescription
 
+DEFAULT_TOOL_TIMEOUT_S = 30.0
+"""Fallback per-tool execution timeout when a trial does not specify one.
+
+Single source of truth for the producer (orchestrator spec build), the gRPC
+client default, and the runner-side consumer fallback."""
+
 
 class TrialSpec(BaseModel):
     """Everything a trial needs to run.
@@ -46,7 +52,8 @@ class TrialSpec(BaseModel):
     """Optional per-trial turn cap override; ``None`` defers to the engine default."""
 
     default_tool_timeout_s: float | None = None
-    """Optional per-tool default timeout in seconds; ``None`` defers to the runner."""
+    """Optional per-tool default timeout in seconds; ``None`` defers to the
+    runner, which falls back to ``DEFAULT_TOOL_TIMEOUT_S``."""
 
     # ---- Extension points ------------------------------------------------
     env_endpoints: dict[str, str] = Field(default_factory=dict)
@@ -83,4 +90,4 @@ class TrialResult(BaseModel):
         return cls(trial_id=trial_id, trajectory=trajectory, worker_id=worker_id)
 
 
-__all__ = ["TrialSpec", "TrialResult"]
+__all__ = ["DEFAULT_TOOL_TIMEOUT_S", "TrialSpec", "TrialResult"]
