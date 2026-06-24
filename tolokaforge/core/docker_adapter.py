@@ -215,7 +215,7 @@ class DockerRunnerAdapter:
         )
         logger.warning(
             "register_tools() called but is deprecated. "
-            "Use register_trial() with TaskDescription JSON instead."
+            "Use register_trial() with a TrialSpec JSON instead."
         )
         return False
 

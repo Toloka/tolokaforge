@@ -1632,7 +1632,9 @@ class Orchestrator:
             output_dir=str(trial_dir),
         )
 
-        return TrialResult.from_trajectory(trial_id=trial_id, trajectory=trajectory)
+        return TrialResult.from_trajectory(
+            trial_id=trial_id, trajectory=trajectory, worker_id=worker_id
+        )
 
     def _serialize_model_config(
         self,
