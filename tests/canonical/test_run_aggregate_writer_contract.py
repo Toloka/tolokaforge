@@ -66,7 +66,7 @@ def _make_failure_attribution() -> dict[str, Any]:
 
 
 @pytest.fixture
-def writers(tmp_path: Path) -> list[RunAggregateWriter]:
+def writers() -> list[RunAggregateWriter]:
     """Both production-shaped writers, ready to receive calls."""
     return [FileAggregateWriter(), InMemoryAggregateWriter()]
 
