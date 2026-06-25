@@ -15,8 +15,10 @@ RUN pip install --no-cache-dir -r service-requirements.txt
 
 # Install the tolokaforge package from a pre-built wheel so service code
 # can ``import tolokaforge.secrets`` for the global log redactor.
-# The wheel is placed in the build context by the host-side wheel resolver.
-ARG WHEEL_FILENAME=tolokaforge-0.0.0-py3-none-any.whl
+# The wheel is placed in the build context by the host-side wheel resolver;
+# WHEEL_FILENAME has no default so a missing --build-arg fails loudly at
+# this layer rather than silently `COPY`ing the wrong filename later.
+ARG WHEEL_FILENAME
 COPY ${WHEEL_FILENAME} /tmp/
 RUN pip install --no-cache-dir "/tmp/${WHEEL_FILENAME}" \
     && rm -f "/tmp/${WHEEL_FILENAME}"

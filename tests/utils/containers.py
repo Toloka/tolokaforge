@@ -44,16 +44,13 @@ def _check_image_available(image_name: str) -> None:
         pytest.skip(f"Docker not available: {exc}")
         return
 
-    # Image not found — try to build it from the project's Dockerfiles
-    from tolokaforge.docker.builder import IMAGE_DEFINITIONS
+    # Image not found — try to build it from the project's Dockerfiles.
+    # service_name_for_image covers both static (IMAGE_DEFINITIONS) and
+    # dynamically-resolved services (runner, rag-service).
+    from tolokaforge.docker.builder import service_name_for_image
 
-    # Resolve image name (without tag) to service name
     base_name = image_name.split(":")[0]
-    service_name = None
-    for svc, defn in IMAGE_DEFINITIONS.items():
-        if defn["name"] == base_name:
-            service_name = svc
-            break
+    service_name = service_name_for_image(base_name)
 
     if service_name is None:
         pytest.skip(f"Docker image '{image_name}' not found and no build definition exists for it")
