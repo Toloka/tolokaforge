@@ -38,8 +38,10 @@ WORKDIR /app
 
 # Install tolokaforge from the wheel the host resolver placed in the context.
 # WHEEL_FILENAME is passed as a build arg by the wheel resolver so we don't
-# rely on shell glob expansion inside Docker.
-ARG WHEEL_FILENAME=tolokaforge-0.0.0-py3-none-any.whl
+# rely on shell glob expansion inside Docker. No default — a missing
+# --build-arg fails loudly at this layer rather than silently `COPY`ing the
+# wrong filename later.
+ARG WHEEL_FILENAME
 COPY ${WHEEL_FILENAME} /tmp/
 RUN pip install --no-cache-dir "/tmp/${WHEEL_FILENAME}[docker]" \
     && rm -f "/tmp/${WHEEL_FILENAME}"
