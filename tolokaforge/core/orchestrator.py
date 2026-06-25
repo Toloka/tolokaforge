@@ -43,6 +43,7 @@ from tolokaforge.core.models import (
     TrialStatus,
     TypeSenseConfig,
 )
+from tolokaforge.core.output.aggregates import FileAggregateWriter, RunAggregateWriter
 from tolokaforge.core.output.artifacts import FileArtifactWriter
 from tolokaforge.core.rate_limiter import GlobalRateLimiter
 from tolokaforge.core.resume import RunStateManager
@@ -149,7 +150,12 @@ class Orchestrator:
     """Orchestrates benchmark runs across tasks and trials"""
 
     def __init__(
-        self, config: RunConfig, resume: bool = False, verbose: bool = False, strict: bool = False
+        self,
+        config: RunConfig,
+        resume: bool = False,
+        verbose: bool = False,
+        strict: bool = False,
+        run_aggregate_writer: RunAggregateWriter | None = None,
     ):
         self.config = config
         self.resume = resume
@@ -163,6 +169,13 @@ class Orchestrator:
         # so the orchestrator stays decoupled from filesystem details and
         # alternative writers (in-memory tests, remote stores) can plug in.
         self._artifact_writer: FileArtifactWriter = FileArtifactWriter()
+        # Run-level analogue: the four post-run aggregate JSONs go through
+        # this writer instead of inline ``json.dump`` calls. Injectable so
+        # tests / alternate backends (remote object store, in-memory) can
+        # substitute without touching the orchestrator.
+        self._run_aggregate_writer: RunAggregateWriter = (
+            run_aggregate_writer if run_aggregate_writer is not None else FileAggregateWriter()
+        )
 
         # Initialize logger
         log_level = logging.DEBUG if verbose else logging.INFO
@@ -1906,29 +1919,25 @@ Try to be helpful and always follow the policy."""
                 group, weighted=True
             )
 
-        # Save per-task metrics
-        with open(output_dir / "per_task_metrics.json", "w") as f:
-            json.dump(all_task_metrics, f, indent=2, default=str)
-
         aggregate["schema_version"] = 1
-        # Save aggregate report
-        with open(output_dir / "aggregate.json", "w") as f:
-            json.dump(aggregate, f, indent=2, default=str)
-        with open(output_dir / "metadata_slices.json", "w") as f:
-            json.dump(metadata_slices, f, indent=2, default=str)
 
         # Deterministic failure attribution report
         failure_attributions = [
             attribute_failure(traj) for traj in self.results if is_failed_trajectory(traj)
         ]
         failure_summary = summarize_failure_attributions(failure_attributions)
-        with open(output_dir / "failure_attribution.json", "w") as f:
-            json.dump(
-                {"summary": failure_summary, "failures": failure_attributions},
-                f,
-                indent=2,
-                default=str,
-            )
+        failure_attribution_payload = {
+            "summary": failure_summary,
+            "failures": failure_attributions,
+        }
+
+        self._run_aggregate_writer.write_run_aggregates(
+            output_dir,
+            all_task_metrics,
+            aggregate,
+            metadata_slices,
+            failure_attribution_payload,
+        )
 
         # Log summary
         self.logger.info(

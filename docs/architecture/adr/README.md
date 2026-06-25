@@ -35,3 +35,4 @@ Day-to-day implementation choices that don't affect the system shape do *not* ne
 | [0002](0002-external-model-registry.md) | External model registry — operator-overridable preset data | Proposed |
 | [0003](0003-trial-spec-and-trial-result.md) | TrialSpec and TrialResult as the typed control↔trial seam | Proposed |
 | [0004](0004-trial-artifact-writer-seam.md) | `TrialArtifactWriter` as the typed data-plane seam | Proposed |
+| [0005](0005-run-aggregate-writer-seam.md) | `RunAggregateWriter` as the run-level data-plane seam | Proposed |
