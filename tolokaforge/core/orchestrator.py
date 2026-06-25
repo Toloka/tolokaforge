@@ -118,16 +118,12 @@ def _tasks_need_full_stack(tasks: list[Any]) -> bool:
         mock_web = (
             initial_state.mock_web
             if hasattr(initial_state, "mock_web")
-            else initial_state.get("mock_web")
-            if isinstance(initial_state, dict)
-            else None
+            else initial_state.get("mock_web") if isinstance(initial_state, dict) else None
         )
         rag = (
             initial_state.rag
             if hasattr(initial_state, "rag")
-            else initial_state.get("rag")
-            if isinstance(initial_state, dict)
-            else None
+            else initial_state.get("rag") if isinstance(initial_state, dict) else None
         )
         if mock_web or rag:
             return True
