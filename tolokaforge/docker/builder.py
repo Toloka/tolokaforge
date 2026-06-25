@@ -128,6 +128,19 @@ def get_image_definition(service_name: str) -> dict[str, Any]:
     raise KeyError(f"Unknown service '{service_name}'. Available: {sorted(_ALL_KNOWN_SERVICES)}")
 
 
+def service_name_for_image(image_name: str) -> str | None:
+    """Return the service whose definition produces ``image_name`` (without tag).
+
+    Searches both static (``IMAGE_DEFINITIONS``) and dynamically-resolved
+    (``runner``, ``rag-service``) services uniformly. Returns ``None`` if no
+    known service matches.
+    """
+    for svc in _ALL_KNOWN_SERVICES:
+        if get_image_definition(svc)["name"] == image_name:
+            return svc
+    return None
+
+
 def build_all_images(
     core_only: bool = False,
     force: bool = False,

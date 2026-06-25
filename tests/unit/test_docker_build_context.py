@@ -12,7 +12,11 @@ from unittest.mock import patch
 
 import pytest
 
-from tolokaforge.docker.builder import build_image, get_image_definition
+from tolokaforge.docker.builder import (
+    build_image,
+    get_image_definition,
+    service_name_for_image,
+)
 from tolokaforge.docker.image import Image
 from tolokaforge.docker.stack import ServiceDefinition, ServiceStack
 from tolokaforge.docker.wheel_resolver import WheelArtifact
@@ -249,6 +253,21 @@ def test_build_image_passes_no_build_args_when_definition_has_none(monkeypatch) 
 
     build_image("db-service", force=True)
     assert captured["build_args"] is None
+
+
+@pytest.mark.usefixtures("_mock_wheel")
+def test_service_name_for_image_resolves_all_known_services() -> None:
+    """Reverse lookup must cover dynamically-resolved services too.
+
+    Integration test fixtures rely on this to auto-build runner / rag-service
+    images on a cold machine; iterating only ``IMAGE_DEFINITIONS`` misses them
+    because they are resolved via ``_runner_definition`` / ``_rag_definition``.
+    """
+    assert service_name_for_image("tolokaforge-db-service") == "db-service"
+    assert service_name_for_image("tolokaforge-mock-web") == "mock-web"
+    assert service_name_for_image("tolokaforge-runner") == "runner"
+    assert service_name_for_image("tolokaforge-rag-service") == "rag-service"
+    assert service_name_for_image("tolokaforge-does-not-exist") is None
 
 
 def test_start_service_builds_with_isolated_context_when_skipping_build_images(
