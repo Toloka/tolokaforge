@@ -67,10 +67,19 @@ class LoopLLMClient(Protocol):
 
 @dataclass(frozen=True)
 class LoopConfig:
-    """In-process loop budget. Frozen value object (AGENTS.md type table)."""
+    """In-process loop budget. Frozen value object (AGENTS.md type table).
+
+    The loop is bounded by ``max_turns`` and by wall-time via
+    ``episode_timeout_s`` (enforced in :meth:`ToolCallingLoop._check_episode_timeout`).
+    There is deliberately no per-turn timeout: a previously declared
+    ``turn_timeout_s`` field was never enforced (dead on ``main`` and through
+    Stage 1) and was dropped in Stage 4 — per-turn LLM timeouts are already
+    handled inside :class:`~tolokaforge.core.llm.client.LLMClient`
+    (``api_call_timeout_s`` + bounded retry), so episode wall-time is the only
+    loop-level time bound.
+    """
 
     max_turns: int = 50
-    turn_timeout_s: int = 60
     episode_timeout_s: int = 1200
 
 

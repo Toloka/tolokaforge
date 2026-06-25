@@ -33,6 +33,8 @@ from typing import Any
 import grpc
 from pydantic import ValidationError
 
+from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, run_rubric_judge
+from tolokaforge.core.models import CriterionResult, LLMJudgeConfig
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, TrialSpec
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner import runner_pb2_grpc
@@ -48,7 +50,6 @@ from tolokaforge.runner.grading import (
     combine_grade_components,
     compute_state_diff,
     evaluate_jsonpath_checks,
-    evaluate_llm_judge,
     evaluate_transcript_rules,
 )
 from tolokaforge.runner.models import (
@@ -895,9 +896,12 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 error=f"Trial '{trial_id}' not found",
             )
 
-        # Run async grading on dedicated event loop thread
+        # Run async grading on dedicated event loop thread. The 600s budget (up
+        # from 300s) accommodates the runner-side rubric judge, which runs its own
+        # multi-turn LLM loop; the judge has its own internal max_turns + wall-time
+        # budget and fails loud well within this outer ceiling.
         try:
-            result = self._run_async(self._grade_trial_async(request))
+            result = self._run_async(self._grade_trial_async(request), timeout=600.0)
             return result
         except Exception as e:
             logger.error(f"GradeTrial: Unexpected error: {e}")
@@ -1041,17 +1045,40 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     f"GradeTrial: {trial_id} - Skipping transcript rules (no messages or tool history)"
                 )
 
-        # B.2) LLM JUDGE GRADING (if llm_judge configured)
+        # B.2) LLM JUDGE GRADING (if llm_judge configured) — runner-side read-only
+        # rubric judge on the shared ToolCallingLoop. Returns per-criterion results
+        # + a weighted score, or ERRORED (no score) on its own malfunction. Never a
+        # 0.0/0.5 fallback (fail loud — AGENTS.md rule 1).
         llm_judge_config = grading_config.llm_judge
+        judge_status = pb2.JUDGE_STATUS_UNSPECIFIED
+        criterion_results: list[CriterionResult] = []
+        judge_reasons: str | None = None
+        judge_gate_failed = False
         if llm_judge_config:
             if llm_messages:
                 logger.info(f"GradeTrial: {trial_id} - Evaluating LLM judge")
-                judge_score, judge_reasons = evaluate_llm_judge(
-                    llm_judge_config.model_dump(), llm_messages
+                judge_result = await self._grade_llm_judge(
+                    trial_id, llm_judge_config, llm_messages, trial_context
                 )
-                components.llm_judge_score = judge_score
-                components.llm_judge_reasons = judge_reasons
-                logger.info(f"GradeTrial: {trial_id} - LLM judge: score={judge_score:.2f}")
+                judge_reasons = judge_result.reasons
+                criterion_results = list(judge_result.criterion_results)
+                if judge_result.status is JudgeStatus.ERRORED:
+                    # Fail loud: the judge component is incomplete, NOT zero. Leave
+                    # the component score at the -1.0 sentinel so it is excluded
+                    # from the weighted combine, and surface ERRORED on the Grade.
+                    judge_status = pb2.JUDGE_STATUS_ERRORED
+                    logger.error(f"GradeTrial: {trial_id} - LLM judge ERRORED: {judge_reasons}")
+                else:
+                    judge_status = pb2.JUDGE_STATUS_COMPLETED
+                    judge_gate_failed = judge_result.gate_failed
+                    # A failed required criterion is a HARD fail of the component
+                    # regardless of the weighted score — a high score must not
+                    # rescue it. Feed 0.0 so the combine reflects the gate.
+                    components.llm_judge_score = 0.0 if judge_gate_failed else judge_result.score
+                    logger.info(
+                        f"GradeTrial: {trial_id} - LLM judge: "
+                        f"score={judge_result.score:.2f}, gate_failed={judge_gate_failed}"
+                    )
             else:
                 logger.info(f"GradeTrial: {trial_id} - Skipping LLM judge (no transcript messages)")
 
@@ -1060,6 +1087,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         grading_config_dict = grading_config.model_dump()
         score, binary_pass = combine_grade_components(components_dict, grading_config_dict)
 
+        # A failed required rubric criterion fails the trial outright — independent
+        # of pass_threshold and any other heavily-weighted component.
+        if judge_gate_failed:
+            binary_pass = False
+
         # Build reasons string
         state_diff_dict = state_diff.model_dump() if state_diff else None
         transcript_result_dict = transcript_result.model_dump() if transcript_result else None
@@ -1067,8 +1099,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             components_dict,
             state_diff_dict,
             transcript_result_dict,
-            judge_reasons=components.llm_judge_reasons or None,
+            judge_reasons=judge_reasons or None,
         )
+        if judge_status == pb2.JUDGE_STATUS_ERRORED:
+            reasons += f" | JUDGE ERRORED: {judge_reasons}"
 
         # Append golden action errors if any (critical for debugging golden replay failures)
         if hash_result and hash_result.golden_action_errors:
@@ -1099,8 +1133,94 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 ),
                 reasons=reasons,
                 state_diff_json=json.dumps(state_diff_dict) if state_diff_dict else "",
+                criterion_results=[
+                    pb2.CriterionResult(
+                        id=cr.id, met=cr.met, score=cr.score, justification=cr.justification
+                    )
+                    for cr in criterion_results
+                ],
+                judge_status=judge_status,
             ),
         )
+
+    async def _grade_llm_judge(
+        self,
+        trial_id: str,
+        llm_judge_config: "LLMJudgeConfig",
+        llm_messages: list[dict[str, Any]],
+        trial_context: TrialContextRuntime,
+    ) -> "JudgeResult":
+        """Run the read-only rubric judge for one trial.
+
+        Async/sync bridge: ``_grade_trial_async`` runs ON the dedicated event
+        loop thread. The judge loop (``run_rubric_judge``) is synchronous and the
+        DB client is async, so we run the judge in a *thread executor*
+        (``run_in_executor``) and give its read-only DB tools a ``DBReader`` that
+        bridges each call back to this loop via
+        ``asyncio.run_coroutine_threadsafe`` — safe because the executor thread is
+        never the loop thread. Nothing here can deadlock the loop.
+
+        Narrow input surface: only ``{agent_system_prompt, transcript, rubric,
+        read-tools}`` are passed; the deterministic-oracle config never reaches
+        the judge.
+        """
+        loop = self._loop
+        db_client = self.db_client
+
+        class _LoopBridgeDBReader:
+            """Synchronous read seam bridging to the async DB client on ``loop``."""
+
+            def get_state(self, tables: list[str] | None = None) -> dict[str, Any]:
+                fut = asyncio.run_coroutine_threadsafe(db_client.get_state(trial_id, tables), loop)
+                return fut.result(timeout=30.0).data
+
+            def query(self, jsonpath: str) -> dict[str, Any]:
+                fut = asyncio.run_coroutine_threadsafe(db_client.query(trial_id, jsonpath), loop)
+                return {"results": fut.result(timeout=30.0).results}
+
+        # Agent policy comes from the transcript's leading system message (the
+        # only oracle-free policy signal the runner has). Stripped from the
+        # transcript so it is injected as policy, not replayed as a turn.
+        agent_system_prompt = ""
+        transcript = list(llm_messages)
+        if transcript and str(transcript[0].get("role", "")).lower() == "system":
+            agent_system_prompt = str(transcript[0].get("content", "") or "")
+            transcript = transcript[1:]
+
+        # search_kb only when the task is RAG-backed (a RAG client is configured).
+        # Use the client's already-resolved base_url — never re-read an env var,
+        # which could be empty and silently drop the tool (fail-loud, AGENTS.md #1).
+        rag_url = self.rag_client.base_url if self.rag_client is not None else None
+        # File readers only when a real workspace exists on this runner.
+        workspace_dir = self._judge_workspace_dir(trial_context)
+
+        def _run() -> JudgeResult:
+            return run_rubric_judge(
+                rubric=llm_judge_config.rubric,
+                model_ref=llm_judge_config.model_ref,
+                agent_system_prompt=agent_system_prompt,
+                transcript=transcript,
+                db_reader=_LoopBridgeDBReader(),
+                rag_url=rag_url,
+                workspace_dir=workspace_dir,
+            )
+
+        return await loop.run_in_executor(None, _run)
+
+    @staticmethod
+    def _judge_workspace_dir(trial_context: TrialContextRuntime) -> Path | None:
+        """Return the agent workspace dir for judge file reads, if one exists here.
+
+        Read-only file tools are offered to the judge only when a real workspace
+        directory is present on this runner. Most state-routed tasks have none.
+        """
+        task = trial_context.task_description
+        candidate = getattr(getattr(task, "initial_state", None), "agent_visible_dir", None)
+        if candidate:
+            path = Path(candidate)
+            if path.exists():
+                return path
+        return None
 
     async def _execute_hash_grading(
         self,

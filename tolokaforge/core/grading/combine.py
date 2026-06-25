@@ -22,7 +22,6 @@ from tolokaforge.core.grading.checks_interface import (
 from tolokaforge.core.grading.checks_interface import (
     ToolCall as CheckToolCall,
 )
-from tolokaforge.core.grading.judge import LLMJudge
 from tolokaforge.core.grading.state_checks import StateChecker
 from tolokaforge.core.grading.transcript import TranscriptChecker
 from tolokaforge.core.models import (
@@ -31,41 +30,26 @@ from tolokaforge.core.models import (
     GradeComponents,
     GradingConfig,
     InitialStateConfig,
-    ModelConfig,
-    Rubric,
     Trajectory,
 )
 
 logger = logging.getLogger(__name__)
 
 
-def _render_rubric_text(rubric: Rubric) -> str:
-    """Render a structured rubric to a plain-text blob for the legacy judge.
-
-    Bridges the structured ``Rubric`` to the legacy single-call ``LLMJudge.grade``
-    which still consumes free text. Removed in Stage 4 when the runner-side rubric
-    judge (per-criterion output) replaces this path.
-    """
-    lines: list[str] = []
-    if rubric.reference:
-        lines.append(f"Reference:\n{rubric.reference}\n")
-    lines.append("Criteria:")
-    for c in rubric.criteria:
-        flags = [c.kind]
-        if c.required:
-            flags.append("required")
-        suffix = f" (expected: {c.expected})" if c.expected else ""
-        lines.append(f"- [{', '.join(flags)}] weight={c.weight} {c.description}{suffix}")
-    return "\n".join(lines)
-
-
 class GradingEngine:
-    """Combine multiple grading components"""
+    """Combine deterministic grading components (state checks, transcript rules,
+    custom checks).
+
+    The LLM/rubric judge is NOT part of this engine — it runs runner-side on the
+    shared :class:`~tolokaforge.core.loop.ToolCallingLoop` via ``GradeTrial``
+    (see ``runner/service.py`` and ``core/grading/judge.py``). This engine covers
+    only the deterministic, in-process components used by the non-runner grading
+    paths (tests / NativeAdapter helpers).
+    """
 
     def __init__(
         self,
         grading_config: GradingConfig,
-        judge_model: ModelConfig | None = None,
         task_domain: str = "general",
         task_dir: Path | None = None,
         task_initial_state: InitialStateConfig | None = None,
@@ -78,7 +62,6 @@ class GradingEngine:
         self.task_mcp_server = task_mcp_server
         self.state_checker = StateChecker()
         self.transcript_checker = TranscriptChecker()
-        self.judge = LLMJudge(judge_model) if judge_model else None
         # New tau2 evaluators
         self.env_evaluator = EnvironmentEvaluator()
         self.action_evaluator = ActionEvaluator()
@@ -88,15 +71,13 @@ class GradingEngine:
         self,
         trajectory: Trajectory,
         final_env_state: dict[str, Any],
-        workspace_dir: Path | None = None,
     ) -> Grade:
         """
-        Grade a complete trajectory
+        Grade a complete trajectory (deterministic components only)
 
         Args:
             trajectory: Trial trajectory with messages and metrics
             final_env_state: Final environment state
-            workspace_dir: Agent workspace directory (for agentic judge file reading)
 
         Returns:
             Grade with score and components
@@ -246,24 +227,9 @@ class GradingEngine:
             transcript_score = action_score * comm_score * legacy_score
             components.transcript_rules = transcript_score
 
-        # LLM Judge
-        #
-        # NOTE: this GradingEngine judge path is legacy and slated for deletion in
-        # Stage 4 (the live judge runs in the runner via GradeTrial). It is kept
-        # importable and type-correct here. The rubric is now a structured
-        # ``Rubric``; render its criteria to text for the single-call judge until
-        # the runner-side rubric judge replaces this path. ``output_schema`` is
-        # derived from the rubric in Stage 3, so it is no longer passed.
-        if self.config.llm_judge and self.judge:
-            judge_score, judge_reasons = self.judge.grade(
-                messages=trajectory.messages,
-                rubric=_render_rubric_text(self.config.llm_judge.rubric),
-                task_description=trajectory.task_id,
-                workspace_dir=workspace_dir,
-            )
-            components.llm_judge = judge_score
-            if judge_reasons:
-                reasons_parts.append(f"Judge: {judge_reasons}")
+        # LLM Judge — NOT computed here. The rubric judge runs runner-side on the
+        # shared ToolCallingLoop (runner/service.py GradeTrial → core/grading/judge.py).
+        # This engine intentionally leaves ``components.llm_judge`` unset.
 
         # Custom Python Checks
         if self.config.custom_checks and self.task_dir:

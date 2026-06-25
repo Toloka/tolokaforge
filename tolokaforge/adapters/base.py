@@ -475,43 +475,22 @@ class BaseAdapter(ABC):
             Grade with score and components
         """
         from tolokaforge.core.grading.combine import GradingEngine
-        from tolokaforge.core.models import ModelConfig
 
         grading_config = self.get_grading_config(task_id)
         task_dir = self.get_task_dir(task_id)
         task = self.get_task(task_id)
 
-        # Create judge model if configured
-        judge_model = None
-        if grading_config.llm_judge and grading_config.llm_judge.model_ref:
-            provider, model_name = grading_config.llm_judge.model_ref.split("/", 1)
-            judge_model = ModelConfig(
-                provider=provider,
-                name=model_name,
-                temperature=0.0,
-            )
-
         # Get MCP server ref from task config
         mcp_server_ref = task.tools.agent.get("mcp_server") if task.tools.agent else None
 
-        # Create grading engine with all required parameters for tau-style grading
+        # Create grading engine for the deterministic components. The rubric judge
+        # is NOT run here — it lives runner-side (GradeTrial → core/grading/judge.py).
         grading_engine = GradingEngine(
             grading_config,
-            judge_model,
             task_domain=task.category if task.category else "general",
             task_dir=task_dir,
             task_initial_state=task.initial_state,
             task_mcp_server=mcp_server_ref,
         )
 
-        # Determine workspace_dir for agentic judge file reading.
-        # In non-docker mode: agent_visible_dir from final_state or env.
-        # In docker mode: materialize filesystem to a temp dir if needed.
-        workspace_dir = None
-        agent_visible = final_state.get("agent_visible_dir")
-        if agent_visible:
-            workspace_dir = Path(agent_visible)
-        elif getattr(env, "task_dir", None):
-            workspace_dir = env.task_dir
-
-        return grading_engine.grade_trajectory(trajectory, final_state, workspace_dir=workspace_dir)
+        return grading_engine.grade_trajectory(trajectory, final_state)

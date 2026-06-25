@@ -191,7 +191,6 @@ class TrialRunner:
                 tool_schemas=self.tool_schemas,
                 config=LoopConfig(
                     max_turns=self.max_turns,
-                    turn_timeout_s=self.turn_timeout_s,
                     episode_timeout_s=self.episode_timeout_s,
                 ),
                 metrics=_AgentMetricsSink(self.metrics),

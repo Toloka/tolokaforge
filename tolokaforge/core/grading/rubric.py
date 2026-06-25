@@ -124,8 +124,8 @@ def build_submit_report_tool(rubric: Rubric) -> dict:
     """Generate the terminal ``submit_report`` tool whose args derive from the rubric.
 
     The tool follows the project's OpenAI function-calling shape
-    (``{"type": "function", "function": {...}}``) — the same shape
-    ``judge.py``'s ``_CORE_TOOL_DEFS`` use, so the LLM layer accepts it directly.
+    (``{"type": "function", "function": {...}}``) — the same shape every other
+    judge read-tool (``judge_tools.py``) uses, so the LLM layer accepts it directly.
 
     Argument schema (all fields required):
 

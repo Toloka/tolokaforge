@@ -235,6 +235,29 @@ class Metrics(BaseModel):
         }
 
 
+class JudgeStatus(str, Enum):
+    """Outcome of the rubric judge for a grade (mirrors proto ``JudgeStatus``).
+
+    ``ERRORED`` is the fail-loud marker: the judge malfunctioned (retry / budget
+    exhaustion or a crash) and there is NO trustworthy numeric score — the
+    ``llm_judge`` component is incomplete, NOT 0.0. ``UNSPECIFIED`` means no
+    judge was configured / run. The integer values match the proto enum so the
+    gRPC wire value maps directly via :meth:`from_proto`.
+    """
+
+    UNSPECIFIED = "unspecified"
+    COMPLETED = "completed"
+    ERRORED = "errored"
+
+    @classmethod
+    def from_proto(cls, value: int) -> "JudgeStatus":
+        """Map the proto ``JudgeStatus`` integer to this enum (fail loud on unknown)."""
+        mapping = {0: cls.UNSPECIFIED, 1: cls.COMPLETED, 2: cls.ERRORED}
+        if value not in mapping:
+            raise ValueError(f"Unknown proto JudgeStatus value: {value}")
+        return mapping[value]
+
+
 class GradeComponents(BaseModel):
     """Individual grading component scores"""
 
@@ -266,6 +289,10 @@ class Grade(BaseModel):
     # Per-criterion rubric-judge breakdown. ``None`` when no LLM judge ran;
     # an empty list is distinct (judge ran, rubric had no scorable criteria).
     criterion_results: list[CriterionResult] | None = None
+    # Rubric-judge outcome. ``UNSPECIFIED`` when no judge was configured;
+    # ``ERRORED`` means the judge malfunctioned and the ``llm_judge`` component
+    # carries NO score (it must NOT be read as 0.0). See JudgeStatus.
+    judge_status: JudgeStatus = JudgeStatus.UNSPECIFIED
 
 
 class Trajectory(BaseModel):

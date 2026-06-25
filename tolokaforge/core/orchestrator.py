@@ -36,6 +36,7 @@ from tolokaforge.core.models import (
     CriterionResult,
     Grade,
     GradeComponents,
+    JudgeStatus,
     ModelConfig,
     RunConfig,
     TaskConfig,
@@ -1075,6 +1076,41 @@ class Orchestrator:
         self.logger.info("Run prepared", **summary)
         return summary
 
+    @staticmethod
+    def _build_judge_messages_json(
+        task: TaskConfig,  # noqa: ARG004 — kept for signature symmetry / future gating
+        trajectory: Trajectory,
+        agent_system_prompt: str | None,
+    ) -> str | None:
+        """Serialise the transcript for the runner-side grading (judge + transcript rules).
+
+        The agent's system prompt is sent as a leading ``system`` message so the
+        rubric judge can inject it as the agent's policy. The runner decides
+        whether to actually run the judge (based on its own grading config) and
+        narrows the input surface from there — so this always serialises the
+        transcript when there is one, and returns ``None`` for an empty trace.
+        """
+        if not trajectory.messages and not agent_system_prompt:
+            return None
+
+        messages: list[dict[str, Any]] = []
+        if agent_system_prompt:
+            messages.append({"role": "system", "content": agent_system_prompt})
+        for msg in trajectory.messages:
+            entry: dict[str, Any] = {
+                "role": msg.role.value,
+                "content": msg.content or "",
+            }
+            if msg.tool_calls:
+                entry["tool_calls"] = [
+                    {"function": {"name": tc.name, "arguments": json.dumps(tc.arguments)}}
+                    for tc in msg.tool_calls
+                ]
+            if msg.tool_call_id:
+                entry["tool_call_id"] = msg.tool_call_id
+            messages.append(entry)
+        return json.dumps(messages)
+
     def _run_trial(
         self,
         task: TaskConfig,
@@ -1533,7 +1569,15 @@ class Orchestrator:
             # Grade trajectory via Runner's GradeTrial RPC
             # It computes golden hash via DB service
             trial_id = f"{task.task_id}:{trial_idx}"
-            grade_result = docker_runtime.executor_client.grade_trial(trial_id=trial_id)
+            # Serialize the transcript + the agent's policy (its system prompt)
+            # whenever there are messages; the runner owns the decision of whether
+            # to actually run the rubric judge (based on its grading config).
+            llm_messages_json = self._build_judge_messages_json(
+                task, trajectory, runner.effective_system_prompt or system_prompt
+            )
+            grade_result = docker_runtime.executor_client.grade_trial(
+                trial_id=trial_id, llm_messages_json=llm_messages_json
+            )
             if grade_result["success"] and grade_result["grade"]:
                 g = grade_result["grade"]
 
@@ -1562,6 +1606,7 @@ class Orchestrator:
                     reasons=g.get("reasons", ""),
                     state_diff=state_diff_parsed,
                     criterion_results=criterion_results,
+                    judge_status=JudgeStatus.from_proto(g.get("judge_status", 0)),
                 )
                 self.logger.info(
                     "Grading via Runner RPC",
