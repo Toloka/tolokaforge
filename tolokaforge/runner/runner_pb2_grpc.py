@@ -91,8 +91,9 @@ class RunnerServiceServicer:
     """
 
     def RegisterTrial(self, request, context):
-        """Register a new trial with full task description
-        Host sends TaskDescription JSON, Runner initializes environment
+        """Register a new trial with a typed TrialSpec payload.
+        Host sends TrialSpec JSON; Runner reads spec.task to initialise the
+        environment and uses spec.<other fields> for per-trial execution context.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details("Method not implemented!")

@@ -23,8 +23,11 @@ if ! command -v git-lfs &>/dev/null; then
     fi
 fi
 
+# Use --force so a pre-existing pre-push hook (e.g. left over from a prior
+# devcontainer build, since .git persists across rebuilds) is overwritten
+# rather than causing `git lfs install` to abort with exit code 2.
 log_info "Initializing Git LFS..."
-git lfs install --local 2>/dev/null || git lfs install
+git lfs install --local --force 2>/dev/null || git lfs install --force
 
 log_info "Pulling Git LFS objects..."
 git lfs pull

@@ -15,7 +15,9 @@ import pytest
 from tolokaforge.runner.grading import (
     build_grade_reasons,
     combine_grade_components,
+    evaluate_jsonpath_checks,
     evaluate_jsonpath_file_checks,
+    evaluate_jsonpath_state_checks,
 )
 
 pytestmark = pytest.mark.unit
@@ -130,6 +132,100 @@ def test_partial_pass_score(tmp_path: Path):
     assert score == 0.5
 
 
+def test_state_jsonpath_checks_grade_db_state():
+    state = {
+        "db": {
+            "orders": [
+                {
+                    "status": "confirmed",
+                    "items": [{"product_id": "hub-flex-7-silver", "quantity": 1}],
+                }
+            ]
+        }
+    }
+    checks = [
+        {
+            "path": "$.db.orders[-1].status",
+            "equals": "confirmed",
+            "description": "order is confirmed",
+        },
+        {
+            "path": "$.db.orders[-1].items[0].product_id",
+            "equals": "hub-flex-7-silver",
+            "description": "exact product selected",
+        },
+    ]
+
+    score, reasons = evaluate_jsonpath_state_checks(checks, state)
+
+    assert score == 1.0
+    assert "PASS: order is confirmed" in reasons
+    assert "PASS: exact product selected" in reasons
+
+
+def test_state_jsonpath_checks_fail_on_wrong_value():
+    state = {"db": {"orders": [{"status": "cancelled"}]}}
+    checks = [
+        {
+            "path": "$.db.orders[-1].status",
+            "equals": "confirmed",
+            "description": "order is confirmed",
+        }
+    ]
+
+    score, reasons = evaluate_jsonpath_state_checks(checks, state)
+
+    assert score == 0.0
+    assert "FAIL: order is confirmed" in reasons
+
+
+def test_state_jsonpath_unknown_operator_fails_loud():
+    """Parity with the core native grader (PR #66): a ``path:`` assertion with
+    no recognized operator (here a typo'd ``op:``/``expected:``) must FAIL with
+    an actionable reason, not silently pass as an existence check."""
+    state = {"db": {"orders": [{"status": "cancelled"}]}}
+    checks = [
+        {
+            "path": "$.db.orders[-1].status",
+            "op": "gte",
+            "expected": 5,
+            "description": "bogus operator",
+        }
+    ]
+
+    score, reasons = evaluate_jsonpath_state_checks(checks, state)
+
+    assert score == 0.0
+    assert "no recognized operator" in reasons
+    assert "bogus operator" in reasons
+    # The supported operators are named so the author can fix the assertion.
+    assert "equals" in reasons
+
+
+def test_mixed_jsonpath_checks_keep_file_compatibility(tmp_path: Path):
+    target = tmp_path / "answer.md"
+    target.write_text("approved")
+    state = {"db": {"orders": [{"status": "confirmed"}]}}
+    checks = [
+        {
+            "path_glob": str(target),
+            "contains_ci": "approved",
+            "description": "file artifact check",
+        },
+        {
+            "path": "$.db.orders[-1].status",
+            "equals": "confirmed",
+            "description": "state check",
+        },
+    ]
+
+    score, reasons = evaluate_jsonpath_checks(checks, state=state)
+
+    assert score == 1.0
+    assert "Files: PASS: file artifact check" in reasons
+    assert "State: PASS: state check" in reasons
+
+
 def test_combine_components_uses_jsonpath_when_hash_absent():
     components = {"hash_score": -1.0, "jsonpath_score": 0.75, "transcript_score": -1.0}
     grading_config = {
@@ -160,7 +256,7 @@ def test_build_reasons_includes_jsonpath_when_score_set():
         "transcript_score": -1.0,
     }
     text = build_grade_reasons(components)
-    assert "Files: PASS: A; FAIL: B" in text
+    assert "JSONPath: PASS: A; FAIL: B" in text
 
 
 class TestRunnerSideAssertionsWithoutPathGlobFailLoud:

@@ -22,8 +22,6 @@ ADR-0004's `Follow-ups` section explicitly listed this gap:
 
 This ADR closes that follow-up. After it lands, every plane has a named, typed, runtime-checkable contract with at least two implementations.
 
-> **Numbering note.** ADR-0003 is reserved for the in-review `TrialSpec` / `TrialResult` decision (the control↔trial seam). If that ADR lands under a different number, this file must be renumbered and the index in `README.md` updated.
-
 ## Decision Drivers
 
 - **Symmetry across the three planes.** Per-trial artifacts already sit behind a runtime-checkable Protocol with two implementations. The run-level half should match.

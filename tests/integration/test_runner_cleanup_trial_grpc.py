@@ -8,14 +8,16 @@ uses in production.
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import grpc
 import pytest
 
 from tolokaforge.core.docker_runtime import RunnerClient
+from tolokaforge.core.models import ModelConfig
+from tolokaforge.core.trial import TrialSpec
 from tolokaforge.runner import runner_pb2 as pb2
+from tolokaforge.runner.models import TaskDescription
 
 pytestmark = [pytest.mark.integration, pytest.mark.requires_docker]
 
@@ -46,6 +48,20 @@ def _task_description() -> dict[str, Any]:
     }
 
 
+def _trial_spec_json(trial_id: str) -> str:
+    """Build a valid ``TrialSpec`` JSON wrapping the minimal task description.
+
+    The runner-side ``RegisterTrial`` handler validates the full ``TrialSpec``
+    (not just ``spec.task``), so the wire payload must be a complete spec.
+    """
+    return TrialSpec(
+        trial_id=trial_id,
+        run_id="cleanup_e2e_run",
+        task=TaskDescription.model_validate(_task_description()),
+        agent_model_config=ModelConfig(name="test-model", provider="test"),
+    ).model_dump_json()
+
+
 @pytest.fixture
 def runner_client(runner_container) -> RunnerClient:
     """RunnerClient connected to the testcontainer Runner over gRPC."""
@@ -64,13 +80,13 @@ class TestCleanupTrialOverGrpc:
         """The retry contract: after CleanupTrial over gRPC, RegisterTrial with the
         same ``trial_id`` must not fail with ``Trial 'X' already exists``."""
         trial_id = "cleanup_e2e:0"
-        td_json = json.dumps(_task_description())
+        spec_json = _trial_spec_json(trial_id)
 
-        first = runner_client.register_trial(trial_id=trial_id, task_description_json=td_json)
+        first = runner_client.register_trial(trial_id=trial_id, trial_spec_json=spec_json)
         assert first["success"] is True, first["error"]
 
         # Baseline: without cleanup, re-register collides.
-        duplicate = runner_client.register_trial(trial_id=trial_id, task_description_json=td_json)
+        duplicate = runner_client.register_trial(trial_id=trial_id, trial_spec_json=spec_json)
         assert duplicate["success"] is False
         assert "already exists" in (duplicate["error"] or "").lower()
 
@@ -80,7 +96,7 @@ class TestCleanupTrialOverGrpc:
 
         # And now re-registration succeeds — burning a retry attempt is no
         # longer a guaranteed failure mode.
-        second = runner_client.register_trial(trial_id=trial_id, task_description_json=td_json)
+        second = runner_client.register_trial(trial_id=trial_id, trial_spec_json=spec_json)
         assert second["success"] is True, second["error"]
 
         # Tidy: leave the server clean for the next test.

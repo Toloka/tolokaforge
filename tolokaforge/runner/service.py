@@ -31,7 +31,9 @@ from pathlib import Path
 from typing import Any
 
 import grpc
+from pydantic import ValidationError
 
+from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, TrialSpec
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner import runner_pb2_grpc
 from tolokaforge.runner.db_client import (
@@ -45,7 +47,7 @@ from tolokaforge.runner.grading import (
     build_grade_reasons,
     combine_grade_components,
     compute_state_diff,
-    evaluate_jsonpath_file_checks,
+    evaluate_jsonpath_checks,
     evaluate_llm_judge,
     evaluate_transcript_rules,
 )
@@ -395,16 +397,17 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         context: grpc.ServicerContext,
     ) -> pb2.RegisterTrialResponse:
         """
-        Register a new trial with full task description.
+        Register a new trial from a serialised TrialSpec.
 
-        Host sends TaskDescription JSON, Runner initializes environment:
-        1. Parse TaskDescription JSON into Pydantic model (fail fast on invalid)
+        Host sends TrialSpec JSON; the Runner reads ``spec.task`` and
+        initialises the environment:
+        1. Validate the full TrialSpec into a Pydantic model (fail fast on invalid)
         2. Initialize DB Service with initial_state, schemas, unstable_fields (fail fast)
         3. Reconstruct tools from ToolSource definitions (fail fast)
         4. Return tool schemas for LLM configuration
 
         Args:
-            request: RegisterTrialRequest with trial_id and task_description_json
+            request: RegisterTrialRequest with trial_id and trial_spec_json
             context: gRPC context
 
         Returns:
@@ -413,22 +416,16 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         trial_id = request.trial_id
         logger.info(f"RegisterTrial: {trial_id}")
 
-        # Parse TaskDescription JSON into Pydantic model (fail fast)
         try:
-            task_dict = json.loads(request.task_description_json)
-            task_description = TaskDescription.model_validate(task_dict)
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse task_description_json: {e}")
+            trial_spec = TrialSpec.model_validate_json(request.trial_spec_json)
+        except ValidationError as e:
+            logger.error(f"Failed to validate trial_spec_json: {e}")
             return pb2.RegisterTrialResponse(
                 success=False,
-                error=f"Invalid task_description_json: {e}",
+                error=f"Invalid trial_spec_json: {e}",
             )
-        except Exception as e:
-            logger.error(f"Failed to validate TaskDescription: {e}")
-            return pb2.RegisterTrialResponse(
-                success=False,
-                error=f"Invalid TaskDescription: {e}",
-            )
+
+        task_description = trial_spec.task
 
         # Extract tool artifacts to temp directory if present
         artifacts_dir = None
@@ -455,7 +452,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         trial_context = TrialContextRuntime(
             trial_id=trial_id,
             task_description=task_description,
-            default_timeout=request.default_tool_timeout_s or 30.0,
+            default_timeout=request.default_tool_timeout_s or DEFAULT_TOOL_TIMEOUT_S,
         )
 
         # Initialize DB Service with initial_state (FAIL FAST)
@@ -985,20 +982,31 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     error=f"Hash grading failed: {type(e).__name__}: {str(e)}",
                 )
 
-        # A.2) JSONPATH FILE ASSERTIONS (if jsonpath_checks exist)
+        # A.2) JSONPATH ASSERTIONS (if jsonpath_checks exist)
         if state_checks_config and state_checks_config.jsonpath_checks:
             logger.info(
                 f"GradeTrial: {trial_id} - Evaluating "
-                f"{len(state_checks_config.jsonpath_checks)} jsonpath file checks"
+                f"{len(state_checks_config.jsonpath_checks)} jsonpath checks"
             )
-            jsonpath_score, jsonpath_reasons = evaluate_jsonpath_file_checks(
-                state_checks_config.jsonpath_checks
+            # Only fetch DB state when at least one assertion targets it via
+            # ``path:``. File-only (``path_glob:``) checks never needed the DB,
+            # so fetching unconditionally would add a round-trip and a new
+            # failure mode for tasks that previously graded without it.
+            jsonpath_checks = state_checks_config.jsonpath_checks
+            jsonpath_state = None
+            if any(check.get("path") is not None for check in jsonpath_checks):
+                stable_state_response = await self.db_client.get_stable_state(trial_id)
+                jsonpath_state = {
+                    "db": stable_state_response.data,
+                    "tables": stable_state_response.data,
+                }
+            jsonpath_score, jsonpath_reasons = evaluate_jsonpath_checks(
+                jsonpath_checks,
+                state=jsonpath_state,
             )
             components.jsonpath_score = jsonpath_score
             components.jsonpath_reasons = jsonpath_reasons
-            logger.info(
-                f"GradeTrial: {trial_id} - Jsonpath file checks: score={jsonpath_score:.2f}"
-            )
+            logger.info(f"GradeTrial: {trial_id} - Jsonpath checks: score={jsonpath_score:.2f}")
 
         # B) TRANSCRIPT RULES GRADING (if transcript_rules exist)
         transcript_rules_config = grading_config.transcript_rules

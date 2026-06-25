@@ -50,6 +50,7 @@ from tolokaforge.core.resume import RunStateManager
 from tolokaforge.core.run_queue import AttemptLease, create_run_queue
 from tolokaforge.core.runner import TrialRunner
 from tolokaforge.core.stuck import StuckDetector
+from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, TrialResult, TrialSpec
 from tolokaforge.runner.models import AdapterType
 
 # Tools that need Playwright + Chromium baked into the runner image. The
@@ -698,6 +699,8 @@ class Orchestrator:
                     output_dir,
                     docker_runtime,
                     request_limiter,
+                    attempt_id=lease.retry_count,
+                    worker_id=lease_owner,
                 )
                 active_futures[future] = lease
                 return True
@@ -712,7 +715,8 @@ class Orchestrator:
                     task_id = lease.task_id
                     trial_idx = lease.trial_index
                     try:
-                        trajectory = future.result()
+                        trial_result = future.result()
+                        trajectory = trial_result.trajectory
                         self.results.append(trajectory)
                         trial_cost = trajectory.metrics.cost_usd or 0.0
                         total_cost_usd += trial_cost
@@ -951,7 +955,7 @@ class Orchestrator:
                 run_queue.mark_running(lease.id, lease_owner)
 
                 try:
-                    trajectory = self._run_trial(
+                    trial_result = self._run_trial(
                         task=task,
                         trial_idx=lease.trial_index,
                         agent_client=agent_client,
@@ -959,7 +963,10 @@ class Orchestrator:
                         output_dir=output_dir,
                         docker_runtime=docker_runtime,
                         request_limiter=request_limiter,
+                        attempt_id=lease.retry_count,
+                        worker_id=lease_owner,
                     )
+                    trajectory = trial_result.trajectory
                     self.results.append(trajectory)
                     trial_cost = trajectory.metrics.cost_usd or 0.0
                     total_cost_usd += trial_cost
@@ -1063,8 +1070,16 @@ class Orchestrator:
         output_dir: Path,
         docker_runtime: Any,
         request_limiter: GlobalRateLimiter | None = None,
-    ) -> Trajectory:
-        """Run a single trial with environment state and grading"""
+        *,
+        attempt_id: int = 0,
+        worker_id: str | None = None,
+    ) -> TrialResult:
+        """Run a single trial with environment state and grading.
+
+        ``attempt_id`` is the queue lease's retry count (0 on first attempt);
+        ``worker_id`` identifies the owning process (the orchestrator itself
+        in single-process mode, the worker's host:pid in distributed mode).
+        """
         assert self.adapter is not None
 
         # Get task directory from adapter (supports both native and tau)
@@ -1249,15 +1264,30 @@ class Orchestrator:
             runner_client=docker_runtime.executor_client, trial_id=trial_id
         )
 
-        # Get TaskDescription from adapter and register trial
         task_desc = self.adapter.to_task_description(task.task_id)
         # Host-side guard: adapter_type is an open string (the adapter set is
         # entry-point-discovered). Validate against the registry here (authoritative
         # on the host) to catch typos/misconfig early.
         ensure_registered_adapter(task_desc.adapter_type)
-        task_desc_json = task_desc.model_dump_json()
 
-        register_result = tool_executor.register_trial(task_description_json=task_desc_json)
+        spec = TrialSpec(
+            trial_id=trial_id,
+            run_id=output_dir.name,
+            attempt_id=attempt_id,
+            worker_id=worker_id,
+            task=task_desc,
+            agent_model_config=agent_client.config,
+            user_model_config=user_config,
+            max_turns=task.max_turns,
+            default_tool_timeout_s=DEFAULT_TOOL_TIMEOUT_S,
+        )
+
+        # The spec is the single source of truth for the timeout; the proto
+        # field is filled from it so the two cannot diverge silently.
+        register_result = tool_executor.register_trial(
+            trial_spec_json=spec.model_dump_json(),
+            default_tool_timeout_s=spec.default_tool_timeout_s or DEFAULT_TOOL_TIMEOUT_S,
+        )
         if not register_result["success"]:
             error = register_result.get("error", "Unknown error")
             raise RuntimeError(
@@ -1606,7 +1636,9 @@ class Orchestrator:
             output_dir=str(trial_dir),
         )
 
-        return trajectory
+        return TrialResult.from_trajectory(
+            trial_id=trial_id, trajectory=trajectory, worker_id=worker_id
+        )
 
     def _serialize_model_config(
         self,
