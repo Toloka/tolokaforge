@@ -152,14 +152,14 @@ def test_runner_build_context_contains_wheel() -> None:
     assert context_files[0].endswith(".whl")
 
 
-@pytest.mark.usefixtures("_mock_wheel")
-def test_build_image_respects_context_files(monkeypatch) -> None:
+def test_build_image_respects_context_files(monkeypatch, _mock_wheel) -> None:
     """build_image() should place the resolved wheel in the Docker context."""
     captured = {}
 
     def fake_build(dockerfile, context, build_args=None, name=None, client=None):
         captured["dockerfile"] = dockerfile
         captured["context"] = context
+        captured["build_args"] = build_args
         root = Path(context)
 
         # The wheel should be in the build context root.
@@ -186,19 +186,23 @@ def test_build_image_respects_context_files(monkeypatch) -> None:
     image = build_image("runner", force=True)
     assert image.full_tag == "tolokaforge-runner:deadbeef"
     assert not Path(captured["context"]).exists(), "Temporary build context should be cleaned up"
+    # WHEEL_FILENAME must reach docker build. The Dockerfile's ARG default
+    # is a placeholder that doesn't match the real wheel on disk, so `COPY
+    # ${WHEEL_FILENAME}` fails whenever the harness omits this build arg.
+    assert captured["build_args"] == {"WHEEL_FILENAME": _mock_wheel.path.name}
 
 
-@pytest.mark.usefixtures("_mock_wheel")
-def test_build_image_non_force_path_uses_isolated_context(monkeypatch) -> None:
+def test_build_image_non_force_path_uses_isolated_context(monkeypatch, _mock_wheel) -> None:
     """The cached (non-force) path must also assemble the isolated context.
 
     Production builds go through ``ImageRegistry.get_or_build``.
     """
-    captured: dict[str, str] = {}
+    captured: dict[str, object] = {}
 
     def fake_get_or_build(self, *, name, dockerfile, context, build_args=None):  # noqa: ARG001
         captured["dockerfile"] = dockerfile
         captured["context"] = context
+        captured["build_args"] = build_args
         root = Path(context)
         # Wheel should be present in the isolated context.
         assert list(root.glob("tolokaforge-*.whl"))
@@ -219,6 +223,32 @@ def test_build_image_non_force_path_uses_isolated_context(monkeypatch) -> None:
     image = build_image("runner")
     assert image.full_tag == "tolokaforge-runner:cafe1234"
     assert not Path(captured["context"]).exists(), "Temporary build context should be cleaned up"
+    assert captured["build_args"] == {"WHEEL_FILENAME": _mock_wheel.path.name}
+
+
+def test_build_image_passes_no_build_args_when_definition_has_none(monkeypatch) -> None:
+    """Services whose definition has no ``build_args`` entry (e.g. db-service)
+    must receive ``build_args=None`` — not ``{}`` — so the content hash and
+    docker build call are bit-identical to the pre-feature behaviour.
+    """
+    captured: dict[str, object] = {}
+
+    def fake_build(dockerfile, context, build_args=None, name=None, client=None):
+        captured["build_args"] = build_args
+        return Image(
+            name=name or "test",
+            tag="deadbeef",
+            image_id="dummy",
+            dockerfile=dockerfile,
+            context=context,
+            context_hash="deadbeef",
+            build_args=build_args or {},
+        )
+
+    monkeypatch.setattr(Image, "build", fake_build)
+
+    build_image("db-service", force=True)
+    assert captured["build_args"] is None
 
 
 def test_start_service_builds_with_isolated_context_when_skipping_build_images(

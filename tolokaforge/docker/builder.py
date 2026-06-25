@@ -215,6 +215,7 @@ def build_image(
     """
     definition = get_image_definition(service_name)
     context_files = definition.get("context_files", [])
+    build_args = definition.get("build_args")
 
     if context_files:
         build_context = assemble_build_context(
@@ -230,6 +231,7 @@ def build_image(
                     dockerfile=str(dockerfile_path),
                     context=str(build_context),
                     name=definition["name"],
+                    build_args=build_args,
                 )
 
             if registry is None:
@@ -239,6 +241,7 @@ def build_image(
                 name=definition["name"],
                 dockerfile=str(dockerfile_path),
                 context=str(build_context),
+                build_args=build_args,
             )
         finally:
             shutil.rmtree(build_context, ignore_errors=True)
@@ -249,6 +252,7 @@ def build_image(
             dockerfile=definition["dockerfile"],
             context=definition["context"],
             name=definition["name"],
+            build_args=build_args,
         )
 
     if registry is None:
@@ -258,6 +262,7 @@ def build_image(
         name=definition["name"],
         dockerfile=definition["dockerfile"],
         context=definition["context"],
+        build_args=build_args,
     )
 
 
