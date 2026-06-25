@@ -4,9 +4,15 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
-from tolokaforge.core.llm import LLMClient, UserSimulator
-from tolokaforge.core.llm.client import LLMApiTimeoutError
+from tolokaforge.core.llm import GenerationResult, LLMClient, UserSimulator
 from tolokaforge.core.logging import StructuredLogger, init_trial_logger
+from tolokaforge.core.loop import (
+    LoopConfig,
+    MetricsSink,
+    TerminationDecision,
+    ToolCallingLoop,
+    UserTurnResult,
+)
 from tolokaforge.core.models import (
     Message,
     MessageRole,
@@ -177,333 +183,33 @@ class TrialRunner:
         termination_reason: TerminationReason | None = None
 
         try:
-            # Determine first user message:
-            # - If initial_user_message is provided, use it directly (tool-use/Tau style)
-            # - Otherwise, generate via user simulator (legacy behavior)
-            if initial_user_message.strip():
-                first_user_text = initial_user_message
-                self.logger.debug("Using provided initial_user_message directly")
-            else:
-                # Generate first message via user simulator (tau-bench style)
-                # The instruction is in user simulator's backstory, NOT sent to agent
-                greeting_context = [
-                    Message(
-                        role=MessageRole.ASSISTANT,
-                        content="Hi! How can I help you today?",
-                        ts=datetime.now(tz=timezone.utc),
-                    )
-                ]
-                first_user_result = None
-                init_attempts = 4
-                for attempt in range(1, init_attempts + 1):
-                    try:
-                        first_user_result = self.user_simulator.reply(greeting_context)
-                        break
-                    except Exception as exc:
-                        is_rate_limit = self._is_rate_limit_error(exc)
-                        if is_rate_limit and attempt < init_attempts:
-                            wait_s = min(2**attempt, 12)
-                            self.logger.warning(
-                                "Initial user generation rate-limited; retrying",
-                                attempt=attempt,
-                                max_attempts=init_attempts,
-                                wait_s=wait_s,
-                                error=str(exc),
-                            )
-                            time.sleep(wait_s)
-                            continue
-                        raise
+            self._seed_first_user_message(initial_user_message)
 
-                if first_user_result is None:
-                    raise RuntimeError("Failed to generate initial user message")
+            outcome = ToolCallingLoop(
+                llm_client=self.agent_client,
+                tool_executor=self.tool_executor,
+                tool_schemas=self.tool_schemas,
+                config=LoopConfig(
+                    max_turns=self.max_turns,
+                    turn_timeout_s=self.turn_timeout_s,
+                    episode_timeout_s=self.episode_timeout_s,
+                ),
+                metrics=_AgentMetricsSink(self.metrics),
+                should_terminate=self._agent_termination,
+                user_turn=self._agent_user_turn,
+                request_limiter=self.request_limiter,
+                normalize_tool_arguments=self._normalize_tool_arguments,
+                logger=self.logger,
+            ).run(system_prompt, self.messages, self.start_time)
 
-                first_user_text = first_user_result.text
-                self.logger.debug("User simulator generated first message")
-
-            # Add first user message to conversation
-            self.messages.append(
-                Message(
-                    role=MessageRole.USER, content=first_user_text, ts=datetime.now(tz=timezone.utc)
-                )
-            )
-
-            # Run turn loop
-            for turn in range(self.max_turns):
-                # Check episode timeout
-                if time.time() - self.start_time > self.episode_timeout_s:
-                    status = TrialStatus.TIMEOUT
-                    termination_reason = TerminationReason.TIMEOUT
-                    self.logger.warning(
-                        "Episode timeout reached",
-                        elapsed_s=time.time() - self.start_time,
-                        timeout_s=self.episode_timeout_s,
-                    )
-                    self.messages.append(
-                        Message(
-                            role=MessageRole.SYSTEM,
-                            content=f"Episode timeout reached ({self.episode_timeout_s}s). Dialogue terminated.",
-                            ts=datetime.now(tz=timezone.utc),
-                        )
-                    )
-                    break
-
-                # Agent generates response
-                try:
-                    self.logger.debug("Requesting agent response", turn=turn)
-
-                    if self.request_limiter is not None:
-                        self.request_limiter.acquire()
-
-                    result = self.agent_client.generate(
-                        system=system_prompt,
-                        messages=self.messages,
-                        tools=self.tool_schemas,
-                        tool_choice="auto",
-                    )
-
-                    # Capture effective system prompt from first generation
-                    if (
-                        result.effective_system_prompt
-                        and not self._effective_system_prompt_captured
-                    ):
-                        self._effective_system_prompt = result.effective_system_prompt
-                        self._effective_system_prompt_captured = True
-
-                    # Update metrics — full Usage accumulation (prompt,
-                    # completion, reasoning, cache creation/read, cached, calls).
-                    # Usage.__add__ is field-wise; calls concatenate (preserving
-                    # per-call cost_source / latency_s); provider_raw is
-                    # "latest wins" per the Usage contract.
-                    self.metrics.api_calls += 1
-                    self.metrics.usage = self.metrics.usage + result.usage
-                    if result.cost_usd is not None:
-                        if self.metrics.cost_usd is None:
-                            self.metrics.cost_usd = result.cost_usd
-                        else:
-                            self.metrics.cost_usd += result.cost_usd
-
-                    self.logger.debug(
-                        "Agent response received",
-                        turn=turn,
-                        prompt_tokens=result.usage.prompt_tokens,
-                        completion_tokens=result.usage.completion_tokens,
-                        reasoning_tokens=result.usage.reasoning_tokens,
-                        cache_read_input_tokens=result.usage.cache_read_input_tokens,
-                    )
-
-                    # Add assistant message
-                    tool_calls_list = None
-                    if result.tool_calls:
-                        tool_calls_list = result.tool_calls
-                        self.logger.debug(
-                            "Agent requested tool calls",
-                            count=len(result.tool_calls),
-                            tools=[tc.name for tc in result.tool_calls],
-                        )
-
-                    self.messages.append(
-                        Message(
-                            role=MessageRole.ASSISTANT,
-                            content=result.text,
-                            tool_calls=tool_calls_list,
-                            reasoning=result.reasoning,  # Include thinking/reasoning for visibility
-                            ts=datetime.now(tz=timezone.utc),
-                        )
-                    )
-
-                    # Check for stuck (after agent response, before tool execution)
-                    if self.stuck_detector and self.stuck_detector.is_stuck(
-                        self.messages, self.tool_executor.get_logs()
-                    ):
-                        self.metrics.stuck_detected = True
-                        termination_reason = TerminationReason.STUCK_DETECTED
-                        self.logger.warning("Stuck condition detected")
-                        self.messages.append(
-                            Message(
-                                role=MessageRole.SYSTEM,
-                                content="Stuck condition detected. Dialogue terminated.",
-                                ts=datetime.now(tz=timezone.utc),
-                            )
-                        )
-                        break
-
-                    # Check if done (agent signals completion)
-                    if self._is_done(result.text):
-                        termination_reason = TerminationReason.AGENT_DONE
-                        self.logger.info("Agent signaled completion")
-                        self.messages.append(
-                            Message(
-                                role=MessageRole.SYSTEM,
-                                content="Agent signaled task completion. Dialogue ended.",
-                                ts=datetime.now(tz=timezone.utc),
-                            )
-                        )
-                        break
-
-                    # Execute tool calls if present
-                    if result.tool_calls:
-                        for tc in result.tool_calls:
-                            normalized_args = self._normalize_tool_arguments(
-                                tc.name, tc.arguments, result.text
-                            )
-                            if normalized_args != tc.arguments:
-                                self.logger.warning(
-                                    "Recovered malformed tool arguments from assistant text",
-                                    tool=tc.name,
-                                    recovered_keys=sorted(
-                                        set(normalized_args.keys())
-                                        - set((tc.arguments or {}).keys())
-                                    ),
-                                )
-                                tc.arguments = normalized_args
-
-                            tool_start = time.time()
-                            tool_result = self.tool_executor.execute(tc.name, tc.arguments)
-                            tool_duration = time.time() - tool_start
-
-                            self.metrics.tool_calls += 1
-
-                            if tool_result.success:
-                                self.logger.debug(
-                                    "Tool executed successfully",
-                                    tool=tc.name,
-                                    duration_s=tool_duration,
-                                )
-                            else:
-                                self.logger.warning(
-                                    "Tool execution failed", tool=tc.name, error=tool_result.error
-                                )
-
-                            # Add tool result message with metadata
-                            self.messages.append(
-                                Message(
-                                    role=MessageRole.TOOL,
-                                    content=(
-                                        tool_result.output
-                                        if tool_result.success
-                                        else f"Error: {tool_result.error}"
-                                    ),
-                                    content_blocks=(
-                                        tool_result.content_blocks if tool_result.success else None
-                                    ),
-                                    tool_call_id=tc.id,
-                                    ts=datetime.now(tz=timezone.utc),
-                                )
-                            )
-                        continue  # Continue to next turn for agent to see tool results
-
-                    # No tool calls - user responds
-                    user_result = self.user_simulator.reply(self.messages)
-
-                    # Check if user signals completion (tau-bench ###STOP###)
-                    if "###STOP###" in user_result.text:
-                        termination_reason = TerminationReason.USER_STOP
-                        self.logger.info("User signaled completion (###STOP###)")
-                        self.messages.append(
-                            Message(
-                                role=MessageRole.SYSTEM,
-                                content="User signaled stop (###STOP###). Dialogue ended.",
-                                ts=datetime.now(tz=timezone.utc),
-                            )
-                        )
-                        break
-
-                    # Execute user tool calls if present (before adding message)
-                    # Note: Anthropic API doesn't support tool_use from USER role, so we embed results in text
-                    # BUT we preserve tool_calls for ActionEvaluator to track required actions
-                    user_message_text = user_result.text
-                    if user_result.tool_calls and self.user_tool_executor:
-                        tool_results_text = []
-                        for tc in user_result.tool_calls:
-                            tool_start = time.time()
-                            tool_result = self.user_tool_executor.execute(tc.name, tc.arguments)
-                            tool_duration = time.time() - tool_start
-
-                            self.logger.debug(
-                                "User tool executed",
-                                tool=tc.name,
-                                success=tool_result.success,
-                                duration_s=tool_duration,
-                            )
-
-                            # Format tool result as text
-                            result_text = f"{tc.name}() result: {tool_result.output if tool_result.success else f'Error: {tool_result.error}'}"
-                            tool_results_text.append(result_text)
-
-                        # Append tool results to user message
-                        if tool_results_text:
-                            user_message_text = f"{user_result.text}\n\n" + "\n".join(
-                                tool_results_text
-                            )
-
-                    # Add single user message with text (including embedded tool results)
-                    # Keep tool_calls for ActionEvaluator even though we embed results in text for LLM
-                    self.messages.append(
-                        Message(
-                            role=MessageRole.USER,
-                            content=user_message_text,
-                            tool_calls=user_result.tool_calls if user_result.tool_calls else None,
-                            ts=datetime.now(tz=timezone.utc),
-                        )
-                    )
-
-                except Exception as e:
-                    # Log error
-                    self.logger.error(
-                        "Error during turn execution",
-                        turn=turn,
-                        error=str(e),
-                        error_type=type(e).__name__,
-                    )
-
-                    # Detect specific error types for better classification.
-                    # ``LLMApiTimeoutError`` is matched by type — substring
-                    # matching on "timeout" mis-classifies tool / sandbox
-                    # / browser timeouts that aren't upstream-LLM timeouts.
-                    error_str = str(e)
-                    if isinstance(e, LLMApiTimeoutError):
-                        termination_reason = TerminationReason.API_TIMEOUT
-                        error_msg = f"API timeout: {error_str}. Dialogue terminated."
-                    elif (
-                        "429" in error_str
-                        or "RateLimitError" in error_str
-                        or "rate limit" in error_str.lower()
-                    ):
-                        termination_reason = TerminationReason.RATE_LIMIT
-                        error_msg = f"Rate limit error: {error_str}. Dialogue terminated."
-                    elif "API" in error_str or "OpenAI" in error_str or "Anthropic" in error_str:
-                        termination_reason = TerminationReason.API_ERROR
-                        error_msg = f"API error: {error_str}. Dialogue terminated."
-                    else:
-                        termination_reason = TerminationReason.ERROR
-                        error_msg = f"Error: {error_str}. Dialogue terminated."
-
-                    # Add error message to conversation as SYSTEM message
-                    self.messages.append(
-                        Message(
-                            role=MessageRole.SYSTEM,
-                            content=error_msg,
-                            ts=datetime.now(tz=timezone.utc),
-                        )
-                    )
-
-                    status = TrialStatus.ERROR
-                    # In strict mode, the logger.error() above will raise
-                    # Otherwise, we break the loop
-                    break
-            else:
-                # for-else: loop finished without break (max turns reached)
-                termination_reason = TerminationReason.MAX_TURNS
-                self.messages.append(
-                    Message(
-                        role=MessageRole.SYSTEM,
-                        content=f"Maximum turns ({self.max_turns}) reached. Dialogue terminated.",
-                        ts=datetime.now(tz=timezone.utc),
-                    )
-                )
+            status = outcome.status
+            termination_reason = outcome.termination_reason
+            if outcome.captured_effective_system_prompt is not None:
+                self._effective_system_prompt = outcome.captured_effective_system_prompt
+                self._effective_system_prompt_captured = True
 
         except Exception as e:
-            # Catch-all for initialization errors
+            # Catch-all for initialization errors (first-user-message generation)
             status = TrialStatus.ERROR
             termination_reason = TerminationReason.ERROR
             self.logger.error(
@@ -585,3 +291,158 @@ class TrialRunner:
         ]
         text_lower = text.lower()
         return any(marker in text_lower for marker in done_markers)
+
+    def _seed_first_user_message(self, initial_user_message: str) -> None:
+        """Determine and append the first user message before the loop runs.
+
+        If ``initial_user_message`` is provided, use it directly (tool-use / Tau
+        style). Otherwise generate it via the user simulator (legacy behaviour),
+        retrying on rate limits. The task instruction lives in the simulator's
+        backstory and is NOT sent to the agent.
+        """
+        if initial_user_message.strip():
+            first_user_text = initial_user_message
+            self.logger.debug("Using provided initial_user_message directly")
+        else:
+            greeting_context = [
+                Message(
+                    role=MessageRole.ASSISTANT,
+                    content="Hi! How can I help you today?",
+                    ts=datetime.now(tz=timezone.utc),
+                )
+            ]
+            first_user_result = None
+            init_attempts = 4
+            for attempt in range(1, init_attempts + 1):
+                try:
+                    first_user_result = self.user_simulator.reply(greeting_context)
+                    break
+                except Exception as exc:
+                    is_rate_limit = self._is_rate_limit_error(exc)
+                    if is_rate_limit and attempt < init_attempts:
+                        wait_s = min(2**attempt, 12)
+                        self.logger.warning(
+                            "Initial user generation rate-limited; retrying",
+                            attempt=attempt,
+                            max_attempts=init_attempts,
+                            wait_s=wait_s,
+                            error=str(exc),
+                        )
+                        time.sleep(wait_s)
+                        continue
+                    raise
+
+            if first_user_result is None:
+                raise RuntimeError("Failed to generate initial user message")
+
+            first_user_text = first_user_result.text
+            self.logger.debug("User simulator generated first message")
+
+        self.messages.append(
+            Message(
+                role=MessageRole.USER,
+                content=first_user_text,
+                ts=datetime.now(tz=timezone.utc),
+            )
+        )
+
+    def _agent_termination(
+        self, result: GenerationResult, turn: int, messages: list[Message]
+    ) -> TerminationDecision | None:
+        """Agent termination policy: stuck detection then ``###STOP###``/_is_done.
+
+        Mirrors the historical order — stuck is checked before the done marker.
+        Stuck sets ``metrics.stuck_detected`` as a side effect, matching the
+        original loop.
+        """
+        if self.stuck_detector and self.stuck_detector.is_stuck(
+            messages, self.tool_executor.get_logs()
+        ):
+            self.metrics.stuck_detected = True
+            self.logger.warning("Stuck condition detected")
+            return TerminationDecision(
+                reason=TerminationReason.STUCK_DETECTED,
+                system_message="Stuck condition detected. Dialogue terminated.",
+            )
+
+        if self._is_done(result.text):
+            self.logger.info("Agent signaled completion")
+            return TerminationDecision(
+                reason=TerminationReason.AGENT_DONE,
+                system_message="Agent signaled task completion. Dialogue ended.",
+            )
+
+        return None
+
+    def _agent_user_turn(self, messages: list[Message]) -> UserTurnResult:
+        """Agent user turn: simulator reply, ``###STOP###`` detection, user tools.
+
+        Embeds user tool-call results in the user message text (Anthropic does
+        not support ``tool_use`` from the USER role) while preserving the
+        original ``tool_calls`` so ``ActionEvaluator`` can track required actions.
+        """
+        user_result = self.user_simulator.reply(messages)
+
+        if "###STOP###" in user_result.text:
+            self.logger.info("User signaled completion (###STOP###)")
+            return UserTurnResult(
+                termination=TerminationDecision(
+                    reason=TerminationReason.USER_STOP,
+                    system_message="User signaled stop (###STOP###). Dialogue ended.",
+                )
+            )
+
+        user_message_text = user_result.text
+        if user_result.tool_calls and self.user_tool_executor:
+            tool_results_text = []
+            for tc in user_result.tool_calls:
+                tool_start = time.time()
+                tool_result = self.user_tool_executor.execute(tc.name, tc.arguments)
+                tool_duration = time.time() - tool_start
+
+                self.logger.debug(
+                    "User tool executed",
+                    tool=tc.name,
+                    success=tool_result.success,
+                    duration_s=tool_duration,
+                )
+
+                result_text = f"{tc.name}() result: {tool_result.output if tool_result.success else f'Error: {tool_result.error}'}"
+                tool_results_text.append(result_text)
+
+            if tool_results_text:
+                user_message_text = f"{user_result.text}\n\n" + "\n".join(tool_results_text)
+
+        return UserTurnResult(
+            message=Message(
+                role=MessageRole.USER,
+                content=user_message_text,
+                tool_calls=user_result.tool_calls if user_result.tool_calls else None,
+                ts=datetime.now(tz=timezone.utc),
+            )
+        )
+
+
+class _AgentMetricsSink(MetricsSink):
+    """Accumulates the agent's per-call usage/cost and tool counts into the
+    trial :class:`Metrics`, preserving the original field-wise semantics.
+
+    ``Usage.__add__`` is field-wise; ``calls`` concatenate (preserving per-call
+    cost_source / latency_s); ``provider_raw`` is "latest wins" per the Usage
+    contract.
+    """
+
+    def __init__(self, metrics: Metrics) -> None:
+        self._metrics = metrics
+
+    def record_generation(self, result: GenerationResult) -> None:
+        self._metrics.api_calls += 1
+        self._metrics.usage = self._metrics.usage + result.usage
+        if result.cost_usd is not None:
+            if self._metrics.cost_usd is None:
+                self._metrics.cost_usd = result.cost_usd
+            else:
+                self._metrics.cost_usd += result.cost_usd
+
+    def record_tool_call(self) -> None:
+        self._metrics.tool_calls += 1
