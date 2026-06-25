@@ -230,6 +230,8 @@ All architecturally significant decisions are recorded as ADRs in [`adr/`](adr/)
 
 See [`adr/README.md`](adr/README.md) for the process and [`adr/0000-template.md`](adr/0000-template.md) for the template.
 
+For the phase ladder and which release delivers which phase, see [`ROADMAP.md`](ROADMAP.md).
+
 ---
 
 ## 10. Risks and Known Limitations
