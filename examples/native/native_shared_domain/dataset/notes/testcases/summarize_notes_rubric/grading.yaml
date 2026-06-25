@@ -1,0 +1,67 @@
+# Rubric-graded testcase. This rubric is designed to grade from the TRANSCRIPT +
+# the author-written `reference` below (the most robust mode per docs/GRADING.md):
+# the criteria judge the agent's WRITTEN summary, which only the transcript
+# carries. A transcript rule independently gates that `list_notes` was called.
+#
+# Backing note: the notes domain runs tools against an in-process _STATE dict in
+# the MCP-server subprocess, and agent mutations there do NOT flow back to the
+# JSON DB service (that is why the other testcases avoid state_checks.jsonpaths).
+# However the per-case `initial_state.json` IS also loaded into the DB service's
+# tables, so the judge's read-only get_db_state / query_db tools CAN read the
+# initial notes. For this read-only summarize task (no mutation) that is the same
+# data, so the judge may corroborate via query_db — but the rubric does not
+# depend on it; transcript + reference are sufficient and authoritative.
+combine:
+  method: weighted
+  weights:
+    transcript_rules: 0.3
+    llm_judge: 0.7
+  pass_threshold: 0.75
+
+transcript_rules:
+  max_turns: 6
+  required_actions:
+    - action_id: "list_notes"
+      requestor: assistant
+      name: list_notes
+      arguments: {}
+      compare_args: []
+
+llm_judge:
+  # Cheap but capable judge. gpt-4o-mini loops and never submits; 4.1-mini
+  # reliably terminates on agentic grading.
+  model_ref: "openrouter/openai/gpt-4.1-mini"
+  rubric:
+    reference: |
+      The user has exactly four saved notes; a correct summary must cover all of
+      them faithfully:
+        - Office Wi-Fi: SSID stonebridge-guest, password aurora-481-fennel.
+        - Lunch order cutoff: group lunch orders close at 11:15 every weekday.
+        - Q3 board meeting: October 14 at 09:00 in the Maple room; bring the
+          printed revenue deck.
+        - Plant watering: water the office plants every Tuesday and Friday.
+      The assistant must only summarize — it must not create or modify notes.
+    criteria:
+      - id: covers_all_notes
+        description: >
+          The reply summarizes every one of the four saved notes (Wi-Fi, lunch
+          order cutoff, Q3 board meeting, plant watering). Missing or inventing a
+          note fails this criterion.
+        kind: binary
+        required: true
+        weight: 1.0
+      - id: facts_accurate
+        description: >
+          The specific facts in the summary match the notes — e.g. the Wi-Fi
+          password, the 11:15 lunch cutoff, the October 14 / 09:00 / Maple room
+          board meeting details, and the Tuesday/Friday watering schedule. No
+          fabricated or contradictory details.
+        expected: "Wi-Fi password aurora-481-fennel; lunch cutoff 11:15; board meeting Oct 14 09:00 Maple room; water plants Tue & Fri"
+        kind: graded
+        weight: 1.0
+      - id: clarity
+        description: >
+          The summary is well-organized and easy to read (e.g. a short list or
+          clearly separated items) rather than a confusing run-on.
+        kind: graded
+        weight: 0.5
