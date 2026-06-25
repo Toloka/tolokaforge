@@ -190,256 +190,277 @@ def _get_field_diffs(expected: dict[str, Any], actual: dict[str, Any]) -> list[d
 def evaluate_transcript_rules(
     messages: list[dict[str, Any]],
     tool_history: list[dict[str, Any]],
-    rules: list[dict[str, Any]],
+    rules: dict[str, Any],
 ) -> TranscriptEvaluationResult:
     """
-    Evaluate transcript rules against conversation history.
+    Evaluate the author-facing ``TranscriptRulesConfig`` against a trajectory.
 
-    Supports rule types:
-    - must_contain: Check if any assistant message contains the text
-    - must_not_contain: Check no assistant message contains the text
-    - required_tool_call: Check tool_history has this tool call
-    - max_turns: Count turns, verify under limit
+    ``rules`` is a single ``TranscriptRulesConfig.model_dump()`` dict — the
+    schema task authors actually write in ``grading.yaml``. It is decomposed
+    into one independent sub-check per field entry, each of which produces a
+    visible ``TranscriptRuleResult`` in ``details``:
+
+    - ``must_contain`` (list[str]): each string must appear (case-insensitive
+      substring) in some assistant message → one sub-check per string.
+    - ``disallow_regex`` (list[str]): none of the regexes may match any
+      assistant message → one sub-check per regex.
+    - ``max_turns`` (int | None): the number of assistant turns must be within
+      the limit → one sub-check when set.
+    - ``required_actions`` (list[RequiredAction]): each declared tool call must
+      appear in the tool history, matched by ``tool_name`` + ``requestor`` and
+      by the argument subset named in ``compare_args`` (``None`` = compare all
+      declared args, ``[]`` = compare none) → one sub-check per action.
+    - ``communicate_info`` (list[{info, required}]): each ``required`` info
+      string must appear in an assistant message → one sub-check per required
+      entry (non-required entries are advisory and not scored).
+
+    Scoring: ``score`` is the fraction of sub-checks that passed and ``passed``
+    is True iff every sub-check passed. The component score feeds
+    ``combine_grade_components`` where ``pass_threshold`` is applied, so a
+    fraction (rather than all-or-nothing) lets authors set partial-credit
+    thresholds (e.g. ``pass_threshold: 0.75``). An empty config (no fields set)
+    is a no-op pass with ``score=1.0`` — there is nothing to violate.
+
+    Unknown / missing data is surfaced as a FAILING sub-check, never silently
+    passed (AGENTS.md: surface failures explicitly).
 
     Args:
         messages: LLM conversation messages (role, content)
-        tool_history: List of tool call records from trial context
-        rules: List of rule definitions from grading config
+        tool_history: List of tool call records (ToolCallRecord.model_dump())
+        rules: A single ``TranscriptRulesConfig.model_dump()`` dict
 
     Returns:
-        TranscriptEvaluationResult with pass, score, and details
+        TranscriptEvaluationResult with passed, score, and per-sub-check details
     """
     details: list[TranscriptRuleResult] = []
 
-    if not rules:
+    must_contain: list[str] = rules.get("must_contain", []) or []
+    disallow_regex: list[str] = rules.get("disallow_regex", []) or []
+    max_turns: int | None = rules.get("max_turns")
+    required_actions: list[dict[str, Any]] = rules.get("required_actions", []) or []
+    communicate_info: list[dict[str, Any]] = rules.get("communicate_info", []) or []
+
+    assistant_messages = _assistant_message_texts(messages)
+
+    for text in must_contain:
+        details.append(_check_must_contain(text, assistant_messages))
+
+    for pattern in disallow_regex:
+        details.append(_check_disallow_regex(pattern, assistant_messages))
+
+    if max_turns is not None:
+        details.append(_check_max_turns(max_turns, messages))
+
+    for action in required_actions:
+        details.append(_check_required_action(action, tool_history))
+
+    for info in communicate_info:
+        check = _check_communicate_info(info, assistant_messages)
+        if check is not None:
+            details.append(check)
+
+    if not details:
+        # No rules configured — nothing can be violated.
         return TranscriptEvaluationResult(passed=True, score=1.0, details=[])
 
-    passed_count = 0
-    total_count = len(rules)
-
-    for rule in rules:
-        rule_type = rule.get("type", "")
-        rule_result = _evaluate_single_rule(rule_type, rule, messages, tool_history)
-        details.append(rule_result)
-
-        if rule_result.passed:
-            passed_count += 1
-
-    # Calculate score as fraction of rules passed
-    score = passed_count / total_count if total_count > 0 else 1.0
+    passed_count = sum(1 for d in details if d.passed)
+    total_count = len(details)
+    score = passed_count / total_count
     all_passed = passed_count == total_count
 
     return TranscriptEvaluationResult(passed=all_passed, score=score, details=details)
 
 
-def _evaluate_single_rule(
-    rule_type: str,
-    rule: dict[str, Any],
-    messages: list[dict[str, Any]],
-    tool_history: list[dict[str, Any]],
-) -> TranscriptRuleResult:
-    """Evaluate a single transcript rule."""
-    if rule_type == "must_contain":
-        result_dict = _evaluate_must_contain(rule, messages)
-    elif rule_type == "must_not_contain":
-        result_dict = _evaluate_must_not_contain(rule, messages)
-    elif rule_type == "required_tool_call":
-        result_dict = _evaluate_required_tool_call(rule, tool_history)
-    elif rule_type == "max_turns":
-        result_dict = _evaluate_max_turns(rule, messages)
-    else:
-        result_dict = {"passed": True, "message": f"Unknown rule type: {rule_type}"}
+# Map the RequiredAction.requestor vocabulary ("assistant"/"user", the
+# author-facing role names) onto the ToolCallRecord.executor vocabulary
+# ("agent"/"user", what the runtime records). They name the same actor.
+_REQUESTOR_TO_EXECUTOR = {"assistant": "agent", "user": "user"}
 
+
+def _assistant_message_texts(messages: list[dict[str, Any]]) -> list[str]:
+    """Extract assistant message text content as a list of strings.
+
+    Content may be a plain string or the structured-content list shape
+    (``[{"type": "text", "text": ...}, ...]``); both are flattened to text so
+    text rules work regardless of how the trajectory was serialized.
+    """
+    texts: list[str] = []
+    for m in messages:
+        if m.get("role") != "assistant":
+            continue
+        content = m.get("content")
+        if content is None:
+            continue
+        if isinstance(content, str):
+            texts.append(content)
+        elif isinstance(content, list):
+            parts = [
+                block.get("text", "")
+                for block in content
+                if isinstance(block, dict) and block.get("type") == "text"
+            ]
+            texts.append("".join(parts))
+    return texts
+
+
+def _check_must_contain(text: str, assistant_messages: list[str]) -> TranscriptRuleResult:
+    """Each required string must appear (case-insensitive) in some assistant message."""
+    needle = text.lower()
+    found = any(needle in content.lower() for content in assistant_messages)
     return TranscriptRuleResult(
-        rule_type=rule_type,
-        rule=rule,
-        passed=result_dict["passed"],
-        message=result_dict["message"],
+        rule_type="must_contain",
+        rule={"must_contain": text},
+        passed=found,
+        message=(
+            f"Found required text {text!r} in an assistant message"
+            if found
+            else f"Required text {text!r} not found in any assistant message"
+        ),
     )
 
 
-def _evaluate_must_contain(rule: dict[str, Any], messages: list[dict[str, Any]]) -> dict[str, Any]:
+def _check_disallow_regex(pattern: str, assistant_messages: list[str]) -> TranscriptRuleResult:
+    """No assistant message may match the disallowed regex.
+
+    An invalid regex is an author error — surface it as a FAIL rather than
+    silently treating it as 'no match'.
     """
-    Check if any assistant message contains the required text.
-
-    Rule format:
-    {
-        "type": "must_contain",
-        "text": "string to find",
-        "case_sensitive": false,  # optional, default false
-        "regex": false            # optional, if true treat text as regex
-    }
-    """
-    text = rule.get("text", "")
-    case_sensitive = rule.get("case_sensitive", False)
-    is_regex = rule.get("regex", False)
-
-    if not text:
-        return {"passed": True, "message": "No text specified, rule passes"}
-
-    # Get all assistant messages
-    assistant_messages = [m.get("content", "") for m in messages if m.get("role") == "assistant"]
+    try:
+        compiled = re.compile(pattern, re.IGNORECASE)
+    except re.error as exc:
+        return TranscriptRuleResult(
+            rule_type="disallow_regex",
+            rule={"disallow_regex": pattern},
+            passed=False,
+            message=f"Invalid disallow_regex {pattern!r}: {exc}",
+        )
 
     for content in assistant_messages:
-        if content is None:
-            continue
+        if compiled.search(content):
+            return TranscriptRuleResult(
+                rule_type="disallow_regex",
+                rule={"disallow_regex": pattern},
+                passed=False,
+                message=f"Disallowed pattern {pattern!r} matched an assistant message",
+            )
+    return TranscriptRuleResult(
+        rule_type="disallow_regex",
+        rule={"disallow_regex": pattern},
+        passed=True,
+        message=f"Disallowed pattern {pattern!r} did not match any assistant message",
+    )
 
-        if is_regex:
-            flags = 0 if case_sensitive else re.IGNORECASE
-            if re.search(text, content, flags):
-                return {"passed": True, "message": f"Found pattern '{text}' in assistant message"}
-        else:
-            search_text = text if case_sensitive else text.lower()
-            search_content = content if case_sensitive else content.lower()
-            if search_text in search_content:
-                return {"passed": True, "message": f"Found '{text}' in assistant message"}
 
-    return {"passed": False, "message": f"Text '{text}' not found in any assistant message"}
+def _check_max_turns(max_turns: int, messages: list[dict[str, Any]]) -> TranscriptRuleResult:
+    """Assistant turn count must be within the limit.
 
-
-def _evaluate_must_not_contain(
-    rule: dict[str, Any], messages: list[dict[str, Any]]
-) -> dict[str, Any]:
+    A "turn" is one assistant message (one model response). This counts the
+    agent's responses rather than user messages so the limit caps the agent's
+    activity, which is what authors intend to bound.
     """
-    Check that no assistant message contains the forbidden text.
+    turn_count = sum(1 for m in messages if m.get("role") == "assistant")
+    within = turn_count <= max_turns
+    return TranscriptRuleResult(
+        rule_type="max_turns",
+        rule={"max_turns": max_turns},
+        passed=within,
+        message=(
+            f"Assistant turn count {turn_count} within limit of {max_turns}"
+            if within
+            else f"Assistant turn count {turn_count} exceeds limit of {max_turns}"
+        ),
+    )
 
-    Rule format:
-    {
-        "type": "must_not_contain",
-        "text": "string to avoid",
-        "case_sensitive": false,  # optional, default false
-        "regex": false            # optional, if true treat text as regex
-    }
+
+def _check_required_action(
+    action: dict[str, Any], tool_history: list[dict[str, Any]]
+) -> TranscriptRuleResult:
+    """A declared tool call must appear in the tool history.
+
+    Matching:
+    - ``tool_name`` must match exactly;
+    - ``requestor`` ("assistant"/"user") must match the call's ``executor``
+      ("agent"/"user");
+    - the call must have ``status == "success"`` (a failed call did not happen);
+    - arguments named by ``compare_args`` must match the declared values.
+      ``compare_args is None`` compares every declared argument; ``[]`` compares
+      none (presence of the tool call is enough).
     """
-    text = rule.get("text", "")
-    case_sensitive = rule.get("case_sensitive", False)
-    is_regex = rule.get("regex", False)
+    action_id = action.get("action_id", "")
+    tool_name = action.get("tool_name", "")
+    requestor = action.get("requestor", "")
+    declared_args = action.get("arguments", {}) or {}
+    compare_args = action.get("compare_args")
 
-    if not text:
-        return {"passed": True, "message": "No text specified, rule passes"}
+    expected_executor = _REQUESTOR_TO_EXECUTOR.get(requestor)
 
-    # Get all assistant messages
-    assistant_messages = [m.get("content", "") for m in messages if m.get("role") == "assistant"]
+    if compare_args is None:
+        keys_to_compare = list(declared_args.keys())
+    else:
+        keys_to_compare = list(compare_args)
 
-    for content in assistant_messages:
-        if content is None:
-            continue
-
-        if is_regex:
-            flags = 0 if case_sensitive else re.IGNORECASE
-            if re.search(text, content, flags):
-                return {
-                    "passed": False,
-                    "message": f"Found forbidden pattern '{text}' in assistant message",
-                }
-        else:
-            search_text = text if case_sensitive else text.lower()
-            search_content = content if case_sensitive else content.lower()
-            if search_text in search_content:
-                return {
-                    "passed": False,
-                    "message": f"Found forbidden text '{text}' in assistant message",
-                }
-
-    return {"passed": True, "message": f"Text '{text}' not found (as expected)"}
-
-
-def _evaluate_required_tool_call(
-    rule: dict[str, Any], tool_history: list[dict[str, Any]]
-) -> dict[str, Any]:
-    """
-    Check that a specific tool was called with optional argument matching.
-
-    Rule format:
-    {
-        "type": "required_tool_call",
-        "tool_name": "book_reservation",
-        "arguments": {"user_id": "mia_li_3668"},  # optional, partial match
-        "min_calls": 1,                           # optional, default 1
-        "executor": "agent"                       # optional, default any
-    }
-    """
-    tool_name = rule.get("tool_name", "")
-    required_args = rule.get("arguments", {})
-    min_calls = rule.get("min_calls", 1)
-    required_executor = rule.get("executor")
+    label = f"required_action {action_id!r} (tool={tool_name!r}, requestor={requestor!r})"
 
     if not tool_name:
-        return {"passed": True, "message": "No tool_name specified, rule passes"}
-
-    matching_calls = 0
+        return TranscriptRuleResult(
+            rule_type="required_action",
+            rule=action,
+            passed=False,
+            message=f"{label}: no tool_name declared",
+        )
 
     for call in tool_history:
-        # Check tool name
         if call.get("tool_name") != tool_name:
             continue
-
-        # Check executor if specified
-        if required_executor and call.get("executor") != required_executor:
+        if expected_executor is not None and call.get("executor") != expected_executor:
             continue
+        if call.get("status") != "success":
+            continue
+        call_args = call.get("arguments", {}) or {}
+        if all(call_args.get(k) == declared_args.get(k) for k in keys_to_compare):
+            return TranscriptRuleResult(
+                rule_type="required_action",
+                rule=action,
+                passed=True,
+                message=f"{label}: matched a successful tool call",
+            )
 
-        # Check arguments if specified (partial match)
-        if required_args:
-            call_args = call.get("arguments", {})
-            args_match = all(call_args.get(k) == v for k, v in required_args.items())
-            if not args_match:
-                continue
-
-        # Check status (only count successful calls)
-        if call.get("status") == "success":
-            matching_calls += 1
-
-    if matching_calls >= min_calls:
-        return {
-            "passed": True,
-            "message": f"Tool '{tool_name}' called {matching_calls} times (required: {min_calls})",
-        }
-    else:
-        return {
-            "passed": False,
-            "message": f"Tool '{tool_name}' called {matching_calls} times (required: {min_calls})",
-        }
+    return TranscriptRuleResult(
+        rule_type="required_action",
+        rule=action,
+        passed=False,
+        message=(
+            f"{label}: no matching successful tool call found"
+            + (f" with args {keys_to_compare}" if keys_to_compare else "")
+        ),
+    )
 
 
-def _evaluate_max_turns(rule: dict[str, Any], messages: list[dict[str, Any]]) -> dict[str, Any]:
+def _check_communicate_info(
+    info: dict[str, Any], assistant_messages: list[str]
+) -> TranscriptRuleResult | None:
+    """A required info string must appear in an assistant message.
+
+    Returns ``None`` (no sub-check, not scored) for non-required info — those
+    are advisory hints, not gating requirements.
     """
-    Check that conversation doesn't exceed maximum turns.
+    text = info.get("info", "")
+    required = info.get("required", True)
+    if not required:
+        return None
 
-    A "turn" is typically counted as one user message + one assistant response.
-
-    Rule format:
-    {
-        "type": "max_turns",
-        "max": 10,
-        "count_method": "user_messages"  # optional: "user_messages", "assistant_messages", "exchanges"
-    }
-    """
-    max_turns = rule.get("max", 10)
-    count_method = rule.get("count_method", "user_messages")
-
-    if count_method == "user_messages":
-        turn_count = sum(1 for m in messages if m.get("role") == "user")
-    elif count_method == "assistant_messages":
-        turn_count = sum(1 for m in messages if m.get("role") == "assistant")
-    elif count_method == "exchanges":
-        # Count pairs of user + assistant messages
-        user_count = sum(1 for m in messages if m.get("role") == "user")
-        assistant_count = sum(1 for m in messages if m.get("role") == "assistant")
-        turn_count = min(user_count, assistant_count)
-    else:
-        # Default to counting all non-system messages
-        turn_count = sum(1 for m in messages if m.get("role") in ("user", "assistant"))
-
-    if turn_count <= max_turns:
-        return {
-            "passed": True,
-            "message": f"Turn count {turn_count} within limit of {max_turns}",
-        }
-    else:
-        return {
-            "passed": False,
-            "message": f"Turn count {turn_count} exceeds limit of {max_turns}",
-        }
+    needle = text.lower()
+    found = any(needle in content.lower() for content in assistant_messages)
+    return TranscriptRuleResult(
+        rule_type="communicate_info",
+        rule=info,
+        passed=found,
+        message=(
+            f"Communicated required info {text!r}"
+            if found
+            else f"Required info {text!r} was not communicated to the user"
+        ),
+    )
 
 
 def evaluate_jsonpath_file_checks(

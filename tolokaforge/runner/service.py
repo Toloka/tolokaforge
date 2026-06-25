@@ -1030,13 +1030,13 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             # Skip transcript grading if no messages and rules require them
             if llm_messages or tool_history:
                 logger.info(f"GradeTrial: {trial_id} - Evaluating transcript rules")
-                # Convert config to dict for grading function
+                # Pass the author-facing TranscriptRulesConfig as a dict; the
+                # grader decomposes its fields (must_contain / disallow_regex /
+                # max_turns / required_actions / communicate_info) into per-field
+                # sub-checks.
                 rules_dict = transcript_rules_config.model_dump()
-                transcript_result_dict = evaluate_transcript_rules(
-                    llm_messages, tool_history, [rules_dict]
-                )
-                transcript_result = TranscriptEvaluationResult.model_validate(
-                    transcript_result_dict
+                transcript_result = evaluate_transcript_rules(
+                    llm_messages, tool_history, rules_dict
                 )
                 components.transcript_pass = transcript_result.passed
                 components.transcript_score = transcript_result.score
