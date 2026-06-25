@@ -19,6 +19,12 @@ on-disk contract.
 
 from __future__ import annotations
 
+from tolokaforge.core.output.aggregates import (
+    FileAggregateWriter,
+    InMemoryAggregateWriter,
+    RunAggregateBundle,
+    RunAggregateWriter,
+)
 from tolokaforge.core.output.artifacts import (
     FileArtifactWriter,
     TrialArtifactWriter,
@@ -26,7 +32,11 @@ from tolokaforge.core.output.artifacts import (
 )
 
 __all__ = [
+    "FileAggregateWriter",
     "FileArtifactWriter",
+    "InMemoryAggregateWriter",
+    "RunAggregateBundle",
+    "RunAggregateWriter",
     "TrialArtifactWriter",
     "model_id_slug",
 ]

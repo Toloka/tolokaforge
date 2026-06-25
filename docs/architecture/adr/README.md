@@ -33,3 +33,4 @@ Day-to-day implementation choices that don't affect the system shape do *not* ne
 |---|---|---|
 | [0001](0001-record-architecture-decisions.md) | Record architecture decisions in ADRs | Accepted |
 | [0002](0002-external-model-registry.md) | External model registry — operator-overridable preset data | Proposed |
+| [0005](0005-run-aggregate-writer-seam.md) | `RunAggregateWriter` as the run-level data-plane seam | Proposed |
