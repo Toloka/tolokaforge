@@ -36,9 +36,12 @@ class EnvEndpoints(BaseModel):
     ``core_stack``; ``rag-service`` ships in ``full_stack`` only)."""
 
     runner_url: str
-    """URL of the runner gRPC endpoint itself. Carried so a future
-    out-of-process conductor reads its target from the spec rather than
-    a host-side default."""
+    """URL of the runner gRPC endpoint as the orchestrator that produced
+    this spec sees it (e.g. ``http://localhost:55310`` in auto-start
+    mode, ``http://executor:50051`` for workers). Carried on the wire
+    ahead of the remote-conductor design — today's value encodes the
+    writer's local view of the runner; a future out-of-process consumer
+    will need a network-reachable URL, which is on the design backlog."""
 
     model_config = {"extra": "forbid"}
 

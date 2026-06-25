@@ -152,11 +152,6 @@ container at start (`tolokaforge/docker/stacks/core.py`). The orchestrator
 mirrors the value on ``TrialSpec.env_endpoints`` so a future out-of-process
 runner reads its service URLs from the spec instead of its own env."""
 
-_DEFAULT_RAG_SERVICE_URL = "http://tolokaforge-rag-service:8001"
-"""Runner-perspective RAG service URL — companion to ``_DEFAULT_DB_SERVICE_URL``.
-``rag-service`` ships in ``full_stack`` only; the URL is still carried in
-case the runner has its own per-trial RAG configuration."""
-
 
 def _normalise_runner_url(runner_address: str) -> str:
     """Prepend ``http://`` to a bare ``host:port`` runner address, leaving
@@ -169,14 +164,18 @@ def _normalise_runner_url(runner_address: str) -> str:
 def _build_env_endpoints(runner_address: str) -> EnvEndpoints:
     """Resolve the per-trial service URLs for inclusion in :class:`TrialSpec`.
 
-    Sources, in order:
+    Field semantics:
 
-    * ``runner_url`` — derived from the orchestrator's known runner address
-      (the value passed to :class:`DockerRuntime`).
-    * ``db_url`` — ``DB_SERVICE_URL`` env override, else the runner-container
-      default the docker stack injects.
-    * ``rag_url`` — ``RAG_SERVICE_URL`` env override, else ``None`` (the
-      runner-side RAG client is constructed lazily and tolerates absence).
+    * ``runner_url`` — derived from the orchestrator's known runner
+      address (the value passed to :class:`DockerRuntime`). Always set.
+    * ``db_url`` — required on the wire. Reads ``DB_SERVICE_URL`` from
+      the environment if set, otherwise the runner-container default
+      the docker stack injects (``_DEFAULT_DB_SERVICE_URL``).
+    * ``rag_url`` — optional. Reads ``RAG_SERVICE_URL`` from the
+      environment if set, otherwise stays ``None``. ``rag-service``
+      ships in ``full_stack`` only, so a ``core_stack`` run with no
+      override resolves to ``None`` — carrying a hardcoded RAG URL
+      would point at a service that isn't running.
     """
     return EnvEndpoints(
         db_url=os.environ.get("DB_SERVICE_URL", _DEFAULT_DB_SERVICE_URL),
