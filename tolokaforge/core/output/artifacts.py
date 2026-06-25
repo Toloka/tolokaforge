@@ -7,8 +7,11 @@ for the eight per-trial YAML files that make up a trial bundle:
 * ``trajectory.yaml`` — full message trace incl. reasoning blocks
 * ``env.yaml`` — final env state snapshot
 * ``metrics.yaml`` — usage / latency / tool-call metrics
-* ``grade.yaml`` — pass / fail + score components (omitted when the
-  trial has no grade)
+* ``grade.yaml`` — pass / fail + score components, per-criterion
+  rubric breakdown, judge_status + judge usage (omitted when the trial
+  has no grade)
+* ``judge_trajectory.yaml`` — the rubric judge's own message transcript
+  (sidecar; written only when an LLM judge ran and captured one)
 * ``logs.yaml`` — structured trial logs
 * ``tools_schemas.yaml`` — post-policy tool list, what the provider saw
 * ``prompts.yaml`` — per-trial agent + user-simulator system prompts

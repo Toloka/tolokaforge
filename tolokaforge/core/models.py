@@ -267,6 +267,29 @@ class GradeComponents(BaseModel):
     custom_checks: float | None = None
 
 
+class JudgeUsage(BaseModel):
+    """The rubric judge's OWN token usage / cost (host-side boundary model).
+
+    The judge runs its own LLM inside the Runner, so its spend is separate from
+    the agent's (which lives in ``Metrics.usage``). This is intentionally a
+    distinct, small type rather than the per-call
+    :class:`~tolokaforge.core.llm.usage.Usage`: the judge reports a single
+    aggregate (no per-call cache history), and its ``tool_calls`` / ``calls``
+    counters are judge-specific accounting. Field set mirrors the runner's
+    :class:`tolokaforge.core.grading.judge.JudgeUsage` dataclass 1:1 and the
+    proto ``JudgeReport`` usage fields.
+    """
+
+    calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    reasoning_tokens: int = 0
+    cost_usd: float = 0.0
+    tool_calls: int = 0
+
+    model_config = {"extra": "forbid"}
+
+
 class CustomCheckDetail(BaseModel):
     """Detail for individual custom check result"""
 
@@ -293,6 +316,15 @@ class Grade(BaseModel):
     # ``ERRORED`` means the judge malfunctioned and the ``llm_judge`` component
     # carries NO score (it must NOT be read as 0.0). See JudgeStatus.
     judge_status: JudgeStatus = JudgeStatus.UNSPECIFIED
+    # The judge's own token usage / cost. ``None`` when no judge ran; populated
+    # for both COMPLETED and ERRORED runs (an errored judge still spent tokens).
+    judge_usage: JudgeUsage | None = None
+    # The judge's full message transcript (role / content / tool_calls dicts) —
+    # the audit channel for WHY a criterion was scored as it was. Written to a
+    # sidecar ``judge_trajectory.yaml`` artifact, not inlined in ``grade.yaml``,
+    # so the grade stays scannable (mirrors the trajectory/prompts split). See
+    # docs/OUTPUT_FORMAT.md. ``None`` when no judge ran or none was captured.
+    judge_transcript: list[dict[str, Any]] | None = None
 
 
 class Trajectory(BaseModel):

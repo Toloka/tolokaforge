@@ -135,6 +135,13 @@ def test_terminates_on_submit_report_and_scores():
     assert result.criterion_results[0].id == "refund_done"
     assert result.criterion_results[0].met is True
     assert client.calls == 1
+    # Stage 5: the judge captures its own transcript for the audit bundle, incl.
+    # the submit_report tool call.
+    assert result.transcript
+    roles = [m["role"] for m in result.transcript]
+    assert "user" in roles and "assistant" in roles
+    names = [tc["name"] for m in result.transcript for tc in m.get("tool_calls", [])]
+    assert "submit_report" in names
 
 
 def test_inspects_db_then_submits():
@@ -302,6 +309,9 @@ def test_turn_exhaustion_without_submit_report_errors():
     assert result.status is JudgeStatus.ERRORED
     assert result.score is None
     assert client.calls == 3
+    # Stage 5: an ERRORED judge still carries its partial transcript — the key
+    # artifact for debugging WHY it failed.
+    assert result.transcript
 
 
 def test_judge_loop_crash_errors_not_scores():

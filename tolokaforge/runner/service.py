@@ -1054,6 +1054,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         criterion_results: list[CriterionResult] = []
         judge_reasons: str | None = None
         judge_gate_failed = False
+        judge_report: pb2.JudgeReport | None = None
         if llm_judge_config:
             if llm_messages:
                 logger.info(f"GradeTrial: {trial_id} - Evaluating LLM judge")
@@ -1062,6 +1063,18 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 )
                 judge_reasons = judge_result.reasons
                 criterion_results = list(judge_result.criterion_results)
+                # Cross the judge's own usage + audit transcript to the host. Built
+                # for both COMPLETED and ERRORED runs — an errored judge still spent
+                # tokens, and its partial transcript is the key debugging artifact.
+                judge_report = pb2.JudgeReport(
+                    calls=judge_result.usage.calls,
+                    prompt_tokens=judge_result.usage.prompt_tokens,
+                    completion_tokens=judge_result.usage.completion_tokens,
+                    reasoning_tokens=judge_result.usage.reasoning_tokens,
+                    cost_usd=judge_result.usage.cost_usd,
+                    tool_calls=judge_result.usage.tool_calls,
+                    transcript_json=json.dumps(list(judge_result.transcript)),
+                )
                 if judge_result.status is JudgeStatus.ERRORED:
                     # Fail loud: the judge component is incomplete, NOT zero. Leave
                     # the component score at the -1.0 sentinel so it is excluded
@@ -1140,6 +1153,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     for cr in criterion_results
                 ],
                 judge_status=judge_status,
+                judge_report=judge_report,
             ),
         )
 

@@ -159,6 +159,11 @@ class JudgeResult:
     gate_failed: bool = False
     criterion_results: tuple[CriterionResult, ...] = ()
     failed_required_ids: tuple[str, ...] = ()
+    # The judge's own message transcript (role / content / tool_calls dicts),
+    # captured for audit/reproducibility (plan open question #2). Populated for
+    # both COMPLETED and ERRORED runs — an errored judge's partial transcript is
+    # the most useful artifact for debugging WHY it failed.
+    transcript: tuple[dict[str, Any], ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -293,6 +298,29 @@ def _build_rubric_brief(rubric: Rubric) -> str:
         expected = f"\n    expected: {c.expected}" if c.expected else ""
         parts.append(f"  - [{c.id}] ({', '.join(flags)}) {c.description}{expected}")
     return "\n".join(parts)
+
+
+def _serialize_judge_transcript(messages: list[Message]) -> tuple[dict[str, Any], ...]:
+    """Serialize the judge's own loop messages to plain dicts for the audit bundle.
+
+    Captures role / content / tool_calls / tool_call_id so a reviewer can replay
+    the judge's reasoning — what it inspected and how it scored — out of the
+    sidecar ``judge_trajectory.yaml``. JSON/YAML-safe primitives only.
+    """
+    out: list[dict[str, Any]] = []
+    for msg in messages:
+        entry: dict[str, Any] = {
+            "role": msg.role.value if hasattr(msg.role, "value") else str(msg.role),
+            "content": msg.content,
+        }
+        if msg.tool_calls:
+            entry["tool_calls"] = [
+                {"id": tc.id, "name": tc.name, "arguments": tc.arguments} for tc in msg.tool_calls
+            ]
+        if msg.tool_call_id:
+            entry["tool_call_id"] = msg.tool_call_id
+        out.append(entry)
+    return tuple(out)
 
 
 def _build_opening_message(agent_system_prompt: str, transcript: list[dict[str, Any]]) -> str:
@@ -452,7 +480,11 @@ def run_rubric_judge(
             outcome = loop.run(system_prompt, messages, start_time=time.time())
         except Exception as exc:  # noqa: BLE001 — fail loud, never score on judge crash
             logger.error("Judge loop raised", error=str(exc), error_type=type(exc).__name__)
-            return _errored(metrics, f"Judge loop crashed: {type(exc).__name__}: {exc}")
+            return _errored(
+                metrics,
+                f"Judge loop crashed: {type(exc).__name__}: {exc}",
+                messages,
+            )
 
         if termination.captured_args is None:
             # Loop ended without submit_report — turn / wall-time / API error.
@@ -460,6 +492,7 @@ def run_rubric_judge(
                 metrics,
                 f"Judge did not call submit_report "
                 f"(termination={outcome.termination_reason}, status={outcome.status}).",
+                messages,
             )
 
         try:
@@ -476,6 +509,7 @@ def run_rubric_judge(
                 return _errored(
                     metrics,
                     f"submit_report invalid after {submit_report_retries} retries: {exc}",
+                    messages,
                 )
             logger.warning(
                 "Judge submit_report invalid; re-prompting", attempt=attempts, error=str(exc)
@@ -511,17 +545,23 @@ def run_rubric_judge(
             gate_failed=aggregate.gate_failed,
             criterion_results=tuple(results),
             failed_required_ids=aggregate.failed_required_ids,
+            transcript=_serialize_judge_transcript(messages),
         )
 
 
-def _errored(metrics: _JudgeMetricsSink, reasons: str) -> JudgeResult:
-    """Build a fail-loud ERRORED result — no score, no criterion results."""
+def _errored(metrics: _JudgeMetricsSink, reasons: str, messages: list[Message]) -> JudgeResult:
+    """Build a fail-loud ERRORED result — no score, no criterion results.
+
+    Carries the partial judge transcript: when the judge breaks, its messages
+    so far are the most useful debugging artifact.
+    """
     return JudgeResult(
         status=JudgeStatus.ERRORED,
         usage=metrics.snapshot(),
         reasons=reasons,
         score=None,
         binary_pass=None,
+        transcript=_serialize_judge_transcript(messages),
     )
 
 

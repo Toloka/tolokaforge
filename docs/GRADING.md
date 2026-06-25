@@ -4,7 +4,7 @@ Tolokaforge evaluates agent performance across three dimensions:
 
 1. **State Checks** - Final environment state verification (hash-based or JSONPath)
 2. **Transcript Rules** - Process constraints (required phrases, tool usage, turn limits)
-3. **LLM Judge** - Subjective quality assessment via rubric
+3. **LLM Judge** - Per-criterion rubric grading by a read-only agentic judge
 
 Scores are weighted and combined into a final score. See [REFERENCE.md](REFERENCE.md) for `grading.yaml` schema.
 
@@ -64,6 +64,120 @@ golden_hash = consistent_hash(to_hashable(env.dump()))
 
 ---
 
+## LLM Judge (Rubric Grading)
+
+The `llm_judge` component grades subjective quality against a **structured
+rubric** — not a free-text prompt. A read-only agentic judge runs *inside the
+Runner* over the trial's final state, scores each criterion independently, and
+emits a per-criterion verdict the reviewer can audit.
+
+### Rubric shape
+
+```yaml
+grading:
+  weights: { state_checks: 0.5, llm_judge: 0.5 }
+  pass_threshold: 0.8
+  llm_judge:
+    model_ref: openrouter/anthropic/claude-sonnet-4.5   # required; a separate fixed judge model
+    rubric:
+      reference: |                # optional, author-written ground truth shown to the judge
+        Correct refund is $328.50 (base fare minus 24h-cancellation fee).
+        Policy requires offering travel credit before a cash refund.
+      criteria:
+        - id: refund_amount
+          description: "Reply quotes the correct refund amount"
+          expected: "$328.50"     # optional per-criterion author reference
+          kind: binary            # binary (0/1) or graded (0–1 gradient)
+          required: true          # failed → rubric fails outright, regardless of others
+          weight: 1.0
+        - id: tone
+          description: "Reply is polite and professional"
+          kind: graded
+          weight: 0.5
+```
+
+### How the judge works
+
+* **A separate, fixed judge model.** `model_ref` is required and independent of
+  the agent under test — this prevents self-grading bias and keeps the judge
+  constant across agent comparisons. The judge builds its own LLM client via the
+  agent's provider-correct capability path (so tool schemas/calls are correct
+  for any provider).
+* **Author-written reference channel.** The judge sees only the rubric's
+  `reference` and per-criterion `expected` — author-written *for grading*. The
+  deterministic oracle (`golden_actions`, `expected_hash`, `jsonpath_checks`) is
+  **never** piped to the judge: that would cause path-matching bias and defeat
+  path-independence. The judge's input surface is exactly
+  `{agent_system_prompt, transcript, rubric, read-only tools}`.
+* **Harness-owned read-only tools.** The judge gets a fixed read-only allowlist —
+  DB reads (`get_db_state` / `query_db`), `search_kb` (when the task is
+  RAG-backed), `read_file` (only when the agent produced a workspace), and the
+  rubric-derived `submit_report`. No `write`, no `compute`, no reuse of the
+  agent's tools.
+* **Single call, per-criterion output.** The judge inspects the final state, then
+  calls `submit_report` once with `{met, score, justification}` for every
+  criterion (its arg schema is generated from the rubric and validated with
+  Pydantic).
+
+### Fail-loud: the ERRORED status
+
+If the judge malfunctions — repeated malformed `submit_report` past its retry
+budget, turn / wall-time exhaustion, or a crash — it produces **no score** and
+marks the grade `judge_status: errored`. It **never** falls back to `0.0` or
+`0.5` (AGENTS.md rule 1). An errored `llm_judge` component is left *unscored* and
+**excluded from the weighted combine** — it is not read as a zero. Reviewers see
+`judge_status: errored` in `grade.yaml`; downstream analytics must branch on it.
+
+### Required-gate semantics
+
+A criterion with `required: true` is a **pure gate**, and is **excluded from the
+weighted average**: if the judge marks it not-met, the whole rubric fails —
+`binary_pass` is forced `false` regardless of the weighted score or any other
+heavily-weighted component. A high score on the other criteria cannot rescue a
+failed required criterion. Conversely, a *met* required criterion contributes
+nothing to the score — it only opens the gate. The weighted average (next
+section) is computed over the **non-required criteria only**.
+
+If **every** criterion is required (no non-required criteria to average), the
+judge score collapses to the gate verdict: `1.0` when all required criteria are
+met, else `0.0`.
+
+### The two weighting layers
+
+Weights act at **two distinct levels**, and they compose multiplicatively:
+
+1. **Per-criterion `weight`** (inside the rubric) — sets each criterion's share
+   of the **judge component score**. Non-required criteria aggregate as
+   `Σ(weight · score) / Σ(weight)` → a single `llm_judge` score in `[0, 1]`.
+   Required criteria are gates, not weighted contributors.
+2. **`weights.llm_judge`** (top-level `combine`) — scales that whole judge
+   component against `state_checks`, `transcript_rules`, and `custom_checks` in
+   the final-score formula below.
+
+So a criterion's pull on the final score is `(its weight / Σ judge weights) ×
+weights.llm_judge / Σ all weights`. Tune *within-rubric* importance with
+per-criterion `weight`; tune *how much grading trusts the judge at all* with
+`weights.llm_judge`.
+
+### Pass semantics: `binary_pass` vs graded `met`
+
+* For a **graded** criterion, the judge's `met` flag uses a **0.5 threshold** on
+  the criterion `score` — it is indicative ("did this clear the author's bar?"),
+  not the authoritative pass signal.
+* The **authoritative pass** for the trial is decided by the combine layer:
+  `final_score ≥ pass_threshold` **AND** no required criterion gated
+  (`not gate_failed`). Per-criterion `met` flags inform the reviewer; they do not
+  by themselves decide the trial.
+
+### Output
+
+Per-criterion results, `judge_status`, and the judge's own token usage / cost
+land in `grade.yaml`; the judge's full message transcript lands in the sibling
+`judge_trajectory.yaml` sidecar (the audit channel for *why* a criterion was
+scored as it was). See [OUTPUT_FORMAT.md](OUTPUT_FORMAT.md).
+
+---
+
 ## pass@k Metrics
 
 Estimates probability that at least 1 of k attempts succeeds.
@@ -113,8 +227,13 @@ Final score formula:
 final_score = (state_score * W_state + transcript_score * W_transcript + judge_score * W_judge)
               / (W_state + W_transcript + W_judge)
 
-binary_pass = (final_score >= pass_threshold)
+binary_pass = (final_score >= pass_threshold) AND (no required rubric criterion gated)
 ```
+
+A component that was not evaluated is **excluded** from both the numerator and
+the denominator — this includes an `llm_judge` component whose judge ERRORED
+(see [LLM Judge](#llm-judge-rubric-grading)): a broken judge is never folded in
+as a `0.0`.
 
 ### Weighting Strategies
 

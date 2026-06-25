@@ -140,16 +140,29 @@ transcript_rules:
     disallowed_tools: ["bash"]
 
 llm_judge:
-  model_ref: "openai/gpt-4o"
-  rubric: |
-    Grading criteria here...
-  output_schema:
-    type: object
-    properties:
-      score: { type: number, minimum: 0, maximum: 1 }
-      reasons: { type: string }
-    required: ["score"]
+  model_ref: "openrouter/anthropic/claude-sonnet-4.5"  # required; a separate fixed judge model
+  rubric:                                  # structured Rubric (NOT free text)
+    reference: |                           # optional author-written ground truth shown to the judge
+      Correct refund is $328.50 (base fare minus 24h-cancellation fee).
+    criteria:
+      - id: refund_amount                  # identifier-safe, unique
+        description: "Reply quotes the correct refund amount"
+        kind: binary                       # binary (0/1) | graded (0–1); default binary
+        required: true                     # default false; failed required → rubric fails
+        weight: 1.0                        # default 1.0; per-criterion weight in the judge score
+        expected: "$328.50"                # optional per-criterion author reference
+      - id: tone
+        description: "Reply is polite and professional"
+        kind: graded
+        weight: 0.5
 ```
+
+`grading.llm_judge.rubric` is a structured `Rubric`, not a free-text blob; the
+old `rubric: "<text>"` shape and the `output_schema` field were removed (the
+judge's structured-output schema is derived from the rubric's criteria). See
+[GRADING.md](GRADING.md#llm-judge-rubric-grading) for the judge mechanism, the
+two weighting layers, the required-gate semantics, and the fail-loud ERRORED
+status.
 
 ### Environment Variables
 

@@ -225,6 +225,37 @@ message Grade {
   // (e.g. retry exhaustion / wall-time budget exceeded): the rubric component is
   // incomplete and MUST NOT be read as a 0.0 score (fail loud, not silent zero).
   JudgeStatus judge_status = 8;
+
+  // Judge accounting + audit transcript. Unset when no judge ran. Carries the
+  // judge's OWN token usage / cost (the judge runs its own LLM in the Runner)
+  // and the judge's message transcript, so a reviewer can audit WHY a criterion
+  // failed and account for grading cost. Populated for both COMPLETED and
+  // ERRORED runs (an errored judge still burned tokens worth recording).
+  JudgeReport judge_report = 9;
+}
+
+// The rubric judge's own accounting + audit transcript (see plans/rubric_grading.md
+// § "Record the judge's own token usage/cost" and the reproducibility open
+// question — the transcript is the audit channel for a non-deterministic judge).
+message JudgeReport {
+  // Number of LLM calls the judge made.
+  int32 calls = 1;
+  // Judge prompt (input) tokens.
+  int32 prompt_tokens = 2;
+  // Judge completion (output) tokens.
+  int32 completion_tokens = 3;
+  // Judge reasoning / thinking tokens (providers with thinking).
+  int32 reasoning_tokens = 4;
+  // Judge LLM cost in USD (the judge's own spend, separate from the agent's).
+  double cost_usd = 5;
+  // Number of read-only tool calls the judge made (DB reads, search_kb, …).
+  int32 tool_calls = 6;
+  // The judge's full message transcript as a JSON string (list of role /
+  // content / tool_calls dicts). Audit/reproducibility channel — the judge
+  // tool-call ordering is non-deterministic even at temperature 0, so the
+  // recorded transcript is the source of truth for "what did the judge see /
+  // do". Empty string when no transcript was captured.
+  string transcript_json = 7;
 }
 
 // Outcome of running the rubric judge. Keeps a judge malfunction distinct from a

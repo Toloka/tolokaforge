@@ -165,19 +165,43 @@ class OutputWriter:
             )
 
     def write_grade(self, grade: Grade):
-        """Write grade.yaml with grading results
+        """Write grade.yaml with grading results (+ judge_trajectory.yaml sidecar).
+
+        ``grade.yaml`` carries the per-criterion breakdown, the ``judge_status``,
+        and the judge's token usage / cost (``judge_usage``) so a reviewer sees
+        the full verdict in one scannable file. The judge's message transcript —
+        often kilobytes of tool calls and inspection — is split into a sibling
+        ``judge_trajectory.yaml`` (mirroring the ``trajectory.yaml`` /
+        ``prompts.yaml`` split), so it never bloats the grade file. See
+        docs/OUTPUT_FORMAT.md.
 
         Args:
-            grade: Grade object with scores and reasons
+            grade: Grade object with scores, reasons, judge usage / transcript
         """
+        # Keep the transcript out of grade.yaml; it lands in the sidecar.
+        grade_payload = grade.model_dump(mode="json", exclude={"judge_transcript"})
         with open(self.output_dir / "grade.yaml", "w") as f:
             yaml.dump(
-                grade.model_dump(mode="json"),
+                grade_payload,
                 f,
                 default_flow_style=False,
                 allow_unicode=True,
                 sort_keys=False,
             )
+
+        # Sidecar: the judge's own message transcript, only when a judge ran and
+        # captured a non-empty one. Absent file ⇒ no judge transcript for this
+        # trial (gate on truthiness, not ``is not None`` — an empty transcript is
+        # not worth a sidecar).
+        if grade.judge_transcript:
+            with open(self.output_dir / "judge_trajectory.yaml", "w") as f:
+                yaml.dump(
+                    {"messages": grade.judge_transcript},
+                    f,
+                    default_flow_style=False,
+                    allow_unicode=True,
+                    sort_keys=False,
+                )
 
     def write_logs(self, logger: StructuredLogger):
         """Write logs.yaml from structured logger

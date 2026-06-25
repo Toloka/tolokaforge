@@ -69,8 +69,12 @@ class SubmitReportValidationError(ValueError):
 class RubricAggregate:
     """Aggregated rubric verdict for the ``llm_judge`` grading component.
 
-    ``score`` is the weighted average over all criteria (``Σ(w·score)/Σ(w)``),
-    in ``[0, 1]``.
+    ``score`` is the weighted average over the NON-required criteria only
+    (``Σ(w·score)/Σ(w)``), in ``[0, 1]``. Required criteria are pure gates: they
+    decide pass/fail via ``gate_failed`` and do NOT contribute to the weighted
+    average. When every criterion is required (no non-required criteria to
+    average), ``score`` collapses to the gate verdict — ``1.0`` if the gate
+    passes, ``0.0`` if a required criterion failed.
 
     ``binary_pass`` is INDICATIVE only — the judge component's own coarse pass
     signal (``not gate_failed`` and ``score >= GRADED_MET_THRESHOLD``, the 0.5
@@ -287,10 +291,14 @@ def aggregate_rubric(rubric: Rubric, results: list[CriterionResult]) -> RubricAg
     - **Required gate:** if ANY criterion with ``required=True`` has ``met=False``,
       the rubric fails outright (``gate_failed=True`` / ``binary_pass=False``),
       regardless of the weighted average.
-    - **Score:** weighted average ``Σ(weight·score) / Σ(weight)`` over ALL criteria.
+    - **Score:** weighted average ``Σ(weight·score) / Σ(weight)`` over the
+      NON-required criteria only. Required criteria are PURE GATES — they are not
+      weighted contributors. When all criteria are required (no non-required
+      criteria), ``score`` is ``1.0`` if the gate passes, else ``0.0``.
 
     Raises :class:`SubmitReportValidationError` if ``results`` does not line up
-    one-to-one with the rubric's criteria (defensive — Stage 4 always feeds the
+    one-to-one with the rubric's criteria, or if there are non-required criteria
+    but their total weight is not positive (defensive — Stage 4 always feeds the
     output of :func:`parse_submit_report`).
     """
     by_id = {r.id: r for r in results}
@@ -300,17 +308,27 @@ def aggregate_rubric(rubric: Rubric, results: list[CriterionResult]) -> RubricAg
             "aggregate. Pass the output of parse_submit_report unchanged."
         )
 
-    total_weight = sum(c.weight for c in rubric.criteria)
-    if total_weight <= 0.0:
-        raise SubmitReportValidationError(
-            f"Rubric total criterion weight must be positive to aggregate; got {total_weight}."
-        )
-
-    weighted = sum(c.weight * by_id[c.id].score for c in rubric.criteria)
-    score = weighted / total_weight
-
     failed_required_ids = tuple(c.id for c in rubric.criteria if c.required and not by_id[c.id].met)
     gate_failed = bool(failed_required_ids)
+
+    # Required criteria are PURE GATES — they decide pass/fail via the gate, and
+    # are EXCLUDED from the weighted average. The score is the weighted mean over
+    # the non-required criteria only.
+    non_required = [c for c in rubric.criteria if not c.required]
+    if non_required:
+        total_weight = sum(c.weight for c in non_required)
+        if total_weight <= 0.0:
+            raise SubmitReportValidationError(
+                "Rubric non-required criterion weight must be positive to "
+                f"aggregate; got {total_weight}."
+            )
+        weighted = sum(c.weight * by_id[c.id].score for c in non_required)
+        score = weighted / total_weight
+    else:
+        # All criteria are required (pure gates) — there is nothing to average, so
+        # the score collapses to the gate verdict.
+        score = 0.0 if gate_failed else 1.0
+
     binary_pass = (not gate_failed) and score >= GRADED_MET_THRESHOLD
 
     return RubricAggregate(

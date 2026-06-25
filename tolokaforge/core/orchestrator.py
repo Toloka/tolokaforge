@@ -37,6 +37,7 @@ from tolokaforge.core.models import (
     Grade,
     GradeComponents,
     JudgeStatus,
+    JudgeUsage,
     ModelConfig,
     RunConfig,
     TaskConfig,
@@ -1594,6 +1595,28 @@ class Orchestrator:
                 if raw_criterion_results:
                     criterion_results = [CriterionResult(**cr) for cr in raw_criterion_results]
 
+                # Judge accounting + audit transcript (None when no judge ran).
+                judge_usage: JudgeUsage | None = None
+                judge_transcript: list[dict[str, Any]] | None = None
+                raw_report = g.get("judge_report")
+                if raw_report:
+                    judge_usage = JudgeUsage(
+                        calls=raw_report.get("calls", 0),
+                        prompt_tokens=raw_report.get("prompt_tokens", 0),
+                        completion_tokens=raw_report.get("completion_tokens", 0),
+                        reasoning_tokens=raw_report.get("reasoning_tokens", 0),
+                        cost_usd=raw_report.get("cost_usd", 0.0),
+                        tool_calls=raw_report.get("tool_calls", 0),
+                    )
+                    raw_transcript = raw_report.get("transcript_json")
+                    if raw_transcript:
+                        try:
+                            parsed = json.loads(raw_transcript)
+                            if isinstance(parsed, list):
+                                judge_transcript = parsed
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+
                 grade = Grade(
                     binary_pass=g["binary_pass"],
                     score=g["score"],
@@ -1607,6 +1630,8 @@ class Orchestrator:
                     state_diff=state_diff_parsed,
                     criterion_results=criterion_results,
                     judge_status=JudgeStatus.from_proto(g.get("judge_status", 0)),
+                    judge_usage=judge_usage,
+                    judge_transcript=judge_transcript,
                 )
                 self.logger.info(
                     "Grading via Runner RPC",

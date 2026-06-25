@@ -188,26 +188,38 @@ class TestParseSubmitReportFailLoud:
 
 class TestAggregateRubric:
     def test_failed_required_forces_binary_fail_despite_high_average(self) -> None:
-        # refund_amount (required, weight 2) fails; tone (weight 1) perfect.
-        # Weighted average is high-ish but the gate must trip.
+        # refund_amount (required) fails → gate trips regardless of the average.
+        # Required criteria are pure gates: the score is the non-required average
+        # (tone perfect → 1.0), but the gate still forces binary_pass False.
         rubric = _mixed_rubric()
         results = parse_submit_report(_valid_args(refund_met=False, tone_score=1.0), rubric)
         agg = aggregate_rubric(rubric, results)
         assert agg.gate_failed is True
         assert agg.binary_pass is False
         assert agg.failed_required_ids == ("refund_amount",)
-        # Score is still the honest weighted average: (2*0 + 1*1)/3.
-        assert agg.score == pytest.approx(1.0 / 3.0)
+        # Score = non-required-only average = tone's score (1.0); the required
+        # criterion does NOT drag it down — it is a gate, not a contributor.
+        assert agg.score == pytest.approx(1.0)
 
-    def test_weighted_average_mixed_weights(self) -> None:
-        rubric = _mixed_rubric()  # weights: refund 2.0, tone 1.0
+    def test_weighted_average_over_non_required_only(self) -> None:
+        # refund_amount is required (a pure gate, excluded); tone is the only
+        # non-required criterion, so the score equals tone's score.
+        rubric = _mixed_rubric()
         results = parse_submit_report(_valid_args(refund_met=True, tone_score=0.4), rubric)
         agg = aggregate_rubric(rubric, results)
-        # (2*1.0 + 1*0.4) / 3 = 0.8
-        assert agg.score == pytest.approx((2 * 1.0 + 1 * 0.4) / 3)
-        # required met (refund True), score >= 0.5 → pass
+        assert agg.score == pytest.approx(0.4)
+        # Gate passes (refund met), but score 0.4 < 0.5 → indicative pass False.
         assert agg.gate_failed is False
-        assert agg.binary_pass is True
+        assert agg.binary_pass is False
+
+    def test_met_required_criterion_does_not_change_weighted_average(self) -> None:
+        # A met required-binary + one graded → score == the graded's score, even
+        # though the required criterion has a large weight. Required = gate only.
+        rubric = _mixed_rubric()  # refund required weight 2.0, tone weight 1.0
+        results = parse_submit_report(_valid_args(refund_met=True, tone_score=0.7), rubric)
+        agg = aggregate_rubric(rubric, results)
+        assert agg.gate_failed is False
+        assert agg.score == pytest.approx(0.7)
 
     def test_all_pass_yields_score_one(self) -> None:
         rubric = _mixed_rubric()
@@ -223,10 +235,59 @@ class TestAggregateRubric:
         results = parse_submit_report(_valid_args(refund_met=True, tone_score=0.0), rubric)
         agg = aggregate_rubric(rubric, results)
         assert agg.gate_failed is False
-        # (2*1 + 1*0)/3 = 0.666...
-        assert agg.score == pytest.approx(2.0 / 3.0)
+        # Non-required-only average = tone's score = 0.0.
+        assert agg.score == pytest.approx(0.0)
 
-    def test_non_positive_total_weight_raises(self) -> None:
+    def test_all_required_scores_one_when_gate_passes(self) -> None:
+        # Every criterion required (all pure gates) → no non-required to average;
+        # the score collapses to the gate verdict: 1.0 when all required are met.
+        rubric = Rubric(
+            criteria=[
+                Criterion(id="a", description="x", kind="binary", required=True),
+                Criterion(id="b", description="y", kind="binary", required=True),
+            ]
+        )
+        results = parse_submit_report(
+            {
+                "a": True,
+                "a_justification": "j",
+                "b": True,
+                "b_justification": "j",
+                "reasons": "r",
+            },
+            rubric,
+        )
+        agg = aggregate_rubric(rubric, results)
+        assert agg.gate_failed is False
+        assert agg.score == pytest.approx(1.0)
+        assert agg.binary_pass is True
+
+    def test_all_required_scores_zero_when_gate_fails(self) -> None:
+        # Every criterion required; one fails → gate trips and score collapses to 0.0.
+        rubric = Rubric(
+            criteria=[
+                Criterion(id="a", description="x", kind="binary", required=True),
+                Criterion(id="b", description="y", kind="binary", required=True),
+            ]
+        )
+        results = parse_submit_report(
+            {
+                "a": True,
+                "a_justification": "j",
+                "b": False,
+                "b_justification": "j",
+                "reasons": "r",
+            },
+            rubric,
+        )
+        agg = aggregate_rubric(rubric, results)
+        assert agg.gate_failed is True
+        assert agg.failed_required_ids == ("b",)
+        assert agg.score == pytest.approx(0.0)
+        assert agg.binary_pass is False
+
+    def test_non_positive_non_required_weight_raises(self) -> None:
+        # A non-required criterion with zero total weight can't be averaged.
         rubric = Rubric(
             criteria=[
                 Criterion(id="only", description="x", kind="graded", weight=0.0),
