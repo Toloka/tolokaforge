@@ -1,6 +1,6 @@
 """Calibration runner — drives the REAL rubric judge over golden fixtures.
 
-Stage 6 of ``plans/rubric_grading.md``. For each fixture this:
+Stage 6 of ``docs/RUBRIC_GRADING_DESIGN.md``. For each fixture this:
 
 1. builds an in-memory, jsonpath-evaluating :class:`DictDBReader` over the
    fixture's ``final_db_state`` (the exact Stage-4 live-test pattern, reused so

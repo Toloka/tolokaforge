@@ -372,7 +372,7 @@ message GradeComponents {
 //      JudgeReport (judge usage + transcript).
 //   3. The Runner combines all component scores using grading.weights and
 //      returns the final Grade. (An earlier protocol revision left the judge to
-//      the Host; the Runner now owns it — see plans/rubric_grading.md.)
+//      the Host; the Runner now owns it — see docs/RUBRIC_GRADING_DESIGN.md.)
 
 message CustomCheckResult {
   string check_name = 1;

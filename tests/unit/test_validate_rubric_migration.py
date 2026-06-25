@@ -2,7 +2,7 @@
 
 Rubric grading moved from a free-text ``rubric: str`` (+ ignored
 ``output_schema``) blob to a structured ``Rubric``. The migration is an
-intentional, non-back-compatible break (plans/rubric_grading.md). ``validate``
+intentional, non-back-compatible break (docs/RUBRIC_GRADING_DESIGN.md). ``validate``
 must catch the old shape at validate time with a message that names the field
 and shows the new shape — not defer the failure to run time.
 """

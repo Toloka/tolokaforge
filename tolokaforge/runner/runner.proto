@@ -234,7 +234,7 @@ message Grade {
   JudgeReport judge_report = 9;
 }
 
-// The rubric judge's own accounting + audit transcript (see plans/rubric_grading.md
+// The rubric judge's own accounting + audit transcript (see docs/RUBRIC_GRADING_DESIGN.md
 // § "Record the judge's own token usage/cost" and the reproducibility open
 // question — the transcript is the audit channel for a non-deterministic judge).
 message JudgeReport {
@@ -289,7 +289,7 @@ message GradeComponents {
   // LLM judge (rubric) score, computed by the Runner on the shared loop.
   // -1.0 means not evaluated; see Grade.judge_status for errored runs (which
   // do NOT report a 0.0 score). Earlier protocol revisions left the judge to
-  // the host — the Runner now owns it (see plans/rubric_grading.md).
+  // the host — the Runner now owns it (see docs/RUBRIC_GRADING_DESIGN.md).
   double llm_judge = 3;
 
   // Custom Python checks score

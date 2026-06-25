@@ -1,6 +1,6 @@
 """Golden calibration fixture — schema + loader.
 
-Stage 6 of ``plans/rubric_grading.md``. A fixture is the human-authored ground
+Stage 6 of ``docs/RUBRIC_GRADING_DESIGN.md``. A fixture is the human-authored ground
 truth a rubric judge is calibrated against. It bundles everything
 ``run_rubric_judge`` needs to grade one episode plus the human's per-criterion
 labels to compare against:

@@ -1,6 +1,6 @@
 """CLI for the rubric-judge calibrator — the trust gate.
 
-Stage 6 of ``plans/rubric_grading.md``. Runs the real judge over golden
+Stage 6 of ``docs/RUBRIC_GRADING_DESIGN.md``. Runs the real judge over golden
 fixtures with a (cheap) judge model, prints the per-criterion agreement report,
 and applies the trust gate: a rubric judge is **not shippable** until its
 agreement clears the threshold. Exits non-zero when the gate fails so CI can

@@ -1,6 +1,6 @@
 """Pure rubric-grading helpers — schema generation, validation, aggregation.
 
-Stage 3 of the rubric-grading plan (``plans/rubric_grading.md``). These functions
+Stage 3 of the rubric-grading plan (``docs/RUBRIC_GRADING_DESIGN.md``). These functions
 are deliberately free of any LLM / loop / IO so they are unit-testable in
 isolation; Stage 4 wires them into the runner-side judge that runs on the shared
 loop.
@@ -286,7 +286,7 @@ def parse_submit_report(tool_args: dict, rubric: Rubric) -> list[CriterionResult
 def aggregate_rubric(rubric: Rubric, results: list[CriterionResult]) -> RubricAggregate:
     """Aggregate per-criterion results into the ``llm_judge`` component verdict.
 
-    Semantics (from ``plans/rubric_grading.md``):
+    Semantics (from ``docs/RUBRIC_GRADING_DESIGN.md``):
 
     - **Required gate:** if ANY criterion with ``required=True`` has ``met=False``,
       the rubric fails outright (``gate_failed=True`` / ``binary_pass=False``),

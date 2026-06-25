@@ -1,6 +1,6 @@
 """Pure agreement metrics for rubric-judge calibration — no LLM, no IO.
 
-Stage 6 of ``plans/rubric_grading.md``: a rubric is NOT trustworthy until it
+Stage 6 of ``docs/RUBRIC_GRADING_DESIGN.md``: a rubric is NOT trustworthy until it
 clears an agreement gate. This module is the *separable, unit-testable* core:
 given the judge's per-criterion verdicts and the human ("golden") labels, it
 computes per-criterion agreement (accuracy + Cohen's κ), extracts the concrete

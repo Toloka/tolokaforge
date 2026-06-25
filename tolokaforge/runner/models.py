@@ -436,7 +436,7 @@ class LLMJudgeConfig(BaseModel):
 
         ``rubric: str`` and the now-removed ``output_schema`` field were the
         pre-Stage-2 contract. Rubric grading never worked end-to-end, so this is
-        an intentional, non-back-compatible break (see plans/rubric_grading.md).
+        an intentional, non-back-compatible break (see docs/RUBRIC_GRADING_DESIGN.md).
         """
         if not isinstance(data, dict):
             return data

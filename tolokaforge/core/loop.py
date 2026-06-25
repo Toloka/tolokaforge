@@ -27,7 +27,7 @@ optional user turn, error classification, max-turns), and delegates every
   message. :func:`classify_loop_error` reproduces the agent's exact
   classification and is the default both paths use.
 
-See ``plans/rubric_grading.md`` Stage 1 for design rationale.
+See ``docs/RUBRIC_GRADING_DESIGN.md`` Stage 1 for design rationale.
 """
 
 from __future__ import annotations

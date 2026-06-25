@@ -1,4 +1,4 @@
-"""Read-only agentic rubric judge — Stage 4 of ``plans/rubric_grading.md``.
+"""Read-only agentic rubric judge — Stage 4 of ``docs/RUBRIC_GRADING_DESIGN.md``.
 
 The judge is *"a solo read-only grader — the shared :class:`ToolCallingLoop`
 with no user simulator, a harness-owned read-only toolset, and a rubric-shaped
