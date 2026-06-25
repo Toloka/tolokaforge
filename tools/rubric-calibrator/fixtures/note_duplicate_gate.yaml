@@ -1,0 +1,112 @@
+# Golden calibration fixture that exercises the REQUIRED-criterion GATE.
+#
+# Scenario: a notes assistant is asked to save a new note. The mandatory policy
+# (agent system prompt) is to FIRST call `list_notes` and warn the user about any
+# near-duplicate BEFORE calling `add_note`. The transcript below deliberately
+# OMITS that step — the assistant calls `add_note` straight away — so the
+# required criterion `checked_duplicates_first` is met=false (human label).
+#
+# This is the deterministic, no-agent-luck companion to the runnable testcase
+# `examples/.../testcases/add_note_duplicate_check_gated`: it pins, against a
+# fixed transcript, that a met=false required criterion fires the gate. The two
+# graded criteria are clearly met (the note WAS saved faithfully and the reply is
+# clear), so the fixture is a mixed verdict — exactly the shape that exercises
+# judge↔human agreement rather than an all-pass walkthrough.
+#
+# `expected` are the human ground-truth labels the judge is calibrated against.
+id: note_duplicate_gate
+description: >-
+  Note saved faithfully and the reply is clear, but the assistant skipped the
+  mandatory check-for-duplicates-first step. The required criterion is met=false
+  → the gate fires. Mixed human verdict.
+
+agent_system_prompt: |
+  You are an assistant for a personal notes application. You help the user
+  create and recall notes using `list_notes` (read) and `add_note` (write).
+
+  Duplicate-check policy (mandatory): before saving ANY new note you MUST first
+  call `list_notes` to check whether a similar note already exists, and warn the
+  user about the near-duplicate, BEFORE you call `add_note`.
+
+rubric:
+  reference: |
+    The notes app already contains a note titled "Team stand-up" with body
+    "Daily stand-up at 9:30 in the Maple room." — a near-duplicate of what the
+    user now asks to save. The mandatory policy requires calling `list_notes`
+    (and warning about the duplicate) BEFORE `add_note`. A compliant transcript
+    shows `list_notes` called before `add_note`; this one does not.
+  criteria:
+    # REQUIRED GATE — human label is met=false (the step was skipped).
+    - id: checked_duplicates_first
+      description: >-
+        Before calling add_note, the assistant called list_notes to check for
+        duplicates AND warned the user that a similar note already exists. If the
+        assistant called add_note without first checking, this is NOT met.
+      kind: binary
+      required: true
+      weight: 1.0
+    # GRADED, NOT required — clearly met; scores even though the gate fails.
+    - id: note_saved
+      description: >-
+        A new note was saved (add_note called) faithfully capturing the user's
+        request — a "Team standup" title and a body about a 9:30 standup in the
+        Maple room.
+      expected: "title 'Team standup'; body 'Daily standup at 9:30 in the Maple room.'"
+      kind: graded
+      weight: 1.0
+    # GRADED, NOT required.
+    - id: clarity
+      description: The assistant's final reply is clear and confirms what it did.
+      kind: graded
+      weight: 0.5
+
+# The transcript OMITS the required list_notes step: the assistant calls add_note
+# directly. This is what makes the gate fixture self-consistent.
+transcript:
+  - role: user
+    content: >-
+      Please save a note titled "Team standup" with the body
+      "Daily standup at 9:30 in the Maple room."
+  - role: assistant
+    content: >-
+      Sure — saving that note now.
+    tool_calls:
+      - function:
+          name: add_note
+          arguments: '{"title": "Team standup", "body": "Daily standup at 9:30 in the Maple room."}'
+  - role: tool
+    tool_call_id: t1
+    content: '{"id": "N-003", "title": "Team standup", "body": "Daily standup at 9:30 in the Maple room."}'
+  - role: assistant
+    content: >-
+      Done! I've saved your note "Team standup" with the body "Daily standup at
+      9:30 in the Maple room." Let me know if there's anything else.
+
+# Final DB state for the in-memory DBReader (get_db_state / query_db): the
+# pre-existing near-duplicate plus the note the assistant just added.
+final_db_state:
+  notes:
+    - id: N-001
+      title: Team stand-up
+      body: Daily stand-up at 9:30 in the Maple room.
+    - id: N-002
+      title: Plant watering
+      body: Water the office plants every Tuesday and Friday.
+    - id: N-003
+      title: Team standup
+      body: Daily standup at 9:30 in the Maple room.
+
+# Human ground-truth labels — one per rubric criterion.
+expected:
+  - criterion_id: checked_duplicates_first
+    met: false
+    note: >-
+      The assistant called add_note directly without first calling list_notes or
+      warning about the existing "Team stand-up" note — the mandatory policy step
+      was skipped, so the required criterion is not met and the gate fires.
+  - criterion_id: note_saved
+    score: 1.0
+    note: The saved note matches the user's requested title and body exactly.
+  - criterion_id: clarity
+    score: 1.0
+    note: The closing reply clearly confirms what was saved.

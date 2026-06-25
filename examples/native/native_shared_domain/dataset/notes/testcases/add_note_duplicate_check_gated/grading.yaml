@@ -1,0 +1,73 @@
+# Rubric-graded testcase that DEMONSTRATES THE REQUIRED-CRITERION GATE FIRING.
+#
+# The agent under test is asked to save a note. The rubric encodes a
+# "check for duplicates BEFORE add_note" policy as a REQUIRED criterion, and the
+# initial state already contains a near-duplicate ("Team stand-up"). The shared
+# system prompt tells the agent to call add_note directly (it does NOT mention
+# the policy) and the user never asks for a duplicate check, so agents reliably
+# skip list_notes and write the note straight away — missing the required step.
+#
+# The required criterion `checked_duplicates_first` then comes back met=false →
+# `gate_failed` → the whole rubric fails (binary_pass=false) REGARDLESS of the
+# weighted average. The graded `note_saved` criterion still scores > 0, which is
+# the proof that the gate overrides the weighted score (see docs/GRADING.md §
+# Required-gate semantics: required criteria are pure gates, excluded from the
+# weighted average).
+#
+# The judge grades from the TRANSCRIPT + author `reference`: whether list_notes
+# was called before add_note, and whether a sensible note was saved, are both
+# visible in the transcript's tool calls and the assistant's reply.
+combine:
+  method: weighted
+  weights:
+    llm_judge: 1.0
+  pass_threshold: 0.75
+
+llm_judge:
+  # Cheap but capable judge that reliably terminates on agentic grading.
+  model_ref: "openrouter/openai/gpt-4.1-mini"
+  rubric:
+    reference: |
+      The notes app already contains a note titled "Team stand-up" with body
+      "Daily stand-up at 9:30 in the Maple room." — a near-duplicate of what the
+      user now asks to save ("Team standup" / "Daily standup at 9:30 in the Maple
+      room.").
+
+      The mandatory policy this rubric grades against: before saving ANY new note
+      the assistant MUST first call `list_notes` to check for a similar existing
+      note, and warn the user about the duplicate, BEFORE calling `add_note`.
+
+      A compliant transcript therefore shows `list_notes` called BEFORE
+      `add_note`, and the assistant warning the user that a similar note already
+      exists. The note the user asked for is itself reasonable to save.
+    criteria:
+      # REQUIRED GATE. Weaker agents skip the policy step → met=false →
+      # gate_failed → binary_pass=false regardless of the other criteria.
+      - id: checked_duplicates_first
+        description: >
+          Before calling add_note, the assistant called list_notes to check for
+          duplicates AND warned the user that a similar note ("Team stand-up",
+          "Daily stand-up at 9:30 in the Maple room.") already exists. If the
+          assistant called add_note without first checking for duplicates, or did
+          not surface the existing near-duplicate, this criterion is NOT met.
+        kind: binary
+        required: true
+        weight: 1.0
+      # GRADED, NOT required. Scores even when the gate fails — proving the gate
+      # is independent of the weighted average.
+      - id: note_saved
+        description: >
+          A new note was saved (add_note called) capturing the user's request —
+          a "Team standup" title and a body about a 9:30 standup in the Maple
+          room. Score on how faithfully the saved note matches what the user
+          asked for.
+        expected: "title 'Team standup'; body 'Daily standup at 9:30 in the Maple room.'"
+        kind: graded
+        weight: 1.0
+      # GRADED, NOT required.
+      - id: clarity
+        description: >
+          The assistant's final reply is clear and professional — it confirms in
+          plain language what it did.
+        kind: graded
+        weight: 0.5

@@ -1,0 +1,31 @@
+task_id: "notes_add_note_duplicate_check_gated"
+name: "Notes — save a reminder under the duplicate-check policy (rubric gate demo)"
+description: >
+  The user asks to save a new note. The rubric encodes a check-first policy
+  (the assistant should list_notes and warn the user when a similar note already
+  exists BEFORE adding) as a REQUIRED criterion. The shared system prompt does
+  NOT mention this policy and instead tells the agent to call add_note directly,
+  and the user never asks for a duplicate check — so agents reliably skip the
+  check-first step. The initial state already contains a near-duplicate note, so
+  the duplicate genuinely exists. This testcase demonstrates the rubric
+  REQUIRED-criterion GATE firing: skipping the check-first step fails the
+  required criterion → gate_failed → binary_pass=false, even though the graded
+  "note was saved" criterion still scores > 0.
+domain: ../../_shared/domain.yaml
+max_turns: 6
+
+initial_user_message: >
+  Please save a note titled "Team standup" with the body
+  "Daily standup at 9:30 in the Maple room."
+
+initial_state:
+  json_db: "initial_state.json"
+
+user_simulator:
+  backstory: >
+    You want a single new note saved with the title and body you gave. You do
+    NOT know or care whether a similar note already exists, and you will NOT ask
+    the assistant to check for duplicates — you just want it saved. As soon as
+    the assistant confirms the note is saved, thank it briefly and stop.
+
+grading: "grading.yaml"

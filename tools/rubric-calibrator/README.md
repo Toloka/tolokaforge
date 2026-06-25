@@ -51,6 +51,12 @@ for the schema: `id`, `rubric`, `agent_system_prompt`, `transcript`,
 `final_db_state` (optional), `workspace` (optional), `rag_url` (optional), and
 `expected` (one human label per criterion — `met` for binary, `score` for graded).
 
+`fixtures/note_duplicate_gate.yaml` is the **required-gate** fixture: its
+transcript omits a mandatory policy step, so a `required` criterion is labelled
+`met: false` and the judge run reports `gate_failed=True` (the deterministic,
+no-agent-luck counterpart to the `add_note_duplicate_check_gated` example
+testcase). The graded criteria are still met, so it is a mixed verdict.
+
 ## Layout
 
 - `src/rubric_calibrator/metrics.py` — pure agreement maths (no LLM, unit-tested).
