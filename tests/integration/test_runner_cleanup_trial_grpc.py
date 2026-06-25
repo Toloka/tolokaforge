@@ -15,7 +15,7 @@ import pytest
 
 from tolokaforge.core.docker_runtime import RunnerClient
 from tolokaforge.core.models import ModelConfig
-from tolokaforge.core.trial import TrialSpec
+from tolokaforge.core.trial import EnvEndpoints, TrialSpec
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.models import TaskDescription
 
@@ -59,6 +59,10 @@ def _trial_spec_json(trial_id: str) -> str:
         run_id="cleanup_e2e_run",
         task=TaskDescription.model_validate(_task_description()),
         agent_model_config=ModelConfig(name="test-model", provider="test"),
+        env_endpoints=EnvEndpoints(
+            db_url="http://db.test:8000",
+            runner_url="http://runner.test:50051",
+        ),
     ).model_dump_json()
 
 

@@ -18,7 +18,7 @@ import pytest
 pytestmark = pytest.mark.unit
 
 from tolokaforge.core.models import ModelConfig
-from tolokaforge.core.trial import TrialSpec
+from tolokaforge.core.trial import EnvEndpoints, TrialSpec
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.models import TaskDescription
 
@@ -36,6 +36,10 @@ def _trial_spec_json(task_dict: dict[str, Any], trial_id: str = "test:0") -> str
         run_id="test_run",
         task=TaskDescription.model_validate(task_dict),
         agent_model_config=ModelConfig(name="test-model", provider="test"),
+        env_endpoints=EnvEndpoints(
+            db_url="http://db.test:8000",
+            runner_url="http://runner.test:50051",
+        ),
     ).model_dump_json()
 
 

@@ -26,7 +26,7 @@ from tolokaforge.core.models import (
     Trajectory,
     TrialStatus,
 )
-from tolokaforge.core.trial import TrialResult, TrialSpec
+from tolokaforge.core.trial import EnvEndpoints, TrialResult, TrialSpec
 from tolokaforge.runner.models import TaskDescription
 
 pytestmark = pytest.mark.canonical
@@ -47,6 +47,14 @@ def _make_model_config() -> ModelConfig:
     return ModelConfig(name="claude-sonnet-4-6", provider="anthropic")
 
 
+def _make_env_endpoints(rag: bool = False) -> EnvEndpoints:
+    return EnvEndpoints(
+        db_url="http://db.local:8000",
+        rag_url="http://rag.local:8001" if rag else None,
+        runner_url="http://runner.local:50051",
+    )
+
+
 # ---------------------------------------------------------------------------
 # TrialSpec
 # ---------------------------------------------------------------------------
@@ -59,15 +67,29 @@ class TestTrialSpecContract:
             run_id="run_2026_06_18",
             task=_make_task_description(),
             agent_model_config=_make_model_config(),
+            env_endpoints=_make_env_endpoints(),
         )
         # Identity defaults: attempt_id and worker_id have sensible zero values.
         assert spec.attempt_id == 0
         assert spec.worker_id is None
-        # Forward-looking extension points default to empty containers, not None.
-        assert spec.env_endpoints == {}
+        # ``env_endpoints`` is required; the typed model is the contract.
+        assert isinstance(spec.env_endpoints, EnvEndpoints)
+        assert spec.env_endpoints.db_url == "http://db.local:8000"
+        # ``runtime_context`` stays a free-form dict (extension point).
         assert spec.runtime_context == {}
         # Embedded task is the same object (no clone, no transformation).
         assert spec.task.task_id == "airline_001"
+
+    def test_env_endpoints_is_required(self) -> None:
+        """The orchestrator must resolve service URLs before constructing
+        a spec — there is no implicit empty default any longer."""
+        with pytest.raises(ValidationError):
+            TrialSpec(
+                trial_id="airline_001:0",
+                run_id="run_2026_06_18",
+                task=_make_task_description(),
+                agent_model_config=_make_model_config(),
+            )
 
     def test_json_round_trip_is_identity(self) -> None:
         spec = TrialSpec(
@@ -80,7 +102,7 @@ class TestTrialSpecContract:
             user_model_config=_make_model_config(),
             max_turns=20,
             default_tool_timeout_s=45.0,
-            env_endpoints={"db": "http://db.local:8000", "rag": "http://rag.local:8001"},
+            env_endpoints=_make_env_endpoints(rag=True),
             runtime_context={"backend": "local", "pod_class": "ephemeral"},
         )
         reloaded = TrialSpec.model_validate_json(spec.model_dump_json())
@@ -96,6 +118,7 @@ class TestTrialSpecContract:
                     "run_id": "r",
                     "task": _make_task_description().model_dump(),
                     "agent_model_config": _make_model_config().model_dump(),
+                    "env_endpoints": _make_env_endpoints().model_dump(),
                     "this_field_does_not_exist": True,
                 }
             )
@@ -107,6 +130,7 @@ class TestTrialSpecContract:
             run_id="r",
             task=_make_task_description(),
             agent_model_config=_make_model_config(),
+            env_endpoints=_make_env_endpoints(),
         )
         # The set of keys at the top level is the seam. Embedded models can
         # evolve under their own contract tests; this set may not drift
