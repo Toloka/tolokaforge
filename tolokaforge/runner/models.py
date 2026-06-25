@@ -324,12 +324,80 @@ class Rubric(BaseModel):
 
     ``reference`` is an optional author-written reference (correct answer /
     policy summary) shown to the judge alongside the per-criterion ``expected``.
+
+    Criterion ids are validated at construction (see ``_validate_criterion_ids``)
+    so that ``validate`` / config-load fail loud before any judge runs — the
+    derived ``submit_report`` tool schema (``core/grading/rubric.py``) relies on
+    these guarantees (unique, identifier-safe ids that never collide with the
+    reserved overall ``reasons`` key or the per-criterion ``<id>_justification``
+    derived keys).
     """
 
     criteria: list[Criterion]
     reference: str | None = None
 
     model_config = {"extra": "forbid"}
+
+    # Reserved keys in the generated submit_report tool schema. Encoded inline
+    # here (not imported from core/grading/rubric.py) to avoid an import cycle;
+    # build_submit_report_tool must keep these in sync.
+    _RESERVED_OVERALL_KEY = "reasons"
+    _JUSTIFICATION_SUFFIX = "_justification"
+    _SAFE_ID_PATTERN = r"^[A-Za-z][A-Za-z0-9_]*$"
+
+    @model_validator(mode="after")
+    def _validate_criterion_ids(self) -> "Rubric":
+        """Fail loud on unsafe / colliding criterion ids.
+
+        Guards the construction seam so a malformed rubric is rejected at
+        config-load / ``validate`` time, never at judge runtime. Rules:
+          (a) no duplicate ``criterion.id``;
+          (b) no id equal to the reserved overall key ``"reasons"``;
+          (c) no id ending in ``"_justification"``, and no id colliding with
+              another criterion's derived ``"<id>_justification"`` key;
+          (d) every id matches ``^[A-Za-z][A-Za-z0-9_]*$`` (identifier-safe).
+        """
+        import re
+
+        ids = [c.id for c in self.criteria]
+
+        seen: set[str] = set()
+        duplicates = {cid for cid in ids if cid in seen or seen.add(cid)}
+        if duplicates:
+            raise ValueError(
+                f"Rubric criterion ids must be unique; duplicates: {sorted(duplicates)}."
+            )
+
+        for cid in ids:
+            if not re.match(self._SAFE_ID_PATTERN, cid):
+                raise ValueError(
+                    f"Rubric criterion id {cid!r} is not identifier-safe; it must "
+                    f"match {self._SAFE_ID_PATTERN} (letter first, then letters / "
+                    f"digits / underscores)."
+                )
+            if cid == self._RESERVED_OVERALL_KEY:
+                raise ValueError(
+                    f"Rubric criterion id {cid!r} is reserved — it collides with the "
+                    f"overall '{self._RESERVED_OVERALL_KEY}' field in the submit_report "
+                    f"tool schema. Rename the criterion."
+                )
+            if cid.endswith(self._JUSTIFICATION_SUFFIX):
+                raise ValueError(
+                    f"Rubric criterion id {cid!r} must not end with "
+                    f"'{self._JUSTIFICATION_SUFFIX}' — that suffix is reserved for the "
+                    f"per-criterion justification fields in the submit_report schema."
+                )
+
+        id_set = set(ids)
+        for cid in ids:
+            derived = f"{cid}{self._JUSTIFICATION_SUFFIX}"
+            if derived in id_set:
+                raise ValueError(
+                    f"Rubric criterion id {derived!r} collides with the derived "
+                    f"justification key for criterion {cid!r}. Rename one of them."
+                )
+
+        return self
 
 
 class CriterionResult(BaseModel):
