@@ -1,0 +1,131 @@
+# Rubric Grading — Design
+
+Status: implemented. This is the as-built architecture and rationale. For the
+authoring/usage reference see [GRADING.md](GRADING.md) and the `grading.yaml`
+schema in [REFERENCE.md](REFERENCE.md).
+
+## Motivation
+
+Rubric grading was nominally available via an "LLM judge" but did not work. The
+concrete defects:
+
+1. **Two divergent judge implementations, neither owned.** A rich agentic
+   `LLMJudge` reachable only through `GradingEngine` / `BaseAdapter.grade()` —
+   which had **no production caller** (dead code) — and a minimal
+   `evaluate_llm_judge` on the live gRPC `GradeTrial` path that did a single
+   completion returning a flat `{score, reasons}`.
+2. **Unstructured rubric.** `rubric: str` (a free-text blob) → a single scalar.
+   No per-criterion scoring, no diagnostics, no partial-credit gradient.
+3. **A required-but-ignored `output_schema`** field the live judge never read.
+4. **The proto contradicted the code** ("LLM judge NOT computed by Runner" while
+   the runner computed it).
+5. **Silent score fallbacks** on judge malfunction (0.0 / 0.5), masking errors.
+
+## Architecture
+
+Grading runs in the **runner** (gRPC `GradeTrial`), co-located with the state
+service (`DBServiceClient`) and the trial workspace. The rubric judge is one
+component of `combine_grade_components`, alongside state checks and transcript
+rules; its aggregated score feeds the existing `weights.llm_judge` slot.
+
+```
+orchestrator ──RegisterTrial──▶ runner            (TaskDescription incl. grading.llm_judge.rubric)
+orchestrator ──GradeTrial─────▶ runner._grade_trial_async
+                                  ├─ state checks / transcript rules
+                                  └─ rubric judge:  run_rubric_judge(...)
+                                        ├─ LLMClient(model_ref) via build_capabilities  (separate fixed judge model)
+                                        ├─ ToolCallingLoop (no user sim; stop on submit_report; max_turns + wall-time)
+                                        │     read-only tools: get_db_state/query_db, search_kb, read_file, submit_report
+                                        ├─ parse_submit_report  → list[CriterionResult]   (fail loud)
+                                        └─ aggregate_rubric      → score + gate
+                                  └─ Grade{ binary_pass, score, components, criterion_results,
+                                            judge_status, judge_report(usage+transcript) }
+orchestrator ◀──GradeTrialResponse── proto Grade ── docker_runtime ── Pydantic Grade ── TrialArtifactWriter
+                                                                                          grade.yaml + judge_trajectory.yaml
+```
+
+The judge runs on the **same `ToolCallingLoop`** the agent uses
+(`core/loop.py`), configured with no user simulator and a termination policy
+that stops the moment `submit_report` appears in the tool calls. The loop is
+sync; the async runner bridges it with `run_in_executor`, and DB-read tools
+bridge back to the runner event loop with `run_coroutine_threadsafe(...)`.
+
+## Key components
+
+| Component | Location | Role |
+|---|---|---|
+| `ToolCallingLoop` | `core/loop.py` | Shared multi-turn tool-calling engine (agent + judge) |
+| `Rubric` / `Criterion` | `runner/models.py` | Author-facing config (Pydantic, `extra=forbid`) |
+| `CriterionResult` | `runner/models.py` | Per-criterion verdict (output side) |
+| `build_submit_report_tool` | `core/grading/rubric.py` | Generates the terminal tool schema from the rubric |
+| `parse_submit_report` | `core/grading/rubric.py` | Validates judge output → `CriterionResult` (fail loud) |
+| `aggregate_rubric` | `core/grading/rubric.py` | Weighted score + required-gate |
+| `run_rubric_judge` | `core/grading/judge.py` | Builds the client + read-only tools, runs the loop |
+| read-only judge tools | `core/grading/judge_tools.py` | `get_db_state`/`query_db`/`search_kb`/`read_file` |
+| `JudgeStatus` / `JudgeReport` | proto + `core/models.py` | Errored status + judge usage/transcript |
+| calibrator | `tools/rubric-calibrator` | Agreement metrics + trust gate over golden fixtures |
+
+## Design decisions
+
+| Decision | Rationale |
+|---|---|
+| **Break `rubric: str` compat** | Rubric grading never worked end-to-end; no in-tree task used it. |
+| **Judge runs in the runner** | DB + workspace live there; matches what the live code already did. Concurrency handled by raising the `GradeTrial` timeout (300→600s) + a per-judge `max_turns`/wall-time budget, not by moving host-side. |
+| **One shared loop** | The judge is "the agent loop run as a solo grader." Avoids a third near-duplicate loop; the old `_grade_agentic` and `GradingEngine` judge path were deleted. |
+| **Harness-owned read-only tools** (not the agent's tools filtered by `category`) | `category` is stamped `"compute"` for all native task tools, so a filter excludes nothing — untrustworthy. A fixed read-only allowlist is safe and modality-correct without a DB clone. |
+| **Separate fixed judge model via `build_capabilities`** | An agentic tool-calling judge needs the preset/policy machinery (schema sanitizers, reasoning codecs) — raw `litellm.completion` mangles tool calls for Gemini/GPT-5/etc. A fixed model (independent of the agent under test) avoids self-grading bias. |
+| **Fail loud → `JudgeStatus.ERRORED`** | Any judge malfunction (no `submit_report`, retry exhaustion, budget/turn exhaustion, crash) yields ERRORED with **no score**; the `llm_judge` component stays at the `-1.0` sentinel (excluded from the combine), never 0.0/0.5. |
+| **Structured output via `submit_report`** | The tool's arg schema is generated from the rubric and validated with Pydantic (bounded re-prompt, then ERRORED). No MCP — the loop is in-process. A flat arg object (per-criterion keyed by id) avoids nested-schema dialect gaps. |
+| **Author-written reference channel** (`rubric.reference`, `criterion.expected`) | The judge needs the correct answer to grade reference-dependent criteria — but it is given an author-written reference, **not** the deterministic oracle (`golden_actions`/`expected_hash`/`jsonpath_checks`), which would bias toward the golden path and double-count state checks. |
+| **Narrow input surface** | `run_rubric_judge` accepts only `{agent_system_prompt, transcript, rubric, read-tools}` — oracle fields cannot leak by construction. Agent system prompts are policy-only by convention. |
+| **Calibration gates trust** | A rubric is not trustworthy until it clears an agreement threshold against human-labeled fixtures. |
+
+## Scoring semantics
+
+A criterion is `binary` (judge reports `met`) or `graded` (judge reports a
+`score` in [0,1]); a graded criterion's `met` is derived at the 0.5 threshold for
+gating only.
+
+- **Required-gate:** any `required` criterion with `met=false` fails the rubric
+  outright (`gate_failed`) — `binary_pass=false` and the `llm_judge` component is
+  forced to 0.0, **independent of `pass_threshold`**. A high weighted score
+  cannot rescue a failed required criterion. Per-criterion detail survives in
+  `criterion_results` regardless.
+- **Weighted score:** `Σ(weight·score) / Σ(weight)` over **non-required**
+  criteria only (required criteria are pure gates, not weighted contributors). An
+  all-required rubric scores 1.0 when the gate passes, 0.0 when it fails.
+- **Two weighting layers:** per-criterion `weight` (inside the rubric) composes
+  multiplicatively with the top-level `weights.llm_judge` that scales the whole
+  judge component in `combine_grade_components`.
+
+## Output
+
+Per trial (`docs/OUTPUT_FORMAT.md`):
+
+- `grade.yaml` — `binary_pass`, `score`, `components`, `criterion_results`
+  (id/met/score/justification), `judge_status`, `judge_usage`
+  (calls/tokens/cost/tool_calls).
+- `judge_trajectory.yaml` — the judge's own message transcript (tool calls +
+  `submit_report`), written only when present. This is the audit/reproducibility
+  channel; the agentic judge is not bit-reproducible even at temperature 0.
+
+## Calibration
+
+`tools/rubric-calibrator` runs the real judge over golden fixtures
+(`{rubric, transcript, final_db_state?, workspace?, expected per-criterion}`),
+computes per-criterion accuracy + Cohen's κ (graded scores binarised at 0.5),
+lists disagreements, and applies a **trust gate**: it exits non-zero when overall
+agreement is below threshold OR any fixture errored. Integration is opt-in
+(default-skipped) so a bare test run never spends money.
+
+## Known limitations / future work
+
+- **Office/PDF judge readers not restored.** The new judge offers only
+  `read_file` (UTF-8 text); the old (dead) judge had xlsx/docx/pptx/pdf readers.
+  Restore as a read-only allowlist before any office-deliverable task lands.
+- **Graded calibration is binarised** at 0.5 — agreement metrics do not catch
+  graded-magnitude drift (a future per-graded MAE metric would).
+- **Single-call grading** risks cross-criterion anchoring; per-criterion calls
+  remain a fallback if calibration shows bias.
+- **Two `RequiredAction`/`TranscriptRulesConfig` schemas** (host `core/models.py`
+  vs runner `runner/models.py`) could be consolidated.

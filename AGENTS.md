@@ -475,6 +475,7 @@ Full six-step process: [`docs/ADD_NEW_MODEL.md`](docs/ADD_NEW_MODEL.md).
 | Scripts | `scripts/README.md` |
 | Task design | `docs/TASKS.md` |
 | Grading | `docs/GRADING.md` |
+| Rubric grading design | `docs/RUBRIC_GRADING_DESIGN.md` |
 | Configuration | `docs/CONFIG.md` |
 | Docker / Runner | `docs/RUNNER.md` |
 | Adapters | `docs/ADAPTERS.md` |
