@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 import shutil
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,19 @@ def repo_root() -> Path:
 # =============================================================================
 # Image Definitions — Single Source of Truth
 # =============================================================================
+#
+# Every service the project knows about appears in IMAGE_DEFINITIONS. Each
+# entry holds the static facts (name, dockerfile, context) and, when the
+# Dockerfile needs no host-side resolution, the static context_files too.
+#
+# Services whose build context depends on the wheel resolver (currently
+# ``runner`` and ``rag-service``) declare only their static fields here, and
+# pair with a factory (``_runner_definition`` / ``_rag_definition``) that
+# augments the static base with ``context_files`` and ``build_args`` at call
+# time. ``get_image_definition`` routes to that factory; everything that only
+# needs the static facts (reverse lookups, service enumeration, group
+# membership) reads IMAGE_DEFINITIONS directly and never triggers wheel
+# resolution as a side effect.
 
 IMAGE_DEFINITIONS: dict[str, dict[str, Any]] = {
     "db-service": {
@@ -51,8 +65,18 @@ IMAGE_DEFINITIONS: dict[str, dict[str, Any]] = {
             "tolokaforge/env/json_db_service/",
         ],
     },
-    # "runner" is resolved dynamically — see get_image_definition().
-    # "rag-service" is also resolved dynamically (needs wheel + service files).
+    "runner": {
+        "name": "tolokaforge-runner",
+        "dockerfile": "tolokaforge/docker/dockerfiles/runner.Dockerfile",
+        "context": ".",
+        # context_files + build_args added by _runner_definition() at call time
+    },
+    "rag-service": {
+        "name": "tolokaforge-rag-service",
+        "dockerfile": "tolokaforge/docker/dockerfiles/rag.Dockerfile",
+        "context": ".",
+        # context_files + build_args added by _rag_definition() at call time
+    },
     "mock-web": {
         "name": "tolokaforge-mock-web",
         "dockerfile": "tolokaforge/docker/dockerfiles/mock_web.Dockerfile",
@@ -61,35 +85,34 @@ IMAGE_DEFINITIONS: dict[str, dict[str, Any]] = {
     },
 }
 
+# Factories that augment a static base entry with wheel-resolver-dependent
+# fields. Keyed by service name; absent for services whose full definition
+# fits in IMAGE_DEFINITIONS verbatim.
+_DYNAMIC_DEFINITIONS: dict[str, Callable[[], dict[str, Any]]] = {}
+
 # Service groups for selective building
 CORE_IMAGES: list[str] = ["db-service", "runner"]
 EXTENDED_IMAGES: list[str] = ["rag-service", "mock-web"]
 
-_ALL_KNOWN_SERVICES = {"db-service", "runner", "rag-service", "mock-web"}
+_ALL_KNOWN_SERVICES = frozenset(IMAGE_DEFINITIONS)
 
 
 def _runner_definition() -> dict[str, Any]:
-    """Build the runner image definition dynamically via the wheel resolver.
+    """Augment the runner base entry with the resolved wheel.
 
-    The resolver produces a wheel on the host; the Dockerfile installs it.
-    The only file in the build context (besides the Dockerfile) is the wheel.
+    The Dockerfile installs the wheel produced by ``resolve_wheel()``; the
+    only file in the build context (besides the Dockerfile) is that wheel.
     """
     artifact = resolve_wheel()
     return {
-        "name": "tolokaforge-runner",
-        "dockerfile": "tolokaforge/docker/dockerfiles/runner.Dockerfile",
-        "context": ".",
-        "context_files": [
-            str(artifact.path),  # absolute path to the .whl
-        ],
-        "build_args": {
-            "WHEEL_FILENAME": artifact.path.name,
-        },
+        **IMAGE_DEFINITIONS["runner"],
+        "context_files": [str(artifact.path)],  # absolute path to the .whl
+        "build_args": {"WHEEL_FILENAME": artifact.path.name},
     }
 
 
 def _rag_definition() -> dict[str, Any]:
-    """Build the rag-service image definition dynamically.
+    """Augment the rag-service base entry with the resolved wheel + service files.
 
     The rag service needs both the tolokaforge wheel (for
     ``import tolokaforge.secrets``) and its own service files
@@ -97,32 +120,31 @@ def _rag_definition() -> dict[str, Any]:
     """
     artifact = resolve_wheel()
     return {
-        "name": "tolokaforge-rag-service",
-        "dockerfile": "tolokaforge/docker/dockerfiles/rag.Dockerfile",
-        "context": ".",
+        **IMAGE_DEFINITIONS["rag-service"],
         "context_files": [
             str(artifact.path),  # wheel (absolute → flat copy)
             "tolokaforge/env/rag_service/",  # service files (relative)
         ],
-        "build_args": {
-            "WHEEL_FILENAME": artifact.path.name,
-        },
+        "build_args": {"WHEEL_FILENAME": artifact.path.name},
     }
 
 
-def get_image_definition(service_name: str) -> dict[str, Any]:
-    """Return the image definition for *service_name*.
+_DYNAMIC_DEFINITIONS["runner"] = _runner_definition
+_DYNAMIC_DEFINITIONS["rag-service"] = _rag_definition
 
-    ``runner`` and ``rag-service`` are built dynamically via the wheel
-    resolver; all other entries come from the static dict.
+
+def get_image_definition(service_name: str) -> dict[str, Any]:
+    """Return the full image definition for *service_name*.
+
+    For services with a dynamic factory, that factory is called (it may
+    invoke ``resolve_wheel()``); otherwise the static entry is returned
+    as-is.
 
     Raises:
         KeyError: If *service_name* is not a known service.
     """
-    if service_name == "runner":
-        return _runner_definition()
-    if service_name == "rag-service":
-        return _rag_definition()
+    if service_name in _DYNAMIC_DEFINITIONS:
+        return _DYNAMIC_DEFINITIONS[service_name]()
     if service_name in IMAGE_DEFINITIONS:
         return IMAGE_DEFINITIONS[service_name]
     raise KeyError(f"Unknown service '{service_name}'. Available: {sorted(_ALL_KNOWN_SERVICES)}")
@@ -131,12 +153,12 @@ def get_image_definition(service_name: str) -> dict[str, Any]:
 def service_name_for_image(image_name: str) -> str | None:
     """Return the service whose definition produces ``image_name`` (without tag).
 
-    Searches both static (``IMAGE_DEFINITIONS``) and dynamically-resolved
-    (``runner``, ``rag-service``) services uniformly. Returns ``None`` if no
-    known service matches.
+    Reads IMAGE_DEFINITIONS directly — every service's image name lives there
+    as a static field, even for services with a dynamic factory, so no wheel
+    resolution is triggered as a side effect of an unrelated lookup.
     """
-    for svc in _ALL_KNOWN_SERVICES:
-        if get_image_definition(svc)["name"] == image_name:
+    for svc, defn in IMAGE_DEFINITIONS.items():
+        if defn["name"] == image_name:
             return svc
     return None
 

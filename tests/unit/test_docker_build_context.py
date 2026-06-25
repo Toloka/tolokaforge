@@ -255,14 +255,25 @@ def test_build_image_passes_no_build_args_when_definition_has_none(monkeypatch) 
     assert captured["build_args"] is None
 
 
-@pytest.mark.usefixtures("_mock_wheel")
-def test_service_name_for_image_resolves_all_known_services() -> None:
-    """Reverse lookup must cover dynamically-resolved services too.
+def test_service_name_for_image_resolves_all_known_services_without_resolving_wheel(
+    monkeypatch,
+) -> None:
+    """Reverse lookup must (a) cover dynamically-resolved services too and
+    (b) never invoke the wheel resolver as a side effect.
 
-    Integration test fixtures rely on this to auto-build runner / rag-service
-    images on a cold machine; iterating only ``IMAGE_DEFINITIONS`` misses them
-    because they are resolved via ``_runner_definition`` / ``_rag_definition``.
+    Iterating ``IMAGE_DEFINITIONS`` only misses runner / rag-service (they're
+    resolved via ``_runner_definition`` / ``_rag_definition``); calling
+    ``get_image_definition`` for every candidate, conversely, would invoke
+    ``resolve_wheel()`` for runner / rag-service even when looking up an
+    unrelated service like db-service — propagating wheel-build failures from
+    an unrelated lookup. The implementation must do neither.
     """
+
+    def fail_resolve_wheel(*args, **kwargs):
+        raise AssertionError("resolve_wheel must not be called during a name lookup")
+
+    monkeypatch.setattr("tolokaforge.docker.builder.resolve_wheel", fail_resolve_wheel)
+
     assert service_name_for_image("tolokaforge-db-service") == "db-service"
     assert service_name_for_image("tolokaforge-mock-web") == "mock-web"
     assert service_name_for_image("tolokaforge-runner") == "runner"
