@@ -10,6 +10,17 @@ from pydantic import BaseModel, Field, field_serializer, field_validator, model_
 from tolokaforge.core.llm.reasoning import ReasoningConfig, StructuredReasoning
 from tolokaforge.core.llm.usage import CostSource, ProviderRawCall, Usage
 
+# Rubric / Criterion / LLMJudgeConfig have a single canonical home in
+# tolokaforge.runner.models — they cross both the YAML grading block and the
+# gRPC wire (serialized inside TrialSpec). Re-exported here so existing
+# ``core.models`` references (e.g. GradingConfig.llm_judge) resolve without a
+# second, drifting definition. CriterionResult is the judge's per-criterion
+# output and is consumed by the host-side Grade model below.
+from tolokaforge.runner.models import Criterion as Criterion
+from tolokaforge.runner.models import CriterionResult as CriterionResult
+from tolokaforge.runner.models import LLMJudgeConfig as LLMJudgeConfig
+from tolokaforge.runner.models import Rubric as Rubric
+
 
 class MessageRole(str, Enum):
     """Message role in conversation"""
@@ -252,6 +263,9 @@ class Grade(BaseModel):
     reasons: str | dict[str, list[str]] = ""
     state_diff: dict[str, Any] | None = None
     custom_checks_details: list[CustomCheckDetail] | None = None
+    # Per-criterion rubric-judge breakdown. ``None`` when no LLM judge ran;
+    # an empty list is distinct (judge ran, rubric had no scorable criteria).
+    criterion_results: list[CriterionResult] | None = None
 
 
 class Trajectory(BaseModel):
@@ -576,17 +590,6 @@ class TranscriptRulesConfig(BaseModel):
     tool_expectations: dict[str, list[str]] | None = None
     required_actions: list[RequiredAction] = Field(default_factory=list)  # NEW
     communicate_info: list[CommunicateInfo] = Field(default_factory=list)  # NEW
-
-
-class LLMJudgeConfig(BaseModel):
-    """LLM judge configuration"""
-
-    model_ref: str | None = None
-    rubric: str
-    output_schema: dict[str, Any]
-    agentic: bool = False
-    system_prompt: str | None = None
-    tool_packs: list[str] = Field(default_factory=list)
 
 
 class GradingCombineConfig(BaseModel):

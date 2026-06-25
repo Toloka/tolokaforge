@@ -1010,7 +1010,7 @@ class LLMJudge:
         self,
         messages: list[Message],
         rubric: str,
-        output_schema: dict[str, Any],
+        output_schema: dict[str, Any] | None = None,
         task_description: str = "",
         workspace_dir: Path | None = None,
         agentic: bool = False,
@@ -1033,6 +1033,8 @@ class LLMJudge:
         Returns:
             (score 0-1, reasons)
         """
+        if output_schema is None:
+            output_schema = {"type": "object"}
         if agentic and workspace_dir and workspace_dir.exists():
             return self._grade_agentic(
                 messages,

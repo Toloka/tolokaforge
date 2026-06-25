@@ -33,6 +33,7 @@ from tolokaforge.core.metrics import (
     calculate_task_metrics,
 )
 from tolokaforge.core.models import (
+    CriterionResult,
     Grade,
     GradeComponents,
     ModelConfig,
@@ -115,12 +116,16 @@ def _tasks_need_full_stack(tasks: list[Any]) -> bool:
         mock_web = (
             initial_state.mock_web
             if hasattr(initial_state, "mock_web")
-            else initial_state.get("mock_web") if isinstance(initial_state, dict) else None
+            else initial_state.get("mock_web")
+            if isinstance(initial_state, dict)
+            else None
         )
         rag = (
             initial_state.rag
             if hasattr(initial_state, "rag")
-            else initial_state.get("rag") if isinstance(initial_state, dict) else None
+            else initial_state.get("rag")
+            if isinstance(initial_state, dict)
+            else None
         )
         if mock_web or rag:
             return True
@@ -1540,6 +1545,11 @@ class Orchestrator:
                     except (json.JSONDecodeError, TypeError):
                         pass
 
+                criterion_results = None
+                raw_criterion_results = g.get("criterion_results")
+                if raw_criterion_results:
+                    criterion_results = [CriterionResult(**cr) for cr in raw_criterion_results]
+
                 grade = Grade(
                     binary_pass=g["binary_pass"],
                     score=g["score"],
@@ -1551,6 +1561,7 @@ class Orchestrator:
                     ),
                     reasons=g.get("reasons", ""),
                     state_diff=state_diff_parsed,
+                    criterion_results=criterion_results,
                 )
                 self.logger.info(
                     "Grading via Runner RPC",

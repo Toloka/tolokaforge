@@ -190,28 +190,44 @@ def test_build_grade_reasons_includes_judge_text():
 
 
 def test_native_adapter_serializes_llm_judge():
-    """NativeAdapter must populate grading.llm_judge from grading.yaml data."""
+    """A structured rubric round-trips through the runner GradingConfig wire shape."""
     from tolokaforge.runner.models import GradingConfig, LLMJudgeConfig
 
     # Direct construction of the runner-side GradingConfig with an llm_judge
-    # round-trips through model_dump → adapter → model_validate.
+    # round-trips through model_dump → adapter → model_validate, with the
+    # structured rubric's criteria intact.
     cfg = GradingConfig(
         combine_method="weighted",
         weights={"llm_judge": 1.0},
         llm_judge=LLMJudgeConfig(
             model_ref="openai/gpt-4o-mini",
-            rubric="rubric text",
-            output_schema={"type": "object"},
+            rubric={
+                "reference": "Correct refund is $328.50.",
+                "criteria": [
+                    {
+                        "id": "refund_amount",
+                        "description": "Reply quotes the correct refund amount",
+                        "expected": "$328.50",
+                        "kind": "binary",
+                        "required": True,
+                        "weight": 1.0,
+                    }
+                ],
+            },
         ),
     )
     payload = cfg.model_dump()
     assert payload["llm_judge"]["model_ref"] == "openai/gpt-4o-mini"
-    assert payload["llm_judge"]["rubric"] == "rubric text"
+    assert payload["llm_judge"]["rubric"]["criteria"][0]["id"] == "refund_amount"
 
-    # Reconstruct on the runner side
+    # Reconstruct on the runner side — criteria survive the JSON wire trip.
     reconstructed = GradingConfig.model_validate(payload)
     assert reconstructed.llm_judge is not None
-    assert reconstructed.llm_judge.model_ref == "openai/gpt-4o-mini"
+    assert reconstructed.llm_judge.rubric.reference == "Correct refund is $328.50."
+    crit = reconstructed.llm_judge.rubric.criteria[0]
+    assert crit.id == "refund_amount"
+    assert crit.required is True
+    assert crit.expected == "$328.50"
 
 
 def test_evaluate_judge_uses_secret_manager_for_keys(monkeypatch):

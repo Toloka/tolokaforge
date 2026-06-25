@@ -15,7 +15,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 # =============================================================================
 # Enums (from TASK_DESCRIPTION_SCHEMA.md)
@@ -299,14 +299,100 @@ class TranscriptRulesConfig(BaseModel):
     model_config = {"extra": "forbid"}
 
 
-class LLMJudgeConfig(BaseModel):
-    """LLM-based grading configuration."""
+class Criterion(BaseModel):
+    """A single rubric criterion the judge scores independently.
 
-    model_ref: str  # "openrouter/anthropic/claude-sonnet-4.5"
-    rubric: str  # Grading rubric text
-    output_schema: dict[str, Any]  # Expected output format
+    ``description`` is an imperative pass-condition the judge evaluates.
+    ``kind`` selects binary (met / not-met → 0 or 1) or graded (0–1 gradient).
+    A failed ``required`` criterion fails the whole rubric regardless of others.
+    ``expected`` is an optional author-written reference shown to the judge for
+    this criterion (e.g. the correct value to look for).
+    """
+
+    id: str
+    description: str
+    weight: float = 1.0
+    kind: Literal["binary", "graded"] = "binary"
+    required: bool = False
+    expected: str | None = None
 
     model_config = {"extra": "forbid"}
+
+
+class Rubric(BaseModel):
+    """Structured grading rubric — the replacement for the old free-text blob.
+
+    ``reference`` is an optional author-written reference (correct answer /
+    policy summary) shown to the judge alongside the per-criterion ``expected``.
+    """
+
+    criteria: list[Criterion]
+    reference: str | None = None
+
+    model_config = {"extra": "forbid"}
+
+
+class CriterionResult(BaseModel):
+    """Per-criterion judge output.
+
+    ``score`` is 0/1 for binary criteria and 0–1 for graded ones. ``met`` is the
+    binary verdict (for graded criteria, whether it cleared the author's bar).
+    """
+
+    id: str
+    met: bool
+    score: float
+    justification: str
+
+    model_config = {"extra": "forbid"}
+
+
+class LLMJudgeConfig(BaseModel):
+    """LLM-based grading configuration.
+
+    Canonical home for the judge config that crosses both the YAML grading block
+    and the gRPC wire (serialized inside ``TrialSpec.task.grading``). The
+    ``output_schema`` field was dropped — the judge's structured-output schema is
+    derived from the rubric's criteria (Stage 3), not author-specified.
+    """
+
+    model_ref: str  # "openrouter/anthropic/claude-sonnet-4.5"
+    rubric: Rubric  # Structured grading rubric
+
+    model_config = {"extra": "forbid"}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_legacy_rubric_shape(cls, data: Any) -> Any:
+        """Fail loud with a migration message on the old free-text rubric shape.
+
+        ``rubric: str`` and the now-removed ``output_schema`` field were the
+        pre-Stage-2 contract. Rubric grading never worked end-to-end, so this is
+        an intentional, non-back-compatible break (see plans/rubric_grading.md).
+        """
+        if not isinstance(data, dict):
+            return data
+        if isinstance(data.get("rubric"), str):
+            raise ValueError(
+                "grading.llm_judge.rubric is now a structured Rubric, not free "
+                'text. Replace `rubric: "<text>"` with:\n'
+                "  rubric:\n"
+                "    reference: <optional author-written reference>\n"
+                "    criteria:\n"
+                "      - id: <criterion_id>\n"
+                "        description: <imperative pass-condition>\n"
+                "        kind: binary  # or graded\n"
+                "        required: false\n"
+                "        weight: 1.0\n"
+                "        expected: <optional per-criterion reference>"
+            )
+        if "output_schema" in data:
+            raise ValueError(
+                "grading.llm_judge.output_schema has been removed. The judge's "
+                "structured-output schema is derived from the rubric's criteria; "
+                "delete the `output_schema` field from grading.llm_judge."
+            )
+        return data
 
 
 class GradingConfig(BaseModel):

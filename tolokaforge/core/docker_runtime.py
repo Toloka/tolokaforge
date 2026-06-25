@@ -348,6 +348,19 @@ class RunnerClient:
                         }
                         for cc in grade.custom_checks
                     ],
+                    # Per-criterion rubric-judge breakdown. Carried through to the
+                    # Pydantic Grade.criterion_results so reviewers see which
+                    # criterion failed and why.
+                    "criterion_results": [
+                        {
+                            "id": cr.id,
+                            "met": cr.met,
+                            "score": cr.score,
+                            "justification": cr.justification,
+                        }
+                        for cr in grade.criterion_results
+                    ],
+                    "judge_status": grade.judge_status,
                 }
 
             if response.success:
