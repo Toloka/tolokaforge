@@ -1,0 +1,34 @@
+[project]
+name = "rubric-calibrator"
+version = "0.1.0"
+description = "Calibrate rubric judges against golden human-labelled fixtures and gate trust on per-criterion agreement."
+requires-python = ">=3.10"
+dependencies = [
+    "tolokaforge",
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+    "typer>=0.12.5,<0.13",
+    "click>=8.0.0,<8.2.0",
+    "rich>=13.0.0",
+    "jsonpath-ng>=1.6.0",
+]
+
+[project.scripts]
+rubric-calibrator = "rubric_calibrator.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+# Integration tests are OPT-IN: a bare `uv run pytest tests/` (incl. CI's
+# per-tool loop) must NOT make a real paid LLM call. Run them explicitly with
+# `-m integration`. The conftest.py auto-skip additionally guards the no-key
+# path, mirroring the repo's tests/conftest.py.
+addopts = ["-m", "not integration"]
+markers = [
+    "unit: marks tests as unit tests (fast, isolated)",
+    "integration: marks tests as integration tests (real LLM call)",
+    "requires_api: marks tests requiring API keys",
+    "llm: marks tests that call real LLM providers",
+]

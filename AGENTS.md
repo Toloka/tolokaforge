@@ -324,6 +324,7 @@ When extending an existing contract, follow the existing choice unless you have 
 - `tools/demo-recorder` — Demo recording utilities
 - `tools/eval-orchestrator` — Benchmark eval splitting and merging for CI shards
 - `tools/pricing-updater` — LLM pricing data updates
+- `tools/rubric-calibrator` — Rubric-judge calibration: agreement metrics + trust gate
 
 ### Virtual Environment
 
