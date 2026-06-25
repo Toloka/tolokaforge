@@ -635,6 +635,46 @@ class TestGenerateReports:
         assert "summary" in fa
         assert "failures" in fa
 
+    def test_run_aggregate_writer_kwarg_swaps_writer(self, tmp_path: Path) -> None:
+        """The ``run_aggregate_writer`` kwarg accepts any
+        :class:`RunAggregateWriter` impl and routes the four aggregates
+        through it instead of the default disk-backed writer."""
+        from tolokaforge.core.orchestrator import Orchestrator
+        from tolokaforge.core.output.aggregates import InMemoryAggregateWriter
+
+        writer = InMemoryAggregateWriter()
+        orch = Orchestrator(_make_run_config(), run_aggregate_writer=writer)
+        orch.tasks = [_make_task_config("T1")]
+        orch.results = [_make_trajectory("T1", 0, score=1.0, binary_pass=True)]
+
+        orch._generate_reports(tmp_path)
+
+        # No JSON files on disk — the in-memory writer captured them instead.
+        assert not (tmp_path / "aggregate.json").exists()
+        assert not (tmp_path / "per_task_metrics.json").exists()
+        bundle = writer.runs[tmp_path]
+        assert bundle.aggregate is not None
+        assert bundle.aggregate["schema_version"] == 1
+        assert bundle.per_task_metrics is not None
+        assert len(bundle.per_task_metrics) == 1
+        assert bundle.metadata_slices is not None
+        assert bundle.failure_attribution is not None
+        assert bundle.failure_attribution.keys() == {"summary", "failures"}
+
+    def test_empty_results_does_not_invoke_writer(self, tmp_path: Path) -> None:
+        """The empty-results early-return guard runs before the writer call,
+        so no aggregates are recorded when the run produced zero trials."""
+        from tolokaforge.core.orchestrator import Orchestrator
+        from tolokaforge.core.output.aggregates import InMemoryAggregateWriter
+
+        writer = InMemoryAggregateWriter()
+        orch = Orchestrator(_make_run_config(), run_aggregate_writer=writer)
+        orch.results = []
+
+        orch._generate_reports(tmp_path)
+
+        assert writer.runs == {}
+
 
 # ===================================================================
 # _create_adapter

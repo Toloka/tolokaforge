@@ -43,7 +43,7 @@ from tolokaforge.core.models import (
     TrialStatus,
     TypeSenseConfig,
 )
-from tolokaforge.core.output.aggregates import FileAggregateWriter
+from tolokaforge.core.output.aggregates import FileAggregateWriter, RunAggregateWriter
 from tolokaforge.core.output.artifacts import FileArtifactWriter
 from tolokaforge.core.rate_limiter import GlobalRateLimiter
 from tolokaforge.core.resume import RunStateManager
@@ -150,7 +150,12 @@ class Orchestrator:
     """Orchestrates benchmark runs across tasks and trials"""
 
     def __init__(
-        self, config: RunConfig, resume: bool = False, verbose: bool = False, strict: bool = False
+        self,
+        config: RunConfig,
+        resume: bool = False,
+        verbose: bool = False,
+        strict: bool = False,
+        run_aggregate_writer: RunAggregateWriter | None = None,
     ):
         self.config = config
         self.resume = resume
@@ -165,8 +170,12 @@ class Orchestrator:
         # alternative writers (in-memory tests, remote stores) can plug in.
         self._artifact_writer: FileArtifactWriter = FileArtifactWriter()
         # Run-level analogue: the four post-run aggregate JSONs go through
-        # this writer instead of inline ``json.dump`` calls.
-        self._run_aggregate_writer: FileAggregateWriter = FileAggregateWriter()
+        # this writer instead of inline ``json.dump`` calls. Injectable so
+        # tests / alternate backends (remote object store, in-memory) can
+        # substitute without touching the orchestrator.
+        self._run_aggregate_writer: RunAggregateWriter = (
+            run_aggregate_writer if run_aggregate_writer is not None else FileAggregateWriter()
+        )
 
         # Initialize logger
         log_level = logging.DEBUG if verbose else logging.INFO
@@ -1917,7 +1926,7 @@ Try to be helpful and always follow the policy."""
             attribute_failure(traj) for traj in self.results if is_failed_trajectory(traj)
         ]
         failure_summary = summarize_failure_attributions(failure_attributions)
-        failure_attribution_payload: dict[str, Any] = {
+        failure_attribution_payload = {
             "summary": failure_summary,
             "failures": failure_attributions,
         }
