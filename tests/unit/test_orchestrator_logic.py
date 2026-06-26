@@ -1331,10 +1331,23 @@ class TestConductorInjection:
         from tolokaforge.core.orchestrator import Orchestrator
 
         orch = Orchestrator(_make_run_config())
-        orch.adapter = MagicMock()  # required by _build_conductor's assert
+        orch.adapter = MagicMock()  # _build_conductor raises if adapter is unset
 
         conductor = orch._build_conductor()
         assert isinstance(conductor, InProcessConductor)
+
+    def test_build_conductor_raises_when_adapter_is_unset(self) -> None:
+        """Fail-fast: building a conductor before ``load_tasks()`` ran (so
+        ``self.adapter`` is still ``None``) raises immediately, instead of
+        silently propagating ``None`` into the Conductor's body where it
+        would crash 600+ lines deep on ``self.adapter.get_task_dir(...)``."""
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        orch = Orchestrator(_make_run_config())
+        assert orch.adapter is None
+
+        with pytest.raises(RuntimeError, match="adapter is loaded"):
+            orch._build_conductor()
 
     def test_injected_factory_is_invoked_with_per_run_dependencies(self) -> None:
         """The orchestrator calls the factory with its resolved per-run

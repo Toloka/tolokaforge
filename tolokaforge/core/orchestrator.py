@@ -294,8 +294,15 @@ class Orchestrator:
 
         Called once per ``run()`` / ``run_worker()`` invocation, after
         the adapter is loaded and the artifact writer is initialised.
+        Raises ``RuntimeError`` if ``self.adapter`` is unset — surfaces a
+        clear failure rather than propagating ``None`` into the
+        Conductor's body (where it would crash deep in ``run()``).
         """
-        assert self.adapter is not None, "adapter must be loaded before building the conductor"
+        if self.adapter is None:
+            raise RuntimeError(
+                "Conductor cannot be built before the adapter is loaded. "
+                "Ensure load_tasks() has run successfully."
+            )
         if self._conductor_factory is not None:
             return self._conductor_factory(
                 adapter=self.adapter,
