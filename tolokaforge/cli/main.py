@@ -131,6 +131,11 @@ def _activate_presets_overlay(
     help="Override user simulator model (e.g., anthropic/claude-sonnet-4.6). Uses OpenRouter as provider.",
 )
 @click.option(
+    "--judge-model",
+    default=None,
+    help="Set the read-only rubric judge model (e.g., anthropic/claude-sonnet-4.6). Uses OpenRouter as provider, temperature 0.",
+)
+@click.option(
     "--presets-file",
     "presets_file",
     type=click.Path(exists=True, dir_okay=False),
@@ -147,6 +152,7 @@ def run(
     verbose: bool,
     strict: bool,
     user_model: str | None,
+    judge_model: str | None,
     presets_file: str | None,
 ):
     """Run benchmark with specified configuration"""
@@ -171,6 +177,20 @@ def run(
             "temperature": DEFAULT_USER_MODEL_TEMPERATURE,
         }
         console.print(f"[cyan]User model override: {user_model_override}[/cyan]")
+
+    # Apply judge model: CLI flag > env var > YAML config (models.judge).
+    # Temperature is pinned to 0 for grading determinism (the judge does not
+    # honour a non-zero temperature yet). The YAML path is primary and parses
+    # with no loader change; this flag is the ergonomic override mirroring
+    # --user-model.
+    judge_model_override = judge_model or os.environ.get("JUDGE_MODEL")
+    if judge_model_override:
+        config_data.setdefault("models", {})["judge"] = {
+            "provider": DEFAULT_USER_MODEL_PROVIDER,
+            "name": judge_model_override,
+            "temperature": 0.0,
+        }
+        console.print(f"[cyan]Judge model: {judge_model_override}[/cyan]")
 
     run_config = RunConfig(**config_data)
 

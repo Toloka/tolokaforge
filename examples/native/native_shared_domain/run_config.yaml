@@ -1,6 +1,11 @@
-# Native shared-domain example — two notes-app testcases that share one
+# Native shared-domain example — notes-app testcases that share one
 # _shared/ directory. Run with:
 #   scripts/with_env.sh uv run tolokaforge run --config examples/native/native_shared_domain/run_config.yaml
+#
+# Three model roles: the `agent` under test, the `user` simulator, and the
+# read-only rubric `judge` (used by the testcases that grade with llm_judge).
+# The judge is a run-level model — separate from the agent under test — so a
+# provider switch is a one-line edit here, not a per-task change.
 models:
   agent:
     provider: "openrouter"
@@ -11,6 +16,10 @@ models:
     provider: "openrouter"
     name: "anthropic/claude-sonnet-4-6"
     temperature: 0.2
+  judge:
+    provider: "openrouter"
+    name: "openai/gpt-4.1-mini"
+    temperature: 0.0
 
 orchestrator:
   workers: 1

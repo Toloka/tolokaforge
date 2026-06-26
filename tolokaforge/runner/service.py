@@ -34,7 +34,7 @@ import grpc
 from pydantic import ValidationError
 
 from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, run_rubric_judge
-from tolokaforge.core.models import CriterionResult, LLMJudgeConfig
+from tolokaforge.core.models import CriterionResult, LLMJudgeConfig, ModelConfig
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, TrialSpec
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner import runner_pb2_grpc
@@ -110,6 +110,7 @@ class TrialContextRuntime:
         trial_id: str,
         task_description: TaskDescription,
         default_timeout: float = 30.0,
+        judge_model_config: ModelConfig | None = None,
     ):
         self.trial_id = trial_id
         self.task_description = task_description
@@ -117,6 +118,10 @@ class TrialContextRuntime:
         self.user_tools: dict[str, Callable] = {}
         self.tool_call_history: list[ToolCallRecord] = []
         self.default_timeout = default_timeout
+        # Run-level LLM config for the read-only rubric judge, carried from the
+        # TrialSpec. None when no selected task uses an llm_judge component; the
+        # orchestrator validates up front that it is present whenever a rubric is.
+        self.judge_model_config = judge_model_config
 
     @property
     def grading_config(self):
@@ -454,6 +459,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             trial_id=trial_id,
             task_description=task_description,
             default_timeout=request.default_tool_timeout_s or DEFAULT_TOOL_TIMEOUT_S,
+            judge_model_config=trial_spec.judge_model_config,
         )
 
         # Initialize DB Service with initial_state (FAIL FAST)
@@ -1208,10 +1214,23 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # File readers only when a real workspace exists on this runner.
         workspace_dir = self._judge_workspace_dir(trial_context)
 
+        # The judge model is a run-level config that rides the TrialSpec. The
+        # orchestrator validates up front that it is present whenever any selected
+        # task declares an llm_judge component, so reaching here without it is a
+        # contract violation — fail loud (AGENTS.md rule 1), never invent a model
+        # or silently skip grading.
+        judge_model_config = trial_context.judge_model_config
+        if judge_model_config is None:
+            raise ValueError(
+                f"Trial {trial_id} has an llm_judge rubric but no judge ModelConfig on "
+                "its TrialSpec (judge_model_config is None). The run config must set "
+                "models.judge; the orchestrator should have rejected this run up front."
+            )
+
         def _run() -> JudgeResult:
             return run_rubric_judge(
                 rubric=llm_judge_config.rubric,
-                model_ref=llm_judge_config.model_ref,
+                model_config=judge_model_config,
                 agent_system_prompt=agent_system_prompt,
                 transcript=transcript,
                 db_reader=_LoopBridgeDBReader(),

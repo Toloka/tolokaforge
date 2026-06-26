@@ -24,8 +24,6 @@ combine:
   pass_threshold: 0.75
 
 llm_judge:
-  # Cheap but capable judge that reliably terminates on agentic grading.
-  model_ref: "openrouter/openai/gpt-4.1-mini"
   rubric:
     reference: |
       The notes app already contains a note titled "Team stand-up" with body

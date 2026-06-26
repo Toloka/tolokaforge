@@ -266,9 +266,12 @@ class LLMJudgeConfig(BaseModel):
     """LLM-based grading configuration.
 
     The judge's structured-output schema is derived from the rubric's criteria;
-    the old `rubric: str` and `output_schema` fields were removed.
+    the old `rubric: str` and `output_schema` fields were removed. The judge
+    MODEL is no longer pinned here — it moved to the run config under
+    `models.judge` (an optional ModelConfig role) and rides each trial as
+    `TrialSpec.judge_model_config`. There is no default and no fallback to the
+    agent model.
     """
-    model_ref: str                                # "openrouter/anthropic/claude-sonnet-4.5"
     rubric: Rubric                                # structured rubric (see above)
 
 

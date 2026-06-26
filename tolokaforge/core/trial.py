@@ -78,6 +78,10 @@ class TrialSpec(BaseModel):
     user_model_config: ModelConfig | None = None
     """LLM config for the user simulator when the task drives one."""
 
+    judge_model_config: ModelConfig | None = None
+    """LLM config for the read-only rubric judge. None when no selected task uses
+    an llm_judge grading component."""
+
     max_turns: int | None = None
     """Optional per-trial turn cap override; ``None`` defers to the engine default."""
 
