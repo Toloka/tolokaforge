@@ -310,7 +310,7 @@ class Orchestrator:
 
     def _cleanup_runner_state_for_retry(
         self,
-        docker_runtime: Any,
+        docker_runtime: RuntimeBackend | None,
         task_id: str,
         trial_idx: int,
     ) -> None:
@@ -1188,7 +1188,7 @@ class Orchestrator:
         agent_client: LLMClient | None,
         user_config: ModelConfig | None,
         output_dir: Path,
-        docker_runtime: Any,
+        docker_runtime: RuntimeBackend | None,
         request_limiter: GlobalRateLimiter | None = None,
         *,
         attempt_id: int = 0,
