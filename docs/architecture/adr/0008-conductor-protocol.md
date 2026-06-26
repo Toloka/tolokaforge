@@ -18,6 +18,107 @@ Why this matters: Phase 2 (out-of-process trials, remote conductor, distributed 
 
 ADR-0003 and ADR-0007's Follow-ups both name this as the closer of the seam-definition arc.
 
+## Architecture context — picture before prose
+
+### Before vs after: orchestrator responsibility split
+
+```
+BEFORE (pre-PR #101):                  AFTER (PR #101):
+
+┌──────────────────────────┐           ┌──────────────────────┐
+│      Orchestrator         │          │     Orchestrator     │
+│   ┌────────────────────┐  │          │  (scheduler only)    │
+│   │ run queue          │  │          │                      │
+│   │ retry policy       │  │          │  • run queue         │
+│   │ result aggregation │  │          │  • retry policy      │
+│   │ lease loop         │  │          │  • result aggregation│
+│   │ ────────────────── │  │          │  • lease loop        │
+│   │ _run_trial:        │  │          │                      │
+│   │  • env setup       │  │          │       │              │
+│   │  • registration    │  │          │       │ conductor.run()
+│   │  • agent loop      │  │          │       ▼              │
+│   │  • grading         │  │          └───────┬──────────────┘
+│   │  • artifact write  │  │                  │
+│   └────────────────────┘  │          ┌───────▼──────────────┐
+│   (~2188 LoC)             │          │   Conductor  (NEW)   │
+└──────────────────────────┘           │  (per-trial executor) │
+                                       │                      │
+                                       │  • env setup         │
+                                       │  • registration      │
+                                       │  • agent loop        │
+                                       │  • grading           │
+                                       │  • artifact write    │
+                                       │   (~621 LoC body)    │
+                                       └──────────────────────┘
+                                       Orchestrator: ~1289 LoC
+                                       (~870 LoC net delete)
+```
+
+The orchestrator becomes a scheduler; the per-trial work becomes a swappable executor.
+
+### How `Conductor` fits with the other Phase-1 seams
+
+```
+                   Orchestrator (scheduler)
+                           │
+                           │  conductor.run(task, trial_idx, ...)
+                           │  ─── returns TrialResult ───
+                           ▼
+        ┌──────────────────────────────────────────┐
+        │              Conductor                   │
+        │   per-trial executor                     │
+        │   (InProcess today; Remote/Firecracker/  │
+        │    LocalProcess as future impls)         │
+        └──┬──────────┬──────────┬─────────────────┘
+           │          │          │
+       carries   delegates   delegates
+           │          │          │
+           ▼          ▼          ▼
+       TrialSpec   Runtime-     TrialArtifact-
+       (ADR-0003)  Backend      Writer
+                   (ADR-0007)   (ADR-0004)
+           │
+           │  contains:
+           ▼
+       EnvEndpoints              RunAggregateWriter
+       (ADR-0006)                (ADR-0005, run-level — orchestrator owns)
+```
+
+Every plane in the engine now has a typed Protocol seam:
+
+| Plane | Seam | Status |
+|---|---|---|
+| Control ↔ Trial (wire) | `TrialSpec` / `TrialResult` | ADR-0003 |
+| Trial → Data (per-trial) | `TrialArtifactWriter` | ADR-0004 |
+| Trial → Data (run-level) | `RunAggregateWriter` | ADR-0005 |
+| Control ↔ Trial (endpoints) | `EnvEndpoints` | ADR-0006 |
+| Execution surface | `RuntimeBackend` | ADR-0007 |
+| **Per-trial executor** | **`Conductor`** | **This ADR — closes Phase 1** |
+
+### Phase 1 → Phase 2: what landing this seam unlocks
+
+```
+TODAY (Phase 1 complete):           PHASE 2 (the prize):
+
+┌─────────────┐                     ┌─────────────┐
+│ Orchestrator│                     │ Orchestrator│
+└──────┬──────┘                     └──────┬──────┘
+       │ conductor.run()                   │ conductor.run()
+       ▼                                   ▼
+┌─────────────┐                     ┌─────────────┐  gRPC   ┌──────────────┐
+│ InProcess   │                     │ Remote      │ ──────▶ │ remote trial │
+│ Conductor   │                     │ Conductor   │         │ executor     │
+│ (same proc) │                     │             │         │ (any process,│
+└─────────────┘                     └─────────────┘         │  any host)   │
+                                                            └──────────────┘
+                                    Same Orchestrator code — just
+                                    a different Conductor injected.
+                                    "Rewrite half the orchestrator"
+                                    becomes "implement the Protocol."
+```
+
+That last picture is the architectural payoff. Phase 2 is no longer "redesign the orchestrator for distributed execution"; it's "write a new class that implements the `Conductor` Protocol."
+
 ## Decision Drivers
 
 - **Closes the Phase-1 seam-definition arc.** Every plane in the engine has a typed Protocol with at least two implementations after this PR.
