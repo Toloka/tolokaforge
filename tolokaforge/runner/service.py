@@ -292,7 +292,17 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             Any exception raised by the coroutine
         """
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
-        return future.result(timeout=timeout)
+        try:
+            return future.result(timeout=timeout)
+        except TimeoutError:
+            # Best-effort: release the orphaned coroutine instead of leaking it for
+            # the loop's lifetime. cancel() is thread-safe for
+            # run_coroutine_threadsafe futures; note it cannot interrupt a coroutine
+            # already blocked inside a run_in_executor call (e.g. a wedged MCP
+            # subprocess) — that deeper case is a separate concern. Reachable via the
+            # search_policy judge bridge.
+            future.cancel()
+            raise
 
     def shutdown(self) -> None:
         """
@@ -1339,6 +1349,15 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         """
         agent_tool = trial_context.agent_tools.get(_SEARCH_POLICY_TOOL_NAME)
         if agent_tool is None:
+            return []
+
+        if not hasattr(agent_tool, "tool_schema") or not callable(
+            getattr(agent_tool, "execute", None)
+        ):
+            logger.warning(
+                f"search_policy in agent_tools is not a ToolWrapper "
+                f"({type(agent_tool).__name__}); skipping judge KB passthrough"
+            )
             return []
 
         schema = agent_tool.tool_schema

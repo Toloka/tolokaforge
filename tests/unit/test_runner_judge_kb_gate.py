@@ -11,6 +11,7 @@ decoupled TypeSense plane). These tests exercise that real gate.
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import MagicMock
 
 import pytest
@@ -167,5 +168,64 @@ def test_search_policy_passthrough_fails_loud_when_agent_tool_raises():
         result = tools[0].execute(question="x")
         assert result.success is False
         assert "typesense unavailable" in (result.error or "")
+    finally:
+        service.shutdown()
+
+
+def test_search_policy_passthrough_skips_non_tool_wrapper(caplog):
+    """A bare callable ``search_policy`` must be skipped, not crash the grade.
+
+    The runtime tool executor tolerates non-``ToolWrapper`` ``agent_tools``
+    entries; the judge gate mirrors that. Reading ``.tool_schema`` on a bare
+    callable would raise an unguarded ``AttributeError`` that propagates through
+    the whole grade — this asserts it degrades to ``[]`` (and warns) instead.
+    """
+    service = _service(None)
+    try:
+
+        def bare_search_policy(arguments: dict) -> str:  # no .execute / .tool_schema
+            return "ignored"
+
+        with caplog.at_level("WARNING"):
+            tools = service._build_judge_search_policy_tools(
+                _trial_context_with({"search_policy": bare_search_policy})
+            )
+
+        assert tools == []
+        assert any("not a ToolWrapper" in rec.message for rec in caplog.records)
+    finally:
+        service.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# _run_async: shared bridge used by the search_policy passthrough (and the DB /
+# grade / register bridges). On timeout it must release the orphaned coroutine
+# instead of leaking it for the loop's lifetime.
+# ---------------------------------------------------------------------------
+
+
+def test_run_async_cancels_submitted_coroutine_on_timeout():
+    service = _service(None)
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def never_completes() -> None:
+        started.set()
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            # Observable proof the orphaned coroutine was actually cancelled.
+            service._loop.call_soon_threadsafe(cancelled.set)
+            raise
+
+    try:
+        with pytest.raises(TimeoutError):
+            service._run_async(never_completes(), timeout=0.1)
+
+        # The coroutine must end up cancelled, not left running on the loop.
+        wait_done = asyncio.run_coroutine_threadsafe(cancelled.wait(), service._loop)
+        wait_done.result(timeout=2.0)
+        assert started.is_set()
+        assert cancelled.is_set()
     finally:
         service.shutdown()
