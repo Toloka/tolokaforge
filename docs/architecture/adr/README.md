@@ -37,3 +37,4 @@ Day-to-day implementation choices that don't affect the system shape do *not* ne
 | [0004](0004-trial-artifact-writer-seam.md) | `TrialArtifactWriter` as the typed data-plane seam | Proposed |
 | [0005](0005-run-aggregate-writer-seam.md) | `RunAggregateWriter` as the run-level data-plane seam | Proposed |
 | [0006](0006-typed-env-endpoints.md) | `EnvEndpoints` — typed runner service URLs on `TrialSpec` | Proposed |
+| [0007](0007-runtime-backend-protocol.md) | `RuntimeBackend` Protocol — lift `DockerRuntime` behind a typed seam | Proposed |
