@@ -76,7 +76,7 @@ __all__ = [
 
 
 def _build_resolved_block(model_config: ModelConfig) -> dict[str, Any]:
-    """Return the Stage 7 ``resolved:`` block for a :class:`ModelConfig`.
+    """Return the ``resolved:`` block for a :class:`ModelConfig`.
 
     Shape: ``{"effective_preset": ..., "schema_sanitizer": ..., ...}``.
     See :func:`tolokaforge.core.llm.presets.resolve_policy_names` for the
@@ -208,14 +208,10 @@ class InProcessConductor:
     process.
 
     Captures the orchestrator's per-run dependencies (adapter, artifact
-    writer, config, logger, verbose / strict flags) at construction
-    time. The orchestrator constructs one of these per ``run()`` /
-    ``run_worker()`` invocation, after the adapter is loaded.
-
-    The body of :meth:`run` is the trial-execution code that used to
-    live as ``Orchestrator._run_trial``. Three helpers travel with it:
-    :meth:`_build_system_prompt`, :meth:`_build_judge_messages_json`,
-    :meth:`_serialize_model_config`.
+    writer, config, logger, verbose / strict flags, agent client,
+    docker runtime, output directory, request limiter) at construction
+    time. :meth:`run` drives one trial end-to-end: environment setup,
+    runner registration, agent loop, grading, artifact write.
     """
 
     def __init__(
@@ -290,10 +286,7 @@ class InProcessConductor:
         rich task type (initial state, tool configs, user-simulator mode);
         the runner-side projection lives on ``spec.task``.
         """
-        # Compatibility shims — re-bind the legacy parameter names from
-        # ``spec`` / ``task_config`` / ``self`` so the verbatim
-        # ``_run_trial`` body below keeps reading the names it was written
-        # against. Eliminating these is the body-refactor follow-up.
+        # Local aliases for the trial-execution body below.
         task = task_config
         trial_idx = int(spec.trial_id.rsplit(":", 1)[1])
         agent_client = self.agent_client
@@ -408,12 +401,12 @@ class InProcessConductor:
                 if mcp_server_path.exists():
                     import importlib.util
 
-                    spec = importlib.util.spec_from_file_location(
+                    module_spec = importlib.util.spec_from_file_location(
                         "mcp_server_init", mcp_server_path
                     )
-                    if spec and spec.loader:
-                        mcp_module_init = importlib.util.module_from_spec(spec)
-                        spec.loader.exec_module(mcp_module_init)
+                    if module_spec and module_spec.loader:
+                        mcp_module_init = importlib.util.module_from_spec(module_spec)
+                        module_spec.loader.exec_module(mcp_module_init)
 
                         # Sync current env state to MCP server
                         if hasattr(mcp_module_init, "set_data"):
@@ -852,8 +845,8 @@ class InProcessConductor:
             user_prompt=runner.user_system_prompt,
         )
 
-        # Prepare task config for output (includes model config snapshot for
-        # reproducibility + Stage 7 resolved preset fingerprint).
+        # Prepare task config for output (includes model config snapshot
+        # for reproducibility + the resolved preset fingerprint).
         task_config_dict = {
             "task_id": task.task_id,
             "trial_index": trial_idx,
@@ -893,12 +886,11 @@ class InProcessConductor:
     ) -> dict[str, Any]:
         """Serialize model config for trial output.
 
-        Stage 7 (P6): each role's block is extended with a ``resolved:``
-        sub-block carrying the preset fingerprint (effective preset name plus
-        the six registered-policy names from
-        :func:`tolokaforge.core.llm.presets.resolve_policy_names`). Analytics
-        tools diff this across runs to detect config drift without having to
-        re-match the preset YAML.
+        Each role's block carries a ``resolved:`` sub-block with the preset
+        fingerprint (effective preset name plus the six registered-policy
+        names from :func:`tolokaforge.core.llm.presets.resolve_policy_names`).
+        Analytics tools diff this across runs to detect config drift without
+        having to re-match the preset YAML.
 
         The ``judge`` role (the run-level read-only rubric judge) is recorded the
         same way as ``agent`` / ``user`` so every grade bundle records which judge
@@ -948,7 +940,7 @@ class InProcessConductor:
             if resolved_judge_config is None and judge is not None:
                 resolved_judge_config = judge
 
-        # Stage 7 — resolved fingerprint per role.
+        # Resolved fingerprint per role.
         if resolved_agent_config is not None:
             result["agent"]["resolved"] = _build_resolved_block(resolved_agent_config)
         if resolved_user_config is not None and result.get("user"):

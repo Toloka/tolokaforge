@@ -423,12 +423,7 @@ class TestCollectExistingCost:
 
 @pytest.mark.unit
 class TestBuildSystemPrompt:
-    """System prompt construction with various priority levels.
-
-    ``_build_system_prompt`` moved from ``Orchestrator`` to
-    ``InProcessConductor`` as part of the Conductor extraction; the
-    behaviour pinned here is unchanged.
-    """
+    """``InProcessConductor._build_system_prompt`` priority resolution."""
 
     def _make_orchestrator(self) -> Any:
         from tolokaforge.core.conductor import InProcessConductor
@@ -1240,7 +1235,7 @@ class TestJudgeModelGate:
             return recording_conductor
 
         orch = Orchestrator(config, conductor_factory=conductor_factory)
-        orch.tasks = [_make_task_config(tid) for tid in {"TASK-needs-judge": True}]
+        orch.tasks = [_make_task_config("TASK-needs-judge")]
         adapter = MagicMock()
         adapter.to_task_description.side_effect = lambda tid: _task_description_with_judge(
             tid, has_judge=True

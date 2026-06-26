@@ -44,7 +44,7 @@ from tolokaforge.core.resume import RunStateManager
 from tolokaforge.core.run_queue import AttemptLease, create_run_queue
 from tolokaforge.core.runtime import RuntimeBackend
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, EnvEndpoints, TrialSpec
-from tolokaforge.runner.models import AdapterType
+from tolokaforge.runner.models import AdapterType, TaskDescription
 
 # Tools that need Playwright + Chromium baked into the runner image. The
 # orchestrator scans the task list before starting the docker stack and
@@ -202,6 +202,12 @@ class Orchestrator:
         # factory) once the adapter and per-run dependencies are
         # resolved. Default factory constructs :class:`InProcessConductor`.
         self._conductor_factory: Callable[..., Conductor] | None = conductor_factory
+        # Per-run cache of resolved ``TaskDescription`` objects keyed by
+        # task_id. ``adapter.to_task_description()`` reads the system
+        # prompt, tool schemas, fixtures, and base64-bundles the task_dir
+        # — repeating that K times for ``repeats=K`` trials of the same
+        # task is wasted work. Populated lazily by ``_build_trial_spec``.
+        self._task_desc_cache: dict[str, TaskDescription] = {}
 
         # Initialize logger
         log_level = logging.DEBUG if verbose else logging.INFO
@@ -358,8 +364,11 @@ class Orchestrator:
         """
         if self.adapter is None:
             raise RuntimeError("Trial spec cannot be built before the adapter is loaded.")
-        task_desc = self.adapter.to_task_description(task.task_id)
-        ensure_registered_adapter(task_desc.adapter_type)
+        task_desc = self._task_desc_cache.get(task.task_id)
+        if task_desc is None:
+            task_desc = self.adapter.to_task_description(task.task_id)
+            ensure_registered_adapter(task_desc.adapter_type)
+            self._task_desc_cache[task.task_id] = task_desc
         return TrialSpec(
             trial_id=f"{task.task_id}:{trial_idx}",
             run_id=output_dir.name,
@@ -601,7 +610,11 @@ class Orchestrator:
         if judge_config is not None:
             return judge_config
 
-        assert self.adapter is not None
+        if self.adapter is None:
+            raise RuntimeError(
+                "Judge config cannot be resolved before the adapter is loaded. "
+                "Ensure load_tasks() has run successfully."
+            )
         offending = [
             task.task_id
             for task in self.tasks
@@ -873,17 +886,29 @@ class Orchestrator:
                 run_state.mark_running(lease.task_id, lease.trial_index)
                 self.state_manager.save_state(run_state)
 
-                spec = self._build_trial_spec(
-                    task=task,
-                    trial_idx=lease.trial_index,
-                    attempt_id=lease.retry_count,
-                    worker_id=lease_owner,
-                    output_dir=output_dir,
-                    agent_client=agent_client,
-                    user_config=user_config,
-                    judge_config=judge_config,
-                    env_endpoints=env_endpoints,
-                )
+                try:
+                    spec = self._build_trial_spec(
+                        task=task,
+                        trial_idx=lease.trial_index,
+                        attempt_id=lease.retry_count,
+                        worker_id=lease_owner,
+                        output_dir=output_dir,
+                        agent_client=agent_client,
+                        user_config=user_config,
+                        judge_config=judge_config,
+                        env_endpoints=env_endpoints,
+                    )
+                except Exception as e:
+                    self.logger.error(
+                        "Trial spec build failed",
+                        task_id=lease.task_id,
+                        trial_index=lease.trial_index,
+                        error=str(e),
+                    )
+                    run_queue.mark_failed(lease.id, f"Spec build failed: {e}", retryable=False)
+                    run_state.mark_failed(lease.task_id, lease.trial_index, str(e))
+                    self.state_manager.save_state(run_state)
+                    return True
                 future = executor.submit(conductor.run, spec, task)
                 active_futures[future] = lease
                 return True
