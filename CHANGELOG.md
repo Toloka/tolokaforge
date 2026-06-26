@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.3.1 (2026-06-26)
+
+### Fix
+
+- **grading**: faithful judge KB search — judge reads the same KB the agent did (#95) (#102)
+
+### Refactor
+
+- **core**: lift DockerRuntime behind a typed RuntimeBackend Protocol (#96)
+- **grading**: relocate LLM-judge model from rubric to run config (#98)
+- **trial**: type env_endpoints with EnvEndpoints Pydantic model (#92)
+
 ## v0.3.0 (2026-06-26)
 
 ### Feat
