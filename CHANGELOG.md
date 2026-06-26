@@ -2,6 +2,25 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.3.0 (2026-06-26)
+
+### Feat
+
+- **grading**: structured rubric grading via a runner-side read-only agentic judge (#94)
+- **output**: formalize RunAggregateWriter as the run-level data-plane seam (#85)
+- **output**: formalize TrialArtifactWriter as the typed data-plane seam (#79)
+- **core**: define TrialSpec / TrialResult as the typed control↔trial seam (#74)
+- **devcontainer**: add Dev Container config for reproducible dev env (#81)
+
+### Fix
+
+- **docker**: unblock clean runner/rag-service builds and integration tests (#88)
+- **ci**: pin Claude review action to claude-opus-4-8 (#78)
+
+### Refactor
+
+- **runner**: drop private-package prefix from MCP_ASYNC import path (#73)
+
 ## v0.2.11 (2026-06-18)
 
 ### Feat
