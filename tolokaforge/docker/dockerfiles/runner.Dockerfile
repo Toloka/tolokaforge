@@ -73,10 +73,14 @@ RUN pip install --no-cache-dir \
 # Create work directory for tool execution
 RUN mkdir -p /work && chmod 755 /work
 
-# Environment variables
+# Environment variables.
+# RAG_SERVICE_URL is intentionally NOT set here: it must be present in the
+# container env iff a rag-service is actually running. The full stack injects
+# it (docker/stacks/full.py); the core stack has no rag-service and leaves it
+# unset, so the runner builds no RAG client and the judge is offered no
+# unreachable search_kb tool.
 ENV PYTHONUNBUFFERED=1
 ENV DB_SERVICE_URL=http://db-service:8000
-ENV RAG_SERVICE_URL=http://rag-service:8001
 
 # gRPC port
 EXPOSE 50051

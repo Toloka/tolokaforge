@@ -70,6 +70,11 @@ def full_stack(
         task_pack_mounts=task_pack_mounts,
         extra_runner_binds=extra_runner_binds,
         mount_docker_socket=mount_docker_socket,
+        # The full stack provisions a rag-service below, so the runner's
+        # RAG_SERVICE_URL points at a service that actually runs. Both the
+        # container name and the ``rag-service`` alias resolve on runner-net;
+        # keep the container-name form (changing it only churns tests).
+        rag_service_url="http://tolokaforge-rag-service:8001",
     )
 
     # RAG Service — hybrid BM25 + FAISS search

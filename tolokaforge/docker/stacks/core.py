@@ -33,6 +33,7 @@ def core_stack(
     task_pack_mounts: list[Path] | None = None,
     extra_runner_binds: list[tuple[Path, str]] | None = None,
     mount_docker_socket: bool = False,
+    rag_service_url: str | None = None,
 ) -> ServiceStack:
     """Create a core service stack with DB service and Runner.
 
@@ -57,6 +58,12 @@ def core_stack(
             Runner so ``docker compose`` inside the Runner can talk to the
             host Docker daemon. Relaxes the default cap-drop policy because
             Docker socket access needs additional capabilities.
+        rag_service_url: URL of the RAG service to inject into the runner
+            container as ``RAG_SERVICE_URL``. ``None`` (the default) leaves it
+            unset — the core stack has no rag-service, so the runner builds no
+            RAG client and the judge is offered no unreachable ``search_kb``.
+            Only ``full_stack`` (which actually starts a rag-service) passes a
+            value, keeping "env present" == "rag-service running".
 
     Returns:
         ServiceStack configured with db-service and runner.
@@ -98,8 +105,12 @@ def core_stack(
     runner_env = {
         "PYTHONUNBUFFERED": "1",
         "DB_SERVICE_URL": "http://tolokaforge-db-service:8000",
-        "RAG_SERVICE_URL": "http://tolokaforge-rag-service:8001",
     }
+    # Inject RAG_SERVICE_URL only when a rag-service is actually provisioned
+    # (full stack). Absent on the core stack so the runner builds no RAG
+    # client and the judge is not offered an unreachable search_kb tool.
+    if rag_service_url is not None:
+        runner_env["RAG_SERVICE_URL"] = rag_service_url
     runner_depends = ["db-service"]
     runner_resources = ResourcePolicy(
         cap_drop=[Capability.ALL],
