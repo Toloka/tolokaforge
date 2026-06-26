@@ -2,7 +2,7 @@
 
 This module is the single entry point for turning a ``task.yaml`` path into a
 validated :class:`TaskConfig`. It exists so that every code path that loads a
-task — :class:`NativeAdapter`, :class:`FrozenMcpCoreAdapter`, the
+task — :class:`NativeAdapter`, the ``tlk_mcp_core`` adapter, the
 ``tolokaforge validate`` CLI, and ``tolokaforge adapter validate`` — applies
 the same domain-layout merge.
 
@@ -85,8 +85,11 @@ def validate_grading_yaml(grading_path: Path) -> None:
     # The rubric migration lives on the canonical LLMJudgeConfig, so validate the
     # llm_judge block directly — independent of the surrounding grading schema,
     # which varies by adapter.
+    # Validate when a rubric is present (the new gate) or when the relocated
+    # ``model_ref`` lingers (so its loud migration error surfaces at validate
+    # time rather than only at run time).
     llm_judge = grading_data.get("llm_judge")
-    if isinstance(llm_judge, dict) and llm_judge.get("model_ref"):
+    if isinstance(llm_judge, dict) and (llm_judge.get("rubric") or "model_ref" in llm_judge):
         from tolokaforge.runner.models import LLMJudgeConfig
 
         LLMJudgeConfig(**llm_judge)

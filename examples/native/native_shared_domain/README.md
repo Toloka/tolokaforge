@@ -63,8 +63,9 @@ can't fully capture.
 
 The rubric carries an author-written `reference` (the four notes' ground-truth
 content) shown to the judge — this is the *grading* reference channel, not
-`golden_actions`. The judge model is `openrouter/openai/gpt-4.1-mini` (cheap but
-capable; `gpt-4o-mini` loops and never submits).
+`golden_actions`. The judge model is configured at the run level under
+`models.judge` (here `openrouter/openai/gpt-4.1-mini` — cheap but capable;
+`gpt-4o-mini` loops and never submits), separate from the agent under test.
 
 The judge grades from the **transcript + reference**: the criteria score the
 agent's written reply, which only the transcript carries. (The judge's read-only

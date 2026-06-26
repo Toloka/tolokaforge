@@ -7,6 +7,10 @@
 # criterion → gate_failed → binary_pass=false, even though the graded
 # `note_saved` / `clarity` criteria still score (see grade.yaml criterion_results).
 #
+# The read-only rubric `judge` is a run-level model (models.judge), separate
+# from the cheap agent under test — it must reliably terminate on agentic
+# grading (gpt-4o-mini loops and never submits; 4.1-mini terminates).
+#
 # Run with:
 #   scripts/with_env.sh uv run tolokaforge run --config examples/native/native_shared_domain/run_config_gate_demo.yaml
 models:
@@ -19,6 +23,10 @@ models:
     provider: "openrouter"
     name: "anthropic/claude-sonnet-4-6"
     temperature: 0.2
+  judge:
+    provider: "openrouter"
+    name: "openai/gpt-4.1-mini"
+    temperature: 0.0
 
 orchestrator:
   workers: 1

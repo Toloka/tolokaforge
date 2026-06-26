@@ -619,9 +619,12 @@ class NativeAdapter(BaseAdapter):
         # reference), not free text. The old ``rubric: str`` / ``output_schema``
         # shape is rejected by ``Rubric``/``LLMJudgeConfig`` (extra="forbid"),
         # surfacing a migration error during validate.
+        # Gate on rubric presence — the judge model moved to the run config
+        # (models.judge), so ``model_ref`` no longer exists on this block. A
+        # lingering ``model_ref`` is rejected loudly by ``LLMJudgeConfig``.
         llm_judge_config = None
         llm_judge_data = grading_data.get("llm_judge", {}) if grading_data else {}
-        if llm_judge_data and llm_judge_data.get("model_ref"):
+        if llm_judge_data and llm_judge_data.get("rubric"):
             from tolokaforge.runner.models import LLMJudgeConfig as RunnerLLMJudgeConfig
 
             llm_judge_config = RunnerLLMJudgeConfig(**llm_judge_data)
@@ -759,7 +762,7 @@ class NativeAdapter(BaseAdapter):
             [{"name": "...", "description": "...", "parameters": { ... }}]
 
         The ``inputSchema`` field returned by MCP becomes ``parameters`` in the
-        stored/returned format, matching what ``FrozenMcpCoreAdapter`` uses.
+        stored/returned format, matching what the ``tlk_mcp_core`` adapter uses.
 
         Args:
             mcp_server_path: Absolute path to ``mcp_server.py``.
@@ -831,7 +834,7 @@ class NativeAdapter(BaseAdapter):
         Resolution order:
 
         1. ``task_dir/fixtures/tools.json`` — pre-generated static file (fastest,
-           avoids subprocess overhead, matches ``FrozenMcpCoreAdapter`` pattern).
+           avoids subprocess overhead, matches the ``tlk_mcp_core`` adapter pattern).
         2. Live MCP query via ``tools/list`` — used when the static file does not
            exist yet; result is written back to ``fixtures/tools.json`` so that
            subsequent runs are fast.

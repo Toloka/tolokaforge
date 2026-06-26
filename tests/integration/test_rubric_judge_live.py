@@ -19,7 +19,11 @@ import os
 
 import pytest
 
-from tolokaforge.core.grading.judge import JudgeStatus, run_rubric_judge
+from tolokaforge.core.grading.judge import (
+    JudgeStatus,
+    model_config_from_ref,
+    run_rubric_judge,
+)
 from tolokaforge.runner.models import Rubric
 
 pytestmark = [
@@ -124,7 +128,7 @@ def _rubric() -> Rubric:
 def test_rubric_judge_live_passes_good_transcript():
     result = run_rubric_judge(
         rubric=_rubric(),
-        model_ref=_MODEL_REF,
+        model_config=model_config_from_ref(_MODEL_REF),
         agent_system_prompt=_AGENT_SYSTEM_PROMPT,
         transcript=_TRANSCRIPT,
         db_reader=_DictDBReader(_DB_STATE),
@@ -158,7 +162,7 @@ def test_rubric_judge_live_gate_fails_when_refund_missing():
     ]
     result = run_rubric_judge(
         rubric=_rubric(),
-        model_ref=_MODEL_REF,
+        model_config=model_config_from_ref(_MODEL_REF),
         agent_system_prompt=_AGENT_SYSTEM_PROMPT,
         transcript=transcript,
         db_reader=_DictDBReader(pending_state),

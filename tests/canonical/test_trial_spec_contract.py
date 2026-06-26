@@ -143,6 +143,7 @@ class TestTrialSpecContract:
             "task",
             "agent_model_config",
             "user_model_config",
+            "judge_model_config",
             "max_turns",
             "default_tool_timeout_s",
             "env_endpoints",
