@@ -72,7 +72,7 @@ from tolokaforge.core.models import (
     TrialStatus,
 )
 from tolokaforge.runner.models import CriterionResult, Rubric
-from tolokaforge.tools.registry import ToolExecutor, ToolRegistry
+from tolokaforge.tools.registry import Tool, ToolExecutor, ToolRegistry
 
 # ---------------------------------------------------------------------------
 # Budget defaults (plan: max_turns ~12-15 + wall-time)
@@ -354,6 +354,7 @@ def _build_judge_registry(
     *,
     db_reader: DBReader | None,
     kb_search: KnowledgeSearch | None,
+    extra_read_tools: list[Tool] | None,
     workspace_dir: Path | None,
     logger: StructuredLogger,
 ) -> ToolRegistry:
@@ -369,6 +370,11 @@ def _build_judge_registry(
       judge gets the SAME KB; no backend ⇒ no tool. (This replaces the old
       ``if rag_url`` gate, which keyed on container-level client existence and
       hit the wrong, global index.)
+    * ``extra_read_tools`` — ready-made read-only tools the runner supplies for
+      this trial (e.g. a passthrough wrapping the agent's reconstructed
+      ``search_policy`` TypeSense tool). They are registered verbatim under their
+      own names. The runner is responsible for offering ONLY read-only tools
+      here, gated to mirror the agent (see ``runner/service.py``).
     * ``read_file`` — only when ``workspace_dir`` exists (the agent produced files).
     """
     registry = ToolRegistry()
@@ -382,6 +388,9 @@ def _build_judge_registry(
     if kb_search is not None:
         registry.register(SearchKbTool(kb_search))
         offered.append("search_kb")
+    for tool in extra_read_tools or []:
+        registry.register(tool)
+        offered.append(tool.name)
     if workspace_dir is not None and workspace_dir.exists():
         registry.register(ReadFileTool(workspace_dir))
         offered.append("read_file")
@@ -423,6 +432,7 @@ def run_rubric_judge(
     transcript: list[dict[str, Any]],
     db_reader: DBReader | None = None,
     kb_search: KnowledgeSearch | None = None,
+    extra_read_tools: list[Tool] | None = None,
     workspace_dir: Path | None = None,
     max_turns: int = DEFAULT_JUDGE_MAX_TURNS,
     episode_timeout_s: int = DEFAULT_JUDGE_EPISODE_TIMEOUT_S,
@@ -457,6 +467,7 @@ def run_rubric_judge(
         rubric,
         db_reader=db_reader,
         kb_search=kb_search,
+        extra_read_tools=extra_read_tools,
         workspace_dir=workspace_dir,
         logger=logger,
     )

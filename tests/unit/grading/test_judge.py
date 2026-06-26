@@ -263,6 +263,172 @@ def test_search_kb_surfaces_backend_hits():
     assert any("refund_policy.md" in (c or "") for c in tool_results)
 
 
+# ---------------------------------------------------------------------------
+# Passthrough read tool (extra_read_tools) — the search_policy reuse path
+# ---------------------------------------------------------------------------
+
+
+def _search_policy_schema() -> dict:
+    """A realistic foreign-tool schema (NOT the harness search_kb schema)."""
+    return {
+        "type": "object",
+        "properties": {
+            "question": {"type": "string", "description": "Policy question to search"},
+            "domain": {"type": "string", "description": "Policy domain"},
+        },
+        "required": ["question"],
+    }
+
+
+def test_extra_read_tool_offered_with_its_own_schema():
+    """A passthrough tool is offered to the judge with the foreign tool's schema."""
+    from tolokaforge.core.grading.judge_tools import DelegatingReadTool
+
+    rubric = _binary_rubric()
+    calls: list[dict] = []
+
+    tool = DelegatingReadTool(
+        name="search_policy",
+        description="Search the policy KB",
+        parameters=_search_policy_schema(),
+        invoke=lambda args: (calls.append(args) or "policy result text"),
+    )
+
+    client = ScriptedClient([[("submit_report", _submit_args(refund_done=True))]])
+    run_rubric_judge(
+        rubric=rubric,
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="",
+        transcript=[],
+        db_reader=FakeDBReader(),
+        extra_read_tools=[tool],
+        llm_client=client,
+    )
+
+    assert "search_policy" in client.seen_tool_names
+    # Crucially the LLM sees the FOREIGN tool's real schema, not search_kb's.
+    assert tool.get_schema() == {
+        "type": "function",
+        "function": {
+            "name": "search_policy",
+            "description": "Search the policy KB",
+            "parameters": _search_policy_schema(),
+        },
+    }
+
+
+def test_extra_read_tool_absent_when_not_supplied():
+    rubric = _binary_rubric()
+    client = ScriptedClient([[("submit_report", _submit_args(refund_done=True))]])
+    run_rubric_judge(
+        rubric=rubric,
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="",
+        transcript=[],
+        db_reader=FakeDBReader(),
+        extra_read_tools=None,
+        llm_client=client,
+    )
+    assert "search_policy" not in client.seen_tool_names
+
+
+def test_extra_read_tool_delegates_and_surfaces_output_verbatim():
+    """The judge's passthrough forwards args and relays the foreign output verbatim."""
+    from tolokaforge.core.grading.judge_tools import DelegatingReadTool
+
+    rubric = _binary_rubric()
+    received: list[dict] = []
+    tool = DelegatingReadTool(
+        name="search_policy",
+        description="Search the policy KB",
+        parameters=_search_policy_schema(),
+        invoke=lambda args: (received.append(args) or "VERBATIM_POLICY_PAYLOAD"),
+    )
+    client = ScriptedClient(
+        [
+            [("search_policy", {"question": "refund window", "domain": "refunds"})],
+            [("submit_report", _submit_args(refund_done=True))],
+        ]
+    )
+
+    result = run_rubric_judge(
+        rubric=rubric,
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="",
+        transcript=[],
+        db_reader=FakeDBReader(),
+        extra_read_tools=[tool],
+        llm_client=client,
+    )
+
+    assert result.status is JudgeStatus.COMPLETED
+    # Args passed through unchanged.
+    assert received == [{"question": "refund window", "domain": "refunds"}]
+    # Foreign output surfaced verbatim in the judge transcript.
+    tool_results = [m["content"] for m in result.transcript if m.get("tool_call_id")]
+    assert any("VERBATIM_POLICY_PAYLOAD" in (c or "") for c in tool_results)
+
+
+def test_extra_read_tool_fails_loud_when_foreign_tool_raises():
+    """A raising foreign tool → ToolResult(success=False), never swallowed."""
+    from tolokaforge.core.grading.judge_tools import DelegatingReadTool
+
+    def boom(_args: dict) -> str:
+        raise RuntimeError("typesense down")
+
+    tool = DelegatingReadTool(
+        name="search_policy",
+        description="Search the policy KB",
+        parameters=_search_policy_schema(),
+        invoke=boom,
+    )
+
+    res = tool.execute(question="anything")
+    assert res.success is False
+    assert "typesense down" in (res.error or "")
+    assert res.output == ""
+
+
+def test_extra_read_tool_bridges_a_sync_call_into_an_async_invoke():
+    """The sync judge tool can drive an ASYNC underlying call via a bridging invoke.
+
+    Mirrors how the runner wires ``invoke=lambda args: self._run_async(
+    agent_tool.execute(args))``: a synchronous ``execute`` that ends up running a
+    coroutine on a separate event loop thread. Here we drive a real async tool
+    through a real (separate-thread) event loop to genuinely exercise the bridge.
+    """
+    import asyncio
+    import threading
+
+    from tolokaforge.core.grading.judge_tools import DelegatingReadTool
+
+    loop = asyncio.new_event_loop()
+    t = threading.Thread(target=loop.run_forever, daemon=True)
+    t.start()
+
+    async def async_search(arguments: dict) -> str:
+        await asyncio.sleep(0)  # force a real await on the loop
+        return f"async-hit:{arguments['question']}"
+
+    def bridged_invoke(args: dict) -> str:
+        fut = asyncio.run_coroutine_threadsafe(async_search(args), loop)
+        return fut.result(timeout=5.0)
+
+    try:
+        tool = DelegatingReadTool(
+            name="search_policy",
+            description="Search the policy KB",
+            parameters=_search_policy_schema(),
+            invoke=bridged_invoke,
+        )
+        res = tool.execute(question="refunds")
+        assert res.success is True
+        assert res.output == "async-hit:refunds"
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        t.join(timeout=5.0)
+
+
 def test_db_tools_absent_when_no_reader():
     rubric = _binary_rubric()
     client = ScriptedClient([[("submit_report", _submit_args(refund_done=True))]])

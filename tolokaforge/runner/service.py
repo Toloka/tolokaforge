@@ -34,6 +34,7 @@ import grpc
 from pydantic import ValidationError
 
 from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, run_rubric_judge
+from tolokaforge.core.grading.judge_tools import DelegatingReadTool
 from tolokaforge.core.grading.kb_search import KnowledgeSearch, RagServiceKnowledgeSearch
 from tolokaforge.core.models import CriterionResult, LLMJudgeConfig, ModelConfig
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, TrialSpec
@@ -80,6 +81,15 @@ logger = logging.getLogger(__name__)
 
 # Service version
 SERVICE_VERSION = "1.0.0"
+
+# The documented read-only mcp_core TypeSense KB connector the agent uses. The
+# judge is allowed to reuse this ONE reconstructed tool (read-only passthrough)
+# so it reads the same corpus the agent did. It is a closed (mcp_core) tool, not
+# a tolokaforge type, so it is matched by this documented name — instance
+# detection is unavailable. This is the deliberate, narrow exception to the
+# judge's "harness-owned allowlist" rule (no generic MCP-tool passthrough — we
+# cannot classify arbitrary MCP tools' read-only-ness).
+_SEARCH_POLICY_TOOL_NAME = "search_policy"
 
 
 # =============================================================================
@@ -1239,6 +1249,13 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # keyed on container-level client existence and hit the wrong (global)
         # index.
         kb_search = trial_context.resolve_kb_search()
+        # TypeSense KB plane: if the agent had the read-only ``search_policy`` tool
+        # (the documented mcp_core TypeSense connector), let the judge reuse THAT
+        # EXACT reconstructed tool via a read-only passthrough — same tool, query,
+        # backend, and ranking the agent saw. This is orthogonal to the rag
+        # ``kb_search`` path above; both end as read-only tools in the judge
+        # registry. See ``_build_judge_search_policy_tools``.
+        extra_read_tools = self._build_judge_search_policy_tools(trial_context)
         # File readers only when a real workspace exists on this runner.
         workspace_dir = self._judge_workspace_dir(trial_context)
 
@@ -1263,6 +1280,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 transcript=transcript,
                 db_reader=_LoopBridgeDBReader(),
                 kb_search=kb_search,
+                extra_read_tools=extra_read_tools,
                 workspace_dir=workspace_dir,
             )
 
@@ -1291,6 +1309,51 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         if not any(isinstance(t, RAGSearchToolWrapper) for t in agent_tools.values()):
             return None
         return RagServiceKnowledgeSearch(self.rag_client, trial_id)
+
+    def _build_judge_search_policy_tools(
+        self, trial_context: TrialContextRuntime
+    ) -> list[DelegatingReadTool]:
+        """Build judge passthrough tools reusing the agent's ``search_policy`` tool.
+
+        TypeSense KB faithfulness: when the agent used the read-only
+        ``search_policy`` KB tool (the mcp_core TypeSense connector), the judge
+        must be able to search the SAME knowledge base. We do this by reusing the
+        agent's OWN already-reconstructed ``search_policy`` ``ToolWrapper`` — no
+        mcp_core import, no assumptions about TypeSense internals or
+        ``search_policy``'s I/O format. We just re-publish its real schema (so the
+        judge LLM fills args correctly) and relay its output verbatim.
+
+        Gate = mirror the agent (same shape as the rag path): a passthrough is
+        offered IFF the agent's reconstructed tools contain ``search_policy``.
+        Detection is by the documented tool name — ``search_policy`` is a closed
+        mcp_core tool, not a tolokaforge type, so instance detection is
+        unavailable; the name is the contract. Only this ONE documented read-only
+        tool is exposed (never a generic MCP passthrough — we cannot classify
+        arbitrary tools' read-only-ness).
+
+        Async bridge: the agent ``ToolWrapper.execute`` is async, but the judge
+        loop runs synchronously in a worker thread. ``invoke`` bridges each call
+        to the runner's dedicated event loop via ``self._run_async`` (the same
+        loop the DB reader bridges to), so the judge tool's sync ``execute`` can
+        drive the agent tool's async ``execute``.
+        """
+        agent_tool = trial_context.agent_tools.get(_SEARCH_POLICY_TOOL_NAME)
+        if agent_tool is None:
+            return []
+
+        schema = agent_tool.tool_schema
+
+        def invoke(arguments: dict[str, Any]) -> str:
+            return self._run_async(agent_tool.execute(arguments))
+
+        return [
+            DelegatingReadTool(
+                name=schema.name,
+                description=schema.description,
+                parameters=schema.parameters,
+                invoke=invoke,
+            )
+        ]
 
     @staticmethod
     def _judge_workspace_dir(trial_context: TrialContextRuntime) -> Path | None:

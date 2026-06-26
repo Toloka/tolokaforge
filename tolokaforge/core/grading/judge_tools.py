@@ -19,6 +19,7 @@ trial — the SAME index the agent searched. It does NOT reuse the builtin
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -29,6 +30,7 @@ if TYPE_CHECKING:
     from tolokaforge.core.grading.kb_search import KnowledgeSearch
 
 __all__ = [
+    "DelegatingReadTool",
     "GetDbStateTool",
     "QueryDbTool",
     "ReadFileTool",
@@ -267,6 +269,62 @@ class SearchKbTool(Tool):
             output="\n".join(lines),
             metadata={"count": len(hits), "top_score": hits[0].score},
         )
+
+
+class DelegatingReadTool(Tool):
+    """Read-only judge tool that passes a call THROUGH to a foreign tool verbatim.
+
+    Generic by construction — it owns no backend, no I/O format, and no
+    mcp_core/runner dependency. It is given a tool's real ``name`` /
+    ``description`` / JSON-Schema ``parameters`` and a synchronous ``invoke``
+    callable; :meth:`get_schema` re-publishes that exact schema so the judge LLM
+    fills the args the way the real tool expects, and :meth:`execute` forwards
+    the args to ``invoke`` and surfaces its string output verbatim.
+
+    Why passthrough (not the ``KnowledgeSearch`` / ``SearchHit`` contract): the
+    runner uses this to let the judge reuse the agent's already-reconstructed
+    read-only ``search_policy`` KB tool (the TypeSense connector) — see
+    ``runner/service.py``. ``search_policy`` is a closed mcp_core tool: tolokaforge
+    cannot import it, cannot know its input parameter names or output format, and
+    cannot test against it in this repo. Forcing it through ``SearchHit`` would
+    require guessing that I/O shape; exposing its real schema and relaying its
+    raw output instead is maximally faithful (same tool, query, backend, ranking
+    the agent saw) and needs zero assumptions. The rag path keeps using
+    :class:`SearchKbTool` over :class:`KnowledgeSearch`; both end as read-only
+    tools in the judge registry, which already holds heterogeneous read tools.
+
+    Fail-loud (AGENTS.md #1): an exception from ``invoke`` becomes a
+    ``ToolResult(success=False, error=...)`` — it is never swallowed into a
+    success or empty result.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        description: str,
+        parameters: dict[str, Any],
+        invoke: Callable[[dict[str, Any]], str],
+    ):
+        super().__init__(name=name, description=description, policy=_read_only_policy())
+        self._parameters = parameters
+        self._invoke = invoke
+
+    def get_schema(self) -> dict[str, Any]:
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self._parameters,
+            },
+        }
+
+    def execute(self, **kwargs: Any) -> ToolResult:
+        try:
+            output = self._invoke(dict(kwargs))
+        except Exception as exc:  # surface foreign-tool errors loud, never swallow
+            return ToolResult(success=False, output="", error=f"{self.name} failed: {exc}")
+        return ToolResult(success=True, output=output)
 
 
 class SubmitReportTool(Tool):
