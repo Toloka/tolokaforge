@@ -34,6 +34,7 @@ import grpc
 from pydantic import ValidationError
 
 from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, run_rubric_judge
+from tolokaforge.core.grading.kb_search import KnowledgeSearch, RagServiceKnowledgeSearch
 from tolokaforge.core.models import CriterionResult, LLMJudgeConfig, ModelConfig
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, TrialSpec
 from tolokaforge.runner import runner_pb2 as pb2
@@ -69,6 +70,7 @@ from tolokaforge.runner.rag_client import (
 from tolokaforge.runner.tool_factory import (
     DockerComposeExecToolWrapper,
     MCPServerToolWrapper,
+    RAGSearchToolWrapper,
     ToolFactory,
     ToolLifecycleContext,
     ToolReconstructionError,
@@ -122,6 +124,25 @@ class TrialContextRuntime:
         # TrialSpec. None when no selected task uses an llm_judge component; the
         # orchestrator validates up front that it is present whenever a rubric is.
         self.judge_model_config = judge_model_config
+        # Per-trial KnowledgeSearch resolved at setup (the SAME index the agent's
+        # KB tool used), or None when the agent had no KB tool this trial. The
+        # judge is offered ``search_kb`` iff this is non-None — faithful gating.
+        # Per-context state (not a process-global dict) because the runner is
+        # concurrent across trials; this gives lifecycle for free and avoids
+        # locking/leak. See the kb_search resolver methods below.
+        self._kb_search: KnowledgeSearch | None = None
+
+    def register_kb_search(self, impl: KnowledgeSearch) -> None:
+        """Bind the per-trial :class:`KnowledgeSearch` resolved at trial setup."""
+        self._kb_search = impl
+
+    def resolve_kb_search(self) -> KnowledgeSearch | None:
+        """Return the trial's :class:`KnowledgeSearch`, or None if none was resolved."""
+        return self._kb_search
+
+    def clear_kb_search(self) -> None:
+        """Drop the per-trial KB backend (called at trial teardown)."""
+        self._kb_search = None
 
     @property
     def grading_config(self):
@@ -576,6 +597,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             # Store reconstructed tools in trial context
             trial_context.agent_tools = dict(reconstructed.agent_tools.items())
             trial_context.user_tools = dict(reconstructed.user_tools.items())
+
+            kb_search = self._resolve_judge_kb_search(trial_id, trial_context.agent_tools)
+            if kb_search is not None:
+                trial_context.register_kb_search(kb_search)
 
             logger.info(
                 f"RegisterTrial: {trial_id} - Reconstructed "
@@ -1207,10 +1232,13 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             agent_system_prompt = str(transcript[0].get("content", "") or "")
             transcript = transcript[1:]
 
-        # search_kb only when the task is RAG-backed (a RAG client is configured).
-        # Use the client's already-resolved base_url — never re-read an env var,
-        # which could be empty and silently drop the tool (fail-loud, AGENTS.md #1).
-        rag_url = self.rag_client.base_url if self.rag_client is not None else None
+        # search_kb only when a KnowledgeSearch was resolved for THIS trial at
+        # setup — the SAME per-trial index the agent's KB tool searched. Faithful
+        # gating: agent had a KB ⇒ judge gets the same KB; none ⇒ no tool. This
+        # replaces the old ``rag_url = self.rag_client.base_url`` path, which
+        # keyed on container-level client existence and hit the wrong (global)
+        # index.
+        kb_search = trial_context.resolve_kb_search()
         # File readers only when a real workspace exists on this runner.
         workspace_dir = self._judge_workspace_dir(trial_context)
 
@@ -1234,11 +1262,35 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 agent_system_prompt=agent_system_prompt,
                 transcript=transcript,
                 db_reader=_LoopBridgeDBReader(),
-                rag_url=rag_url,
+                kb_search=kb_search,
                 workspace_dir=workspace_dir,
             )
 
         return await loop.run_in_executor(None, _run)
+
+    def _resolve_judge_kb_search(
+        self, trial_id: str, agent_tools: dict[str, Callable]
+    ) -> KnowledgeSearch | None:
+        """Resolve the judge's per-trial KnowledgeSearch, or None.
+
+        Gated on the SAME signal that gave the AGENT a rag ``search_kb``: a
+        ``RAGSearchToolWrapper`` was reconstructed (dispatch=RAG + a rag client)
+        — NOT ``search_config.enabled`` (the decoupled TypeSense plane;
+        ``native.py`` hardcodes ``search.enabled=False``, so gating there never
+        fires for real rag tasks and wrongly fires for TypeSense ones). Detected
+        by instance, not tool name, so a renamed tool can't fool it.
+
+        Binding to the same ``rag_client`` + ``trial_id`` means the judge
+        retrieves from the SAME per-trial index by construction: if the agent's
+        ``search_kb`` works the judge's does too, and if it 404s both do. (The
+        host-side global ``/index`` POST and per-trial indexing gating are
+        pre-existing and out of scope here.)
+        """
+        if self.rag_client is None:
+            return None
+        if not any(isinstance(t, RAGSearchToolWrapper) for t in agent_tools.values()):
+            return None
+        return RagServiceKnowledgeSearch(self.rag_client, trial_id)
 
     @staticmethod
     def _judge_workspace_dir(trial_context: TrialContextRuntime) -> Path | None:

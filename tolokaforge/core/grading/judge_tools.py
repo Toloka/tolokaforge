@@ -9,8 +9,11 @@ Each tool is a :class:`~tolokaforge.tools.registry.Tool` so the judge can drive
 them through the same :class:`~tolokaforge.tools.registry.ToolExecutor` the agent
 uses. The DB tools are *synchronous* — they call a :class:`DBReader` the runner
 supplies, which bridges to its async DB client off the judge's worker thread (see
-``judge.py`` module docstring). ``search_kb`` reuses the builtin
-:class:`~tolokaforge.tools.builtin.rag_search.SearchKBTool` (already sync httpx).
+``judge.py`` module docstring). ``search_kb`` is :class:`SearchKbTool`, a
+harness-owned read-only tool that delegates to the per-trial
+:class:`~tolokaforge.core.grading.kb_search.KnowledgeSearch` resolved for the
+trial — the SAME index the agent searched. It does NOT reuse the builtin
+``SearchKBTool`` (that one re-derives a global rag URL — the bug this fixes).
 """
 
 from __future__ import annotations
@@ -19,13 +22,11 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from tolokaforge.tools.builtin.rag_search import (
-    SearchKBTool as SearchKbTool,  # noqa: F401 re-export
-)
 from tolokaforge.tools.registry import Tool, ToolCategory, ToolPolicy, ToolResult
 
 if TYPE_CHECKING:
     from tolokaforge.core.grading.judge import DBReader
+    from tolokaforge.core.grading.kb_search import KnowledgeSearch
 
 __all__ = [
     "GetDbStateTool",
@@ -181,6 +182,91 @@ class ReadFileTool(Tool):
         except OSError as exc:
             return ToolResult(success=False, output="", error=f"read_file failed: {exc}")
         return ToolResult(success=True, output=_truncate(content))
+
+
+class SearchKbTool(Tool):
+    """Read-only knowledge-base search delegating to a per-trial backend.
+
+    The judge gets this tool **iff** a :class:`KnowledgeSearch` was resolved for
+    the trial (faithful gating: the agent had a KB ⇒ the judge gets the SAME KB).
+    The external schema is kept stable (``search_kb(query, top_k, alpha)``) for
+    prompt stability; the call delegates to the resolved backend, which points at
+    the same per-trial index the agent searched. Fail-loud: a transport error in
+    the backend surfaces as a tool error (never silently empty results).
+    """
+
+    def __init__(self, kb_search: KnowledgeSearch):
+        super().__init__(
+            name="search_kb",
+            description="Search the knowledge base for relevant information",
+            policy=_read_only_policy(),
+        )
+        self._kb = kb_search
+
+    def get_schema(self) -> dict[str, Any]:
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Search query to find relevant documents",
+                        },
+                        "top_k": {
+                            "type": "integer",
+                            "description": "Number of results to return (default: 5)",
+                            "default": 5,
+                        },
+                        "alpha": {
+                            "type": "number",
+                            "description": (
+                                "Weight for hybrid search: 0.0=BM25 only (keyword), "
+                                "1.0=FAISS only (semantic), 0.5=balanced (default: 0.5). "
+                                "Ignored by backends that do not support hybrid search."
+                            ),
+                            "default": 0.5,
+                            "minimum": 0.0,
+                            "maximum": 1.0,
+                        },
+                    },
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+            },
+        }
+
+    def execute(self, query: str = "", top_k: int = 5, alpha: float = 0.5, **_: Any) -> ToolResult:
+        if not query:
+            return ToolResult(success=False, output="", error="search_kb requires a 'query'.")
+        try:
+            hits = self._kb.search(query, top_k=top_k, alpha=alpha)
+        except Exception as exc:  # surface transport/backend errors loud, not empty
+            return ToolResult(success=False, output="", error=f"search_kb failed: {exc}")
+
+        if not hits:
+            return ToolResult(
+                success=True,
+                output="No relevant documents found.",
+                metadata={"count": 0},
+            )
+
+        lines = [f"Found {len(hits)} relevant documents:\n"]
+        for i, hit in enumerate(hits, 1):
+            snippet = hit.text[:200]
+            ellipsis = "..." if len(hit.text) > 200 else ""
+            lines.append(f"\n[{i}] Document: {hit.doc_id}")
+            lines.append(f"    Source: {hit.source}")
+            lines.append(f"    Score: {hit.score:.3f}")
+            lines.append(f"    Content: {snippet}{ellipsis}")
+        return ToolResult(
+            success=True,
+            output="\n".join(lines),
+            metadata={"count": len(hits), "top_score": hits[0].score},
+        )
 
 
 class SubmitReportTool(Tool):

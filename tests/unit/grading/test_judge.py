@@ -174,6 +174,95 @@ def test_inspects_db_then_submits():
     assert "submit_report" in client.seen_tool_names
 
 
+class FakeKnowledgeSearch:
+    """A stub ``KnowledgeSearch`` returning fixed hits; records its queries.
+
+    Exercises the contract the judge depends on without an HTTP / RAG service —
+    asserts the judge's ``search_kb`` surfaces exactly the backend's hits (the
+    core regression: judge searches the same index the agent did).
+    """
+
+    def __init__(self, hits=None):
+        from tolokaforge.core.grading.kb_search import SearchHit
+
+        self._hits = (
+            hits
+            if hits is not None
+            else [
+                SearchHit(
+                    doc_id="policy_42",
+                    source="refund_policy.md",
+                    score=0.97,
+                    text="Refunds within 30 days.",
+                ),
+            ]
+        )
+        self.queries: list[tuple[str, int, float]] = []
+
+    def search(self, query: str, top_k: int = 5, alpha: float = 0.5):
+        self.queries.append((query, top_k, alpha))
+        return list(self._hits)
+
+
+def test_search_kb_offered_only_when_kb_resolved():
+    """Faithful gating: search_kb iff a KnowledgeSearch is resolved; absent otherwise."""
+    rubric = _binary_rubric()
+
+    with_kb = ScriptedClient([[("submit_report", _submit_args(refund_done=True))]])
+    run_rubric_judge(
+        rubric=rubric,
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="",
+        transcript=[],
+        db_reader=FakeDBReader(),
+        kb_search=FakeKnowledgeSearch(),
+        llm_client=with_kb,
+    )
+    assert "search_kb" in with_kb.seen_tool_names
+
+    without_kb = ScriptedClient([[("submit_report", _submit_args(refund_done=True))]])
+    run_rubric_judge(
+        rubric=rubric,
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="",
+        transcript=[],
+        db_reader=FakeDBReader(),
+        kb_search=None,
+        llm_client=without_kb,
+    )
+    assert "search_kb" not in without_kb.seen_tool_names
+
+
+def test_search_kb_surfaces_backend_hits():
+    """The judge's search_kb routes to the resolved backend and surfaces its hits."""
+    rubric = _binary_rubric()
+    kb = FakeKnowledgeSearch()
+    client = ScriptedClient(
+        [
+            [("search_kb", {"query": "refund window", "top_k": 3})],
+            [("submit_report", _submit_args(refund_done=True))],
+        ]
+    )
+
+    result = run_rubric_judge(
+        rubric=rubric,
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="",
+        transcript=[],
+        db_reader=FakeDBReader(),
+        kb_search=kb,
+        llm_client=client,
+    )
+
+    assert result.status is JudgeStatus.COMPLETED
+    # The judge delegated to the backend with the model's query/top_k.
+    assert kb.queries == [("refund window", 3, 0.5)]
+    # The backend's hit surfaced in the judge's tool-result transcript.
+    tool_results = [m["content"] for m in result.transcript if m.get("tool_call_id")]
+    assert any("policy_42" in (c or "") for c in tool_results)
+    assert any("refund_policy.md" in (c or "") for c in tool_results)
+
+
 def test_db_tools_absent_when_no_reader():
     rubric = _binary_rubric()
     client = ScriptedClient([[("submit_report", _submit_args(refund_done=True))]])

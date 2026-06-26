@@ -48,6 +48,7 @@ from tolokaforge.core.grading.judge_tools import (
     SearchKbTool,
     SubmitReportTool,
 )
+from tolokaforge.core.grading.kb_search import KnowledgeSearch
 from tolokaforge.core.grading.rubric import (
     SUBMIT_REPORT_TOOL_NAME,
     SubmitReportValidationError,
@@ -352,7 +353,7 @@ def _build_judge_registry(
     rubric: Rubric,
     *,
     db_reader: DBReader | None,
-    rag_url: str | None,
+    kb_search: KnowledgeSearch | None,
     workspace_dir: Path | None,
     logger: StructuredLogger,
 ) -> ToolRegistry:
@@ -363,7 +364,11 @@ def _build_judge_registry(
     * ``submit_report`` — ALWAYS (the terminal rubric tool, schema from the rubric).
     * ``get_db_state`` / ``query_db`` — when a ``db_reader`` is supplied (the task
       routes state through the DB service). Strictly read-only.
-    * ``search_kb`` — when ``rag_url`` is set (the task is RAG-backed).
+    * ``search_kb`` — iff a ``kb_search`` backend was resolved for this trial.
+      Faithful gating: the agent had a KB tool over the per-trial index ⇒ the
+      judge gets the SAME KB; no backend ⇒ no tool. (This replaces the old
+      ``if rag_url`` gate, which keyed on container-level client existence and
+      hit the wrong, global index.)
     * ``read_file`` — only when ``workspace_dir`` exists (the agent produced files).
     """
     registry = ToolRegistry()
@@ -374,8 +379,8 @@ def _build_judge_registry(
         registry.register(GetDbStateTool(db_reader))
         registry.register(QueryDbTool(db_reader))
         offered += ["get_db_state", "query_db"]
-    if rag_url:
-        registry.register(SearchKbTool(rag_url))
+    if kb_search is not None:
+        registry.register(SearchKbTool(kb_search))
         offered.append("search_kb")
     if workspace_dir is not None and workspace_dir.exists():
         registry.register(ReadFileTool(workspace_dir))
@@ -417,7 +422,7 @@ def run_rubric_judge(
     agent_system_prompt: str,
     transcript: list[dict[str, Any]],
     db_reader: DBReader | None = None,
-    rag_url: str | None = None,
+    kb_search: KnowledgeSearch | None = None,
     workspace_dir: Path | None = None,
     max_turns: int = DEFAULT_JUDGE_MAX_TURNS,
     episode_timeout_s: int = DEFAULT_JUDGE_EPISODE_TIMEOUT_S,
@@ -451,7 +456,7 @@ def run_rubric_judge(
     registry = _build_judge_registry(
         rubric,
         db_reader=db_reader,
-        rag_url=rag_url,
+        kb_search=kb_search,
         workspace_dir=workspace_dir,
         logger=logger,
     )
@@ -585,6 +590,7 @@ def _build_reasons(tool_args: dict[str, Any], failed_required_ids: tuple[str, ..
 
 __all__ = [
     "DBReader",
+    "KnowledgeSearch",
     "JudgeResult",
     "JudgeStatus",
     "JudgeUsage",
