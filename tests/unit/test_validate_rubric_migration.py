@@ -60,7 +60,6 @@ def test_validate_rejects_legacy_rubric_str(tmp_path: Path):
           weights:
             llm_judge: 1.0
         llm_judge:
-          model_ref: "openai/gpt-4o-mini"
           rubric: "Grade the reply for correctness and tone."
           output_schema:
             type: object
@@ -78,6 +77,35 @@ def test_validate_rejects_legacy_rubric_str(tmp_path: Path):
     assert "criteria:" in out
 
 
+def test_validate_rejects_legacy_model_ref(tmp_path: Path):
+    """The judge model relocated to the run config (models.judge); a stray
+    ``llm_judge.model_ref`` in grading.yaml must fail validate with a migration
+    message that names where the model now lives."""
+    task_file = _write_task(
+        tmp_path / "legacy_model_ref",
+        """
+        combine:
+          method: weighted
+          weights:
+            llm_judge: 1.0
+        llm_judge:
+          model_ref: "openai/gpt-4o-mini"
+          rubric:
+            criteria:
+              - id: refund_amount
+                description: "Reply quotes the correct refund amount"
+                kind: binary
+                weight: 1.0
+        """,
+    )
+
+    result = CliRunner(mix_stderr=False).invoke(cli, ["validate", "--tasks", str(task_file)])
+
+    out = result.output
+    assert "0 valid, 1 invalid" in out
+    assert "model_ref moved to the run config" in out
+
+
 def test_validate_accepts_structured_rubric(tmp_path: Path):
     task_file = _write_task(
         tmp_path / "structured_rubric",
@@ -87,7 +115,6 @@ def test_validate_accepts_structured_rubric(tmp_path: Path):
           weights:
             llm_judge: 1.0
         llm_judge:
-          model_ref: "openai/gpt-4o-mini"
           rubric:
             reference: "Correct refund is $328.50."
             criteria:
@@ -111,7 +138,6 @@ def test_validate_grading_yaml_rejects_removed_output_schema(tmp_path: Path):
         textwrap.dedent(
             """
             llm_judge:
-              model_ref: "openai/gpt-4o-mini"
               rubric:
                 criteria:
                   - id: a

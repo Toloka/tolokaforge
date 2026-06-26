@@ -78,7 +78,6 @@ grading:
   weights: { state_checks: 0.5, llm_judge: 0.5 }
   pass_threshold: 0.8
   llm_judge:
-    model_ref: openrouter/anthropic/claude-sonnet-4.5   # required; a separate fixed judge model
     rubric:
       reference: |                # optional, author-written ground truth shown to the judge
         Correct refund is $328.50 (base fare minus 24h-cancellation fee).
@@ -98,11 +97,17 @@ grading:
 
 ### How the judge works
 
-* **A separate, fixed judge model.** `model_ref` is required and independent of
-  the agent under test — this prevents self-grading bias and keeps the judge
-  constant across agent comparisons. The judge builds its own LLM client via the
-  agent's provider-correct capability path (so tool schemas/calls are correct
-  for any provider).
+* **A separate, run-level judge model.** The judge model is configured once per
+  run under `models.judge` (the run config — sibling to `models.agent` and
+  `models.user`), **not** in the per-task grading block. It is independent of the
+  agent under test — this prevents self-grading bias and keeps the judge constant
+  across agent comparisons — while a provider switch is a one-line run-config edit
+  rather than an N-task change. There is **no default and no fallback to the agent
+  model**: if a selected task uses an `llm_judge` component but the run config has
+  no `models.judge`, the orchestrator aborts the run up front, before any trial
+  executes (AGENTS.md rule 1). The judge builds its own LLM client via the agent's
+  provider-correct capability path (so tool schemas/calls are correct for any
+  provider).
 * **Author-written reference channel.** The judge sees only the rubric's
   `reference` and per-criterion `expected` — author-written *for grading*. The
   deterministic oracle (`golden_actions`, `expected_hash`, `jsonpath_checks`) is
@@ -261,7 +266,7 @@ Tasks used for RL training need grading that produces a meaningful signal — no
 
 - **Use `state_checks` (weight 1.0) for deterministic tasks.** State checks are objective and reproducible. They verify that the agent actually changed the environment correctly.
 - **Reserve `llm_judge` for genuinely subjective tasks.** An LLM judge giving 0.7 for "attempted the task" masks real failures. Don't use it as padding.
-- **CI portability:** public examples may use `mock/mock-judge` so CI can run without live judge inference; for real evaluations replace it with your production judge model.
+- **CI portability:** the judge model is a run-level role (`models.judge`), so CI can point it at `mock/mock-judge` to run without live judge inference; for real evaluations set `models.judge` to your production judge model. (No per-task edit is needed — switch the whole run in one place.)
 - **Check specific values, not just existence.** Assert `equals: "Large (14\")"` instead of just checking the path exists. Assert `equals: "apple_pay"` instead of checking that any payment method was set.
 - **Set `pass_threshold` to allow partial differentiation.** With 6 checks at `pass_threshold: 0.8`, an agent that gets 5/6 still passes but scores lower than 6/6. This provides gradient signal.
 

@@ -28,9 +28,6 @@ transcript_rules:
       compare_args: []
 
 llm_judge:
-  # Cheap but capable judge. gpt-4o-mini loops and never submits; 4.1-mini
-  # reliably terminates on agentic grading.
-  model_ref: "openrouter/openai/gpt-4.1-mini"
   rubric:
     reference: |
       The user has exactly four saved notes; a correct summary must cover all of

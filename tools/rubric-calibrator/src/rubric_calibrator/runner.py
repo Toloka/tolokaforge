@@ -27,6 +27,7 @@ from tolokaforge.core.grading.judge import (
     JudgeResult,
     JudgeStatus,
     JudgeUsage,
+    model_config_from_ref,
     run_rubric_judge,
 )
 
@@ -126,9 +127,11 @@ def judge_fixture(
     db_reader = DictDBReader(fixture.final_db_state) if fixture.final_db_state else None
     workspace_dir = fixture.workspace_path(fixture_file) if fixture_file else None
 
+    # The calibrator's CLI surface keeps a string ``--model-ref``; convert it to
+    # a run-level ModelConfig at this boundary (the judge no longer takes a ref).
     kwargs: dict[str, Any] = {
         "rubric": fixture.rubric,
-        "model_ref": model_ref,
+        "model_config": model_config_from_ref(model_ref),
         "agent_system_prompt": fixture.agent_system_prompt,
         "transcript": fixture.transcript,
         "db_reader": db_reader,
@@ -191,7 +194,8 @@ def run_calibration(
 
     ``on_fixture_done(outcome)`` is an optional progress callback. ``llm_client``
     is shared across fixtures when injected (scripted tests); production passes
-    ``None`` so each judge builds its own client from ``model_ref``.
+    ``None`` so each judge builds its own client from the ``ModelConfig`` derived
+    from ``model_ref`` at the judge boundary.
     """
     outcomes: list[FixtureOutcome] = []
     all_observations: list[CriterionObservation] = []

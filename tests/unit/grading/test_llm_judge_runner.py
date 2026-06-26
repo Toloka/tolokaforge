@@ -35,7 +35,7 @@ def test_combine_components_includes_llm_judge_when_score_set():
     cfg = {
         "combine_method": "weighted",
         "weights": {"llm_judge": 1.0},
-        "llm_judge": {"model_ref": "x"},
+        "llm_judge": {"rubric": {"criteria": [{"id": "a", "description": "d"}]}},
     }
     score, _ = combine_grade_components(components, cfg)
     assert score == pytest.approx(0.6)
@@ -77,14 +77,18 @@ def test_build_grade_reasons_includes_judge_text():
 
 
 def test_native_adapter_serializes_llm_judge():
-    """A structured rubric round-trips through the runner GradingConfig wire shape."""
+    """A structured rubric round-trips through the runner GradingConfig wire shape.
+
+    The judge *model* no longer lives on this block — it relocated to the run
+    config (models.judge) and rides ``TrialSpec.judge_model_config``. This pins
+    that the grading payload now carries ONLY the rubric, with no ``model_ref``.
+    """
     from tolokaforge.runner.models import GradingConfig, LLMJudgeConfig
 
     cfg = GradingConfig(
         combine_method="weighted",
         weights={"llm_judge": 1.0},
         llm_judge=LLMJudgeConfig(
-            model_ref="openai/gpt-4o-mini",
             rubric={
                 "reference": "Correct refund is $328.50.",
                 "criteria": [
@@ -101,7 +105,7 @@ def test_native_adapter_serializes_llm_judge():
         ),
     )
     payload = cfg.model_dump()
-    assert payload["llm_judge"]["model_ref"] == "openai/gpt-4o-mini"
+    assert "model_ref" not in payload["llm_judge"]
     assert payload["llm_judge"]["rubric"]["criteria"][0]["id"] == "refund_amount"
 
     reconstructed = GradingConfig.model_validate(payload)
@@ -111,3 +115,34 @@ def test_native_adapter_serializes_llm_judge():
     assert crit.id == "refund_amount"
     assert crit.required is True
     assert crit.expected == "$328.50"
+
+
+def test_judge_model_rides_on_trial_spec():
+    """The judge model is now a run-level ModelConfig carried on the TrialSpec —
+    symmetric with the agent and user models — and survives the gRPC JSON wire."""
+    from tolokaforge.core.models import ModelConfig
+    from tolokaforge.core.trial import EnvEndpoints, TrialSpec
+    from tolokaforge.runner.models import TaskDescription
+
+    judge_model = ModelConfig(
+        provider="openrouter", name="anthropic/claude-sonnet-4.6", temperature=0.0
+    )
+    spec = TrialSpec(
+        trial_id="t:0",
+        run_id="r",
+        task=TaskDescription(
+            task_id="t",
+            name="t",
+            category="test",
+            description="d",
+            adapter_type="native",
+            system_prompt="sys",
+        ),
+        agent_model_config=ModelConfig(provider="openrouter", name="agent"),
+        judge_model_config=judge_model,
+        env_endpoints=EnvEndpoints(db_url="http://db", runner_url="http://runner"),
+    )
+
+    rehydrated = TrialSpec.model_validate_json(spec.model_dump_json())
+    assert rehydrated.judge_model_config == judge_model
+    assert rehydrated.judge_model_config.temperature == 0.0

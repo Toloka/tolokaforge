@@ -33,7 +33,7 @@ orchestrator ──RegisterTrial──▶ runner            (TaskDescription inc
 orchestrator ──GradeTrial─────▶ runner._grade_trial_async
                                   ├─ state checks / transcript rules
                                   └─ rubric judge:  run_rubric_judge(...)
-                                        ├─ LLMClient(model_ref) via build_capabilities  (separate fixed judge model)
+                                        ├─ LLMClient(judge_model_config) via build_capabilities  (run-level models.judge)
                                         ├─ ToolCallingLoop (no user sim; stop on submit_report; max_turns + wall-time)
                                         │     read-only tools: get_db_state/query_db, search_kb, read_file, submit_report
                                         ├─ parse_submit_report  → list[CriterionResult]   (fail loud)
@@ -73,7 +73,7 @@ bridge back to the runner event loop with `run_coroutine_threadsafe(...)`.
 | **Judge runs in the runner** | DB + workspace live there; matches what the live code already did. Concurrency handled by raising the `GradeTrial` timeout (300→600s) + a per-judge `max_turns`/wall-time budget, not by moving host-side. |
 | **One shared loop** | The judge is "the agent loop run as a solo grader." Avoids a third near-duplicate loop; the old `_grade_agentic` and `GradingEngine` judge path were deleted. |
 | **Harness-owned read-only tools** (not the agent's tools filtered by `category`) | `category` is stamped `"compute"` for all native task tools, so a filter excludes nothing — untrustworthy. A fixed read-only allowlist is safe and modality-correct without a DB clone. |
-| **Separate fixed judge model via `build_capabilities`** | An agentic tool-calling judge needs the preset/policy machinery (schema sanitizers, reasoning codecs) — raw `litellm.completion` mangles tool calls for Gemini/GPT-5/etc. A fixed model (independent of the agent under test) avoids self-grading bias. |
+| **Run-level judge model via `build_capabilities`** | An agentic tool-calling judge needs the preset/policy machinery (schema sanitizers, reasoning codecs) — raw `litellm.completion` mangles tool calls for Gemini/GPT-5/etc. The model is a run-level role (`RunConfig.models["judge"]`, carried on `TrialSpec.judge_model_config`), separate from the agent under test to avoid self-grading bias, with no default and no fallback — a fleet-wide provider switch is a one-line run-config edit. |
 | **Fail loud → `JudgeStatus.ERRORED`** | Any judge malfunction (no `submit_report`, retry exhaustion, budget/turn exhaustion, crash) yields ERRORED with **no score**; the `llm_judge` component stays at the `-1.0` sentinel (excluded from the combine), never 0.0/0.5. |
 | **Structured output via `submit_report`** | The tool's arg schema is generated from the rubric and validated with Pydantic (bounded re-prompt, then ERRORED). No MCP — the loop is in-process. A flat arg object (per-criterion keyed by id) avoids nested-schema dialect gaps. |
 | **Author-written reference channel** (`rubric.reference`, `criterion.expected`) | The judge needs the correct answer to grade reference-dependent criteria — but it is given an author-written reference, **not** the deterministic oracle (`golden_actions`/`expected_hash`/`jsonpath_checks`), which would bias toward the golden path and double-count state checks. |

@@ -1014,6 +1014,58 @@ class TestSerializeModelConfig:
         assert isinstance(result["user"], dict)
         assert result["user"]["name"] == "anthropic/claude-sonnet-4.6"
 
+    def test_serialize_records_judge_role_with_resolved_fingerprint(self) -> None:
+        """A configured judge role is recorded in the bundle like agent/user —
+        carrying provider/name and a ``resolved`` preset fingerprint — so every
+        grade bundle records which judge produced it."""
+        orch = MagicMock()
+        orch.config.models = {
+            "agent": ModelConfig(provider="openrouter", name="openai/gpt-5.4"),
+            "judge": ModelConfig(
+                provider="openrouter", name="openai/gpt-4.1-mini", temperature=0.0
+            ),
+        }
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        result = Orchestrator._serialize_model_config(orch)
+
+        assert result["judge"] is not None
+        assert result["judge"]["provider"] == "openrouter"
+        assert result["judge"]["name"] == "openai/gpt-4.1-mini"
+        # The resolved preset fingerprint must be present (same shape as agent/user).
+        assert "resolved" in result["judge"]
+        assert "effective_preset" in result["judge"]["resolved"]
+
+    def test_serialize_judge_is_null_when_unconfigured(self) -> None:
+        """No judge role configured → ``judge`` key present and null (consistent
+        with how an absent user is recorded), with no resolved fingerprint."""
+        orch = MagicMock()
+        orch.config.models = {
+            "agent": ModelConfig(provider="openrouter", name="openai/gpt-5.4"),
+            "user": ModelConfig(provider="openrouter", name="anthropic/claude-sonnet-4.6"),
+        }
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        result = Orchestrator._serialize_model_config(orch)
+
+        assert result["judge"] is None
+
+    def test_serialize_judge_arg_overrides_and_is_recorded(self) -> None:
+        """The explicit ``judge_config`` arg (the resolved run-level judge passed
+        from the trial build) is recorded, mirroring the agent/user arg path."""
+        orch = MagicMock()
+        orch.config.models = {
+            "agent": ModelConfig(provider="openrouter", name="openai/gpt-5.4"),
+            "judge": ModelConfig(provider="openrouter", name="openai/gpt-4.1-mini"),
+        }
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        judge = ModelConfig(provider="openrouter", name="openai/gpt-4.1-mini", temperature=0.0)
+        result = Orchestrator._serialize_model_config(orch, judge_config=judge)
+
+        assert result["judge"]["name"] == "openai/gpt-4.1-mini"
+        assert "resolved" in result["judge"]
+
 
 # ===================================================================
 # _build_env_endpoints (free function)
@@ -1066,6 +1118,114 @@ class TestBuildEnvEndpoints:
 
         endpoints = _build_env_endpoints("https://runner.example:50051")
         assert endpoints.runner_url == "https://runner.example:50051"
+
+
+# ===================================================================
+# Up-front judge-model gate (fail loud, no hidden default)
+# ===================================================================
+
+
+def _task_description_with_judge(task_id: str, *, has_judge: bool):
+    """Build a TaskDescription whose grading does / does not declare an llm_judge."""
+    from tolokaforge.runner.models import (
+        GradingConfig,
+        LLMJudgeConfig,
+        Rubric,
+        TaskDescription,
+    )
+
+    llm_judge = None
+    if has_judge:
+        llm_judge = LLMJudgeConfig(
+            rubric=Rubric(
+                criteria=[{"id": "c", "description": "d", "kind": "binary", "weight": 1.0}]
+            )
+        )
+    return TaskDescription(
+        task_id=task_id,
+        name=task_id,
+        category="test",
+        description="d",
+        adapter_type="native",
+        system_prompt="sys",
+        grading=GradingConfig(llm_judge=llm_judge),
+    )
+
+
+def _orchestrator_with_tasks(config: RunConfig, judge_flags: dict[str, bool]):
+    """Construct an Orchestrator with stubbed tasks + adapter for the gate test."""
+    from tolokaforge.core.orchestrator import Orchestrator
+
+    orch = Orchestrator(config)
+    orch.tasks = [_make_task_config(tid) for tid in judge_flags]
+    adapter = MagicMock()
+    adapter.to_task_description.side_effect = lambda tid: _task_description_with_judge(
+        tid, has_judge=judge_flags[tid]
+    )
+    orch.adapter = adapter
+    return orch
+
+
+@pytest.mark.unit
+class TestJudgeModelGate:
+    """The run must abort up front when a task needs an llm_judge but none is set.
+
+    This is the load-bearing relocation guarantee: the judge model lives at the
+    run level (models.judge), there is no default and no fallback to the agent
+    model, and the failure surfaces BEFORE any trial executes (in the gate the
+    run loop calls before scheduling).
+    """
+
+    def test_missing_judge_model_aborts_and_names_offending_task(self) -> None:
+        config = _make_run_config()  # models has agent only, no judge
+        orch = _orchestrator_with_tasks(config, {"TASK-needs-judge": True, "TASK-no-judge": False})
+
+        with pytest.raises(ValueError) as excinfo:
+            orch._resolve_judge_config()
+
+        message = str(excinfo.value)
+        assert "TASK-needs-judge" in message
+        # The non-judge task must NOT be flagged.
+        assert "TASK-no-judge" not in message
+        assert "models.judge" in message
+
+    def test_judge_model_present_returns_it_no_abort(self) -> None:
+        judge = ModelConfig(provider="openrouter", name="anthropic/claude-sonnet-4.6")
+        config = _make_run_config(
+            models={"agent": ModelConfig(provider="openai", name="gpt-4"), "judge": judge}
+        )
+        orch = _orchestrator_with_tasks(config, {"TASK-needs-judge": True})
+
+        assert orch._resolve_judge_config() == judge
+
+    def test_no_judge_task_no_judge_model_is_allowed(self) -> None:
+        config = _make_run_config()  # no judge model
+        orch = _orchestrator_with_tasks(config, {"TASK-no-judge": False})
+
+        # No task needs a judge, so the absence of models.judge is fine.
+        assert orch._resolve_judge_config() is None
+
+    def test_run_worker_aborts_before_any_trial_dispatch(self, tmp_path: Path) -> None:
+        """Pin the gate's PLACEMENT: the abort happens before a single trial is
+        dispatched. ``_run_trial`` and the Docker runtime are stubbed so that if a
+        refactor moved the gate below the scheduling loop, the trial stub would be
+        invoked and this test would fail instead of silently passing.
+        """
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        config = _make_run_config()  # agent only, no judge model
+        orch = _orchestrator_with_tasks(config, {"TASK-needs-judge": True})
+
+        with (
+            patch.object(Orchestrator, "_run_trial") as run_trial,
+            patch("tolokaforge.core.docker_runtime.DockerRuntime") as docker_runtime,
+        ):
+            with pytest.raises(ValueError, match="TASK-needs-judge"):
+                orch.run_worker(tmp_path)
+
+        # No trial was dispatched, and the run never reached Docker setup.
+        run_trial.assert_not_called()
+        docker_runtime.assert_not_called()
 
 
 # ===================================================================

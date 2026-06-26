@@ -14,10 +14,15 @@ import pytest
 from tolokaforge.core.grading.judge import JudgeStatus, run_rubric_judge
 from tolokaforge.core.llm.client import GenerationResult
 from tolokaforge.core.llm.usage import Usage
-from tolokaforge.core.models import ToolCall
+from tolokaforge.core.models import ModelConfig, ToolCall
 from tolokaforge.runner.models import Rubric
 
 pytestmark = pytest.mark.unit
+
+# The judge now takes a run-level ModelConfig. These tests inject a scripted
+# ``llm_client`` so the config is never used to build a real client; it is
+# supplied only to satisfy the required signature.
+_JUDGE_MODEL = ModelConfig(provider="openai", name="gpt-4o-mini", temperature=0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +127,7 @@ def test_terminates_on_submit_report_and_scores():
 
     result = run_rubric_judge(
         rubric=rubric,
-        model_ref="openai/gpt-4o-mini",
+        model_config=_JUDGE_MODEL,
         agent_system_prompt="You are a refund agent.",
         transcript=[{"role": "user", "content": "refund me"}],
         db_reader=FakeDBReader(),
@@ -156,7 +161,7 @@ def test_inspects_db_then_submits():
 
     result = run_rubric_judge(
         rubric=rubric,
-        model_ref="openai/gpt-4o-mini",
+        model_config=_JUDGE_MODEL,
         agent_system_prompt="policy",
         transcript=[{"role": "user", "content": "hi"}],
         db_reader=reader,
@@ -174,7 +179,7 @@ def test_db_tools_absent_when_no_reader():
     client = ScriptedClient([[("submit_report", _submit_args(refund_done=True))]])
     run_rubric_judge(
         rubric=rubric,
-        model_ref="openai/gpt-4o-mini",
+        model_config=_JUDGE_MODEL,
         agent_system_prompt="",
         transcript=[],
         db_reader=None,
@@ -199,7 +204,7 @@ def test_malformed_submit_report_reprompts_then_errors():
 
     result = run_rubric_judge(
         rubric=rubric,
-        model_ref="openai/gpt-4o-mini",
+        model_config=_JUDGE_MODEL,
         agent_system_prompt="",
         transcript=[],
         db_reader=FakeDBReader(),
@@ -223,7 +228,7 @@ def test_malformed_then_valid_recovers():
     )
     result = run_rubric_judge(
         rubric=rubric,
-        model_ref="openai/gpt-4o-mini",
+        model_config=_JUDGE_MODEL,
         agent_system_prompt="",
         transcript=[],
         db_reader=FakeDBReader(),
@@ -239,7 +244,7 @@ def test_weighted_score_and_criterion_results():
     client = ScriptedClient([[("submit_report", _submit_args(refund_done=True, tone=0.4))]])
     result = run_rubric_judge(
         rubric=rubric,
-        model_ref="openai/gpt-4o-mini",
+        model_config=_JUDGE_MODEL,
         agent_system_prompt="",
         transcript=[],
         db_reader=FakeDBReader(),
@@ -257,7 +262,7 @@ def test_failed_required_criterion_gates_regardless_of_weighted_score():
     client = ScriptedClient([[("submit_report", _submit_args(refund_done=False, tone=1.0))]])
     result = run_rubric_judge(
         rubric=rubric,
-        model_ref="openai/gpt-4o-mini",
+        model_config=_JUDGE_MODEL,
         agent_system_prompt="",
         transcript=[],
         db_reader=FakeDBReader(),
@@ -279,7 +284,7 @@ def test_usage_is_recorded():
     )
     result = run_rubric_judge(
         rubric=rubric,
-        model_ref="openai/gpt-4o-mini",
+        model_config=_JUDGE_MODEL,
         agent_system_prompt="",
         transcript=[],
         db_reader=FakeDBReader(),
@@ -299,7 +304,7 @@ def test_turn_exhaustion_without_submit_report_errors():
     client = ScriptedClient([[("get_db_state", {})]] * 50)
     result = run_rubric_judge(
         rubric=rubric,
-        model_ref="openai/gpt-4o-mini",
+        model_config=_JUDGE_MODEL,
         agent_system_prompt="",
         transcript=[],
         db_reader=FakeDBReader(),
@@ -323,7 +328,7 @@ def test_judge_loop_crash_errors_not_scores():
 
     result = run_rubric_judge(
         rubric=rubric,
-        model_ref="openai/gpt-4o-mini",
+        model_config=_JUDGE_MODEL,
         agent_system_prompt="",
         transcript=[],
         db_reader=FakeDBReader(),
@@ -346,7 +351,7 @@ def test_agent_system_prompt_injected_into_opening_context():
     client = CapturingClient([[("submit_report", _submit_args(refund_done=True))]])
     run_rubric_judge(
         rubric=rubric,
-        model_ref="openai/gpt-4o-mini",
+        model_config=_JUDGE_MODEL,
         agent_system_prompt="SECRET-AGENT-POLICY-MARKER",
         transcript=[{"role": "user", "content": "do the thing"}],
         db_reader=FakeDBReader(),

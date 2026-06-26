@@ -8,9 +8,10 @@ malfunction."*
 Design (locked decisions, see the plan):
 
 * **Separate fixed judge model.** The judge constructs its own
-  :class:`~tolokaforge.core.llm.client.LLMClient` from the rubric's ``model_ref``
-  via the agent's ``build_capabilities`` path (so tool schemas/calls are
-  provider-correct for Gemini / GPT-5 / …). API keys are read through
+  :class:`~tolokaforge.core.llm.client.LLMClient` from the run-level
+  ``ModelConfig`` (``RunConfig.models["judge"]``) via the agent's
+  ``build_capabilities`` path (so tool schemas/calls are provider-correct for
+  Gemini / GPT-5 / …). API keys are read through
   :class:`SecretManager` inside ``LLMClient`` — never ``os.environ`` here.
 * **Harness-owned read-only allowlist.** NOT the agent's tools, NO category
   filter, NO DB clone. The judge gets read-only DB tools, ``search_kb`` when the
@@ -384,8 +385,13 @@ def _build_judge_registry(
     return registry
 
 
-def _model_config_from_ref(model_ref: str) -> ModelConfig:
+def model_config_from_ref(model_ref: str) -> ModelConfig:
     """Split a ``model_ref`` into ``provider`` / ``name`` (first ``/`` only).
+
+    Boundary helper for the only places that still carry the judge model as a
+    string — the CLI ``--judge-model`` flag and the ``rubric-calibrator``
+    ``--model-ref`` option. The judge's own runtime path takes a full
+    ``ModelConfig`` (run-level), never a string.
 
     Matches ``BaseAdapter.grade`` and ``LLMClient._format_model_name``: e.g.
     ``openrouter/anthropic/claude-sonnet-4.5`` → provider ``openrouter``, name
@@ -407,7 +413,7 @@ def _model_config_from_ref(model_ref: str) -> ModelConfig:
 def run_rubric_judge(
     *,
     rubric: Rubric,
-    model_ref: str,
+    model_config: ModelConfig,
     agent_system_prompt: str,
     transcript: list[dict[str, Any]],
     db_reader: DBReader | None = None,
@@ -430,7 +436,8 @@ def run_rubric_judge(
     numeric score. There is no path that returns ``0.0`` / ``0.5`` on failure.
 
     ``llm_client`` may be injected for tests (a scripted ``LoopLLMClient`` /
-    fake); production passes ``None`` and the judge builds one from ``model_ref``.
+    fake); production passes ``None`` and the judge builds one from the
+    run-level ``model_config``.
     """
     logger = logger or get_logger("rubric_judge")
     metrics = _JudgeMetricsSink()
@@ -439,7 +446,7 @@ def run_rubric_judge(
     if llm_client is not None:
         client = llm_client  # type: ignore[assignment]
     else:
-        client = LLMClient(_model_config_from_ref(model_ref))
+        client = LLMClient(model_config)
 
     registry = _build_judge_registry(
         rubric,
@@ -581,5 +588,6 @@ __all__ = [
     "JudgeResult",
     "JudgeStatus",
     "JudgeUsage",
+    "model_config_from_ref",
     "run_rubric_judge",
 ]

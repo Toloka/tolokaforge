@@ -27,6 +27,15 @@ models:
     provider: "openai"
     name: "gpt-4o-mini"
     temperature: 0.3
+  # Optional: read-only rubric judge model. Required only when a selected task
+  # grades with `llm_judge` — the run aborts up front if a rubric task is
+  # selected but `judge` is absent (no default, no fallback to the agent model).
+  # Keep it separate from `agent` to avoid self-grading bias; temperature 0.0
+  # for determinism.
+  judge:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4.6"
+    temperature: 0.0
 
 orchestrator:
   workers: 4
@@ -61,6 +70,7 @@ evaluation:
 ```
 
 Notes:
+- `models.judge` is the optional run-level read-only rubric judge model (no default); the run fails loud up front if a selected task grades with `llm_judge` but `models.judge` is absent.
 - `models.agent.capabilities` overrides auto-detected model capabilities. Auto-detection (via `ModelCapabilities.for_model()`) covers most models; use overrides for A/B comparisons or to fix edge cases. Available fields: `dict_map_prompt_hints` (inject system prompt hints for dict-map parameters), `supports_typed_dict_maps`, `supports_schema_extras`, `fixed_temperature`, `supports_seed`, `unwrap_input_key`, `reasoning_via_extra_body`. See [Model Capability Presets](#model-capability-presets) below.
 - PyPI wheels exclude `tasks/**`; configure benchmark content via `evaluation.task_packs`.
 - `runtime: docker` is the only supported runtime; it uses the executor service and environment containers.
@@ -309,8 +319,8 @@ transcript_rules:
     required_tools: ["browser"]
     disallowed_tools: []
 
-llm_judge:
-  model_ref: "openrouter/anthropic/claude-sonnet-4.5"   # required; a separate fixed judge model
+llm_judge:                                 # the judge MODEL is set once per run
+                                           # under models.judge — NOT here
   rubric:                                  # structured Rubric (NOT free text)
     reference: |                           # optional author-written ground truth
       The correct order total is $42.50 with apple_pay.
@@ -327,9 +337,12 @@ llm_judge:
 ```
 
 The rubric is a structured `Rubric` (per-criterion scoring + a required gate),
-not a free-text blob; the old `rubric: "<text>"` shape and the `output_schema`
-field were removed. See [GRADING.md](GRADING.md#llm-judge-rubric-grading) for the
-judge mechanism, the two weighting layers, and the fail-loud ERRORED status.
+not a free-text blob; the old `rubric: "<text>"` shape, the `output_schema`
+field, and the per-task judge-model field were all removed. The judge **model**
+is now a run-level role (`models.judge`, see above) — separate from the agent
+under test, with no default and no fallback. See
+[GRADING.md](GRADING.md#llm-judge-rubric-grading) for the judge mechanism, the
+two weighting layers, and the fail-loud ERRORED status.
 
 ## Environment Variables
 

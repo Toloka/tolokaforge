@@ -129,6 +129,9 @@ model_config:
       response_policy: "standard"
       reasoning_codec: "none"
       cache_policy: "none"
+  judge: null                               # run-level rubric judge (models.judge);
+                                            # null when unconfigured, else a full
+                                            # role block with its own resolved.*
 ```
 
 ### `model_config.<role>.resolved.*` (Stage 7, P6)
@@ -151,6 +154,11 @@ Computed by the orchestrator at trial-start via
 stateful [`GenerationParams`](../tolokaforge/core/llm/params_policy.py)
 dataclass, not a single-named policy. Callers needing the full parameter
 block read the `agent.capabilities` block directly.
+
+The `judge` role (the run-level read-only rubric judge, `models.judge`) is
+recorded symmetrically with `agent` / `user` — its own role block plus a
+`resolved.*` fingerprint — so every grade bundle records which judge produced
+it. It is `null` when the run configures no judge.
 
 ## `trials/{task_id}/{trial_index}/trajectory.yaml`
 

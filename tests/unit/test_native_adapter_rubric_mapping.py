@@ -55,7 +55,6 @@ def test_structured_rubric_maps_into_runner_llm_judge(tmp_path: Path):
                 "pass_threshold": 0.8,
             },
             "llm_judge": {
-                "model_ref": "openai/gpt-4o-mini",
                 "rubric": {
                     "reference": "Correct refund is $328.50.",
                     "criteria": [
@@ -83,7 +82,6 @@ def test_structured_rubric_maps_into_runner_llm_judge(tmp_path: Path):
 
     judge = task_desc.grading.llm_judge
     assert judge is not None
-    assert judge.model_ref == "openai/gpt-4o-mini"
     assert judge.rubric.reference == "Correct refund is $328.50."
 
     by_id = {c.id: c for c in judge.rubric.criteria}
@@ -108,7 +106,6 @@ def test_legacy_rubric_str_in_task_grading_is_rejected(tmp_path: Path):
         {
             "combine": {"method": "weighted", "weights": {"llm_judge": 1.0}},
             "llm_judge": {
-                "model_ref": "openai/gpt-4o-mini",
                 "rubric": "free-text rubric blob",
                 "output_schema": {"type": "object"},
             },
@@ -116,4 +113,25 @@ def test_legacy_rubric_str_in_task_grading_is_rejected(tmp_path: Path):
     )
 
     with pytest.raises(ValueError, match="rubric is now a structured Rubric"):
+        adapter.to_task_description("rubric_task")
+
+
+def test_legacy_model_ref_in_task_grading_is_rejected(tmp_path: Path):
+    """The judge model moved to the run config; a lingering ``model_ref`` fails loud."""
+    adapter = _build_task(
+        tmp_path,
+        {
+            "combine": {"method": "weighted", "weights": {"llm_judge": 1.0}},
+            "llm_judge": {
+                "model_ref": "openai/gpt-4o-mini",
+                "rubric": {
+                    "criteria": [
+                        {"id": "a", "description": "d", "kind": "binary", "weight": 1.0},
+                    ],
+                },
+            },
+        },
+    )
+
+    with pytest.raises(ValueError, match="model_ref moved to the run config"):
         adapter.to_task_description("rubric_task")

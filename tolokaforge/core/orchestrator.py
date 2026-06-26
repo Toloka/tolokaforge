@@ -517,6 +517,40 @@ class Orchestrator:
 
         self.logger.info("Tasks loaded", count=len(self.tasks), adapter=type(self.adapter).__name__)
 
+    def _resolve_judge_config(self) -> ModelConfig | None:
+        """Resolve the run-level judge model and fail loud on the missing-judge case.
+
+        The judge model lives at the run level (``models.judge``), symmetric with
+        the agent and user models. There is NO default and NO fallback to the
+        agent model (self-grading bias). If any selected task declares an
+        ``llm_judge`` grading component but ``models.judge`` is absent, the run is
+        rejected here — before any trial executes — naming the offending tasks
+        (AGENTS.md rule 1).
+
+        Assumes every adapter populates ``to_task_description().grading.llm_judge``
+        for rubric tasks; only ``NativeAdapter`` implements rubric grading today,
+        so non-native adapters simply surface no offending tasks here.
+        """
+        judge_config = self.config.models.get("judge")
+        if judge_config is not None:
+            return judge_config
+
+        assert self.adapter is not None
+        offending = [
+            task.task_id
+            for task in self.tasks
+            if self.adapter.to_task_description(task.task_id).grading.llm_judge is not None
+        ]
+        if offending:
+            raise ValueError(
+                "These selected tasks use an llm_judge grading component but the run "
+                "config has no judge model: "
+                f"{', '.join(sorted(offending))}. Add a judge model to the run config "
+                "under models.judge (provider/name), e.g. "
+                "`models: {judge: {provider: openrouter, name: anthropic/claude-sonnet-4.6}}`."
+            )
+        return None
+
     def run(self) -> None:
         """Execute all tasks with configured trials"""
         # Add timestamp to output directory for unique runs
@@ -589,11 +623,16 @@ class Orchestrator:
                 user_model="openrouter/anthropic/claude-sonnet-4.6",
             )
 
-        # Log model configuration for both roles
+        # Resolve the run-level judge model and reject the run up front if any
+        # selected task needs a judge but none is configured (fail loud).
+        judge_config = self._resolve_judge_config()
+
+        # Log model configuration for all roles
         self.logger.info(
             "Model configuration",
             agent_model=f"{agent_config.provider}/{agent_config.name}",
             user_model=f"{user_config.provider}/{user_config.name}",
+            judge_model=(f"{judge_config.provider}/{judge_config.name}" if judge_config else None),
         )
 
         # Instantiate agent client in orchestrator process
@@ -773,6 +812,7 @@ class Orchestrator:
                     attempt_id=lease.retry_count,
                     worker_id=lease_owner,
                     env_endpoints=env_endpoints,
+                    judge_config=judge_config,
                 )
                 active_futures[future] = lease
                 return True
@@ -957,11 +997,16 @@ class Orchestrator:
                 user_model="openrouter/anthropic/claude-sonnet-4.6",
             )
 
-        # Log model configuration for both roles
+        # Resolve the run-level judge model and reject the run up front if any
+        # selected task needs a judge but none is configured (fail loud).
+        judge_config = self._resolve_judge_config()
+
+        # Log model configuration for all roles
         self.logger.info(
             "Model configuration",
             agent_model=f"{agent_config.provider}/{agent_config.name}",
             user_model=f"{user_config.provider}/{user_config.name}",
+            judge_model=(f"{judge_config.provider}/{judge_config.name}" if judge_config else None),
         )
 
         agent_client = LLMClient(agent_config)
@@ -1050,6 +1095,7 @@ class Orchestrator:
                         attempt_id=lease.retry_count,
                         worker_id=lease_owner,
                         env_endpoints=env_endpoints,
+                        judge_config=judge_config,
                     )
                     trajectory = trial_result.trajectory
                     self.results.append(trajectory)
@@ -1118,6 +1164,11 @@ class Orchestrator:
             self.load_tasks()
         if not self.tasks:
             raise ValueError("No tasks found to enqueue")
+
+        # Reject up front (at enqueue time) if any task needs a judge but none is
+        # configured — otherwise a misconfigured distributed run reports success
+        # here and then every worker dies identically at grade time.
+        self._resolve_judge_config()
 
         run_queue = create_run_queue(
             self.config.orchestrator.queue_backend,
@@ -1194,6 +1245,7 @@ class Orchestrator:
         attempt_id: int = 0,
         worker_id: str | None = None,
         env_endpoints: EnvEndpoints,
+        judge_config: ModelConfig | None = None,
     ) -> TrialResult:
         """Run a single trial with environment state and grading.
 
@@ -1399,6 +1451,7 @@ class Orchestrator:
             task=task_desc,
             agent_model_config=agent_client.config,
             user_model_config=user_config,
+            judge_model_config=judge_config,
             max_turns=task.max_turns,
             default_tool_timeout_s=DEFAULT_TOOL_TIMEOUT_S,
             env_endpoints=env_endpoints,
@@ -1779,7 +1832,7 @@ class Orchestrator:
             "tools": task.tools.model_dump(mode="json"),
             "policies": task.policies,
             "model_config": self._serialize_model_config(
-                agent_config=agent_config, user_config=user_config
+                agent_config=agent_config, user_config=user_config, judge_config=judge_config
             ),
         }
 
@@ -1805,6 +1858,7 @@ class Orchestrator:
         self,
         agent_config: ModelConfig | None = None,
         user_config: ModelConfig | None = None,
+        judge_config: ModelConfig | None = None,
     ) -> dict[str, Any]:
         """Serialize model config for trial output.
 
@@ -1815,40 +1869,61 @@ class Orchestrator:
         tools diff this across runs to detect config drift without having to
         re-match the preset YAML.
 
-        When callers (e.g. tests) omit *agent_config* / *user_config*, the
-        method falls back to the values declared on ``self.config.models``.
-        The ``resolved:`` block is computed against the same identity.
+        The ``judge`` role (the run-level read-only rubric judge) is recorded the
+        same way as ``agent`` / ``user`` so every grade bundle records which judge
+        produced it — the judge model is a mutable per-run knob. ``judge`` is
+        ``null`` when the run configures no judge.
+
+        When callers (e.g. tests) omit *agent_config* / *user_config* /
+        *judge_config*, the method falls back to the values declared on
+        ``self.config.models``. The ``resolved:`` block is computed against the
+        same identity.
         """
         result: dict[str, Any] = {}
 
         resolved_agent_config = agent_config
         resolved_user_config = user_config
+        resolved_judge_config = judge_config
 
         models = self.config.models
         if isinstance(models, dict):
             agent = models.get("agent", {})
             user = models.get("user")
+            judge = models.get("judge")
             result["agent"] = agent if isinstance(agent, dict) else agent.model_dump(mode="json")
             result["user"] = (
                 (user if isinstance(user, dict) else user.model_dump(mode="json")) if user else None
+            )
+            result["judge"] = (
+                (judge if isinstance(judge, dict) else judge.model_dump(mode="json"))
+                if judge
+                else None
             )
             if resolved_agent_config is None and not isinstance(agent, dict):
                 resolved_agent_config = agent
             if resolved_user_config is None and user is not None and not isinstance(user, dict):
                 resolved_user_config = user
+            if resolved_judge_config is None and judge is not None and not isinstance(judge, dict):
+                resolved_judge_config = judge
         else:
             result["agent"] = models.agent.model_dump(mode="json")
             result["user"] = models.user.model_dump(mode="json") if models.user else None
+            judge = getattr(models, "judge", None)
+            result["judge"] = judge.model_dump(mode="json") if judge else None
             if resolved_agent_config is None:
                 resolved_agent_config = models.agent
             if resolved_user_config is None and models.user is not None:
                 resolved_user_config = models.user
+            if resolved_judge_config is None and judge is not None:
+                resolved_judge_config = judge
 
         # Stage 7 — resolved fingerprint per role.
         if resolved_agent_config is not None:
             result["agent"]["resolved"] = _build_resolved_block(resolved_agent_config)
         if resolved_user_config is not None and result.get("user"):
             result["user"]["resolved"] = _build_resolved_block(resolved_user_config)
+        if resolved_judge_config is not None and result.get("judge"):
+            result["judge"]["resolved"] = _build_resolved_block(resolved_judge_config)
 
         return result
 

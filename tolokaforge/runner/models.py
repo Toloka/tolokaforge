@@ -421,10 +421,11 @@ class LLMJudgeConfig(BaseModel):
     Canonical home for the judge config that crosses both the YAML grading block
     and the gRPC wire (serialized inside ``TrialSpec.task.grading``). The
     ``output_schema`` field was dropped — the judge's structured-output schema is
-    derived from the rubric's criteria (Stage 3), not author-specified.
+    derived from the rubric's criteria (Stage 3), not author-specified. The
+    judge *model* is no longer pinned here: it lives at the run level under
+    ``RunConfig.models["judge"]`` and rides ``TrialSpec.judge_model_config``.
     """
 
-    model_ref: str  # "openrouter/anthropic/claude-sonnet-4.5"
     rubric: Rubric  # Structured grading rubric
 
     model_config = {"extra": "forbid"}
@@ -432,14 +433,20 @@ class LLMJudgeConfig(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _reject_legacy_rubric_shape(cls, data: Any) -> Any:
-        """Fail loud with a migration message on the old free-text rubric shape.
+        """Fail loud with a migration message on legacy llm_judge shapes.
 
-        ``rubric: str`` and the now-removed ``output_schema`` field were the
-        pre-Stage-2 contract. Rubric grading never worked end-to-end, so this is
-        an intentional, non-back-compatible break (see docs/RUBRIC_GRADING_DESIGN.md).
+        The free-text ``rubric: str`` blob, the removed ``output_schema`` field,
+        and the relocated ``model_ref`` field are all pre-relocation contracts.
+        Rubric grading never worked end-to-end, so this is an intentional,
+        non-back-compatible break (see docs/RUBRIC_GRADING_DESIGN.md).
         """
         if not isinstance(data, dict):
             return data
+        if "model_ref" in data:
+            raise ValueError(
+                "grading.llm_judge.model_ref moved to the run config under "
+                "models.judge; remove it from grading.yaml."
+            )
         if isinstance(data.get("rubric"), str):
             raise ValueError(
                 "grading.llm_judge.rubric is now a structured Rubric, not free "

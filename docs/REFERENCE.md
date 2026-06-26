@@ -139,8 +139,7 @@ transcript_rules:
     required_tools: ["db_update"]
     disallowed_tools: ["bash"]
 
-llm_judge:
-  model_ref: "openrouter/anthropic/claude-sonnet-4.5"  # required; a separate fixed judge model
+llm_judge:                                 # judge MODEL is run-level (models.judge), not here
   rubric:                                  # structured Rubric (NOT free text)
     reference: |                           # optional author-written ground truth shown to the judge
       Correct refund is $328.50 (base fare minus 24h-cancellation fee).
@@ -158,11 +157,14 @@ llm_judge:
 ```
 
 `grading.llm_judge.rubric` is a structured `Rubric`, not a free-text blob; the
-old `rubric: "<text>"` shape and the `output_schema` field were removed (the
-judge's structured-output schema is derived from the rubric's criteria). See
-[GRADING.md](GRADING.md#llm-judge-rubric-grading) for the judge mechanism, the
-two weighting layers, the required-gate semantics, and the fail-loud ERRORED
-status.
+old `rubric: "<text>"` shape, the `output_schema` field, and the per-task
+judge-model field were all removed (the judge's structured-output schema is
+derived from the rubric's criteria). The judge **model** is configured once per run under
+`models.judge` (an optional `ModelConfig` role beside `agent` / `user`) and rides
+each trial as `TrialSpec.judge_model_config`; there is no default and no fallback
+to the agent model. See [GRADING.md](GRADING.md#llm-judge-rubric-grading) for the
+judge mechanism, the two weighting layers, the required-gate semantics, and the
+fail-loud ERRORED status.
 
 ### Environment Variables
 
@@ -288,13 +290,17 @@ from tolokaforge.core.grading.combine import GradingEngine
 
 engine = GradingEngine(
     grading_config: GradingConfig,
-    judge_model: ModelConfig | None = None,
     task_domain: str = "general",
     task_dir: Path | None = None,
 )
 
 grade = engine.grade_trajectory(trajectory: Trajectory, final_env_state: dict)
 # Returns: Grade with binary_pass, score, components, reasons, state_diff
+# (deterministic components only — GradingEngine does NOT run the rubric judge)
+#
+# The rubric judge runs Runner-side (see core/grading/judge.run_rubric_judge),
+# taking the run-level judge ModelConfig carried on TrialSpec.judge_model_config
+# (sourced from RunConfig.models["judge"]).
 ```
 
 ---
