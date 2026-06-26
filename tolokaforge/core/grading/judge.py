@@ -48,6 +48,7 @@ from tolokaforge.core.grading.judge_tools import (
     SearchKbTool,
     SubmitReportTool,
 )
+from tolokaforge.core.grading.kb_search import KnowledgeSearch
 from tolokaforge.core.grading.rubric import (
     SUBMIT_REPORT_TOOL_NAME,
     SubmitReportValidationError,
@@ -71,7 +72,7 @@ from tolokaforge.core.models import (
     TrialStatus,
 )
 from tolokaforge.runner.models import CriterionResult, Rubric
-from tolokaforge.tools.registry import ToolExecutor, ToolRegistry
+from tolokaforge.tools.registry import Tool, ToolExecutor, ToolRegistry
 
 # ---------------------------------------------------------------------------
 # Budget defaults (plan: max_turns ~12-15 + wall-time)
@@ -160,6 +161,13 @@ class JudgeResult:
     gate_failed: bool = False
     criterion_results: tuple[CriterionResult, ...] = ()
     failed_required_ids: tuple[str, ...] = ()
+    # Which KB backend(s) the judge was offered this trial — the visible signal
+    # that the judge graded WITH (or WITHOUT) the knowledge base the agent used
+    # (issue #95). ``("search_kb",)`` for rag-service, ``("search_policy",)`` for
+    # the TypeSense passthrough, ``()`` for none offered. Surfaced verbatim into
+    # ``reasons`` as a "Judge KB: …" note. Empty is NOT an error — we cannot
+    # statically know a rubric needs KB — just an observability fact.
+    kb_tools_offered: tuple[str, ...] = ()
     # The judge's own message transcript (role / content / tool_calls dicts),
     # captured for audit/reproducibility (plan open question #2). Populated for
     # both COMPLETED and ERRORED runs — an errored judge's partial transcript is
@@ -352,37 +360,60 @@ def _build_judge_registry(
     rubric: Rubric,
     *,
     db_reader: DBReader | None,
-    rag_url: str | None,
+    kb_search: KnowledgeSearch | None,
+    extra_read_tools: list[Tool] | None,
     workspace_dir: Path | None,
     logger: StructuredLogger,
-) -> ToolRegistry:
+) -> tuple[ToolRegistry, tuple[str, ...]]:
     """Build the read-only tool registry offered to the judge.
+
+    Returns the registry and the **KB-relevant** subset of offered tool names
+    (``search_kb`` from the rag-service contract and any ``extra_read_tools`` —
+    the ``search_policy`` TypeSense passthrough). This subset is the issue-#95
+    observability signal: it tells a reviewer which knowledge base — if any — the
+    judge could read, the SAME one the agent had. DB / file / ``submit_report``
+    tools are not KB and are excluded.
 
     Which tools are offered, and when:
 
     * ``submit_report`` — ALWAYS (the terminal rubric tool, schema from the rubric).
     * ``get_db_state`` / ``query_db`` — when a ``db_reader`` is supplied (the task
       routes state through the DB service). Strictly read-only.
-    * ``search_kb`` — when ``rag_url`` is set (the task is RAG-backed).
+    * ``search_kb`` — iff a ``kb_search`` backend was resolved for this trial.
+      Faithful gating: the agent had a KB tool over the per-trial index ⇒ the
+      judge gets the SAME KB; no backend ⇒ no tool. (This replaces the old
+      ``if rag_url`` gate, which keyed on container-level client existence and
+      hit the wrong, global index.)
+    * ``extra_read_tools`` — ready-made read-only tools the runner supplies for
+      this trial (e.g. a passthrough wrapping the agent's reconstructed
+      ``search_policy`` TypeSense tool). They are registered verbatim under their
+      own names. The runner is responsible for offering ONLY read-only tools
+      here, gated to mirror the agent (see ``runner/service.py``).
     * ``read_file`` — only when ``workspace_dir`` exists (the agent produced files).
     """
     registry = ToolRegistry()
     registry.register(SubmitReportTool(build_submit_report_tool(rubric)))
 
     offered = [SUBMIT_REPORT_TOOL_NAME]
+    kb_tools: list[str] = []
     if db_reader is not None:
         registry.register(GetDbStateTool(db_reader))
         registry.register(QueryDbTool(db_reader))
         offered += ["get_db_state", "query_db"]
-    if rag_url:
-        registry.register(SearchKbTool(rag_url))
+    if kb_search is not None:
+        registry.register(SearchKbTool(kb_search))
         offered.append("search_kb")
+        kb_tools.append("search_kb")
+    for tool in extra_read_tools or []:
+        registry.register(tool)
+        offered.append(tool.name)
+        kb_tools.append(tool.name)
     if workspace_dir is not None and workspace_dir.exists():
         registry.register(ReadFileTool(workspace_dir))
         offered.append("read_file")
 
-    logger.info("Judge read-only tools assembled", tools=offered)
-    return registry
+    logger.info("Judge read-only tools assembled", tools=offered, kb_tools=kb_tools)
+    return registry, tuple(kb_tools)
 
 
 def model_config_from_ref(model_ref: str) -> ModelConfig:
@@ -417,7 +448,8 @@ def run_rubric_judge(
     agent_system_prompt: str,
     transcript: list[dict[str, Any]],
     db_reader: DBReader | None = None,
-    rag_url: str | None = None,
+    kb_search: KnowledgeSearch | None = None,
+    extra_read_tools: list[Tool] | None = None,
     workspace_dir: Path | None = None,
     max_turns: int = DEFAULT_JUDGE_MAX_TURNS,
     episode_timeout_s: int = DEFAULT_JUDGE_EPISODE_TIMEOUT_S,
@@ -448,10 +480,11 @@ def run_rubric_judge(
     else:
         client = LLMClient(model_config)
 
-    registry = _build_judge_registry(
+    registry, kb_tools_offered = _build_judge_registry(
         rubric,
         db_reader=db_reader,
-        rag_url=rag_url,
+        kb_search=kb_search,
+        extra_read_tools=extra_read_tools,
         workspace_dir=workspace_dir,
         logger=logger,
     )
@@ -491,6 +524,7 @@ def run_rubric_judge(
                 metrics,
                 f"Judge loop crashed: {type(exc).__name__}: {exc}",
                 messages,
+                kb_tools_offered,
             )
 
         if termination.captured_args is None:
@@ -500,6 +534,7 @@ def run_rubric_judge(
                 f"Judge did not call submit_report "
                 f"(termination={outcome.termination_reason}, status={outcome.status}).",
                 messages,
+                kb_tools_offered,
             )
 
         try:
@@ -517,6 +552,7 @@ def run_rubric_judge(
                     metrics,
                     f"submit_report invalid after {submit_report_retries} retries: {exc}",
                     messages,
+                    kb_tools_offered,
                 )
             logger.warning(
                 "Judge submit_report invalid; re-prompting", attempt=attempts, error=str(exc)
@@ -542,7 +578,9 @@ def run_rubric_judge(
             gate_failed=aggregate.gate_failed,
             failed_required=list(aggregate.failed_required_ids),
         )
-        reasons = _build_reasons(termination.captured_args, aggregate.failed_required_ids)
+        reasons = _build_reasons(
+            termination.captured_args, aggregate.failed_required_ids, kb_tools_offered
+        )
         return JudgeResult(
             status=JudgeStatus.COMPLETED,
             usage=metrics.snapshot(),
@@ -552,39 +590,68 @@ def run_rubric_judge(
             gate_failed=aggregate.gate_failed,
             criterion_results=tuple(results),
             failed_required_ids=aggregate.failed_required_ids,
+            kb_tools_offered=kb_tools_offered,
             transcript=_serialize_judge_transcript(messages),
         )
 
 
-def _errored(metrics: _JudgeMetricsSink, reasons: str, messages: list[Message]) -> JudgeResult:
+def _errored(
+    metrics: _JudgeMetricsSink,
+    reasons: str,
+    messages: list[Message],
+    kb_tools_offered: tuple[str, ...],
+) -> JudgeResult:
     """Build a fail-loud ERRORED result — no score, no criterion results.
 
     Carries the partial judge transcript: when the judge breaks, its messages
-    so far are the most useful debugging artifact.
+    so far are the most useful debugging artifact. The ``Judge KB: …`` note is
+    appended even on error so a reviewer can see whether a KB-blind judge was a
+    factor in the failure (issue #95).
     """
     return JudgeResult(
         status=JudgeStatus.ERRORED,
         usage=metrics.snapshot(),
-        reasons=reasons,
+        reasons=f"{reasons} | {_kb_note(kb_tools_offered)}",
         score=None,
         binary_pass=None,
+        kb_tools_offered=kb_tools_offered,
         transcript=_serialize_judge_transcript(messages),
     )
 
 
-def _build_reasons(tool_args: dict[str, Any], failed_required_ids: tuple[str, ...]) -> str:
-    """Compose the judge's human-readable reasons from its overall summary + gate."""
+def _kb_note(kb_tools_offered: tuple[str, ...]) -> str:
+    """The human-readable "graded with / without KB" signal (issue #95).
+
+    e.g. ``Judge KB: search_policy`` / ``Judge KB: search_kb`` / ``Judge KB:
+    none offered``. Observability, not an error — "none offered" is a legitimate
+    state (the rubric may not need a KB).
+    """
+    return f"Judge KB: {', '.join(kb_tools_offered) if kb_tools_offered else 'none offered'}"
+
+
+def _build_reasons(
+    tool_args: dict[str, Any],
+    failed_required_ids: tuple[str, ...],
+    kb_tools_offered: tuple[str, ...],
+) -> str:
+    """Compose the judge's human-readable reasons from its overall summary + gate.
+
+    Always ends with the ``Judge KB: …`` note (issue #95) so the grade output
+    makes visible which knowledge base — if any — the judge could read.
+    """
     overall = tool_args.get("reasons")
     parts: list[str] = []
     if isinstance(overall, str) and overall.strip():
         parts.append(overall.strip())
     if failed_required_ids:
         parts.append(f"FAILED required criteria: {', '.join(failed_required_ids)}")
-    return " | ".join(parts) if parts else "Judge completed."
+    parts.append(_kb_note(kb_tools_offered))
+    return " | ".join(parts)
 
 
 __all__ = [
     "DBReader",
+    "KnowledgeSearch",
     "JudgeResult",
     "JudgeStatus",
     "JudgeUsage",

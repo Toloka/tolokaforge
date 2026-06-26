@@ -174,6 +174,347 @@ def test_inspects_db_then_submits():
     assert "submit_report" in client.seen_tool_names
 
 
+class FakeKnowledgeSearch:
+    """A stub ``KnowledgeSearch`` returning fixed hits; records its queries.
+
+    Exercises the contract the judge depends on without an HTTP / RAG service —
+    asserts the judge's ``search_kb`` surfaces exactly the backend's hits (the
+    core regression: judge searches the same index the agent did).
+    """
+
+    def __init__(self, hits=None):
+        from tolokaforge.core.grading.kb_search import SearchHit
+
+        self._hits = (
+            hits
+            if hits is not None
+            else [
+                SearchHit(
+                    doc_id="policy_42",
+                    source="refund_policy.md",
+                    score=0.97,
+                    text="Refunds within 30 days.",
+                ),
+            ]
+        )
+        self.queries: list[tuple[str, int, float]] = []
+
+    def search(self, query: str, top_k: int = 5, alpha: float = 0.5):
+        self.queries.append((query, top_k, alpha))
+        return list(self._hits)
+
+
+def test_search_kb_offered_only_when_kb_resolved():
+    """Faithful gating: search_kb iff a KnowledgeSearch is resolved; absent otherwise."""
+    rubric = _binary_rubric()
+
+    with_kb = ScriptedClient([[("submit_report", _submit_args(refund_done=True))]])
+    run_rubric_judge(
+        rubric=rubric,
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="",
+        transcript=[],
+        db_reader=FakeDBReader(),
+        kb_search=FakeKnowledgeSearch(),
+        llm_client=with_kb,
+    )
+    assert "search_kb" in with_kb.seen_tool_names
+
+    without_kb = ScriptedClient([[("submit_report", _submit_args(refund_done=True))]])
+    run_rubric_judge(
+        rubric=rubric,
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="",
+        transcript=[],
+        db_reader=FakeDBReader(),
+        kb_search=None,
+        llm_client=without_kb,
+    )
+    assert "search_kb" not in without_kb.seen_tool_names
+
+
+def test_search_kb_surfaces_backend_hits():
+    """The judge's search_kb routes to the resolved backend and surfaces its hits."""
+    rubric = _binary_rubric()
+    kb = FakeKnowledgeSearch()
+    client = ScriptedClient(
+        [
+            [("search_kb", {"query": "refund window", "top_k": 3})],
+            [("submit_report", _submit_args(refund_done=True))],
+        ]
+    )
+
+    result = run_rubric_judge(
+        rubric=rubric,
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="",
+        transcript=[],
+        db_reader=FakeDBReader(),
+        kb_search=kb,
+        llm_client=client,
+    )
+
+    assert result.status is JudgeStatus.COMPLETED
+    # The judge delegated to the backend with the model's query/top_k.
+    assert kb.queries == [("refund window", 3, 0.5)]
+    # The backend's hit surfaced in the judge's tool-result transcript.
+    tool_results = [m["content"] for m in result.transcript if m.get("tool_call_id")]
+    assert any("policy_42" in (c or "") for c in tool_results)
+    assert any("refund_policy.md" in (c or "") for c in tool_results)
+
+
+# ---------------------------------------------------------------------------
+# Passthrough read tool (extra_read_tools) — the search_policy reuse path
+# ---------------------------------------------------------------------------
+
+
+def _search_policy_schema() -> dict:
+    """A realistic foreign-tool schema (NOT the harness search_kb schema)."""
+    return {
+        "type": "object",
+        "properties": {
+            "question": {"type": "string", "description": "Policy question to search"},
+            "domain": {"type": "string", "description": "Policy domain"},
+        },
+        "required": ["question"],
+    }
+
+
+def test_extra_read_tool_offered_with_its_own_schema():
+    """A passthrough tool is offered to the judge with the foreign tool's schema."""
+    from tolokaforge.core.grading.judge_tools import DelegatingReadTool
+
+    rubric = _binary_rubric()
+    calls: list[dict] = []
+
+    tool = DelegatingReadTool(
+        name="search_policy",
+        description="Search the policy KB",
+        parameters=_search_policy_schema(),
+        invoke=lambda args: (calls.append(args) or "policy result text"),
+    )
+
+    client = ScriptedClient([[("submit_report", _submit_args(refund_done=True))]])
+    run_rubric_judge(
+        rubric=rubric,
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="",
+        transcript=[],
+        db_reader=FakeDBReader(),
+        extra_read_tools=[tool],
+        llm_client=client,
+    )
+
+    assert "search_policy" in client.seen_tool_names
+    # Crucially the LLM sees the FOREIGN tool's real schema, not search_kb's.
+    assert tool.get_schema() == {
+        "type": "function",
+        "function": {
+            "name": "search_policy",
+            "description": "Search the policy KB",
+            "parameters": _search_policy_schema(),
+        },
+    }
+
+
+def test_extra_read_tool_absent_when_not_supplied():
+    rubric = _binary_rubric()
+    client = ScriptedClient([[("submit_report", _submit_args(refund_done=True))]])
+    run_rubric_judge(
+        rubric=rubric,
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="",
+        transcript=[],
+        db_reader=FakeDBReader(),
+        extra_read_tools=None,
+        llm_client=client,
+    )
+    assert "search_policy" not in client.seen_tool_names
+
+
+def test_extra_read_tool_delegates_and_surfaces_output_verbatim():
+    """The judge's passthrough forwards args and relays the foreign output verbatim."""
+    from tolokaforge.core.grading.judge_tools import DelegatingReadTool
+
+    rubric = _binary_rubric()
+    received: list[dict] = []
+    tool = DelegatingReadTool(
+        name="search_policy",
+        description="Search the policy KB",
+        parameters=_search_policy_schema(),
+        invoke=lambda args: (received.append(args) or "VERBATIM_POLICY_PAYLOAD"),
+    )
+    client = ScriptedClient(
+        [
+            [("search_policy", {"question": "refund window", "domain": "refunds"})],
+            [("submit_report", _submit_args(refund_done=True))],
+        ]
+    )
+
+    result = run_rubric_judge(
+        rubric=rubric,
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="",
+        transcript=[],
+        db_reader=FakeDBReader(),
+        extra_read_tools=[tool],
+        llm_client=client,
+    )
+
+    assert result.status is JudgeStatus.COMPLETED
+    # Args passed through unchanged.
+    assert received == [{"question": "refund window", "domain": "refunds"}]
+    # Foreign output surfaced verbatim in the judge transcript.
+    tool_results = [m["content"] for m in result.transcript if m.get("tool_call_id")]
+    assert any("VERBATIM_POLICY_PAYLOAD" in (c or "") for c in tool_results)
+
+
+def test_extra_read_tool_fails_loud_when_foreign_tool_raises():
+    """A raising foreign tool → ToolResult(success=False), never swallowed."""
+    from tolokaforge.core.grading.judge_tools import DelegatingReadTool
+
+    def boom(_args: dict) -> str:
+        raise RuntimeError("typesense down")
+
+    tool = DelegatingReadTool(
+        name="search_policy",
+        description="Search the policy KB",
+        parameters=_search_policy_schema(),
+        invoke=boom,
+    )
+
+    res = tool.execute(question="anything")
+    assert res.success is False
+    assert "typesense down" in (res.error or "")
+    assert res.output == ""
+
+
+def test_extra_read_tool_bridges_a_sync_call_into_an_async_invoke():
+    """The sync judge tool can drive an ASYNC underlying call via a bridging invoke.
+
+    Mirrors how the runner wires ``invoke=lambda args: self._run_async(
+    agent_tool.execute(args))``: a synchronous ``execute`` that ends up running a
+    coroutine on a separate event loop thread. Here we drive a real async tool
+    through a real (separate-thread) event loop to genuinely exercise the bridge.
+    """
+    import asyncio
+    import threading
+
+    from tolokaforge.core.grading.judge_tools import DelegatingReadTool
+
+    loop = asyncio.new_event_loop()
+    t = threading.Thread(target=loop.run_forever, daemon=True)
+    t.start()
+
+    async def async_search(arguments: dict) -> str:
+        await asyncio.sleep(0)  # force a real await on the loop
+        return f"async-hit:{arguments['question']}"
+
+    def bridged_invoke(args: dict) -> str:
+        fut = asyncio.run_coroutine_threadsafe(async_search(args), loop)
+        return fut.result(timeout=5.0)
+
+    try:
+        tool = DelegatingReadTool(
+            name="search_policy",
+            description="Search the policy KB",
+            parameters=_search_policy_schema(),
+            invoke=bridged_invoke,
+        )
+        res = tool.execute(question="refunds")
+        assert res.success is True
+        assert res.output == "async-hit:refunds"
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        t.join(timeout=5.0)
+
+
+# ---------------------------------------------------------------------------
+# Observability: kb_tools_offered + the "Judge KB: …" reasons note (issue #95)
+# ---------------------------------------------------------------------------
+
+
+def test_kb_observability_rag_search_kb_offered():
+    """rag-service KB resolved → kb_tools_offered=('search_kb',) + reasons note."""
+    rubric = _binary_rubric()
+    client = ScriptedClient([[("submit_report", _submit_args(refund_done=True))]])
+    result = run_rubric_judge(
+        rubric=rubric,
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="",
+        transcript=[],
+        db_reader=FakeDBReader(),
+        kb_search=FakeKnowledgeSearch(),
+        llm_client=client,
+    )
+    assert result.kb_tools_offered == ("search_kb",)
+    assert "Judge KB: search_kb" in result.reasons
+
+
+def test_kb_observability_search_policy_offered():
+    """TypeSense passthrough (extra_read_tools) → kb_tools_offered=('search_policy',)."""
+    from tolokaforge.core.grading.judge_tools import DelegatingReadTool
+
+    rubric = _binary_rubric()
+    tool = DelegatingReadTool(
+        name="search_policy",
+        description="Search the policy KB",
+        parameters=_search_policy_schema(),
+        invoke=lambda args: "policy result text",
+    )
+    client = ScriptedClient([[("submit_report", _submit_args(refund_done=True))]])
+    result = run_rubric_judge(
+        rubric=rubric,
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="",
+        transcript=[],
+        db_reader=FakeDBReader(),
+        extra_read_tools=[tool],
+        llm_client=client,
+    )
+    assert result.kb_tools_offered == ("search_policy",)
+    assert "Judge KB: search_policy" in result.reasons
+
+
+def test_kb_observability_none_offered_is_recorded_not_errored():
+    """No KB backend → kb_tools_offered=() + 'Judge KB: none offered' — NOT an error."""
+    rubric = _binary_rubric()
+    client = ScriptedClient([[("submit_report", _submit_args(refund_done=True))]])
+    result = run_rubric_judge(
+        rubric=rubric,
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="",
+        transcript=[],
+        db_reader=FakeDBReader(),
+        kb_search=None,
+        extra_read_tools=None,
+        llm_client=client,
+    )
+    # Observability, not failure: a KB-less judge still COMPLETES.
+    assert result.status is JudgeStatus.COMPLETED
+    assert result.kb_tools_offered == ()
+    assert "Judge KB: none offered" in result.reasons
+
+
+def test_kb_note_surfaced_even_when_judge_errors():
+    """An ERRORED judge still records which KB it had — debugging signal (#95)."""
+    rubric = _binary_rubric()
+    client = ScriptedClient([[("get_db_state", {})]] * 50)  # never submits → turn exhaustion
+    result = run_rubric_judge(
+        rubric=rubric,
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="",
+        transcript=[],
+        db_reader=FakeDBReader(),
+        kb_search=None,
+        max_turns=2,
+        llm_client=client,
+    )
+    assert result.status is JudgeStatus.ERRORED
+    assert result.kb_tools_offered == ()
+    assert "Judge KB: none offered" in result.reasons
+
+
 def test_db_tools_absent_when_no_reader():
     rubric = _binary_rubric()
     client = ScriptedClient([[("submit_report", _submit_args(refund_done=True))]])

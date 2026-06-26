@@ -73,10 +73,18 @@ RUN pip install --no-cache-dir \
 # Create work directory for tool execution
 RUN mkdir -p /work && chmod 755 /work
 
-# Environment variables
+# Environment variables.
+# Service URLs are NOT baked here — the stacks inject them so the container env
+# reflects what is actually running:
+#   * DB_SERVICE_URL — every stack runs db-service and injects it
+#     (docker/stacks/{core,test}.py); runner/__main__.py keeps a localhost
+#     default for bare/local runs (a missing/wrong DB URL fails loud on first
+#     call, so a default is safe here — unlike RAG).
+#   * RAG_SERVICE_URL — intentionally absent: it must be present iff a
+#     rag-service is actually running. Only the full stack injects it
+#     (docker/stacks/full.py); the core stack leaves it unset so the runner
+#     builds no RAG client and the judge is offered no unreachable search_kb.
 ENV PYTHONUNBUFFERED=1
-ENV DB_SERVICE_URL=http://db-service:8000
-ENV RAG_SERVICE_URL=http://rag-service:8001
 
 # gRPC port
 EXPOSE 50051
