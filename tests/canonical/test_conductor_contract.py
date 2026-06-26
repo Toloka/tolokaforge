@@ -20,6 +20,9 @@ from tolokaforge.core.conductor import (
     InMemoryConductor,
     InProcessConductor,
 )
+from tolokaforge.core.models import ModelConfig
+from tolokaforge.core.trial import EnvEndpoints, TrialSpec
+from tolokaforge.runner.models import TaskDescription
 
 pytestmark = pytest.mark.canonical
 
@@ -35,6 +38,45 @@ def _make_in_process_conductor() -> InProcessConductor:
         logger=MagicMock(),
         verbose=False,
         strict=False,
+        agent_client=MagicMock(),
+        docker_runtime=MagicMock(),
+        output_dir=Path("/tmp"),
+        request_limiter=MagicMock(),
+    )
+
+
+def _make_task_description(task_id: str = "t1") -> TaskDescription:
+    """Build the minimal :class:`TaskDescription` Pydantic requires."""
+    return TaskDescription(
+        task_id=task_id,
+        name=task_id,
+        category="test",
+        description="contract-test stub",
+        adapter_type="native",
+        system_prompt="",
+    )
+
+
+def _make_spec(
+    *,
+    task_id: str = "t1",
+    trial_idx: int = 0,
+    attempt_id: int = 0,
+    worker_id: str | None = None,
+) -> TrialSpec:
+    """Build a minimal :class:`TrialSpec` for contract tests."""
+    return TrialSpec(
+        trial_id=f"{task_id}:{trial_idx}",
+        run_id="test-run",
+        attempt_id=attempt_id,
+        worker_id=worker_id,
+        task=_make_task_description(task_id),
+        agent_model_config=ModelConfig(provider="anthropic", name="stub"),
+        user_model_config=None,
+        judge_model_config=None,
+        max_turns=10,
+        default_tool_timeout_s=30.0,
+        env_endpoints=EnvEndpoints(db_url="http://db:8000", runner_url="http://runner:50051"),
     )
 
 
@@ -63,22 +105,10 @@ class TestRunMethodSignature:
     invoking ``run()`` for real would require a full Docker stack.
     """
 
-    def test_in_memory_run_accepts_all_keyword_args(self, tmp_path: Path) -> None:
+    def test_in_memory_run_accepts_spec_and_task_config(self) -> None:
         backend = InMemoryConductor()
-        # All 12 parameters from the Protocol must be accepted.
-        result = backend.run(
-            task=MagicMock(task_id="t1"),
-            trial_idx=0,
-            agent_client=MagicMock(),
-            user_config=MagicMock(),
-            output_dir=tmp_path,
-            docker_runtime=MagicMock(),
-            request_limiter=MagicMock(),
-            attempt_id=2,
-            worker_id="worker-7",
-            env_endpoints=MagicMock(),
-            judge_config=MagicMock(),
-        )
+        spec = _make_spec(task_id="t1", trial_idx=0, attempt_id=2, worker_id="worker-7")
+        result = backend.run(spec, MagicMock(task_id="t1"))
         assert result.trial_id == "t1:0"
         assert result.worker_id == "worker-7"
 
@@ -97,19 +127,15 @@ class TestInMemoryConductorSemantics:
     success trajectory; a custom factory drives any scenario.
     """
 
-    def test_call_log_records_trial_metadata(self, tmp_path: Path) -> None:
+    def test_call_log_records_trial_metadata(self) -> None:
         backend = InMemoryConductor()
-        backend.run(
-            task=MagicMock(task_id="airline_001"),
+        spec = _make_spec(
+            task_id="airline_001",
             trial_idx=3,
-            agent_client=None,
-            user_config=None,
-            output_dir=tmp_path,
-            docker_runtime=None,
             attempt_id=1,
             worker_id="w-1",
-            env_endpoints=MagicMock(),
         )
+        backend.run(spec, MagicMock(task_id="airline_001"))
         assert backend.call_log.runs == [
             {
                 "trial_id": "airline_001:3",
@@ -120,24 +146,16 @@ class TestInMemoryConductorSemantics:
             }
         ]
 
-    def test_default_factory_returns_success_trajectory(self, tmp_path: Path) -> None:
+    def test_default_factory_returns_success_trajectory(self) -> None:
         from tolokaforge.core.models import TrialStatus
 
         backend = InMemoryConductor()
-        result = backend.run(
-            task=MagicMock(task_id="t1"),
-            trial_idx=0,
-            agent_client=None,
-            user_config=None,
-            output_dir=tmp_path,
-            docker_runtime=None,
-            env_endpoints=MagicMock(),
-        )
+        result = backend.run(_make_spec(), MagicMock(task_id="t1"))
         assert result.trajectory.status == TrialStatus.COMPLETED
         assert result.trajectory.grade is not None
         assert result.trajectory.grade.binary_pass is True
 
-    def test_custom_factory_drives_failure_scenario(self, tmp_path: Path) -> None:
+    def test_custom_factory_drives_failure_scenario(self) -> None:
         from datetime import UTC, datetime
 
         from tolokaforge.core.models import (
@@ -162,30 +180,14 @@ class TestInMemoryConductorSemantics:
             )
 
         backend = InMemoryConductor(trajectory_factory=error_factory)
-        result = backend.run(
-            task=MagicMock(task_id="t1"),
-            trial_idx=0,
-            agent_client=None,
-            user_config=None,
-            output_dir=tmp_path,
-            docker_runtime=None,
-            env_endpoints=MagicMock(),
-        )
+        result = backend.run(_make_spec(), MagicMock(task_id="t1"))
         assert result.trajectory.status == TrialStatus.ERROR
         assert result.trajectory.grade is None
 
-    def test_each_run_appends_independently(self, tmp_path: Path) -> None:
+    def test_each_run_appends_independently(self) -> None:
         backend = InMemoryConductor()
         for i in range(3):
-            backend.run(
-                task=MagicMock(task_id="t1"),
-                trial_idx=i,
-                agent_client=None,
-                user_config=None,
-                output_dir=tmp_path,
-                docker_runtime=None,
-                env_endpoints=MagicMock(),
-            )
+            backend.run(_make_spec(trial_idx=i), MagicMock(task_id="t1"))
         assert len(backend.call_log.runs) == 3
         assert [r["trial_idx"] for r in backend.call_log.runs] == [0, 1, 2]
 

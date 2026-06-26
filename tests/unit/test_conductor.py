@@ -7,7 +7,6 @@ in ``tests/canonical/test_conductor_contract.py``.
 
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -17,8 +16,38 @@ from tolokaforge.core.conductor import (
     InMemoryConductor,
     _default_success_trajectory,
 )
+from tolokaforge.core.models import ModelConfig
+from tolokaforge.core.trial import EnvEndpoints, TrialSpec
+from tolokaforge.runner.models import TaskDescription
 
 pytestmark = pytest.mark.unit
+
+
+def _make_spec(
+    *,
+    task_id: str = "t1",
+    trial_idx: int = 0,
+    attempt_id: int = 0,
+    worker_id: str | None = None,
+) -> TrialSpec:
+    return TrialSpec(
+        trial_id=f"{task_id}:{trial_idx}",
+        run_id="test-run",
+        attempt_id=attempt_id,
+        worker_id=worker_id,
+        task=TaskDescription(
+            task_id=task_id,
+            name=task_id,
+            category="test",
+            description="unit-test stub",
+            adapter_type="native",
+            system_prompt="",
+        ),
+        agent_model_config=ModelConfig(provider="anthropic", name="stub"),
+        max_turns=10,
+        default_tool_timeout_s=30.0,
+        env_endpoints=EnvEndpoints(db_url="http://db:8000", runner_url="http://runner:50051"),
+    )
 
 
 class TestConductorCallLog:
@@ -73,22 +102,14 @@ class TestInMemoryConductorConstruction:
         backend = InMemoryConductor()
         assert backend.call_log.runs == []
 
-    def test_each_backend_has_independent_call_log(self, tmp_path: Path) -> None:
+    def test_each_backend_has_independent_call_log(self) -> None:
         a = InMemoryConductor()
         b = InMemoryConductor()
-        a.run(
-            task=MagicMock(task_id="t1"),
-            trial_idx=0,
-            agent_client=None,
-            user_config=None,
-            output_dir=tmp_path,
-            docker_runtime=None,
-            env_endpoints=MagicMock(),
-        )
+        a.run(_make_spec(), MagicMock(task_id="t1"))
         assert len(a.call_log.runs) == 1
         assert b.call_log.runs == []
 
-    def test_custom_factory_replaces_default(self, tmp_path: Path) -> None:
+    def test_custom_factory_replaces_default(self) -> None:
         from datetime import UTC, datetime
 
         from tolokaforge.core.models import Metrics, Trajectory, TrialStatus
@@ -110,55 +131,28 @@ class TestInMemoryConductorConstruction:
             )
 
         backend = InMemoryConductor(trajectory_factory=factory)
-        backend.run(
-            task=MagicMock(task_id="t1"),
-            trial_idx=5,
-            agent_client=None,
-            user_config=None,
-            output_dir=tmp_path,
-            docker_runtime=None,
-            env_endpoints=MagicMock(),
-        )
+        backend.run(_make_spec(trial_idx=5), MagicMock(task_id="t1"))
         assert seen_args == [("t1", 5)]
 
 
 class TestInMemoryConductorRun:
-    def test_trial_id_format_is_canonical(self, tmp_path: Path) -> None:
+    def test_trial_id_format_is_canonical(self) -> None:
         backend = InMemoryConductor()
         result = backend.run(
-            task=MagicMock(task_id="airline_001"),
-            trial_idx=3,
-            agent_client=None,
-            user_config=None,
-            output_dir=tmp_path,
-            docker_runtime=None,
-            env_endpoints=MagicMock(),
+            _make_spec(task_id="airline_001", trial_idx=3),
+            MagicMock(task_id="airline_001"),
         )
         assert result.trial_id == "airline_001:3"
 
-    def test_worker_id_threads_through(self, tmp_path: Path) -> None:
+    def test_worker_id_threads_through(self) -> None:
         backend = InMemoryConductor()
         result = backend.run(
-            task=MagicMock(task_id="t1"),
-            trial_idx=0,
-            agent_client=None,
-            user_config=None,
-            output_dir=tmp_path,
-            docker_runtime=None,
-            worker_id="worker-42",
-            env_endpoints=MagicMock(),
+            _make_spec(worker_id="worker-42"),
+            MagicMock(task_id="t1"),
         )
         assert result.worker_id == "worker-42"
 
-    def test_worker_id_default_is_none(self, tmp_path: Path) -> None:
+    def test_worker_id_default_is_none(self) -> None:
         backend = InMemoryConductor()
-        result = backend.run(
-            task=MagicMock(task_id="t1"),
-            trial_idx=0,
-            agent_client=None,
-            user_config=None,
-            output_dir=tmp_path,
-            docker_runtime=None,
-            env_endpoints=MagicMock(),
-        )
+        result = backend.run(_make_spec(), MagicMock(task_id="t1"))
         assert result.worker_id is None

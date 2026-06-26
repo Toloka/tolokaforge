@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from tolokaforge.adapters import BaseAdapter, get_adapter
+from tolokaforge.adapters import BaseAdapter, ensure_registered_adapter, get_adapter
 from tolokaforge.core.conductor import Conductor, InProcessConductor
 from tolokaforge.core.engine_run_state import write_engine_run_state
 from tolokaforge.core.failure_attribution import (
@@ -43,7 +43,7 @@ from tolokaforge.core.rate_limiter import GlobalRateLimiter
 from tolokaforge.core.resume import RunStateManager
 from tolokaforge.core.run_queue import AttemptLease, create_run_queue
 from tolokaforge.core.runtime import RuntimeBackend
-from tolokaforge.core.trial import EnvEndpoints
+from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, EnvEndpoints, TrialSpec
 from tolokaforge.runner.models import AdapterType
 
 # Tools that need Playwright + Chromium baked into the runner image. The
@@ -285,7 +285,14 @@ class Orchestrator:
             return True
         return False
 
-    def _build_conductor(self) -> Conductor:
+    def _build_conductor(
+        self,
+        *,
+        agent_client: LLMClient | None,
+        docker_runtime: RuntimeBackend | None,
+        output_dir: Path,
+        request_limiter: GlobalRateLimiter | None,
+    ) -> Conductor:
         """Construct the per-trial executor for this run.
 
         Invokes the injected ``conductor_factory`` when one was supplied
@@ -293,10 +300,11 @@ class Orchestrator:
         wired against the orchestrator's per-run dependencies.
 
         Called once per ``run()`` / ``run_worker()`` invocation, after
-        the adapter is loaded and the artifact writer is initialised.
-        Raises ``RuntimeError`` if ``self.adapter`` is unset — surfaces a
-        clear failure rather than propagating ``None`` into the
-        Conductor's body (where it would crash deep in ``run()``).
+        the adapter is loaded, the artifact writer is initialised, and the
+        per-run wiring (LLM client, runtime backend, output directory,
+        rate limiter) is resolved. Raises ``RuntimeError`` if ``self.adapter``
+        is unset — surfaces a clear failure rather than propagating ``None``
+        into the Conductor's body (where it would crash deep in ``run()``).
         """
         if self.adapter is None:
             raise RuntimeError(
@@ -311,6 +319,10 @@ class Orchestrator:
                 logger=self.logger,
                 verbose=self.verbose,
                 strict=self.strict,
+                agent_client=agent_client,
+                docker_runtime=docker_runtime,
+                output_dir=output_dir,
+                request_limiter=request_limiter,
             )
         return InProcessConductor(
             adapter=self.adapter,
@@ -319,6 +331,47 @@ class Orchestrator:
             logger=self.logger,
             verbose=self.verbose,
             strict=self.strict,
+            agent_client=agent_client,
+            docker_runtime=docker_runtime,
+            output_dir=output_dir,
+            request_limiter=request_limiter,
+        )
+
+    def _build_trial_spec(
+        self,
+        *,
+        task: TaskConfig,
+        trial_idx: int,
+        attempt_id: int,
+        worker_id: str,
+        output_dir: Path,
+        agent_client: LLMClient,
+        user_config: ModelConfig,
+        judge_config: ModelConfig | None,
+        env_endpoints: EnvEndpoints,
+    ) -> TrialSpec:
+        """Build the per-trial :class:`TrialSpec` the Conductor consumes.
+
+        Resolves the wire-format ``TaskDescription`` through the adapter and
+        validates that its declared backend is registered before the spec is
+        constructed, so failures surface here rather than mid-execution.
+        """
+        if self.adapter is None:
+            raise RuntimeError("Trial spec cannot be built before the adapter is loaded.")
+        task_desc = self.adapter.to_task_description(task.task_id)
+        ensure_registered_adapter(task_desc.adapter_type)
+        return TrialSpec(
+            trial_id=f"{task.task_id}:{trial_idx}",
+            run_id=output_dir.name,
+            attempt_id=attempt_id,
+            worker_id=worker_id,
+            task=task_desc,
+            agent_model_config=agent_client.config,
+            user_model_config=user_config,
+            judge_model_config=judge_config,
+            max_turns=task.max_turns,
+            default_tool_timeout_s=DEFAULT_TOOL_TIMEOUT_S,
+            env_endpoints=env_endpoints,
         )
 
     def _cleanup_runner_state_for_retry(
@@ -744,7 +797,12 @@ class Orchestrator:
             runner_url=env_endpoints.runner_url,
         )
 
-        conductor = self._build_conductor()
+        conductor = self._build_conductor(
+            agent_client=agent_client,
+            docker_runtime=docker_runtime,
+            output_dir=output_dir,
+            request_limiter=request_limiter,
+        )
 
         executor_healthy = docker_runtime.health_check()
         self.logger.info("Docker runtime health check", executor_healthy=executor_healthy)
@@ -815,20 +873,18 @@ class Orchestrator:
                 run_state.mark_running(lease.task_id, lease.trial_index)
                 self.state_manager.save_state(run_state)
 
-                future = executor.submit(
-                    conductor.run,
-                    task,
-                    lease.trial_index,
-                    agent_client,
-                    user_config,
-                    output_dir,
-                    docker_runtime,
-                    request_limiter,
+                spec = self._build_trial_spec(
+                    task=task,
+                    trial_idx=lease.trial_index,
                     attempt_id=lease.retry_count,
                     worker_id=lease_owner,
-                    env_endpoints=env_endpoints,
+                    output_dir=output_dir,
+                    agent_client=agent_client,
+                    user_config=user_config,
                     judge_config=judge_config,
+                    env_endpoints=env_endpoints,
                 )
+                future = executor.submit(conductor.run, spec, task)
                 active_futures[future] = lease
                 return True
 
@@ -1048,7 +1104,12 @@ class Orchestrator:
             runner_url=env_endpoints.runner_url,
         )
 
-        conductor = self._build_conductor()
+        conductor = self._build_conductor(
+            agent_client=agent_client,
+            docker_runtime=docker_runtime,
+            output_dir=output_dir,
+            request_limiter=request_limiter,
+        )
 
         task_by_id = {task.task_id: task for task in self.tasks}
         run_queue = create_run_queue(
@@ -1101,19 +1162,18 @@ class Orchestrator:
                 run_queue.mark_running(lease.id, lease_owner)
 
                 try:
-                    trial_result = conductor.run(
+                    spec = self._build_trial_spec(
                         task=task,
                         trial_idx=lease.trial_index,
-                        agent_client=agent_client,
-                        user_config=user_config,
-                        output_dir=output_dir,
-                        docker_runtime=docker_runtime,
-                        request_limiter=request_limiter,
                         attempt_id=lease.retry_count,
                         worker_id=lease_owner,
-                        env_endpoints=env_endpoints,
+                        output_dir=output_dir,
+                        agent_client=agent_client,
+                        user_config=user_config,
                         judge_config=judge_config,
+                        env_endpoints=env_endpoints,
                     )
+                    trial_result = conductor.run(spec, task)
                     trajectory = trial_result.trajectory
                     self.results.append(trajectory)
                     trial_cost = trajectory.metrics.cost_usd or 0.0

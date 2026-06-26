@@ -138,8 +138,8 @@ That last picture is the architectural payoff. Phase 2 is no longer "redesign th
 
 We adopt **Option 1**.
 
-- Add `tolokaforge/core/conductor.py` with `@runtime_checkable` `Conductor` Protocol declaring `run(task, trial_idx, agent_client, user_config, output_dir, docker_runtime, request_limiter, *, attempt_id, worker_id, env_endpoints, judge_config) -> TrialResult`.
-- `InProcessConductor` captures the orchestrator's per-run dependencies (`adapter`, `artifact_writer`, `config`, `logger`, `verbose`, `strict`) in its constructor. The body of its `run()` method is the verbatim body of the old `_run_trial`; the three private helpers travel with it. The module-level `_build_resolved_block` helper (only consumer was `_serialize_model_config`) moves to `conductor.py`.
+- Add `tolokaforge/core/conductor.py` with `@runtime_checkable` `Conductor` Protocol declaring `run(spec: TrialSpec, task_config: TaskConfig) -> TrialResult`. `spec` is the same wire-format input the runner consumes (ADR-0003); `task_config` is the orchestrator-side rich `TaskConfig` (initial state, tool configs, user-simulator mode) the in-process executor still reads from while the body is verbatim.
+- `InProcessConductor` captures the orchestrator's per-run dependencies (`adapter`, `artifact_writer`, `config`, `logger`, `verbose`, `strict`, `agent_client`, `docker_runtime`, `output_dir`, `request_limiter`) in its constructor. The body of its `run()` method is the verbatim body of the old `_run_trial`; the three private helpers travel with it. The module-level `_build_resolved_block` helper (only consumer was `_serialize_model_config`) moves to `conductor.py`.
 - `InMemoryConductor` is the test fixture. Records every `run()` call on a `ConductorCallLog`; returns a configurable `TrialResult` via a `trajectory_factory: Callable[[str, int], Trajectory] | None` constructor arg (defaults to a synthetic success trajectory). Two purposes: (a) prove the seam is swappable; (b) let orchestrator-level tests assert scheduling / retry behaviour without spinning up Docker or an LLM.
 - `Orchestrator.__init__` accepts an optional `conductor_factory: Callable[..., Conductor] | None = None` kwarg. The orchestrator constructs the Conductor inside `run()` / `run_worker()` (after the adapter is set + per-run dependencies resolved) via a new `_build_conductor()` helper. Default factory builds an `InProcessConductor`.
 - The two `_run_trial` call sites become `conductor.run(...)`. `_run_trial` and the three helper methods are **deleted** from `Orchestrator`.
@@ -155,7 +155,7 @@ We adopt **Option 1**.
 
 ### Negative / Trade-offs
 
-- The Protocol's `run()` signature is long (12 keyword-style arguments). Justified because the existing `_run_trial` already had this surface — the extraction preserves it verbatim. A follow-up could collapse it into a per-call `TrialSpec`-shaped input (similar to the control↔trial seam ADR-0003 established for the runner-side wire), but that's a separate refactor with its own breaking-change-risk considerations.
+- The Protocol's `run()` takes two arguments: `spec: TrialSpec` and `task_config: TaskConfig`. The orchestrator builds the `TrialSpec` once per trial (with `_build_trial_spec`, which also runs the adapter-registry guard) and passes the same orchestrator-side `TaskConfig` it has been carrying through scheduling. The `InProcessConductor` body still re-binds the legacy parameter names from `spec`/`task_config`/`self` so the verbatim 621-line execution code keeps reading the names it was written against; eliminating those shims is the body-refactor follow-up.
 - `InProcessConductor.run()` is still 621 lines. Cleanup of the body's internal structure is queued as a follow-up — see Follow-ups below.
 - Mocking the conductor in tests is mildly more involved than mocking `_run_trial` was (need to provide a factory rather than a method patch). Mitigation: `InMemoryConductor` is provided as the canonical replacement, and it's strictly more useful (call log, configurable trajectory factory).
 
@@ -165,7 +165,7 @@ We adopt **Option 1**.
 - **`RemoteConductor` concrete implementation.** When Phase 2 starts and the first out-of-process / distributed-execution work begins.
 - **Collapse `DockerRunnerAdapter` into per-trial Protocol methods.** Same as ADR-0007's follow-up.
 - **Promote `RunnerClient` to its own Protocol.** Same as ADR-0007's follow-up.
-- **Collapse the 12-arg `run()` signature into a `TrialSpec`-shaped input.** The control↔trial seam (ADR-0003) already uses a single `TrialSpec` to capture per-trial state for the gRPC wire; the same pattern could simplify the Conductor's surface.
+- **Body-shim removal inside `InProcessConductor.run()`.** The reshape leaves a short compatibility block at the top of `run()` that re-binds legacy parameter names from `spec` / `task_config` / `self`. Once the body is broken into smaller methods (the larger refactor follow-up), each piece can read from `spec` / `task_config` / `self` directly and the shims disappear.
 
 ## Rejected alternatives
 

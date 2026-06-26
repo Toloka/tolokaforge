@@ -441,6 +441,10 @@ class TestBuildSystemPrompt:
             logger=MagicMock(),
             verbose=False,
             strict=False,
+            agent_client=MagicMock(),
+            docker_runtime=MagicMock(),
+            output_dir=Path("/tmp"),
+            request_limiter=MagicMock(),
         )
         return conductor
 
@@ -1323,7 +1327,7 @@ class TestConductorInjection:
         orch = Orchestrator(_make_run_config(), conductor_factory=factory)
         assert orch._conductor_factory is factory
 
-    def test_default_factory_builds_in_process_conductor(self) -> None:
+    def test_default_factory_builds_in_process_conductor(self, tmp_path: Path) -> None:
         """When no factory is injected, ``_build_conductor`` returns an
         :class:`InProcessConductor` wired against the orchestrator's
         per-run dependencies."""
@@ -1333,10 +1337,15 @@ class TestConductorInjection:
         orch = Orchestrator(_make_run_config())
         orch.adapter = MagicMock()  # _build_conductor raises if adapter is unset
 
-        conductor = orch._build_conductor()
+        conductor = orch._build_conductor(
+            agent_client=MagicMock(),
+            docker_runtime=MagicMock(),
+            output_dir=tmp_path,
+            request_limiter=MagicMock(),
+        )
         assert isinstance(conductor, InProcessConductor)
 
-    def test_build_conductor_raises_when_adapter_is_unset(self) -> None:
+    def test_build_conductor_raises_when_adapter_is_unset(self, tmp_path: Path) -> None:
         """Fail-fast: building a conductor before ``load_tasks()`` ran (so
         ``self.adapter`` is still ``None``) raises immediately, instead of
         silently propagating ``None`` into the Conductor's body where it
@@ -1347,13 +1356,17 @@ class TestConductorInjection:
         assert orch.adapter is None
 
         with pytest.raises(RuntimeError, match="adapter is loaded"):
-            orch._build_conductor()
+            orch._build_conductor(
+                agent_client=MagicMock(),
+                docker_runtime=MagicMock(),
+                output_dir=tmp_path,
+                request_limiter=MagicMock(),
+            )
 
-    def test_injected_factory_is_invoked_with_per_run_dependencies(self) -> None:
+    def test_injected_factory_is_invoked_with_per_run_dependencies(self, tmp_path: Path) -> None:
         """The orchestrator calls the factory with its resolved per-run
-        deps (adapter, artifact_writer, config, logger, verbose, strict).
-        Pinned so a future refactor that changes the dependency surface
-        forces this test to update deliberately."""
+        deps. Pinned so a future refactor that changes the dependency
+        surface forces this test to update deliberately."""
         from tolokaforge.core.conductor import InMemoryConductor
         from tolokaforge.core.orchestrator import Orchestrator
 
@@ -1366,7 +1379,12 @@ class TestConductorInjection:
         orch = Orchestrator(_make_run_config(), conductor_factory=factory)
         orch.adapter = MagicMock()
 
-        orch._build_conductor()
+        orch._build_conductor(
+            agent_client=MagicMock(),
+            docker_runtime=MagicMock(),
+            output_dir=tmp_path,
+            request_limiter=MagicMock(),
+        )
 
         assert set(captured.keys()) == {
             "adapter",
@@ -1375,4 +1393,8 @@ class TestConductorInjection:
             "logger",
             "verbose",
             "strict",
+            "agent_client",
+            "docker_runtime",
+            "output_dir",
+            "request_limiter",
         }

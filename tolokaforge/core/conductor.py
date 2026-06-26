@@ -29,7 +29,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from tolokaforge.adapters import BaseAdapter, ensure_registered_adapter
+from tolokaforge.adapters import BaseAdapter
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.docker_adapter import DockerRunnerAdapter
 from tolokaforge.core.env_state import EnvironmentState
@@ -57,7 +57,7 @@ from tolokaforge.core.rate_limiter import GlobalRateLimiter
 from tolokaforge.core.runner import TrialRunner
 from tolokaforge.core.runtime import RuntimeBackend
 from tolokaforge.core.stuck import StuckDetector
-from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, EnvEndpoints, TrialResult, TrialSpec
+from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, TrialResult, TrialSpec
 
 if TYPE_CHECKING:
     from tolokaforge.core.logging import StructuredLogger
@@ -101,28 +101,24 @@ def _build_resolved_block(model_config: ModelConfig) -> dict[str, Any]:
 
 @runtime_checkable
 class Conductor(Protocol):
-    """Per-trial executor. Reads a task + index, writes a :class:`TrialResult`.
+    """Per-trial executor. Reads a typed :class:`TrialSpec` + orchestrator
+    -side :class:`TaskConfig`, writes a :class:`TrialResult`.
 
     The orchestrator constructs a Conductor once per ``run()`` invocation
-    (after the adapter and the runtime backend are resolved) and calls
-    ``conductor.run(task, trial_idx, ...)`` for every leased trial.
+    (after the adapter, runtime backend, and per-run dependencies are
+    resolved at the orchestrator level) and calls ``conductor.run(spec,
+    task_config)`` for every leased trial.
+
+    * ``spec`` — the wire-format :class:`TrialSpec` (ADR-0003) carrying
+      trial identity, model configs, env endpoints, and per-trial knobs.
+    * ``task_config`` — the orchestrator-side rich :class:`TaskConfig`
+      (initial state, tool configs, user-simulator mode, …). The wire
+      format ``spec.task`` is the runner-side projection; the conductor
+      needs both surfaces because the per-trial execution path uses
+      orchestrator-side detail the wire format doesn't carry.
     """
 
-    def run(
-        self,
-        task: TaskConfig,
-        trial_idx: int,
-        agent_client: LLMClient | None,
-        user_config: ModelConfig | None,
-        output_dir: Path,
-        docker_runtime: RuntimeBackend | None,
-        request_limiter: GlobalRateLimiter | None = None,
-        *,
-        attempt_id: int = 0,
-        worker_id: str | None = None,
-        env_endpoints: EnvEndpoints,
-        judge_config: ModelConfig | None = None,
-    ) -> TrialResult:
+    def run(self, spec: TrialSpec, task_config: TaskConfig) -> TrialResult:
         """Execute one trial end-to-end."""
         ...
 
@@ -182,34 +178,23 @@ class InMemoryConductor:
         self.call_log = ConductorCallLog()
         self._factory = trajectory_factory or _default_success_trajectory
 
-    def run(
-        self,
-        task: TaskConfig,
-        trial_idx: int,
-        agent_client: LLMClient | None,
-        user_config: ModelConfig | None,
-        output_dir: Path,
-        docker_runtime: RuntimeBackend | None,
-        request_limiter: GlobalRateLimiter | None = None,
-        *,
-        attempt_id: int = 0,
-        worker_id: str | None = None,
-        env_endpoints: EnvEndpoints,
-        judge_config: ModelConfig | None = None,
-    ) -> TrialResult:
-        trial_id = f"{task.task_id}:{trial_idx}"
+    def run(self, spec: TrialSpec, task_config: TaskConfig) -> TrialResult:
+        # ``spec.trial_id`` is canonical (``"{task_id}:{trial_idx}"``); derive
+        # ``trial_idx`` from it so the call log entry shape matches what tests
+        # established under the pre-reshape signature.
+        trial_idx = int(spec.trial_id.rsplit(":", 1)[1])
         self.call_log.runs.append(
             {
-                "trial_id": trial_id,
-                "task_id": task.task_id,
+                "trial_id": spec.trial_id,
+                "task_id": task_config.task_id,
                 "trial_idx": trial_idx,
-                "attempt_id": attempt_id,
-                "worker_id": worker_id,
+                "attempt_id": spec.attempt_id,
+                "worker_id": spec.worker_id,
             }
         )
-        trajectory = self._factory(task.task_id, trial_idx)
+        trajectory = self._factory(task_config.task_id, trial_idx)
         return TrialResult.from_trajectory(
-            trial_id=trial_id, trajectory=trajectory, worker_id=worker_id
+            trial_id=spec.trial_id, trajectory=trajectory, worker_id=spec.worker_id
         )
 
 
@@ -242,6 +227,10 @@ class InProcessConductor:
         logger: StructuredLogger,
         verbose: bool = False,
         strict: bool = False,
+        agent_client: LLMClient | None,
+        docker_runtime: RuntimeBackend | None,
+        output_dir: Path,
+        request_limiter: GlobalRateLimiter | None = None,
     ) -> None:
         self.adapter = adapter
         self._artifact_writer = artifact_writer
@@ -249,6 +238,10 @@ class InProcessConductor:
         self.logger = logger
         self.verbose = verbose
         self.strict = strict
+        self.agent_client = agent_client
+        self.docker_runtime = docker_runtime
+        self.output_dir = output_dir
+        self.request_limiter = request_limiter
 
     @staticmethod
     def _build_judge_messages_json(
@@ -287,26 +280,29 @@ class InProcessConductor:
 
     def run(
         self,
-        task: TaskConfig,
-        trial_idx: int,
-        agent_client: LLMClient | None,
-        user_config: ModelConfig | None,
-        output_dir: Path,
-        docker_runtime: RuntimeBackend | None,
-        request_limiter: GlobalRateLimiter | None = None,
-        *,
-        attempt_id: int = 0,
-        worker_id: str | None = None,
-        env_endpoints: EnvEndpoints,
-        judge_config: ModelConfig | None = None,
+        spec: TrialSpec,
+        task_config: TaskConfig,
     ) -> TrialResult:
         """Run a single trial with environment state and grading.
 
-        ``attempt_id`` is the queue lease's retry count (0 on first attempt);
-        ``worker_id`` identifies the owning process (the orchestrator itself
-        in single-process mode, the worker's host:pid in distributed mode).
+        ``spec`` carries trial identity, model configs, env endpoints,
+        retry / worker metadata. ``task_config`` is the orchestrator-side
+        rich task type (initial state, tool configs, user-simulator mode);
+        the runner-side projection lives on ``spec.task``.
         """
-        assert self.adapter is not None
+        # Compatibility shims — re-bind the legacy parameter names from
+        # ``spec`` / ``task_config`` / ``self`` so the verbatim
+        # ``_run_trial`` body below keeps reading the names it was written
+        # against. Eliminating these is the body-refactor follow-up.
+        task = task_config
+        trial_idx = int(spec.trial_id.rsplit(":", 1)[1])
+        agent_client = self.agent_client
+        user_config = spec.user_model_config
+        output_dir = self.output_dir
+        docker_runtime = self.docker_runtime
+        request_limiter = self.request_limiter
+        worker_id = spec.worker_id
+        judge_config = spec.judge_model_config
 
         # Get task directory from adapter (supports both native and tau)
         task_dir = self.adapter.get_task_dir(task.task_id)
@@ -489,28 +485,11 @@ class InProcessConductor:
             runner_client=docker_runtime.executor_client, trial_id=trial_id
         )
 
-        task_desc = self.adapter.to_task_description(task.task_id)
-        # Host-side guard: adapter_type is an open string (the adapter set is
-        # entry-point-discovered). Validate against the registry here (authoritative
-        # on the host) to catch typos/misconfig early.
-        ensure_registered_adapter(task_desc.adapter_type)
-
-        spec = TrialSpec(
-            trial_id=trial_id,
-            run_id=output_dir.name,
-            attempt_id=attempt_id,
-            worker_id=worker_id,
-            task=task_desc,
-            agent_model_config=agent_client.config,
-            user_model_config=user_config,
-            judge_model_config=judge_config,
-            max_turns=task.max_turns,
-            default_tool_timeout_s=DEFAULT_TOOL_TIMEOUT_S,
-            env_endpoints=env_endpoints,
-        )
-
         # The spec is the single source of truth for the timeout; the proto
-        # field is filled from it so the two cannot diverge silently.
+        # field is filled from it so the two cannot diverge silently. The
+        # adapter-registry guard runs orchestrator-side before the spec is
+        # constructed, so the runner reads ``spec.task`` directly without
+        # re-resolving the adapter here.
         register_result = tool_executor.register_trial(
             trial_spec_json=spec.model_dump_json(),
             default_tool_timeout_s=spec.default_tool_timeout_s or DEFAULT_TOOL_TIMEOUT_S,
