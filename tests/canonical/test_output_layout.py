@@ -49,6 +49,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from tolokaforge.core.conductor import _build_resolved_block
 from tolokaforge.core.llm import build_capabilities
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import (
@@ -60,7 +61,6 @@ from tolokaforge.core.models import (
     Trajectory,
     TrialStatus,
 )
-from tolokaforge.core.orchestrator import _build_resolved_block
 from tolokaforge.core.output.artifacts import FileArtifactWriter
 
 pytestmark = pytest.mark.canonical
