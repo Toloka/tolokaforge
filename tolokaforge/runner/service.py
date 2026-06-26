@@ -491,8 +491,14 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # Initialise mcp_core TypeSense registry so search_policy tools work.
         # Documents are already indexed by the host-side adapter; we just
         # register a client inside this container pointing at the same server.
+        #
+        # Gated on ``host`` (TypeSense is configured) ONLY — independent of
+        # ``enabled``. ``enabled`` now means just "this task needs rag-service"
+        # (it gates the RAG indexing block below); it does NOT govern TypeSense.
+        # A TypeSense-only domain therefore sets ``enabled=False`` + ``host=…``:
+        # TypeSense inits here, the RAG block is skipped (no rag_client needed).
         search_config = task_description.search
-        if search_config and search_config.enabled and search_config.host:
+        if search_config and search_config.host:
             self._init_typesense_for_trial(search_config, artifacts_dir)
 
         # Create trial context with validated TaskDescription
@@ -563,7 +569,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 f"Provisioned {len(initial_state.filesystem)} filesystem file(s)"
             )
 
-        # Initialize RAG service if search is enabled (FAIL FAST)
+        # Initialize RAG service if search is enabled (FAIL FAST).
+        # ``enabled`` means the task needs rag-service; on the core stack
+        # (no rag-service ⇒ rag_client is None) this hard-fails ON PURPOSE.
         search_config = task_description.search
         rag_client_for_trial = None
         if search_config and search_config.enabled:

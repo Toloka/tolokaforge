@@ -407,6 +407,131 @@ class TestRunnerPipeline:
         assert final_state_response.success is True
 
 
+class TestRegisterTrialSearchPlanes:
+    """RegisterTrial decouples the two search planes.
+
+    ``search.enabled`` and ``search.host`` are independent:
+
+    - ``host`` set  ⇒ TypeSense init runs (the search_policy registry), gated on
+      ``host`` ALONE — independent of ``enabled``.
+    - ``enabled`` set ⇒ the task declares it needs rag-service; the RAG indexing
+      block requires a configured ``rag_client`` and fails loud otherwise.
+
+    Regression context (PR #102): once the core stack stopped setting
+    ``RAG_SERVICE_URL`` (rag-env-honesty), ``rag_client is None`` on that stack.
+    A TypeSense-only domain used to flip ``enabled=True`` only to get TypeSense
+    init, which then hard-failed on the RAG requirement. The fix gates TypeSense
+    init on ``host`` alone so such a domain sets ``enabled=False`` and registers.
+    """
+
+    @staticmethod
+    def _search_task(search: dict[str, Any]) -> dict[str, Any]:
+        """A minimal registrable task carrying a ``search`` config block."""
+        return {
+            "task_id": "search_plane_task",
+            "name": "Search Plane Test",
+            "category": "test",
+            "description": "Exercises the TypeSense/RAG gate decoupling",
+            "adapter_type": "tlk_mcp_core",
+            "system_prompt": "You are a test assistant.",
+            "initial_state": {"tables": {}, "schemas": []},
+            "agent_tools": [],
+            "user_tools": [],
+            "search": search,
+        }
+
+    def test_typesense_only_registers_without_rag_client(self, mock_grpc_context, db_client):
+        """REGRESSION: a TypeSense-only domain (enabled=False, host set) with NO
+        rag_client registers successfully — it must NOT hit the RAG fail-loud.
+
+        mcp_core is absent in this repo, so ``_init_typesense_for_trial`` warns
+        and skips; the contract under test is only that registration succeeds.
+        """
+        from tolokaforge.runner.service import RunnerServiceImpl
+
+        service = RunnerServiceImpl(db_client)  # rag_client defaults to None
+        assert service.rag_client is None
+        try:
+            trial_id = "typesense_only:0"
+            task = self._search_task(
+                {
+                    "enabled": False,
+                    "host": "typesense",
+                    "port": 8108,
+                    "domain_name": "external_retail_v3",
+                }
+            )
+            request = pb2.RegisterTrialRequest(
+                trial_id=trial_id,
+                trial_spec_json=_trial_spec_json(task, trial_id=trial_id),
+            )
+
+            response = service.RegisterTrial(request, mock_grpc_context)
+
+            assert response.success is True, f"Registration failed: {response.error}"
+            assert "RAG service not configured" not in response.error
+            assert trial_id in service.trials
+        finally:
+            service.shutdown()
+
+    def test_enabled_without_rag_client_still_fails_loud(self, mock_grpc_context, db_client):
+        """FAIL-LOUD preserved: enabled=True with rag_client=None still returns the
+        'Search enabled but RAG service not configured' error."""
+        from tolokaforge.runner.service import RunnerServiceImpl
+
+        service = RunnerServiceImpl(db_client)  # rag_client defaults to None
+        assert service.rag_client is None
+        try:
+            trial_id = "rag_required:0"
+            task = self._search_task(
+                {
+                    "enabled": True,
+                    "host": "typesense",
+                    "port": 8108,
+                    "domain_name": "external_retail_v3",
+                }
+            )
+            request = pb2.RegisterTrialRequest(
+                trial_id=trial_id,
+                trial_spec_json=_trial_spec_json(task, trial_id=trial_id),
+            )
+
+            response = service.RegisterTrial(request, mock_grpc_context)
+
+            assert response.success is False
+            assert "Search enabled but RAG service not configured" in response.error
+        finally:
+            service.shutdown()
+
+    def test_domain_set_on_db_proxy_regardless_of_enabled(self, mock_grpc_context, db_client):
+        """A TypeSense config with a domain_name sets the db-proxy domain even
+        with enabled=False (the db-proxy plane is gated on domain_name, NOT
+        enabled). Verifies registration succeeds for that path."""
+        from tolokaforge.runner.service import RunnerServiceImpl
+
+        service = RunnerServiceImpl(db_client)
+        try:
+            trial_id = "domain_proxy:0"
+            task = self._search_task(
+                {
+                    "enabled": False,
+                    "host": "typesense",
+                    "domain_name": "external_retail_v3",
+                }
+            )
+            request = pb2.RegisterTrialRequest(
+                trial_id=trial_id,
+                trial_spec_json=_trial_spec_json(task, trial_id=trial_id),
+            )
+
+            response = service.RegisterTrial(request, mock_grpc_context)
+
+            assert response.success is True, f"Registration failed: {response.error}"
+            assert trial_id in service.trials
+        finally:
+            service.shutdown()
+
+
 # NOTE: TestDBClientWithTestClient has been moved to tests/test_db_client.py
 # to avoid duplication. See TestDBServiceClientLifecycle for comprehensive
 # DB client tests against real json_db_service.
