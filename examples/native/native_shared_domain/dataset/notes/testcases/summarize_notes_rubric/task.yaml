@@ -1,0 +1,22 @@
+task_id: "notes_summarize_notes_rubric"
+name: "Notes — summarize all saved notes (rubric-graded)"
+description: >
+  Agent must list the stored notes and write a clear, complete digest of all of
+  them. The quality and completeness of the written summary is graded by the
+  rubric LLM judge, not by deterministic checks. No new notes should be created.
+domain: ../../_shared/domain.yaml
+max_turns: 6
+
+initial_user_message: >
+  Can you give me a quick rundown of everything I've saved in my notes?
+
+initial_state:
+  json_db: "initial_state.json"
+
+user_simulator:
+  backstory: >
+    You want a single readable summary covering every note you have stored.
+    You do NOT want the assistant to add or change any notes — just summarize.
+    Once the assistant gives you the rundown, thank it briefly and stop.
+
+grading: "grading.yaml"

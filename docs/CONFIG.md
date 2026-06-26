@@ -310,16 +310,26 @@ transcript_rules:
     disallowed_tools: []
 
 llm_judge:
-  model_ref: "openrouter/anthropic/claude-3.5-sonnet"
-  rubric: |
-    Grade task completion and correctness.
-  output_schema:
-    type: object
-    properties:
-      score: { type: number, minimum: 0, maximum: 1 }
-      reasoning: { type: string }
-    required: ["score", "reasoning"]
+  model_ref: "openrouter/anthropic/claude-sonnet-4.5"   # required; a separate fixed judge model
+  rubric:                                  # structured Rubric (NOT free text)
+    reference: |                           # optional author-written ground truth
+      The correct order total is $42.50 with apple_pay.
+    criteria:
+      - id: task_complete
+        description: "Order was placed with the correct total and payment method"
+        kind: binary
+        required: true
+        weight: 1.0
+      - id: clarity
+        description: "Confirmation message is clear and complete"
+        kind: graded
+        weight: 0.5
 ```
+
+The rubric is a structured `Rubric` (per-criterion scoring + a required gate),
+not a free-text blob; the old `rubric: "<text>"` shape and the `output_schema`
+field were removed. See [GRADING.md](GRADING.md#llm-judge-rubric-grading) for the
+judge mechanism, the two weighting layers, and the fail-loud ERRORED status.
 
 ## Environment Variables
 

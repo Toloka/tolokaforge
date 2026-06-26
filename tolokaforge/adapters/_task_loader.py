@@ -56,6 +56,42 @@ import yaml
 from tolokaforge.core.models import TaskConfig
 
 
+def validate_grading_yaml(grading_path: Path) -> None:
+    """Validate a task's ``grading.yaml``, failing loud on schema breaks.
+
+    Run by ``tolokaforge validate`` so a malformed grading block — most notably
+    the pre-Stage-2 free-text ``llm_judge.rubric: str`` / removed
+    ``output_schema`` shape — is rejected at validate time with a clear
+    migration message (raised by :class:`LLMJudgeConfig`), not only at run time.
+
+    A missing grading file is not an error here: ``load_task_yaml`` already
+    validates the ``grading`` path field, and some adapters synthesise grading
+    config without an on-disk file.
+
+    Raises:
+        ValueError / pydantic.ValidationError: If the grading block is invalid.
+    """
+    if not grading_path.exists():
+        return
+
+    with open(grading_path) as f:
+        grading_data = yaml.safe_load(f) or {}
+
+    if not isinstance(grading_data, dict):
+        raise RuntimeError(
+            f"Grading file {grading_path} is not a YAML mapping (got {type(grading_data).__name__})"
+        )
+
+    # The rubric migration lives on the canonical LLMJudgeConfig, so validate the
+    # llm_judge block directly — independent of the surrounding grading schema,
+    # which varies by adapter.
+    llm_judge = grading_data.get("llm_judge")
+    if isinstance(llm_judge, dict) and llm_judge.get("model_ref"):
+        from tolokaforge.runner.models import LLMJudgeConfig
+
+        LLMJudgeConfig(**llm_judge)
+
+
 def load_task_yaml(task_path: Path) -> tuple[TaskConfig, Path]:
     """Read ``task.yaml``, apply any ``domain:`` merge, return the validated config.
 

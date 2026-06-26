@@ -246,11 +246,30 @@ class TranscriptRulesConfig(BaseModel):
     communicate_info: List[Dict[str, Any]] = Field(default_factory=list)
 
 
+class Criterion(BaseModel):
+    """One rubric criterion the judge scores independently."""
+    id: str                                       # identifier-safe, unique
+    description: str                              # imperative pass-condition
+    weight: float = 1.0                           # per-criterion weight (non-required only)
+    kind: Literal["binary", "graded"] = "binary"  # 0/1 vs 0–1 gradient
+    required: bool = False                        # pure gate: failed → rubric fails
+    expected: str | None = None                   # optional per-criterion author reference
+
+
+class Rubric(BaseModel):
+    """Structured grading rubric (replaces the old free-text blob)."""
+    criteria: List[Criterion]
+    reference: str | None = None                  # optional author-written ground truth
+
+
 class LLMJudgeConfig(BaseModel):
-    """LLM-based grading configuration."""
+    """LLM-based grading configuration.
+
+    The judge's structured-output schema is derived from the rubric's criteria;
+    the old `rubric: str` and `output_schema` fields were removed.
+    """
     model_ref: str                                # "openrouter/anthropic/claude-sonnet-4.5"
-    rubric: str                                   # Grading rubric text
-    output_schema: Dict[str, Any]                 # Expected output format
+    rubric: Rubric                                # structured rubric (see above)
 
 
 class GradingConfig(BaseModel):

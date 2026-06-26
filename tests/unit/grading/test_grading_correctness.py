@@ -32,6 +32,7 @@ from tolokaforge.runner.grading import (
     compute_state_diff,
     evaluate_transcript_rules,
 )
+from tolokaforge.runner.models import RequiredAction, TranscriptRulesConfig
 
 
 class TestGoldenMatchScoresOne:
@@ -495,92 +496,325 @@ class TestLLMJudgePlaceholderStatus:
 
 
 class TestTranscriptRulesEvaluation:
-    """Test transcript rules evaluation (implemented but often not used)"""
+    """Real-behaviour tests for the author-facing TranscriptRulesConfig grader.
 
-    def test_must_contain_rule_pass(self):
-        """Test must_contain rule that passes."""
+    ``evaluate_transcript_rules`` takes a single
+    ``TranscriptRulesConfig.model_dump()`` dict (the schema authors write in
+    grading.yaml) and decomposes its fields into per-field sub-checks. These
+    tests exercise each field honestly with realistic fixtures and prove the
+    historical always-pass no-op bug is gone.
+    """
+
+    @staticmethod
+    def _config(**fields):
+        """Build a TranscriptRulesConfig dump with only the given fields set."""
+        return TranscriptRulesConfig(**fields).model_dump()
+
+    # --- empty config (no-op pass) -----------------------------------------
+
+    def test_empty_config_is_noop_pass(self):
+        result = evaluate_transcript_rules([], [], self._config())
+        assert result.passed is True
+        assert result.score == 1.0
+        assert result.details == []
+
+    # --- must_contain ------------------------------------------------------
+
+    def test_must_contain_present(self):
         messages = [
             {"role": "user", "content": "Help me with my order"},
-            {
-                "role": "assistant",
-                "content": "I'll help you with your order. Let me check the status.",
-            },
+            {"role": "assistant", "content": "I'll help you with your order."},
         ]
-
-        rules = [{"type": "must_contain", "text": "help you", "case_sensitive": False}]
-
-        result = evaluate_transcript_rules(messages, [], rules)
-
+        result = evaluate_transcript_rules(messages, [], self._config(must_contain=["help you"]))
         assert result.passed is True
         assert result.score == 1.0
 
-    def test_must_contain_rule_fail(self):
-        """Test must_contain rule that fails."""
+    def test_must_contain_absent_fails(self):
         messages = [
             {"role": "user", "content": "Help me with my order"},
             {"role": "assistant", "content": "I cannot assist with that."},
         ]
-
-        rules = [{"type": "must_contain", "text": "help you", "case_sensitive": False}]
-
-        result = evaluate_transcript_rules(messages, [], rules)
-
+        result = evaluate_transcript_rules(messages, [], self._config(must_contain=["help you"]))
         assert result.passed is False
         assert result.score == 0.0
 
-    def test_must_not_contain_rule_pass(self):
-        """Test must_not_contain rule that passes."""
-        messages = [
-            {"role": "assistant", "content": "I'll help you with your request."},
-        ]
+    def test_must_contain_partial_credit(self):
+        """One of two required strings present → score 0.5, not passed."""
+        messages = [{"role": "assistant", "content": "Your order is confirmed."}]
+        result = evaluate_transcript_rules(
+            messages, [], self._config(must_contain=["confirmed", "refunded"])
+        )
+        assert result.passed is False
+        assert result.score == 0.5
 
-        rules = [{"type": "must_not_contain", "text": "cannot help", "case_sensitive": False}]
+    # --- disallow_regex ----------------------------------------------------
 
-        result = evaluate_transcript_rules(messages, [], rules)
-
+    def test_disallow_regex_no_match_passes(self):
+        messages = [{"role": "assistant", "content": "I'll help you with your request."}]
+        result = evaluate_transcript_rules(
+            messages, [], self._config(disallow_regex=[r"cannot\s+help"])
+        )
         assert result.passed is True
         assert result.score == 1.0
 
-    def test_required_tool_call_rule(self):
-        """Test required_tool_call rule."""
-        messages = []
+    def test_disallow_regex_match_fails(self):
+        messages = [{"role": "assistant", "content": "Sorry, I cannot   help with that."}]
+        result = evaluate_transcript_rules(
+            messages, [], self._config(disallow_regex=[r"cannot\s+help"])
+        )
+        assert result.passed is False
+        assert result.score == 0.0
+
+    # --- max_turns ---------------------------------------------------------
+
+    def test_max_turns_under_limit_passes(self):
+        messages = [
+            {"role": "user", "content": "Q1"},
+            {"role": "assistant", "content": "A1"},
+            {"role": "user", "content": "Q2"},
+            {"role": "assistant", "content": "A2"},
+        ]
+        result = evaluate_transcript_rules(messages, [], self._config(max_turns=5))
+        assert result.passed is True
+        assert result.score == 1.0
+
+    def test_max_turns_over_limit_fails(self):
+        messages = [{"role": "assistant", "content": f"A{i}"} for i in range(10)]
+        result = evaluate_transcript_rules(messages, [], self._config(max_turns=5))
+        assert result.passed is False
+        assert result.score == 0.0
+
+    # --- required_actions --------------------------------------------------
+
+    def test_required_action_present(self):
         tool_history = [
-            {"tool_name": "get_order", "arguments": {"order_id": "123"}, "status": "success"},
+            {
+                "tool_name": "get_order",
+                "arguments": {"order_id": "123"},
+                "executor": "agent",
+                "status": "success",
+            },
         ]
-
-        rules = [{"type": "required_tool_call", "tool_name": "get_order", "min_calls": 1}]
-
-        result = evaluate_transcript_rules(messages, tool_history, rules)
-
+        config = self._config(
+            required_actions=[
+                RequiredAction(
+                    action_id="get",
+                    requestor="assistant",
+                    tool_name="get_order",
+                    arguments={},
+                    compare_args=[],
+                )
+            ]
+        )
+        result = evaluate_transcript_rules([], tool_history, config)
         assert result.passed is True
         assert result.score == 1.0
 
-    def test_max_turns_rule_pass(self):
-        """Test max_turns rule that passes."""
-        messages = [
-            {"role": "user", "content": "Question 1"},
-            {"role": "assistant", "content": "Answer 1"},
-            {"role": "user", "content": "Question 2"},
-            {"role": "assistant", "content": "Answer 2"},
+    def test_required_action_absent_fails(self):
+        tool_history = [
+            {
+                "tool_name": "list_orders",
+                "arguments": {},
+                "executor": "agent",
+                "status": "success",
+            },
         ]
-
-        rules = [{"type": "max_turns", "max": 5, "count_method": "user_messages"}]
-
-        result = evaluate_transcript_rules(messages, [], rules)
-
-        assert result.passed is True
-        assert result.score == 1.0
-
-    def test_max_turns_rule_fail(self):
-        """Test max_turns rule that fails."""
-        messages = [{"role": "user", "content": f"Question {i}"} for i in range(10)]
-
-        rules = [{"type": "max_turns", "max": 5, "count_method": "user_messages"}]
-
-        result = evaluate_transcript_rules(messages, [], rules)
-
+        config = self._config(
+            required_actions=[
+                RequiredAction(
+                    action_id="get",
+                    requestor="assistant",
+                    tool_name="get_order",
+                    compare_args=[],
+                )
+            ]
+        )
+        result = evaluate_transcript_rules([], tool_history, config)
         assert result.passed is False
         assert result.score == 0.0
+
+    def test_required_action_compare_args_right_args(self):
+        """compare_args subset matches → pass."""
+        tool_history = [
+            {
+                "tool_name": "book_reservation",
+                "arguments": {"user_id": "mia_li_3668", "seat": "12A"},
+                "executor": "agent",
+                "status": "success",
+            },
+        ]
+        config = self._config(
+            required_actions=[
+                RequiredAction(
+                    action_id="book",
+                    requestor="assistant",
+                    tool_name="book_reservation",
+                    arguments={"user_id": "mia_li_3668"},
+                    compare_args=["user_id"],
+                )
+            ]
+        )
+        result = evaluate_transcript_rules([], tool_history, config)
+        assert result.passed is True
+        assert result.score == 1.0
+
+    def test_required_action_compare_args_wrong_args_fails(self):
+        """compare_args subset mismatches → fail (the arg value differs)."""
+        tool_history = [
+            {
+                "tool_name": "book_reservation",
+                "arguments": {"user_id": "someone_else", "seat": "12A"},
+                "executor": "agent",
+                "status": "success",
+            },
+        ]
+        config = self._config(
+            required_actions=[
+                RequiredAction(
+                    action_id="book",
+                    requestor="assistant",
+                    tool_name="book_reservation",
+                    arguments={"user_id": "mia_li_3668"},
+                    compare_args=["user_id"],
+                )
+            ]
+        )
+        result = evaluate_transcript_rules([], tool_history, config)
+        assert result.passed is False
+        assert result.score == 0.0
+
+    def test_required_action_requestor_mismatch_fails(self):
+        """A call made by the user does not satisfy an assistant-requestor action."""
+        tool_history = [
+            {
+                "tool_name": "get_order",
+                "arguments": {},
+                "executor": "user",
+                "status": "success",
+            },
+        ]
+        config = self._config(
+            required_actions=[
+                RequiredAction(
+                    action_id="get",
+                    requestor="assistant",
+                    tool_name="get_order",
+                    compare_args=[],
+                )
+            ]
+        )
+        result = evaluate_transcript_rules([], tool_history, config)
+        assert result.passed is False
+
+    def test_required_action_failed_call_does_not_count(self):
+        """A non-success status does not satisfy a required action."""
+        tool_history = [
+            {
+                "tool_name": "get_order",
+                "arguments": {},
+                "executor": "agent",
+                "status": "error",
+            },
+        ]
+        config = self._config(
+            required_actions=[
+                RequiredAction(
+                    action_id="get",
+                    requestor="assistant",
+                    tool_name="get_order",
+                    compare_args=[],
+                )
+            ]
+        )
+        result = evaluate_transcript_rules([], tool_history, config)
+        assert result.passed is False
+
+    # --- communicate_info --------------------------------------------------
+
+    def test_communicate_info_required_present(self):
+        messages = [
+            {"role": "assistant", "content": "Your Wi-Fi password is aurora-481-fennel."},
+        ]
+        config = self._config(communicate_info=[{"info": "aurora-481-fennel", "required": True}])
+        result = evaluate_transcript_rules(messages, [], config)
+        assert result.passed is True
+        assert result.score == 1.0
+
+    def test_communicate_info_required_absent_fails(self):
+        messages = [{"role": "assistant", "content": "Here is some unrelated text."}]
+        config = self._config(communicate_info=[{"info": "aurora-481-fennel", "required": True}])
+        result = evaluate_transcript_rules(messages, [], config)
+        assert result.passed is False
+        assert result.score == 0.0
+
+    def test_communicate_info_not_required_is_not_scored(self):
+        """Non-required info is advisory and produces no sub-check."""
+        messages = [{"role": "assistant", "content": "Nothing relevant here."}]
+        config = self._config(communicate_info=[{"info": "aurora-481-fennel", "required": False}])
+        result = evaluate_transcript_rules(messages, [], config)
+        # No sub-checks at all → no-op pass.
+        assert result.details == []
+        assert result.passed is True
+
+    # --- regression: the old always-pass no-op bug -------------------------
+
+    def test_violating_config_no_longer_silently_passes(self):
+        """REGRESSION: previously the full TranscriptRulesConfig dict was passed
+        as a single rule with no ``type`` key, hitting the unknown-type branch
+        and ALWAYS returning passed=True / score=1.0. A config the transcript
+        clearly violates must now fail.
+        """
+        messages = [{"role": "assistant", "content": "I did nothing useful."}]
+        tool_history = []  # the required action never happened
+        config = self._config(
+            must_contain=["confirmation number"],
+            required_actions=[
+                RequiredAction(
+                    action_id="book",
+                    requestor="assistant",
+                    tool_name="book_reservation",
+                    compare_args=[],
+                )
+            ],
+            communicate_info=[{"info": "your refund", "required": True}],
+        )
+        result = evaluate_transcript_rules(messages, tool_history, config)
+        assert result.passed is False
+        assert result.score < 1.0
+        # Every sub-check should be present and failing.
+        assert len(result.details) == 3
+        assert all(d.passed is False for d in result.details)
+
+    def test_combined_fields_mixed_pass_fail(self):
+        """Multiple fields together: score is the fraction of sub-checks passed."""
+        messages = [
+            {"role": "user", "content": "Cancel my booking"},
+            {"role": "assistant", "content": "Done — your booking is cancelled."},
+        ]
+        tool_history = [
+            {
+                "tool_name": "cancel_booking",
+                "arguments": {"booking_id": "B1"},
+                "executor": "agent",
+                "status": "success",
+            },
+        ]
+        config = self._config(
+            must_contain=["cancelled"],  # pass
+            max_turns=5,  # pass (1 assistant turn)
+            required_actions=[
+                RequiredAction(
+                    action_id="cancel",
+                    requestor="assistant",
+                    tool_name="cancel_booking",
+                    compare_args=[],
+                )
+            ],  # pass
+            communicate_info=[{"info": "refund issued", "required": True}],  # fail
+        )
+        result = evaluate_transcript_rules(messages, tool_history, config)
+        assert result.passed is False
+        assert result.score == 0.75  # 3 of 4 sub-checks pass
 
 
 class TestStableHashComputation:

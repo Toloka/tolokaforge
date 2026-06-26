@@ -10,6 +10,17 @@ from pydantic import BaseModel, Field, field_serializer, field_validator, model_
 from tolokaforge.core.llm.reasoning import ReasoningConfig, StructuredReasoning
 from tolokaforge.core.llm.usage import CostSource, ProviderRawCall, Usage
 
+# Rubric / Criterion / LLMJudgeConfig have a single canonical home in
+# tolokaforge.runner.models — they cross both the YAML grading block and the
+# gRPC wire (serialized inside TrialSpec). Re-exported here so existing
+# ``core.models`` references (e.g. GradingConfig.llm_judge) resolve without a
+# second, drifting definition. CriterionResult is the judge's per-criterion
+# output and is consumed by the host-side Grade model below.
+from tolokaforge.runner.models import Criterion as Criterion
+from tolokaforge.runner.models import CriterionResult as CriterionResult
+from tolokaforge.runner.models import LLMJudgeConfig as LLMJudgeConfig
+from tolokaforge.runner.models import Rubric as Rubric
+
 
 class MessageRole(str, Enum):
     """Message role in conversation"""
@@ -224,6 +235,29 @@ class Metrics(BaseModel):
         }
 
 
+class JudgeStatus(str, Enum):
+    """Outcome of the rubric judge for a grade (mirrors proto ``JudgeStatus``).
+
+    ``ERRORED`` is the fail-loud marker: the judge malfunctioned (retry / budget
+    exhaustion or a crash) and there is NO trustworthy numeric score — the
+    ``llm_judge`` component is incomplete, NOT 0.0. ``UNSPECIFIED`` means no
+    judge was configured / run. The integer values match the proto enum so the
+    gRPC wire value maps directly via :meth:`from_proto`.
+    """
+
+    UNSPECIFIED = "unspecified"
+    COMPLETED = "completed"
+    ERRORED = "errored"
+
+    @classmethod
+    def from_proto(cls, value: int) -> "JudgeStatus":
+        """Map the proto ``JudgeStatus`` integer to this enum (fail loud on unknown)."""
+        mapping = {0: cls.UNSPECIFIED, 1: cls.COMPLETED, 2: cls.ERRORED}
+        if value not in mapping:
+            raise ValueError(f"Unknown proto JudgeStatus value: {value}")
+        return mapping[value]
+
+
 class GradeComponents(BaseModel):
     """Individual grading component scores"""
 
@@ -231,6 +265,29 @@ class GradeComponents(BaseModel):
     transcript_rules: float | None = None
     llm_judge: float | None = None
     custom_checks: float | None = None
+
+
+class JudgeUsage(BaseModel):
+    """The rubric judge's OWN token usage / cost (host-side boundary model).
+
+    The judge runs its own LLM inside the Runner, so its spend is separate from
+    the agent's (which lives in ``Metrics.usage``). This is intentionally a
+    distinct, small type rather than the per-call
+    :class:`~tolokaforge.core.llm.usage.Usage`: the judge reports a single
+    aggregate (no per-call cache history), and its ``tool_calls`` / ``calls``
+    counters are judge-specific accounting. Field set mirrors the runner's
+    :class:`tolokaforge.core.grading.judge.JudgeUsage` dataclass 1:1 and the
+    proto ``JudgeReport`` usage fields.
+    """
+
+    calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    reasoning_tokens: int = 0
+    cost_usd: float = 0.0
+    tool_calls: int = 0
+
+    model_config = {"extra": "forbid"}
 
 
 class CustomCheckDetail(BaseModel):
@@ -252,6 +309,22 @@ class Grade(BaseModel):
     reasons: str | dict[str, list[str]] = ""
     state_diff: dict[str, Any] | None = None
     custom_checks_details: list[CustomCheckDetail] | None = None
+    # Per-criterion rubric-judge breakdown. ``None`` when no LLM judge ran;
+    # an empty list is distinct (judge ran, rubric had no scorable criteria).
+    criterion_results: list[CriterionResult] | None = None
+    # Rubric-judge outcome. ``UNSPECIFIED`` when no judge was configured;
+    # ``ERRORED`` means the judge malfunctioned and the ``llm_judge`` component
+    # carries NO score (it must NOT be read as 0.0). See JudgeStatus.
+    judge_status: JudgeStatus = JudgeStatus.UNSPECIFIED
+    # The judge's own token usage / cost. ``None`` when no judge ran; populated
+    # for both COMPLETED and ERRORED runs (an errored judge still spent tokens).
+    judge_usage: JudgeUsage | None = None
+    # The judge's full message transcript (role / content / tool_calls dicts) —
+    # the audit channel for WHY a criterion was scored as it was. Written to a
+    # sidecar ``judge_trajectory.yaml`` artifact, not inlined in ``grade.yaml``,
+    # so the grade stays scannable (mirrors the trajectory/prompts split). See
+    # docs/OUTPUT_FORMAT.md. ``None`` when no judge ran or none was captured.
+    judge_transcript: list[dict[str, Any]] | None = None
 
 
 class Trajectory(BaseModel):
@@ -576,17 +649,6 @@ class TranscriptRulesConfig(BaseModel):
     tool_expectations: dict[str, list[str]] | None = None
     required_actions: list[RequiredAction] = Field(default_factory=list)  # NEW
     communicate_info: list[CommunicateInfo] = Field(default_factory=list)  # NEW
-
-
-class LLMJudgeConfig(BaseModel):
-    """LLM judge configuration"""
-
-    model_ref: str | None = None
-    rubric: str
-    output_schema: dict[str, Any]
-    agentic: bool = False
-    system_prompt: str | None = None
-    tool_packs: list[str] = Field(default_factory=list)
 
 
 class GradingCombineConfig(BaseModel):

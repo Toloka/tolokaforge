@@ -339,11 +339,13 @@ required-version = ">=0.9.5,<0.10"
 members = [
     "tools/dev-mcp",
     "tools/pricing-updater",
+    "tools/rubric-calibrator",
     "external_adapters/tolokaforge-adapter-terminal-bench",
 ]
 
 [tool.uv.sources]
 dev-mcp = { workspace = true }
+rubric-calibrator = { workspace = true }
 tolokaforge = { workspace = true }
 tolokaforge-adapter-terminal-bench = { workspace = true }
 

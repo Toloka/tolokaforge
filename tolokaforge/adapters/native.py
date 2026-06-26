@@ -614,16 +614,17 @@ class NativeAdapter(BaseAdapter):
                 )
 
         # Build LLM judge config
+        #
+        # ``rubric`` is now a structured ``Rubric`` (criteria + optional
+        # reference), not free text. The old ``rubric: str`` / ``output_schema``
+        # shape is rejected by ``Rubric``/``LLMJudgeConfig`` (extra="forbid"),
+        # surfacing a migration error during validate.
         llm_judge_config = None
         llm_judge_data = grading_data.get("llm_judge", {}) if grading_data else {}
         if llm_judge_data and llm_judge_data.get("model_ref"):
             from tolokaforge.runner.models import LLMJudgeConfig as RunnerLLMJudgeConfig
 
-            llm_judge_config = RunnerLLMJudgeConfig(
-                model_ref=llm_judge_data["model_ref"],
-                rubric=llm_judge_data.get("rubric", ""),
-                output_schema=llm_judge_data.get("output_schema", {}),
-            )
+            llm_judge_config = RunnerLLMJudgeConfig(**llm_judge_data)
 
         # Build combined grading config
         combine_data = grading_data.get("combine", {}) if grading_data else {}

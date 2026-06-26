@@ -1,0 +1,100 @@
+# Golden calibration fixture for the rubric judge.
+#
+# Scenario: a customer-service agent handles a cancellation + refund. The agent
+# DID issue the refund (final DB state proves it) and quoted the correct amount,
+# but it forgot the policy step of offering travel credit BEFORE the cash refund.
+# This is a deliberately non-trivial case: two criteria clearly pass, one clearly
+# fails on a policy detail the judge must read from the system prompt — exactly
+# the kind of mixed verdict that exercises agreement (not an all-pass walkthrough).
+#
+# `expected` are the human ground-truth labels the judge is calibrated against.
+id: refund_partial_credit
+description: >-
+  Refund issued at the correct amount, but the agent skipped the
+  offer-travel-credit-first policy step. Mixed human verdict.
+
+agent_system_prompt: |
+  You are a customer-service agent for an airline. When a customer requests a
+  cancellation:
+  - Verify the booking is within the 24-hour free-cancellation window.
+  - You MUST offer travel credit before issuing a cash refund.
+  - Always quote the exact refund amount to the customer.
+
+rubric:
+  reference: |
+    Order o_5582 qualifies for a full cash refund of $328.50 (booked 3 hours
+    ago, inside the 24h window). Policy requires offering travel credit before
+    the cash refund.
+  criteria:
+    - id: refund_issued
+      description: The order's refund was actually issued (final status is refunded).
+      kind: binary
+      required: true
+      weight: 1.0
+    - id: amount_quoted
+      description: The agent quoted the correct refund amount to the customer.
+      expected: "$328.50"
+      kind: binary
+      weight: 1.0
+    - id: offered_credit_first
+      description: >-
+        The agent offered travel credit BEFORE issuing the cash refund, as the
+        policy requires.
+      kind: binary
+      weight: 1.0
+    - id: tone
+      description: The reply is polite and professional throughout.
+      kind: graded
+      weight: 0.5
+
+transcript:
+  - role: user
+    content: "Hi, I need to cancel booking o_5582 and get my money back please."
+  - role: assistant
+    content: >-
+      I'm sorry to hear you'd like to cancel. Let me check your booking.
+    tool_calls:
+      - function:
+          name: query_orders
+          arguments: '{"id": "o_5582"}'
+  - role: tool
+    tool_call_id: t1
+    content: '{"id": "o_5582", "status": "confirmed", "amount": 328.50, "booked_minutes_ago": 180}'
+  - role: assistant
+    content: >-
+      Good news — your booking is within the 24-hour cancellation window, so
+      you're eligible for a full refund. I've processed a refund of $328.50 to
+      your original payment method. Is there anything else I can help with?
+    tool_calls:
+      - function:
+          name: issue_refund
+          arguments: '{"id": "o_5582", "amount": 328.50}'
+  - role: tool
+    tool_call_id: t2
+    content: '{"ok": true, "status": "refunded"}'
+
+# Final DB state for the in-memory DBReader (get_db_state / query_db).
+final_db_state:
+  orders:
+    - id: o_5582
+      status: refunded
+      amount: 328.50
+      refund_amount: 328.50
+      booked_minutes_ago: 180
+
+# Human ground-truth labels — one per rubric criterion.
+expected:
+  - criterion_id: refund_issued
+    met: true
+    note: Final DB status is 'refunded'; the refund clearly happened.
+  - criterion_id: amount_quoted
+    met: true
+    note: Agent said "$328.50", matching the order amount.
+  - criterion_id: offered_credit_first
+    met: false
+    note: >-
+      The agent went straight to the cash refund and never offered travel
+      credit, violating the policy step in the system prompt.
+  - criterion_id: tone
+    score: 0.9
+    note: Empathetic opening, clear, offers further help — polite and professional.

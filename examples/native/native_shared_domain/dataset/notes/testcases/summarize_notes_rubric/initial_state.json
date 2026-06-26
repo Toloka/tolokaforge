@@ -1,0 +1,24 @@
+{
+  "notes": [
+    {
+      "id": "N-001",
+      "title": "Office Wi-Fi",
+      "body": "SSID: stonebridge-guest. Password: aurora-481-fennel."
+    },
+    {
+      "id": "N-002",
+      "title": "Lunch order cutoff",
+      "body": "Group lunch orders close at 11:15 every weekday."
+    },
+    {
+      "id": "N-003",
+      "title": "Q3 board meeting",
+      "body": "Q3 board meeting is on October 14 at 09:00 in the Maple room. Bring the printed revenue deck."
+    },
+    {
+      "id": "N-004",
+      "title": "Plant watering",
+      "body": "Water the office plants every Tuesday and Friday."
+    }
+  ]
+}

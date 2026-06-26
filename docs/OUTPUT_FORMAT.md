@@ -22,6 +22,7 @@ bumped and this document is updated in the same commit.
             ├── env.yaml
             ├── metrics.yaml
             ├── grade.yaml
+            ├── judge_trajectory.yaml       ← rubric-judge transcript (only when an LLM judge ran)
             ├── logs.yaml
             ├── prompts.yaml                ← agent + user-sim system prompts
             └── tools_schemas.yaml          ← post-policy tool list
@@ -320,11 +321,90 @@ state_diff:  # Present when state check fails
   diff_lines: 200
   has_diff: true
 custom_checks_details: null     # list[CustomCheckDetail] or null
+criterion_results:              # per-criterion rubric breakdown; null unless an LLM judge ran
+  - id: refund_amount
+    met: true
+    score: 1.0
+    justification: "Reply quotes the correct $328.50 refund."
+  - id: tone
+    met: false
+    score: 0.4
+    justification: "Polite but terse; missed the apology the policy asks for."
+judge_status: completed         # unspecified | completed | errored
+judge_usage:                    # the judge's OWN token spend; null unless an LLM judge ran
+  calls: 3
+  prompt_tokens: 4120
+  completion_tokens: 318
+  reasoning_tokens: 0
+  cost_usd: 0.0142
+  tool_calls: 4
 ```
 
 Score scale: `0.0` ≤ `score` ≤ `1.0`. `binary_pass` is the harness-level
 pass/fail; `score` is a fractional pass rate (used for tasks with partial
 credit).
+
+### Rubric-judge fields
+
+`criterion_results`, `judge_status`, and `judge_usage` are populated only
+when an LLM rubric judge ran (`grading.llm_judge` configured). See
+[`docs/GRADING.md`](GRADING.md) for the rubric mechanism and the two
+weighting layers.
+
+* `criterion_results` — one entry per rubric criterion: `id`, `met`
+  (binary verdict; for graded criteria, whether it cleared the author's
+  0.5 threshold), `score` (`0`/`1` for binary, `0`–`1` for graded), and
+  the judge's `justification`. `null` when no judge ran; `[]` is distinct
+  (judge ran, rubric had no scorable criteria).
+* `judge_status` — `unspecified` (no judge configured), `completed`
+  (per-criterion results produced), or `errored`. **`errored` is the
+  fail-loud marker**: the judge malfunctioned (retry / wall-time
+  exhaustion or a crash). The `components.llm_judge` score is then
+  **incomplete and MUST NOT be read as `0.0`** — it is left unscored and
+  excluded from the weighted combine.
+* `judge_usage` — the judge's own token usage / cost, separate from the
+  agent's `metrics.yaml` `usage`. The judge runs a separate LLM inside
+  the Runner; this records what *grading* cost. Populated for both
+  `completed` and `errored` runs (an errored judge still spent tokens).
+
+## `trials/{task_id}/{trial_index}/judge_trajectory.yaml`
+
+The rubric judge's own message transcript — written **only** when an LLM
+judge ran and captured one (absent file ⇒ no judge transcript for this
+trial). Kept out of `grade.yaml` for the same reason agent prompts live
+in `prompts.yaml`: the transcript is often kilobytes of read-tool calls
+and inspection, and a reviewer opening `grade.yaml` wants the verdict,
+not the judge's working.
+
+```yaml
+messages:
+  - role: system
+    content: "You are a strict, evidence-based grading judge..."
+  - role: user
+    content: "The agent under evaluation operated under this policy..."
+  - role: assistant
+    content: ""
+    tool_calls:
+      - id: call_1
+        name: get_db_state
+        arguments: {tables: ["orders"]}
+  - role: tool
+    content: "{...}"
+    tool_call_id: call_1
+  - role: assistant
+    content: ""
+    tool_calls:
+      - id: call_2
+        name: submit_report
+        arguments: {refund_amount: true, ...}
+```
+
+This is the **audit / reproducibility channel** for the judge. The judge
+loop's tool-call ordering is non-deterministic even at `temperature=0`
+(plan open question #2), so the recorded transcript — not a re-run — is
+the source of truth for *what the judge saw and did*. For an `errored`
+judge it carries the partial transcript up to the failure, which is the
+most useful debugging artifact.
 
 ## `trials/{task_id}/{trial_index}/logs.yaml`
 
@@ -371,6 +451,7 @@ def load_trial(trial_dir: Path) -> dict:
         "env",
         "metrics",
         "grade",
+        "judge_trajectory",
         "logs",
         "prompts",
         "tools_schemas",

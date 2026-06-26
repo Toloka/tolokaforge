@@ -348,6 +348,36 @@ class RunnerClient:
                         }
                         for cc in grade.custom_checks
                     ],
+                    # Per-criterion rubric-judge breakdown. Carried through to the
+                    # Pydantic Grade.criterion_results so reviewers see which
+                    # criterion failed and why.
+                    "criterion_results": [
+                        {
+                            "id": cr.id,
+                            "met": cr.met,
+                            "score": cr.score,
+                            "justification": cr.justification,
+                        }
+                        for cr in grade.criterion_results
+                    ],
+                    "judge_status": grade.judge_status,
+                    # Judge accounting + audit transcript. The judge runs its own
+                    # LLM in the Runner; its usage/cost and message transcript are
+                    # surfaced here so the host writes them to the trial bundle
+                    # (grade.yaml usage + judge_trajectory.yaml sidecar).
+                    "judge_report": (
+                        {
+                            "calls": grade.judge_report.calls,
+                            "prompt_tokens": grade.judge_report.prompt_tokens,
+                            "completion_tokens": grade.judge_report.completion_tokens,
+                            "reasoning_tokens": grade.judge_report.reasoning_tokens,
+                            "cost_usd": grade.judge_report.cost_usd,
+                            "tool_calls": grade.judge_report.tool_calls,
+                            "transcript_json": grade.judge_report.transcript_json,
+                        }
+                        if grade.HasField("judge_report")
+                        else None
+                    ),
                 }
 
             if response.success:

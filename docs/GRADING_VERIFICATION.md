@@ -221,41 +221,11 @@ Output files are written by [`tolokaforge/core/output_writer.py`](../tolokaforge
 
 ## C) What's Missing / Placeholder
 
-### LLM Judge
+### Custom Checks placeholder
 
-**Status: Implemented but not used in Docker architecture**
-
-**Implementation exists at:**
-- [`tolokaforge/core/grading/judge.py`](../tolokaforge/core/grading/judge.py) - `LLMJudge` class
-- [`tolokaforge/core/grading/combine.py`](../tolokaforge/core/grading/combine.py:222-232) - Integration
-
-**Current behavior:**
-- `llm_judge` field in `GradeComponents` is always `null`
-- Runner service sets `llm_judge=-1.0` (not computed)
-- The `LLMJudge` class is functional but not invoked in Docker runtime
-
-**From [`tolokaforge/runner/service.py`](../tolokaforge/runner/service.py:814-815):**
 ```python
-llm_judge=-1.0,  # Not computed by Runner
 custom_checks=-1.0,  # Not implemented yet
 ```
-
-**To enable LLM judge:**
-1. Configure in `grading.yaml`:
-   ```yaml
-   grading:
-     combine:
-       weights: { state_checks: 0.7, llm_judge: 0.3 }
-     llm_judge:
-       model_ref: "anthropic/claude-3-sonnet"
-       rubric: "Evaluate the agent's helpfulness..."
-       output_schema:
-         type: object
-         properties:
-           score: { type: number }
-           reasons: { type: string }
-   ```
-2. Modify Runner service to invoke `LLMJudge.grade()` during `GradeTrial` RPC
 
 ### Transcript Rules
 
@@ -288,53 +258,29 @@ custom_checks=-1.0,  # Not implemented yet
 
 ---
 
-## D) Recommendations for Implementing LLM Fallback
+## D) LLM Judge (rubric grading)
 
-If LLM judge is needed for subjective evaluation:
+**Status: live, computed by the Runner.** When `grading.llm_judge` is
+configured, `GradeTrial`
+([`tolokaforge/runner/service.py`](../tolokaforge/runner/service.py)) runs a
+read-only agentic rubric judge on the shared tool-calling loop and fills
+`GradeComponents.llm_judge` plus per-criterion `criterion_results`, a
+`judge_status`, and a `JudgeReport` (the judge's own usage + transcript). See
+[GRADING.md](GRADING.md#llm-judge-rubric-grading) for the full mechanism and
+[OUTPUT_FORMAT.md](OUTPUT_FORMAT.md) for the on-disk shape.
 
-### 1. Add LLM Judge to Runner Service
+Key properties (do NOT re-introduce the old behaviour):
 
-Modify [`tolokaforge/runner/service.py`](../tolokaforge/runner/service.py) `GradeTrial` RPC:
-
-```python
-# After hash-based grading
-if grading_config.llm_judge:
-    from tolokaforge.core.grading.judge import LLMJudge
-    
-    judge = LLMJudge(grading_config.llm_judge.model_config)
-    judge_score, judge_reasons = judge.grade(
-        messages=llm_messages,
-        rubric=grading_config.llm_judge.rubric,
-        output_schema=grading_config.llm_judge.output_schema,
-        task_description=task_description.description,
-    )
-    components.llm_judge = judge_score
-```
-
-### 2. Update GradingConfig Schema
-
-Ensure [`tolokaforge/runner/models.py`](../tolokaforge/runner/models.py) `LLMJudgeConfig` includes:
-- `model_ref` - Model identifier (e.g., "anthropic/claude-3-sonnet")
-- `rubric` - Grading rubric text
-- `output_schema` - JSON schema for judge response
-- `temperature` - Sampling temperature (default: 0.0)
-
-### 3. Handle Judge Failures Gracefully
-
-```python
-try:
-    judge_score, judge_reasons = judge.grade(...)
-except Exception as e:
-    logger.warning(f"LLM judge failed: {e}")
-    judge_score = 0.5  # Neutral fallback
-    judge_reasons = f"Judge failed: {e}"
-```
-
-### 4. Consider Cost/Latency
-
-- LLM judge adds API call latency (~1-5s)
-- Consider caching judge results for identical transcripts
-- Use cheaper models for judge (e.g., claude-3-haiku) vs agent
+- **Structured rubric.** `grading.llm_judge.rubric` is a structured `Rubric`
+  (per-criterion `kind` / `weight` / `required` + an author-written `reference`),
+  not free text. There is no `output_schema` — the judge's structured-output
+  schema is derived from the rubric's criteria.
+- **Fail loud, never a neutral fallback.** If the judge malfunctions (retry /
+  wall-time exhaustion or a crash) it emits `judge_status: errored` with **no
+  score** — the `llm_judge` component is left unscored and excluded from the
+  weighted combine. It **never** falls back to `0.0` or `0.5` (AGENTS.md rule 1).
+- **Required criteria are pure gates.** A failed `required` criterion fails the
+  rubric outright; required criteria are excluded from the weighted average.
 
 ---
 

@@ -299,6 +299,41 @@ message Grade {
 
   // Detailed custom check results if applicable
   repeated CustomCheckResult custom_checks = 6;
+
+  // Per-criterion rubric-judge breakdown (empty unless an LLM judge ran).
+  repeated CriterionResult criterion_results = 7;
+
+  // Rubric-judge status: UNSPECIFIED (no judge), COMPLETED, or ERRORED.
+  // ERRORED is fail-loud: the llm_judge component is incomplete, NOT 0.0.
+  JudgeStatus judge_status = 8;
+
+  // The judge's own token usage / cost + audit transcript (unset when no
+  // judge ran). The Runner runs the judge's LLM, so this is grading spend,
+  // separate from the agent's usage.
+  JudgeReport judge_report = 9;
+}
+
+message CriterionResult {
+  string id = 1;              // matches Criterion.id in the rubric
+  bool met = 2;              // binary verdict (graded: cleared the author's bar)
+  double score = 3;          // 0/1 for binary, 0–1 for graded
+  string justification = 4;  // judge's per-criterion reasoning
+}
+
+enum JudgeStatus {
+  JUDGE_STATUS_UNSPECIFIED = 0;  // no judge configured / not run
+  JUDGE_STATUS_COMPLETED = 1;    // per-criterion results produced
+  JUDGE_STATUS_ERRORED = 2;      // judge failed; component incomplete, no score
+}
+
+message JudgeReport {
+  int32 calls = 1;             // LLM calls the judge made
+  int32 prompt_tokens = 2;
+  int32 completion_tokens = 3;
+  int32 reasoning_tokens = 4;
+  double cost_usd = 5;         // the judge's own spend
+  int32 tool_calls = 6;        // read-only tool calls the judge made
+  string transcript_json = 7;  // judge message transcript (audit channel), JSON
 }
 
 message GradeComponents {
@@ -309,8 +344,9 @@ message GradeComponents {
   // Transcript rules score (required actions, communicate info, max turns)
   double transcript_rules = 2;
 
-  // LLM judge score - NOT computed by Runner (see Design Note below)
-  // Runner returns -1.0; Host computes this separately if configured
+  // LLM judge (rubric) score, computed by the Runner on the shared loop.
+  // -1.0 means not evaluated; see Grade.judge_status for ERRORED runs (which
+  // do NOT report a 0.0 score).
   double llm_judge = 3;
 
   // Custom Python checks score
@@ -321,20 +357,22 @@ message GradeComponents {
 // Design Note: LLM Judge Grading
 // =============================================================================
 //
-// LLM Judge grading requires an LLM API call (OpenAI, Anthropic, etc.).
-// This is handled by the HOST, not the Runner, because:
-//
-// 1. Host already has LLM client configured with API keys
-// 2. Runner shouldn't need LLM API access (security boundary)
-// 3. LLM Judge evaluates conversation quality, which Host has full context for
+// The LLM rubric judge is computed by the RUNNER, not the Host. The Runner is
+// already inside the trial's security boundary, co-located with the DB service
+// and the agent workspace the read-only judge tools inspect; secrets are
+// reconstructed in-container, so the judge builds its own LLM client there.
 //
 // Flow:
-//   1. Host calls GradeTrial() → Runner returns state_checks + transcript_rules
-//   2. If grading.llm_judge is configured, Host runs LLM judge locally
-//   3. Host combines all component scores using grading.weights
-//
-// The GradeComponents.llm_judge field is included for completeness but
-// Runner always returns -1.0 (not evaluated). Host fills it in after.
+//   1. Host calls GradeTrial(), forwarding the transcript (incl. the agent's
+//      system prompt) via llm_messages_json.
+//   2. The Runner computes state_checks + transcript_rules, and — when
+//      grading.llm_judge is configured — runs the read-only rubric judge on the
+//      shared tool-calling loop, returning criterion_results + the llm_judge
+//      component score (or JUDGE_STATUS_ERRORED with no score), plus a
+//      JudgeReport (judge usage + transcript).
+//   3. The Runner combines all component scores using grading.weights and
+//      returns the final Grade. (An earlier protocol revision left the judge to
+//      the Host; the Runner now owns it — see docs/RUBRIC_GRADING_DESIGN.md.)
 
 message CustomCheckResult {
   string check_name = 1;
