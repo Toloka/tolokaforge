@@ -1323,7 +1323,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
     def _build_judge_search_policy_tools(
         self, trial_context: TrialContextRuntime
     ) -> list[DelegatingReadTool]:
-        """Build judge passthrough tools reusing the agent's ``search_policy`` tool.
+        """Build judge passthrough tools reusing the agent's ``search_policy`` tools.
 
         TypeSense KB faithfulness: when the agent used the read-only
         ``search_policy`` KB tool (the mcp_core TypeSense connector), the judge
@@ -1334,12 +1334,25 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         judge LLM fills args correctly) and relay its output verbatim.
 
         Gate = mirror the agent (same shape as the rag path): a passthrough is
-        offered IFF the agent's reconstructed tools contain ``search_policy``.
-        Detection is by the documented tool name — ``search_policy`` is a closed
-        mcp_core tool, not a tolokaforge type, so instance detection is
-        unavailable; the name is the contract. Only this ONE documented read-only
-        tool is exposed (never a generic MCP passthrough — we cannot classify
-        arbitrary tools' read-only-ness).
+        offered for each reconstructed tool whose name identifies the documented
+        ``search_policy`` connector. Detection is by the documented connector name
+        — ``search_policy`` is a closed mcp_core tool, not a tolokaforge type, so
+        instance detection is unavailable; the name is the contract. We accept the
+        bare name ``search_policy`` AND any adapter toolset-namespace PREFIX of it
+        (e.g. ``connectors_typesense_search_policy``): namespaced adapters
+        (``tlk_mcp_core`` / ``frozen_mcp_core``) key ``agent_tools`` by the
+        prefixed ``schema.name``, so an exact lookup would miss them. The suffix
+        is anchored on ``_search_policy`` so unrelated names (``search_policy_v2``,
+        ``search_policy_admin``) do NOT match. This only WIDENS which agent KB
+        tools are reused; the read-only-by-convention assumption of the
+        ``search_policy`` connector extends to its namespaced variants, so we stay
+        within the documented read-only connector convention (never a generic MCP
+        passthrough — we cannot classify arbitrary tools' read-only-ness).
+
+        Multiple connectors: an agent may expose several TypeSense domains, each a
+        distinct ``*_search_policy`` connector. We build one passthrough per match,
+        each named from its own ``tool_schema.name`` (the distinct namespaced names
+        guarantee no judge-registry collision).
 
         Async bridge: the agent ``ToolWrapper.execute`` is async, but the judge
         loop runs synchronously in a worker thread. ``invoke`` bridges each call
@@ -1347,32 +1360,43 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         loop the DB reader bridges to), so the judge tool's sync ``execute`` can
         drive the agent tool's async ``execute``.
         """
-        agent_tool = trial_context.agent_tools.get(_SEARCH_POLICY_TOOL_NAME)
-        if agent_tool is None:
-            return []
 
-        if not hasattr(agent_tool, "tool_schema") or not callable(
-            getattr(agent_tool, "execute", None)
-        ):
-            logger.warning(
-                f"search_policy in agent_tools is not a ToolWrapper "
-                f"({type(agent_tool).__name__}); skipping judge KB passthrough"
+        def _is_search_policy(name: str) -> bool:
+            return name == _SEARCH_POLICY_TOOL_NAME or name.endswith(f"_{_SEARCH_POLICY_TOOL_NAME}")
+
+        def _make_invoke(tool: Any) -> Callable[[dict[str, Any]], str]:
+            # Bind the per-iteration tool via a factory so the closure does not
+            # capture the loop variable by reference (late-binding bug).
+            def invoke(arguments: dict[str, Any]) -> str:
+                return self._run_async(tool.execute(arguments))
+
+            return invoke
+
+        passthroughs: list[DelegatingReadTool] = []
+        for name, agent_tool in trial_context.agent_tools.items():
+            if not _is_search_policy(name):
+                continue
+
+            if not hasattr(agent_tool, "tool_schema") or not callable(
+                getattr(agent_tool, "execute", None)
+            ):
+                logger.warning(
+                    f"{name} in agent_tools is not a ToolWrapper "
+                    f"({type(agent_tool).__name__}); skipping judge KB passthrough"
+                )
+                continue
+
+            schema = agent_tool.tool_schema
+            passthroughs.append(
+                DelegatingReadTool(
+                    name=schema.name,
+                    description=schema.description,
+                    parameters=schema.parameters,
+                    invoke=_make_invoke(agent_tool),
+                )
             )
-            return []
 
-        schema = agent_tool.tool_schema
-
-        def invoke(arguments: dict[str, Any]) -> str:
-            return self._run_async(agent_tool.execute(arguments))
-
-        return [
-            DelegatingReadTool(
-                name=schema.name,
-                description=schema.description,
-                parameters=schema.parameters,
-                invoke=invoke,
-            )
-        ]
+        return passthroughs
 
     @staticmethod
     def _judge_workspace_dir(trial_context: TrialContextRuntime) -> Path | None:

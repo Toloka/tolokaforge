@@ -103,6 +103,29 @@ class _FakeReconstructedSearchPolicy:
         return f"policy-doc-for:{arguments['question']}"
 
 
+class _FakeNamespacedSearchPolicy(_FakeReconstructedSearchPolicy):
+    """A ``search_policy`` connector reconstructed under an adapter NAMESPACE.
+
+    ``tlk_mcp_core`` / ``frozen_mcp_core`` adapters key ``agent_tools`` by the
+    prefixed ``schema.name`` (e.g. ``connectors_typesense_search_policy``). This
+    mimics that real keying: ``.tool_schema.name`` carries the namespaced name.
+    """
+
+    def __init__(self, name: str) -> None:
+        super().__init__()
+        self.tool_schema = ToolSchema(
+            name=name,
+            description=f"Search the {name} TypeSense KB",
+            parameters={
+                "type": "object",
+                "properties": {"question": {"type": "string"}},
+                "required": ["question"],
+            },
+            category="read",
+        )
+        self.name = name
+
+
 def _trial_context_with(agent_tools: dict):
     ctx = MagicMock()
     ctx.agent_tools = agent_tools
@@ -193,6 +216,121 @@ def test_search_policy_passthrough_skips_non_tool_wrapper(caplog):
 
         assert tools == []
         assert any("not a ToolWrapper" in rec.message for rec in caplog.records)
+    finally:
+        service.shutdown()
+
+
+def test_search_policy_passthrough_matches_namespaced_connector():
+    """REGRESSION: a NAMESPACED ``connectors_typesense_search_policy`` tool.
+
+    Namespaced adapters (``tlk_mcp_core`` / ``frozen_mcp_core``) key
+    ``agent_tools`` by the prefixed ``schema.name``. An exact ``.get("search_policy")``
+    misses it, so the judge can't read the same KB the agent did. The gate must
+    match the bare name AND the namespaced suffix, preserve the namespaced schema
+    name on the passthrough, and bridge async execute correctly.
+    """
+    service = _service(None)
+    try:
+        agent_tool = _FakeNamespacedSearchPolicy("connectors_typesense_search_policy")
+        tools = service._build_judge_search_policy_tools(
+            _trial_context_with(
+                {"connectors_typesense_search_policy": agent_tool, "other": MagicMock()}
+            )
+        )
+
+        assert len(tools) == 1
+        passthrough = tools[0]
+        assert isinstance(passthrough, DelegatingReadTool)
+        # The namespaced schema name is preserved (no collision with bare name).
+        assert passthrough.get_schema()["function"]["name"] == "connectors_typesense_search_policy"
+
+        # Delegates/bridges: the sync judge tool drives the agent tool's async execute.
+        result = passthrough.execute(question="refund window")
+        assert result.success is True
+        assert result.output == "policy-doc-for:refund window"
+        assert agent_tool.received == [{"question": "refund window"}]
+    finally:
+        service.shutdown()
+
+
+def test_search_policy_passthrough_matches_bare_name_no_regression():
+    """The bare ``search_policy`` connector still produces a passthrough."""
+    service = _service(None)
+    try:
+        agent_tool = _FakeReconstructedSearchPolicy()
+        tools = service._build_judge_search_policy_tools(
+            _trial_context_with({"search_policy": agent_tool})
+        )
+
+        assert len(tools) == 1
+        assert tools[0].get_schema()["function"]["name"] == "search_policy"
+    finally:
+        service.shutdown()
+
+
+def test_search_policy_passthrough_exposes_all_matching_connectors():
+    """Multiple TypeSense domains → one distinct passthrough per connector."""
+    service = _service(None)
+    try:
+        typesense = _FakeNamespacedSearchPolicy("connectors_typesense_search_policy")
+        elastic = _FakeNamespacedSearchPolicy("connectors_elastic_search_policy")
+        tools = service._build_judge_search_policy_tools(
+            _trial_context_with(
+                {
+                    "connectors_typesense_search_policy": typesense,
+                    "connectors_elastic_search_policy": elastic,
+                    "unrelated": MagicMock(),
+                }
+            )
+        )
+
+        names = {t.get_schema()["function"]["name"] for t in tools}
+        assert names == {
+            "connectors_typesense_search_policy",
+            "connectors_elastic_search_policy",
+        }
+
+        # Each passthrough bridges to ITS OWN agent tool (no late-binding closure
+        # bug: both must not collapse onto the last loop iteration's tool).
+        for tool in tools:
+            tool.execute(question=tool.get_schema()["function"]["name"])
+        assert typesense.received == [{"question": "connectors_typesense_search_policy"}]
+        assert elastic.received == [{"question": "connectors_elastic_search_policy"}]
+    finally:
+        service.shutdown()
+
+
+@pytest.mark.parametrize("near_miss", ["search_policy_admin", "search_policy_v2"])
+def test_search_policy_passthrough_ignores_near_miss_names(near_miss):
+    """Anchored suffix: names that do NOT end with ``_search_policy`` are ignored."""
+    service = _service(None)
+    try:
+        tools = service._build_judge_search_policy_tools(
+            _trial_context_with({near_miss: _FakeNamespacedSearchPolicy(near_miss)})
+        )
+        assert tools == []
+    finally:
+        service.shutdown()
+
+
+def test_search_policy_passthrough_skips_namespaced_non_tool_wrapper(caplog):
+    """A namespaced-matching but non-ToolWrapper entry is skipped + warned, not crashed."""
+    service = _service(None)
+    try:
+
+        def bare(arguments: dict) -> str:  # no .execute / .tool_schema
+            return "ignored"
+
+        with caplog.at_level("WARNING"):
+            tools = service._build_judge_search_policy_tools(
+                _trial_context_with({"connectors_typesense_search_policy": bare})
+            )
+
+        assert tools == []
+        assert any(
+            "connectors_typesense_search_policy in agent_tools is not a ToolWrapper" in rec.message
+            for rec in caplog.records
+        )
     finally:
         service.shutdown()
 
