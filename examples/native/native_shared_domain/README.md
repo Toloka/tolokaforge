@@ -80,6 +80,29 @@ The run produces, per trial:
 - `judge_trajectory.yaml` — the judge's own message transcript (the audit channel
   for *why* each criterion was scored as it was).
 
+### Judge KB faithfulness (`Judge KB:` in the grade reasons)
+
+The rubric judge is given a knowledge-base search tool **iff the agent had one
+this trial — the same backend and same per-trial index — or none at all.** You
+cannot grade an agent against information it could not access. The `grade.yaml`
+`reasons` string ends with a `Judge KB: …` note recording what was offered:
+`search_kb` (rag-service), `search_policy` (TypeSense, reused from the agent),
+or `none offered`.
+
+This testcase runs on the **core stack** (the notes MCP server; no
+`search_kb` / browser / rag-service), so the agent has no KB tool — and the
+judge is correctly offered none. The grade shows:
+
+```
+reasons: 'Transcript: … | Judge: score=1.00 (…) | Judge KB: none offered'
+```
+
+and `judge_trajectory.yaml` shows the judge calling only `get_db_state` and
+`submit_report` — never a `search_kb` tool. This is the fix for issue #95:
+on the core stack the judge is no longer handed a phantom `search_kb` that
+would silently 404 against a rag-service that isn't running. See
+`docs/GRADING.md` § Judge KB faithfulness.
+
 ## Required-gate-fire testcase (`add_note_duplicate_check_gated`)
 
 `summarize_notes_rubric` is the happy path (a good agent passes, score 1.0). This

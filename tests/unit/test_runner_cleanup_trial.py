@@ -84,6 +84,34 @@ class TestCleanupTrialRPC:
         assert response.error == ""
         assert trial_id not in runner_service.trials
 
+    def test_cleanup_clears_per_trial_kb_search(
+        self, runner_service, mock_grpc_context, task_description
+    ):
+        """CleanupTrial tears down the per-trial judge KnowledgeSearch (issue #95).
+
+        The KB resolver is bound at trial setup and must be dropped at teardown.
+        We hold a reference to the trial context across cleanup (the dict entry is
+        deleted) and assert the KB was explicitly cleared, not merely orphaned.
+        """
+        trial_id = "cleanup_trial_test:0"
+        register = _register(runner_service, mock_grpc_context, trial_id, task_description)
+        assert register.success is True, register.error
+
+        ctx = runner_service.trials[trial_id]
+        # Simulate a trial that resolved a judge KB at setup.
+        sentinel = object()
+        ctx.register_kb_search(sentinel)  # type: ignore[arg-type]
+        assert ctx.resolve_kb_search() is sentinel
+
+        response = runner_service.CleanupTrial(
+            pb2.CleanupTrialRequest(trial_id=trial_id), mock_grpc_context
+        )
+
+        assert response.success is True, response.error
+        assert trial_id not in runner_service.trials
+        # The context we still hold had its KB explicitly cleared.
+        assert ctx.resolve_kb_search() is None
+
     def test_cleanup_is_idempotent_on_unknown_trial(self, runner_service, mock_grpc_context):
         """Cleanup of a trial that was never registered succeeds — repeated cleanup
         on the same retry path must not itself crash."""

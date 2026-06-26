@@ -30,6 +30,7 @@ from tolokaforge.core.grading.judge import (
     model_config_from_ref,
     run_rubric_judge,
 )
+from tolokaforge.core.grading.kb_search import KnowledgeSearch, RagServiceKnowledgeSearch
 
 from .fixture import GoldenFixture
 from .metrics import (
@@ -62,6 +63,22 @@ class DictDBReader:
 
         matches = [m.value for m in parse(jsonpath).find(self._state)]
         return {"results": matches}
+
+
+def _kb_search_for_fixture(fixture: GoldenFixture) -> KnowledgeSearch | None:
+    """Build the per-trial ``KnowledgeSearch`` for a RAG-backed fixture, if any.
+
+    The judge now consumes a backend-neutral :class:`KnowledgeSearch` (not a raw
+    ``rag_url``). A fixture that declares ``rag_url`` is treated as a per-trial
+    rag-service index keyed by the fixture id; absent ``rag_url`` ⇒ no KB tool
+    (faithful gating). The fixture must have been indexed at ``rag_url`` under
+    ``trial_id == fixture.id`` for the judge to retrieve hits.
+    """
+    if not fixture.rag_url:
+        return None
+    from tolokaforge.runner.rag_client import RAGServiceClient
+
+    return RagServiceKnowledgeSearch(RAGServiceClient(base_url=fixture.rag_url), fixture.id)
 
 
 @dataclass(frozen=True)
@@ -126,6 +143,7 @@ def judge_fixture(
     """Run the real judge on one fixture and pair its verdicts against the labels."""
     db_reader = DictDBReader(fixture.final_db_state) if fixture.final_db_state else None
     workspace_dir = fixture.workspace_path(fixture_file) if fixture_file else None
+    kb_search = _kb_search_for_fixture(fixture)
 
     # The calibrator's CLI surface keeps a string ``--model-ref``; convert it to
     # a run-level ModelConfig at this boundary (the judge no longer takes a ref).
@@ -135,7 +153,7 @@ def judge_fixture(
         "agent_system_prompt": fixture.agent_system_prompt,
         "transcript": fixture.transcript,
         "db_reader": db_reader,
-        "rag_url": fixture.rag_url,
+        "kb_search": kb_search,
         "workspace_dir": workspace_dir,
         "llm_client": llm_client,
     }

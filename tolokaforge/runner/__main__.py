@@ -10,7 +10,9 @@ Usage:
 
 Environment Variables:
     DB_SERVICE_URL: URL of the DB Service (default: http://localhost:8000)
-    RAG_SERVICE_URL: URL of the RAG Service (default: http://localhost:8001)
+    RAG_SERVICE_URL: URL of the RAG Service. Optional and has NO default: it is
+        set only when a rag-service is actually running (full stack). Unset =>
+        the runner builds no RAG client and the judge gets no search_kb tool.
     RUNNER_PORT: gRPC server port (default: 50051)
     LOG_LEVEL: Logging level (default: INFO)
     TOLOKAFORGE_SECRETS_JSON: JSON-serialized credential map injected by the
@@ -37,7 +39,6 @@ from tolokaforge.secrets import SecretManager, init_default_from, install_global
 
 # Default configuration
 DEFAULT_DB_SERVICE_URL = "http://localhost:8000"
-DEFAULT_RAG_SERVICE_URL = "http://localhost:8001"
 DEFAULT_RUNNER_PORT = 50051
 DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_MAX_WORKERS = 10
@@ -104,7 +105,13 @@ def get_config() -> dict:
     """
     return {
         "db_service_url": os.environ.get("DB_SERVICE_URL", DEFAULT_DB_SERVICE_URL),
-        "rag_service_url": os.environ.get("RAG_SERVICE_URL", DEFAULT_RAG_SERVICE_URL),
+        # No default: RAG_SERVICE_URL is present iff a rag-service is actually
+        # running (injected by the full stack only). Defaulting it to a
+        # localhost URL would make ``if self.rag_service_url:`` truthy on the
+        # core stack, so the runner would build a RAG client and the judge
+        # would be offered a search_kb tool that fails at runtime (no
+        # rag-service on this stack). Honest absence => no RAG client.
+        "rag_service_url": os.environ.get("RAG_SERVICE_URL"),
         "runner_port": int(os.environ.get("RUNNER_PORT", DEFAULT_RUNNER_PORT)),
         "log_level": os.environ.get("LOG_LEVEL", DEFAULT_LOG_LEVEL),
         "max_workers": int(os.environ.get("MAX_WORKERS", DEFAULT_MAX_WORKERS)),
@@ -277,7 +284,7 @@ async def run_server() -> None:
     logger.info("=" * 60)
     logger.info("Configuration:")
     logger.info(f"  DB Service URL: {config['db_service_url']}")
-    logger.info(f"  RAG Service URL: {config['rag_service_url']}")
+    logger.info(f"  RAG Service URL: {config['rag_service_url'] or 'not configured'}")
     logger.info(f"  Runner Port: {config['runner_port']}")
     logger.info(f"  Log Level: {config['log_level']}")
     logger.info(f"  Max Workers: {config['max_workers']}")

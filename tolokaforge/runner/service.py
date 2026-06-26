@@ -34,6 +34,8 @@ import grpc
 from pydantic import ValidationError
 
 from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, run_rubric_judge
+from tolokaforge.core.grading.judge_tools import DelegatingReadTool
+from tolokaforge.core.grading.kb_search import KnowledgeSearch, RagServiceKnowledgeSearch
 from tolokaforge.core.models import CriterionResult, LLMJudgeConfig, ModelConfig
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, TrialSpec
 from tolokaforge.runner import runner_pb2 as pb2
@@ -69,6 +71,7 @@ from tolokaforge.runner.rag_client import (
 from tolokaforge.runner.tool_factory import (
     DockerComposeExecToolWrapper,
     MCPServerToolWrapper,
+    RAGSearchToolWrapper,
     ToolFactory,
     ToolLifecycleContext,
     ToolReconstructionError,
@@ -78,6 +81,15 @@ logger = logging.getLogger(__name__)
 
 # Service version
 SERVICE_VERSION = "1.0.0"
+
+# The documented read-only mcp_core TypeSense KB connector the agent uses. The
+# judge is allowed to reuse this ONE reconstructed tool (read-only passthrough)
+# so it reads the same corpus the agent did. It is a closed (mcp_core) tool, not
+# a tolokaforge type, so it is matched by this documented name — instance
+# detection is unavailable. This is the deliberate, narrow exception to the
+# judge's "harness-owned allowlist" rule (no generic MCP-tool passthrough — we
+# cannot classify arbitrary MCP tools' read-only-ness).
+_SEARCH_POLICY_TOOL_NAME = "search_policy"
 
 
 # =============================================================================
@@ -122,6 +134,25 @@ class TrialContextRuntime:
         # TrialSpec. None when no selected task uses an llm_judge component; the
         # orchestrator validates up front that it is present whenever a rubric is.
         self.judge_model_config = judge_model_config
+        # Per-trial KnowledgeSearch resolved at setup (the SAME index the agent's
+        # KB tool used), or None when the agent had no KB tool this trial. The
+        # judge is offered ``search_kb`` iff this is non-None — faithful gating.
+        # Per-context state (not a process-global dict) because the runner is
+        # concurrent across trials; this gives lifecycle for free and avoids
+        # locking/leak. See the kb_search resolver methods below.
+        self._kb_search: KnowledgeSearch | None = None
+
+    def register_kb_search(self, impl: KnowledgeSearch) -> None:
+        """Bind the per-trial :class:`KnowledgeSearch` resolved at trial setup."""
+        self._kb_search = impl
+
+    def resolve_kb_search(self) -> KnowledgeSearch | None:
+        """Return the trial's :class:`KnowledgeSearch`, or None if none was resolved."""
+        return self._kb_search
+
+    def clear_kb_search(self) -> None:
+        """Drop the per-trial KB backend (called at trial teardown)."""
+        self._kb_search = None
 
     @property
     def grading_config(self):
@@ -261,7 +292,17 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             Any exception raised by the coroutine
         """
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
-        return future.result(timeout=timeout)
+        try:
+            return future.result(timeout=timeout)
+        except TimeoutError:
+            # Best-effort: release the orphaned coroutine instead of leaking it for
+            # the loop's lifetime. cancel() is thread-safe for
+            # run_coroutine_threadsafe futures; note it cannot interrupt a coroutine
+            # already blocked inside a run_in_executor call (e.g. a wedged MCP
+            # subprocess) — that deeper case is a separate concern. Reachable via the
+            # search_policy judge bridge.
+            future.cancel()
+            raise
 
     def shutdown(self) -> None:
         """
@@ -450,8 +491,14 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # Initialise mcp_core TypeSense registry so search_policy tools work.
         # Documents are already indexed by the host-side adapter; we just
         # register a client inside this container pointing at the same server.
+        #
+        # Gated on ``host`` (TypeSense is configured) ONLY — independent of
+        # ``enabled``. ``enabled`` now means just "this task needs rag-service"
+        # (it gates the RAG indexing block below); it does NOT govern TypeSense.
+        # A TypeSense-only domain therefore sets ``enabled=False`` + ``host=…``:
+        # TypeSense inits here, the RAG block is skipped (no rag_client needed).
         search_config = task_description.search
-        if search_config and search_config.enabled and search_config.host:
+        if search_config and search_config.host:
             self._init_typesense_for_trial(search_config, artifacts_dir)
 
         # Create trial context with validated TaskDescription
@@ -522,7 +569,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 f"Provisioned {len(initial_state.filesystem)} filesystem file(s)"
             )
 
-        # Initialize RAG service if search is enabled (FAIL FAST)
+        # Initialize RAG service if search is enabled (FAIL FAST).
+        # ``enabled`` means the task needs rag-service; on the core stack
+        # (no rag-service ⇒ rag_client is None) this hard-fails ON PURPOSE.
         search_config = task_description.search
         rag_client_for_trial = None
         if search_config and search_config.enabled:
@@ -576,6 +625,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             # Store reconstructed tools in trial context
             trial_context.agent_tools = dict(reconstructed.agent_tools.items())
             trial_context.user_tools = dict(reconstructed.user_tools.items())
+
+            kb_search = self._resolve_judge_kb_search(trial_id, trial_context.agent_tools)
+            if kb_search is not None:
+                trial_context.register_kb_search(kb_search)
 
             logger.info(
                 f"RegisterTrial: {trial_id} - Reconstructed "
@@ -1207,10 +1260,20 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             agent_system_prompt = str(transcript[0].get("content", "") or "")
             transcript = transcript[1:]
 
-        # search_kb only when the task is RAG-backed (a RAG client is configured).
-        # Use the client's already-resolved base_url — never re-read an env var,
-        # which could be empty and silently drop the tool (fail-loud, AGENTS.md #1).
-        rag_url = self.rag_client.base_url if self.rag_client is not None else None
+        # search_kb only when a KnowledgeSearch was resolved for THIS trial at
+        # setup — the SAME per-trial index the agent's KB tool searched. Faithful
+        # gating: agent had a KB ⇒ judge gets the same KB; none ⇒ no tool. This
+        # replaces the old ``rag_url = self.rag_client.base_url`` path, which
+        # keyed on container-level client existence and hit the wrong (global)
+        # index.
+        kb_search = trial_context.resolve_kb_search()
+        # TypeSense KB plane: if the agent had the read-only ``search_policy`` tool
+        # (the documented mcp_core TypeSense connector), let the judge reuse THAT
+        # EXACT reconstructed tool via a read-only passthrough — same tool, query,
+        # backend, and ranking the agent saw. This is orthogonal to the rag
+        # ``kb_search`` path above; both end as read-only tools in the judge
+        # registry. See ``_build_judge_search_policy_tools``.
+        extra_read_tools = self._build_judge_search_policy_tools(trial_context)
         # File readers only when a real workspace exists on this runner.
         workspace_dir = self._judge_workspace_dir(trial_context)
 
@@ -1234,11 +1297,114 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 agent_system_prompt=agent_system_prompt,
                 transcript=transcript,
                 db_reader=_LoopBridgeDBReader(),
-                rag_url=rag_url,
+                kb_search=kb_search,
+                extra_read_tools=extra_read_tools,
                 workspace_dir=workspace_dir,
             )
 
         return await loop.run_in_executor(None, _run)
+
+    def _resolve_judge_kb_search(
+        self, trial_id: str, agent_tools: dict[str, Callable]
+    ) -> KnowledgeSearch | None:
+        """Resolve the judge's per-trial KnowledgeSearch, or None.
+
+        Gated on the SAME signal that gave the AGENT a rag ``search_kb``: a
+        ``RAGSearchToolWrapper`` was reconstructed (dispatch=RAG + a rag client)
+        — NOT ``search_config.enabled`` (the decoupled TypeSense plane;
+        ``native.py`` hardcodes ``search.enabled=False``, so gating there never
+        fires for real rag tasks and wrongly fires for TypeSense ones). Detected
+        by instance, not tool name, so a renamed tool can't fool it.
+
+        Binding to the same ``rag_client`` + ``trial_id`` means the judge
+        retrieves from the SAME per-trial index by construction: if the agent's
+        ``search_kb`` works the judge's does too, and if it 404s both do. (The
+        host-side global ``/index`` POST and per-trial indexing gating are
+        pre-existing and out of scope here.)
+        """
+        if self.rag_client is None:
+            return None
+        if not any(isinstance(t, RAGSearchToolWrapper) for t in agent_tools.values()):
+            return None
+        return RagServiceKnowledgeSearch(self.rag_client, trial_id)
+
+    def _build_judge_search_policy_tools(
+        self, trial_context: TrialContextRuntime
+    ) -> list[DelegatingReadTool]:
+        """Build judge passthrough tools reusing the agent's ``search_policy`` tools.
+
+        TypeSense KB faithfulness: when the agent used the read-only
+        ``search_policy`` KB tool (the mcp_core TypeSense connector), the judge
+        must be able to search the SAME knowledge base. We do this by reusing the
+        agent's OWN already-reconstructed ``search_policy`` ``ToolWrapper`` — no
+        mcp_core import, no assumptions about TypeSense internals or
+        ``search_policy``'s I/O format. We just re-publish its real schema (so the
+        judge LLM fills args correctly) and relay its output verbatim.
+
+        Gate = mirror the agent (same shape as the rag path): a passthrough is
+        offered for each reconstructed tool whose name identifies the documented
+        ``search_policy`` connector. Detection is by the documented connector name
+        — ``search_policy`` is a closed mcp_core tool, not a tolokaforge type, so
+        instance detection is unavailable; the name is the contract. We accept the
+        bare name ``search_policy`` AND any adapter toolset-namespace PREFIX of it
+        (e.g. ``connectors_typesense_search_policy``): namespaced adapters
+        (``tlk_mcp_core`` / ``frozen_mcp_core``) key ``agent_tools`` by the
+        prefixed ``schema.name``, so an exact lookup would miss them. The suffix
+        is anchored on ``_search_policy`` so unrelated names (``search_policy_v2``,
+        ``search_policy_admin``) do NOT match. This only WIDENS which agent KB
+        tools are reused; the read-only-by-convention assumption of the
+        ``search_policy`` connector extends to its namespaced variants, so we stay
+        within the documented read-only connector convention (never a generic MCP
+        passthrough — we cannot classify arbitrary tools' read-only-ness).
+
+        Multiple connectors: an agent may expose several TypeSense domains, each a
+        distinct ``*_search_policy`` connector. We build one passthrough per match,
+        each named from its own ``tool_schema.name`` (the distinct namespaced names
+        guarantee no judge-registry collision).
+
+        Async bridge: the agent ``ToolWrapper.execute`` is async, but the judge
+        loop runs synchronously in a worker thread. ``invoke`` bridges each call
+        to the runner's dedicated event loop via ``self._run_async`` (the same
+        loop the DB reader bridges to), so the judge tool's sync ``execute`` can
+        drive the agent tool's async ``execute``.
+        """
+
+        def _is_search_policy(name: str) -> bool:
+            return name == _SEARCH_POLICY_TOOL_NAME or name.endswith(f"_{_SEARCH_POLICY_TOOL_NAME}")
+
+        def _make_invoke(tool: Any) -> Callable[[dict[str, Any]], str]:
+            # Bind the per-iteration tool via a factory so the closure does not
+            # capture the loop variable by reference (late-binding bug).
+            def invoke(arguments: dict[str, Any]) -> str:
+                return self._run_async(tool.execute(arguments))
+
+            return invoke
+
+        passthroughs: list[DelegatingReadTool] = []
+        for name, agent_tool in trial_context.agent_tools.items():
+            if not _is_search_policy(name):
+                continue
+
+            if not hasattr(agent_tool, "tool_schema") or not callable(
+                getattr(agent_tool, "execute", None)
+            ):
+                logger.warning(
+                    f"{name} in agent_tools is not a ToolWrapper "
+                    f"({type(agent_tool).__name__}); skipping judge KB passthrough"
+                )
+                continue
+
+            schema = agent_tool.tool_schema
+            passthroughs.append(
+                DelegatingReadTool(
+                    name=schema.name,
+                    description=schema.description,
+                    parameters=schema.parameters,
+                    invoke=_make_invoke(agent_tool),
+                )
+            )
+
+        return passthroughs
 
     @staticmethod
     def _judge_workspace_dir(trial_context: TrialContextRuntime) -> Path | None:
@@ -1878,8 +2044,26 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         logger.info(f"Cleaning up trial: {trial_id}")
 
         # Remove from local context
-        if trial_id in self.trials:
+        trial_context = self.trials.get(trial_id)
+        if trial_context is not None:
+            # Explicit teardown of the per-trial judge KnowledgeSearch. Dropping
+            # the context below already GCs it, but clearing here documents intent
+            # and keeps lifecycle symmetric with register_kb_search at setup.
+            trial_context.clear_kb_search()
             del self.trials[trial_id]
+
+        # KNOWN PRE-EXISTING LIMITATION (issue #95, judge_kb_resolver Stage 5):
+        # the mcp_core TypeSense client handle registered by
+        # ``_init_typesense_for_trial`` (via mcp_core's
+        # ``initialize_typesense_for_domain``) is NOT torn down here. mcp_core is
+        # an optional, lazily-imported dependency that is not importable in this
+        # repo, and its ``typesense_registry`` exposes no clearly-named
+        # deregister/clear API we can confirm. Blind-calling an unknown teardown
+        # would risk crashing cleanup or hiding errors (AGENTS.md rule 1), so the
+        # leak is documented rather than papered over. Per-domain registration is
+        # idempotent (re-init for the same domain re-registers, not duplicates),
+        # so the practical impact is a bounded handle held for the runner's
+        # lifetime, not unbounded growth across trials.
 
         # Drop extracted tool artifacts (no-op if none were extracted)
         self._cleanup_trial_artifacts(trial_id)

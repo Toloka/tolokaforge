@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from tolokaforge.docker.stacks.core import core_stack
 from tolokaforge.docker.stacks.full import full_stack
 
 pytestmark = pytest.mark.unit
@@ -22,6 +23,25 @@ def _runner_def(stack):
     runner = stack.services.get("runner")
     assert runner is not None, "runner ServiceDefinition not found in stack"
     return runner
+
+
+def test_core_stack_runner_omits_rag_service_url():
+    """The core stack provisions no rag-service, so the runner container must
+    NOT carry ``RAG_SERVICE_URL``. An honest absence is load-bearing: the
+    runner only builds a RAG client (and the judge only gets a ``search_kb``
+    tool) when this var is present, so a stray value here would point the
+    judge at a host that does not exist on this stack — it would then grade
+    silently without reading the KB it grades against (issue #95)."""
+    runner = _runner_def(core_stack())
+    assert "RAG_SERVICE_URL" not in runner.environment
+
+
+def test_full_stack_runner_injects_rag_service_url():
+    """The full stack DOES run a rag-service, so the runner container carries
+    ``RAG_SERVICE_URL`` pointing at it. This is what makes the agent's
+    full-stack RAG client non-None and the judge's search_kb reachable."""
+    runner = _runner_def(full_stack())
+    assert runner.environment.get("RAG_SERVICE_URL") == "http://tolokaforge-rag-service:8001"
 
 
 def test_full_stack_includes_db_runner_and_extras():
