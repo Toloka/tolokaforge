@@ -624,6 +624,15 @@ class DockerRuntime:
         """Check health of Runner service"""
         return self.runner_client.health_check()
 
+    def cleanup_trial(self, trial_id: str) -> dict:
+        """Forget any prior registration of ``trial_id`` on the runner.
+
+        The retry-cleanup path needs to call this *before* a per-trial
+        adapter exists, so the method lives on the runtime (delegating
+        to the gRPC client). Idempotent on the runner side.
+        """
+        return self.runner_client.cleanup_trial(trial_id)
+
     def __enter__(self):
         """Context manager entry"""
         self.connect()

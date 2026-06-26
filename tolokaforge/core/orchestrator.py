@@ -52,6 +52,7 @@ from tolokaforge.core.rate_limiter import GlobalRateLimiter
 from tolokaforge.core.resume import RunStateManager
 from tolokaforge.core.run_queue import AttemptLease, create_run_queue
 from tolokaforge.core.runner import TrialRunner
+from tolokaforge.core.runtime import RuntimeBackend
 from tolokaforge.core.stuck import StuckDetector
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, EnvEndpoints, TrialResult, TrialSpec
 from tolokaforge.runner.models import AdapterType
@@ -197,6 +198,7 @@ class Orchestrator:
         verbose: bool = False,
         strict: bool = False,
         run_aggregate_writer: RunAggregateWriter | None = None,
+        runtime_backend: RuntimeBackend | None = None,
     ):
         self.config = config
         self.resume = resume
@@ -217,6 +219,12 @@ class Orchestrator:
         self._run_aggregate_writer: RunAggregateWriter = (
             run_aggregate_writer if run_aggregate_writer is not None else FileAggregateWriter()
         )
+        # Execution surface: the orchestrator depends on the
+        # :class:`RuntimeBackend` Protocol, not a concrete class. When
+        # ``None``, ``run()`` / ``run_worker()`` construct a default
+        # :class:`DockerRuntime` from the resolved runner address — the
+        # legacy behaviour. Tests / alternate backends inject here.
+        self._injected_runtime_backend: RuntimeBackend | None = runtime_backend
 
         # Initialize logger
         log_level = logging.DEBUG if verbose else logging.INFO
@@ -302,7 +310,7 @@ class Orchestrator:
 
     def _cleanup_runner_state_for_retry(
         self,
-        docker_runtime: Any,
+        docker_runtime: RuntimeBackend | None,
         task_id: str,
         trial_idx: int,
     ) -> None:
@@ -321,7 +329,7 @@ class Orchestrator:
             return
         trial_id = f"{task_id}:{trial_idx}"
         try:
-            result = docker_runtime.executor_client.cleanup_trial(trial_id)
+            result = docker_runtime.cleanup_trial(trial_id)
         except Exception as e:
             self.logger.warning(
                 "Cleanup before retry raised; continuing with re-registration",
@@ -700,15 +708,20 @@ class Orchestrator:
         else:
             runner_address = None
 
-        # Docker runtime (always used)
-        from tolokaforge.core.docker_runtime import DockerRuntime
-
+        # Resolve the runtime backend: injected for tests / alternate
+        # backends, default :class:`DockerRuntime` otherwise.
         if runner_address is None:
             runner_address = os.environ.get("EXECUTOR_ADDRESS", "executor:50051")
 
-        docker_runtime = DockerRuntime(runner_address=runner_address)
+        docker_runtime: RuntimeBackend
+        if self._injected_runtime_backend is not None:
+            docker_runtime = self._injected_runtime_backend
+        else:
+            from tolokaforge.core.docker_runtime import DockerRuntime
+
+            docker_runtime = DockerRuntime(runner_address=runner_address)
         docker_runtime.connect()
-        self.logger.info("Docker runtime connected")
+        self.logger.info("Runtime backend connected")
 
         env_endpoints = _build_env_endpoints(runner_address)
         self.logger.info(
@@ -1001,10 +1014,15 @@ class Orchestrator:
         if self.config.orchestrator.max_requests_per_second is not None:
             request_limiter = GlobalRateLimiter(self.config.orchestrator.max_requests_per_second)
 
-        from tolokaforge.core.docker_runtime import DockerRuntime
-
         runner_address = os.environ.get("EXECUTOR_ADDRESS", "executor:50051")
-        docker_runtime = DockerRuntime(runner_address=runner_address)
+
+        docker_runtime: RuntimeBackend
+        if self._injected_runtime_backend is not None:
+            docker_runtime = self._injected_runtime_backend
+        else:
+            from tolokaforge.core.docker_runtime import DockerRuntime
+
+            docker_runtime = DockerRuntime(runner_address=runner_address)
         docker_runtime.connect()
 
         env_endpoints = _build_env_endpoints(runner_address)
@@ -1221,7 +1239,7 @@ class Orchestrator:
         agent_client: LLMClient | None,
         user_config: ModelConfig | None,
         output_dir: Path,
-        docker_runtime: Any,
+        docker_runtime: RuntimeBackend | None,
         request_limiter: GlobalRateLimiter | None = None,
         *,
         attempt_id: int = 0,

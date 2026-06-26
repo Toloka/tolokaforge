@@ -313,11 +313,11 @@ class TestCleanupRunnerStateForRetry:
     def test_calls_cleanup_with_canonical_trial_id(self) -> None:
         orch = self._make_orchestrator()
         runtime = MagicMock()
-        runtime.executor_client.cleanup_trial.return_value = {"success": True, "error": None}
+        runtime.cleanup_trial.return_value = {"success": True, "error": None}
 
         orch._cleanup_runner_state_for_retry(runtime, "TASK-001", 3)
 
-        runtime.executor_client.cleanup_trial.assert_called_once_with("TASK-001:3")
+        runtime.cleanup_trial.assert_called_once_with("TASK-001:3")
 
     def test_none_runtime_is_noop(self) -> None:
         """Native (non-Docker) flows have no docker_runtime — cleanup is a no-op."""
@@ -334,14 +334,14 @@ class TestCleanupRunnerStateForRetry:
         """
         orch = self._make_orchestrator()
         runtime = MagicMock()
-        runtime.executor_client.cleanup_trial.side_effect = RuntimeError("connection lost")
+        runtime.cleanup_trial.side_effect = RuntimeError("connection lost")
 
         orch._cleanup_runner_state_for_retry(runtime, "TASK-001", 0)  # must not raise
 
     def test_cleanup_non_success_is_swallowed(self) -> None:
         orch = self._make_orchestrator()
         runtime = MagicMock()
-        runtime.executor_client.cleanup_trial.return_value = {
+        runtime.cleanup_trial.return_value = {
             "success": False,
             "error": "DB unreachable",
         }
@@ -1226,3 +1226,46 @@ class TestJudgeModelGate:
         # No trial was dispatched, and the run never reached Docker setup.
         run_trial.assert_not_called()
         docker_runtime.assert_not_called()
+
+
+# ===================================================================
+# Orchestrator(runtime_backend=...) kwarg
+# ===================================================================
+
+
+@pytest.mark.unit
+class TestRuntimeBackendInjection:
+    """The ``runtime_backend`` kwarg accepts any :class:`RuntimeBackend`
+    impl. The orchestrator stores the injected instance and uses it
+    instead of constructing :class:`DockerRuntime`.
+    """
+
+    def test_kwarg_default_is_none(self) -> None:
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        orch = Orchestrator(_make_run_config())
+        assert orch._injected_runtime_backend is None
+
+    def test_kwarg_stores_injected_instance(self) -> None:
+        from tolokaforge.core.orchestrator import Orchestrator
+        from tolokaforge.core.runtime import InMemoryRuntimeBackend
+
+        backend = InMemoryRuntimeBackend()
+        orch = Orchestrator(_make_run_config(), runtime_backend=backend)
+
+        assert orch._injected_runtime_backend is backend
+
+    def test_injection_does_not_invoke_backend_lifecycle(self) -> None:
+        """Construction must not call ``connect``/``close`` on the injected
+        backend — that happens only when ``run()`` / ``run_worker()`` are
+        invoked. Tests that construct an Orchestrator with an in-memory
+        backend rely on this to assert lifecycle from a known-empty log."""
+        from tolokaforge.core.orchestrator import Orchestrator
+        from tolokaforge.core.runtime import InMemoryRuntimeBackend
+
+        backend = InMemoryRuntimeBackend()
+        Orchestrator(_make_run_config(), runtime_backend=backend)
+
+        assert backend.call_log.connect_calls == []
+        assert backend.call_log.close_calls == 0
+        assert backend.call_log.health_check_calls == 0
