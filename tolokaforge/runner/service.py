@@ -1993,8 +1993,26 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         logger.info(f"Cleaning up trial: {trial_id}")
 
         # Remove from local context
-        if trial_id in self.trials:
+        trial_context = self.trials.get(trial_id)
+        if trial_context is not None:
+            # Explicit teardown of the per-trial judge KnowledgeSearch. Dropping
+            # the context below already GCs it, but clearing here documents intent
+            # and keeps lifecycle symmetric with register_kb_search at setup.
+            trial_context.clear_kb_search()
             del self.trials[trial_id]
+
+        # KNOWN PRE-EXISTING LIMITATION (issue #95, judge_kb_resolver Stage 5):
+        # the mcp_core TypeSense client handle registered by
+        # ``_init_typesense_for_trial`` (via mcp_core's
+        # ``initialize_typesense_for_domain``) is NOT torn down here. mcp_core is
+        # an optional, lazily-imported dependency that is not importable in this
+        # repo, and its ``typesense_registry`` exposes no clearly-named
+        # deregister/clear API we can confirm. Blind-calling an unknown teardown
+        # would risk crashing cleanup or hiding errors (AGENTS.md rule 1), so the
+        # leak is documented rather than papered over. Per-domain registration is
+        # idempotent (re-init for the same domain re-registers, not duplicates),
+        # so the practical impact is a bounded handle held for the runner's
+        # lifetime, not unbounded growth across trials.
 
         # Drop extracted tool artifacts (no-op if none were extracted)
         self._cleanup_trial_artifacts(trial_id)

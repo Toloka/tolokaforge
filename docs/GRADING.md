@@ -115,14 +115,51 @@ grading:
   path-independence. The judge's input surface is exactly
   `{agent_system_prompt, transcript, rubric, read-only tools}`.
 * **Harness-owned read-only tools.** The judge gets a fixed read-only allowlist —
-  DB reads (`get_db_state` / `query_db`), `search_kb` (when the task is
-  RAG-backed), `read_file` (only when the agent produced a workspace), and the
-  rubric-derived `submit_report`. No `write`, no `compute`, no reuse of the
-  agent's tools.
+  DB reads (`get_db_state` / `query_db`), a KB search mirroring the agent's
+  (`search_kb` for rag-service or the reused `search_policy` for TypeSense — see
+  *Judge KB faithfulness* below), `read_file` (only when the agent produced a
+  workspace), and the rubric-derived `submit_report`. No `write`, no `compute`.
 * **Single call, per-criterion output.** The judge inspects the final state, then
   calls `submit_report` once with `{met, score, justification}` for every
   criterion (its arg schema is generated from the rubric and validated with
   Pydantic).
+
+### Judge KB faithfulness
+
+A rubric often says "the response complies with policy X", so the judge must be
+able to read the **same knowledge base the agent read** — never a different
+corpus, and never none while still scoring policy compliance. The judge's KB
+capability is therefore resolved **per-trial to mirror the agent's** (issue #95):
+
+* **rag-service** — when the agent had the rag `search_kb` tool (a
+  `RAGSearchToolWrapper` was reconstructed and a rag client exists), the judge
+  gets a `search_kb` bound to the **same `rag_client` + `trial_id`**, querying the
+  per-trial `/trials/{trial_id}/search` index. Identical retrieval by
+  construction: the agent gets hits ⇒ the judge does too; the agent 404s ⇒ the
+  judge 404s.
+* **TypeSense (`search_policy`)** — when the agent had the read-only
+  `search_policy` KB tool (the mcp_core TypeSense connector), the judge reuses
+  **that exact reconstructed tool** through a read-only passthrough: same tool,
+  query, backend, and ranking. No mcp_core import, no assumptions about
+  `search_policy`'s I/O.
+* **None** — if the agent had no KB tool, the judge gets none. You cannot
+  penalise an agent for information it could not access.
+
+**Seeing which backend was used.** The judge's `reasons` (surfaced into the grade
+output's `reasons`) always ends with a `Judge KB: …` note — `Judge KB: search_kb`,
+`Judge KB: search_policy`, or `Judge KB: none offered`. The `JudgeResult` also
+carries the structured `kb_tools_offered` tuple. This is the visible "graded
+with / without KB" signal. "none offered" is **observability, not an error** — we
+cannot statically know whether a given rubric needs a KB, so a KB-less judge
+still `COMPLETED`; the note simply makes the gap auditable. The judge's own
+`judge_trajectory.yaml` records which KB tools it actually *called*.
+
+**Honest limitation.** The `search_policy` reuse path is validated only against a
+fake reconstructed tool in unit tests; real TypeSense retrieval is exercised only
+in a deployed mcp_core environment (mcp_core is not importable in this repo).
+Likewise the mcp_core TypeSense client handle registered at trial setup is not
+torn down at cleanup — a documented, bounded pre-existing leak (no confirmable
+deregister API in mcp_core's registry); see the runner's `cleanup_trial`.
 
 ### Fail-loud: the ERRORED status
 

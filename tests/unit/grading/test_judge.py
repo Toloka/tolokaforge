@@ -429,6 +429,92 @@ def test_extra_read_tool_bridges_a_sync_call_into_an_async_invoke():
         t.join(timeout=5.0)
 
 
+# ---------------------------------------------------------------------------
+# Observability: kb_tools_offered + the "Judge KB: …" reasons note (issue #95)
+# ---------------------------------------------------------------------------
+
+
+def test_kb_observability_rag_search_kb_offered():
+    """rag-service KB resolved → kb_tools_offered=('search_kb',) + reasons note."""
+    rubric = _binary_rubric()
+    client = ScriptedClient([[("submit_report", _submit_args(refund_done=True))]])
+    result = run_rubric_judge(
+        rubric=rubric,
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="",
+        transcript=[],
+        db_reader=FakeDBReader(),
+        kb_search=FakeKnowledgeSearch(),
+        llm_client=client,
+    )
+    assert result.kb_tools_offered == ("search_kb",)
+    assert "Judge KB: search_kb" in result.reasons
+
+
+def test_kb_observability_search_policy_offered():
+    """TypeSense passthrough (extra_read_tools) → kb_tools_offered=('search_policy',)."""
+    from tolokaforge.core.grading.judge_tools import DelegatingReadTool
+
+    rubric = _binary_rubric()
+    tool = DelegatingReadTool(
+        name="search_policy",
+        description="Search the policy KB",
+        parameters=_search_policy_schema(),
+        invoke=lambda args: "policy result text",
+    )
+    client = ScriptedClient([[("submit_report", _submit_args(refund_done=True))]])
+    result = run_rubric_judge(
+        rubric=rubric,
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="",
+        transcript=[],
+        db_reader=FakeDBReader(),
+        extra_read_tools=[tool],
+        llm_client=client,
+    )
+    assert result.kb_tools_offered == ("search_policy",)
+    assert "Judge KB: search_policy" in result.reasons
+
+
+def test_kb_observability_none_offered_is_recorded_not_errored():
+    """No KB backend → kb_tools_offered=() + 'Judge KB: none offered' — NOT an error."""
+    rubric = _binary_rubric()
+    client = ScriptedClient([[("submit_report", _submit_args(refund_done=True))]])
+    result = run_rubric_judge(
+        rubric=rubric,
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="",
+        transcript=[],
+        db_reader=FakeDBReader(),
+        kb_search=None,
+        extra_read_tools=None,
+        llm_client=client,
+    )
+    # Observability, not failure: a KB-less judge still COMPLETES.
+    assert result.status is JudgeStatus.COMPLETED
+    assert result.kb_tools_offered == ()
+    assert "Judge KB: none offered" in result.reasons
+
+
+def test_kb_note_surfaced_even_when_judge_errors():
+    """An ERRORED judge still records which KB it had — debugging signal (#95)."""
+    rubric = _binary_rubric()
+    client = ScriptedClient([[("get_db_state", {})]] * 50)  # never submits → turn exhaustion
+    result = run_rubric_judge(
+        rubric=rubric,
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="",
+        transcript=[],
+        db_reader=FakeDBReader(),
+        kb_search=None,
+        max_turns=2,
+        llm_client=client,
+    )
+    assert result.status is JudgeStatus.ERRORED
+    assert result.kb_tools_offered == ()
+    assert "Judge KB: none offered" in result.reasons
+
+
 def test_db_tools_absent_when_no_reader():
     rubric = _binary_rubric()
     client = ScriptedClient([[("submit_report", _submit_args(refund_done=True))]])
