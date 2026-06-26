@@ -1013,3 +1013,56 @@ class TestSerializeModelConfig:
         assert result["agent"]["name"] == "openai/gpt-5.4"
         assert isinstance(result["user"], dict)
         assert result["user"]["name"] == "anthropic/claude-sonnet-4.6"
+
+
+# ===================================================================
+# _build_env_endpoints (free function)
+# ===================================================================
+
+
+@pytest.mark.unit
+class TestBuildEnvEndpoints:
+    """The producer of ``TrialSpec.env_endpoints`` — pure resolver that
+    reads the orchestrator's known runner address and the runner-parity
+    env vars (``DB_SERVICE_URL`` / ``RAG_SERVICE_URL``). No service-stack
+    introspection; suitable for both auto-start and external (worker) runs.
+    """
+
+    def test_defaults_match_docker_stack_injection(self, monkeypatch: Any) -> None:
+        """With no env override, ``db_url`` falls back to the URL the docker
+        stack injects into the runner container — so the wire value matches
+        what the runner already sees today."""
+        from tolokaforge.core.orchestrator import _build_env_endpoints
+
+        monkeypatch.delenv("DB_SERVICE_URL", raising=False)
+        monkeypatch.delenv("RAG_SERVICE_URL", raising=False)
+
+        endpoints = _build_env_endpoints("executor:50051")
+
+        assert endpoints.db_url == "http://tolokaforge-db-service:8000"
+        assert endpoints.rag_url is None
+        assert endpoints.runner_url == "http://executor:50051"
+
+    def test_env_overrides_take_precedence(self, monkeypatch: Any) -> None:
+        from tolokaforge.core.orchestrator import _build_env_endpoints
+
+        monkeypatch.setenv("DB_SERVICE_URL", "http://db.example:8000")
+        monkeypatch.setenv("RAG_SERVICE_URL", "http://rag.example:8001")
+
+        endpoints = _build_env_endpoints("runner.example:50051")
+
+        assert endpoints.db_url == "http://db.example:8000"
+        assert endpoints.rag_url == "http://rag.example:8001"
+        assert endpoints.runner_url == "http://runner.example:50051"
+
+    def test_runner_address_with_scheme_passes_through(self) -> None:
+        from tolokaforge.core.orchestrator import _build_env_endpoints
+
+        endpoints = _build_env_endpoints("http://runner.example:50051")
+        assert endpoints.runner_url == "http://runner.example:50051"
+
+    def test_runner_address_https_passes_through(self) -> None:
+        from tolokaforge.core.orchestrator import _build_env_endpoints
+
+        endpoints = _build_env_endpoints("https://runner.example:50051")
+        assert endpoints.runner_url == "https://runner.example:50051"

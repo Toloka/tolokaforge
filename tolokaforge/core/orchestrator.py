@@ -53,7 +53,7 @@ from tolokaforge.core.resume import RunStateManager
 from tolokaforge.core.run_queue import AttemptLease, create_run_queue
 from tolokaforge.core.runner import TrialRunner
 from tolokaforge.core.stuck import StuckDetector
-from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, TrialResult, TrialSpec
+from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, EnvEndpoints, TrialResult, TrialSpec
 from tolokaforge.runner.models import AdapterType
 
 # Tools that need Playwright + Chromium baked into the runner image. The
@@ -147,6 +147,44 @@ def _build_resolved_block(model_config: ModelConfig) -> dict[str, Any]:
         "effective_preset": resolve_effective_preset(model_config.name, model_config.provider),
         **resolve_policy_names(capabilities),
     }
+
+
+_DEFAULT_DB_SERVICE_URL = "http://tolokaforge-db-service:8000"
+"""Runner-perspective DB service URL the docker stack injects into the runner
+container at start (`tolokaforge/docker/stacks/core.py`). The orchestrator
+mirrors the value on ``TrialSpec.env_endpoints`` so a future out-of-process
+runner reads its service URLs from the spec instead of its own env."""
+
+
+def _normalise_runner_url(runner_address: str) -> str:
+    """Prepend ``http://`` to a bare ``host:port`` runner address, leaving
+    fully-qualified URLs untouched."""
+    if runner_address.startswith(("http://", "https://")):
+        return runner_address
+    return f"http://{runner_address}"
+
+
+def _build_env_endpoints(runner_address: str) -> EnvEndpoints:
+    """Resolve the per-trial service URLs for inclusion in :class:`TrialSpec`.
+
+    Field semantics:
+
+    * ``runner_url`` — derived from the orchestrator's known runner
+      address (the value passed to :class:`DockerRuntime`). Always set.
+    * ``db_url`` — required on the wire. Reads ``DB_SERVICE_URL`` from
+      the environment if set, otherwise the runner-container default
+      the docker stack injects (``_DEFAULT_DB_SERVICE_URL``).
+    * ``rag_url`` — optional. Reads ``RAG_SERVICE_URL`` from the
+      environment if set, otherwise stays ``None``. ``rag-service``
+      ships in ``full_stack`` only, so a ``core_stack`` run with no
+      override resolves to ``None`` — carrying a hardcoded RAG URL
+      would point at a service that isn't running.
+    """
+    return EnvEndpoints(
+        db_url=os.environ.get("DB_SERVICE_URL", _DEFAULT_DB_SERVICE_URL),
+        rag_url=os.environ.get("RAG_SERVICE_URL"),
+        runner_url=_normalise_runner_url(runner_address),
+    )
 
 
 class Orchestrator:
@@ -633,6 +671,14 @@ class Orchestrator:
         docker_runtime.connect()
         self.logger.info("Docker runtime connected")
 
+        env_endpoints = _build_env_endpoints(runner_address)
+        self.logger.info(
+            "Resolved trial-scoped service endpoints",
+            db_url=env_endpoints.db_url,
+            rag_url=env_endpoints.rag_url,
+            runner_url=env_endpoints.runner_url,
+        )
+
         executor_healthy = docker_runtime.health_check()
         self.logger.info("Docker runtime health check", executor_healthy=executor_healthy)
 
@@ -713,6 +759,7 @@ class Orchestrator:
                     request_limiter,
                     attempt_id=lease.retry_count,
                     worker_id=lease_owner,
+                    env_endpoints=env_endpoints,
                 )
                 active_futures[future] = lease
                 return True
@@ -911,10 +958,17 @@ class Orchestrator:
 
         from tolokaforge.core.docker_runtime import DockerRuntime
 
-        docker_runtime = DockerRuntime(
-            runner_address=os.environ.get("EXECUTOR_ADDRESS", "executor:50051")
-        )
+        runner_address = os.environ.get("EXECUTOR_ADDRESS", "executor:50051")
+        docker_runtime = DockerRuntime(runner_address=runner_address)
         docker_runtime.connect()
+
+        env_endpoints = _build_env_endpoints(runner_address)
+        self.logger.info(
+            "Resolved trial-scoped service endpoints",
+            db_url=env_endpoints.db_url,
+            rag_url=env_endpoints.rag_url,
+            runner_url=env_endpoints.runner_url,
+        )
 
         task_by_id = {task.task_id: task for task in self.tasks}
         run_queue = create_run_queue(
@@ -977,6 +1031,7 @@ class Orchestrator:
                         request_limiter=request_limiter,
                         attempt_id=lease.retry_count,
                         worker_id=lease_owner,
+                        env_endpoints=env_endpoints,
                     )
                     trajectory = trial_result.trajectory
                     self.results.append(trajectory)
@@ -1120,6 +1175,7 @@ class Orchestrator:
         *,
         attempt_id: int = 0,
         worker_id: str | None = None,
+        env_endpoints: EnvEndpoints,
     ) -> TrialResult:
         """Run a single trial with environment state and grading.
 
@@ -1327,6 +1383,7 @@ class Orchestrator:
             user_model_config=user_config,
             max_turns=task.max_turns,
             default_tool_timeout_s=DEFAULT_TOOL_TIMEOUT_S,
+            env_endpoints=env_endpoints,
         )
 
         # The spec is the single source of truth for the timeout; the proto

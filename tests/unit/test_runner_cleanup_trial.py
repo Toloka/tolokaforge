@@ -14,7 +14,7 @@ import pytest
 pytestmark = pytest.mark.unit
 
 from tolokaforge.core.models import ModelConfig
-from tolokaforge.core.trial import TrialSpec
+from tolokaforge.core.trial import EnvEndpoints, TrialSpec
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.models import TaskDescription
 
@@ -52,6 +52,10 @@ def _register(runner_service, mock_grpc_context, trial_id: str, td: dict[str, An
         run_id="test_run",
         task=TaskDescription.model_validate(td),
         agent_model_config=ModelConfig(name="test-model", provider="test"),
+        env_endpoints=EnvEndpoints(
+            db_url="http://db.test:8000",
+            runner_url="http://runner.test:50051",
+        ),
     )
     request = pb2.RegisterTrialRequest(
         trial_id=trial_id,
