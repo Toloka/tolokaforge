@@ -53,6 +53,12 @@ class RuntimeBackend(Protocol):
         ``DockerRuntime`` waits for the gRPC server to become healthy
         under a timeout / retry loop; in-memory implementations record
         the call and return immediately.
+
+        Idempotent. Calling ``connect()`` on an instance that is already
+        connected re-runs the health check but does not re-create the
+        underlying connection. Callers (including tests injecting
+        a pre-connected backend) can rely on this — the orchestrator
+        invokes ``connect()`` unconditionally at the start of every run.
         """
         ...
 
@@ -117,9 +123,9 @@ class _UnusableExecutorClient:
 
     def __getattr__(self, name: str) -> Any:
         raise NotImplementedError(
-            f"InMemoryRuntimeBackend.executor_client.{name}() is not implemented. "
-            "Tests that exercise the runner RPC surface must use DockerRuntime "
-            "or mock RunnerClient directly."
+            f"Access to InMemoryRuntimeBackend.executor_client.{name} is not "
+            "implemented. Tests that exercise the runner RPC surface must use "
+            "DockerRuntime or mock RunnerClient directly."
         )
 
 
