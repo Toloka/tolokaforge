@@ -389,6 +389,29 @@ class Orchestrator:
             env_endpoints=env_endpoints,
         )
 
+    def _canonicalise_resumed_run_id(self, run_state: Any, canonical_run_id: str) -> None:
+        """Heal a resumed :class:`RunState` whose ``run_id`` disagrees with
+        the directory it lives in.
+
+        The directory basename is the disk fact and the canonical identifier
+        every other surface (engine_run_state.json, TrialSpec.run_id) is
+        derived from. A legacy state file written before the unification may
+        carry a timestamp-only ``run_id``; on resume we rewrite the state
+        file in place so the two surfaces agree from now on. No-op when
+        they already match.
+        """
+        if self.state_manager is None:
+            raise RuntimeError("state_manager must be initialised before canonicalising run_id")
+        if run_state.run_id == canonical_run_id:
+            return
+        self.logger.warning(
+            "RunState.run_id differs from output_dir.name; canonicalising to output_dir.name",
+            loaded=run_state.run_id,
+            canonical=canonical_run_id,
+        )
+        run_state.run_id = canonical_run_id
+        self.state_manager.save_state(run_state)
+
     def _cleanup_runner_state_for_retry(
         self,
         docker_runtime: RuntimeBackend | None,
@@ -660,12 +683,12 @@ class Orchestrator:
         if self.resume:
             run_state = self.state_manager.load_state()
             if run_state:
-                run_id = run_state.run_id
+                self._canonicalise_resumed_run_id(run_state, run_id)
                 resume_info = self.state_manager.get_resume_info()
                 if resume_info:
                     self.logger.info(
                         "Resuming run",
-                        run_id=run_state.run_id,
+                        run_id=run_id,
                         completed=resume_info["completed_trials"],
                         total=resume_info["total_trials"],
                         pending=resume_info["pending_trials"],
@@ -1309,8 +1332,20 @@ class Orchestrator:
             run_queue.clear_all()
 
         items = self._build_pending_trials(self.tasks, self.config.orchestrator.repeats)
-        run_queue.enqueue_many(items)
-        counts = run_queue.get_counts()
+        existing_counts = run_queue.get_counts()
+        if existing_counts.get("total", 0) > 0:
+            self.logger.warning(
+                "Queue already populated; skipping enqueue to avoid duplicates. "
+                "Pass reset_queue=True to re-enqueue from scratch.",
+                existing_counts=existing_counts,
+                would_enqueue=len(items),
+            )
+            counts = existing_counts
+            queued_attempts = 0
+        else:
+            run_queue.enqueue_many(items)
+            counts = run_queue.get_counts()
+            queued_attempts = len(items)
 
         # Persist engine-level run state for subprocess workers (the preset
         # overlay path is the only field today). Worker CLIs read this so the
@@ -1319,7 +1354,7 @@ class Orchestrator:
         write_engine_run_state(output_dir, run_id=run_id, presets_file=get_overlay_path())
 
         summary = {
-            "queued_attempts": len(items),
+            "queued_attempts": queued_attempts,
             "queue_counts": counts,
             "queue_backend": self.config.orchestrator.queue_backend,
         }

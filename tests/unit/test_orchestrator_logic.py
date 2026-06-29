@@ -1271,6 +1271,133 @@ class TestJudgeModelGate:
 
 
 # ===================================================================
+# Resume canonicalisation
+# ===================================================================
+
+
+@pytest.mark.unit
+class TestResumeCanonicalisation:
+    """``_canonicalise_resumed_run_id`` heals a legacy ``RunState`` whose
+    ``run_id`` disagrees with the directory it lives in. The directory
+    basename is the disk fact; the state file is rewritten so every
+    surface (engine_run_state.json, TrialSpec.run_id) agrees.
+    """
+
+    def test_canonicalises_when_run_id_disagrees(self, tmp_path: Path) -> None:
+        from tolokaforge.core.orchestrator import Orchestrator
+        from tolokaforge.core.resume import RunStateManager
+
+        output_dir = tmp_path / "coding_example_20260626_154233"
+        output_dir.mkdir()
+        state_manager = RunStateManager(output_dir)
+        # Pre-seed a state file with the legacy timestamp-only run_id.
+        state_manager.initialize_run(
+            run_id="20260626_154233",
+            config_path="config.yaml",
+            task_ids=["TASK-001"],
+            repeats=1,
+        )
+
+        orch = Orchestrator(_make_run_config())
+        orch.state_manager = state_manager
+        loaded = state_manager.load_state()
+        assert loaded is not None
+        assert loaded.run_id == "20260626_154233"
+
+        orch._canonicalise_resumed_run_id(loaded, "coding_example_20260626_154233")
+
+        # In-memory state is updated.
+        assert loaded.run_id == "coding_example_20260626_154233"
+        # And the file on disk is rewritten.
+        reloaded = state_manager.load_state()
+        assert reloaded is not None
+        assert reloaded.run_id == "coding_example_20260626_154233"
+
+    def test_no_op_when_run_id_matches(self, tmp_path: Path) -> None:
+        """When the loaded ``run_id`` already matches the canonical one
+        the state file is not rewritten — verified by comparing the
+        ``last_updated`` timestamp."""
+        from tolokaforge.core.orchestrator import Orchestrator
+        from tolokaforge.core.resume import RunStateManager
+
+        output_dir = tmp_path / "coding_example_20260626_154233"
+        output_dir.mkdir()
+        state_manager = RunStateManager(output_dir)
+        state_manager.initialize_run(
+            run_id="coding_example_20260626_154233",
+            config_path="config.yaml",
+            task_ids=["TASK-001"],
+            repeats=1,
+        )
+
+        orch = Orchestrator(_make_run_config())
+        orch.state_manager = state_manager
+        loaded = state_manager.load_state()
+        assert loaded is not None
+        last_updated_before = loaded.last_updated
+
+        orch._canonicalise_resumed_run_id(loaded, "coding_example_20260626_154233")
+
+        # Same value; no rewrite — last_updated unchanged.
+        reloaded = state_manager.load_state()
+        assert reloaded is not None
+        assert reloaded.last_updated == last_updated_before
+
+
+# ===================================================================
+# prepare_run idempotency
+# ===================================================================
+
+
+@pytest.mark.unit
+class TestPrepareRunIdempotency:
+    """``prepare_run`` must be safe to re-run on the same output_dir
+    without double-enqueuing trials. Re-running with ``reset_queue=True``
+    clears the existing queue and re-enqueues from scratch.
+    """
+
+    def _make_orch(self, tmp_path: Path):
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        orch = Orchestrator(_make_run_config())
+        orch.tasks = [_make_task_config("TASK-001"), _make_task_config("TASK-002")]
+        adapter = MagicMock()
+        adapter.to_task_description.side_effect = lambda tid: _task_description_with_judge(
+            tid, has_judge=False
+        )
+        orch.adapter = adapter
+        return orch
+
+    def test_second_call_skips_enqueue(self, tmp_path: Path) -> None:
+        output_dir = tmp_path / "example_20260626_154233"
+        orch = self._make_orch(tmp_path)
+
+        first = orch.prepare_run(output_dir)
+        assert first["queued_attempts"] == 2  # two tasks × repeats=1
+        first_total = first["queue_counts"]["total"]
+        assert first_total == 2
+
+        second = orch.prepare_run(output_dir)
+        # The second call MUST be a no-op — no new attempts enqueued.
+        assert second["queued_attempts"] == 0
+        # And the queue's total population is unchanged.
+        assert second["queue_counts"]["total"] == first_total
+
+    def test_reset_queue_re_enqueues_from_scratch(self, tmp_path: Path) -> None:
+        output_dir = tmp_path / "example_20260626_154233"
+        orch = self._make_orch(tmp_path)
+
+        first = orch.prepare_run(output_dir)
+        assert first["queued_attempts"] == 2
+
+        second = orch.prepare_run(output_dir, reset_queue=True)
+        # With reset_queue, the second call clears and re-enqueues — same
+        # total as the first call (not doubled).
+        assert second["queued_attempts"] == 2
+        assert second["queue_counts"]["total"] == 2
+
+
+# ===================================================================
 # Orchestrator(runtime_backend=...) kwarg
 # ===================================================================
 
