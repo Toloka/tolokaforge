@@ -1326,6 +1326,7 @@ class TestArtifactWriterInjection:
         """The conductor constructed by ``_build_conductor`` receives the
         same writer the orchestrator was given — not a fresh
         :class:`FileArtifactWriter`."""
+        from tolokaforge.core.conductor import InMemoryConductor
         from tolokaforge.core.orchestrator import Orchestrator
         from tolokaforge.core.output.artifacts import InMemoryArtifactWriter
 
@@ -1334,8 +1335,6 @@ class TestArtifactWriterInjection:
 
         def factory(**kwargs):
             captured.update(kwargs)
-            from tolokaforge.core.conductor import InMemoryConductor
-
             return InMemoryConductor()
 
         orch = Orchestrator(
@@ -1346,10 +1345,10 @@ class TestArtifactWriterInjection:
         orch.adapter = MagicMock()
 
         orch._build_conductor(
-            agent_client=MagicMock(),
-            docker_runtime=MagicMock(),
+            agent_client=None,
+            docker_runtime=None,
             output_dir=tmp_path,
-            request_limiter=MagicMock(),
+            request_limiter=None,
         )
 
         assert captured["artifact_writer"] is writer
