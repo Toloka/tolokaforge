@@ -91,6 +91,20 @@ class TestTrialSpecContract:
                 agent_model_config=_make_model_config(),
             )
 
+    def test_empty_run_id_is_rejected(self) -> None:
+        """``run_id`` carries the run-level identity; an empty string is
+        not a meaningful run name. Pinned because the value used to be
+        derived from ``output_dir.name``, which is empty for ``Path('.')``
+        and ``Path('/')``."""
+        with pytest.raises(ValidationError):
+            TrialSpec(
+                trial_id="airline_001:0",
+                run_id="",
+                task=_make_task_description(),
+                agent_model_config=_make_model_config(),
+                env_endpoints=_make_env_endpoints(),
+            )
+
     def test_json_round_trip_is_identity(self) -> None:
         spec = TrialSpec(
             trial_id="airline_001:3",

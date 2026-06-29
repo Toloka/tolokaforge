@@ -1250,6 +1250,25 @@ class TestJudgeModelGate:
         assert recording_conductor.call_log.runs == []
         docker_runtime.assert_not_called()
 
+    def test_run_worker_requires_engine_run_state(self, tmp_path: Path) -> None:
+        """``run_worker`` reads the canonical ``run_id`` from
+        ``engine_run_state.json``. Absence means the operator skipped
+        ``tolokaforge prepare`` — fail loud rather than silently making
+        up an identifier."""
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        config = _make_run_config()
+        orch = Orchestrator(config)
+        orch.tasks = [_make_task_config("TASK-001")]
+        adapter = MagicMock()
+        adapter.to_task_description.side_effect = lambda tid: _task_description_with_judge(
+            tid, has_judge=False
+        )
+        orch.adapter = adapter
+
+        with pytest.raises(RuntimeError, match="engine_run_state.json"):
+            orch.run_worker(tmp_path)
+
 
 # ===================================================================
 # Orchestrator(runtime_backend=...) kwarg

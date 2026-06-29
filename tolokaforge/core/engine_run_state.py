@@ -1,9 +1,9 @@
 """Engine-level run state persisted alongside the queue directory.
 
-Today this file holds a single field — the preset overlay path active when
-``tolokaforge prepare`` ran — so worker subprocesses can inherit it without
-the operator threading ``--presets-file`` through every ``tolokaforge worker``
-invocation.
+The file carries the engine-level inputs a worker subprocess needs to join
+a run without the operator threading them through every ``tolokaforge
+worker`` invocation: the canonical ``run_id`` for the run and the preset
+overlay path active when ``tolokaforge prepare`` ran.
 
 The file is small, JSON, and intentionally separate from the queue database
 so that adding new engine-level fields later does not require a schema
@@ -19,14 +19,18 @@ from typing import Any
 _FILENAME = "engine_run_state.json"
 
 
-def write_engine_run_state(run_dir: Path, *, presets_file: str | None) -> None:
+def write_engine_run_state(run_dir: Path, *, run_id: str, presets_file: str | None) -> None:
     """Write ``engine_run_state.json`` next to the run queue.
 
     Always writes — clearing a previously-persisted overlay requires
     re-running ``prepare`` with no ``--presets-file``, which surfaces as
-    ``presets_file = None`` in the new file.
+    ``presets_file = None`` in the new file. ``run_id`` is required and
+    persisted so workers read the same canonical identifier the
+    orchestrator stamped on every ``TrialSpec``.
     """
-    payload: dict[str, Any] = {"presets_file": presets_file}
+    if not run_id:
+        raise ValueError("run_id must be a non-empty string")
+    payload: dict[str, Any] = {"run_id": run_id, "presets_file": presets_file}
     (Path(run_dir) / _FILENAME).write_text(json.dumps(payload, indent=2) + "\n")
 
 
@@ -47,3 +51,8 @@ def read_engine_run_state(run_dir: Path) -> dict[str, Any]:
 def read_persisted_presets_file(run_dir: Path) -> str | None:
     """Convenience accessor for the overlay path persisted by ``prepare``."""
     return read_engine_run_state(run_dir).get("presets_file")
+
+
+def read_persisted_run_id(run_dir: Path) -> str | None:
+    """Return the canonical ``run_id`` for ``run_dir`` or ``None`` if absent."""
+    return read_engine_run_state(run_dir).get("run_id")
