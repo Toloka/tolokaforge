@@ -23,13 +23,13 @@ import pytest
 import yaml
 
 from tolokaforge.cli.main import _activate_presets_overlay
+from tolokaforge.core.conductor import _build_resolved_block
 from tolokaforge.core.llm import build_capabilities
 from tolokaforge.core.llm.presets import (
     resolve_effective_preset,
     resolve_policy_names,
 )
 from tolokaforge.core.models import EngineConfig, ModelConfig, RunConfig
-from tolokaforge.core.orchestrator import _build_resolved_block
 
 pytestmark = pytest.mark.integration
 

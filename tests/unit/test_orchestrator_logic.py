@@ -423,15 +423,25 @@ class TestCollectExistingCost:
 
 @pytest.mark.unit
 class TestBuildSystemPrompt:
-    """System prompt construction with various priority levels."""
+    """``InProcessConductor._build_system_prompt`` priority resolution."""
 
     def _make_orchestrator(self) -> Any:
-        from tolokaforge.core.orchestrator import Orchestrator
+        from tolokaforge.core.conductor import InProcessConductor
 
         config = _make_run_config()
-        orch = Orchestrator(config)
-        orch.adapter = MagicMock()
-        return orch
+        conductor = InProcessConductor(
+            adapter=MagicMock(),
+            artifact_writer=MagicMock(),
+            config=config,
+            logger=MagicMock(),
+            verbose=False,
+            strict=False,
+            agent_client=MagicMock(),
+            docker_runtime=MagicMock(),
+            output_dir=Path("/tmp"),
+            request_limiter=MagicMock(),
+        )
+        return conductor
 
     def test_inline_agent_system_prompt(self) -> None:
         orch = self._make_orchestrator()
@@ -959,9 +969,9 @@ class TestSerializeModelConfig:
                 provider="openrouter", name="anthropic/claude-sonnet-4.6", temperature=0.2
             ),
         }
-        from tolokaforge.core.orchestrator import Orchestrator
+        from tolokaforge.core.conductor import InProcessConductor
 
-        result = Orchestrator._serialize_model_config(orch)
+        result = InProcessConductor._serialize_model_config(orch)
 
         assert isinstance(result, dict)
         assert result["agent"]["provider"] == "openrouter"
@@ -976,9 +986,9 @@ class TestSerializeModelConfig:
             "agent": {"provider": "openrouter", "name": "openai/gpt-5.4", "temperature": 0.6},
             "user": {"provider": "openrouter", "name": "anthropic/claude-sonnet-4.6"},
         }
-        from tolokaforge.core.orchestrator import Orchestrator
+        from tolokaforge.core.conductor import InProcessConductor
 
-        result = Orchestrator._serialize_model_config(orch)
+        result = InProcessConductor._serialize_model_config(orch)
 
         assert isinstance(result, dict)
         assert result["agent"]["name"] == "openai/gpt-5.4"
@@ -991,9 +1001,9 @@ class TestSerializeModelConfig:
         orch.config.models = {
             "agent": {"provider": "openrouter", "name": "openai/gpt-5.4"},
         }
-        from tolokaforge.core.orchestrator import Orchestrator
+        from tolokaforge.core.conductor import InProcessConductor
 
-        result = Orchestrator._serialize_model_config(orch)
+        result = InProcessConductor._serialize_model_config(orch)
 
         assert result["agent"]["name"] == "openai/gpt-5.4"
         assert result["user"] is None
@@ -1005,9 +1015,9 @@ class TestSerializeModelConfig:
             "agent": {"provider": "openrouter", "name": "openai/gpt-5.4"},
             "user": ModelConfig(provider="openrouter", name="anthropic/claude-sonnet-4.6"),
         }
-        from tolokaforge.core.orchestrator import Orchestrator
+        from tolokaforge.core.conductor import InProcessConductor
 
-        result = Orchestrator._serialize_model_config(orch)
+        result = InProcessConductor._serialize_model_config(orch)
 
         assert isinstance(result["agent"], dict)
         assert result["agent"]["name"] == "openai/gpt-5.4"
@@ -1025,9 +1035,9 @@ class TestSerializeModelConfig:
                 provider="openrouter", name="openai/gpt-4.1-mini", temperature=0.0
             ),
         }
-        from tolokaforge.core.orchestrator import Orchestrator
+        from tolokaforge.core.conductor import InProcessConductor
 
-        result = Orchestrator._serialize_model_config(orch)
+        result = InProcessConductor._serialize_model_config(orch)
 
         assert result["judge"] is not None
         assert result["judge"]["provider"] == "openrouter"
@@ -1044,9 +1054,9 @@ class TestSerializeModelConfig:
             "agent": ModelConfig(provider="openrouter", name="openai/gpt-5.4"),
             "user": ModelConfig(provider="openrouter", name="anthropic/claude-sonnet-4.6"),
         }
-        from tolokaforge.core.orchestrator import Orchestrator
+        from tolokaforge.core.conductor import InProcessConductor
 
-        result = Orchestrator._serialize_model_config(orch)
+        result = InProcessConductor._serialize_model_config(orch)
 
         assert result["judge"] is None
 
@@ -1058,10 +1068,10 @@ class TestSerializeModelConfig:
             "agent": ModelConfig(provider="openrouter", name="openai/gpt-5.4"),
             "judge": ModelConfig(provider="openrouter", name="openai/gpt-4.1-mini"),
         }
-        from tolokaforge.core.orchestrator import Orchestrator
+        from tolokaforge.core.conductor import InProcessConductor
 
         judge = ModelConfig(provider="openrouter", name="openai/gpt-4.1-mini", temperature=0.0)
-        result = Orchestrator._serialize_model_config(orch, judge_config=judge)
+        result = InProcessConductor._serialize_model_config(orch, judge_config=judge)
 
         assert result["judge"]["name"] == "openai/gpt-4.1-mini"
         assert "resolved" in result["judge"]
@@ -1207,24 +1217,37 @@ class TestJudgeModelGate:
 
     def test_run_worker_aborts_before_any_trial_dispatch(self, tmp_path: Path) -> None:
         """Pin the gate's PLACEMENT: the abort happens before a single trial is
-        dispatched. ``_run_trial`` and the Docker runtime are stubbed so that if a
-        refactor moved the gate below the scheduling loop, the trial stub would be
-        invoked and this test would fail instead of silently passing.
+        dispatched. The conductor factory is wired with an
+        :class:`InMemoryConductor` whose call log records every ``run()`` invocation;
+        if a refactor moved the gate below the scheduling loop, the conductor's
+        ``call_log.runs`` would be non-empty and this test would fail.
         """
+        from tolokaforge.core.conductor import InMemoryConductor
         from tolokaforge.core.orchestrator import Orchestrator
 
         config = _make_run_config()  # agent only, no judge model
-        orch = _orchestrator_with_tasks(config, {"TASK-needs-judge": True})
 
-        with (
-            patch.object(Orchestrator, "_run_trial") as run_trial,
-            patch("tolokaforge.core.docker_runtime.DockerRuntime") as docker_runtime,
-        ):
+        # Build a conductor factory that returns a single InMemoryConductor so
+        # we can assert on its call_log after the run_worker raises.
+        recording_conductor = InMemoryConductor()
+
+        def conductor_factory(**_kwargs):
+            return recording_conductor
+
+        orch = Orchestrator(config, conductor_factory=conductor_factory)
+        orch.tasks = [_make_task_config("TASK-needs-judge")]
+        adapter = MagicMock()
+        adapter.to_task_description.side_effect = lambda tid: _task_description_with_judge(
+            tid, has_judge=True
+        )
+        orch.adapter = adapter
+
+        with patch("tolokaforge.core.docker_runtime.DockerRuntime") as docker_runtime:
             with pytest.raises(ValueError, match="TASK-needs-judge"):
                 orch.run_worker(tmp_path)
 
         # No trial was dispatched, and the run never reached Docker setup.
-        run_trial.assert_not_called()
+        assert recording_conductor.call_log.runs == []
         docker_runtime.assert_not_called()
 
 
@@ -1269,3 +1292,104 @@ class TestRuntimeBackendInjection:
         assert backend.call_log.connect_calls == []
         assert backend.call_log.close_calls == 0
         assert backend.call_log.health_check_calls == 0
+
+
+# ===================================================================
+# Orchestrator(conductor_factory=...) kwarg
+# ===================================================================
+
+
+@pytest.mark.unit
+class TestConductorInjection:
+    """The ``conductor_factory`` kwarg accepts a Callable[..., Conductor]
+    that the orchestrator invokes inside ``run()`` / ``run_worker()``
+    once the adapter and per-run dependencies are resolved.
+    """
+
+    def test_kwarg_default_is_none(self) -> None:
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        orch = Orchestrator(_make_run_config())
+        assert orch._conductor_factory is None
+
+    def test_kwarg_stores_injected_factory(self) -> None:
+        from tolokaforge.core.conductor import InMemoryConductor
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        def factory(**_kwargs):
+            return InMemoryConductor()
+
+        orch = Orchestrator(_make_run_config(), conductor_factory=factory)
+        assert orch._conductor_factory is factory
+
+    def test_default_factory_builds_in_process_conductor(self, tmp_path: Path) -> None:
+        """When no factory is injected, ``_build_conductor`` returns an
+        :class:`InProcessConductor` wired against the orchestrator's
+        per-run dependencies."""
+        from tolokaforge.core.conductor import InProcessConductor
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        orch = Orchestrator(_make_run_config())
+        orch.adapter = MagicMock()  # _build_conductor raises if adapter is unset
+
+        conductor = orch._build_conductor(
+            agent_client=MagicMock(),
+            docker_runtime=MagicMock(),
+            output_dir=tmp_path,
+            request_limiter=MagicMock(),
+        )
+        assert isinstance(conductor, InProcessConductor)
+
+    def test_build_conductor_raises_when_adapter_is_unset(self, tmp_path: Path) -> None:
+        """Fail-fast: building a conductor before ``load_tasks()`` ran (so
+        ``self.adapter`` is still ``None``) raises immediately, instead of
+        silently propagating ``None`` into the Conductor's body where it
+        would crash 600+ lines deep on ``self.adapter.get_task_dir(...)``."""
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        orch = Orchestrator(_make_run_config())
+        assert orch.adapter is None
+
+        with pytest.raises(RuntimeError, match="adapter is loaded"):
+            orch._build_conductor(
+                agent_client=MagicMock(),
+                docker_runtime=MagicMock(),
+                output_dir=tmp_path,
+                request_limiter=MagicMock(),
+            )
+
+    def test_injected_factory_is_invoked_with_per_run_dependencies(self, tmp_path: Path) -> None:
+        """The orchestrator calls the factory with its resolved per-run
+        deps. Pinned so a future refactor that changes the dependency
+        surface forces this test to update deliberately."""
+        from tolokaforge.core.conductor import InMemoryConductor
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        captured: dict = {}
+
+        def factory(**kwargs):
+            captured.update(kwargs)
+            return InMemoryConductor()
+
+        orch = Orchestrator(_make_run_config(), conductor_factory=factory)
+        orch.adapter = MagicMock()
+
+        orch._build_conductor(
+            agent_client=MagicMock(),
+            docker_runtime=MagicMock(),
+            output_dir=tmp_path,
+            request_limiter=MagicMock(),
+        )
+
+        assert set(captured.keys()) == {
+            "adapter",
+            "artifact_writer",
+            "config",
+            "logger",
+            "verbose",
+            "strict",
+            "agent_client",
+            "docker_runtime",
+            "output_dir",
+            "request_limiter",
+        }
