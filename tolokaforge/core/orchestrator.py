@@ -301,7 +301,7 @@ class Orchestrator:
         self,
         *,
         agent_client: LLMClient | None,
-        docker_runtime: RuntimeBackend | None,
+        docker_runtime: RuntimeBackend,
         output_dir: Path,
         request_limiter: GlobalRateLimiter | None,
     ) -> Conductor:
