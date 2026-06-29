@@ -38,7 +38,7 @@ from tolokaforge.core.models import (
     TypeSenseConfig,
 )
 from tolokaforge.core.output.aggregates import FileAggregateWriter, RunAggregateWriter
-from tolokaforge.core.output.artifacts import FileArtifactWriter
+from tolokaforge.core.output.artifacts import FileArtifactWriter, TrialArtifactWriter
 from tolokaforge.core.rate_limiter import GlobalRateLimiter
 from tolokaforge.core.resume import RunStateManager
 from tolokaforge.core.run_queue import AttemptLease, create_run_queue
@@ -170,6 +170,7 @@ class Orchestrator:
         run_aggregate_writer: RunAggregateWriter | None = None,
         runtime_backend: RuntimeBackend | None = None,
         conductor_factory: Callable[..., Conductor] | None = None,
+        artifact_writer: TrialArtifactWriter | None = None,
     ):
         self.config = config
         self.resume = resume
@@ -182,7 +183,9 @@ class Orchestrator:
         # Shared artifact writer — every per-trial write goes through it
         # so the orchestrator stays decoupled from filesystem details and
         # alternative writers (in-memory tests, remote stores) can plug in.
-        self._artifact_writer: FileArtifactWriter = FileArtifactWriter()
+        self._artifact_writer: TrialArtifactWriter = (
+            artifact_writer if artifact_writer is not None else FileArtifactWriter()
+        )
         # Run-level analogue: the four post-run aggregate JSONs go through
         # this writer instead of inline ``json.dump`` calls. Injectable so
         # tests / alternate backends (remote object store, in-memory) can
