@@ -417,7 +417,7 @@ class Orchestrator:
 
     def _cleanup_runner_state_for_retry(
         self,
-        docker_runtime: RuntimeBackend | None,
+        docker_runtime: RuntimeBackend,
         task_id: str,
         trial_idx: int,
     ) -> None:
@@ -432,8 +432,6 @@ class Orchestrator:
         failing cleanup never blocks the retry attempt itself (the
         re-registration will surface a clearer error if state is unrecoverable).
         """
-        if docker_runtime is None:
-            return
         trial_id = f"{task_id}:{trial_idx}"
         try:
             result = docker_runtime.cleanup_trial(trial_id)

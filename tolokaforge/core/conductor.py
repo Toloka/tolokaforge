@@ -310,40 +310,6 @@ class InProcessConductor:
         env_state = EnvironmentState(task_dir, task.initial_state)
         env_state.hydrate()
 
-        # Initialize json-db service with initial state (namespaced for parallel isolation)
-        # Skip when Docker runtime is active — the Runner's InMemoryDatabase is the
-        # source of truth, and the standalone json-db service is not started.
-        if env_state.db_state and not docker_runtime:
-            try:
-                import httpx
-
-                json_db_reset_urls = [
-                    f"http://json-db:8000/ns/{db_ns}",
-                    f"http://localhost:8000/ns/{db_ns}",
-                ]
-
-                initialized = False
-                for reset_url in json_db_reset_urls:
-                    try:
-                        with httpx.Client(timeout=10.0) as client:
-                            response = client.post(f"{reset_url}/reset", json=env_state.db_state)
-                        if response.status_code == 200:
-                            self.logger.debug(
-                                "Initialized json-db service",
-                                url=reset_url,
-                                namespace=db_ns,
-                                tables=len(env_state.db_state),
-                            )
-                            initialized = True
-                            break
-                    except Exception:
-                        continue
-
-                if not initialized:
-                    self.logger.warning("Failed to initialize json-db service")
-            except Exception as e:
-                self.logger.warning("Could not initialize json-db service", error=str(e))
-
         # Initialize RAG index if corpus is configured
         if env_state.rag_corpus_dir:
             try:
@@ -623,12 +589,11 @@ class InProcessConductor:
             except Exception as e:
                 self.logger.warning("Could not sync json-db state", error=str(e))
 
-        # Retrieve final state from Runner DB service (source of truth in Docker mode)
-        # The adapter_env.data is a snapshot from create_environment() and does NOT
-        # reflect tool-execution changes made through the Runner.
-        # For native MCP-server tasks the Runner's GetState RPC now syncs the
-        # subprocess state to db-service before reading, so the condition no
-        # longer needs to exclude NativeAdapter.
+        # Retrieve final state from the Runner DB service (source of truth).
+        # ``adapter_env.data`` is a snapshot from ``create_environment()`` and
+        # does not reflect tool-execution changes made through the Runner; the
+        # Runner's ``GetState`` RPC syncs the subprocess state to db-service
+        # before reading, so the read covers every adapter.
         if docker_runtime:
             try:
                 state_result = docker_runtime.executor_client.get_state(trial_id)
@@ -665,20 +630,6 @@ class InProcessConductor:
                 if adapter_env.data:
                     env_state.db_state = adapter_env.data
                     env_state._normalize_db_state()
-        elif adapter_env.data and not isinstance(self.adapter, NativeAdapter):
-            # Non-Docker mode fallback — adapter is source of truth
-            env_state.db_state = adapter_env.data
-            env_state._normalize_db_state()
-            self.logger.debug(
-                "Synced final adapter env data to env_state",
-                tables_count=(len(adapter_env.data) if isinstance(adapter_env.data, dict) else 0),
-                tables_sample=(
-                    list(adapter_env.data.keys())[:5]
-                    if isinstance(adapter_env.data, dict)
-                    else "non-dict"
-                ),
-            )
-
         # Capture final environment state
         final_state = env_state.get_final_state()
         # Pass agent_visible_dir so the agentic judge can read files from disk
