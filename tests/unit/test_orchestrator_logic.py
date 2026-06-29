@@ -1295,6 +1295,66 @@ class TestRuntimeBackendInjection:
 
 
 # ===================================================================
+# Orchestrator(artifact_writer=...) kwarg
+# ===================================================================
+
+
+@pytest.mark.unit
+class TestArtifactWriterInjection:
+    """The ``artifact_writer`` kwarg accepts any :class:`TrialArtifactWriter`
+    impl. The orchestrator stores the injected instance and uses it
+    instead of constructing :class:`FileArtifactWriter`.
+    """
+
+    def test_kwarg_default_is_file_writer(self) -> None:
+        from tolokaforge.core.orchestrator import Orchestrator
+        from tolokaforge.core.output.artifacts import FileArtifactWriter
+
+        orch = Orchestrator(_make_run_config())
+        assert isinstance(orch._artifact_writer, FileArtifactWriter)
+
+    def test_kwarg_stores_injected_instance(self) -> None:
+        from tolokaforge.core.orchestrator import Orchestrator
+        from tolokaforge.core.output.artifacts import InMemoryArtifactWriter
+
+        writer = InMemoryArtifactWriter()
+        orch = Orchestrator(_make_run_config(), artifact_writer=writer)
+
+        assert orch._artifact_writer is writer
+
+    def test_injected_writer_threads_to_conductor(self, tmp_path: Path) -> None:
+        """The conductor constructed by ``_build_conductor`` receives the
+        same writer the orchestrator was given — not a fresh
+        :class:`FileArtifactWriter`."""
+        from tolokaforge.core.conductor import InMemoryConductor
+        from tolokaforge.core.orchestrator import Orchestrator
+        from tolokaforge.core.output.artifacts import InMemoryArtifactWriter
+
+        writer = InMemoryArtifactWriter()
+        captured: dict = {}
+
+        def factory(**kwargs):
+            captured.update(kwargs)
+            return InMemoryConductor()
+
+        orch = Orchestrator(
+            _make_run_config(),
+            artifact_writer=writer,
+            conductor_factory=factory,
+        )
+        orch.adapter = MagicMock()
+
+        orch._build_conductor(
+            agent_client=None,
+            docker_runtime=None,
+            output_dir=tmp_path,
+            request_limiter=None,
+        )
+
+        assert captured["artifact_writer"] is writer
+
+
+# ===================================================================
 # Orchestrator(conductor_factory=...) kwarg
 # ===================================================================
 
