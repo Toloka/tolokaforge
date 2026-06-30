@@ -105,12 +105,28 @@ The manifest carries no runtime behaviour in this PR — no provisioner reads it
 
 ## Impact on existing tasks
 
-**None — by design.**
+**This PR changes nothing about today's run behaviour.** It adds a schema; no code path reads it. Full canonical + unit suites stay green.
 
-- **Existing run path is unchanged.** No code path in this PR reads `environment_manifest`. The shared-stack path (`core_stack` / `full_stack` templates) keeps running every task exactly as it does on `main`.
-- **No mandatory migration.** `environment_manifest` is `Optional` with default `None`. Tasks that do not declare a manifest continue through the existing shared-stack path.
-- **Single-container tasks need nothing.** A task that runs in one container (terminal-bench, native single-service tasks, etc.) is unaffected. If a single-container task ever wants per-trial isolation, it can declare a manifest with one service — but it does not have to.
-- **Multi-service tasks (today's `full_stack` consumers) need nothing yet.** They keep using the shared stack. When the runtime backend that consumes the manifest lands (a later PR), each consumer adapter opts in on its own schedule by adding an `environment_manifest` to its `TaskDescription`. There is no flag day, no mass migration, and no breakage.
+The longer-term picture is worth being explicit about — it shapes how adapter packs plan their adoption.
+
+### Per-trial isolation is the universal architectural goal
+
+The current shared-stack model (one run-wide `ServiceStack`; trials are distinguished only by `trial_id` in URLs) is on the architectural deprecation list — it is a known coupling point regardless of how many services a task uses. Even single-container tasks share the runner across trials today, which leaves room for cross-trial state contamination and constrains how aggressively trials can run in parallel. The direction this arc is moving toward is **one isolated stack per trial for every task**, irrespective of topology size. Multi-service tasks are the forcing function; single-container tasks ride the same machinery.
+
+That direction is delivered by the runtime backend that consumes this manifest, not by this PR.
+
+### What happens to existing tasks across the arc
+
+- **In this PR:** nothing. The shared-stack path runs every task exactly as on `main`.
+- **When the per-trial runtime backend lands (later PR):** runtime-backend selection is config-driven. The shared-stack path remains the default; tasks that opt into the per-trial backend run with isolation; tasks that do not opt in keep their existing path.
+- **Long term:** the per-trial path is the recommended target. Adapter packs adopt the manifest on their own schedule by adding an `environment_manifest` to their `TaskDescription` — even a one-service manifest is enough to give a single-container task its own isolated container per trial.
+
+### Does a task need a manifest to "comply"?
+
+- **To keep running on today's behaviour:** no, never. The shared-stack path is preserved indefinitely as a fallback.
+- **To gain per-trial isolation:** yes, eventually — but on the adapter pack's own schedule, not a flag day. The schema is optional and opt-in.
+
+There is no mandatory migration, no engine-side breakage, and no rush.
 
 ## Industry-standard grounding
 
