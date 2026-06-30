@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.4.0 (2026-06-30)
+
+### Feat
+
+- **orchestrator**: make TrialArtifactWriter injectable (#112)
+
+### Fix
+
+- **core**: decouple TrialSpec.run_id from output_dir.name (#111)
+
+### Refactor
+
+- **core**: lift _run_trial behind a typed Conductor Protocol (#101)
+
 ## v0.3.1 (2026-06-26)
 
 ### Fix
