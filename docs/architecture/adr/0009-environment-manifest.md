@@ -96,6 +96,8 @@ Concretely:
 - `DependsOn` exists as a structured form for `depends_on` entries: `condition: Literal["service_started", "service_healthy"]`. `ServiceSpec.depends_on: list[str | DependsOn]` — string entries are shorthand for `DependsOn(service=name, condition="service_started")`.
 - `ServiceSpec.image` is required and validated against a deny-list of floating tags (`latest`, `main`, `master`, `edge`, `stable`, `dev`, `develop`, `nightly`, `head`, case-insensitive) plus a parser that correctly handles registry-with-port image references (`registry.example.com:5000/foo` without a tag is rejected). `@sha256:` digests are accepted.
 - `ServiceSpec.name` is a lowercase DNS label (`^[a-z]([-a-z0-9]*[a-z0-9])?$`) capped at 63 characters (RFC 1123).
+- **`VolumeMount.source` (when `kind="bind"`) and `InitialStateRef.from_` are validated as safe relative paths** — non-empty, not absolute, with no `..` segments. A manifest cannot bind-mount the host's `/etc` into a trial container; it cannot reference a fixture outside the task pack root. Named-volume sources are unaffected (they are identifiers, not paths).
+- **`EnvironmentManifest.network: Literal["isolated", "external"] = "isolated"`** declares the network posture the provisioner is asked to enforce. Default `isolated` means the per-trial network has no outbound path to the public internet or to other trials' projects; `external` is the explicit opt-in for tasks that legitimately need outbound access. The schema declares the posture; provisioners enforce it.
 - `EnvironmentManifest` carries cross-service validators: `services` non-empty, names unique within the manifest, every `depends_on` reference (in either form) resolves to a service in the same manifest, every `initial_state` key resolves to a service in the same manifest.
 - `tolokaforge/runner/models.py:TaskDescription.environment_manifest: EnvironmentManifest | None = None` — net-new optional field. No prior field is being superseded.
 - `tests/canonical/test_environment_manifest_contract.py` pins the JSON wire shape (snapshot), the `extra="forbid"` round-trip, and every cross-field validator.
@@ -127,6 +129,18 @@ That direction is delivered by the runtime backend that consumes this manifest, 
 - **To gain per-trial isolation:** yes, eventually — but on the adapter pack's own schedule, not a flag day. The schema is optional and opt-in.
 
 There is no mandatory migration, no engine-side breakage, and no rush.
+
+## Safety boundaries
+
+The manifest is the typed declaration of the **boundary an agent's trial runs inside**. Three properties are worth stating explicitly so reviewers and adapter authors share the same mental model.
+
+**Grading runs outside the trial container.** Every grader the engine ships (rubric judge, state-hash, assertions, transcript rules) executes in the runner / orchestrator process, never inside the trial's services. The agent loop inside the trial cannot reach the grader's code, the tests it evaluates, or the report it produces. The manifest does not change this — the grader is structurally beyond an agent's reach by where it runs, not by what the schema declares.
+
+**The schema declares; the provisioner enforces.** `read_only`, `network`, and `resources` are properties the schema documents; the runtime backend that consumes the manifest (`LocalRuntimeBackend` and successors) is responsible for honouring them. The schema's job is to make the intended posture explicit and auditable; the provisioner's job is to materialise that posture in containers, networks, and policies. A manifest that declares `read_only: true` on a fixture mount is still only safe if the provisioner refuses to ignore it — that's why these are named follow-ups for the provisioner ADR, not just task-side declarations.
+
+**Per-trial isolation bounds an agent's blast radius.** Today's shared-stack path partitions trials only by `trial_id` in URLs; per-trial isolation puts each trial in its own compose project with its own network and its own ephemeral volumes. The manifest's job is to make that boundary declarative and consistent across runtime backends so the same task runs with the same posture whether the provisioner is local docker-compose or a future substrate.
+
+The schema-side guards in this ADR (path-traversal validation on bind sources and initial-state references, network-mode default of `isolated`, image-pinning, `extra="forbid"`) reduce the surface area through which a malformed or hostile manifest could weaken those boundaries. They do not replace the provisioner-side enforcement that lands later — but they catch the cheap failure modes (typos, careless authoring, drift) at task-load time instead of at trial-run time.
 
 ## Industry-standard grounding
 
@@ -163,6 +177,15 @@ Adopting Inspect's compose convention means an operator who has used Inspect can
 - **Layered image hierarchy / build cache.** Build-time optimisation, not a schema concern. Surfaces as `ServiceSpec.build` once we have a layered base-image story.
 - **Streaming log surface.** Belongs on `RuntimeBackend.stream_logs`, not on the manifest.
 - **Flip this ADR's status to `Accepted`** once a complex workload validates the schema end-to-end.
+
+#### Deferred safety follow-ups
+
+Named here so a future reader does not have to re-derive what was considered and consciously deferred from this ADR:
+
+- **Per-service security context.** Capability drops, `runAsUser` / UID, read-only root filesystem, `noNewPrivileges`. Important once the trial runs untrusted code (a complex-adapter workload). The schema does not carry these fields yet; adding them without a provisioner that enforces them would bloat the surface. Lands with the first workload that requires sandboxed execution, recorded in its own ADR.
+- **Per-trial secret scoping.** The current `SecretManager` is a runner-wide singleton bootstrapped from a single environment variable; every trial in a run sees the same secret pool. Per-trial secret scoping is a control-plane concern (which trial sees which credentials), not a manifest concern. Separate ADR when secret-leakage isolation becomes a hard requirement.
+- **Grader / agent boundary inside the trial container.** Today's grader runs in the runner / orchestrator process — outside any trial container. The schema therefore does not need to carve out a separate grading service. If a future runtime backend ever runs the grader beside the agent (e.g. inheriting a benchmark harness convention), the manifest will need an optional `grading_service` field with stricter mounts and a read-only artifact path the agent cannot write to. Not in scope today.
+- **Trusted-output declaration / instruction-hierarchy hardening.** When the engine evaluates agents against adversarial-content scenarios (manifest-declared services that emit fake CI logs, fake issue comments, etc.), the manifest may need a way to mark which service outputs the agent should treat as authoritative vs untrusted. Out of scope until such evaluations exist in the engine.
 
 ## Rejected alternatives
 

@@ -16,6 +16,7 @@ from __future__ import annotations
 import re
 from datetime import datetime
 from enum import Enum
+from pathlib import PurePosixPath
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -564,15 +565,29 @@ class PortSpec(BaseModel):
 VolumeKind = Literal["named", "bind"]
 
 
+def _check_safe_relative_path(value: str, field_label: str) -> None:
+    """Raise ``ValueError`` unless ``value`` is a non-empty relative path with
+    no ``..`` segments. Used to keep manifest-declared paths inside the task
+    pack root."""
+    if not value:
+        raise ValueError(f"{field_label} must be a non-empty path.")
+    path = PurePosixPath(value)
+    if path.is_absolute():
+        raise ValueError(f"{field_label} must be a relative path; got absolute {value!r}.")
+    if any(part == ".." for part in path.parts):
+        raise ValueError(f"{field_label} must not contain '..' segments; got {value!r}.")
+
+
 class VolumeMount(BaseModel):
     """A volume mounted into a service container."""
 
     kind: VolumeKind = "bind"
     """``"named"`` — ``source`` is a named volume identifier.
-    ``"bind"`` — ``source`` is a host or task-pack-relative path."""
+    ``"bind"`` — ``source`` is a path relative to the task pack root."""
 
     source: str
-    """Volume name (when ``kind == "named"``) or path (when ``kind == "bind"``)."""
+    """Volume name (when ``kind == "named"``) or path (when ``kind == "bind"``).
+    Bind sources are validated as relative, ``..``-free paths."""
 
     target: str
     """Path inside the container."""
@@ -580,6 +595,12 @@ class VolumeMount(BaseModel):
     read_only: bool = False
 
     model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def _bind_source_stays_inside_task_pack(self) -> VolumeMount:
+        if self.kind == "bind":
+            _check_safe_relative_path(self.source, "VolumeMount.source (bind)")
+        return self
 
 
 class Resources(BaseModel):
@@ -612,10 +633,12 @@ class InitialStateRef(BaseModel):
 
     @field_validator("from_")
     @classmethod
-    def _from_is_non_empty(cls, v: str) -> str:
-        if not v:
-            raise ValueError("InitialStateRef.from must be a non-empty path.")
+    def _from_is_safe_relative_path(cls, v: str) -> str:
+        _check_safe_relative_path(v, "InitialStateRef.from")
         return v
+
+
+NetworkMode = Literal["isolated", "external"]
 
 
 DependsOnCondition = Literal["service_started", "service_healthy"]
@@ -751,6 +774,13 @@ class EnvironmentManifest(BaseModel):
     resources: Resources | None = None
     """Manifest-level resource defaults applied when a service declares no
     ``resources`` of its own."""
+
+    network: NetworkMode = "isolated"
+    """Network posture the provisioner is asked to enforce.
+    ``"isolated"`` — services reach each other on the per-trial network only;
+    no path out to the public internet or to other trials.
+    ``"external"`` — services may reach the public internet (still no path to
+    other trials). Opt in explicitly; the safe default is ``"isolated"``."""
 
     model_config = {"extra": "forbid"}
 

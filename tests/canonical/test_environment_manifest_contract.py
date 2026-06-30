@@ -122,6 +122,20 @@ class TestVolumeMountContract:
         with pytest.raises(ValidationError):
             VolumeMount.model_validate({"kind": "tmpfs", "source": "a", "target": "/b"})
 
+    @pytest.mark.parametrize(
+        "bad_source",
+        ["..", "../escape", "a/../b", "/etc/passwd", "/", ""],
+    )
+    def test_bind_source_rejects_unsafe_paths(self, bad_source: str) -> None:
+        with pytest.raises(ValidationError):
+            VolumeMount(kind="bind", source=bad_source, target="/in/container")
+
+    def test_named_source_skips_path_traversal_check(self) -> None:
+        # Named volume identifiers are not paths; path-traversal guard does not apply.
+        mount = VolumeMount(kind="named", source="../pgdata", target="/data")
+        assert mount.kind == "named"
+        assert mount.source == "../pgdata"
+
     def test_extra_field_rejected(self) -> None:
         with pytest.raises(ValidationError):
             VolumeMount.model_validate({"source": "a", "target": "/b", "mode": "rw"})
@@ -173,6 +187,14 @@ class TestInitialStateRefContract:
     def test_empty_from_rejected(self) -> None:
         with pytest.raises(ValidationError, match="non-empty"):
             InitialStateRef.model_validate({"from": ""})
+
+    @pytest.mark.parametrize(
+        "bad_from",
+        ["..", "../escape.sql", "a/../b.sql", "/etc/passwd", "/"],
+    )
+    def test_from_rejects_unsafe_paths(self, bad_from: str) -> None:
+        with pytest.raises(ValidationError):
+            InitialStateRef.model_validate({"from": bad_from})
 
     def test_extra_field_rejected(self) -> None:
         with pytest.raises(ValidationError):
@@ -411,6 +433,26 @@ class TestEnvironmentManifestContract:
                 }
             )
 
+    # ---- network mode (safety default) ----
+
+    def test_network_defaults_to_isolated(self) -> None:
+        manifest = _make_minimal_manifest()
+        assert manifest.network == "isolated"
+
+    @pytest.mark.parametrize("mode", ["isolated", "external"])
+    def test_network_modes_accepted(self, mode: str) -> None:
+        manifest = EnvironmentManifest(services=[_make_minimal_service()], network=mode)
+        assert manifest.network == mode
+
+    def test_unknown_network_mode_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            EnvironmentManifest.model_validate(
+                {
+                    "services": [{"name": "runner", "image": "tolokaforge/runner:0.5.0"}],
+                    "network": "bridge",
+                }
+            )
+
     def test_canonical_wire_shape(self) -> None:
         """Pin the JSON wire shape of a fully-populated manifest. Any
         intentional field addition or default change must update this
@@ -508,6 +550,7 @@ class TestEnvironmentManifestContract:
             ],
             "initial_state": {"db": {"from": "fixtures/seed.sql", "kind": "sql"}},
             "resources": {"cpu": "2", "memory": "4Gi"},
+            "network": "isolated",
         }
         assert actual == expected
 
