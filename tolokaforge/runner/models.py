@@ -568,7 +568,14 @@ VolumeKind = Literal["named", "bind"]
 def _check_safe_relative_path(value: str, field_label: str) -> None:
     """Raise ``ValueError`` unless ``value`` is a non-empty relative path with
     no ``..`` segments. Used to keep manifest-declared paths inside the task
-    pack root."""
+    pack root.
+
+    POSIX-targeted (uses ``PurePosixPath``) because the runtime backends in
+    scope (docker-compose Linux containers) interpret paths as POSIX. A
+    Windows-style ``..\\escape`` is not flagged on POSIX; that is correct for
+    the substrates we target, and would need a separate guard if the engine
+    ever runs on a non-POSIX provisioner.
+    """
     if not value:
         raise ValueError(f"{field_label} must be a non-empty path.")
     path = PurePosixPath(value)
@@ -678,6 +685,10 @@ _FLOATING_IMAGE_TAGS = frozenset(
     }
 )
 
+# Accept the two algorithms in common use; reject malformed lengths and any
+# unknown algorithm string. Hex is case-insensitive (Docker normalises to lower).
+_IMAGE_DIGEST_RE = re.compile(r"^(?:sha256:[a-fA-F0-9]{64}|sha512:[a-fA-F0-9]{128})$")
+
 
 def _image_tag_or_digest(image: str) -> tuple[str | None, str | None]:
     """Return ``(tag, digest)`` from a docker image reference.
@@ -742,6 +753,12 @@ class ServiceSpec(BaseModel):
             raise ValueError("ServiceSpec.image must not be empty.")
         tag, digest = _image_tag_or_digest(v)
         if digest is not None:
+            if not _IMAGE_DIGEST_RE.fullmatch(digest):
+                raise ValueError(
+                    f"ServiceSpec.image digest must be a well-formed "
+                    f"`sha256:<64-hex>` or `sha512:<128-hex>` reference; "
+                    f"got {v!r}."
+                )
             return v
         if tag is None:
             raise ValueError(

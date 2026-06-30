@@ -336,6 +336,26 @@ class TestServiceSpecContract:
         )
         assert "@sha256:" in svc.image
 
+    def test_sha512_digest_accepted(self) -> None:
+        svc = ServiceSpec(name="runner", image="example/svc@sha512:" + "0" * 128)
+        assert "@sha512:" in svc.image
+
+    @pytest.mark.parametrize(
+        "bad_image",
+        [
+            "repo@sha256:zzz",  # not hex
+            "repo@sha256:" + "0" * 63,  # one char short
+            "repo@sha256:" + "0" * 65,  # one char long
+            "repo@sha512:" + "0" * 64,  # sha512 must be 128 hex
+            "repo@md5:" + "0" * 32,  # unsupported algorithm
+            "repo@:" + "0" * 64,  # missing algorithm
+            "repo@sha256:",  # empty digest
+        ],
+    )
+    def test_malformed_digest_rejected(self, bad_image: str) -> None:
+        with pytest.raises(ValidationError, match="well-formed"):
+            ServiceSpec(name="runner", image=bad_image)
+
     # ---- name validation ----
 
     @pytest.mark.parametrize(
