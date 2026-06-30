@@ -664,10 +664,21 @@ class Orchestrator:
         # The canonical ``run_id`` is computed here once and threaded
         # through the run state, the engine run-state file (so workers
         # read the same value), and every ``TrialSpec`` via
-        # ``_build_trial_spec``.
+        # ``_build_trial_spec``. ``run()`` treats
+        # ``config.evaluation.output_dir`` as a base name and appends a
+        # timestamp (so successive runs land in sibling directories);
+        # ``prepare_run`` treats its ``output_dir`` arg as the fully-
+        # qualified run directory verbatim. Symmetric fail-fast: an empty
+        # basename (``.``, ``/``) is rejected before any disk writes.
         base_output_dir = self.config.evaluation.output_dir
+        base_name = Path(base_output_dir).name
+        if not base_name:
+            raise ValueError(
+                f"run requires evaluation.output_dir with a non-empty basename; "
+                f"got {base_output_dir!r}"
+            )
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        run_id = f"{Path(base_output_dir).name}_{timestamp}"
+        run_id = f"{base_name}_{timestamp}"
         output_dir = Path(base_output_dir).parent / run_id
         output_dir.mkdir(parents=True, exist_ok=True)
 

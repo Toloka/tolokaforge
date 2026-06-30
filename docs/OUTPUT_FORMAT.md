@@ -28,8 +28,19 @@ bumped and this document is updated in the same commit.
             └── tools_schemas.yaml          ← post-policy tool list
 ```
 
-* `{output_dir}` = the orchestrator's run output root (`--output` or the
-  CLI default under `results/`).
+* `{output_dir}` = the orchestrator's run output root. The naming
+  convention differs by entry point:
+  * `tolokaforge run` derives `{output_dir} = {base}_{YYYYMMDD_HHMMSS}`
+    where `{base}` is `config.evaluation.output_dir` (e.g.
+    `results/coding_example_20260629_154233`). Successive runs land in
+    sibling directories with distinct timestamps.
+  * `tolokaforge prepare` + `tolokaforge worker` use the `--run-dir`
+    value verbatim. Workers join an already-prepared directory by
+    name; no timestamp is appended.
+
+  The directory basename is the canonical `run_id` stamped into
+  `engine_run_state.json` and every `TrialSpec.run_id`, so the two
+  entry points produce different `run_id` formats by design.
 * `{task_id}` and `{trial_index}` map 1:1 to `TaskConfig.task_id` and the
   per-task trial ordinal.
 * Every trial bundle is **self-contained** — every artifact needed to

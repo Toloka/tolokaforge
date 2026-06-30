@@ -1398,6 +1398,38 @@ class TestPrepareRunIdempotency:
 
 
 # ===================================================================
+# Orchestrator.run() — output_dir basename guard
+# ===================================================================
+
+
+@pytest.mark.unit
+class TestRunOutputDirBasenameGuard:
+    """``run()`` rejects an ``evaluation.output_dir`` whose basename is
+    empty (``.``, ``/``, trailing slash). Mirrors the guard already in
+    ``prepare_run`` so both entry points fail loud on the pathological
+    inputs that would otherwise persist a degenerate run_id.
+    """
+
+    def test_empty_basename_dot_is_rejected(self) -> None:
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        config = _make_run_config(evaluation=EvaluationConfig(output_dir="."))
+        orch = Orchestrator(config)
+
+        with pytest.raises(ValueError, match="non-empty basename"):
+            orch.run()
+
+    def test_empty_basename_root_is_rejected(self) -> None:
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        config = _make_run_config(evaluation=EvaluationConfig(output_dir="/"))
+        orch = Orchestrator(config)
+
+        with pytest.raises(ValueError, match="non-empty basename"):
+            orch.run()
+
+
+# ===================================================================
 # Orchestrator(runtime_backend=...) kwarg
 # ===================================================================
 
