@@ -57,8 +57,11 @@ class TrialSpec(BaseModel):
     trial_id: str
     """Canonical ``"{task_id}:{trial_index}"`` identifier for this trial."""
 
-    run_id: str
-    """The orchestrator-level run this trial belongs to."""
+    run_id: str = Field(min_length=1)
+    """The orchestrator-level run this trial belongs to. Set by the
+    orchestrator at the top of ``run()`` and persisted into the engine
+    run-state file so workers can read the same value for resumes.
+    Independent of the output directory's filesystem name."""
 
     attempt_id: int = 0
     """0-based retry counter. 0 means the first attempt."""

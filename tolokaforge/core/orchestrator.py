@@ -12,7 +12,10 @@ from typing import Any
 
 from tolokaforge.adapters import BaseAdapter, ensure_registered_adapter, get_adapter
 from tolokaforge.core.conductor import Conductor, InProcessConductor
-from tolokaforge.core.engine_run_state import write_engine_run_state
+from tolokaforge.core.engine_run_state import (
+    read_persisted_run_id,
+    write_engine_run_state,
+)
 from tolokaforge.core.failure_attribution import (
     attribute_failure,
     is_failed_trajectory,
@@ -353,7 +356,7 @@ class Orchestrator:
         trial_idx: int,
         attempt_id: int,
         worker_id: str,
-        output_dir: Path,
+        run_id: str,
         agent_client: LLMClient,
         user_config: ModelConfig,
         judge_config: ModelConfig | None,
@@ -364,6 +367,9 @@ class Orchestrator:
         Resolves the wire-format ``TaskDescription`` through the adapter and
         validates that its declared backend is registered before the spec is
         constructed, so failures surface here rather than mid-execution.
+        ``run_id`` is supplied by the caller (computed once at the top of
+        ``run()`` / read from the engine run-state file in ``run_worker()``)
+        so trial identity is independent of where artifacts are written.
         """
         if self.adapter is None:
             raise RuntimeError("Trial spec cannot be built before the adapter is loaded.")
@@ -374,7 +380,7 @@ class Orchestrator:
             self._task_desc_cache[task.task_id] = task_desc
         return TrialSpec(
             trial_id=f"{task.task_id}:{trial_idx}",
-            run_id=output_dir.name,
+            run_id=run_id,
             attempt_id=attempt_id,
             worker_id=worker_id,
             task=task_desc,
@@ -385,6 +391,29 @@ class Orchestrator:
             default_tool_timeout_s=DEFAULT_TOOL_TIMEOUT_S,
             env_endpoints=env_endpoints,
         )
+
+    def _canonicalise_resumed_run_id(self, run_state: Any, canonical_run_id: str) -> None:
+        """Heal a resumed :class:`RunState` whose ``run_id`` disagrees with
+        the directory it lives in.
+
+        The directory basename is the disk fact and the canonical identifier
+        every other surface (engine_run_state.json, TrialSpec.run_id) is
+        derived from. A legacy state file written before the unification may
+        carry a timestamp-only ``run_id``; on resume we rewrite the state
+        file in place so the two surfaces agree from now on. No-op when
+        they already match.
+        """
+        if self.state_manager is None:
+            raise RuntimeError("state_manager must be initialised before canonicalising run_id")
+        if run_state.run_id == canonical_run_id:
+            return
+        self.logger.warning(
+            "RunState.run_id differs from output_dir.name; canonicalising to output_dir.name",
+            loaded=run_state.run_id,
+            canonical=canonical_run_id,
+        )
+        run_state.run_id = canonical_run_id
+        self.state_manager.save_state(run_state)
 
     def _cleanup_runner_state_for_retry(
         self,
@@ -635,10 +664,25 @@ class Orchestrator:
 
     def run(self) -> None:
         """Execute all tasks with configured trials"""
-        # Add timestamp to output directory for unique runs
+        # The canonical ``run_id`` is computed here once and threaded
+        # through the run state, the engine run-state file (so workers
+        # read the same value), and every ``TrialSpec`` via
+        # ``_build_trial_spec``. ``run()`` treats
+        # ``config.evaluation.output_dir`` as a base name and appends a
+        # timestamp (so successive runs land in sibling directories);
+        # ``prepare_run`` treats its ``output_dir`` arg as the fully-
+        # qualified run directory verbatim. Symmetric fail-fast: an empty
+        # basename (``.``, ``/``) is rejected before any disk writes.
         base_output_dir = self.config.evaluation.output_dir
+        base_name = Path(base_output_dir).name
+        if not base_name:
+            raise ValueError(
+                f"run requires evaluation.output_dir with a non-empty basename; "
+                f"got {base_output_dir!r}"
+            )
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_dir = Path(f"{base_output_dir}_{timestamp}")
+        run_id = f"{base_name}_{timestamp}"
+        output_dir = Path(base_output_dir).parent / run_id
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # Ensure TypeSense is started and tasks are loaded
@@ -653,11 +697,12 @@ class Orchestrator:
         if self.resume:
             run_state = self.state_manager.load_state()
             if run_state:
+                self._canonicalise_resumed_run_id(run_state, run_id)
                 resume_info = self.state_manager.get_resume_info()
                 if resume_info:
                     self.logger.info(
                         "Resuming run",
-                        run_id=run_state.run_id,
+                        run_id=run_id,
                         completed=resume_info["completed_trials"],
                         total=resume_info["total_trials"],
                         pending=resume_info["pending_trials"],
@@ -669,7 +714,6 @@ class Orchestrator:
 
         # Initialize new run state if not resuming
         if not run_state:
-            run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
             task_ids = [task.task_id for task in self.tasks]
             run_state = self.state_manager.initialize_run(
                 run_id=run_id,
@@ -684,6 +728,7 @@ class Orchestrator:
                 repeats=self.config.orchestrator.repeats,
                 total_trials=run_state.total_trials,
             )
+        write_engine_run_state(output_dir, run_id=run_id, presets_file=get_overlay_path())
 
         # Create agent and user clients
         agent_config = self.config.models.get("agent")
@@ -895,7 +940,7 @@ class Orchestrator:
                         trial_idx=lease.trial_index,
                         attempt_id=lease.retry_count,
                         worker_id=lease_owner,
-                        output_dir=output_dir,
+                        run_id=run_id,
                         agent_client=agent_client,
                         user_config=user_config,
                         judge_config=judge_config,
@@ -1100,6 +1145,17 @@ class Orchestrator:
         # selected task needs a judge but none is configured (fail loud).
         judge_config = self._resolve_judge_config()
 
+        # The canonical run_id is whatever the orchestrator that prepared
+        # this directory stamped on ``engine_run_state.json``. Workers join
+        # an already-prepared run; absence means the operator skipped
+        # ``tolokaforge prepare`` (fail loud).
+        run_id = read_persisted_run_id(output_dir)
+        if not run_id:
+            raise RuntimeError(
+                f"Worker requires an engine_run_state.json with a run_id in {output_dir}. "
+                "Run `tolokaforge prepare` first."
+            )
+
         # Log model configuration for all roles
         self.logger.info(
             "Model configuration",
@@ -1195,7 +1251,7 @@ class Orchestrator:
                         trial_idx=lease.trial_index,
                         attempt_id=lease.retry_count,
                         worker_id=lease_owner,
-                        output_dir=output_dir,
+                        run_id=run_id,
                         agent_client=agent_client,
                         user_config=user_config,
                         judge_config=judge_config,
@@ -1264,6 +1320,11 @@ class Orchestrator:
         """Prepare a run directory and seed the durable queue."""
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
+        run_id = output_dir.name
+        if not run_id:
+            raise ValueError(
+                f"prepare_run requires an output_dir with a non-empty basename; got {output_dir!r}"
+            )
 
         if not self.tasks:
             self.load_tasks()
@@ -1285,17 +1346,29 @@ class Orchestrator:
             run_queue.clear_all()
 
         items = self._build_pending_trials(self.tasks, self.config.orchestrator.repeats)
-        run_queue.enqueue_many(items)
-        counts = run_queue.get_counts()
+        existing_counts = run_queue.get_counts()
+        if existing_counts.get("total", 0) > 0:
+            self.logger.warning(
+                "Queue already populated; skipping enqueue to avoid duplicates. "
+                "Pass reset_queue=True to re-enqueue from scratch.",
+                existing_counts=existing_counts,
+                would_enqueue=len(items),
+            )
+            counts = existing_counts
+            queued_attempts = 0
+        else:
+            run_queue.enqueue_many(items)
+            counts = run_queue.get_counts()
+            queued_attempts = len(items)
 
         # Persist engine-level run state for subprocess workers (the preset
         # overlay path is the only field today). Worker CLIs read this so the
         # overlay set at ``prepare`` time propagates without the operator
         # threading --presets-file through every ``worker`` invocation.
-        write_engine_run_state(output_dir, presets_file=get_overlay_path())
+        write_engine_run_state(output_dir, run_id=run_id, presets_file=get_overlay_path())
 
         summary = {
-            "queued_attempts": len(items),
+            "queued_attempts": queued_attempts,
             "queue_counts": counts,
             "queue_backend": self.config.orchestrator.queue_backend,
         }
