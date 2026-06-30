@@ -60,10 +60,9 @@ Domain directories currently baked in:
 
 ### Issue 2 — `docker/` directory: still needed?
 
-The `docker/` directory contains 8 Dockerfiles. Questions:
-- Are all 8 Dockerfiles still needed? `json_db.Dockerfile` and `db_service.Dockerfile` may overlap. `orchestrator.Dockerfile` and `agent.Dockerfile` may be obsolete.
-- Should Dockerfiles move inside `tolokaforge/docker/dockerfiles/`?
-- Do Dockerfiles correctly reference the new project structure?
+The `docker/` directory contains Dockerfiles. Questions:
+- Do `json_db.Dockerfile` and `db_service.Dockerfile` overlap?
+- Is `orchestrator.Dockerfile` still wanted? `tolokaforge` ships as a CLI; the orchestrator does not need its own image unless we add a hosted execution surface.
 
 ### Issue 3 — No end-to-end validation for native and tau adapters
 
@@ -174,9 +173,7 @@ The key question for removing baked-in domain files is: how does each adapter de
 | `runner.Dockerfile` | gRPC runner service | Needed — simplify per 9.3 |
 | `rag.Dockerfile` | RAG search service | Needed |
 | `mock_web.Dockerfile` | Mock web service | Needed |
-| `executor.Dockerfile` | Tool executor | Verify still used |
-| `orchestrator.Dockerfile` | Orchestrator container | Verify still used |
-| `agent.Dockerfile` | Agent container | Verify still used |
+| `orchestrator.Dockerfile` | Orchestrator container | Audit — engine ships as a CLI; image may be unused |
 
 ### 9.5 Verification gate
 

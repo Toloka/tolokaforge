@@ -1,6 +1,6 @@
 # 0005. `RunAggregateWriter` as the run-level data-plane seam
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-06-23
 - **Deciders:** @CiroGamboa
 - **Supersedes:** —

@@ -193,8 +193,6 @@ uv run pytest -v 2>&1 | tee /tmp/test-output.log
 | `tolokaforge/core` | Orchestration, grading, metrics, models, search |
 | `tolokaforge/core/llm` | LLM abstractions — reasoning, schema, cache, usage, client |
 | `tolokaforge/runner` | gRPC runner service (DB client, tool factory, LLM judge) |
-| `tolokaforge/executor` | gRPC executor service |
-| `tolokaforge/agent` | gRPC agent service |
 | `tolokaforge/adapters` | Benchmark adapters (native, tau, tlk_mcp_core) |
 | `tolokaforge/secrets` | Secret management (SecretManager, providers, config) |
 | `tolokaforge/tools` | Tool registry and builtin tools |
@@ -206,8 +204,6 @@ uv run pytest -v 2>&1 | tee /tmp/test-output.log
 - **CLI** (`tolokaforge/cli`): Entry point for all commands — `run`, `validate`, `docker`, etc.
 - **Core** (`tolokaforge/core`): Orchestration engine, grading pipeline, metrics collection, model interfaces, model capability policies, and task search.
 - **Runner** (`tolokaforge/runner`): gRPC service managing benchmark execution, database clients, tool instantiation, and LLM-as-judge evaluation (when `grading.yaml` configures `llm_judge`).
-- **Executor** (`tolokaforge/executor`): gRPC service that executes individual agent steps in isolated environments.
-- **Agent** (`tolokaforge/agent`): gRPC service wrapping LLM agent interactions.
 - **Adapters** (`tolokaforge/adapters`): Translate between task formats — native (built-in), tau-bench, and tlk_mcp_core.
 - **Secrets** (`tolokaforge/secrets`): Universal secret management. `SecretManager` reads `.env` via `DotEnvProvider` then falls back to `os.environ` via `EnvProvider`; never pollutes `os.environ` itself. `tolokaforge run` calls `init_default()` once at startup; the runner container reconstructs the singleton from `TOLOKAFORGE_SECRETS_JSON`. See the **Secrets — single abstraction** rule below for the contract.
 - **Tools** (`tolokaforge/tools`): Registry of builtin tools available to agents during benchmark runs.

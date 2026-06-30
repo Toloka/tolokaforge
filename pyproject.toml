@@ -220,8 +220,6 @@ omit = [
     "*_pb2_grpc.py",
     "*/__main__.py",
     # gRPC service implementations (require running infrastructure)
-    "tolokaforge/agent/service.py",
-    "tolokaforge/executor/service.py",
     "tolokaforge/runner/service.py",
     # HTTP clients and tool factory (require running services / gRPC)
     "tolokaforge/runner/db_client.py",

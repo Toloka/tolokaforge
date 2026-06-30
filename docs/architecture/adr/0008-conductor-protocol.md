@@ -1,6 +1,6 @@
 # 0008. `Conductor` Protocol — per-trial executor seam
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-06-26
 - **Deciders:** @CiroGamboa
 - **Supersedes:** —

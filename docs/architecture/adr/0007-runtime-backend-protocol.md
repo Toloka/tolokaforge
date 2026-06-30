@@ -1,6 +1,6 @@
 # 0007. `RuntimeBackend` Protocol — lift `DockerRuntime` behind a typed seam
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-06-26
 - **Deciders:** @CiroGamboa
 - **Supersedes:** —
@@ -19,7 +19,7 @@ There is no typed surface that says "this is how the orchestrator talks to its e
 - **Symmetry with the other Phase-1 seams.** Each plane has a `@runtime_checkable` Protocol with at least two implementations. The execution surface should match.
 - **Lean code.** The orchestrator's two `DockerRuntime(...)` construction sites and one direct `executor_client.cleanup_trial` call can route through a Protocol without losing any behaviour.
 - **Fail-fast.** A backend that doesn't satisfy the Protocol fails at instance creation, not deep in the retry path.
-- **The seam is the precondition for the `Conductor` Protocol** (next architecture-seam step), which will read `RuntimeBackend` to know where to send a trial.
+- **The seam is the precondition for the `Conductor` Protocol** (ADR-0008), which reads `RuntimeBackend` to know where to send a trial.
 
 ## Considered Options
 
@@ -49,7 +49,7 @@ We will adopt **Option 1**.
 ### Positive
 
 - The orchestrator depends on a Protocol, not a concrete class. The execution surface is now swappable without touching the orchestrator.
-- The Phase-1 seam-definition arc is complete after this PR plus the planned `Conductor` follow-up. Every architectural seam in the engine has a typed contract with at least two implementations.
+- The Phase-1 seam-definition arc is complete with this Protocol and the `Conductor` Protocol (ADR-0008). Every architectural seam in the engine has a typed contract with at least two implementations.
 - `InMemoryRuntimeBackend` is reusable by any test that needs an orchestrator with no Docker dependency.
 - Future plug-in discovery (entry-point-discovered backends) can rely on `isinstance(impl, RuntimeBackend)` for safe injection.
 
@@ -62,7 +62,6 @@ We will adopt **Option 1**.
 
 - **Promote `RunnerClient` to its own Protocol** if a non-gRPC backend ever needs to fake the RPC surface without the gRPC stack.
 - **Collapse `DockerRunnerAdapter` into per-trial Protocol methods.** The adapter is partial-application of `trial_id` over the runner RPC surface; if `RuntimeBackend` directly took `trial_id` parameters everywhere, the adapter could be deleted.
-- **`Conductor` Protocol promoting `TrialRunner`.** Reads `RuntimeBackend` to know its target. Next architecture-seam step.
 - **`LocalProcessRuntime` / Firecracker / remote-conductor backends.** Concrete alternative implementations of `RuntimeBackend`. User-driven follow-ons once the seam is in place.
 - **Remove the hardcoded `EXECUTOR_ADDRESS` env-var default** in `orchestrator.py`. Belongs to the centralized-config follow-up surfaced by ADR-0006.
 
