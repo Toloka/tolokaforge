@@ -73,7 +73,7 @@ Notes:
 - `models.judge` is the optional run-level read-only rubric judge model (no default); the run fails loud up front if a selected task grades with `llm_judge` but `models.judge` is absent.
 - `models.agent.capabilities` overrides auto-detected model capabilities. Auto-detection (via `ModelCapabilities.for_model()`) covers most models; use overrides for A/B comparisons or to fix edge cases. Available fields: `dict_map_prompt_hints` (inject system prompt hints for dict-map parameters), `supports_typed_dict_maps`, `supports_schema_extras`, `fixed_temperature`, `supports_seed`, `unwrap_input_key`, `reasoning_via_extra_body`. See [Model Capability Presets](#model-capability-presets) below.
 - PyPI wheels exclude `tasks/**`; configure benchmark content via `evaluation.task_packs`.
-- `runtime: docker` is the only supported runtime; it uses the executor service and environment containers.
+- `runtime: docker` is the only supported runtime; it uses the runner gRPC service and environment containers.
 - `max_budget_usd` pauses scheduling new trials when cumulative spend reaches the budget.
 - `max_requests_per_second` applies a global limiter across worker threads.
 - `max_attempt_retries` retries transient failures (`rate_limit`, `api_error`, `timeout`) before marking a trial failed.
