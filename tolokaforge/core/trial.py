@@ -1,8 +1,8 @@
 """TrialSpec and TrialResult — the typed ``RegisterTrial`` wire format.
 
 ``EnvironmentManifest`` and its supporting models live alongside
-``TaskDescription`` in :mod:`tolokaforge.runner.models` (the manifest is a
-field on the task description); they are re-exported here for convenience.
+``TaskDescription`` in :mod:`tolokaforge.runner.models`; they are re-exported
+here for callers that work against the trial-spec surface.
 """
 
 from __future__ import annotations
@@ -13,14 +13,18 @@ from pydantic import BaseModel, Field
 
 from tolokaforge.core.models import ModelConfig, Trajectory
 from tolokaforge.runner.models import (
+    DependsOn,
+    DependsOnCondition,
     EnvironmentManifest,
     HealthProbe,
     HealthProbeKind,
+    InitialStateKind,
     InitialStateRef,
     PortSpec,
     Resources,
     ServiceSpec,
     TaskDescription,
+    VolumeKind,
     VolumeMount,
 )
 
@@ -145,15 +149,19 @@ class TrialResult(BaseModel):
 
 __all__ = [
     "DEFAULT_TOOL_TIMEOUT_S",
+    "DependsOn",
+    "DependsOnCondition",
     "EnvEndpoints",
     "EnvironmentManifest",
     "HealthProbe",
     "HealthProbeKind",
+    "InitialStateKind",
     "InitialStateRef",
     "PortSpec",
     "Resources",
     "ServiceSpec",
     "TrialResult",
     "TrialSpec",
+    "VolumeKind",
     "VolumeMount",
 ]

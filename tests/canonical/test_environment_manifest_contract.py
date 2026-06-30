@@ -1,13 +1,8 @@
 """Pin the JSON wire shape and validators of ``EnvironmentManifest``.
 
-Contract tests for ADR-0009. The manifest is the typed declaration of a
-task's multi-service world; this module pins every field, every default,
-every cross-field validator. Any silent change to the wire format or to a
-validator surfaces here.
-
-The manifest carries no runtime behaviour in v0.5.0 — no provisioner reads
-it yet. The contract test IS the only consumer; that is intentional per
-ADR-0009.
+The manifest is the typed declaration of a task's multi-service environment;
+this module pins every field, every default, and every cross-field validator
+so a silent change to either fails CI.
 """
 
 from __future__ import annotations
@@ -19,6 +14,7 @@ import pytest
 from pydantic import ValidationError
 
 from tolokaforge.runner.models import (
+    DependsOn,
     EnvironmentManifest,
     HealthProbe,
     InitialStateRef,
@@ -51,9 +47,10 @@ def _make_minimal_manifest() -> EnvironmentManifest:
 
 
 class TestHealthProbeContract:
-    def test_tcp_probe_minimal(self) -> None:
+    def test_tcp_probe_defaults(self) -> None:
         probe = HealthProbe(kind="tcp", port=5432)
         assert probe.path is None
+        assert probe.initial_delay_seconds == 0
         assert probe.interval_seconds == 5
         assert probe.timeout_seconds == 3
         assert probe.retries == 10
@@ -66,11 +63,12 @@ class TestHealthProbeContract:
         with pytest.raises(ValidationError, match="not allowed"):
             HealthProbe(kind="tcp", port=5432, path="/healthz")
 
-    def test_http_probe_round_trip(self) -> None:
+    def test_initial_delay_seconds_round_trip(self) -> None:
         probe = HealthProbe(
             kind="http",
             port=8080,
             path="/healthz",
+            initial_delay_seconds=30,
             interval_seconds=10,
             timeout_seconds=2,
             retries=20,
@@ -111,13 +109,18 @@ class TestPortSpecContract:
 
 
 class TestVolumeMountContract:
-    def test_minimal_mount(self) -> None:
-        mount = VolumeMount(source="data", target="/var/lib/data")
+    def test_minimal_mount_defaults_to_bind(self) -> None:
+        mount = VolumeMount(source="fixtures/seed.sql", target="/seed.sql")
+        assert mount.kind == "bind"
         assert mount.read_only is False
 
-    def test_read_only_round_trip(self) -> None:
-        mount = VolumeMount(source="fixtures/seed.sql", target="/seed.sql", read_only=True)
+    def test_named_volume_round_trip(self) -> None:
+        mount = VolumeMount(kind="named", source="pgdata", target="/var/lib/postgresql/data")
         assert VolumeMount.model_validate_json(mount.model_dump_json()) == mount
+
+    def test_unknown_kind_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            VolumeMount.model_validate({"kind": "tmpfs", "source": "a", "target": "/b"})
 
     def test_extra_field_rejected(self) -> None:
         with pytest.raises(ValidationError):
@@ -151,15 +154,52 @@ class TestResourcesContract:
 
 
 class TestInitialStateRefContract:
-    def test_round_trip_via_alias(self) -> None:
+    def test_round_trip_via_alias_defaults_to_copy(self) -> None:
         ref = InitialStateRef.model_validate({"from": "fixtures/orders.sql"})
         assert ref.from_ == "fixtures/orders.sql"
+        assert ref.kind == "copy"
         dumped = ref.model_dump(by_alias=True)
-        assert dumped == {"from": "fixtures/orders.sql"}
+        assert dumped == {"from": "fixtures/orders.sql", "kind": "copy"}
+
+    @pytest.mark.parametrize("kind", ["sql", "copy", "script"])
+    def test_all_kinds_accepted(self, kind: str) -> None:
+        ref = InitialStateRef.model_validate({"from": "x", "kind": kind})
+        assert ref.kind == kind
+
+    def test_unknown_kind_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            InitialStateRef.model_validate({"from": "x", "kind": "exec"})
+
+    def test_empty_from_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="non-empty"):
+            InitialStateRef.model_validate({"from": ""})
 
     def test_extra_field_rejected(self) -> None:
         with pytest.raises(ValidationError):
             InitialStateRef.model_validate({"from": "a.sql", "format": "sql"})
+
+
+# ---------------------------------------------------------------------------
+# DependsOn
+# ---------------------------------------------------------------------------
+
+
+class TestDependsOnContract:
+    def test_minimal_construction_defaults_to_started(self) -> None:
+        dep = DependsOn(service="db")
+        assert dep.condition == "service_started"
+
+    def test_service_healthy_accepted(self) -> None:
+        dep = DependsOn(service="db", condition="service_healthy")
+        assert dep.condition == "service_healthy"
+
+    def test_unknown_condition_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            DependsOn.model_validate({"service": "db", "condition": "service_completed"})
+
+    def test_extra_field_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            DependsOn.model_validate({"service": "db", "restart": True})
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +216,7 @@ class TestServiceSpecContract:
         assert svc.volumes == []
         assert svc.depends_on == []
         assert svc.health is None
+        assert svc.resources is None
 
     def test_full_construction_round_trip(self) -> None:
         svc = ServiceSpec(
@@ -184,19 +225,79 @@ class TestServiceSpecContract:
             command=["postgres", "-c", "shared_buffers=256MB"],
             env={"POSTGRES_PASSWORD": "dev"},
             ports=[PortSpec(container_port=5432)],
-            volumes=[VolumeMount(source="pgdata", target="/var/lib/postgresql/data")],
+            volumes=[VolumeMount(kind="named", source="pgdata", target="/var/lib/postgresql/data")],
             depends_on=[],
-            health=HealthProbe(kind="tcp", port=5432),
+            health=HealthProbe(kind="tcp", port=5432, initial_delay_seconds=15),
+            resources=Resources(cpu="2", memory="4Gi"),
         )
         assert ServiceSpec.model_validate_json(svc.model_dump_json()) == svc
 
+    def test_per_service_resources_override(self) -> None:
+        svc = ServiceSpec(
+            name="runner",
+            image="tolokaforge/runner:0.5.0",
+            resources=Resources(cpu="500m", memory="256Mi"),
+        )
+        assert svc.resources is not None
+        assert svc.resources.cpu == "500m"
+
+    def test_depends_on_accepts_string_shorthand(self) -> None:
+        svc = ServiceSpec(
+            name="backend",
+            image="ghcr.io/example/api:v1.2.3",
+            depends_on=["db"],
+        )
+        # String entries stay as strings on the wire (shorthand for service_started).
+        assert svc.depends_on == ["db"]
+
+    def test_depends_on_accepts_structured_form(self) -> None:
+        svc = ServiceSpec(
+            name="backend",
+            image="ghcr.io/example/api:v1.2.3",
+            depends_on=[DependsOn(service="db", condition="service_healthy")],
+        )
+        assert isinstance(svc.depends_on[0], DependsOn)
+        assert svc.depends_on[0].condition == "service_healthy"
+
+    def test_depends_on_mixed_round_trip(self) -> None:
+        svc = ServiceSpec(
+            name="backend",
+            image="ghcr.io/example/api:v1.2.3",
+            depends_on=["db", DependsOn(service="cache", condition="service_healthy")],
+        )
+        rehydrated = ServiceSpec.model_validate_json(svc.model_dump_json())
+        assert rehydrated == svc
+
+    # ---- image-pinning ----
+
     def test_latest_tag_rejected(self) -> None:
-        with pytest.raises(ValidationError, match="pinned"):
+        with pytest.raises(ValidationError, match="floating tag"):
             ServiceSpec(name="runner", image="tolokaforge/runner:latest")
 
+    def test_latest_tag_case_insensitive(self) -> None:
+        with pytest.raises(ValidationError, match="floating tag"):
+            ServiceSpec(name="runner", image="tolokaforge/runner:LATEST")
+
+    @pytest.mark.parametrize("tag", ["main", "master", "edge", "stable", "dev", "nightly", "head"])
+    def test_other_floating_tags_rejected(self, tag: str) -> None:
+        with pytest.raises(ValidationError, match="floating tag"):
+            ServiceSpec(name="svc", image=f"example/svc:{tag}")
+
     def test_bare_image_rejected(self) -> None:
-        with pytest.raises(ValidationError, match="explicit tag or"):
+        with pytest.raises(ValidationError, match="explicit tag or digest"):
             ServiceSpec(name="runner", image="tolokaforge/runner")
+
+    def test_registry_with_port_but_no_tag_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="explicit tag or digest"):
+            ServiceSpec(name="runner", image="registry.example.com:5000/foo")
+
+    def test_registry_with_port_and_tag_accepted(self) -> None:
+        svc = ServiceSpec(name="runner", image="registry.example.com:5000/foo:1.2.3")
+        assert svc.image == "registry.example.com:5000/foo:1.2.3"
+
+    def test_empty_tag_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="non-empty"):
+            ServiceSpec(name="runner", image="example/svc:")
 
     def test_sha_digest_accepted(self) -> None:
         svc = ServiceSpec(
@@ -204,6 +305,16 @@ class TestServiceSpecContract:
             image="tolokaforge/runner@sha256:" + "0" * 64,
         )
         assert svc.image.startswith("tolokaforge/runner@sha256:")
+
+    def test_digest_with_tag_accepted(self) -> None:
+        # Docker permits tag + digest; digest takes precedence and is always pinned.
+        svc = ServiceSpec(
+            name="runner",
+            image="example/svc:1.2.3@sha256:" + "0" * 64,
+        )
+        assert "@sha256:" in svc.image
+
+    # ---- name validation ----
 
     @pytest.mark.parametrize(
         "bad_name",
@@ -217,8 +328,15 @@ class TestServiceSpecContract:
         ],
     )
     def test_invalid_dns_label_rejected(self, bad_name: str) -> None:
-        with pytest.raises(ValidationError, match="DNS label"):
+        with pytest.raises(ValidationError):
             ServiceSpec(name=bad_name, image="tolokaforge/runner:0.5.0")
+
+    def test_dns_label_length_cap_63(self) -> None:
+        ok = "a" + "b" * 62  # 63 chars total
+        ServiceSpec(name=ok, image="example/svc:1.0")
+        too_long = "a" + "b" * 63  # 64 chars
+        with pytest.raises(ValidationError, match="at most 63 characters"):
+            ServiceSpec(name=too_long, image="example/svc:1.0")
 
     def test_extra_field_rejected(self) -> None:
         with pytest.raises(ValidationError):
@@ -228,7 +346,7 @@ class TestServiceSpecContract:
 
 
 # ---------------------------------------------------------------------------
-# EnvironmentManifest — top-level model + cross-service validators
+# EnvironmentManifest — cross-service validators + wire shape
 # ---------------------------------------------------------------------------
 
 
@@ -251,7 +369,7 @@ class TestEnvironmentManifestContract:
                 ]
             )
 
-    def test_depends_on_must_resolve(self) -> None:
+    def test_depends_on_string_must_resolve(self) -> None:
         with pytest.raises(ValidationError, match="unknown service"):
             EnvironmentManifest(
                 services=[
@@ -259,6 +377,20 @@ class TestEnvironmentManifestContract:
                         name="runner",
                         image="tolokaforge/runner:0.5.0",
                         depends_on=["nonexistent"],
+                    ),
+                ]
+            )
+
+    def test_depends_on_dependson_form_must_resolve(self) -> None:
+        with pytest.raises(ValidationError, match="unknown service"):
+            EnvironmentManifest(
+                services=[
+                    ServiceSpec(
+                        name="runner",
+                        image="tolokaforge/runner:0.5.0",
+                        depends_on=[
+                            DependsOn(service="ghost", condition="service_healthy"),
+                        ],
                     ),
                 ]
             )
@@ -291,16 +423,20 @@ class TestEnvironmentManifestContract:
                     image="postgres:16",
                     env={"POSTGRES_PASSWORD": "dev"},
                     ports=[PortSpec(container_port=5432)],
-                    health=HealthProbe(kind="tcp", port=5432),
+                    health=HealthProbe(kind="tcp", port=5432, initial_delay_seconds=15),
+                    resources=Resources(cpu="2", memory="2Gi"),
                 ),
                 ServiceSpec(
                     name="backend",
                     image="ghcr.io/example/api:v1.2.3",
-                    depends_on=["db"],
+                    depends_on=["db", DependsOn(service="cache", condition="service_healthy")],
                     health=HealthProbe(kind="http", port=8080, path="/healthz"),
                 ),
+                ServiceSpec(name="cache", image="redis:7"),
             ],
-            initial_state={"db": InitialStateRef.model_validate({"from": "fixtures/seed.sql"})},
+            initial_state={
+                "db": InitialStateRef.model_validate({"from": "fixtures/seed.sql", "kind": "sql"}),
+            },
             resources=Resources(cpu="2", memory="4Gi"),
         )
         actual = json.loads(manifest.model_dump_json(by_alias=True))
@@ -315,6 +451,7 @@ class TestEnvironmentManifestContract:
                     "volumes": [],
                     "depends_on": [],
                     "health": None,
+                    "resources": None,
                 },
                 {
                     "name": "db",
@@ -328,10 +465,12 @@ class TestEnvironmentManifestContract:
                         "kind": "tcp",
                         "port": 5432,
                         "path": None,
+                        "initial_delay_seconds": 15,
                         "interval_seconds": 5,
                         "timeout_seconds": 3,
                         "retries": 10,
                     },
+                    "resources": {"cpu": "2", "memory": "2Gi"},
                 },
                 {
                     "name": "backend",
@@ -340,18 +479,34 @@ class TestEnvironmentManifestContract:
                     "env": {},
                     "ports": [],
                     "volumes": [],
-                    "depends_on": ["db"],
+                    "depends_on": [
+                        "db",
+                        {"service": "cache", "condition": "service_healthy"},
+                    ],
                     "health": {
                         "kind": "http",
                         "port": 8080,
                         "path": "/healthz",
+                        "initial_delay_seconds": 0,
                         "interval_seconds": 5,
                         "timeout_seconds": 3,
                         "retries": 10,
                     },
+                    "resources": None,
+                },
+                {
+                    "name": "cache",
+                    "image": "redis:7",
+                    "command": None,
+                    "env": {},
+                    "ports": [],
+                    "volumes": [],
+                    "depends_on": [],
+                    "health": None,
+                    "resources": None,
                 },
             ],
-            "initial_state": {"db": {"from": "fixtures/seed.sql"}},
+            "initial_state": {"db": {"from": "fixtures/seed.sql", "kind": "sql"}},
             "resources": {"cpu": "2", "memory": "4Gi"},
         }
         assert actual == expected
@@ -370,7 +525,7 @@ class TestEnvironmentManifestContract:
 
 
 # ---------------------------------------------------------------------------
-# TaskDescription embedding — pin that the field travels round-trip
+# TaskDescription embedding
 # ---------------------------------------------------------------------------
 
 

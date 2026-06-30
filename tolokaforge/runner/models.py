@@ -510,14 +510,7 @@ class GradingConfig(BaseModel):
 
 
 # =============================================================================
-# EnvironmentManifest — per ADR-0009
-#
-# Typed schema for per-trial multicontainer environments. Borrows Inspect AI's
-# compose convention (first service = default / runner, others addressed by
-# name, health probes typed by protocol) and Kubernetes Agent Sandbox's field
-# shapes (k8s-quantity resources, no host-port assignment). Substrate-agnostic
-# — compiles to docker-compose today and to a Sandbox CR once a K8s backend
-# lands.
+# EnvironmentManifest — typed schema for multi-service environments
 # =============================================================================
 
 
@@ -525,8 +518,7 @@ HealthProbeKind = Literal["tcp", "http"]
 
 
 class HealthProbe(BaseModel):
-    """Readiness probe for a service. Typed by protocol so it compiles to both
-    docker-compose ``healthcheck`` and Kubernetes ``readinessProbe`` blocks."""
+    """Readiness probe for a service, typed by protocol."""
 
     kind: HealthProbeKind
     """``"tcp"`` opens a socket; ``"http"`` issues a GET."""
@@ -535,11 +527,19 @@ class HealthProbe(BaseModel):
     """Container port to probe."""
 
     path: str | None = None
-    """HTTP path. Required iff ``kind == "http"``."""
+    """HTTP path. Required when ``kind == "http"``; must be unset for ``"tcp"``."""
+
+    initial_delay_seconds: int = 0
+    """Seconds to wait after container start before the first probe attempt."""
 
     interval_seconds: int = 5
+    """Seconds between probe attempts."""
+
     timeout_seconds: int = 3
+    """Seconds a single probe attempt may run before it counts as failed."""
+
     retries: int = 10
+    """Failed attempts (after the initial delay) before the service is unhealthy."""
 
     model_config = {"extra": "forbid"}
 
@@ -553,8 +553,7 @@ class HealthProbe(BaseModel):
 
 
 class PortSpec(BaseModel):
-    """A container port declaration. The runtime backend assigns the host-side
-    mapping; manifests do not name host ports."""
+    """A container port declaration. The runtime backend assigns the host port."""
 
     container_port: int
     protocol: Literal["tcp", "udp"] = "tcp"
@@ -562,11 +561,18 @@ class PortSpec(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+VolumeKind = Literal["named", "bind"]
+
+
 class VolumeMount(BaseModel):
     """A volume mounted into a service container."""
 
+    kind: VolumeKind = "bind"
+    """``"named"`` — ``source`` is a named volume identifier.
+    ``"bind"`` — ``source`` is a host or task-pack-relative path."""
+
     source: str
-    """Named volume or fixture path relative to the task pack root."""
+    """Volume name (when ``kind == "named"``) or path (when ``kind == "bind"``)."""
 
     target: str
     """Path inside the container."""
@@ -577,11 +583,7 @@ class VolumeMount(BaseModel):
 
 
 class Resources(BaseModel):
-    """Resource limits / requests in Kubernetes quantity strings.
-
-    Same field shape works for compose ``deploy.resources.limits`` today and
-    pod ``resources.requests`` tomorrow.
-    """
+    """Resource limits / requests as Kubernetes quantity strings."""
 
     cpu: str | None = None
     """E.g. ``"2"`` or ``"500m"``."""
@@ -592,49 +594,117 @@ class Resources(BaseModel):
     model_config = {"extra": "forbid"}
 
 
-class InitialStateRef(BaseModel):
-    """Reference to a fixture used to initialise a service's state.
+InitialStateKind = Literal["sql", "copy", "script"]
 
-    The provisioner is responsible for resolving the path and applying the
-    fixture; the manifest just names it.
-    """
+
+class InitialStateRef(BaseModel):
+    """Reference to a fixture that initialises a service's state."""
 
     from_: str = Field(alias="from")
-    """Fixture path relative to the task pack root."""
+    """Path to the fixture, relative to the task pack root. Non-empty."""
+
+    kind: InitialStateKind = "copy"
+    """How the provisioner applies the fixture: ``"sql"`` pipes through the
+    service's SQL client, ``"copy"`` writes the file inside the container,
+    ``"script"`` executes it as a script in the container."""
 
     model_config = {"extra": "forbid", "populate_by_name": True}
 
+    @field_validator("from_")
+    @classmethod
+    def _from_is_non_empty(cls, v: str) -> str:
+        if not v:
+            raise ValueError("InitialStateRef.from must be a non-empty path.")
+        return v
 
-_LATEST_TAG_RE = re.compile(r":latest$|:$")
+
+DependsOnCondition = Literal["service_started", "service_healthy"]
+
+
+class DependsOn(BaseModel):
+    """Service dependency with a wait condition.
+
+    String entries in ``ServiceSpec.depends_on`` are shorthand for
+    ``DependsOn(service=name, condition="service_started")``.
+    """
+
+    service: str
+    """Name of another service declared in the same manifest."""
+
+    condition: DependsOnCondition = "service_started"
+    """``"service_started"`` waits only for the container to start.
+    ``"service_healthy"`` also waits for the service's ``HealthProbe`` to pass."""
+
+    model_config = {"extra": "forbid"}
+
+
 _VALID_SERVICE_NAME_RE = re.compile(r"^[a-z]([-a-z0-9]*[a-z0-9])?$")
+_MAX_DNS_LABEL_LENGTH = 63
+
+_FLOATING_IMAGE_TAGS = frozenset(
+    {
+        "latest",
+        "main",
+        "master",
+        "edge",
+        "stable",
+        "dev",
+        "develop",
+        "nightly",
+        "head",
+    }
+)
+
+
+def _image_tag_or_digest(image: str) -> tuple[str | None, str | None]:
+    """Return ``(tag, digest)`` from a docker image reference.
+
+    Either may be ``None``. The digest (if any) takes precedence — when the
+    digest is set, the tag is reported as ``None`` even if a tag is also
+    present in the reference.
+    """
+    if "@" in image:
+        head, digest = image.rsplit("@", 1)
+        return None, digest
+    last_segment = image.rsplit("/", 1)[-1]
+    if ":" not in last_segment:
+        return None, None
+    return last_segment.split(":", 1)[1], None
 
 
 class ServiceSpec(BaseModel):
     """One service in an environment manifest."""
 
     name: str
-    """Unique within the manifest. Lowercase DNS label so it works as a
-    hostname in both docker-compose's default network and a Kubernetes pod's
-    DNS."""
+    """Unique within the manifest. Lowercase DNS label up to 63 characters."""
 
     image: str
-    """Container image, pinned. ``:latest`` is rejected; digests
-    (``@sha256:…``) are accepted and encouraged."""
+    """Container image with an immutable tag or a ``@sha256:`` digest.
+    Floating tags (``:latest``, ``:main``, ``:edge``, ``:stable``, ``:dev``,
+    ``:develop``, ``:nightly``, ``:head``) are rejected."""
 
     command: list[str] | None = None
     env: dict[str, str] = Field(default_factory=dict)
     ports: list[PortSpec] = Field(default_factory=list)
     volumes: list[VolumeMount] = Field(default_factory=list)
-    depends_on: list[str] = Field(default_factory=list)
-    """Other services in the same manifest this one depends on."""
+    depends_on: list[str | DependsOn] = Field(default_factory=list)
+    """Other services this one depends on. String entries are shorthand for
+    ``DependsOn(service=name, condition="service_started")``."""
 
     health: HealthProbe | None = None
+    resources: Resources | None = None
+    """Per-service overrides for the manifest-level ``resources`` defaults."""
 
     model_config = {"extra": "forbid"}
 
     @field_validator("name")
     @classmethod
     def _name_is_valid_dns_label(cls, v: str) -> str:
+        if len(v) > _MAX_DNS_LABEL_LENGTH:
+            raise ValueError(
+                f"ServiceSpec.name must be at most {_MAX_DNS_LABEL_LENGTH} "
+                f"characters (RFC 1123 DNS label); got {len(v)}."
+            )
         if not _VALID_SERVICE_NAME_RE.fullmatch(v):
             raise ValueError(
                 f"ServiceSpec.name must be a lowercase DNS label "
@@ -645,36 +715,42 @@ class ServiceSpec(BaseModel):
     @field_validator("image")
     @classmethod
     def _image_is_pinned(cls, v: str) -> str:
-        if _LATEST_TAG_RE.search(v):
+        if not v:
+            raise ValueError("ServiceSpec.image must not be empty.")
+        tag, digest = _image_tag_or_digest(v)
+        if digest is not None:
+            return v
+        if tag is None:
             raise ValueError(
-                "ServiceSpec.image must be pinned to an immutable tag or "
-                "digest; ':latest' (or an empty tag) is not deterministic."
+                f"ServiceSpec.image must include an explicit tag or " f"digest; got {v!r}."
             )
-        if ":" not in v and "@" not in v:
+        if tag == "":
+            raise ValueError(f"ServiceSpec.image tag must be non-empty; got {v!r}.")
+        if tag.lower() in _FLOATING_IMAGE_TAGS:
             raise ValueError(
-                "ServiceSpec.image must include an explicit tag or " f"digest; got {v!r}."
+                f"ServiceSpec.image must be pinned to an immutable tag or "
+                f"digest; floating tag {tag!r} is not deterministic."
             )
         return v
 
 
-class EnvironmentManifest(BaseModel):
-    """Typed declaration of a task's multi-service world.
+def _dep_service_name(dep: str | DependsOn) -> str:
+    return dep if isinstance(dep, str) else dep.service
 
-    Per ADR-0009. The first listed service is the default / runner — others
-    are addressed by name. Substrate-agnostic: the same manifest compiles to
-    docker-compose locally and to a Kubernetes pod once a K8s backend lands.
-    """
+
+class EnvironmentManifest(BaseModel):
+    """Typed declaration of a task's multi-service environment."""
 
     services: list[ServiceSpec]
-    """Non-empty. First entry is the default / runner service."""
+    """Non-empty. The first entry is the default / runner service."""
 
     initial_state: dict[str, InitialStateRef] = Field(default_factory=dict)
-    """Keyed by service name. Each value names a fixture the provisioner
+    """Keyed by service name. Each value declares a fixture the provisioner
     applies to that service before the readiness gate."""
 
     resources: Resources | None = None
-    """Manifest-level resource defaults applied by the provisioner when a
-    service declares no resources of its own."""
+    """Manifest-level resource defaults applied when a service declares no
+    ``resources`` of its own."""
 
     model_config = {"extra": "forbid"}
 
@@ -692,10 +768,11 @@ class EnvironmentManifest(BaseModel):
 
         for service in self.services:
             for dep in service.depends_on:
-                if dep not in seen:
+                dep_name = _dep_service_name(dep)
+                if dep_name not in seen:
                     raise ValueError(
                         f"ServiceSpec({service.name!r}).depends_on references "
-                        f"unknown service {dep!r}; manifest declares "
+                        f"unknown service {dep_name!r}; manifest declares "
                         f"{sorted(seen)!r}."
                     )
 
@@ -770,10 +847,10 @@ class TaskDescription(BaseModel):
         "Keys are relative paths, values are base64 content.",
     )
 
-    # --- Environment (per ADR-0009) ---
+    # --- Environment ---
     environment_manifest: EnvironmentManifest | None = None
     """Typed declaration of the task's multi-service environment. ``None``
-    falls back to the legacy shared-stack path."""
+    means the task does not declare one."""
 
     model_config = {"extra": "forbid"}
 
