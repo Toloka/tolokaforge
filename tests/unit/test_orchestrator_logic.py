@@ -1517,8 +1517,8 @@ class TestArtifactWriterInjection:
         orch.adapter = MagicMock()
 
         orch._build_conductor(
-            agent_client=None,
-            docker_runtime=None,
+            agent_client=MagicMock(),
+            docker_runtime=MagicMock(),
             output_dir=tmp_path,
             request_limiter=None,
         )

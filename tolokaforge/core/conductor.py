@@ -223,7 +223,7 @@ class InProcessConductor:
         logger: StructuredLogger,
         verbose: bool = False,
         strict: bool = False,
-        agent_client: LLMClient | None,
+        agent_client: LLMClient,
         docker_runtime: RuntimeBackend,
         output_dir: Path,
         request_limiter: GlobalRateLimiter | None = None,
@@ -299,9 +299,6 @@ class InProcessConductor:
 
         # Get task directory from adapter (supports both native and tau)
         task_dir = self.adapter.get_task_dir(task.task_id)
-
-        if agent_client is None:
-            raise ValueError("Agent client must be provided for trial execution")
 
         # Initialize environment state
         env_state = EnvironmentState(task_dir, task.initial_state)
@@ -551,41 +548,39 @@ class InProcessConductor:
         # does not reflect tool-execution changes made through the Runner; the
         # Runner's ``GetState`` RPC syncs the subprocess state to db-service
         # before reading, so the read covers every adapter.
+        runner_state: dict[str, Any] | None = None
         try:
             state_result = docker_runtime.executor_client.get_state(trial_id)
             if state_result.get("success") and state_result.get("state_json"):
                 import json as _json
 
-                runner_state = _json.loads(state_result["state_json"])
-                if isinstance(runner_state, dict) and runner_state:
-                    env_state.db_state = runner_state
-                    env_state._normalize_db_state()
-                    self.logger.debug(
-                        "Synced final state from Runner DB service",
-                        tables_count=len(runner_state),
-                        tables_sample=list(runner_state.keys())[:5],
-                    )
+                decoded = _json.loads(state_result["state_json"])
+                if isinstance(decoded, dict) and decoded:
+                    runner_state = decoded
                 else:
                     self.logger.debug("Runner DB state empty, falling back to adapter env data")
-                    if adapter_env.data:
-                        env_state.db_state = adapter_env.data
-                        env_state._normalize_db_state()
             else:
                 self.logger.debug(
                     "Failed to fetch Runner DB state, falling back to adapter env data",
                     error=state_result.get("error"),
                 )
-                if adapter_env.data:
-                    env_state.db_state = adapter_env.data
-                    env_state._normalize_db_state()
         except Exception as e:
             self.logger.warning(
                 "Could not fetch state from Runner, using adapter env data",
                 error=str(e),
             )
-            if adapter_env.data:
-                env_state.db_state = adapter_env.data
-                env_state._normalize_db_state()
+
+        if runner_state is not None:
+            env_state.db_state = runner_state
+            env_state._normalize_db_state()
+            self.logger.debug(
+                "Synced final state from Runner DB service",
+                tables_count=len(runner_state),
+                tables_sample=list(runner_state.keys())[:5],
+            )
+        elif adapter_env.data:
+            env_state.db_state = adapter_env.data
+            env_state._normalize_db_state()
 
         # Capture final environment state
         final_state = env_state.get_final_state()

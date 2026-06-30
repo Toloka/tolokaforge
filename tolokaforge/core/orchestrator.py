@@ -300,7 +300,7 @@ class Orchestrator:
     def _build_conductor(
         self,
         *,
-        agent_client: LLMClient | None,
+        agent_client: LLMClient,
         docker_runtime: RuntimeBackend,
         output_dir: Path,
         request_limiter: GlobalRateLimiter | None,
