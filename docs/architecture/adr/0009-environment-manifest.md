@@ -125,10 +125,11 @@ That direction is delivered by the runtime backend that consumes this manifest, 
 
 ### Does a task need a manifest to "comply"?
 
-- **To keep running on today's behaviour:** no, never. The shared-stack path is preserved indefinitely as a fallback.
-- **To gain per-trial isolation:** yes, eventually — but on the adapter pack's own schedule, not a flag day. The schema is optional and opt-in.
+- **In this PR and the near term:** no. The shared-stack path keeps working; the schema is optional and opt-in. Adapter packs adopt the manifest on their own schedule, not a flag day.
+- **To gain per-trial isolation today:** declare a manifest. Even a one-service manifest is enough; the runtime backend that consumes it will give that task its own isolated stack per trial.
+- **Longer term:** per-trial isolation may become the required path. Once it has been proven on real workloads and the per-trial backend is the default, the shared-stack path is a candidate for deprecation. **That decision is not made by this ADR.** A future ADR — with its own deprecation window, migration guide, and communication ahead of any breaking change — will decide whether and when "running with a manifest" becomes mandatory. Adapter packs treating manifest adoption as eventual rather than optional is the safer planning posture.
 
-There is no mandatory migration, no engine-side breakage, and no rush.
+Today there is no mandatory migration and no engine-side breakage. The schema's design intentionally keeps the door open to making it required later, so anyone planning adapter-pack work knows that "adopt the manifest" is the direction of travel, not a permanent opt-in.
 
 ## Safety boundaries
 
