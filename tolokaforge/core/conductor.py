@@ -223,8 +223,8 @@ class InProcessConductor:
         logger: StructuredLogger,
         verbose: bool = False,
         strict: bool = False,
-        agent_client: LLMClient | None,
-        docker_runtime: RuntimeBackend | None,
+        agent_client: LLMClient,
+        docker_runtime: RuntimeBackend,
         output_dir: Path,
         request_limiter: GlobalRateLimiter | None = None,
     ) -> None:
@@ -300,49 +300,9 @@ class InProcessConductor:
         # Get task directory from adapter (supports both native and tau)
         task_dir = self.adapter.get_task_dir(task.task_id)
 
-        if agent_client is None:
-            raise ValueError("Agent client must be provided for trial execution")
-
-        # Per-trial DB namespace for parallel isolation
-        db_ns = f"{task.task_id}_{trial_idx}"
-
         # Initialize environment state
         env_state = EnvironmentState(task_dir, task.initial_state)
         env_state.hydrate()
-
-        # Initialize json-db service with initial state (namespaced for parallel isolation)
-        # Skip when Docker runtime is active — the Runner's InMemoryDatabase is the
-        # source of truth, and the standalone json-db service is not started.
-        if env_state.db_state and not docker_runtime:
-            try:
-                import httpx
-
-                json_db_reset_urls = [
-                    f"http://json-db:8000/ns/{db_ns}",
-                    f"http://localhost:8000/ns/{db_ns}",
-                ]
-
-                initialized = False
-                for reset_url in json_db_reset_urls:
-                    try:
-                        with httpx.Client(timeout=10.0) as client:
-                            response = client.post(f"{reset_url}/reset", json=env_state.db_state)
-                        if response.status_code == 200:
-                            self.logger.debug(
-                                "Initialized json-db service",
-                                url=reset_url,
-                                namespace=db_ns,
-                                tables=len(env_state.db_state),
-                            )
-                            initialized = True
-                            break
-                    except Exception:
-                        continue
-
-                if not initialized:
-                    self.logger.warning("Failed to initialize json-db service")
-            except Exception as e:
-                self.logger.warning("Could not initialize json-db service", error=str(e))
 
         # Initialize RAG index if corpus is configured
         if env_state.rag_corpus_dir:
@@ -583,101 +543,44 @@ class InProcessConductor:
         initial_message = task.initial_user_message if task.initial_user_message else ""
         trajectory = runner.run(system_prompt, initial_message)
 
-        # Sync JSON DB state for native tasks (if no MCP server is used)
-        # Skip when Docker runtime is active — state comes from Runner DB service.
-        if (
-            task.initial_state.json_db
-            and not task.tools.agent.get("mcp_server")
-            and not docker_runtime
-        ):
-            try:
-                import httpx
+        # Retrieve final state from the Runner DB service (source of truth).
+        # ``adapter_env.data`` is a snapshot from ``create_environment()`` and
+        # does not reflect tool-execution changes made through the Runner; the
+        # Runner's ``GetState`` RPC syncs the subprocess state to db-service
+        # before reading, so the read covers every adapter.
+        runner_state: dict[str, Any] | None = None
+        try:
+            state_result = docker_runtime.executor_client.get_state(trial_id)
+            if state_result.get("success") and state_result.get("state_json"):
+                import json as _json
 
-                json_db_sync_urls = [
-                    f"http://json-db:8000/ns/{db_ns}",
-                    f"http://localhost:8000/ns/{db_ns}",
-                ]
-
-                synced = False
-                for sync_url in json_db_sync_urls:
-                    try:
-                        with httpx.Client(timeout=10.0) as client:
-                            response = client.post(f"{sync_url}/query", json={"jsonpath": "$"})
-                        if response.status_code == 200:
-                            results = response.json().get("results", [])
-                            if results:
-                                env_state.db_state = results[0]
-                                env_state._normalize_db_state()
-                                self.logger.debug(
-                                    "Synced json-db state for grading",
-                                    url=sync_url,
-                                    namespace=db_ns,
-                                )
-                                synced = True
-                                break
-                    except Exception:
-                        continue
-
-                if not synced:
-                    self.logger.warning("Failed to sync json-db state")
-            except Exception as e:
-                self.logger.warning("Could not sync json-db state", error=str(e))
-
-        # Retrieve final state from Runner DB service (source of truth in Docker mode)
-        # The adapter_env.data is a snapshot from create_environment() and does NOT
-        # reflect tool-execution changes made through the Runner.
-        # For native MCP-server tasks the Runner's GetState RPC now syncs the
-        # subprocess state to db-service before reading, so the condition no
-        # longer needs to exclude NativeAdapter.
-        if docker_runtime:
-            try:
-                state_result = docker_runtime.executor_client.get_state(trial_id)
-                if state_result.get("success") and state_result.get("state_json"):
-                    import json as _json
-
-                    runner_state = _json.loads(state_result["state_json"])
-                    if isinstance(runner_state, dict) and runner_state:
-                        env_state.db_state = runner_state
-                        env_state._normalize_db_state()
-                        self.logger.debug(
-                            "Synced final state from Runner DB service",
-                            tables_count=len(runner_state),
-                            tables_sample=list(runner_state.keys())[:5],
-                        )
-                    else:
-                        self.logger.debug("Runner DB state empty, falling back to adapter env data")
-                        if adapter_env.data:
-                            env_state.db_state = adapter_env.data
-                            env_state._normalize_db_state()
+                decoded = _json.loads(state_result["state_json"])
+                if isinstance(decoded, dict) and decoded:
+                    runner_state = decoded
                 else:
-                    self.logger.debug(
-                        "Failed to fetch Runner DB state, falling back to adapter env data",
-                        error=state_result.get("error"),
-                    )
-                    if adapter_env.data:
-                        env_state.db_state = adapter_env.data
-                        env_state._normalize_db_state()
-            except Exception as e:
-                self.logger.warning(
-                    "Could not fetch state from Runner, using adapter env data",
-                    error=str(e),
+                    self.logger.debug("Runner DB state empty, falling back to adapter env data")
+            else:
+                self.logger.debug(
+                    "Failed to fetch Runner DB state, falling back to adapter env data",
+                    error=state_result.get("error"),
                 )
-                if adapter_env.data:
-                    env_state.db_state = adapter_env.data
-                    env_state._normalize_db_state()
-        elif adapter_env.data and not isinstance(self.adapter, NativeAdapter):
-            # Non-Docker mode fallback — adapter is source of truth
-            env_state.db_state = adapter_env.data
+        except Exception as e:
+            self.logger.warning(
+                "Could not fetch state from Runner, using adapter env data",
+                error=str(e),
+            )
+
+        if runner_state is not None:
+            env_state.db_state = runner_state
             env_state._normalize_db_state()
             self.logger.debug(
-                "Synced final adapter env data to env_state",
-                tables_count=(len(adapter_env.data) if isinstance(adapter_env.data, dict) else 0),
-                tables_sample=(
-                    list(adapter_env.data.keys())[:5]
-                    if isinstance(adapter_env.data, dict)
-                    else "non-dict"
-                ),
+                "Synced final state from Runner DB service",
+                tables_count=len(runner_state),
+                tables_sample=list(runner_state.keys())[:5],
             )
+        elif adapter_env.data:
+            env_state.db_state = adapter_env.data
+            env_state._normalize_db_state()
 
         # Capture final environment state
         final_state = env_state.get_final_state()

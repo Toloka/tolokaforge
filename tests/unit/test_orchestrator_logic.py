@@ -319,12 +319,6 @@ class TestCleanupRunnerStateForRetry:
 
         runtime.cleanup_trial.assert_called_once_with("TASK-001:3")
 
-    def test_none_runtime_is_noop(self) -> None:
-        """Native (non-Docker) flows have no docker_runtime — cleanup is a no-op."""
-        orch = self._make_orchestrator()
-
-        orch._cleanup_runner_state_for_retry(None, "TASK-001", 0)  # must not raise
-
     def test_cleanup_exception_is_swallowed(self) -> None:
         """A stale runner connection must not block the retry attempt itself.
 
@@ -1523,8 +1517,8 @@ class TestArtifactWriterInjection:
         orch.adapter = MagicMock()
 
         orch._build_conductor(
-            agent_client=None,
-            docker_runtime=None,
+            agent_client=MagicMock(),
+            docker_runtime=MagicMock(),
             output_dir=tmp_path,
             request_limiter=None,
         )
