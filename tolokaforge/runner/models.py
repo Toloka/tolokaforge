@@ -11,11 +11,14 @@ This module contains all Pydantic models used by the Runner service:
 All models use Pydantic v2 BaseModel for validation and serialization.
 """
 
+from __future__ import annotations
+
+import re
 from datetime import datetime
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # =============================================================================
 # Enums (from TASK_DESCRIPTION_SCHEMA.md)
@@ -346,7 +349,7 @@ class Rubric(BaseModel):
     _SAFE_ID_PATTERN = r"^[A-Za-z][A-Za-z0-9_]*$"
 
     @model_validator(mode="after")
-    def _validate_criterion_ids(self) -> "Rubric":
+    def _validate_criterion_ids(self) -> Rubric:
         """Fail loud on unsafe / colliding criterion ids.
 
         Guards the construction seam so a malformed rubric is rejected at
@@ -507,6 +510,207 @@ class GradingConfig(BaseModel):
 
 
 # =============================================================================
+# EnvironmentManifest — per ADR-0009
+#
+# Typed schema for per-trial multicontainer environments. Borrows Inspect AI's
+# compose convention (first service = default / runner, others addressed by
+# name, health probes typed by protocol) and Kubernetes Agent Sandbox's field
+# shapes (k8s-quantity resources, no host-port assignment). Substrate-agnostic
+# — compiles to docker-compose today and to a Sandbox CR once a K8s backend
+# lands.
+# =============================================================================
+
+
+HealthProbeKind = Literal["tcp", "http"]
+
+
+class HealthProbe(BaseModel):
+    """Readiness probe for a service. Typed by protocol so it compiles to both
+    docker-compose ``healthcheck`` and Kubernetes ``readinessProbe`` blocks."""
+
+    kind: HealthProbeKind
+    """``"tcp"`` opens a socket; ``"http"`` issues a GET."""
+
+    port: int
+    """Container port to probe."""
+
+    path: str | None = None
+    """HTTP path. Required iff ``kind == "http"``."""
+
+    interval_seconds: int = 5
+    timeout_seconds: int = 3
+    retries: int = 10
+
+    model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def _path_consistent_with_kind(self) -> HealthProbe:
+        if self.kind == "http" and not self.path:
+            raise ValueError("HealthProbe.path is required when kind == 'http'.")
+        if self.kind == "tcp" and self.path is not None:
+            raise ValueError("HealthProbe.path is not allowed when kind == 'tcp'.")
+        return self
+
+
+class PortSpec(BaseModel):
+    """A container port declaration. The runtime backend assigns the host-side
+    mapping; manifests do not name host ports."""
+
+    container_port: int
+    protocol: Literal["tcp", "udp"] = "tcp"
+
+    model_config = {"extra": "forbid"}
+
+
+class VolumeMount(BaseModel):
+    """A volume mounted into a service container."""
+
+    source: str
+    """Named volume or fixture path relative to the task pack root."""
+
+    target: str
+    """Path inside the container."""
+
+    read_only: bool = False
+
+    model_config = {"extra": "forbid"}
+
+
+class Resources(BaseModel):
+    """Resource limits / requests in Kubernetes quantity strings.
+
+    Same field shape works for compose ``deploy.resources.limits`` today and
+    pod ``resources.requests`` tomorrow.
+    """
+
+    cpu: str | None = None
+    """E.g. ``"2"`` or ``"500m"``."""
+
+    memory: str | None = None
+    """E.g. ``"4Gi"`` or ``"512Mi"``."""
+
+    model_config = {"extra": "forbid"}
+
+
+class InitialStateRef(BaseModel):
+    """Reference to a fixture used to initialise a service's state.
+
+    The provisioner is responsible for resolving the path and applying the
+    fixture; the manifest just names it.
+    """
+
+    from_: str = Field(alias="from")
+    """Fixture path relative to the task pack root."""
+
+    model_config = {"extra": "forbid", "populate_by_name": True}
+
+
+_LATEST_TAG_RE = re.compile(r":latest$|:$")
+_VALID_SERVICE_NAME_RE = re.compile(r"^[a-z]([-a-z0-9]*[a-z0-9])?$")
+
+
+class ServiceSpec(BaseModel):
+    """One service in an environment manifest."""
+
+    name: str
+    """Unique within the manifest. Lowercase DNS label so it works as a
+    hostname in both docker-compose's default network and a Kubernetes pod's
+    DNS."""
+
+    image: str
+    """Container image, pinned. ``:latest`` is rejected; digests
+    (``@sha256:…``) are accepted and encouraged."""
+
+    command: list[str] | None = None
+    env: dict[str, str] = Field(default_factory=dict)
+    ports: list[PortSpec] = Field(default_factory=list)
+    volumes: list[VolumeMount] = Field(default_factory=list)
+    depends_on: list[str] = Field(default_factory=list)
+    """Other services in the same manifest this one depends on."""
+
+    health: HealthProbe | None = None
+
+    model_config = {"extra": "forbid"}
+
+    @field_validator("name")
+    @classmethod
+    def _name_is_valid_dns_label(cls, v: str) -> str:
+        if not _VALID_SERVICE_NAME_RE.fullmatch(v):
+            raise ValueError(
+                f"ServiceSpec.name must be a lowercase DNS label "
+                f"(matching ^[a-z]([-a-z0-9]*[a-z0-9])?$); got {v!r}."
+            )
+        return v
+
+    @field_validator("image")
+    @classmethod
+    def _image_is_pinned(cls, v: str) -> str:
+        if _LATEST_TAG_RE.search(v):
+            raise ValueError(
+                "ServiceSpec.image must be pinned to an immutable tag or "
+                "digest; ':latest' (or an empty tag) is not deterministic."
+            )
+        if ":" not in v and "@" not in v:
+            raise ValueError(
+                "ServiceSpec.image must include an explicit tag or " f"digest; got {v!r}."
+            )
+        return v
+
+
+class EnvironmentManifest(BaseModel):
+    """Typed declaration of a task's multi-service world.
+
+    Per ADR-0009. The first listed service is the default / runner — others
+    are addressed by name. Substrate-agnostic: the same manifest compiles to
+    docker-compose locally and to a Kubernetes pod once a K8s backend lands.
+    """
+
+    services: list[ServiceSpec]
+    """Non-empty. First entry is the default / runner service."""
+
+    initial_state: dict[str, InitialStateRef] = Field(default_factory=dict)
+    """Keyed by service name. Each value names a fixture the provisioner
+    applies to that service before the readiness gate."""
+
+    resources: Resources | None = None
+    """Manifest-level resource defaults applied by the provisioner when a
+    service declares no resources of its own."""
+
+    model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def _validate_cross_service_references(self) -> EnvironmentManifest:
+        if not self.services:
+            raise ValueError("EnvironmentManifest.services must be non-empty.")
+
+        names = [s.name for s in self.services]
+        seen: set[str] = set()
+        for name in names:
+            if name in seen:
+                raise ValueError(f"EnvironmentManifest.services has duplicate name {name!r}.")
+            seen.add(name)
+
+        for service in self.services:
+            for dep in service.depends_on:
+                if dep not in seen:
+                    raise ValueError(
+                        f"ServiceSpec({service.name!r}).depends_on references "
+                        f"unknown service {dep!r}; manifest declares "
+                        f"{sorted(seen)!r}."
+                    )
+
+        for state_key in self.initial_state:
+            if state_key not in seen:
+                raise ValueError(
+                    f"EnvironmentManifest.initial_state has key {state_key!r} "
+                    f"that does not match any declared service; manifest "
+                    f"declares {sorted(seen)!r}."
+                )
+
+        return self
+
+
+# =============================================================================
 # Main TaskDescription (from TASK_DESCRIPTION_SCHEMA.md)
 # =============================================================================
 
@@ -565,6 +769,11 @@ class TaskDescription(BaseModel):
         description="Base64-encoded Python files for tool reconstruction. "
         "Keys are relative paths, values are base64 content.",
     )
+
+    # --- Environment (per ADR-0009) ---
+    environment_manifest: EnvironmentManifest | None = None
+    """Typed declaration of the task's multi-service environment. ``None``
+    falls back to the legacy shared-stack path."""
 
     model_config = {"extra": "forbid"}
 

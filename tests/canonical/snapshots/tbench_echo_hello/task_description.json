@@ -46,6 +46,7 @@
   ],
   "category": "terminal",
   "description": "Create a file /tmp/hello.txt containing the text \"Hello, World!\".\n",
+  "environment_manifest": null,
   "generated_at": null,
   "grading": {
     "combine_method": "weighted",
