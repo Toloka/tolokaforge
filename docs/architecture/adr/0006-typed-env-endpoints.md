@@ -1,6 +1,6 @@
 # 0006. `EnvEndpoints` — typed runner service URLs on `TrialSpec`
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-06-25
 - **Deciders:** @CiroGamboa
 - **Supersedes:** —

@@ -130,8 +130,6 @@ Component-level detail (CLI commands, the run-queue client, SecretManager, indiv
 | **SecretManager** | Single read path for every credential (API keys, DB URLs, OAuth, signing keys). Subprocess export is the only sanctioned `os.environ` mutation, scoped narrowly. | `tolokaforge/secrets` | [AGENTS.md § Secrets](../../AGENTS.md#secrets--single-abstraction) |
 | **Run-queue client** | Durable attempt queue. SQLite for single-host runs, Postgres for distributed worker pools. | `tolokaforge/core/run_queue.py` | — |
 
-> **Note on the `tolokaforge/agent/` and `tolokaforge/executor/` packages.** These contain protobuf definitions and `*ServiceServicer` implementations for a planned multi-service decomposition, but they are not currently invoked by the orchestrator (`grep -rn "AgentServiceStub\|ExecutorServiceStub" tolokaforge/` returns no callers). Today only the single **Runner Service** is part of the live architecture. The dormant scaffolding is preserved while a decision about service decomposition is open — when that decision lands, an ADR should record the direction.
-
 ### Adapter plugin shape (zoom on the Adapter Layer)
 
 ```mermaid
@@ -240,7 +238,6 @@ For the phase ladder and which release delivers which phase, see [`ROADMAP.md`](
 |---|---|
 | **Provider drift** | Tool-schema dialects and reasoning encodings change without notice. Mitigated by capability tests per preset (see [`docs/LLM_LAYER.md`](../LLM_LAYER.md)) and explicit `ModelCertificate` declarations. |
 | **Multi-turn vs single-turn behaviour gap** | Some model failures only surface in long-context multi-turn runs and pass synthetic single-turn probes. Tracked in [AGENTS.md § Known Gotchas](../../AGENTS.md#known-gotchas) #22. |
-| **Dormant gRPC scaffolding** | `tolokaforge/agent/` and `tolokaforge/executor/` packages contain gRPC service implementations that nothing currently calls. Whether to wire them up or remove them is an open decision; an ADR should land before the next significant change to the Runner boundary. See also [`docs/FUTURE_DEVELOPMENT.md`](../FUTURE_DEVELOPMENT.md). |
 | **Container resource accounting** | Sandboxed Runner shares the host; resource accounting is per-process, not cgroup-bounded. |
 
 ---

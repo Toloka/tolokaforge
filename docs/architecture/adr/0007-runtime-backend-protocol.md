@@ -1,6 +1,6 @@
 # 0007. `RuntimeBackend` Protocol — lift `DockerRuntime` behind a typed seam
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-06-26
 - **Deciders:** @CiroGamboa
 - **Supersedes:** —

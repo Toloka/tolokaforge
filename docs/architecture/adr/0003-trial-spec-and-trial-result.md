@@ -1,6 +1,6 @@
 # 0003. TrialSpec and TrialResult as the typed control↔trial seam
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-06-19
 - **Deciders:** @CiroGamboa
 - **Supersedes:** —
