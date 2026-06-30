@@ -143,17 +143,47 @@ The manifest is the typed declaration of the **boundary an agent's trial runs in
 
 The schema-side guards in this ADR (path-traversal validation on bind sources and initial-state references, network-mode default of `isolated`, image-pinning, `extra="forbid"`) reduce the surface area through which a malformed or hostile manifest could weaken those boundaries. They do not replace the provisioner-side enforcement that lands later — but they catch the cheap failure modes (typos, careless authoring, drift) at task-load time instead of at trial-run time.
 
-## Industry-standard grounding
+## Industry precedents studied
 
-### Inspect AI (UK AI Safety Institute)
+The schema is the result of an explicit review of how other agent-evaluation harnesses declare their environments. Three projects shaped the choices here; one is the primary precedent we copied from, one is a future-integration option we deliberately left room for, and one informed a single targeted choice (image pinning).
 
-[https://inspect.aisi.org.uk/sandboxing.html](https://inspect.aisi.org.uk/sandboxing.html). Inspect's sandbox-provider model decouples the eval harness from where each sample runs. The compose convention used by Inspect's `docker` provider is the schema's primary precedent:
+### Inspect AI (UK AI Safety Institute) — primary precedent
 
-- The first listed service is the **default** that the harness talks to; other services are addressed by name.
-- Per-sample isolation: each sample gets its own sandbox instance, even when the manifest is defined at task level.
-- The same manifest compiles cleanly under different provider implementations.
+[inspect.aisi.org.uk/sandboxing](https://inspect.aisi.org.uk/sandboxing.html). The UK AISI's open evaluation framework is the clearest existing example of the two pillars this ADR formalises:
 
-Adopting Inspect's compose convention means an operator who has used Inspect can read our manifest immediately, and an Inspect task could in principle be ported by remapping field names — no new mental model.
+- **Sandbox-provider abstraction.** Inspect ships `docker` and `local` built in, plus `k8s`, Daytona, Modal, EC2, and Proxmox as separate provider packages. The eval runs unchanged across them — substrate is a swap, not a rewrite. This is the same shape our `RuntimeBackend` Protocol (ADR-0007) commits to.
+- **Per-sample isolation.** "Each sample gets its own sandbox instance, even if the sandbox is defined at task level" — validates per-trial isolation as the right unit.
+- **Compose-based environment convention.** Inspect's `docker` provider reads a `compose.yaml` where the **first listed service is the default** (the one the harness talks to), **others are addressed by name**, and shared volumes wire inter-container comms.
+
+What we adopted directly: the compose convention (first-service-default, address-by-name), per-sample isolation as the model, and the protocol typing of health probes (`tcp` / `http`) instead of raw command strings. An operator who has used Inspect can read our manifest without learning anything new; an Inspect task could in principle be ported by renaming fields.
+
+### Kubernetes Agent Sandbox — studied as a future integration
+
+[agent-sandbox.sigs.k8s.io](https://agent-sandbox.sigs.k8s.io). A formal Kubernetes SIG-Apps subproject (launched late 2025) that standardises agent-execution primitives on Kubernetes. We studied it as the candidate path for any future at-scale backend; we did **not** commit to it, but we made schema choices that keep the integration cheap if/when it happens.
+
+What Agent Sandbox offers:
+
+- **A `Sandbox` CRD** — a declarative, controller-managed pod with stable identity and persistent storage. Replaces the hand-rolled "StatefulSet of size 1 + headless Service + PVC" pattern.
+- **Warm pools** (`SandboxWarmPool` + `SandboxTemplate` + `SandboxClaim`) — pre-provisioned isolated pods claimed on demand, with reported sub-200 ms allocation latency.
+- **Pluggable isolation** via Kubernetes's standard `runtimeClassName` — **gVisor** (userspace kernel) or **Kata** (per-pod micro-VM) for kernel/network isolation of untrusted agent + task code on shared infrastructure.
+
+Why this ADR does not commit to it:
+
+- **Pre-1.0.** The project is still maturing (v0.4.x as of writing); APIs may change; warm-pool design is still under upstream discussion. Adopting now means tracking a moving target.
+- **Multi-container gap.** Core Sandbox models a **single container per sandbox**; a realistic trial often needs N services (db + backend + frontend + …). Multi-container topology is an open extension point — not free, would need composition work on our side.
+- **Local must always work.** The `local` runtime backend has to work without a cluster; committing to a specific at-scale substrate is reversible only if it stays optional.
+
+What we did instead — cheap insurance:
+
+- `Resources.cpu` / `memory` use Kubernetes-style quantity strings (`"500m"`, `"4Gi"`). Borrowed grammar; works for compose `deploy.resources.limits` today; would drop straight into pod `resources.requests` if a K8s integration ever lands.
+- `PortSpec` declares only the container port; the runtime backend assigns host-side mapping. Sandbox CRs have no host ports either — services are reached by name on the pod's network namespace. Same shape works both ways.
+- Health probes are typed by protocol (`tcp` / `http`), the same shape Kubernetes readiness/liveness probes use.
+
+Names that would need to land in a separate ADR if we ever pursue this path: `runtimeClassName`, `securityContext`, `NetworkPolicy`. They are out of scope here.
+
+### SWE-bench — targeted influence on image pinning
+
+[swebench.com](https://www.swebench.com/). SWE-bench's instance-image discipline (every instance image pinned to an immutable tag or digest, hierarchy of base → environment → instance images cached aggressively) is the precedent for the strict image-pinning rule on `ServiceSpec.image`. We borrowed the rule; the layered-cache pattern is a named follow-up (see below), not in this ADR.
 
 ## Consequences
 
