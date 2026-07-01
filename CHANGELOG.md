@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.4.1 (2026-07-01)
+
+### Feat
+
+- **llm**: register anthropic/claude-sonnet-5 (cert + pricing) (#129)
+
+### Fix
+
+- **pricing**: refresh GLM 5.1/5.2 rates to current OpenRouter list (#123)
+
 ## v0.4.0 (2026-06-30)
 
 ### Feat
