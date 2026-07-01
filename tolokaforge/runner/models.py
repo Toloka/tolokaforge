@@ -645,6 +645,33 @@ class InitialStateRef(BaseModel):
         return v
 
 
+class SecurityContext(BaseModel):
+    """Per-container security policy declarations."""
+
+    run_as_user: int | None = None
+    """UID the container process runs as. ``None`` defers to the image default."""
+
+    run_as_group: int | None = None
+    """GID the container process runs as. ``None`` defers to the image default."""
+
+    read_only_root_filesystem: bool = False
+    """When ``True``, the container's root filesystem is mounted read-only.
+    Writable paths must be declared as volumes."""
+
+    no_new_privileges: bool = True
+    """When ``True``, the container cannot gain new privileges via setuid
+    binaries or file capabilities. Default ``True`` — safer posture."""
+
+    capabilities_drop: list[str] = Field(default_factory=lambda: ["ALL"])
+    """Linux capabilities to drop. Default drops ``ALL`` — start from no
+    capabilities and add back only what's needed via ``capabilities_add``."""
+
+    capabilities_add: list[str] = Field(default_factory=list)
+    """Linux capabilities to add back after ``capabilities_drop`` runs."""
+
+    model_config = {"extra": "forbid"}
+
+
 NetworkMode = Literal["isolated", "external"]
 
 
@@ -728,6 +755,10 @@ class ServiceSpec(BaseModel):
     health: HealthProbe | None = None
     resources: Resources | None = None
     """Per-service overrides for the manifest-level ``resources`` defaults."""
+
+    security_context: SecurityContext | None = None
+    """Per-container security policy. ``None`` means the container runs with
+    the runtime backend's default posture."""
 
     model_config = {"extra": "forbid"}
 

@@ -20,6 +20,7 @@ from tolokaforge.runner.models import (
     InitialStateRef,
     PortSpec,
     Resources,
+    SecurityContext,
     ServiceSpec,
     TaskDescription,
     VolumeMount,
@@ -204,6 +205,54 @@ class TestInitialStateRefContract:
 # ---------------------------------------------------------------------------
 # DependsOn
 # ---------------------------------------------------------------------------
+
+
+class TestSecurityContextContract:
+    def test_defaults_favour_safer_posture(self) -> None:
+        sc = SecurityContext()
+        assert sc.run_as_user is None
+        assert sc.run_as_group is None
+        assert sc.read_only_root_filesystem is False
+        assert sc.no_new_privileges is True
+        assert sc.capabilities_drop == ["ALL"]
+        assert sc.capabilities_add == []
+
+    def test_full_construction_round_trip(self) -> None:
+        sc = SecurityContext(
+            run_as_user=1000,
+            run_as_group=1000,
+            read_only_root_filesystem=True,
+            no_new_privileges=True,
+            capabilities_drop=["ALL"],
+            capabilities_add=["NET_BIND_SERVICE"],
+        )
+        assert SecurityContext.model_validate_json(sc.model_dump_json()) == sc
+
+    def test_extra_field_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            SecurityContext.model_validate(
+                {"run_as_user": 1000, "seccomp_profile": "runtime/default"}
+            )
+
+    def test_per_service_assignment(self) -> None:
+        svc = ServiceSpec(
+            name="runner",
+            image="tolokaforge/runner:0.5.0",
+            security_context=SecurityContext(run_as_user=1000, read_only_root_filesystem=True),
+        )
+        assert svc.security_context is not None
+        assert svc.security_context.run_as_user == 1000
+        assert svc.security_context.read_only_root_filesystem is True
+
+    def test_service_default_is_none(self) -> None:
+        svc = ServiceSpec(name="runner", image="tolokaforge/runner:0.5.0")
+        assert svc.security_context is None
+
+    def test_negative_uid_rejected_by_type(self) -> None:
+        # int | None accepts any int; the runtime backend is responsible for
+        # rejecting nonsensical UIDs. Confirmed with a positive small-int case.
+        sc = SecurityContext(run_as_user=0)
+        assert sc.run_as_user == 0
 
 
 class TestDependsOnContract:
@@ -514,6 +563,7 @@ class TestEnvironmentManifestContract:
                     "depends_on": [],
                     "health": None,
                     "resources": None,
+                    "security_context": None,
                 },
                 {
                     "name": "db",
@@ -533,6 +583,7 @@ class TestEnvironmentManifestContract:
                         "retries": 10,
                     },
                     "resources": {"cpu": "2", "memory": "2Gi"},
+                    "security_context": None,
                 },
                 {
                     "name": "backend",
@@ -555,6 +606,7 @@ class TestEnvironmentManifestContract:
                         "retries": 10,
                     },
                     "resources": None,
+                    "security_context": None,
                 },
                 {
                     "name": "cache",
@@ -566,6 +618,7 @@ class TestEnvironmentManifestContract:
                     "depends_on": [],
                     "health": None,
                     "resources": None,
+                    "security_context": None,
                 },
             ],
             "initial_state": {"db": {"from": "fixtures/seed.sql", "kind": "sql"}},
