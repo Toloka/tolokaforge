@@ -225,6 +225,12 @@
       "cache_read": 0.3,
       "cache_write": 3.75
     },
+    "anthropic/claude-sonnet-5": {
+      "input": 2.0,
+      "output": 10.0,
+      "cache_read": 0.2,
+      "cache_write": 2.5
+    },
     "arcee-ai/coder-large": {
       "input": 0.5,
       "output": 0.8
