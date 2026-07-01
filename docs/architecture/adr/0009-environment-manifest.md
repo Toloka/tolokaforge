@@ -210,12 +210,19 @@ Names that would need to land in a separate ADR if we ever pursue this path: `ru
 - **Streaming log surface.** Belongs on `RuntimeBackend.stream_logs`, not on the manifest.
 - **Flip this ADR's status to `Accepted`** once a complex workload validates the schema end-to-end.
 
+#### Architectural-consistency follow-ups
+
+Not specific to this manifest, but surfaced by the pattern-audit this ADR triggered — filed so the discipline they codify applies uniformly to future components:
+
+- **[Architectural conventions ADR](https://github.com/Toloka/tolokaforge/issues/130).** Codify the two patterns Phase 1 established — seam-definition (Protocol + ≥2 impls + `InMemory*` fixture + contract test) and data-declaration (Pydantic + `extra="forbid"` + snapshot test) — so new components adopt the same shape rather than each contributor picking their own.
+- **[Judge Protocol lift](https://github.com/Toloka/tolokaforge/issues/131).** The rubric judge is a one-implementation top-level function today; lifting it to a `Judge` Protocol (with `LLMJudge` + `InMemoryJudge`) matches the seam-definition pattern used by `RuntimeBackend`, `Conductor`, and the artifact writers. Unlocks deterministic replay, cross-check ensemble, and adversarial-content variants without ad-hoc forks. Coordination with the Judge maintainer; sequenced after their active follow-up PRs.
+
 #### Deferred safety follow-ups
 
 Named here so a future reader does not have to re-derive what was considered and consciously deferred from this ADR:
 
 - **Per-trial secret scoping.** The current `SecretManager` is a runner-wide singleton bootstrapped from a single environment variable; every trial in a run sees the same secret pool. Per-trial secret scoping is a control-plane concern (which trial sees which credentials), not a manifest concern. Separate ADR when secret-leakage isolation becomes a hard requirement.
-- **Grader / agent boundary inside the trial container.** Today's grader runs in the runner / orchestrator process — outside any trial container. The schema therefore does not need to carve out a separate grading service. If a future runtime backend ever runs the grader beside the agent (e.g. inheriting a benchmark harness convention), the manifest will need an optional `grading_service` field with stricter mounts and a read-only artifact path the agent cannot write to. Not in scope today.
+- **Grader / agent boundary inside the trial container.** Today's grader runs in the runner / orchestrator process — outside any trial container, with its own isolated `ToolRegistry` the agent has no path to reach. The schema therefore does not need to carve out a separate grading service. If a future runtime backend ever runs the grader beside the agent (e.g. inheriting a benchmark harness convention), the manifest will need an optional `grading_service` field with stricter mounts and a read-only artifact path the agent cannot write to. Not in scope today. Complementary architectural work — lifting the judge itself to a Protocol — is tracked separately (see [Judge Protocol lift](https://github.com/Toloka/tolokaforge/issues/131) in the architectural-consistency follow-ups above).
 - **Trusted-output declaration / instruction-hierarchy hardening.** When the engine evaluates agents against adversarial-content scenarios (manifest-declared services that emit fake CI logs, fake issue comments, etc.), the manifest may need a way to mark which service outputs the agent should treat as authoritative vs untrusted. Out of scope until such evaluations exist in the engine.
 
 ## Rejected alternatives
