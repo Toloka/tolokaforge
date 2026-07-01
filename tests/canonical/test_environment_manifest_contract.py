@@ -248,9 +248,9 @@ class TestSecurityContextContract:
         svc = ServiceSpec(name="runner", image="tolokaforge/runner:0.5.0")
         assert svc.security_context is None
 
-    def test_negative_uid_rejected_by_type(self) -> None:
+    def test_uid_type_is_unbounded_int(self) -> None:
         # int | None accepts any int; the runtime backend is responsible for
-        # rejecting nonsensical UIDs. Confirmed with a positive small-int case.
+        # rejecting nonsensical UIDs. Confirmed with a small-int case.
         sc = SecurityContext(run_as_user=0)
         assert sc.run_as_user == 0
 
