@@ -316,12 +316,25 @@ class _InMemoryEnvHandle:
 
 
 class InMemoryRuntimeBackend:
-    """Non-gRPC :class:`RuntimeBackend` implementation.
+    """Recording test-fixture — records every :class:`RuntimeBackend`
+    method call on :attr:`call_log` and never talks to Docker or gRPC.
+    Production code never constructs this class; contract tests and
+    orchestrator-level tests inject it to exercise the Protocol surface
+    without a real backend.
 
-    Records lifecycle, cleanup, and provisioning calls on :attr:`call_log`.
-    The per-trial RPC methods raise :class:`NotImplementedError` — tests
-    that exercise the RPC surface must use :class:`SharedStackRuntimeBackend` or
-    mock the methods on the backend instance.
+    Named ``InMemory`` for consistency with the codebase's
+    ``InMemory{ProtocolName}`` test-fixture prefix (see also
+    :class:`~tolokaforge.core.trial_artifact_writer.InMemoryArtifactWriter`,
+    :class:`~tolokaforge.core.conductor.InMemoryConductor`). "InMemory"
+    here reads as "no external state" rather than literal
+    in-memory-data storage — the class records call history in a dict
+    for tests to assert against.
+
+    Non-gRPC by design. Records lifecycle, cleanup, and provisioning
+    calls on :attr:`call_log`. The per-trial RPC methods raise
+    :class:`NotImplementedError` — tests that exercise the RPC surface
+    must use :class:`SharedStackRuntimeBackend` or mock the methods on
+    the backend instance.
 
     Constructor knobs let orchestrator-level tests exercise the failure
     branches of the provisioning contract without a real substrate:

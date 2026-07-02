@@ -471,6 +471,30 @@ class Orchestrator:
                 error=result.get("error"),
             )
 
+    def _construct_runtime_backend(self, runner_address: str) -> RuntimeBackend:
+        """Construct the runtime backend from ``config.orchestrator.runtime``.
+
+        ``shared`` (default) → :class:`SharedStackRuntimeBackend`;
+        ``per_trial`` → :class:`PerTrialRuntimeBackend`. Called when no
+        backend is injected via ``Orchestrator.__init__(runtime_backend=...)``.
+        """
+        runtime_choice = self.config.orchestrator.runtime
+        if runtime_choice == "per_trial":
+            from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
+
+            self.logger.info(
+                "runtime.backend.selected", backend="PerTrialRuntimeBackend", source="config"
+            )
+            return PerTrialRuntimeBackend()
+        from tolokaforge.core.shared_stack_runtime import SharedStackRuntimeBackend
+
+        self.logger.info(
+            "runtime.backend.selected",
+            backend="SharedStackRuntimeBackend",
+            source="config" if runtime_choice == "shared" else "default",
+        )
+        return SharedStackRuntimeBackend(runner_address=runner_address)
+
     def _verify_isolation_compatibility(self, runtime_backend: RuntimeBackend) -> None:
         """Refuse to start the run if any task declares per-trial isolation
         but the selected runtime backend cannot provide it.
@@ -921,9 +945,7 @@ class Orchestrator:
         if self._injected_runtime_backend is not None:
             shared_stack_runtime = self._injected_runtime_backend
         else:
-            from tolokaforge.core.shared_stack_runtime import SharedStackRuntimeBackend
-
-            shared_stack_runtime = SharedStackRuntimeBackend(runner_address=runner_address)
+            shared_stack_runtime = self._construct_runtime_backend(runner_address)
         shared_stack_runtime.connect()
         self.logger.info("Runtime backend connected")
         self._verify_isolation_compatibility(shared_stack_runtime)
@@ -1255,9 +1277,7 @@ class Orchestrator:
         if self._injected_runtime_backend is not None:
             shared_stack_runtime = self._injected_runtime_backend
         else:
-            from tolokaforge.core.shared_stack_runtime import SharedStackRuntimeBackend
-
-            shared_stack_runtime = SharedStackRuntimeBackend(runner_address=runner_address)
+            shared_stack_runtime = self._construct_runtime_backend(runner_address)
         shared_stack_runtime.connect()
         self._verify_isolation_compatibility(shared_stack_runtime)
 

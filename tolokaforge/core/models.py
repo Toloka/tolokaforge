@@ -482,7 +482,38 @@ class OrchestratorConfig(BaseModel):
     auto_start_services: bool = True  # Auto-start Docker services via ServiceStack
     continue_prompt: str = "Please proceed to the next step."
     stuck_heuristics: StuckHeuristics = Field(default_factory=StuckHeuristics)
-    runtime: Literal["docker"] = "docker"  # Runtime mode (docker only; in-process was removed)
+    runtime: Literal["shared", "per_trial"] = "shared"
+    """Runtime backend selection.
+
+    * ``shared`` (default) — one docker-compose stack shared across every
+      trial in the run (``SharedStackRuntimeBackend``). Preserves today's
+      behaviour; fastest for stateless tasks.
+    * ``per_trial`` — one docker-compose stack per trial via Testcontainers
+      (``PerTrialRuntimeBackend``). Required by tasks whose manifest
+      declares ``isolation: per_trial``.
+
+    Legacy value ``docker`` is accepted as an alias for ``shared`` with a
+    deprecation warning at load time; drop it from configs going forward.
+    """
+
+    @field_validator("runtime", mode="before")
+    @classmethod
+    def _accept_legacy_docker_alias(cls, value: Any) -> Any:
+        """Accept ``docker`` as a deprecated alias for ``shared`` so
+        older run configs continue to load. Emits a ``DeprecationWarning``
+        and structured-log-friendly stderr line."""
+        if value == "docker":
+            import warnings
+
+            warnings.warn(
+                "OrchestratorConfig.runtime = 'docker' is a deprecated alias "
+                "for 'shared'; update your run config.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            return "shared"
+        return value
+
     typesense: TypeSenseConfig | None = None  # TypeSense server configuration
 
 
