@@ -67,13 +67,13 @@ Use for a typed shape that crosses a serialization or task-boundary. Every occur
 |---|---|---|---|
 | Trial wire format | `TrialSpec`, `TrialResult` | `test_trial_spec_contract.py` | [0003](0003-trial-spec-and-trial-result.md) |
 | Trial-scoped service URLs | `EnvEndpoints` | *(embedded in `TrialSpec` snapshot)* | [0006](0006-typed-env-endpoints.md) |
-| Multi-service environment | `EnvironmentManifest` + `ServiceSpec` + `HealthProbe` + `PortSpec` + `VolumeMount` + `Resources` + `InitialStateRef` + `DependsOn` + `SecurityContext` | `test_environment_manifest_contract.py` | [0009](0009-environment-manifest.md) |
+| Per-trial environment | `EnvironmentManifest` + `InitialStateRef` + `NetworkPolicy` + `SecurityContext` (points at a Docker Compose file; safety validators run against loaded compose contents) | `test_environment_manifest_contract.py` | [0009](0009-environment-manifest.md) |
 | Rubric grading | `Rubric`, `Criterion`, `CriterionResult`, `LLMJudgeConfig` | *(embedded in `TaskDescription` + grading tests)* | — |
 
 ### Naming discipline
 
 - **`*Config` suffix** for models whose purpose is *behaviour configuration* — e.g. `LLMJudgeConfig`, `SearchConfig`, `UserSimulatorConfig`, `GradingConfig`, `TranscriptRulesConfig`. These carry knobs that select or shape a runtime component's behaviour.
-- **No suffix** for models whose purpose is *data-shape declaration* — e.g. `ServiceSpec`, `HealthProbe`, `Resources`, `EnvEndpoints`, `TrialSpec`, `Rubric`. These describe a structure, not a set of choices.
+- **No suffix** for models whose purpose is *data-shape declaration* — e.g. `EnvironmentManifest`, `InitialStateRef`, `SecurityContext`, `EnvEndpoints`, `TrialSpec`, `Rubric`. These describe a structure, not a set of choices.
 
 The distinction is descriptive of what the codebase already does; it is not a new convention. New models should follow whichever suffix matches their role.
 
