@@ -304,49 +304,6 @@ class InProcessConductor:
         env_state = EnvironmentState(task_dir, task.initial_state)
         env_state.hydrate()
 
-        # Initialize RAG index if corpus is configured
-        if env_state.rag_corpus_dir:
-            try:
-                import httpx
-
-                rag_service_urls = ["http://rag-service:8001", "http://localhost:8001"]
-
-                corpus_path = str(env_state.rag_corpus_dir)
-                container_corpus_path = None
-                try:
-                    repo_root = Path(__file__).resolve().parents[2]
-                    repo_tolokaforge = repo_root / "tolokaforge"
-                    if env_state.rag_corpus_dir.is_relative_to(repo_tolokaforge):
-                        rel_path = env_state.rag_corpus_dir.relative_to(repo_tolokaforge)
-                        container_corpus_path = str(Path("/app/tolokaforge") / rel_path)
-                except Exception:
-                    container_corpus_path = None
-                indexed = False
-                for rag_service_url in rag_service_urls:
-                    try:
-                        request_path = corpus_path
-                        if "localhost" in rag_service_url and container_corpus_path:
-                            request_path = container_corpus_path
-
-                        with httpx.Client(timeout=10.0) as client:
-                            response = client.post(
-                                f"{rag_service_url}/index",
-                                json={"corpus_path": request_path},
-                            )
-                        if response.status_code == 200:
-                            self.logger.debug(
-                                "Indexed RAG corpus", path=corpus_path, url=rag_service_url
-                            )
-                            indexed = True
-                            break
-                    except Exception:
-                        continue
-
-                if not indexed:
-                    self.logger.warning("Failed to index RAG corpus", path=corpus_path)
-            except Exception as e:
-                self.logger.warning("Could not index RAG corpus", error=str(e))
-
         # Execute initialization_actions to set correct starting state
         if task.initial_state.initialization_actions:
             init_actions = [
