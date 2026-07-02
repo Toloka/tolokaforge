@@ -1,0 +1,13 @@
+services:
+  db:
+    image: postgres:16
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  default:
+    image: tolokaforge/runner:0.5.0
+    depends_on:
+      db:
+        condition: service_healthy

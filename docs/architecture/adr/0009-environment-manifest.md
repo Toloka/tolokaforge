@@ -1,240 +1,239 @@
-# 0009. `EnvironmentManifest` — typed schema for per-trial multicontainer environments
+# 0009. `EnvironmentManifest` — compose-as-source-of-truth for per-trial environments
 
 - **Status:** Proposed
-- **Date:** 2026-06-30
+- **Date:** 2026-07-02
 - **Deciders:** @CiroGamboa
 - **Supersedes:** —
 - **Superseded by:** —
 
 ## Context and Problem Statement
 
-The engine's typed-seam arc is complete: every plane has a `@runtime_checkable` Protocol with at least two implementations. The next architectural arc is **per-trial environment isolation** — a task that needs `db + backend + frontend` (or even `db + rag`) should run in its own isolated stack, not share one stack across every trial of the run.
+Multi-service tasks (agent + database + tool services) need per-trial environment isolation: each trial gets its own containers, its own bind mounts, its own initial state. The engine's current shared-stack path — one docker-compose project shared across every trial in a run — makes cross-trial state contamination structural. It also caps concurrency at one trial per stack.
 
-Today there is no typed declaration of what a task's world looks like. Tasks fall back to a small set of hard-coded stack templates (`core_stack`, `full_stack`) selected by tool declarations; the orchestrator brings the shared stack up once at the start of a run and tears it down at the end. That choice predates per-trial isolation and locks the engine to a single-substrate, shared-stack model.
+Solving that requires the engine to know, for a given task, what its environment looks like. Not just "which containers" — but also which service is the agent's runner, which fixtures to apply before the run starts, what network posture to enforce, and what security defaults to apply to every service.
 
-We need a typed, declarative schema that:
-
-- expresses any multi-service environment a task could need,
-- does not bake in any one substrate's grammar (so non-local substrates remain a future option without re-design),
-- is the same wire format every runtime backend reads.
-
-That schema is the **environment manifest**. This ADR proposes it.
+That declaration is what this ADR defines: `EnvironmentManifest`, a small Pydantic wrapper that points at a Docker Compose file, adds the engine-specific fields the provisioner needs, and applies safety validators against the loaded compose contents at construction time.
 
 ## Architecture context — picture before prose
 
 ### Today: one stack, shared across trials
 
 ```
-┌──────────────────────────────────────────────┐
-│            Run-wide shared stack             │
-│  (one ServiceStack, lives for the whole run) │
-│                                              │
-│  ┌──────┐  ┌────┐  ┌─────┐  ┌──────────────┐ │
-│  │runner│  │ db │  │ rag │  │  typesense   │ │
-│  └──────┘  └────┘  └─────┘  └──────────────┘ │
-└──────────────────────────────────────────────┘
-            ▲   ▲   ▲   ▲   ▲
-            │   │   │   │   │
-        trials 1, 2, 3, 4, 5 (all share one stack)
+                          Orchestrator
+                                │
+                                ▼
+                     ServiceStack (shared)
+                    ┌───────┬───────┬───────┐
+                    │  db   │ runner│  rag  │
+                    └───────┴───────┴───────┘
+                        ▲       ▲       ▲
+                        │       │       │
+                    trial 0 trial 1 trial 2   (all trials share the same containers)
 ```
 
 ### Next: one isolated stack per trial, declared by a manifest
 
 ```
-   ┌─── trial 1 ────┐  ┌─── trial 2 ────┐  ┌─── trial 3 ────┐
-   │ ┌────┐ ┌────┐  │  │ ┌────┐ ┌────┐  │  │ ┌────┐ ┌────┐  │
-   │ │runr│ │ db │  │  │ │runr│ │ db │  │  │ │runr│ │ db │  │
-   │ └────┘ └────┘  │  │ └────┘ └────┘  │  │ └────┘ └────┘  │
-   └────────────────┘  └────────────────┘  └────────────────┘
-            ▲                  ▲                  ▲
-            │                  │                  │
-            └──────── EnvironmentManifest ────────┘
-                              │
-                              ▼
-        ┌─────────────────────────────────────────┐
-        │  RuntimeBackend.provision(spec)         │
-        │  ─── compiles manifest into substrate ─ │
-        │                                         │
-        │   • LocalRuntimeBackend → per-trial     │
-        │     docker-compose project              │
-        │   • DockerRuntime → shared stack        │
-        │     (no-op compat path)                 │
-        └─────────────────────────────────────────┘
+              Orchestrator
+                     │
+                     ▼
+    ┌────────────┬────────────┬────────────┐
+    ▼            ▼            ▼            ▼
+ stack 0     stack 1     stack 2     stack N
+ ┌──────┐   ┌──────┐   ┌──────┐   ┌──────┐
+ │  db  │   │  db  │   │  db  │   │  db  │
+ │runner│   │runner│   │runner│   │runner│
+ └──────┘   └──────┘   └──────┘   └──────┘
+    ▲          ▲          ▲          ▲
+    │          │          │          │
+ trial 0    trial 1    trial 2    trial N
 ```
 
-The manifest is **the wire format between task declarations and runtime backends.**
+The manifest is the declarative side of this arc; the runtime backend (ADR-0010) is the consuming side.
 
 ## Decision Drivers
 
-- **Borrow, don't reinvent.** The compose convention used by Inspect AI is an established shape with documented semantics; aligning with it saves design effort and gives operators a familiar surface.
-- **Substrate-agnostic.** The schema does not bake in compose-only grammar. Today the only consumer is `LocalRuntimeBackend` (docker-compose). Other substrates can be added later without breaking the wire format — but the design does not commit to any specific non-local substrate, and adding one is an independent decision recorded in its own ADR.
-- **Determinism precondition.** Images pinned; readiness gate explicit; initial state declared, not inferred.
-- **Strict schema.** `extra="forbid"` everywhere so silent field additions cannot drift the wire format.
-- **Validation-first.** Land the schema and its tests **before** any runtime backend consumes it, so the contract can iterate against a Pydantic model (cheap) rather than against a deployed backend (expensive).
-- **No mandatory migration.** Existing tasks must keep running unchanged. The new field is optional and opt-in.
+- **The compose file is already the industry-standard artefact for declaring a multi-service environment.** Task authors know Docker Compose. Tooling (`docker compose config`, IDE integrations, `docker compose up`) works out of the box. Adjacent agent-eval harnesses that solve the same problem (Inspect AI in particular) consume compose files directly.
+- **Substrate portability.** Docker Compose translates to Kubernetes Pods via industry-standard tooling (`kompose`, Testcontainers' k8s module) and to remote sandbox platforms via their own SDKs. Adopting compose as the source-of-truth avoids building a parallel schema that would then need those same translators anyway.
+- **Safety belongs to the wrapper, not the substrate.** The engine's safety controls (path-traversal guards on bind mount sources, rejection of `network_mode: host`, rejection of `privileged: true`, rejection of `cap_add`) are engine concerns, not compose concerns. Encoding them as load-time validators against the compose contents keeps the substrate agnostic and the safety story ours to enforce.
+- **Ecosystem interop.** Tasks whose sandbox spec is already a compose file (Inspect AI's docker sandbox convention, community task packs) run natively with zero adapter code.
+- **Iterate cheaply until validated.** The manifest lands as `Proposed`; contract tests pin every safety validator against fixture compose files. Status flips to `Accepted` once a real workload runs end-to-end on a per-trial backend (ADR-0010's follow-up work).
 
 ## Considered Options
 
-1. **Typed Pydantic manifest borrowing Inspect AI's compose convention.** First service = default / runner; others addressed by name; health probes typed by protocol (`tcp` / `http`); `extra="forbid"` round-trip-pinned by a canonical contract test. **This ADR.**
-2. **Roll our own schema from scratch.** Maximum freedom, but no precedent to align with; every operator who has used Inspect AI would have to relearn it.
-3. **Use docker-compose YAML directly as the manifest.** Zero translation effort today, but locks the wire format to docker-compose grammar — any other substrate would need a parallel format.
-4. **Defer until a runtime backend needs it.** The runtime backend cannot land without something to consume; deferring just reorders the same work into a more constrained position.
+1. **Compose file as source-of-truth; `EnvironmentManifest` is a Pydantic wrapper adding engine-specific fields and safety validators.** *This ADR.*
+2. **Field-by-field Pydantic schema that re-encodes compose semantics.** Every compose field (`services`, `ports`, `volumes`, `depends_on`, `health`, `resources`) becomes a Pydantic type owned by the engine. Rejected: pays a translation tax at every backend (Pydantic → compose → docker) and diverges from every neighbour in the agent-eval space that reads compose directly.
+3. **Python-code environment definitions (METR task-standard's approach).** Task authors write a `TaskFamily` class with `install()` / `start()` / `teardown()` methods. Rejected: sacrifices the ability to statically analyse environments (which our safety-validator layer requires) and diverges from the compose ecosystem tooling.
 
 ## Decision
 
-We adopt **Option 1**.
+We adopt **Option 1**. `EnvironmentManifest` is:
 
-Concretely:
+```python
+class EnvironmentManifest(BaseModel):
+    model_config = {"extra": "forbid"}
 
-- Add `EnvironmentManifest` and its supporting models (`ServiceSpec`, `HealthProbe`, `PortSpec`, `VolumeMount`, `Resources`, `InitialStateRef`, `DependsOn`, `SecurityContext`) to `tolokaforge/runner/models.py` — alongside `TaskDescription`, which carries the new field. All `extra="forbid"`. The models are re-exported from `tolokaforge/core/trial.py` for callers that work against the trial-spec surface; placing them next to `TaskDescription` avoids a circular import (the manifest is a field on `TaskDescription`).
-- `EnvironmentManifest`'s top-level surface: `services: list[ServiceSpec]` (non-empty, first service = default / runner), optional `initial_state: dict[str, InitialStateRef]`, optional `resources: Resources | None` (manifest-level defaults).
-- `ServiceSpec` carries a per-service `resources: Resources | None` override — provisioners fall back to the manifest-level defaults when a service declares none.
-- `HealthProbe` carries `kind: Literal["tcp", "http"]` plus `port` plus optional `path` (required iff `kind == "http"`), plus `initial_delay_seconds` (startup grace window) alongside `interval_seconds` / `timeout_seconds` / `retries`. No raw `HEALTHCHECK CMD` strings — the typed-by-protocol shape is provisioner-agnostic.
-- `Resources` uses **Kubernetes-style quantity strings** — `cpu: "2" | "500m"`, `memory: "4Gi" | "512Mi"`. This is a documented external standard we are borrowing the grammar from (so we don't invent our own parser); it does not commit us to running on Kubernetes.
-- `VolumeMount` carries an explicit `kind: Literal["named", "bind"]` (default `"bind"`) so the provisioner does not have to infer named-volume vs path from `source`'s shape.
-- `InitialStateRef` carries `kind: Literal["sql", "copy", "script"]` (default `"copy"`) so the provisioner knows how to apply the fixture — SQL pipe, file copy, or script exec — instead of inferring from a filename extension. `from_` is rejected when empty.
-- `DependsOn` exists as a structured form for `depends_on` entries: `condition: Literal["service_started", "service_healthy"]`. `ServiceSpec.depends_on: list[str | DependsOn]` — string entries are shorthand for `DependsOn(service=name, condition="service_started")`.
-- `ServiceSpec.image` is required and validated against a deny-list of floating tags (`latest`, `main`, `master`, `edge`, `stable`, `dev`, `develop`, `nightly`, `head`, case-insensitive) plus a parser that correctly handles registry-with-port image references (`registry.example.com:5000/foo` without a tag is rejected). `@sha256:` digests are accepted.
-- `ServiceSpec.name` is a lowercase DNS label (`^[a-z]([-a-z0-9]*[a-z0-9])?$`) capped at 63 characters (RFC 1123).
-- **`VolumeMount.source` (when `kind="bind"`) and `InitialStateRef.from_` are validated as safe relative paths** — non-empty, not absolute, with no `..` segments. A manifest cannot bind-mount the host's `/etc` into a trial container; it cannot reference a fixture outside the task pack root. Named-volume sources are unaffected (they are identifiers, not paths).
-- **`EnvironmentManifest.network: Literal["isolated", "external"] = "isolated"`** declares the network posture the provisioner is asked to enforce. Default `isolated` means the per-trial network has no outbound path to the public internet or to other trials' projects; `external` is the explicit opt-in for tasks that legitimately need outbound access. The schema declares the posture; provisioners enforce it.
-- **`ServiceSpec.security_context: SecurityContext | None`** declares per-container security policy — `run_as_user`, `run_as_group`, `read_only_root_filesystem`, `no_new_privileges`, `capabilities_drop`, `capabilities_add`. Same declare-in-schema / provisioner-enforces-later pattern used for `network`, `read_only`, `resources`. Defaults chosen deliberately: `no_new_privileges=True` and `capabilities_drop=["ALL"]` are the safer starting posture; other fields default `None` / `False` / empty so a service that does not declare a `security_context` sees no behaviour change from the runtime backend's default.
-- `EnvironmentManifest` carries cross-service validators: `services` non-empty, names unique within the manifest, every `depends_on` reference (in either form) resolves to a service in the same manifest, every `initial_state` key resolves to a service in the same manifest.
-- `tolokaforge/runner/models.py:TaskDescription.environment_manifest: EnvironmentManifest | None = None` — net-new optional field. No prior field is being superseded.
-- `tests/canonical/test_environment_manifest_contract.py` pins the JSON wire shape (snapshot), the `extra="forbid"` round-trip, and every cross-field validator.
-- ADR status stays `Proposed` until a real complex workload exercises the schema end-to-end. The follow-up arc flips it to `Accepted`.
+    compose_file: Path
+    """Path to the docker-compose file. Absolute if resolved by a task
+    loader; relative paths are resolved against the current working
+    directory at construction time."""
 
-The manifest carries no runtime behaviour in this PR — no provisioner reads it yet. That is intentional: lock the schema with tests before any backend consumer locks it into runtime decisions.
+    runner_service: str = "default"
+    """Which compose service is the agent runner. Must be declared in
+    the compose file's `services:` mapping."""
+
+    initial_state: dict[str, InitialStateRef] = {}
+    """Fixture-copy operations, keyed by service name."""
+
+    network_policy: NetworkPolicy = NetworkPolicy.NO_INTERNET
+    """Network posture the provisioner is asked to enforce."""
+
+    security_context_defaults: SecurityContext | None = None
+    """Applied by the provisioner to every service that does not override
+    the equivalent settings in the compose file."""
+```
+
+Load-time safety validators run against the loaded compose contents. Failing any of them raises `ValidationError` at construction:
+
+- **Bind mount sources** — reject `..` segments and absolute paths (both short-form `SOURCE:TARGET` and long-form `{type: bind, source: ...}` syntaxes).
+- **`network_mode: host`** — rejected outright. The manifest's `network_policy` is the only network-posture surface.
+- **`privileged: true`** — rejected outright.
+- **`cap_add`** — rejected outright. If a task genuinely needs added capabilities, they belong on the manifest's `SecurityContext.capabilities_add` — a location the provisioner can reason about and log.
+
+Cross-field checks:
+
+- `runner_service` must be a service declared in the compose file.
+- Every key in `initial_state` must reference a declared compose service.
+
+### `NetworkPolicy` — permission-string network model
+
+Three literal states, following METR task-standard's permission-string convention:
+
+| Value | Semantics |
+|---|---|
+| `no_internet` (default) | Services reach each other on the per-trial network only. No egress to the public internet; no reachability across per-trial projects. |
+| `limited_internet` | Egress permitted for a provisioner-defined allowlist. No cross-trial reachability. The allowlist is a provisioner concern, not a schema concern. |
+| `full_internet` | Unrestricted egress. Still no cross-trial reachability. |
+
+Extending to a fourth mode (e.g. `dns_only`) is a permission-string addition; no consumer breaks.
+
+### `SecurityContext` — defaults applied by the provisioner
+
+`SecurityContext` declares per-container security policy. On the manifest it appears as `security_context_defaults` — the provisioner applies each declared field to every compose service that does not already set the equivalent. Task authors who want per-service policy set it in the compose file (`security_opt`, `user`, `read_only`, `cap_drop`, `cap_add` — subject to the safety validators).
+
+### `InitialStateRef` — how a fixture applies to a service
+
+```python
+class InitialStateRef(BaseModel):
+    from_: str          # relative path to the fixture (validated: no absolute, no `..`)
+    kind: Literal["sql", "copy", "script"] = "copy"
+```
+
+- `sql` — piped through the service's SQL client.
+- `copy` — written to a well-known path inside the service's container.
+- `script` — executed inside the service's container.
+
+Applied by the provisioner before `await_ready` returns.
+
+### Two-file task authoring model
+
+```yaml
+# task.yaml
+task_id: my_task
+name: My Task
+category: general
+description: ...
+adapter_type: native
+system_prompt: ...
+environment_manifest:
+  compose_file: ./environment/compose.yaml
+  runner_service: default
+  network_policy: no_internet
+  initial_state:
+    db:
+      from: ./fixtures/db-seed.sql
+      kind: sql
+
+# environment/compose.yaml   (pure Docker Compose)
+services:
+  db:
+    image: postgres:16
+    healthcheck: { test: ["CMD-SHELL", "pg_isready"] }
+  default:
+    image: tolokaforge/runner:0.5.0
+    depends_on:
+      db: { condition: service_healthy }
+```
 
 ## Impact on existing tasks
 
-**This PR changes nothing about today's run behaviour.** It adds a schema; no code path reads it. Full canonical + unit suites stay green.
-
-The longer-term picture is worth being explicit about — it shapes how adapter packs plan their adoption.
-
 ### Per-trial isolation is the universal architectural goal
 
-The current shared-stack model (one run-wide `ServiceStack`; trials are distinguished only by `trial_id` in URLs) is on the architectural deprecation list — it is a known coupling point regardless of how many services a task uses. Even single-container tasks share the runner across trials today, which leaves room for cross-trial state contamination and constrains how aggressively trials can run in parallel. The direction this arc is moving toward is **one isolated stack per trial for every task**, irrespective of topology size. Multi-service tasks are the forcing function; single-container tasks ride the same machinery.
-
-That direction is delivered by the runtime backend that consumes this manifest, not by this PR.
+Every task in the engine — not just multi-service ones — moves to per-trial isolation. Single-container tasks get a one-service manifest; the underlying infrastructure changes even where the task's declared shape is minimal.
 
 ### What happens to existing tasks across the arc
 
-- **In this PR:** nothing. The shared-stack path runs every task exactly as on `main`.
-- **When the per-trial runtime backend lands (later PR):** runtime-backend selection is config-driven. The shared-stack path remains the default; tasks that opt into the per-trial backend run with isolation; tasks that do not opt in keep their existing path.
-- **Long term:** the per-trial path is the recommended target. Adapter packs adopt the manifest on their own schedule by adding an `environment_manifest` to their `TaskDescription` — even a one-service manifest is enough to give a single-container task its own isolated container per trial.
+- Tasks that do not declare an `environment_manifest` continue to run on the shared-stack path (`DockerRuntime`, unchanged). No behavioural change from this ADR.
+- Tasks that opt into a manifest run through the per-trial provisioning path (ADR-0010 + `LocalRuntimeBackend`, follow-up PR). The manifest is validated at load time; unsafe configurations fail before any container starts.
 
 ### Does a task need a manifest to "comply"?
 
-- **In this PR and the near term:** no. The shared-stack path keeps working; the schema is optional and opt-in. Adapter packs adopt the manifest on their own schedule, not a flag day.
-- **To gain per-trial isolation today:** declare a manifest. Even a one-service manifest is enough; the runtime backend that consumes it will give that task its own isolated stack per trial.
-- **Longer term:** per-trial isolation may become the required path. Once it has been proven on real workloads and the per-trial backend is the default, the shared-stack path is a candidate for deprecation. **That decision is not made by this ADR.** A future ADR — with its own deprecation window, migration guide, and communication ahead of any breaking change — will decide whether and when "running with a manifest" becomes mandatory. Adapter packs treating manifest adoption as eventual rather than optional is the safer planning posture.
-
-Today there is no mandatory migration and no engine-side breakage. The schema's design intentionally keeps the door open to making it required later, so anyone planning adapter-pack work knows that "adopt the manifest" is the direction of travel, not a permanent opt-in.
+No. The manifest is opt-in. A task with no `environment_manifest` continues to work under the shared-stack semantics. Task authors adopt the manifest when they want per-trial isolation.
 
 ## Safety boundaries
 
-The manifest is the typed declaration of the **boundary an agent's trial runs inside**. Three properties are worth stating explicitly so reviewers and adapter authors share the same mental model.
-
-**Grading runs outside the trial container.** Every grader the engine ships (rubric judge, state-hash, assertions, transcript rules) executes in the runner / orchestrator process, never inside the trial's services. The agent loop inside the trial cannot reach the grader's code, the tests it evaluates, or the report it produces. The manifest does not change this — the grader is structurally beyond an agent's reach by where it runs, not by what the schema declares.
-
-**The schema declares; the provisioner enforces.** `read_only`, `network`, and `resources` are properties the schema documents; the runtime backend that consumes the manifest is responsible for honouring them. The schema's job is to make the intended posture explicit and auditable; the provisioner's job is to materialise that posture in containers, networks, and policies. A manifest that declares `read_only: true` on a fixture mount is still only safe if the provisioner refuses to ignore it — that's why these are named follow-ups for the provisioner ADR, not just task-side declarations.
-
-**Per-trial isolation bounds an agent's blast radius.** Today's shared-stack path partitions trials only by `trial_id` in URLs; per-trial isolation puts each trial in its own compose project with its own network and its own ephemeral volumes. The manifest's job is to make that boundary declarative and consistent across runtime backends so the same task runs with the same posture whether the provisioner is local docker-compose or a future substrate.
-
-The schema-side guards in this ADR (path-traversal validation on bind sources and initial-state references, network-mode default of `isolated`, image-pinning, `extra="forbid"`) reduce the surface area through which a malformed or hostile manifest could weaken those boundaries. They do not replace the provisioner-side enforcement that lands later — but they catch the cheap failure modes (typos, careless authoring, drift) at task-load time instead of at trial-run time.
+- **Grading runs outside the trial container.** The grader (rubric judge, transcript checker, state-hash comparator) executes in the runner-side worker thread; the agent cannot reach the grader's code. This is a load-bearing safety property distinct from container isolation, and it is preserved unchanged by this ADR.
+- **Safety validators are load-time, not runtime-time.** A manifest that would let a service escape the per-trial boundary (`network_mode: host`, `privileged: true`, `cap_add`, `..` in a bind mount source) fails to load. Provisioning cannot start.
+- **The manifest declares; the provisioner enforces.** The manifest is the declaration surface. ADR-0010's `RuntimeBackend` provisioning contract requires the provisioner to honour every declared field, or to fail `provision` if it cannot. Silent degradation is a contract violation.
 
 ## Industry precedents studied
 
-The schema is the result of an explicit review of how other agent-evaluation harnesses declare their environments. Three projects shaped the choices here; one is the primary precedent we copied from, one is a future-integration option we deliberately left room for, and one informed a single targeted choice (image pinning).
-
 ### Inspect AI (UK AI Safety Institute) — primary precedent
 
-[inspect.aisi.org.uk/sandboxing](https://inspect.aisi.org.uk/sandboxing.html). The UK AISI's open evaluation framework is the clearest existing example of the two pillars this ADR formalises:
+Inspect AI's docker sandbox provider consumes a `compose.yaml` file verbatim, resolves service topology from the compose file's `services:` mapping, and layers a small config layer for provider-specific fields (a `default` service convention, cleanup semantics). This ADR adopts the same shape: compose is the source of truth; the wrapper adds engine-specific fields.
 
-- **Sandbox-provider abstraction.** Inspect ships `docker` and `local` built in, plus `k8s`, Daytona, Modal, EC2, and Proxmox as separate provider packages. The eval runs unchanged across them — substrate is a swap, not a rewrite. This is the same shape our `RuntimeBackend` Protocol (ADR-0007) commits to.
-- **Per-sample isolation.** "Each sample gets its own sandbox instance, even if the sandbox is defined at task level" — validates per-trial isolation as the right unit.
-- **Compose-based environment convention.** Inspect's `docker` provider reads a `compose.yaml` where the **first listed service is the default** (the one the harness talks to), **others are addressed by name**, and shared volumes wire inter-container comms.
+### METR task-standard — permission-string network model
 
-What we adopted directly: the compose convention (first-service-default, address-by-name), per-sample isolation as the model, and the protocol typing of health probes (`tcp` / `http`) instead of raw command strings. An operator who has used Inspect can read our manifest without learning anything new; an Inspect task could in principle be ported by renaming fields.
+METR's `manifest.yaml` uses permission strings for network access (`no_internet` / `limited_internet` / `full_internet`) rather than a boolean or a specific-substrate literal. This ADR's `NetworkPolicy` follows that convention: extensible without breaking callers, and readable at a glance without needing to know the substrate.
 
-### Kubernetes Agent Sandbox — studied as a future integration
+### Testcontainers — the library that consumes the manifest
 
-[agent-sandbox.sigs.k8s.io](https://agent-sandbox.sigs.k8s.io). A formal Kubernetes SIG-Apps subproject (launched late 2025) that standardises agent-execution primitives on Kubernetes. We studied it as the candidate path for any future at-scale backend; we did **not** commit to it, but we made schema choices that keep the integration cheap if/when it happens.
+Testcontainers Python's `testcontainers.compose.DockerCompose` module consumes a compose file directly. Adopting compose as source-of-truth means the concrete `LocalRuntimeBackend` (ADR-0010 follow-up) is a thin adapter over Testcontainers — no Pydantic-to-compose translator to own.
 
-What Agent Sandbox offers:
+### SWE-bench — layered image caching, not manifest
 
-- **A `Sandbox` CRD** — a declarative, controller-managed pod with stable identity and persistent storage. Replaces the hand-rolled "StatefulSet of size 1 + headless Service + PVC" pattern.
-- **Warm pools** (`SandboxWarmPool` + `SandboxTemplate` + `SandboxClaim`) — pre-provisioned isolated pods claimed on demand, with reported sub-200 ms allocation latency.
-- **Pluggable isolation** via Kubernetes's standard `runtimeClassName` — **gVisor** (userspace kernel) or **Kata** (per-pod micro-VM) for kernel/network isolation of untrusted agent + task code on shared infrastructure.
-
-Why this ADR does not commit to it:
-
-- **Pre-1.0.** The project is still maturing (v0.4.x as of writing); APIs may change; warm-pool design is still under upstream discussion. Adopting now means tracking a moving target.
-- **Multi-container gap.** Core Sandbox models a **single container per sandbox**; a realistic trial often needs N services (db + backend + frontend + …). Multi-container topology is an open extension point — not free, would need composition work on our side.
-- **Local must always work.** The `local` runtime backend has to work without a cluster; committing to a specific at-scale substrate is reversible only if it stays optional.
-
-What we did instead — cheap insurance:
-
-- `Resources.cpu` / `memory` use Kubernetes-style quantity strings (`"500m"`, `"4Gi"`). Borrowed grammar; works for compose `deploy.resources.limits` today; would drop straight into pod `resources.requests` if a K8s integration ever lands.
-- `PortSpec` declares only the container port; the runtime backend assigns host-side mapping. Sandbox CRs have no host ports either — services are reached by name on the pod's network namespace. Same shape works both ways.
-- Health probes are typed by protocol (`tcp` / `http`), the same shape Kubernetes readiness/liveness probes use.
-
-Names that would need to land in a separate ADR if we ever pursue this path: `runtimeClassName`, `securityContext`, `NetworkPolicy`. They are out of scope here.
-
-### SWE-bench — targeted influence on image pinning
-
-[swebench.com](https://www.swebench.com/). SWE-bench's instance-image discipline (every instance image pinned to an immutable tag or digest, hierarchy of base → environment → instance images cached aggressively) is the precedent for the strict image-pinning rule on `ServiceSpec.image`. We borrowed the rule; the layered-cache pattern is a named follow-up (see below), not in this ADR.
+SWE-bench's harness uses a 3-tier image hierarchy (base → environment → instance) for build-time caching. That is a build-time optimisation, not a schema concern, and it composes with any manifest that declares images with pinned tags or digests.
 
 ## Consequences
 
 ### Positive
 
-- The boundary between task-side declaration and runtime-side execution is now typed.
-- The schema's strict validation (`extra="forbid"`, image pinning, cross-field resolvers) catches malformed manifests at task-load time, not at trial-run time.
-- A canonical contract test pins the JSON wire shape: any silent field addition fails CI before it ships.
-- The shape is familiar to anyone who has used Inspect AI — no novel mental model.
-- Existing tasks are not impacted. The new field is optional and opt-in; the shared-stack path is preserved.
+- Task authors write compose files — an artefact they already know. The engine adds a small typed wrapper on top; the total learning curve is bounded.
+- Every safety-relevant configuration (`network_mode: host`, `privileged: true`, `cap_add`, bind-mount traversal) fails to load. Unsafe manifests never reach a provisioner.
+- Compose files run through `docker compose config` for structural validation, through IDE integrations for authoring, and through `docker compose up` for standalone testing. Zero-cost interop with the surrounding ecosystem.
+- The concrete `LocalRuntimeBackend` consumes the compose file directly via Testcontainers. No engine-owned Pydantic-to-compose translator.
+- Alignment with Inspect AI's docker sandbox convention makes ecosystem interop trivial: an Inspect-authored compose sandbox spec runs through `EnvironmentManifest` with no adapter code.
 
 ### Negative / Trade-offs
 
-- The manifest carries no runtime behaviour in this PR — the value is purely contract definition until a provisioner consumes it. Acceptable: the alternative (ship schema + provisioner together) doubles the diff and removes the "iterate schema cheaply" property.
-- `extra="forbid"` is intentionally strict. A new field needs a coordinated change: model + validator + canonical snapshot. That is the cost of catching silent drift at CI time.
-- Inspect-AI-compatible field names (`services`, `image`, `depends_on`) are inherited rather than re-invented; some are more verbose than the shortest possible alternative. We accept the verbosity in exchange for the familiarity.
+- Task authors edit two files (`task.yaml` + `environment/compose.yaml`) instead of one. Acceptable — the alternative (one file mixing engine-specific config with compose config) is harder to reason about and diverges from ecosystem convention.
+- Compose is docker-specific. A future Kubernetes backend translates the compose file to a Pod spec at provisioning time (via `kompose`, Testcontainers' k8s module, or a small owned translator). One industry-standard translator vs. two engine-owned translators; still the smaller cost.
+- Author-time type safety on the compose file itself is looser than an all-Pydantic schema would give (compose YAML is a permissive spec). Mitigated by the safety validators, which catch the classes of misconfiguration that matter, and by `docker compose config`.
 
 ### Follow-ups
 
-- **`RuntimeBackend` Protocol extension** (the provisioning surface that consumes the manifest). Separate PR.
-- **`LocalRuntimeBackend`** — the first concrete consumer.
-- **Layered image hierarchy / build cache.** Build-time optimisation, not a schema concern. Surfaces as `ServiceSpec.build` once we have a layered base-image story.
-- **Streaming log surface.** Belongs on `RuntimeBackend.stream_logs`, not on the manifest.
-- **Flip this ADR's status to `Accepted`** once a complex workload validates the schema end-to-end.
-
-#### Architectural-consistency follow-ups
-
-Not specific to this manifest, but surfaced by the pattern-audit this ADR triggered — filed so the discipline they codify applies uniformly to future components:
-
-- **[Architectural conventions ADR](https://github.com/Toloka/tolokaforge/issues/130).** Codify the two patterns Phase 1 established — seam-definition (Protocol + ≥2 impls + `InMemory*` fixture + contract test) and data-declaration (Pydantic + `extra="forbid"` + snapshot test) — so new components adopt the same shape rather than each contributor picking their own.
-- **[Judge Protocol lift](https://github.com/Toloka/tolokaforge/issues/131).** The rubric judge is a one-implementation top-level function today; lifting it to a `Judge` Protocol (with `LLMJudge` + `InMemoryJudge`) matches the seam-definition pattern used by `RuntimeBackend`, `Conductor`, and the artifact writers. Unlocks deterministic replay, cross-check ensemble, and adversarial-content variants without ad-hoc forks. Coordination with the Judge maintainer; sequenced after their active follow-up PRs.
-
-#### Deferred safety follow-ups
-
-Named here so a future reader does not have to re-derive what was considered and consciously deferred from this ADR:
-
-- **Per-trial secret scoping.** The current `SecretManager` is a runner-wide singleton bootstrapped from a single environment variable; every trial in a run sees the same secret pool. Per-trial secret scoping is a control-plane concern (which trial sees which credentials), not a manifest concern. Separate ADR when secret-leakage isolation becomes a hard requirement.
-- **Grader / agent boundary inside the trial container.** Today's grader runs in the runner / orchestrator process — outside any trial container, with its own isolated `ToolRegistry` the agent has no path to reach. The schema therefore does not need to carve out a separate grading service. If a future runtime backend ever runs the grader beside the agent (e.g. inheriting a benchmark harness convention), the manifest will need an optional `grading_service` field with stricter mounts and a read-only artifact path the agent cannot write to. Not in scope today. Complementary architectural work — lifting the judge itself to a Protocol — is tracked separately (see [Judge Protocol lift](https://github.com/Toloka/tolokaforge/issues/131) in the architectural-consistency follow-ups above).
-- **Trusted-output declaration / instruction-hierarchy hardening.** When the engine evaluates agents against adversarial-content scenarios (manifest-declared services that emit fake CI logs, fake issue comments, etc.), the manifest may need a way to mark which service outputs the agent should treat as authoritative vs untrusted. Out of scope until such evaluations exist in the engine.
+- **`LocalRuntimeBackend`** — the first concrete provisioner. Consumes `manifest.compose_file` directly via `testcontainers.compose.DockerCompose`.
+- **`NetworkPolicy.LIMITED_INTERNET` allowlist mechanism** — provisioner-defined; separate ADR when the first workload requires it.
+- **`K8sRuntimeBackend` design ADR** — filed when the K8s backend becomes concrete work.
 
 ## Rejected alternatives
 
-- **Option 2 — roll our own schema.** No precedent alignment; every operator pays a relearning tax.
-- **Option 3 — docker-compose YAML directly.** Locks the wire format to one substrate's grammar; no other consumer could ever read the same document.
-- **Option 4 — defer.** Just reorders the work. The runtime backend cannot land without something to consume.
+- **Field-by-field Pydantic schema re-encoding compose.** Owning `ServiceSpec` / `PortSpec` / `VolumeMount` / `HealthProbe` / `Resources` / `DependsOn` as Pydantic types. Rejected — pays a translation tax at every backend, diverges from every neighbour that reads compose directly, and gives no safety guarantee that a compose-file wrapper cannot give equivalently.
+- **METR-style Python code environment definitions.** Task authors write `TaskFamily` classes with lifecycle methods. Rejected — sacrifices static analysability, which the safety-validator layer requires, and diverges from compose tooling.
+- **One-file authoring (compose file with `x-tolokaforge:` extension carrying engine config).** Considered; rejected because it mixes engine-specific config with compose config in a single artefact, obscuring which fields the engine controls and which are pure compose semantics.
 
 ## Scope notes
 
-- **Net-new field.** `TaskDescription.environment_manifest` is brand new — there is no prior `docker_stack_requirements` field on `TaskDescription` to supersede. The shared-stack path (`core_stack` / `full_stack` templates selected by tool declarations) is preserved as the default until a backend honours the new field.
-- **Optional field, opt-in adoption.** `environment_manifest: EnvironmentManifest | None = None`. Tasks without a manifest continue to run on the existing shared-stack path. Adapter packs adopt the manifest on their own schedule.
-- **No runtime behaviour change.** No code path constructs or consumes the manifest in this PR. The contract test exercises serialization, deserialization, and every validator — that is the scope of "Proposed" status.
-- **Health probes are typed-by-protocol, not raw command strings.** A `command: list[str]` field would compile only to one healthcheck flavour. Typed `kind: tcp|http` + `port` + optional `path` is provisioner-agnostic.
-- **Initial state references are paths.** `InitialStateRef.from_` is a string path interpreted relative to the task pack root. The provisioner is responsible for resolving the path and applying the fixture; the manifest just names it and declares the kind of application (sql / copy / script).
+- **Status.** `Proposed`. Flips to `Accepted` when a real workload runs end-to-end on a per-trial backend (ADR-0010's follow-up).
+- **Contract tests are canonical.** `tests/canonical/test_environment_manifest_contract.py` pins every safety validator against fixture compose files (`tests/canonical/fixtures/environment_manifest/*.yaml`). Any silent drift fails CI.
+- **The manifest does not cache compose contents.** Every `manifest.load_compose()` re-reads from disk. Backends that need per-trial variants (per-project prefix, etc.) do so at provision time.

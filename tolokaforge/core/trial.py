@@ -13,21 +13,12 @@ from pydantic import BaseModel, Field
 
 from tolokaforge.core.models import ModelConfig, Trajectory
 from tolokaforge.runner.models import (
-    DependsOn,
-    DependsOnCondition,
     EnvironmentManifest,
-    HealthProbe,
-    HealthProbeKind,
     InitialStateKind,
     InitialStateRef,
-    NetworkMode,
-    PortSpec,
-    Resources,
+    NetworkPolicy,
     SecurityContext,
-    ServiceSpec,
     TaskDescription,
-    VolumeKind,
-    VolumeMount,
 )
 
 DEFAULT_TOOL_TIMEOUT_S = 30.0
@@ -151,21 +142,12 @@ class TrialResult(BaseModel):
 
 __all__ = [
     "DEFAULT_TOOL_TIMEOUT_S",
-    "DependsOn",
-    "DependsOnCondition",
     "EnvEndpoints",
     "EnvironmentManifest",
-    "HealthProbe",
-    "HealthProbeKind",
     "InitialStateKind",
     "InitialStateRef",
-    "NetworkMode",
-    "PortSpec",
-    "Resources",
+    "NetworkPolicy",
     "SecurityContext",
-    "ServiceSpec",
     "TrialResult",
     "TrialSpec",
-    "VolumeKind",
-    "VolumeMount",
 ]
