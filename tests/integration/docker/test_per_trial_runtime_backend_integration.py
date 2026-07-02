@@ -8,8 +8,7 @@ across concurrent instances.
 The fixture stops short of the runner RPC surface: nginx does not
 speak gRPC, so ``register_trial`` / ``execute_tool`` / etc. are not
 exercised here. That coverage arrives in the validation-gate PR
-against a real workload; see the PerTrialRuntimeBackend Jira sub-task.
-Unit-level RPC coverage lives in
+against a real workload (see #143). Unit-level RPC coverage lives in
 ``tests/canonical/test_per_trial_runtime_backend.py``.
 """
 
