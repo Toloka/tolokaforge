@@ -50,6 +50,9 @@ _ALL: list[MC] = [
             {
                 C.BASIC_COMPLETION,
                 C.SIMPLE_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
                 C.MULTI_TURN_TOOL_USE,
                 C.MULTI_TURN_ERROR_RECOVERY,
                 C.ENUM_SLASH_TOLERANCE,
@@ -88,6 +91,9 @@ _ALL: list[MC] = [
             {
                 C.BASIC_COMPLETION,
                 C.SIMPLE_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
                 C.MULTI_TURN_TOOL_USE,
                 C.MULTI_TURN_ERROR_RECOVERY,
                 C.ENUM_SLASH_TOLERANCE,
@@ -132,6 +138,9 @@ _ALL: list[MC] = [
             {
                 C.BASIC_COMPLETION,
                 C.SIMPLE_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
                 C.MULTI_TURN_TOOL_USE,
                 C.MULTI_TURN_ERROR_RECOVERY,
                 C.ENUM_SLASH_TOLERANCE,
@@ -174,6 +183,9 @@ _ALL: list[MC] = [
             {
                 C.BASIC_COMPLETION,
                 C.SIMPLE_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
                 C.MULTI_TURN_TOOL_USE,
                 C.MULTI_TURN_ERROR_RECOVERY,
                 C.ENUM_SLASH_TOLERANCE,
@@ -230,6 +242,9 @@ _ALL: list[MC] = [
             {
                 C.BASIC_COMPLETION,
                 C.SIMPLE_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
                 C.MULTI_TURN_TOOL_USE,
                 C.MULTI_TURN_ERROR_RECOVERY,
                 C.ENUM_SLASH_TOLERANCE,
@@ -306,6 +321,9 @@ _ALL: list[MC] = [
             {
                 C.BASIC_COMPLETION,
                 C.SIMPLE_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
                 C.MULTI_TURN_TOOL_USE,
                 C.MULTI_TURN_ERROR_RECOVERY,
                 C.ENUM_SLASH_TOLERANCE,
@@ -361,78 +379,6 @@ _ALL: list[MC] = [
             }
         ),
     ),
-    # claude-sonnet-5 - Anthropic adaptive thinker, Sonnet tier, current gen.
-    # Same adaptive-thinking contract as opus-4.8 (thinking on by default,
-    # budget_tokens removed, non-default sampling params rejected) and the same
-    # Opus-4.8 tokenizer. Live-certified 2026-07-01 via
-    # ``pytest tests/integration/llm/ -k claude-sonnet-5`` (OpenRouter route;
-    # final posture 17 required / 3 known_unsupported, identical to the opus-4.8
-    # sibling). Per docs/ADD_NEW_MODEL.md § "copying a sibling cert verbatim",
-    # the sibling posture was NOT copied blind: every known_unsupported entry
-    # was flipped to ``required`` and re-run live, then only the entries that
-    # actually failed were moved back.
-    #
-    #   * Routed through the GENERIC ``anthropic`` preset (NO version-specific
-    #     preset): THINKING_EMITS_BLOCKS + THINKING_REPLAY_ROUNDTRIP both pass
-    #     live under content_policy=anthropic / reasoning_codec=anthropic (the
-    #     OpenRouter extra_body.reasoning overlay), so — like fable-5 — Sonnet 5
-    #     needs no version-specific litellm ``thinking=`` kwarg preset the way
-    #     opus-4.7/4.8 do.
-    #   * DICT_MAP_TOOL_CALL + DECIMAL_FIELD_TOOL_CALL + PROMPT_CACHING all pass
-    #     under Anthropic PassthroughSchema, same posture as opus-4.8.
-    MC(
-        model_id="openrouter__anthropic_claude-sonnet-5",
-        provider="openrouter",
-        name="anthropic/claude-sonnet-5",
-        env_key="OPENROUTER_API_KEY",
-        required=frozenset(
-            {
-                C.BASIC_COMPLETION,
-                C.SIMPLE_TOOL_CALL,
-                C.MULTI_TURN_TOOL_USE,
-                C.MULTI_TURN_ERROR_RECOVERY,
-                C.ENUM_SLASH_TOLERANCE,
-                C.RE2_PATTERN_TOLERANCE,
-                C.THINKING_EMITS_BLOCKS,
-                C.THINKING_REPLAY_ROUNDTRIP,
-                C.PROMPT_CACHING,
-                C.USAGE_METRICS_POPULATED,
-                C.COST_USD_POPULATED,
-                C.TOOL_NAME_DISCIPLINE,
-                C.LEXICAL_TOOL_INVENTION,
-                C.REQUIRED_FIELDS_COMPLETE,
-                C.PROGRESS_AFTER_SUCCESS,
-                # Round-trip cleanly under Anthropic PassthroughSchema (verified
-                # live 2026-07-01), same posture as opus-4.8 / fable-5.
-                C.DICT_MAP_TOOL_CALL,
-                C.DECIMAL_FIELD_TOOL_CALL,
-            }
-        ),
-        known_unsupported=frozenset(
-            {
-                # explicit_discriminator variant emits ``item`` as a
-                # JSON-encoded string instead of a nested dict (bare_union
-                # passes); no JsonCoerce recovery on the Anthropic passthrough
-                # route. Flipped to ``required`` and reproduced live 2026-07-01
-                # (string body ``{"kind": "ticket", "subject": ...}``) — identical
-                # failure mode to the opus-4.8 / fable-5 siblings, so moved back.
-                C.DISCRIMINATED_UNION_TOOL_CALL,
-                # Pass-but-wrong-reason on every Anthropic sibling: the synthetic
-                # probe only fires because our anthropic_ephemeral cache_policy
-                # injects explicit cache_control markers, so it is really
-                # measuring EXPLICIT caching (covered by PROMPT_CACHING, required
-                # above). Anthropic has no implicit auto-cache surface; the test's
-                # own docstring lists anthropic as known_unsupported.
-                C.IMPLICIT_PROMPT_CACHING,
-                # Pass-but-wrong-shape on every Anthropic sibling:
-                # test_unsigned_thinking_replay asserts the Gemini-lineage
-                # reasoning.text replay shape. Anthropic's real replay contract is
-                # the SIGNED variant (THINKING_REPLAY_ROUNDTRIP, required above).
-                # Kept consistent with opus-4.6/4.7/4.8 + fable-5.
-                C.UNSIGNED_THINKING_REPLAY,
-            }
-        ),
-    ),
     # -----------------------------------------------------------------
     # Qwen — preset routes it through the same strict trio as GPT-5.
     # Reasoning surface is OpenAI-style summary only, no signed blocks,
@@ -447,6 +393,9 @@ _ALL: list[MC] = [
             {
                 C.BASIC_COMPLETION,
                 C.SIMPLE_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
                 C.MULTI_TURN_TOOL_USE,
                 C.MULTI_TURN_ERROR_RECOVERY,
                 C.ENUM_SLASH_TOLERANCE,
@@ -493,6 +442,9 @@ _ALL: list[MC] = [
             {
                 C.BASIC_COMPLETION,
                 C.SIMPLE_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
                 C.MULTI_TURN_TOOL_USE,
                 C.MULTI_TURN_ERROR_RECOVERY,
                 C.ENUM_SLASH_TOLERANCE,
@@ -567,6 +519,9 @@ _ALL: list[MC] = [
             {
                 C.BASIC_COMPLETION,
                 C.SIMPLE_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
                 C.MULTI_TURN_TOOL_USE,
                 C.MULTI_TURN_ERROR_RECOVERY,
                 C.ENUM_SLASH_TOLERANCE,
@@ -610,6 +565,9 @@ _ALL: list[MC] = [
             {
                 C.BASIC_COMPLETION,
                 C.SIMPLE_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
                 C.MULTI_TURN_TOOL_USE,
                 C.DICT_MAP_TOOL_CALL,
                 C.DISCRIMINATED_UNION_TOOL_CALL,
@@ -704,6 +662,9 @@ _ALL: list[MC] = [
             {
                 C.BASIC_COMPLETION,
                 C.SIMPLE_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
                 C.MULTI_TURN_TOOL_USE,
                 # Live-verified 2026-05-14: 4/4 probe + capability test
                 # pass — Flash reliably reads the tool-error message and
@@ -785,6 +746,9 @@ _ALL: list[MC] = [
             {
                 C.BASIC_COMPLETION,
                 C.SIMPLE_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
                 C.MULTI_TURN_TOOL_USE,
                 C.MULTI_TURN_ERROR_RECOVERY,
                 C.ENUM_SLASH_TOLERANCE,
@@ -875,6 +839,9 @@ _ALL: list[MC] = [
             {
                 C.BASIC_COMPLETION,
                 C.SIMPLE_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
                 C.MULTI_TURN_TOOL_USE,
                 C.MULTI_TURN_ERROR_RECOVERY,
                 C.ENUM_SLASH_TOLERANCE,
@@ -930,6 +897,9 @@ _ALL: list[MC] = [
             {
                 C.BASIC_COMPLETION,
                 C.SIMPLE_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
                 C.MULTI_TURN_TOOL_USE,
                 C.MULTI_TURN_ERROR_RECOVERY,
                 C.ENUM_SLASH_TOLERANCE,
@@ -967,6 +937,9 @@ _ALL: list[MC] = [
             {
                 C.BASIC_COMPLETION,
                 C.SIMPLE_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
                 C.MULTI_TURN_TOOL_USE,
                 C.MULTI_TURN_ERROR_RECOVERY,
                 C.ENUM_SLASH_TOLERANCE,
@@ -1027,6 +1000,9 @@ _ALL: list[MC] = [
             {
                 C.BASIC_COMPLETION,
                 C.SIMPLE_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
                 C.MULTI_TURN_TOOL_USE,
                 C.MULTI_TURN_ERROR_RECOVERY,
                 C.ENUM_SLASH_TOLERANCE,
@@ -1092,6 +1068,9 @@ _ALL: list[MC] = [
             {
                 C.BASIC_COMPLETION,
                 C.SIMPLE_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
                 C.MULTI_TURN_TOOL_USE,
                 C.MULTI_TURN_ERROR_RECOVERY,
                 C.ENUM_SLASH_TOLERANCE,
@@ -1153,6 +1132,9 @@ _ALL: list[MC] = [
             {
                 C.BASIC_COMPLETION,
                 C.SIMPLE_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
                 C.MULTI_TURN_TOOL_USE,
                 C.MULTI_TURN_ERROR_RECOVERY,
                 C.ENUM_SLASH_TOLERANCE,
@@ -1195,6 +1177,9 @@ _ALL: list[MC] = [
             {
                 C.BASIC_COMPLETION,
                 C.SIMPLE_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
                 C.MULTI_TURN_TOOL_USE,
                 C.MULTI_TURN_ERROR_RECOVERY,
                 C.ENUM_SLASH_TOLERANCE,
@@ -1298,6 +1283,9 @@ _ALL: list[MC] = [
             {
                 C.BASIC_COMPLETION,
                 C.SIMPLE_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
                 C.MULTI_TURN_TOOL_USE,
                 C.MULTI_TURN_ERROR_RECOVERY,
                 C.ENUM_SLASH_TOLERANCE,
@@ -1342,6 +1330,9 @@ _ALL: list[MC] = [
             {
                 C.BASIC_COMPLETION,
                 C.SIMPLE_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
                 C.MULTI_TURN_TOOL_USE,
                 C.MULTI_TURN_ERROR_RECOVERY,
                 C.ENUM_SLASH_TOLERANCE,
@@ -1385,6 +1376,9 @@ _ALL: list[MC] = [
             {
                 C.BASIC_COMPLETION,
                 C.SIMPLE_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
                 C.MULTI_TURN_TOOL_USE,
                 C.MULTI_TURN_ERROR_RECOVERY,
                 C.ENUM_SLASH_TOLERANCE,
@@ -1432,6 +1426,9 @@ _ALL: list[MC] = [
             {
                 C.BASIC_COMPLETION,
                 C.SIMPLE_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
                 C.MULTI_TURN_TOOL_USE,
                 C.MULTI_TURN_ERROR_RECOVERY,
                 C.ENUM_SLASH_TOLERANCE,
@@ -1482,6 +1479,9 @@ _ALL: list[MC] = [
             {
                 C.BASIC_COMPLETION,
                 C.SIMPLE_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
                 C.MULTI_TURN_TOOL_USE,
                 C.MULTI_TURN_ERROR_RECOVERY,
                 C.ENUM_SLASH_TOLERANCE,
@@ -1530,6 +1530,9 @@ _ALL: list[MC] = [
             {
                 C.BASIC_COMPLETION,
                 C.SIMPLE_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
                 C.MULTI_TURN_TOOL_USE,
                 C.MULTI_TURN_ERROR_RECOVERY,
                 C.ENUM_SLASH_TOLERANCE,
@@ -1577,6 +1580,9 @@ _ALL: list[MC] = [
             {
                 C.BASIC_COMPLETION,
                 C.SIMPLE_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
                 C.MULTI_TURN_TOOL_USE,
                 C.MULTI_TURN_ERROR_RECOVERY,
                 C.ENUM_SLASH_TOLERANCE,
@@ -1625,6 +1631,9 @@ _ALL: list[MC] = [
             {
                 C.BASIC_COMPLETION,
                 C.SIMPLE_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
                 C.MULTI_TURN_TOOL_USE,
                 C.MULTI_TURN_ERROR_RECOVERY,
                 C.ENUM_SLASH_TOLERANCE,
@@ -1721,6 +1730,20 @@ _ALL: list[MC] = [
         ),
         known_unsupported=frozenset(
             {
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
+                # minimax-m3 stringifies dict-map/union/nested shapes; its
+                # preset is `minimax_m3_tags` (tag-unwrap), NOT `json_coerce`,
+                # so these stringify-class shapes have no recovery. Live raw
+                # run: recursive/heterogeneous/allof all stringified.
+                # Stringify-class shapes (recursive $ref, polymorphic
+                # arrays, allOf merge) share the native mis-shaping /
+                # stringification failure mode of dict_map below, and the
+                # minimax preset is `minimax_m3_tags` (tag-unwrap), NOT
+                # `json_coerce` — so there is no stringify recovery. Local
+                # raw run 2026-06-30 stringified these heavily, unrecovered.
+                # Kept known_unsupported (ratchet target).
                 # Typed Dict[str, T] tool args are flaky: the model
                 # intermittently emits an array under a literal "item" key
                 # ({"item": [{"sku": ...}, ...]}) instead of a dict keyed by
