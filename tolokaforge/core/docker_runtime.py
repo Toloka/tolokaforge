@@ -760,6 +760,68 @@ class DockerRuntime:
         """No-op: the shared stack lives for the whole run and is torn
         down at :meth:`close`, not per-trial. Idempotent by construction."""
 
+    # ---- Per-trial RPC operations (ADR-0013) ----
+    # Thin delegates to ``self.runner_client``. Kept as explicit methods
+    # (not ``__getattr__`` proxy magic) so the ``RuntimeBackend`` Protocol
+    # surface is discoverable in the class definition.
+
+    def register_trial(
+        self,
+        trial_id: str,
+        trial_spec_json: str,
+        default_tool_timeout_s: float | None = None,
+    ) -> dict:
+        kwargs: dict[str, Any] = {}
+        if default_tool_timeout_s is not None:
+            kwargs["default_tool_timeout_s"] = default_tool_timeout_s
+        return self.runner_client.register_trial(trial_id, trial_spec_json, **kwargs)
+
+    def execute_tool(
+        self,
+        trial_id: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        timeout_seconds: float = 30.0,
+        executor: str = "agent",
+    ) -> ToolResult:
+        return self.runner_client.execute_tool(
+            trial_id=trial_id,
+            tool_name=tool_name,
+            arguments=arguments,
+            timeout_seconds=timeout_seconds,
+            executor=executor,
+        )
+
+    def grade_trial(
+        self,
+        trial_id: str,
+        llm_messages_json: str | None = None,
+        grading_components: list[str] | None = None,
+    ) -> dict:
+        return self.runner_client.grade_trial(
+            trial_id=trial_id,
+            llm_messages_json=llm_messages_json,
+            grading_components=grading_components,
+        )
+
+    def get_state(
+        self,
+        trial_id: str,
+        include_unstable: bool = True,
+        tables: list[str] | None = None,
+    ) -> dict:
+        return self.runner_client.get_state(
+            trial_id=trial_id,
+            include_unstable=include_unstable,
+            tables=tables,
+        )
+
+    def reset_trial(self, trial_id: str, execute_init_actions: bool = False) -> dict:
+        return self.runner_client.reset_trial(
+            trial_id=trial_id,
+            execute_init_actions=execute_init_actions,
+        )
+
     def __enter__(self):
         """Context manager entry"""
         self.connect()

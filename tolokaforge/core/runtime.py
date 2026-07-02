@@ -27,6 +27,7 @@ from tolokaforge.core.trial import EnvEndpoints, TrialSpec
 
 if TYPE_CHECKING:  # pragma: no cover — type-only imports
     from tolokaforge.core.docker_runtime import RunnerClient
+    from tolokaforge.tools.registry import ToolResult
 
 __all__ = [
     "EnvHandle",
@@ -94,11 +95,22 @@ class ProvisionError(Exception):
 class RuntimeBackend(Protocol):
     """The orchestrator's execution surface for trials.
 
-    Declares the run-level lifecycle, the per-trial provisioning surface,
-    and the one trial-state operation that runs *before* a per-trial
-    adapter exists (the retry-cleanup path). Per-trial operations after
-    registration flow through :class:`DockerRunnerAdapter`, which is
-    constructed from :attr:`executor_client`.
+    Declares three surfaces:
+
+    * **Run-level lifecycle** — ``connect`` / ``close`` / ``health_check``.
+      Called once per orchestrator run.
+    * **Per-trial provisioning** (ADR-0010) — ``provision`` /
+      ``await_ready`` / ``endpoints`` / ``teardown``. Materialises and
+      tears down a trial's declared environment.
+    * **Per-trial RPC operations** (ADR-0013) — ``register_trial`` /
+      ``execute_tool`` / ``grade_trial`` / ``get_state`` / ``reset_trial``
+      / ``cleanup_trial``. Every method takes ``trial_id`` explicitly;
+      callers no longer construct an intermediate wrapper class to bind
+      it.
+
+    :attr:`executor_client` remains a legacy handoff kept only for
+    :class:`DockerRunnerAdapter`'s ``execute()`` path — see the field's
+    own docstring.
     """
 
     # ---- Run-level lifecycle ----
@@ -125,14 +137,100 @@ class RuntimeBackend(Protocol):
         """Probe whether the runtime is currently usable."""
         ...
 
-    # ---- Retry-cleanup path (called before a per-trial adapter exists) ----
+    # ---- Per-trial RPC operations (ADR-0013) ----
+    # trial_id is the first positional argument for every method — they used
+    # to hang off ``DockerRunnerAdapter``, which curried trial_id at
+    # construction time; now callers pass trial_id explicitly and there is
+    # no wrapper class between them and the runtime.
+    def register_trial(
+        self,
+        trial_id: str,
+        trial_spec_json: str,
+        default_tool_timeout_s: float | None = None,
+    ) -> dict[str, Any]:
+        """Register a new trial with the runtime service.
+
+        ``trial_spec_json`` is a serialised :class:`TrialSpec` — the runner
+        reads ``spec.task`` for tool reconstruction and uses the rest of
+        the spec for per-trial execution context. ``default_tool_timeout_s``
+        defaults to :data:`tolokaforge.core.trial.DEFAULT_TOOL_TIMEOUT_S`
+        when ``None``; the concrete backend applies the default.
+
+        Returns a dict shaped like
+        ``{"success": bool, "error": str | None, "tool_schemas": list,
+        "num_agent_tools": int, "num_user_tools": int}``.
+        """
+        ...
+
+    def execute_tool(
+        self,
+        trial_id: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        timeout_seconds: float = 30.0,
+        executor: str = "agent",
+    ) -> ToolResult:
+        """Execute a tool call registered for ``trial_id``.
+
+        ``executor`` names the caller environment (``"agent"`` or
+        ``"user"``); the runtime routes the call to the matching tool
+        registry inside the runner service.
+        """
+        ...
+
+    def grade_trial(
+        self,
+        trial_id: str,
+        llm_messages_json: str | None = None,
+        grading_components: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Compute the grade for a completed trial.
+
+        ``llm_messages_json`` is the transcript for transcript-rule /
+        rubric-judge grading (``None`` when neither component is
+        configured). ``grading_components`` narrows the components to
+        compute (``None`` / empty = all).
+
+        Returns
+        ``{"success": bool, "error": str | None, "grade": dict | None}``;
+        the ``grade`` sub-dict mirrors :class:`tolokaforge.core.models.Grade`.
+        """
+        ...
+
+    def get_state(
+        self,
+        trial_id: str,
+        include_unstable: bool = True,
+        tables: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Return a snapshot of the trial's DB state (debugging + grading).
+
+        ``include_unstable`` toggles inclusion of fields the state hash
+        excludes; ``tables`` narrows the snapshot to the named tables
+        (empty / ``None`` = all). Returns
+        ``{"success": bool, "error": str | None, "state_json": str,
+        "stable_hash": str, "full_hash": str}``.
+        """
+        ...
+
+    def reset_trial(self, trial_id: str, execute_init_actions: bool = False) -> dict[str, Any]:
+        """Reset a trial's state to its registered initial state.
+
+        ``execute_init_actions`` re-runs the manifest's initialisation
+        actions after resetting the DB. Returns
+        ``{"success": bool, "error": str | None, "state_hash": str}``.
+        """
+        ...
+
     def cleanup_trial(self, trial_id: str) -> dict[str, Any]:
         """Forget any prior registration of ``trial_id`` on the runtime.
 
         Idempotent: cleaning a trial that isn't currently registered
-        succeeds. Returns the same shape as
-        :meth:`RunnerClient.cleanup_trial` —
+        succeeds. Returns
         ``{"success": bool, "error": str | None}``.
+
+        Called by both the retry-cleanup path (before a per-trial adapter
+        exists) and by trial teardown (after a successful trial run).
         """
         ...
 
@@ -185,16 +283,18 @@ class RuntimeBackend(Protocol):
         """
         ...
 
-    # ---- Per-trial adapter handoff ----
+    # ---- Per-trial adapter handoff (legacy — see ADR-0013 follow-ups) ----
     executor_client: RunnerClient
-    """The RPC client used by :class:`DockerRunnerAdapter` for per-trial
-    operations after a trial is registered.
+    """The RPC client used by :class:`DockerRunnerAdapter` for the tool
+    execution path (``.execute()`` + ``tool_logs`` bookkeeping).
 
-    Typed as the :class:`RunnerClient` Protocol so a non-gRPC backend can
-    satisfy the RuntimeBackend contract without pulling in the gRPC
-    stack. :class:`DockerRuntime` sets this to a :class:`GrpcRunnerClient`
-    instance; ``InMemoryRuntimeBackend`` sets it to a stub that raises on
-    any RPC method access."""
+    Every other per-trial RPC method now lives on :class:`RuntimeBackend`
+    directly (see ADR-0013). ``executor_client`` remains only because
+    :class:`DockerRunnerAdapter` — now a slim per-trial ``ToolExecutor`` —
+    still routes ``execute_tool`` through it. Follow-up ticket:
+    remove ``executor_client`` from the Protocol once every ``execute``
+    call site is proven safe to route through
+    :meth:`execute_tool` directly."""
 
 
 # ---------------------------------------------------------------------------
@@ -340,3 +440,66 @@ class InMemoryRuntimeBackend:
 
     def teardown(self, handle: EnvHandle) -> None:
         self.call_log.torn_down_trials.append(handle.trial_id)
+
+    # ---- Per-trial RPC operations (ADR-0013) ----
+    # The in-memory backend has no runner service to talk to; every RPC
+    # method raises with a pointer to the DockerRuntime alternative, in
+    # the same spirit as the ``_UnusableExecutorClient`` stub. Tests that
+    # exercise the RPC surface must use ``DockerRuntime`` or mock the
+    # methods on this instance directly.
+    def register_trial(
+        self,
+        trial_id: str,
+        trial_spec_json: str,
+        default_tool_timeout_s: float | None = None,
+    ) -> dict[str, Any]:
+        raise NotImplementedError(
+            "InMemoryRuntimeBackend.register_trial is not implemented. "
+            "Tests that exercise the runner RPC surface must use "
+            "DockerRuntime or mock the method on the backend instance."
+        )
+
+    def execute_tool(
+        self,
+        trial_id: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        timeout_seconds: float = 30.0,
+        executor: str = "agent",
+    ) -> Any:
+        raise NotImplementedError(
+            "InMemoryRuntimeBackend.execute_tool is not implemented. "
+            "Tests that exercise the runner RPC surface must use "
+            "DockerRuntime or mock the method on the backend instance."
+        )
+
+    def grade_trial(
+        self,
+        trial_id: str,
+        llm_messages_json: str | None = None,
+        grading_components: list[str] | None = None,
+    ) -> dict[str, Any]:
+        raise NotImplementedError(
+            "InMemoryRuntimeBackend.grade_trial is not implemented. "
+            "Tests that exercise the runner RPC surface must use "
+            "DockerRuntime or mock the method on the backend instance."
+        )
+
+    def get_state(
+        self,
+        trial_id: str,
+        include_unstable: bool = True,
+        tables: list[str] | None = None,
+    ) -> dict[str, Any]:
+        raise NotImplementedError(
+            "InMemoryRuntimeBackend.get_state is not implemented. "
+            "Tests that exercise the runner RPC surface must use "
+            "DockerRuntime or mock the method on the backend instance."
+        )
+
+    def reset_trial(self, trial_id: str, execute_init_actions: bool = False) -> dict[str, Any]:
+        raise NotImplementedError(
+            "InMemoryRuntimeBackend.reset_trial is not implemented. "
+            "Tests that exercise the runner RPC surface must use "
+            "DockerRuntime or mock the method on the backend instance."
+        )
