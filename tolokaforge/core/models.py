@@ -52,6 +52,7 @@ class TerminationReason(str, Enum):
     RATE_LIMIT = "rate_limit"  # API rate limit error
     API_TIMEOUT = "api_timeout"  # API call timed out after retries
     API_ERROR = "api_error"  # Other API errors
+    PROVISION_ERROR = "provision_error"  # Substrate provisioning failed before the trial body ran
 
 
 class ToolCall(BaseModel):

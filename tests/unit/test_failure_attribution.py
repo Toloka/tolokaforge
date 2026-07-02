@@ -48,6 +48,21 @@ def test_timeout_classification():
     assert attribution["deterministic"] is True
 
 
+def test_provision_error_classification():
+    """A trajectory carrying ``PROVISION_ERROR`` classifies as ``provision_failure`` —
+    substrate came up wrong before the trial body ran, so the failure is
+    infra-side, not model-side."""
+    traj = _base_trajectory()
+    traj.status = TrialStatus.ERROR
+    traj.termination_reason = TerminationReason.PROVISION_ERROR
+
+    assert is_failed_trajectory(traj) is True
+    attribution = attribute_failure(traj)
+    assert attribution["failure_class"] == "provision_failure"
+    assert attribution["deterministic"] is True
+    assert any(e["kind"] == "termination_reason" for e in attribution["evidence"])
+
+
 def test_tool_argument_classification():
     traj = _base_trajectory()
     traj.tool_log = [
