@@ -396,7 +396,13 @@ class InProcessConductor:
         # runner's ``execute()`` path.
         register_result = self.runtime_backend.register_trial(
             trial_id=trial_id,
-            trial_spec_json=spec.model_dump_json(),
+            # ``environment_manifest`` describes HOW the orchestrator
+            # materialises the trial's substrate; the runner runs INSIDE
+            # that substrate and has no need for the manifest. Excluded
+            # from the wire so the runner-side ``TrialSpec`` validator
+            # doesn't try to re-validate a ``compose_file`` path that
+            # was resolved on the orchestrator's local filesystem.
+            trial_spec_json=spec.model_dump_json(exclude={"task": {"environment_manifest"}}),
             default_tool_timeout_s=spec.default_tool_timeout_s or DEFAULT_TOOL_TIMEOUT_S,
         )
         if not register_result["success"]:
