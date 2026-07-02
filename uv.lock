@@ -4056,7 +4056,7 @@ dev = [
     { name = "pytest-docker", specifier = ">=2.0.0" },
     { name = "rank-bm25", specifier = ">=0.2.2" },
     { name = "ruff", specifier = "==0.14.4" },
-    { name = "testcontainers", specifier = ">=3.7.0" },
+    { name = "testcontainers", specifier = ">=4.14.2,<5" },
     { name = "tolokaforge-adapter-terminal-bench", editable = "external_adapters/tolokaforge-adapter-terminal-bench" },
     { name = "uvicorn", specifier = ">=0.25.0" },
 ]

@@ -223,6 +223,7 @@ SWE-bench's harness uses a 3-tier image hierarchy (base → environment → inst
 ### Follow-ups
 
 - **`LocalRuntimeBackend`** — the first concrete provisioner. Consumes `manifest.compose_file` directly via `testcontainers.compose.DockerCompose`.
+- **Endpoint-resolution conventions** — `LocalRuntimeBackend` resolves `EnvEndpoints` from the compose file via convention: `runner_service` (default `"default"`) at gRPC port `50051` → `runner_url`; a compose service named `db` at port `5432` → `db_url`; a compose service named `rag` or `rag-service` at its declared port → `rag_url`. Task packs whose services deviate from these names or ports will get manifest-level overrides (`runner_port`, `db_service`, `db_port`, `rag_service`, `rag_port`) in a follow-up PR — the current shape prioritises simplicity for the common case.
 - **`NetworkPolicy.LIMITED_INTERNET` allowlist mechanism** — provisioner-defined; separate ADR when the first workload requires it.
 - **`K8sRuntimeBackend` design ADR** — filed when the K8s backend becomes concrete work.
 

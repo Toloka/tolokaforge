@@ -37,8 +37,9 @@ pytestmark = pytest.mark.canonical
 
 
 class TestProtocolRuntimeCheck:
-    """The Protocol is ``@runtime_checkable``; both implementations satisfy
-    it via ``isinstance`` (not just by structural type-hint compatibility).
+    """The Protocol is ``@runtime_checkable``; every implementation
+    satisfies it via ``isinstance`` (not just by structural type-hint
+    compatibility).
     """
 
     def test_docker_runtime_passes_isinstance(self) -> None:
@@ -46,6 +47,11 @@ class TestProtocolRuntimeCheck:
 
     def test_in_memory_runtime_backend_passes_isinstance(self) -> None:
         assert isinstance(InMemoryRuntimeBackend(), RuntimeBackend)
+
+    def test_local_runtime_backend_passes_isinstance(self) -> None:
+        from tolokaforge.core.local_runtime import LocalRuntimeBackend
+
+        assert isinstance(LocalRuntimeBackend(), RuntimeBackend)
 
     def test_random_object_does_not_pass_isinstance(self) -> None:
         class _NotARuntime:
