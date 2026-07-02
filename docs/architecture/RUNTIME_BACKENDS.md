@@ -322,6 +322,19 @@ half-provisioned resources leaked to the daemon.
 
 Both satisfy the same `RuntimeBackend` Protocol. Callers depend only on the Protocol — swapping backends is a construction-time choice, not a callsite change.
 
+## Extending to new substrates
+
+The manifest is **substrate-neutral by design**: `EnvironmentManifest` points at a Docker Compose file, but compose is the *vocabulary* the manifest speaks — every backend owns the *translation* from compose to its own substrate. Adding a new substrate means adding a new `RuntimeBackend` implementation; task manifests do not change.
+
+Concretely, when the next substrate lands (e.g. Kubernetes):
+
+- Write a new class that satisfies the nine-method `RuntimeBackend` Protocol.
+- Inside `provision`, translate `manifest.load_compose()` into that substrate's shape (a k8s backend would use `kompose` or a small owned translator to render Pod / Service specs, then `kubectl apply`; a Modal / E2B backend would render into its SDK's spec type).
+- Advertise the backend's isolation posture by setting the class-level `isolation_mode: IsolationMode` attribute — `SHARED_STACK` if trials share one materialisation, `PER_TRIAL_STACK` if each trial gets its own. The orchestrator's isolation-compatibility check reads this attribute, not the class name, so a `KubernetesPerTrialRuntimeBackend` (or whatever it's called) slots into the enforcement path with zero orchestrator changes.
+- Wire the backend into config: extend the `orchestrator.runtime` selector so operators can pick between the shipped backends.
+
+The isolation axis (shared vs per-trial) and the substrate axis (docker compose vs kubernetes vs hosted sandbox) are orthogonal — a substrate can support either isolation mode, or specialise in one. Class names today collapse the substrate axis (both current backends are docker-compose-based) because there is only one substrate; when a second substrate arrives, the naming can grow to make the substrate explicit alongside the mode.
+
 ## What this PR does *not* do
 
 - **No Conductor wiring for per-trial provisioning.** `Conductor.run()` still uses the pre-ADR-0013 call sites for the shared-stack path — this PR ships `PerTrialRuntimeBackend` as a functioning backend, but the conductor doesn't call its `provision` / `endpoints` / `teardown` methods per trial yet. That wiring is the next PR (Phase 3.D).

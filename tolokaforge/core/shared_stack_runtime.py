@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import grpc
 
+from tolokaforge.core.runtime import IsolationMode
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, EnvEndpoints
 from tolokaforge.runner import (
     ExecutionStatus,
@@ -668,6 +669,11 @@ class SharedStackRuntimeBackend:
                 # Use runtime.runner_client for operations
                 pass
     """
+
+    isolation_mode: IsolationMode = IsolationMode.SHARED_STACK
+    """Every trial in the run talks to the same runner container. Read by
+    the orchestrator's compatibility check to refuse runs whose tasks
+    declare ``environment_manifest.isolation: per_trial``."""
 
     def __init__(self, runner_address: str = "runner:50051"):
         """

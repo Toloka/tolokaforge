@@ -41,7 +41,7 @@ from typing import TYPE_CHECKING, Any
 
 from testcontainers.compose import DockerCompose
 
-from tolokaforge.core.runtime import EnvHandle, ProvisionError
+from tolokaforge.core.runtime import EnvHandle, IsolationMode, ProvisionError
 from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient, RunnerClient
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, EnvEndpoints
 
@@ -102,6 +102,11 @@ class PerTrialRuntimeBackend:
     delegates. Callers that hit an RPC method before provisioning that
     trial's environment get a clear :class:`RuntimeError`.
     """
+
+    isolation_mode: IsolationMode = IsolationMode.PER_TRIAL_STACK
+    """Every trial gets its own compose project. Advertised to the
+    orchestrator's compatibility check so tasks that declare
+    ``environment_manifest.isolation: per_trial`` are satisfied."""
 
     connect_timeout: float = 30.0
     """Seconds to wait for a per-trial runner's gRPC server to become

@@ -21,6 +21,7 @@ Protocol that decouples the orchestrator from that single implementation.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, EnvEndpoints, TrialSpec
@@ -31,11 +32,31 @@ if TYPE_CHECKING:  # pragma: no cover — type-only imports
 __all__ = [
     "EnvHandle",
     "InMemoryRuntimeBackend",
+    "IsolationMode",
     "ProvisionError",
     "ProvisionStage",
     "RuntimeBackend",
     "RuntimeBackendCallLog",
 ]
+
+
+class IsolationMode(str, Enum):
+    """The isolation posture a :class:`RuntimeBackend` provides.
+
+    Every backend advertises its mode via :attr:`RuntimeBackend.isolation_mode`.
+    The orchestrator's task-vs-backend compatibility check reads this attribute
+    rather than inspecting the concrete class — so a future backend on a
+    different substrate (Kubernetes, Modal, ...) only has to set the attribute
+    correctly to slot into the enforcement path.
+
+    * ``SHARED_STACK`` — one substrate materialisation shared across every
+      trial in the run. Cross-trial state contamination is structural.
+    * ``PER_TRIAL_STACK`` — one substrate materialisation per trial.
+      Concurrent trials are fully isolated.
+    """
+
+    SHARED_STACK = "shared_stack"
+    PER_TRIAL_STACK = "per_trial_stack"
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +127,21 @@ class RuntimeBackend(Protocol):
       / ``cleanup_trial``. Every method takes ``trial_id`` explicitly;
       callers no longer construct an intermediate wrapper class to bind
       it.
+
+    Every implementation advertises its :attr:`isolation_mode` — the
+    orchestrator's task-vs-backend compatibility check reads that attribute
+    rather than inspecting the concrete class, so future backends on other
+    substrates (Kubernetes, Modal, ...) plug into the enforcement path by
+    setting the attribute correctly.
     """
+
+    isolation_mode: IsolationMode
+    """The isolation posture this backend provides. Read by the orchestrator
+    to refuse runs whose tasks declare an incompatible isolation
+    requirement. Substrate-agnostic: any backend that shares state across
+    trials sets :attr:`IsolationMode.SHARED_STACK`; any backend that
+    materialises an independent substrate per trial sets
+    :attr:`IsolationMode.PER_TRIAL_STACK`."""
 
     # ---- Run-level lifecycle ----
     def connect(self, timeout: float = 30.0, retry_interval: float = 1.0) -> None:
@@ -354,15 +389,24 @@ class InMemoryRuntimeBackend:
     substrate to be in an anomalous state.
     """
 
+    isolation_mode: IsolationMode = IsolationMode.SHARED_STACK
+    """Test fixture keeps the shared-stack posture by default so tests that
+    inject it against tasks with no isolation requirement continue to work.
+    Tests exercising the per-trial-required-but-shared-provided branch of
+    :meth:`Orchestrator._verify_isolation_compatibility` can override the
+    attribute on the instance."""
+
     def __init__(
         self,
         *,
         fail_provision_after_service: str | None = None,
         await_ready_times_out: bool = False,
+        isolation_mode: IsolationMode = IsolationMode.SHARED_STACK,
     ) -> None:
         self.call_log = RuntimeBackendCallLog()
         self._fail_provision_after_service = fail_provision_after_service
         self._await_ready_times_out = await_ready_times_out
+        self.isolation_mode = isolation_mode
 
     # ---- Run-level lifecycle ----
     def connect(self, timeout: float = 30.0, retry_interval: float = 1.0) -> None:

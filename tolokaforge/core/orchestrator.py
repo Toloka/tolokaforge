@@ -505,17 +505,19 @@ class Orchestrator:
         ``environment_manifest.isolation: per_trial`` would produce wrong
         verdicts when run against a shared stack.
 
+        Reads :attr:`RuntimeBackend.isolation_mode` rather than inspecting
+        the concrete class, so a future backend on a different substrate
+        (Kubernetes, Modal, ...) plugs into this check by setting the
+        attribute correctly.
+
         Raises :class:`RuntimeError` naming the offending tasks and the
         concrete fix.
         """
-        # Local imports keep this method self-contained + avoid any
-        # circular-import risk against per-trial backend modules.
-        from tolokaforge.core.shared_stack_runtime import SharedStackRuntimeBackend
+        from tolokaforge.core.runtime import IsolationMode
         from tolokaforge.runner.models import TaskIsolation
 
-        if not isinstance(runtime_backend, SharedStackRuntimeBackend):
-            # PerTrialRuntimeBackend (and any future per-trial impl)
-            # satisfies every isolation requirement.
+        if runtime_backend.isolation_mode is IsolationMode.PER_TRIAL_STACK:
+            # Any per-trial backend satisfies every isolation requirement.
             return
 
         if self.adapter is None:
