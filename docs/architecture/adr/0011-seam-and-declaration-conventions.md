@@ -67,13 +67,23 @@ Use for a typed shape that crosses a serialization or task-boundary. Every occur
 |---|---|---|---|
 | Trial wire format | `TrialSpec`, `TrialResult` | `test_trial_spec_contract.py` | [0003](0003-trial-spec-and-trial-result.md) |
 | Trial-scoped service URLs | `EnvEndpoints` | *(embedded in `TrialSpec` snapshot)* | [0006](0006-typed-env-endpoints.md) |
-| Multi-service environment | `EnvironmentManifest` + `ServiceSpec` + `HealthProbe` + `PortSpec` + `VolumeMount` + `Resources` + `InitialStateRef` + `DependsOn` + `SecurityContext` | `test_environment_manifest_contract.py` | [0009](0009-environment-manifest.md) |
+| Per-trial environment | `EnvironmentManifest` + `InitialStateRef` + `NetworkPolicy` + `SecurityContext` (points at a Docker Compose file; safety validators run against loaded compose contents) | `test_environment_manifest_contract.py` | [0009](0009-environment-manifest.md) |
 | Rubric grading | `Rubric`, `Criterion`, `CriterionResult`, `LLMJudgeConfig` | *(embedded in `TaskDescription` + grading tests)* | — |
+
+**Pattern B addendum — typed wrapper over an external artifact.** A strict Pydantic wrapper may reference an external artifact (a Docker Compose file, a Kubernetes Pod spec, etc.) via a `Path` (or equivalent locator) field, provided:
+
+- The wrapper's engine-specific fields remain strict with `extra="forbid"`, and every field the wrapper itself declares is either a typed Pydantic type or a locator (never an untyped dict that carries structured meaning).
+- The wrapper's `model_validator` inspects the artifact's contents at construction and rejects unsafe patterns. Every safety guarantee is a load-time check, not a runtime hope.
+- The artifact's shape has its own governing external spec (Docker Compose, Kubernetes, OCI, etc.). The wrapper does NOT re-encode the external spec as Pydantic types — that is the translation tax this pattern is written to avoid.
+- Safety-validator behaviour is pinned by fixture-driven canonical tests (one fixture artifact per unsafe pattern, plus at least one safe fixture the wrapper accepts).
+- Any cached in-memory representation of the parsed artifact lives on the model as a `PrivateAttr` (not a field). `PrivateAttr` values do not appear in the wire format and do not count as an untyped-dict escape hatch.
+
+**Example:** `EnvironmentManifest` (ADR-0009) points at a `compose.yaml` file. The wrapper's five engine-specific fields (`compose_file`, `runner_service`, `initial_state`, `network_policy`, `security_context_defaults`) are strict Pydantic; the compose file is validated by safety helpers (`_check_no_host_network`, `_check_no_privileged`, `_check_no_cap_add`, `_check_safe_bind_mounts`, `_check_pinned_images`, `_check_depends_on_resolves`) at construction; the parsed contents are cached on the model via a `PrivateAttr` and returned verbatim by `load_compose()`.
 
 ### Naming discipline
 
 - **`*Config` suffix** for models whose purpose is *behaviour configuration* — e.g. `LLMJudgeConfig`, `SearchConfig`, `UserSimulatorConfig`, `GradingConfig`, `TranscriptRulesConfig`. These carry knobs that select or shape a runtime component's behaviour.
-- **No suffix** for models whose purpose is *data-shape declaration* — e.g. `ServiceSpec`, `HealthProbe`, `Resources`, `EnvEndpoints`, `TrialSpec`, `Rubric`. These describe a structure, not a set of choices.
+- **No suffix** for models whose purpose is *data-shape declaration* — e.g. `EnvironmentManifest`, `InitialStateRef`, `SecurityContext`, `EnvEndpoints`, `TrialSpec`, `Rubric`. These describe a structure, not a set of choices.
 
 The distinction is descriptive of what the codebase already does; it is not a new convention. New models should follow whichever suffix matches their role.
 

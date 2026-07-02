@@ -305,7 +305,7 @@ class InMemoryRuntimeBackend:
         handle = _InMemoryEnvHandle(trial_id=trial_id)
         manifest = spec.task.environment_manifest
         if self._fail_provision_after_service is not None and manifest is not None:
-            service_names = [s.name for s in manifest.services]
+            service_names = set(manifest.load_compose()["services"])
             if self._fail_provision_after_service in service_names:
                 # Best-effort teardown of anything materialised so far.
                 self.teardown(handle)

@@ -14,6 +14,8 @@ The lower half of the file pins the ADR-0010 provisioning surface:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from tests.canonical._factories import make_env_endpoints, make_task_description
@@ -26,8 +28,10 @@ from tolokaforge.core.runtime import (
     RuntimeBackend,
     RuntimeBackendCallLog,
 )
-from tolokaforge.core.trial import EnvEndpoints, EnvironmentManifest, ServiceSpec, TrialSpec
+from tolokaforge.core.trial import EnvEndpoints, EnvironmentManifest, TrialSpec
 from tolokaforge.runner.models import TaskDescription
+
+_FIXTURES = Path(__file__).parent / "fixtures" / "environment_manifest"
 
 pytestmark = pytest.mark.canonical
 
@@ -192,12 +196,11 @@ def _make_trial_spec(
 
 
 def _make_two_service_manifest() -> EnvironmentManifest:
-    return EnvironmentManifest(
-        services=[
-            ServiceSpec(name="runner", image="tolokaforge/runner:0.5.0"),
-            ServiceSpec(name="db", image="postgres:16"),
-        ],
-    )
+    return EnvironmentManifest(compose_file=_FIXTURES / "safe_two_service.yaml")
+
+
+def _make_one_service_manifest() -> EnvironmentManifest:
+    return EnvironmentManifest(compose_file=_FIXTURES / "safe_one_service.yaml")
 
 
 class TestProvisioningProtocolConformance:
@@ -267,10 +270,7 @@ class TestProvisionLifecycle:
 
     def test_partial_startup_only_fires_when_service_present(self) -> None:
         backend = InMemoryRuntimeBackend(fail_provision_after_service="db")
-        manifest = EnvironmentManifest(
-            services=[ServiceSpec(name="runner", image="tolokaforge/runner:0.5.0")]
-        )
-        handle = backend.provision(_make_trial_spec(manifest=manifest))
+        handle = backend.provision(_make_trial_spec(manifest=_make_one_service_manifest()))
         assert handle.trial_id == "task-1:0"
 
 

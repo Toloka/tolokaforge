@@ -106,7 +106,7 @@ class RuntimeBackend(Protocol):
 ```
 
 - **`provision(spec)`** — reads `spec.task.environment_manifest`, materialises its services (or fails `ProvisionError`), returns an `EnvHandle` the backend understands. When `environment_manifest is None`, the backend materialises the shared-stack view (backwards-compat path).
-- **`await_ready(handle)`** — blocks until all services in the handle pass their `HealthProbe`s. Raises `ProvisionError` on health-probe timeout (before returning; not silently after).
+- **`await_ready(handle)`** — blocks until every compose service in the handle passes its `healthcheck:` probe. Raises `ProvisionError` on probe timeout (before returning; not silently after).
 - **`endpoints(handle)`** — resolves per-trial URLs for the runner + declared services. Returns a fully populated `EnvEndpoints` (ADR-0006). Does not block; readiness is `await_ready`'s job.
 - **`teardown(handle)`** — stops containers, removes per-trial network, releases any lease the backend holds. **Idempotent** — calling on an already-torn-down handle is a no-op, not an error. **Best-effort** — logs but does not raise if a container was already gone.
 
@@ -144,21 +144,22 @@ class ProvisionError(Exception):
 
 ### Enforcement obligations
 
-A `RuntimeBackend` implementation is contractually obligated to honour these manifest declarations. Failure to enforce any of them at `provision` time — not later, not silently — is a contract violation:
+A `RuntimeBackend` implementation is contractually obligated to honour every declaration in the manifest and the compose file it points at. Failure to enforce any of them at `provision` time — not later, not silently — is a contract violation:
 
-| Manifest field | Provisioner obligation |
+| Declared where | Provisioner obligation |
 |---|---|
-| `EnvironmentManifest.network` = `isolated` | No egress to the public internet; no reachability across per-trial projects. Enforce via substrate-native network isolation. |
-| `EnvironmentManifest.network` = `external` | Egress permitted; still no cross-trial reachability. |
-| `ServiceSpec.security_context` | Every declared field applied to the container (`run_as_user`, `read_only_root_filesystem`, `no_new_privileges`, capability drops/adds). Fail `ProvisionError` if any declared field cannot be enforced by the substrate. |
-| `ServiceSpec.resources` / manifest-level `Resources` | CPU / memory caps applied at the container level. Per-service overrides manifest-level defaults. |
-| `VolumeMount.read_only` | Bind or named mount honours the flag. |
-| `ServiceSpec.health` + `HealthProbe.initial_delay_seconds` | `await_ready` respects the delay before the first probe. |
-| `ServiceSpec.depends_on` (in either form) | Startup ordering; `service_healthy` waits on the probe passing. |
-| `EnvironmentManifest.initial_state` | Fixture applied per its `kind` (`sql` / `copy` / `script`) before `await_ready` returns. |
-| `ServiceSpec.image` pinning | Substrate honours the exact tag or digest; no automatic tag resolution. |
+| `EnvironmentManifest.network_policy` = `no_internet` | No egress to the public internet; no reachability across per-trial projects. Enforce via substrate-native network isolation. |
+| `EnvironmentManifest.network_policy` = `limited_internet` | Egress permitted for the provisioner-defined allowlist; no cross-trial reachability. |
+| `EnvironmentManifest.network_policy` = `full_internet` | Unrestricted egress; still no cross-trial reachability. |
+| `EnvironmentManifest.security_context_defaults` | Every declared field applied to each compose service that does not set the equivalent explicitly (`run_as_user`, `read_only_root_filesystem`, `no_new_privileges`, capability drops / adds). Fail `ProvisionError` if the substrate cannot enforce a declared field. |
+| `EnvironmentManifest.initial_state` | Fixture applied per its `kind` (`sql` / `copy` / `script`) to the named compose service before `await_ready` returns. |
+| Compose service `deploy.resources` / `mem_limit` / `cpus` | Container-level CPU / memory caps enforced as declared. |
+| Compose service `volumes:` with `:ro` short-form or `read_only: true` long-form | Bind or named mount honours the read-only flag. |
+| Compose service `healthcheck:` block | `await_ready` respects `start_period`, `interval`, `timeout`, `retries` before returning. |
+| Compose service `depends_on` (short-form list or long-form mapping) | Startup ordering enforced; `condition: service_healthy` waits on the probe passing. |
+| Compose service `image:` pinning (validated at manifest load-time) | Substrate honours the exact tag or digest; no automatic tag resolution. |
 
-**Rule of thumb: if the substrate cannot enforce a declared property, `provision` raises `ProvisionError` at task-load time. No provisioner may silently drop, downgrade, or ignore a declaration.**
+**Rule of thumb: if the substrate cannot enforce a declared property, `provision` raises `ProvisionError` — not later, not silently. No provisioner may silently drop, downgrade, or ignore a declaration.**
 
 ### Lifecycle ownership
 
