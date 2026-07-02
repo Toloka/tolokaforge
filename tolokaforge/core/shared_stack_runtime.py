@@ -675,14 +675,31 @@ class SharedStackRuntimeBackend:
     the orchestrator's compatibility check to refuse runs whose tasks
     declare ``environment_manifest.isolation: per_trial``."""
 
-    def __init__(self, runner_address: str = "runner:50051"):
-        """
-        Initialize Docker runtime
+    def __init__(
+        self,
+        runner_address: str = "runner:50051",
+        endpoints: EnvEndpoints | None = None,
+    ):
+        """Initialize the shared-stack runtime.
 
-        Args:
-            runner_address: gRPC address for Runner service
+        ``runner_address`` is the gRPC host:port for the shared runner
+        service. ``endpoints`` carries the fully-resolved per-trial URLs
+        (db / rag / runner) the run's shared stack exposes; every call to
+        :meth:`endpoints` returns them verbatim. The orchestrator builds
+        this value once via ``_build_env_endpoints(runner_address)`` and
+        passes it at construction; ``endpoints=None`` is a
+        backwards-compatibility path for callers that construct the
+        backend outside the orchestrator (typically tests) and derives
+        placeholder URLs from ``runner_address`` alone.
         """
         self.runner_client: GrpcRunnerClient = GrpcRunnerClient(runner_address)
+        if endpoints is None:
+            endpoints = EnvEndpoints(
+                db_url=f"http://{runner_address}/db",
+                rag_url=None,
+                runner_url=f"http://{runner_address}",
+            )
+        self._endpoints = endpoints
         logger.info("Docker runtime initialized")
 
     def connect(self, timeout: float = 30.0, retry_interval: float = 1.0) -> None:
@@ -742,24 +759,17 @@ class SharedStackRuntimeBackend:
         applied by :meth:`connect`'s health-check loop."""
 
     def endpoints(self, handle: EnvHandle) -> EnvEndpoints:  # noqa: ARG002 — Protocol conformance
-        """Return **sentinel** URLs for the shared-stack path.
+        """Return the run-wide shared-stack URLs.
 
-        SharedStackRuntimeBackend does not carry the per-trial URLs the manifest
-        would resolve to; the returned strings are placeholders scoped
-        to the runner address (``…/db-shared``) purely to satisfy
-        :class:`EnvEndpoints`' non-empty ``db_url`` / ``runner_url``
-        constraint. **Do not wire a client to these values** — real
-        addresses on the shared-stack path come from the orchestrator's
-        existing ``EnvEndpoints`` construction site, not from this
-        method. Callers that need per-trial URLs should use a per-trial
-        backend (e.g. ``PerTrialRuntimeBackend``, which resolves real URLs
-        from its per-trial ``ServiceStack``).
+        Same value for every trial in the run — the shared stack exposes
+        one set of service addresses that all trials share. The
+        orchestrator resolves these via ``_build_env_endpoints`` at
+        construction and passes them via the constructor's ``endpoints``
+        argument. Callers that need per-trial URLs should use a per-trial
+        backend (e.g. ``PerTrialRuntimeBackend``, which resolves real
+        URLs from its per-trial ``ServiceStack``).
         """
-        return EnvEndpoints(
-            db_url=f"http://{self.runner_client.runner_address}/db-shared",
-            rag_url=None,
-            runner_url=f"http://{self.runner_client.runner_address}",
-        )
+        return self._endpoints
 
     def teardown(self, handle: EnvHandle) -> None:  # noqa: ARG002 — Protocol conformance
         """No-op: the shared stack lives for the whole run and is torn

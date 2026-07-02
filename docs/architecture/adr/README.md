@@ -44,3 +44,4 @@ Day-to-day implementation choices that don't affect the system shape do *not* ne
 | [0011](0011-seam-and-declaration-conventions.md) | Seam-definition and data-declaration conventions for new components | Proposed |
 | [0013](0013-runtime-backend-per-trial-rpc-methods.md) | `RuntimeBackend` owns per-trial RPC methods — collapse `DockerRunnerAdapter` | Proposed |
 | [0014](0014-trial-grader-protocol.md) | `TrialGrader` Protocol — swappable trial-grading strategy | Proposed |
+| [0015](0015-trial-executor-protocol.md) | `TrialExecutor` Protocol — per-trial substrate-lifecycle seam | Proposed |

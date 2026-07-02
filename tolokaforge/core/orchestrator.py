@@ -47,6 +47,7 @@ from tolokaforge.core.resume import RunStateManager
 from tolokaforge.core.run_queue import AttemptLease, create_run_queue
 from tolokaforge.core.runtime import RuntimeBackend
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, EnvEndpoints, TrialSpec
+from tolokaforge.core.trial_executor import TrialExecutor
 from tolokaforge.runner.models import AdapterType, TaskDescription
 
 # Tools that need Playwright + Chromium baked into the runner image. The
@@ -305,7 +306,20 @@ class Orchestrator:
 
     @staticmethod
     def _is_retryable_trajectory(trajectory: Trajectory) -> bool:
-        """Classify retryable infrastructure failures."""
+        """Classify retryable infrastructure failures.
+
+        Substrate provisioning failures (``TerminationReason.PROVISION_ERROR``)
+        short-circuit to non-retryable — ``failure_attribution`` classifies
+        them as ``deterministic=True``, and retrying a deterministic
+        config fault (bad compose file, missing manifest) burns cycles
+        without changing the outcome. When we later gain a way to
+        distinguish transient substrate faults (image pull timeout, docker
+        daemon flake) from deterministic config faults, this branch will
+        gate on that finer signal; today, fail-fast preserves diagnostic
+        clarity and matches AGENTS.md rule 1.
+        """
+        if trajectory.termination_reason == TerminationReason.PROVISION_ERROR:
+            return False
         if trajectory.status in (TrialStatus.ERROR, TrialStatus.TIMEOUT):
             return True
         if trajectory.termination_reason in (
@@ -480,9 +494,10 @@ class Orchestrator:
     def _construct_runtime_backend(self, runner_address: str) -> RuntimeBackend:
         """Construct the runtime backend from ``config.orchestrator.runtime``.
 
-        ``shared`` (default) → :class:`SharedStackRuntimeBackend`;
-        ``per_trial`` → :class:`PerTrialRuntimeBackend`. Called when no
-        backend is injected via ``Orchestrator.__init__(runtime_backend=...)``.
+        ``shared`` (default) → :class:`SharedStackRuntimeBackend` built
+        with :func:`_build_env_endpoints`-resolved URLs; ``per_trial`` →
+        :class:`PerTrialRuntimeBackend`. Called when no backend is
+        injected via ``Orchestrator.__init__(runtime_backend=...)``.
         """
         runtime_choice = self.config.orchestrator.runtime
         if runtime_choice == "per_trial":
@@ -499,7 +514,30 @@ class Orchestrator:
             backend="SharedStackRuntimeBackend",
             source="config" if runtime_choice == "shared" else "default",
         )
-        return SharedStackRuntimeBackend(runner_address=runner_address)
+        return SharedStackRuntimeBackend(
+            runner_address=runner_address,
+            endpoints=_build_env_endpoints(runner_address),
+        )
+
+    def _build_trial_executor(
+        self, runtime_backend: RuntimeBackend, conductor: Conductor
+    ) -> TrialExecutor:
+        """Compose the per-run :class:`TrialExecutor` (ADR-0015).
+
+        The executor owns the per-trial substrate lifecycle bracket
+        (``provision`` / ``await_ready`` / ``endpoints`` / ``teardown``)
+        around ``conductor.run``. The orchestrator submits
+        ``trial_executor.execute`` to the worker pool in place of
+        ``conductor.run``; the bracket runs on the worker thread so
+        provisioning parallelism equals worker count.
+        """
+        from tolokaforge.core.trial_executor import ProvisioningTrialExecutor
+
+        return ProvisioningTrialExecutor(
+            runtime_backend=runtime_backend,
+            conductor=conductor,
+            logger=self.logger,
+        )
 
     def _verify_isolation_compatibility(self, runtime_backend: RuntimeBackend) -> None:
         """Refuse to start the run if any task declares per-trial isolation
@@ -972,6 +1010,7 @@ class Orchestrator:
             output_dir=output_dir,
             request_limiter=request_limiter,
         )
+        trial_executor = self._build_trial_executor(runtime_backend, conductor)
 
         executor_healthy = runtime_backend.health_check()
         self.logger.info("Docker runtime health check", executor_healthy=executor_healthy)
@@ -1065,7 +1104,7 @@ class Orchestrator:
                     run_state.mark_failed(lease.task_id, lease.trial_index, str(e))
                     self.state_manager.save_state(run_state)
                     return True
-                future = executor.submit(conductor.run, spec, task)
+                future = executor.submit(trial_executor.execute, spec, task)
                 active_futures[future] = lease
                 return True
 
@@ -1303,6 +1342,7 @@ class Orchestrator:
             output_dir=output_dir,
             request_limiter=request_limiter,
         )
+        trial_executor = self._build_trial_executor(runtime_backend, conductor)
 
         task_by_id = {task.task_id: task for task in self.tasks}
         run_queue = create_run_queue(
@@ -1366,7 +1406,7 @@ class Orchestrator:
                         judge_config=judge_config,
                         env_endpoints=env_endpoints,
                     )
-                    trial_result = conductor.run(spec, task)
+                    trial_result = trial_executor.execute(spec, task)
                     trajectory = trial_result.trajectory
                     self.results.append(trajectory)
                     trial_cost = trajectory.metrics.cost_usd or 0.0

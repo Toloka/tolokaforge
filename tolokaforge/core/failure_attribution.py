@@ -14,6 +14,7 @@ DETERMINISTIC_CLASSES = {
     "grader_contract",
     "infrastructure",
     "timeout_or_resource",
+    "provision_failure",
 }
 
 _CONNECTION_ERROR_RE = re.compile(
@@ -37,7 +38,17 @@ def attribute_failure(trajectory: Trajectory) -> dict[str, Any]:
     failure_class = "model_reasoning"
     deterministic = False
 
-    if trajectory.termination_reason in (
+    if trajectory.termination_reason == TerminationReason.PROVISION_ERROR:
+        failure_class = "provision_failure"
+        deterministic = True
+        evidence.append(
+            {
+                "kind": "termination_reason",
+                "value": trajectory.termination_reason.value,
+                "status": trajectory.status.value,
+            }
+        )
+    elif trajectory.termination_reason in (
         TerminationReason.TIMEOUT,
         TerminationReason.RATE_LIMIT,
         TerminationReason.API_ERROR,
