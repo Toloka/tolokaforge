@@ -22,7 +22,6 @@ body.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -39,16 +38,12 @@ from tolokaforge.core.llm.presets import (
     resolve_policy_names,
 )
 from tolokaforge.core.models import (
-    CriterionResult,
     Grade,
     GradeComponents,
-    JudgeStatus,
-    JudgeUsage,
     Metrics,
     ModelConfig,
     RunConfig,
     TaskConfig,
-    TerminationReason,
     Trajectory,
     TrialStatus,
 )
@@ -58,6 +53,7 @@ from tolokaforge.core.runner import TrialRunner
 from tolokaforge.core.runtime import RuntimeBackend
 from tolokaforge.core.stuck import StuckDetector
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, TrialResult, TrialSpec
+from tolokaforge.core.trial_grader import TrialGrader
 
 if TYPE_CHECKING:
     from tolokaforge.core.logging import StructuredLogger
@@ -126,6 +122,27 @@ class Conductor(Protocol):
 # ---------------------------------------------------------------------------
 # InMemoryConductor — test fixture, records calls + returns synthetic result
 # ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _TrialSetup:
+    """Per-trial context assembled during setup, threaded through the phase
+    methods of :meth:`InProcessConductor.run`.
+
+    Populated by :meth:`InProcessConductor._setup_trial`; consumed by the
+    downstream phases (agent loop, final-state capture, grading, artifact
+    write). Frozen because the run body only reads these values — mutations
+    to trial state happen via ``env_state`` and ``trajectory``.
+    """
+
+    trial_id: str
+    trial_idx: int
+    task_dir: Path
+    trial_dir: Path
+    env_state: EnvironmentState
+    adapter_env: Any
+    tool_schemas: list[dict[str, Any]]
+    tool_executor: DockerRunnerAdapter
 
 
 @dataclass
@@ -224,7 +241,8 @@ class InProcessConductor:
         verbose: bool = False,
         strict: bool = False,
         agent_client: LLMClient,
-        shared_stack_runtime: RuntimeBackend,
+        runtime_backend: RuntimeBackend,
+        trial_grader: TrialGrader,
         output_dir: Path,
         request_limiter: GlobalRateLimiter | None = None,
     ) -> None:
@@ -235,44 +253,10 @@ class InProcessConductor:
         self.verbose = verbose
         self.strict = strict
         self.agent_client = agent_client
-        self.shared_stack_runtime = shared_stack_runtime
+        self.runtime_backend = runtime_backend
+        self.trial_grader = trial_grader
         self.output_dir = output_dir
         self.request_limiter = request_limiter
-
-    @staticmethod
-    def _build_judge_messages_json(
-        task: TaskConfig,  # noqa: ARG004 — kept for signature symmetry / future gating
-        trajectory: Trajectory,
-        agent_system_prompt: str | None,
-    ) -> str | None:
-        """Serialise the transcript for the runner-side grading (judge + transcript rules).
-
-        The agent's system prompt is sent as a leading ``system`` message so the
-        rubric judge can inject it as the agent's policy. The runner decides
-        whether to actually run the judge (based on its own grading config) and
-        narrows the input surface from there — so this always serialises the
-        transcript when there is one, and returns ``None`` for an empty trace.
-        """
-        if not trajectory.messages and not agent_system_prompt:
-            return None
-
-        messages: list[dict[str, Any]] = []
-        if agent_system_prompt:
-            messages.append({"role": "system", "content": agent_system_prompt})
-        for msg in trajectory.messages:
-            entry: dict[str, Any] = {
-                "role": msg.role.value,
-                "content": msg.content or "",
-            }
-            if msg.tool_calls:
-                entry["tool_calls"] = [
-                    {"function": {"name": tc.name, "arguments": json.dumps(tc.arguments)}}
-                    for tc in msg.tool_calls
-                ]
-            if msg.tool_call_id:
-                entry["tool_call_id"] = msg.tool_call_id
-            messages.append(entry)
-        return json.dumps(messages)
 
     def run(
         self,
@@ -285,33 +269,51 @@ class InProcessConductor:
         retry / worker metadata. ``task_config`` is the orchestrator-side
         rich task type (initial state, tool configs, user-simulator mode);
         the runner-side projection lives on ``spec.task``.
+
+        The body delegates to five phase methods executed in order —
+        :meth:`_setup_trial`, :meth:`_run_agent_loop`,
+        :meth:`_capture_final_state`, :meth:`_grade`,
+        :meth:`_write_artifacts`. Each phase owns one responsibility;
+        this method is the thin coordinator.
         """
-        # Local aliases for the trial-execution body below.
+        setup = self._setup_trial(spec, task_config)
+        trajectory, runner, system_prompt = self._run_agent_loop(spec, task_config, setup)
+        self._capture_final_state(setup, trajectory)
+        self._grade(spec, task_config, setup, trajectory, runner, system_prompt)
+        self._write_artifacts(spec, task_config, setup, trajectory, runner)
+        return TrialResult.from_trajectory(
+            trial_id=setup.trial_id, trajectory=trajectory, worker_id=spec.worker_id
+        )
+
+    def _setup_trial(
+        self,
+        spec: TrialSpec,
+        task_config: TaskConfig,
+    ) -> _TrialSetup:
+        """Prepare the trial's environment state and register it with the runner.
+
+        Runs before the agent loop. Builds the task directory, hydrates
+        the :class:`EnvironmentState`, executes any declared
+        ``initialization_actions`` via the task's MCP server, creates
+        the trial output directory, resolves the adapter's environment
+        snapshot, and issues the ``register_trial`` RPC — returning
+        everything downstream phases need.
+        """
         task = task_config
         trial_idx = int(spec.trial_id.rsplit(":", 1)[1])
-        agent_client = self.agent_client
-        user_config = spec.user_model_config
-        output_dir = self.output_dir
-        shared_stack_runtime = self.shared_stack_runtime
-        request_limiter = self.request_limiter
-        worker_id = spec.worker_id
-        judge_config = spec.judge_model_config
+        trial_id = f"{task.task_id}:{trial_idx}"
 
-        # Get task directory from adapter (supports both native and tau)
         task_dir = self.adapter.get_task_dir(task.task_id)
 
-        # Initialize environment state
         env_state = EnvironmentState(task_dir, task.initial_state)
         env_state.hydrate()
 
-        # Execute initialization_actions to set correct starting state
         if task.initial_state.initialization_actions:
             init_actions = [
                 action.model_dump() for action in task.initial_state.initialization_actions
             ]
             self.logger.debug("Executing initialization actions", count=len(init_actions))
 
-            # Import MCP server to execute actions before trial starts
             mcp_server_ref = task.tools.agent.get("mcp_server")
             if mcp_server_ref:
                 mcp_server_path = task_dir / mcp_server_ref
@@ -325,13 +327,11 @@ class InProcessConductor:
                         mcp_module_init = importlib.util.module_from_spec(module_spec)
                         module_spec.loader.exec_module(mcp_module_init)
 
-                        # Sync current env state to MCP server
                         if hasattr(mcp_module_init, "set_data"):
                             mcp_module_init.set_data(env_state.get_db())
 
-                        # Execute each initialization action
                         for action in init_actions:
-                            env_type = action.get("env_type")  # "user" or "assistant"
+                            env_type = action.get("env_type")
                             func_name = action.get("func_name")
                             arguments = action.get("arguments", {})
 
@@ -343,7 +343,6 @@ class InProcessConductor:
                             )
 
                             try:
-                                # Invoke helper/tool via MCP server
                                 if hasattr(mcp_module_init, "invoke_environment_action"):
                                     result = mcp_module_init.invoke_environment_action(
                                         env_type, func_name, **arguments
@@ -356,7 +355,6 @@ class InProcessConductor:
                                     "Init action failed", func_name=func_name, error=str(e)
                                 )
 
-                        # Retrieve updated state after initialization
                         if hasattr(mcp_module_init, "get_data"):
                             updated_state = mcp_module_init.get_data()
                             if updated_state:
@@ -365,14 +363,13 @@ class InProcessConductor:
                                 self.logger.debug("Retrieved updated state after initialization")
 
         # Create trial directory early for video recording
-        trial_dir = output_dir / "trials" / task.task_id / str(trial_idx)
+        trial_dir = self.output_dir / "trials" / task.task_id / str(trial_idx)
         trial_dir.mkdir(parents=True, exist_ok=True)
 
-        # Load adapter environment (needed for state sync with Tau tasks)
         adapter_env = self.adapter.create_environment(task.task_id)
 
-        # Sync adapter environment data to env_state for Tau tasks
-        # This ensures adapter data appears in env.yaml and is available for grading
+        # Sync adapter environment data to env_state for Tau tasks — the adapter
+        # data appears in env.yaml and is available for grading.
         if adapter_env.data and not isinstance(self.adapter, NativeAdapter):
             env_state.db_state = adapter_env.data
             env_state._normalize_db_state()
@@ -386,21 +383,18 @@ class InProcessConductor:
                 ),
             )
 
-        # Docker runtime - use executor adapter for tool execution
         from tolokaforge.tools.registry import sanitize_schema_properties
 
-        trial_id = f"{task.task_id}:{trial_idx}"
-
-        tool_executor = DockerRunnerAdapter(runtime=shared_stack_runtime, trial_id=trial_id)
+        tool_executor = DockerRunnerAdapter(runtime=self.runtime_backend, trial_id=trial_id)
 
         # The spec is the single source of truth for the timeout; the proto
         # field is filled from it so the two cannot diverge silently. The
         # adapter-registry guard runs orchestrator-side before the spec is
         # constructed, so the runner reads ``spec.task`` directly without
         # re-resolving the adapter here. Registration goes straight to the
-        # runtime backend now (ADR-0013); the tool executor is only used
-        # for the runner's ``execute()`` path.
-        register_result = shared_stack_runtime.register_trial(
+        # runtime backend (ADR-0013); the tool executor is only used for the
+        # runner's ``execute()`` path.
+        register_result = self.runtime_backend.register_trial(
             trial_id=trial_id,
             trial_spec_json=spec.model_dump_json(),
             default_tool_timeout_s=spec.default_tool_timeout_s or DEFAULT_TOOL_TIMEOUT_S,
@@ -411,8 +405,8 @@ class InProcessConductor:
                 f"Failed to register trial with executor for trial {trial_id}: {error}"
             )
 
-        # Use tool schemas from register_trial result (converted to OpenAI format)
-        # Sanitize property names to match LLM API requirements (^[a-zA-Z0-9_.-]+$)
+        # Tool schemas from register_trial (converted to OpenAI format).
+        # Sanitise property names to match LLM API requirements (^[a-zA-Z0-9_.-]+$).
         tool_schemas = [
             {
                 "type": "function",
@@ -431,25 +425,48 @@ class InProcessConductor:
             tool_count=register_result.get("num_agent_tools", len(tool_schemas)),
         )
 
-        # User tool executor is not used in Docker mode (Runner handles tools)
+        return _TrialSetup(
+            trial_id=trial_id,
+            trial_idx=trial_idx,
+            task_dir=task_dir,
+            trial_dir=trial_dir,
+            env_state=env_state,
+            adapter_env=adapter_env,
+            tool_schemas=tool_schemas,
+            tool_executor=tool_executor,
+        )
+
+    def _run_agent_loop(
+        self,
+        spec: TrialSpec,
+        task_config: TaskConfig,
+        setup: _TrialSetup,
+    ) -> tuple[Trajectory, TrialRunner, str]:
+        """Build the user simulator, stuck detector, system prompt, and
+        :class:`TrialRunner`, then execute the agent ↔ user-simulator loop.
+
+        Returns the produced :class:`Trajectory`, the runner instance (used
+        downstream for prompt/logger access during artifact write), and the
+        system prompt string (used by :meth:`_grade` when the runner has
+        not yet populated its ``effective_system_prompt``).
+        """
+        task = task_config
+        user_config = spec.user_model_config
+
+        # User tool executor is not used in Docker mode (Runner handles tools).
         user_tool_executor = None
         user_tool_schemas: list[dict[str, Any]] = []
 
-        # Use backstory from task configuration
-        backstory = task.user_simulator.backstory
-
-        # Create user simulator
         user_llm_config = user_config if task.user_simulator.mode == "llm" else None
         user_simulator = UserSimulator(
             mode=task.user_simulator.mode,
             llm_config=user_llm_config,
             persona=task.user_simulator.persona,
-            backstory=backstory,
+            backstory=task.user_simulator.backstory,
             scripted_flow=task.user_simulator.scripted_flow,
             tool_schemas=user_tool_schemas if user_tool_executor else None,
         )
 
-        # Create stuck detector with configured heuristics
         stuck_detector = None
         if self.config.orchestrator.stuck_heuristics.enabled:
             stuck_detector = StuckDetector(
@@ -457,10 +474,9 @@ class InProcessConductor:
                 max_idle_turns=self.config.orchestrator.stuck_heuristics.max_idle_turns,
             )
 
-        # Build system prompt
-        system_prompt = self._build_system_prompt(task, tool_schemas, task_dir)
+        system_prompt = self._build_system_prompt(task, setup.tool_schemas, setup.task_dir)
 
-        # Respect per-task max_turns when provided. Fall back to orchestrator default.
+        # Respect per-task max_turns when provided; fall back to orchestrator default.
         max_turns = (
             task.max_turns if task.max_turns is not None else self.config.orchestrator.max_turns
         )
@@ -477,38 +493,47 @@ class InProcessConductor:
                 elif app_count == 4:
                     max_turns = max(max_turns, 75)
 
-        # Create runner with verbose and strict flags
         runner = TrialRunner(
             task_id=task.task_id,
-            trial_index=trial_idx,
-            agent_client=agent_client,
+            trial_index=setup.trial_idx,
+            agent_client=self.agent_client,
             user_simulator=user_simulator,
-            tool_executor=tool_executor,
-            tool_schemas=tool_schemas,
+            tool_executor=setup.tool_executor,
+            tool_schemas=setup.tool_schemas,
             max_turns=max_turns,
             turn_timeout_s=self.config.orchestrator.timeouts.turn_s,
             episode_timeout_s=self.config.orchestrator.timeouts.episode_s,
             stuck_detector=stuck_detector,
             user_tool_executor=user_tool_executor,
-            request_limiter=request_limiter,
+            request_limiter=self.request_limiter,
             verbose=self.verbose,
             strict=self.strict,
         )
 
-        # Run trial
-        # Use initial_user_message if provided (e.g., tool-use style tasks)
-        # Otherwise use task.description which will be interpreted by user simulator (e.g., TAU tasks)
+        # Use initial_user_message if provided (e.g., tool-use style tasks).
+        # Otherwise use task.description which the user simulator interprets (e.g., TAU tasks).
         initial_message = task.initial_user_message if task.initial_user_message else ""
         trajectory = runner.run(system_prompt, initial_message)
 
-        # Retrieve final state from the Runner DB service (source of truth).
-        # ``adapter_env.data`` is a snapshot from ``create_environment()`` and
-        # does not reflect tool-execution changes made through the Runner; the
-        # Runner's ``GetState`` RPC syncs the subprocess state to db-service
-        # before reading, so the read covers every adapter.
+        return trajectory, runner, system_prompt
+
+    def _capture_final_state(
+        self,
+        setup: _TrialSetup,
+        trajectory: Trajectory,
+    ) -> None:
+        """Sync the trial's final environment state from the Runner DB
+        service and stash it on ``trajectory.final_env_state``.
+
+        The Runner's ``GetState`` RPC syncs the subprocess state to
+        db-service before reading, so this read covers every adapter.
+        ``adapter_env.data`` (from :meth:`BaseAdapter.create_environment`)
+        is a snapshot from before the trial ran; it is used as a fallback
+        only when the Runner-side read fails.
+        """
         runner_state: dict[str, Any] | None = None
         try:
-            state_result = shared_stack_runtime.get_state(trial_id)
+            state_result = self.runtime_backend.get_state(setup.trial_id)
             if state_result.get("success") and state_result.get("state_json"):
                 import json as _json
 
@@ -529,214 +554,119 @@ class InProcessConductor:
             )
 
         if runner_state is not None:
-            env_state.db_state = runner_state
-            env_state._normalize_db_state()
+            setup.env_state.db_state = runner_state
+            setup.env_state._normalize_db_state()
             self.logger.debug(
                 "Synced final state from Runner DB service",
                 tables_count=len(runner_state),
                 tables_sample=list(runner_state.keys())[:5],
             )
-        elif adapter_env.data:
-            env_state.db_state = adapter_env.data
-            env_state._normalize_db_state()
+        elif setup.adapter_env.data:
+            setup.env_state.db_state = setup.adapter_env.data
+            setup.env_state._normalize_db_state()
 
-        # Capture final environment state
-        final_state = env_state.get_final_state()
-        # Pass agent_visible_dir so the agentic judge can read files from disk
-        final_state["agent_visible_dir"] = str(env_state.agent_visible_dir)
+        final_state = setup.env_state.get_final_state()
+        # Pass agent_visible_dir so the agentic judge can read files from disk.
+        final_state["agent_visible_dir"] = str(setup.env_state.agent_visible_dir)
         trajectory.final_env_state = final_state
 
-        # Check if trial completed successfully - ERROR/TIMEOUT trials should auto-fail
-        # This prevents false positives when 429 or other errors occur before any work is done
-        if trajectory.status in (TrialStatus.ERROR, TrialStatus.TIMEOUT):
-            self.logger.info(
-                "Trial did not complete successfully - automatic fail",
-                task_id=task.task_id,
-                trial_index=trial_idx,
-                status=trajectory.status.value,
-            )
-            grade = Grade(
-                binary_pass=False,
-                score=0.0,
-                components=GradeComponents(state_checks=0.0),
-                reasons=f"Trial failed with status: {trajectory.status.value}",
-            )
-        elif trajectory.termination_reason == TerminationReason.STUCK_DETECTED:
-            # Stuck agents always fail — even if hash matches
-            self.logger.info(
-                "Trial stuck - automatic fail",
-                task_id=task.task_id,
-                trial_index=trial_idx,
-                termination_reason=trajectory.termination_reason.value,
-            )
-            grade = Grade(
-                binary_pass=False,
-                score=0.0,
-                components=GradeComponents(state_checks=0.0),
-                reasons="Agent got stuck (repeated actions without progress)",
-            )
-        else:
-            # Grade trajectory via Runner's GradeTrial RPC
-            # It computes golden hash via DB service
-            trial_id = f"{task.task_id}:{trial_idx}"
-            # Serialize the transcript + the agent's policy (its system prompt)
-            # whenever there are messages; the runner owns the decision of whether
-            # to actually run the rubric judge (based on its grading config).
-            llm_messages_json = self._build_judge_messages_json(
-                task, trajectory, runner.effective_system_prompt or system_prompt
-            )
-            grade_result = shared_stack_runtime.grade_trial(
-                trial_id=trial_id, llm_messages_json=llm_messages_json
-            )
-            if grade_result["success"] and grade_result["grade"]:
-                g = grade_result["grade"]
+    def _grade(
+        self,
+        spec: TrialSpec,
+        task_config: TaskConfig,
+        setup: _TrialSetup,
+        trajectory: Trajectory,
+        runner: TrialRunner,
+        system_prompt: str,
+    ) -> None:
+        """Compute the trial's :class:`Grade` via the injected
+        :class:`TrialGrader` and assign it to ``trajectory.grade``.
 
-                # Parse state_diff from gRPC JSON for post-mortem diagnostics
-                state_diff_parsed: dict[str, Any] | None = None
-                if g.get("state_diff_json"):
-                    try:
-                        state_diff_parsed = json.loads(g["state_diff_json"])
-                    except (json.JSONDecodeError, TypeError):
-                        pass
-
-                criterion_results = None
-                raw_criterion_results = g.get("criterion_results")
-                if raw_criterion_results:
-                    criterion_results = [CriterionResult(**cr) for cr in raw_criterion_results]
-
-                # Judge accounting + audit transcript (None when no judge ran).
-                judge_usage: JudgeUsage | None = None
-                judge_transcript: list[dict[str, Any]] | None = None
-                raw_report = g.get("judge_report")
-                if raw_report:
-                    judge_usage = JudgeUsage(
-                        calls=raw_report.get("calls", 0),
-                        prompt_tokens=raw_report.get("prompt_tokens", 0),
-                        completion_tokens=raw_report.get("completion_tokens", 0),
-                        reasoning_tokens=raw_report.get("reasoning_tokens", 0),
-                        cost_usd=raw_report.get("cost_usd", 0.0),
-                        tool_calls=raw_report.get("tool_calls", 0),
-                    )
-                    raw_transcript = raw_report.get("transcript_json")
-                    if raw_transcript:
-                        try:
-                            parsed = json.loads(raw_transcript)
-                            if isinstance(parsed, list):
-                                judge_transcript = parsed
-                        except (json.JSONDecodeError, TypeError):
-                            pass
-
-                grade = Grade(
-                    binary_pass=g["binary_pass"],
-                    score=g["score"],
-                    components=GradeComponents(
-                        state_checks=g["components"].get("state_checks", -1.0),
-                        transcript_rules=g["components"].get("transcript_rules", -1.0),
-                        llm_judge=g["components"].get("llm_judge", -1.0),
-                        custom_checks=g["components"].get("custom_checks", -1.0),
-                    ),
-                    reasons=g.get("reasons", ""),
-                    state_diff=state_diff_parsed,
-                    criterion_results=criterion_results,
-                    judge_status=JudgeStatus.from_proto(g.get("judge_status", 0)),
-                    judge_usage=judge_usage,
-                    judge_transcript=judge_transcript,
-                )
-                self.logger.info(
-                    "Grading via Runner RPC",
-                    task_id=task.task_id,
-                    trial_index=trial_idx,
-                    score=grade.score,
-                    binary_pass=grade.binary_pass,
-                )
-            else:
-                # Grading RPC failed - fail the trial
-                error_msg = grade_result.get("error", "Unknown grading error")
-                self.logger.error(
-                    "Grading RPC failed",
-                    task_id=task.task_id,
-                    trial_index=trial_idx,
-                    error=error_msg,
-                )
-                grade = Grade(
-                    binary_pass=False,
-                    score=0.0,
-                    components=GradeComponents(state_checks=0.0),
-                    reasons=f"Grading RPC failed: {error_msg}",
-                )
-        trajectory.grade = grade
-
+        Grading strategy — including auto-fail on ``ERROR`` / ``TIMEOUT``
+        / ``STUCK_DETECTED`` and the runner-RPC path for a normal
+        completion — lives inside the grader. This phase is the trigger
+        (per CLOUD_RUNTIME §6.3): assemble the agent's post-policy
+        system prompt, delegate.
+        """
+        agent_system_prompt = runner.effective_system_prompt or system_prompt
+        trajectory.grade = self.trial_grader.grade(
+            spec, task_config, trajectory, agent_system_prompt
+        )
         self.logger.info(
             "Trial graded",
-            task_id=task.task_id,
-            trial_index=trial_idx,
-            score=grade.score,
-            binary_pass=grade.binary_pass,
+            task_id=task_config.task_id,
+            trial_index=setup.trial_idx,
+            score=trajectory.grade.score,
+            binary_pass=trajectory.grade.binary_pass,
         )
 
-        # Note: Browser cleanup is handled automatically by Playwright when the process ends.
-        # The video recording is finalized when the browser context closes.
-        # We don't need explicit cleanup here - it was causing event loop issues.
-        # The video file is already being written to the videos directory.
+    def _write_artifacts(
+        self,
+        spec: TrialSpec,
+        task_config: TaskConfig,
+        setup: _TrialSetup,
+        trajectory: Trajectory,
+        runner: TrialRunner,
+    ) -> None:
+        """Persist the trial bundle (trajectory, prompts, tools schemas,
+        task config snapshot) via the shared
+        :class:`TrialArtifactWriter`.
 
-        # Save trial outputs through the shared :class:`FileArtifactWriter`.
-        # ``trial_dir`` was already created earlier for video recording.
+        The trial directory was created during :meth:`_setup_trial` for
+        video recording. This phase writes the remaining artifacts
+        through the composed writer; the per-trial writer instance is
+        cached inside the ``FileArtifactWriter`` keyed on ``trial_dir``.
+        """
+        task = task_config
         writer = self._artifact_writer
-
-        # Get grading config for output (from adapter)
         grading_config = self.adapter.get_grading_config(task.task_id)
 
         # Persist the post-policy tool list inside the trial bundle as
-        # ``tools_schemas.yaml``. ``tool_schemas`` is the list handed to the
-        # agent's :class:`LLMClient`; pushing it through the matched
-        # ``schema_sanitizer`` reproduces exactly what the provider saw.
-        # Self-contained per-trial: no dedup, no cross-trial state.
-        agent_config = agent_client.config
-        sanitized = agent_client.capabilities.schema_sanitizer.sanitize(tool_schemas)
-        writer.write_tools_schemas(trial_dir, sanitized)
+        # ``tools_schemas.yaml`` — the exact list handed to the agent's
+        # :class:`LLMClient`, passed through the capabilities' schema
+        # sanitizer so the file reproduces what the provider saw.
+        agent_config = self.agent_client.config
+        sanitized = self.agent_client.capabilities.schema_sanitizer.sanitize(setup.tool_schemas)
+        writer.write_tools_schemas(setup.trial_dir, sanitized)
 
         # Persist the agent's effective (post-policy) system prompt and
         # the user simulator's system prompt as ``prompts.yaml`` — kept
         # separate from ``trajectory.yaml`` so the message trace stays
-        # easy to scan. Both come off the runner as read-only properties
-        # populated during ``run()``.
+        # easy to scan.
         writer.write_prompts(
-            trial_dir,
+            setup.trial_dir,
             agent_prompt=runner.effective_system_prompt,
             user_prompt=runner.user_system_prompt,
         )
 
-        # Prepare task config for output (includes model config snapshot
-        # for reproducibility + the resolved preset fingerprint).
         task_config_dict = {
             "task_id": task.task_id,
-            "trial_index": trial_idx,
+            "trial_index": setup.trial_idx,
             "category": task.category,
             "description": task.description,
             "grading_config": grading_config.model_dump(mode="json") if grading_config else {},
             "tools": task.tools.model_dump(mode="json"),
             "policies": task.policies,
             "model_config": self._serialize_model_config(
-                agent_config=agent_config, user_config=user_config, judge_config=judge_config
+                agent_config=agent_config,
+                user_config=spec.user_model_config,
+                judge_config=spec.judge_model_config,
             ),
         }
 
-        # Write all split output files via the composed writer. The per-trial
-        # :class:`OutputWriter` is cached inside FileArtifactWriter keyed on
-        # ``trial_dir`` so repeated writes don't re-create the directory.
         writer.write_trial_bundle(
-            trial_dir, trajectory, task_config_dict, final_state, runner.logger
+            setup.trial_dir,
+            trajectory,
+            task_config_dict,
+            trajectory.final_env_state,
+            runner.logger,
         )
 
         self.logger.info(
             "Trial output saved",
             task_id=task.task_id,
-            trial_index=trial_idx,
-            output_dir=str(trial_dir),
-        )
-
-        return TrialResult.from_trajectory(
-            trial_id=trial_id, trajectory=trajectory, worker_id=worker_id
+            trial_index=setup.trial_idx,
+            output_dir=str(setup.trial_dir),
         )
 
     def _serialize_model_config(
