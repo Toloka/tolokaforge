@@ -13,7 +13,7 @@ from typing import Any
 import grpc
 import pytest
 
-from tolokaforge.core.docker_runtime import RunnerClient
+from tolokaforge.core.docker_runtime import GrpcRunnerClient, RunnerClient
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.trial import EnvEndpoints, TrialSpec
 from tolokaforge.runner import runner_pb2 as pb2
@@ -71,7 +71,7 @@ def runner_client(runner_container) -> RunnerClient:
     """RunnerClient connected to the testcontainer Runner over gRPC."""
     host = runner_container.get_container_host_ip()
     port = runner_container.get_exposed_port(50051)
-    client = RunnerClient(runner_address=f"{host}:{port}")
+    client = GrpcRunnerClient(runner_address=f"{host}:{port}")
     client.connect()
     yield client
     client.close()

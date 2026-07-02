@@ -24,7 +24,7 @@ from typing import Any
 
 import pytest
 
-from tolokaforge.core.docker_runtime import RunnerClient
+from tolokaforge.core.docker_runtime import GrpcRunnerClient
 
 pytestmark = [pytest.mark.integration, pytest.mark.requires_docker]
 
@@ -84,18 +84,18 @@ def _task_description(jsonpath_checks: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 @pytest.fixture
-def runner_client(runner_container) -> RunnerClient:
+def runner_client(runner_container) -> GrpcRunnerClient:
     """RunnerClient connected to the testcontainer Runner over gRPC."""
     host = runner_container.get_container_host_ip()
     port = runner_container.get_exposed_port(50051)
-    client = RunnerClient(runner_address=f"{host}:{port}")
+    client = GrpcRunnerClient(runner_address=f"{host}:{port}")
     client.connect()
     yield client
     client.close()
 
 
 def _register_and_grade(
-    runner_client: RunnerClient,
+    runner_client: GrpcRunnerClient,
     trial_id: str,
     jsonpath_checks: list[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -115,7 +115,7 @@ def _register_and_grade(
 class TestDbJsonpathGradingOverGrpc:
     """Validate PR #80's DB JSONPath state grading against the real wire protocol."""
 
-    def test_db_state_checks_graded_against_live_db(self, runner_client: RunnerClient) -> None:
+    def test_db_state_checks_graded_against_live_db(self, runner_client: GrpcRunnerClient) -> None:
         """``path:`` assertions are evaluated against the registered DB state, with
         PASS/FAIL verdicts and actionable mismatch reasons surfaced under ``State:``."""
         checks = [
@@ -161,7 +161,7 @@ class TestDbJsonpathGradingOverGrpc:
         assert grade["components"]["state_checks"] == pytest.approx(0.6)
         assert grade["binary_pass"] is False
 
-    def test_unknown_operator_fails_loud_over_grpc(self, runner_client: RunnerClient) -> None:
+    def test_unknown_operator_fails_loud_over_grpc(self, runner_client: GrpcRunnerClient) -> None:
         """Parity with the core native grader (PR #66): a ``path:`` assertion with no
         recognized operator must FAIL loudly through the RPC, not silently pass."""
         checks = [

@@ -15,7 +15,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tolokaforge.core.docker_runtime import RunnerClient
+from tolokaforge.core.docker_runtime import GrpcRunnerClient
 from tolokaforge.core.models import (
     CriterionResult,
     Grade,
@@ -98,7 +98,7 @@ def test_proto_grade_criterion_results_round_trip():
     )
     response = runner_pb2.GradeTrialResponse(success=True, grade=proto_grade)
 
-    client = RunnerClient.__new__(RunnerClient)
+    client = GrpcRunnerClient.__new__(GrpcRunnerClient)
     client.stub = MagicMock()
     client.stub.GradeTrial.return_value = response
 
@@ -123,7 +123,7 @@ def test_proto_grade_without_criterion_results_yields_none():
     proto_grade = runner_pb2.Grade(binary_pass=False, score=0.0)
     response = runner_pb2.GradeTrialResponse(success=True, grade=proto_grade)
 
-    client = RunnerClient.__new__(RunnerClient)
+    client = GrpcRunnerClient.__new__(GrpcRunnerClient)
     client.stub = MagicMock()
     client.stub.GradeTrial.return_value = response
 
@@ -170,7 +170,7 @@ def test_proto_grade_judge_report_round_trip():
     )
     response = runner_pb2.GradeTrialResponse(success=True, grade=proto_grade)
 
-    client = RunnerClient.__new__(RunnerClient)
+    client = GrpcRunnerClient.__new__(GrpcRunnerClient)
     client.stub = MagicMock()
     client.stub.GradeTrial.return_value = response
 
