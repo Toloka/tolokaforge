@@ -1456,7 +1456,7 @@ class TestRuntimeBackendInjection:
         from tolokaforge.core.orchestrator import Orchestrator
 
         orch = Orchestrator(_make_run_config())
-        assert orch._runtime_backend is None
+        assert orch._injected_runtime_backend is None
 
     def test_stores_injected_instance(self) -> None:
         from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
@@ -1465,7 +1465,7 @@ class TestRuntimeBackendInjection:
         backend = InMemoryRuntimeBackend()
         orch = Orchestrator(_make_run_config(), deps=OrchestratorDeps(runtime_backend=backend))
 
-        assert orch._runtime_backend is backend
+        assert orch._injected_runtime_backend is backend
 
     def test_injection_does_not_invoke_backend_lifecycle(self) -> None:
         """Construction must not call ``connect``/``close`` on the injected

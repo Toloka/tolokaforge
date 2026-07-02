@@ -262,6 +262,11 @@ class InProcessConductor:
     """Production :class:`Conductor`. Runs each trial in the orchestrator
     process.
 
+    The constructor kwargs are a 1:1 match for :class:`ConductorContext`
+    fields — the orchestrator unpacks the context via ``**vars(ctx)`` on
+    the default-factory path, so field-name / kwarg-name parity between
+    the two is a load-bearing contract.
+
     Captures the orchestrator's per-run dependencies (adapter, artifact
     writer, config, logger, verbose / strict flags, agent client,
     docker runtime, output directory, request limiter) at construction
