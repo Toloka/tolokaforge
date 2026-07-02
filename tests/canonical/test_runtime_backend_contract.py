@@ -339,11 +339,6 @@ class TestTeardownLifecycle:
         backend.teardown(handle)
         backend.teardown(handle)  # no exception
 
-    def test_teardown_best_effort_on_missing_resources(self) -> None:
-        backend = InMemoryRuntimeBackend(container_missing_on_teardown=True)
-        handle = backend.provision(_make_trial_spec(manifest=_make_two_service_manifest()))
-        backend.teardown(handle)  # no exception
-
 
 class TestDockerRuntimeSharedStackCompat:
     def test_provision_returns_handle_with_trial_id(self) -> None:

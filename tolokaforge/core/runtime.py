@@ -265,9 +265,11 @@ class InMemoryRuntimeBackend:
     * ``await_ready_times_out`` — when ``True``, :meth:`await_ready`
       raises :class:`ProvisionError` with ``stage="await_ready"``. The
       handle stays valid; the caller must still call :meth:`teardown`.
-    * ``container_missing_on_teardown`` — when ``True``, :meth:`teardown`
-      records its call but takes no other action, matching a real
-      backend's best-effort behaviour when a container is already gone.
+
+    Substrate-specific failure modes (e.g. "container already gone" on
+    teardown) are not simulated here — those live in the concrete
+    backend's own test module because the in-memory backend has no
+    substrate to be in an anomalous state.
     """
 
     def __init__(
@@ -275,13 +277,11 @@ class InMemoryRuntimeBackend:
         *,
         fail_provision_after_service: str | None = None,
         await_ready_times_out: bool = False,
-        container_missing_on_teardown: bool = False,
     ) -> None:
         self.call_log = RuntimeBackendCallLog()
         self.executor_client: Any = _UnusableExecutorClient()
         self._fail_provision_after_service = fail_provision_after_service
         self._await_ready_times_out = await_ready_times_out
-        self._container_missing_on_teardown = container_missing_on_teardown
 
     # ---- Run-level lifecycle ----
     def connect(self, timeout: float = 30.0, retry_interval: float = 1.0) -> None:
@@ -338,6 +338,3 @@ class InMemoryRuntimeBackend:
 
     def teardown(self, handle: EnvHandle) -> None:
         self.call_log.torn_down_trials.append(handle.trial_id)
-        # container_missing_on_teardown is best-effort no-raise; the call is
-        # still recorded above, matching a real backend's log-and-move-on.
-        _ = self._container_missing_on_teardown

@@ -677,13 +677,18 @@ class DockerRuntime:
         applied by :meth:`connect`'s health-check loop."""
 
     def endpoints(self, handle: EnvHandle) -> EnvEndpoints:  # noqa: ARG002 — Protocol conformance
-        """Return the run-wide shared endpoints.
+        """Return **sentinel** URLs for the shared-stack path.
 
         DockerRuntime does not carry the per-trial URLs the manifest
-        would resolve to — orchestrator-side resolution supplies those
-        through the existing ``EnvEndpoints`` construction site. The
-        method exists to satisfy the extended Protocol; callers that
-        need per-trial URLs should use a per-trial backend.
+        would resolve to; the returned strings are placeholders scoped
+        to the runner address (``…/db-shared``) purely to satisfy
+        :class:`EnvEndpoints`' non-empty ``db_url`` / ``runner_url``
+        constraint. **Do not wire a client to these values** — real
+        addresses on the shared-stack path come from the orchestrator's
+        existing ``EnvEndpoints`` construction site, not from this
+        method. Callers that need per-trial URLs should use a per-trial
+        backend (e.g. ``LocalRuntimeBackend``, which resolves real URLs
+        from its per-trial ``ServiceStack``).
         """
         from tolokaforge.core.trial import EnvEndpoints
 
