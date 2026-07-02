@@ -191,6 +191,23 @@ def calculate_task_metrics(trajectories: list[Trajectory]) -> dict[str, any]:
         if metrics["total_cost_usd"] is not None and n_total > 0
         else None
     )
+    # Judge spend is separate from the agent trajectory cost: the rubric judge
+    # runs its own LLM in the Runner, so its cost lives on ``grade.judge_usage``,
+    # not ``trajectory.metrics``. ``total_cost_usd`` above is agent-only; surface
+    # judge cost on its own and a combined total so a run's true spend is visible
+    # without parsing every ``grade.yaml`` (issue: run-level judge cost).
+    _judge_costs = [
+        t.grade.judge_usage.cost_usd
+        for t in trajectories
+        if t.grade is not None and t.grade.judge_usage is not None
+    ]
+    metrics["judge_cost_usd"] = sum(_judge_costs) if _judge_costs else None
+    if metrics["total_cost_usd"] is None and metrics["judge_cost_usd"] is None:
+        metrics["total_cost_incl_judge_usd"] = None
+    else:
+        metrics["total_cost_incl_judge_usd"] = (metrics["total_cost_usd"] or 0.0) + (
+            metrics["judge_cost_usd"] or 0.0
+        )
 
     metrics.update(calculate_latency_percentiles([t.metrics.latency_total_s for t in trajectories]))
 
@@ -311,6 +328,18 @@ def calculate_aggregate_metrics(
     agg["avg_cost_usd"] = (
         sum(_known_avg_costs) / n_tasks if _known_avg_costs and n_tasks > 0 else None
     )
+    # Roll up judge spend and the combined total across tasks (agent-only
+    # ``total_cost_usd`` above; judge runs its own LLM in the Runner).
+    _known_judge_costs = [
+        m.get("judge_cost_usd") for m in task_metrics if m.get("judge_cost_usd") is not None
+    ]
+    agg["judge_cost_usd"] = sum(_known_judge_costs) if _known_judge_costs else None
+    _known_total_incl = [
+        m.get("total_cost_incl_judge_usd")
+        for m in task_metrics
+        if m.get("total_cost_incl_judge_usd") is not None
+    ]
+    agg["total_cost_incl_judge_usd"] = sum(_known_total_incl) if _known_total_incl else None
 
     for percentile in ("latency_p50_s", "latency_p90_s", "latency_p99_s"):
         agg[f"{percentile}_macro"] = (
