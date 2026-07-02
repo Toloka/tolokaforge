@@ -1,0 +1,80 @@
+task_id: "cascade_telecom_dispute"
+name: "Telecom probe: billing-dispute resolution cascade (multi-step)"
+description: >
+  Non-scoring wire-shape probe derived from the public tau2-bench telecom domain
+  (policy stripped). A cooperative llm user-sim drives a billing-dispute
+  resolution cascade across many turns - look up the subscriber, read the
+  profile, pull invoices, update the nested billing address, register a bank
+  payment method (the bank branch of the discriminated PaymentMethod union, a
+  branch the other telecom probes never hit), make a PARTIAL Decimal payment on
+  the overdue invoice, suspend then re-activate the same service line (a closed
+  enum exercised twice in sequence), and top up data (multiple-of-five
+  constraint) - so a model reveals id-threading / fan-in habits AND the
+  request-side shapes (nested object, dict-map-of-union, Decimal, enums,
+  constraints) in one trial.
+domain: ../../_shared/domain.yaml
+max_turns: 22
+
+initial_user_message: >
+  Hi - I want to dispute a charge on my mobile account and sort out a few things.
+  My number is +15559876543. Can you pull up my account first?
+
+initial_state: {}
+
+tools:
+  agent:
+    enabled:
+      - lookup_subscriber
+      - get_subscriber_details
+      - get_invoices
+      - update_address
+      - register_payment_methods
+      - send_payment_request
+      - set_service_status
+      - top_up_data
+
+user_simulator:
+  mode: llm
+  persona: cooperative
+  backstory: >
+    You are a mobile subscriber whose phone number is +15559876543. You just
+    moved and want to clean up your account around a disputed invoice. You want
+    the assistant to work through your requests one at a time, waiting for it to
+    confirm each before you ask for the next:
+    (1) look up your account from your phone number, pull up your profile so you
+        can see your service lines, and list your invoices;
+    (2) your billing address changed - update it to twenty-nine Birchwood Lane,
+        city Easthaven, postal code three three one zero one, country US;
+    (3) add a new payment method under the label settlement: it's a bank entry
+        whose IBAN is NL91ABNA0417164300;
+    (4) you only want to pay part of the overdue invoice for now - send a payment
+        of eighteen dollars and seventy-five cents against that invoice;
+    (5) while the dispute is open, suspend your first service line;
+    (6) once that's confirmed, change your mind and set that same first service
+        line back to active;
+    (7) finally, add twenty-five gigabytes of data to that same service line.
+    Give the assistant only the values above in plain words; do not describe how
+    to format anything, and do not mention payment kinds, branches, or fields.
+    Once all seven are confirmed, thank the assistant and end. Keep replies short.
+
+metadata:
+  expected_failure_modes:
+    - discriminated_union
+    - dict_map
+    - dict_flatten
+    - stringified_dict
+    - deep_nesting
+    - decimal_field
+    - enum_membership
+    - validation_constraints
+    - lifecycle_threading
+    - fan_in
+  tags:
+    - smoke
+    - wire-probe
+    - non-scoring
+    - multi-turn
+    - tau2-derived
+    - cascade
+
+grading: "grading.yaml"

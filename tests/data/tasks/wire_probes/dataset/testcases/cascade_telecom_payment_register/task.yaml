@@ -1,0 +1,44 @@
+task_id: "cascade_telecom_payment_register"
+name: "Telecom probe: payment-methods dict-map of a union (single-shot)"
+description: >
+  Non-scoring wire-shape probe (tau2-bench-derived, policy stripped). Isolates
+  the heaviest single shape of the domain: `methods` is a map of a label to a
+  discriminated payment-method union (card | voucher | bank). One call, so a bad
+  shape (dict-flatten, stringified union body, wrong branch, key-packing) is
+  cleanly attributable.
+domain: ../../_shared/domain.yaml
+max_turns: 3
+
+initial_user_message: >
+  For subscriber SUB-7F3A, register two payment methods. Under the label primary,
+  use a card ending four two four two that expires August twenty-twenty-seven.
+  Under the label backup, use a voucher whose code is SAVE10 worth twenty-five
+  dollars. Then you're done.
+
+initial_state: {}
+
+tools:
+  agent:
+    enabled:
+      - register_payment_methods
+
+user_simulator:
+  scripted_flow:
+    - role: user
+      content: "###STOP###"
+
+metadata:
+  expected_failure_modes:
+    - dict_map
+    - discriminated_union
+    - dict_flatten
+    - decimal_field
+    - stringified_dict
+    - key_packing
+  tags:
+    - smoke
+    - wire-probe
+    - non-scoring
+    - tau2-derived
+
+grading: "grading.yaml"

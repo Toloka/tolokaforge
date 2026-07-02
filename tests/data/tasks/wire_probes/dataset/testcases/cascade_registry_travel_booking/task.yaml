@@ -1,0 +1,76 @@
+task_id: "cascade_registry_travel_booking"
+name: "Registry probe: travel-booking cascade with hotel meta-search, deposit transfer, devices, free-form prefs (multi-step)"
+description: >
+  Non-scoring wire-shape probe derived from the public API-Bank meta-tool
+  benchmark (policy stripped). A sonnet-4.6 user-sim plans a trip but never
+  names a tool, so the model must search_tools, read the returned descriptor,
+  and call the tool it names (output-selects-next-tool) while threading an
+  access token (lifecycle). Chains several HARD shapes across many turns: a
+  meta-retrieval hotel search (no token), then a Decimal deposit transfer that
+  fans in TWO account ids under one threaded token, a register_devices dict-map
+  of a DeviceSpec entry, and a set_preferences free-form open object
+  (additionalProperties). Multi-turn breadth amplifies catch-rate on the
+  dict-map, Decimal, fan-in and token-threading surfaces.
+domain: ../../_shared/domain.yaml
+max_turns: 22
+
+initial_user_message: >
+  Hi - I'm booking a short trip and I'm not sure which of your tools I need. Can
+  you first find the tool for looking up hotels? I'll give you the trip details
+  once you've found it.
+
+initial_state: {}
+
+tools:
+  agent:
+    enabled:
+      - search_tools
+      - get_access_token
+      - search_hotels
+      - transfer_funds
+      - register_devices
+      - set_preferences
+
+user_simulator:
+  mode: llm
+  persona: cooperative
+  backstory: >
+    You are planning a short trip and you want the assistant to find the right
+    tool for each request before doing it, and to log you in when a tool needs
+    it (your username is traveler9 and your password is wander2026). Drive these
+    one at a time, waiting for the assistant to confirm each before asking for
+    the next:
+    (1) find the tool for looking up hotels, then search for hotels in Riverton
+        checking in on the second of July twenty-twenty-six and checking out on
+        the fifth of July twenty-twenty-six;
+    (2) move the deposit money: transfer one hundred twenty-five dollars and
+        fifty cents from account ACC-401 to account ACC-902;
+    (3) register the two devices you are bringing on the trip: a phone under the
+        label primary and a tablet under the label backup;
+    (4) set your trip preferences: a room on a high floor, a quiet room, and a
+        late checkout.
+    Give the assistant only the values above in plain words; do not describe how
+    to format anything, and do not name the tools yourself - let the assistant
+    discover them. Once all four are confirmed, thank the assistant and end. Keep
+    replies short.
+
+metadata:
+  expected_failure_modes:
+    - tool_selection_relevance
+    - schema_at_volume
+    - lifecycle_threading
+    - fan_in
+    - decimal_field
+    - dict_map
+    - free_form_object
+    - stringified_dict
+  tags:
+    - smoke
+    - wire-probe
+    - non-scoring
+    - multi-turn
+    - apibank-derived
+    - meta-tool
+    - cascade
+
+grading: "grading.yaml"

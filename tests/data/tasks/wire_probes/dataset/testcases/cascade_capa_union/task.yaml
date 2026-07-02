@@ -1,0 +1,39 @@
+task_id: "cascade_capa_union"
+name: "Samples probe: CAPA discriminated union"
+description: >
+  Non-scoring wire-shape probe derived from the manufacturing CAPA flow (policy
+  stripped). Elicits discriminated-union mis-shape, dict-flatten (scalar +
+  hoisted fields), oneOf/$ref dialect handling, and stringified union body on
+  create_capa.capa.
+domain: ../../_shared/domain.yaml
+max_turns: 4
+
+initial_user_message: >
+  Open a CAPA against lot LOT-09. The reason is "expired material found during
+  inspection". Then you're done.
+
+initial_state: {}
+
+tools:
+  agent:
+    enabled:
+      - create_capa
+
+user_simulator:
+  scripted_flow:
+    - role: user
+      content: "###STOP###"
+
+metadata:
+  expected_failure_modes:
+    - discriminated_union
+    - dict_flatten
+    - gemini_schema_oneof_ref
+    - stringified_dict
+  tags:
+    - smoke
+    - wire-probe
+    - non-scoring
+    - manufacturing-derived
+
+grading: "grading.yaml"

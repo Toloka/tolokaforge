@@ -1,0 +1,59 @@
+task_id: "cascade_allocation_lifecycle"
+name: "Samples probe: allocation lifecycle (multi-step cascade)"
+description: >
+  Non-scoring wire-shape probe derived from the real manufacturing allocation
+  flow (policy stripped). A sonnet-4.6 user-sim drives the full multi-step
+  cascade (create_allocation with the `lots` dict-map, per-lot modify_lot,
+  modify_order with the `upsert_lines` dict-map, then modify_inventory) across
+  turns, exercising the dict-map surfaces AND the longer call-ordering /
+  lifecycle dimension that these multi-step patterns exercise most.
+domain: ../../_shared/domain.yaml
+max_turns: 16
+
+initial_user_message: >
+  I need to allocate materials for order ORD-7 on SKU SKU-A. Allocate a total of
+  100 units, taking 60 from lot LOT-01 and 40 from lot LOT-02.
+
+initial_state: {}
+
+tools:
+  agent:
+    enabled:
+      - get_entity_info
+      - create_allocation
+      - modify_lot
+      - modify_order
+      - modify_inventory
+
+user_simulator:
+  mode: llm
+  persona: cooperative
+  backstory: >
+    You are an operations user processing order ORD-7, and you want every step
+    of the allocation cascade done. Drive these one at a time, waiting for the
+    assistant to confirm each before asking for the next:
+    (1) create the allocation: 100 units of SKU-A on ORD-7, taking 60 from
+        LOT-01 and 40 from LOT-02;
+    (2) mark each consumed lot: LOT-01 now has 0 remaining and is consumed, and
+        LOT-02 now has 0 remaining and is consumed;
+    (3) update the order line for SKU-A so requested is 100 and allocated is 100;
+    (4) recompute SKU-A inventory: in_stock 300, reserved 0, available_to_promise
+        300.
+    Once all four are confirmed, thank the assistant and end. Keep replies short.
+
+metadata:
+  expected_failure_modes:
+    - dict_map
+    - stringified_dict
+    - array_dict_map
+    - empty_container
+    - lifecycle_threading
+  tags:
+    - smoke
+    - wire-probe
+    - non-scoring
+    - multi-turn
+    - manufacturing-derived
+    - cascade
+
+grading: "grading.yaml"

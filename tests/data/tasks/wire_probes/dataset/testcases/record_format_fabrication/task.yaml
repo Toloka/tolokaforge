@@ -1,0 +1,32 @@
+task_id: "record_format_fabrication"
+name: "Wire-probe: format-keyword value (no fabrication)"
+description: >
+  Non-scoring wire-shape probe. Elicits format-keyword fabrication: format:uuid + date-time values are given in the request and must be used verbatim, not invented.
+domain: ../../_shared/domain.yaml
+max_turns: 3
+
+initial_user_message: >
+  Link record REC-3004 to reference 550e8400-e29b-41d4-a716-446655440000 at 2026-06-29T10:00:00Z. Then you're done.
+
+initial_state: {}
+
+tools:
+  agent:
+    enabled:
+      - link_ref
+
+user_simulator:
+  scripted_flow:
+    - role: user
+      content: "###STOP###"
+
+metadata:
+  expected_failure_modes:
+    - format_fabrication
+    - placeholder_id
+  tags:
+    - smoke
+    - wire-probe
+    - non-scoring
+
+grading: "grading.yaml"
