@@ -1295,7 +1295,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # agent's own edits) as its primary view of the outcome, instead of it
         # dumping the whole final DB via get_db_state. This is NOT the
         # trial-vs-golden diff (that would leak the oracle and bias grading, see
-        # rubric_grading.md #7/#8) — it reveals only what the agent changed.
+        # docs/RUBRIC_GRADING_DESIGN.md #7/#8) — it reveals only what the agent changed.
         # Persisted for free: the opening message it lands in is captured into
         # judge_trajectory.yaml. Computed here on the loop thread where both
         # states are in hand.

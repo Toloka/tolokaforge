@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import pytest
+
 from tolokaforge.core.grading.state_diff import render_state_diff
+
+pytestmark = pytest.mark.unit
 
 
 def test_no_changes_reports_untouched_explicitly() -> None:
