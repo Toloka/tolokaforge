@@ -6,6 +6,10 @@ wrapper, never ``connect()``-ed in this test) and
 methods and the retry-cleanup method are exercised on both; ``connect()``
 itself is *not* invoked on ``DockerRuntime`` because that would require
 a real runner gRPC server.
+
+The lower half of the file pins the ADR-0010 provisioning surface:
+``provision`` / ``await_ready`` / ``endpoints`` / ``teardown``,
+``EnvHandle``, ``ProvisionError``.
 """
 
 from __future__ import annotations
@@ -13,11 +17,16 @@ from __future__ import annotations
 import pytest
 
 from tolokaforge.core.docker_runtime import DockerRuntime
+from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.runtime import (
+    EnvHandle,
     InMemoryRuntimeBackend,
+    ProvisionError,
     RuntimeBackend,
     RuntimeBackendCallLog,
 )
+from tolokaforge.core.trial import EnvEndpoints, EnvironmentManifest, ServiceSpec, TrialSpec
+from tolokaforge.runner.models import TaskDescription
 
 pytestmark = pytest.mark.canonical
 
@@ -144,3 +153,251 @@ class TestInMemoryBackendSemantics:
     def test_fresh_backend_has_empty_call_log(self) -> None:
         backend = InMemoryRuntimeBackend()
         assert backend.call_log == RuntimeBackendCallLog()
+
+
+# ===========================================================================
+# ADR-0010 provisioning contract
+# ===========================================================================
+#
+# The tests below pin the provisioning surface added by ADR-0010:
+# provision / await_ready / endpoints / teardown, plus EnvHandle shape and
+# ProvisionError semantics. Per-backend enforcement of manifest safety
+# declarations lives in that backend's own test module — this file tests
+# the Protocol contract only.
+
+
+def _make_task_description(manifest: EnvironmentManifest | None = None) -> TaskDescription:
+    return TaskDescription(
+        task_id="task-1",
+        name="probe",
+        category="general",
+        description="Contract-test task",
+        adapter_type="native",
+        system_prompt="You are a helpful assistant.",
+        environment_manifest=manifest,
+    )
+
+
+def _make_env_endpoints() -> EnvEndpoints:
+    return EnvEndpoints(
+        db_url="http://db.local:8000",
+        rag_url=None,
+        runner_url="http://runner.local:50051",
+    )
+
+
+def _make_trial_spec(
+    trial_id: str = "task-1:0",
+    manifest: EnvironmentManifest | None = None,
+) -> TrialSpec:
+    return TrialSpec(
+        trial_id=trial_id,
+        run_id="run_contract_test",
+        task=_make_task_description(manifest),
+        agent_model_config=ModelConfig(name="claude-sonnet-4-6", provider="anthropic"),
+        env_endpoints=_make_env_endpoints(),
+    )
+
+
+def _make_two_service_manifest() -> EnvironmentManifest:
+    return EnvironmentManifest(
+        services=[
+            ServiceSpec(name="runner", image="tolokaforge/runner:0.5.0"),
+            ServiceSpec(name="db", image="postgres:16"),
+        ],
+    )
+
+
+class TestProvisioningProtocolConformance:
+    def test_docker_runtime_has_provisioning_methods(self) -> None:
+        backend = DockerRuntime(runner_address="sentinel:50051")
+        for method in ("provision", "await_ready", "endpoints", "teardown"):
+            assert callable(getattr(backend, method))
+
+    def test_in_memory_backend_has_provisioning_methods(self) -> None:
+        backend = InMemoryRuntimeBackend()
+        for method in ("provision", "await_ready", "endpoints", "teardown"):
+            assert callable(getattr(backend, method))
+
+
+class TestEnvHandleShape:
+    def test_handle_exposes_trial_id(self) -> None:
+        backend = InMemoryRuntimeBackend()
+        handle = backend.provision(_make_trial_spec(trial_id="task-1:0"))
+        assert handle.trial_id == "task-1:0"
+
+    def test_handle_is_protocol_typed(self) -> None:
+        backend = InMemoryRuntimeBackend()
+        handle = backend.provision(_make_trial_spec())
+        assert isinstance(handle, EnvHandle)
+
+
+class TestProvisionError:
+    def test_carries_trial_id_stage_reason(self) -> None:
+        err = ProvisionError(trial_id="task-1:0", stage="provision", reason="port bind failed")
+        assert err.trial_id == "task-1:0"
+        assert err.stage == "provision"
+        assert err.reason == "port bind failed"
+
+    @pytest.mark.parametrize("stage", ["provision", "await_ready"])
+    def test_stage_accepts_documented_literals(self, stage: str) -> None:
+        err = ProvisionError(trial_id="t:0", stage=stage, reason="x")  # type: ignore[arg-type]
+        assert err.stage == stage
+
+    def test_error_is_raisable_and_catchable(self) -> None:
+        with pytest.raises(ProvisionError) as exc:
+            raise ProvisionError(trial_id="t:0", stage="provision", reason="x")
+        assert exc.value.trial_id == "t:0"
+
+
+class TestProvisionLifecycle:
+    def test_returns_handle_with_matching_trial_id(self) -> None:
+        backend = InMemoryRuntimeBackend()
+        spec = _make_trial_spec(trial_id="task-1:0", manifest=_make_two_service_manifest())
+        handle = backend.provision(spec)
+        assert handle.trial_id == "task-1:0"
+
+    def test_no_manifest_returns_handle(self) -> None:
+        backend = InMemoryRuntimeBackend()
+        spec = _make_trial_spec(manifest=None)
+        handle = backend.provision(spec)
+        assert handle.trial_id == spec.trial_id
+
+    def test_partial_startup_raises_provision_error(self) -> None:
+        backend = InMemoryRuntimeBackend(fail_provision_after_service="db")
+        spec = _make_trial_spec(trial_id="task-1:0", manifest=_make_two_service_manifest())
+        with pytest.raises(ProvisionError) as exc:
+            backend.provision(spec)
+        assert exc.value.stage == "provision"
+        assert exc.value.trial_id == "task-1:0"
+        # Best-effort teardown ran before the raise.
+        assert "task-1:0" in backend.call_log.torn_down_trials
+
+    def test_partial_startup_only_fires_when_service_present(self) -> None:
+        backend = InMemoryRuntimeBackend(fail_provision_after_service="db")
+        manifest = EnvironmentManifest(
+            services=[ServiceSpec(name="runner", image="tolokaforge/runner:0.5.0")]
+        )
+        handle = backend.provision(_make_trial_spec(manifest=manifest))
+        assert handle.trial_id == "task-1:0"
+
+
+class TestAwaitReadyLifecycle:
+    def test_returns_when_all_probes_pass(self) -> None:
+        backend = InMemoryRuntimeBackend()
+        handle = backend.provision(_make_trial_spec())
+        assert backend.await_ready(handle) is None
+
+    def test_timeout_raises_provision_error(self) -> None:
+        backend = InMemoryRuntimeBackend(await_ready_times_out=True)
+        handle = backend.provision(_make_trial_spec(manifest=_make_two_service_manifest()))
+        with pytest.raises(ProvisionError) as exc:
+            backend.await_ready(handle)
+        assert exc.value.stage == "await_ready"
+
+    def test_handle_valid_after_await_ready_failure(self) -> None:
+        backend = InMemoryRuntimeBackend(await_ready_times_out=True)
+        handle = backend.provision(_make_trial_spec(manifest=_make_two_service_manifest()))
+        with pytest.raises(ProvisionError):
+            backend.await_ready(handle)
+        backend.teardown(handle)  # must not raise
+        assert handle.trial_id in backend.call_log.torn_down_trials
+
+
+class TestEndpointsResolution:
+    def test_returns_env_endpoints(self) -> None:
+        backend = InMemoryRuntimeBackend()
+        handle = backend.provision(_make_trial_spec())
+        endpoints = backend.endpoints(handle)
+        assert isinstance(endpoints, EnvEndpoints)
+        assert endpoints.runner_url
+
+    def test_does_not_block(self) -> None:
+        backend = InMemoryRuntimeBackend(await_ready_times_out=True)
+        handle = backend.provision(_make_trial_spec())
+        _ = backend.endpoints(handle)  # must not raise
+
+    def test_per_trial_endpoints_differ(self) -> None:
+        backend = InMemoryRuntimeBackend()
+        handle_a = backend.provision(_make_trial_spec(trial_id="task-1:0"))
+        handle_b = backend.provision(_make_trial_spec(trial_id="task-1:1"))
+        ep_a = backend.endpoints(handle_a)
+        ep_b = backend.endpoints(handle_b)
+        assert ep_a.runner_url != ep_b.runner_url
+
+
+class TestTeardownLifecycle:
+    def test_teardown_records_trial(self) -> None:
+        backend = InMemoryRuntimeBackend()
+        handle = backend.provision(_make_trial_spec(trial_id="task-1:0"))
+        backend.teardown(handle)
+        assert "task-1:0" in backend.call_log.torn_down_trials
+
+    def test_teardown_is_idempotent(self) -> None:
+        backend = InMemoryRuntimeBackend()
+        handle = backend.provision(_make_trial_spec())
+        backend.teardown(handle)
+        backend.teardown(handle)  # no exception
+
+    def test_teardown_best_effort_on_missing_resources(self) -> None:
+        backend = InMemoryRuntimeBackend(container_missing_on_teardown=True)
+        handle = backend.provision(_make_trial_spec(manifest=_make_two_service_manifest()))
+        backend.teardown(handle)  # no exception
+
+
+class TestDockerRuntimeSharedStackCompat:
+    def test_provision_returns_handle_with_trial_id(self) -> None:
+        backend = DockerRuntime(runner_address="localhost:50051")
+        spec = _make_trial_spec(trial_id="task-1:0")
+        handle = backend.provision(spec)
+        assert handle.trial_id == "task-1:0"
+        assert isinstance(handle, EnvHandle)
+
+    def test_endpoints_returns_shared_run_wide_urls(self) -> None:
+        backend = DockerRuntime(runner_address="localhost:50051")
+        handle_a = backend.provision(_make_trial_spec(trial_id="task-1:0"))
+        handle_b = backend.provision(_make_trial_spec(trial_id="task-1:1"))
+        # Shared-stack semantics: both handles resolve to the same endpoints.
+        assert backend.endpoints(handle_a) == backend.endpoints(handle_b)
+
+    def test_teardown_is_no_op(self) -> None:
+        backend = DockerRuntime(runner_address="localhost:50051")
+        handle = backend.provision(_make_trial_spec())
+        backend.teardown(handle)  # no exception
+        backend.teardown(handle)  # idempotent
+
+    def test_await_ready_is_no_op(self) -> None:
+        backend = DockerRuntime(runner_address="localhost:50051")
+        handle = backend.provision(_make_trial_spec())
+        assert backend.await_ready(handle) is None
+
+
+class TestInMemoryProvisioningCallLog:
+    def test_records_provision_and_teardown(self) -> None:
+        backend = InMemoryRuntimeBackend()
+        handle = backend.provision(_make_trial_spec(trial_id="task-1:0"))
+        backend.teardown(handle)
+        assert backend.call_log.provisioned_trials == ["task-1:0"]
+        assert backend.call_log.torn_down_trials == ["task-1:0"]
+
+    def test_call_log_preserves_ordering(self) -> None:
+        backend = InMemoryRuntimeBackend()
+        h_a = backend.provision(_make_trial_spec(trial_id="task-1:0"))
+        h_b = backend.provision(_make_trial_spec(trial_id="task-1:1"))
+        backend.teardown(h_a)
+        backend.teardown(h_b)
+        assert backend.call_log.provisioned_trials == ["task-1:0", "task-1:1"]
+        assert backend.call_log.torn_down_trials == ["task-1:0", "task-1:1"]
+
+    def test_records_await_ready_and_endpoints_calls(self) -> None:
+        backend = InMemoryRuntimeBackend()
+        handle = backend.provision(_make_trial_spec(trial_id="task-1:0"))
+        backend.await_ready(handle)
+        backend.endpoints(handle)
+        assert backend.call_log.await_ready_calls == ["task-1:0"]
+        assert backend.call_log.endpoints_calls == ["task-1:0"]
+
+    def test_configurable_provision_failure(self) -> None:
+        backend = InMemoryRuntimeBackend(fail_provision_after_service="db")
+        with pytest.raises(ProvisionError):
+            backend.provision(_make_trial_spec(manifest=_make_two_service_manifest()))

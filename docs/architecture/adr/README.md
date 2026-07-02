@@ -40,4 +40,5 @@ Day-to-day implementation choices that don't affect the system shape do *not* ne
 | [0007](0007-runtime-backend-protocol.md) | `RuntimeBackend` Protocol — lift `DockerRuntime` behind a typed seam | Accepted |
 | [0008](0008-conductor-protocol.md) | `Conductor` Protocol — per-trial executor seam | Accepted |
 | [0009](0009-environment-manifest.md) | `EnvironmentManifest` — typed schema for per-trial multicontainer environments | Proposed |
+| [0010](0010-runtime-backend-provisioning-contract.md) | `RuntimeBackend` provisioning contract — `provision` / `await_ready` / `endpoints` / `teardown` | Proposed |
 | [0011](0011-seam-and-declaration-conventions.md) | Seam-definition and data-declaration conventions for new components | Proposed |
