@@ -25,8 +25,8 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
 
-      - name: Set up Python 3.12
-        run: uv python install 3.12
+      - name: Set up Python (pinned in .python-version)
+        run: uv python install "$(cat .python-version)"
 
 
       - name: Install dependencies

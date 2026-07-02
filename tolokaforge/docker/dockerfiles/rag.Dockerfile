@@ -3,7 +3,8 @@
 # Per-trial document indexing and search via FastAPI.
 # See tolokaforge/env/rag_service/app.py for the API surface.
 
-FROM python:3.10-slim
+ARG PYTHON_VERSION=3.12
+FROM python:${PYTHON_VERSION}-slim
 
 WORKDIR /app
 

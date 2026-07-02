@@ -193,7 +193,14 @@ def test_build_image_respects_context_files(monkeypatch, _mock_wheel) -> None:
     # WHEEL_FILENAME must reach docker build. The Dockerfile's ARG default
     # is a placeholder that doesn't match the real wheel on disk, so `COPY
     # ${WHEEL_FILENAME}` fails whenever the harness omits this build arg.
-    assert captured["build_args"] == {"WHEEL_FILENAME": _mock_wheel.path.name}
+    # PYTHON_VERSION is sourced from .python-version so a single upgrade
+    # propagates to every runtime image.
+    from tolokaforge.docker.builder import PYTHON_VERSION
+
+    assert captured["build_args"] == {
+        "WHEEL_FILENAME": _mock_wheel.path.name,
+        "PYTHON_VERSION": PYTHON_VERSION,
+    }
 
 
 def test_build_image_non_force_path_uses_isolated_context(monkeypatch, _mock_wheel) -> None:
@@ -227,13 +234,18 @@ def test_build_image_non_force_path_uses_isolated_context(monkeypatch, _mock_whe
     image = build_image("runner")
     assert image.full_tag == "tolokaforge-runner:cafe1234"
     assert not Path(captured["context"]).exists(), "Temporary build context should be cleaned up"
-    assert captured["build_args"] == {"WHEEL_FILENAME": _mock_wheel.path.name}
+    from tolokaforge.docker.builder import PYTHON_VERSION
+
+    assert captured["build_args"] == {
+        "WHEEL_FILENAME": _mock_wheel.path.name,
+        "PYTHON_VERSION": PYTHON_VERSION,
+    }
 
 
-def test_build_image_passes_no_build_args_when_definition_has_none(monkeypatch) -> None:
-    """Services whose definition has no ``build_args`` entry (e.g. db-service)
-    must receive ``build_args=None`` — not ``{}`` — so the content hash and
-    docker build call are bit-identical to the pre-feature behaviour.
+def test_build_image_passes_python_version_build_arg_for_db_service(monkeypatch) -> None:
+    """Every runtime image receives the pinned Python version as a build arg
+    so ``FROM python:${PYTHON_VERSION}-slim`` resolves from ``.python-version``
+    instead of a per-Dockerfile hardcoded minor version.
     """
     captured: dict[str, object] = {}
 
@@ -252,7 +264,9 @@ def test_build_image_passes_no_build_args_when_definition_has_none(monkeypatch) 
     monkeypatch.setattr(Image, "build", fake_build)
 
     build_image("db-service", force=True)
-    assert captured["build_args"] is None
+    from tolokaforge.docker.builder import PYTHON_VERSION
+
+    assert captured["build_args"] == {"PYTHON_VERSION": PYTHON_VERSION}
 
 
 def test_service_name_for_image_resolves_all_known_services_without_resolving_wheel(

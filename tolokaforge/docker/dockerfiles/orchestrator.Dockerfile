@@ -1,5 +1,6 @@
 # Orchestrator container - has access to env network and coordinates all services
-FROM python:3.10-slim
+ARG PYTHON_VERSION=3.12
+FROM python:${PYTHON_VERSION}-slim
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
