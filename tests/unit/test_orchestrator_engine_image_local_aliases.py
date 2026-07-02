@@ -1,4 +1,4 @@
-"""Unit tests for :meth:`Orchestrator._ensure_versioned_runner_image_tag`.
+"""Unit tests for :meth:`Orchestrator._ensure_engine_image_local_aliases`.
 
 The hook applies ``docker tag <content-hash> <repo>:local`` after the
 shared stack starts, giving per-trial task compose files stable names
@@ -24,6 +24,7 @@ from tolokaforge.core.models import (
     RunConfig,
 )
 from tolokaforge.core.orchestrator import Orchestrator
+from tolokaforge.docker.image import ImageError
 
 pytestmark = pytest.mark.unit
 
@@ -71,7 +72,7 @@ class TestVersionedRunnerImageTag:
         db_img = _FakeImage()
         stack = _FakeServiceStack({"runner": runner_img, "db-service": db_img})
 
-        orch._ensure_versioned_runner_image_tag(stack)
+        orch._ensure_engine_image_local_aliases(stack)
 
         assert runner_img.calls == [("tolokaforge-runner", "local")]
         assert db_img.calls == [("tolokaforge-db-service", "local")]
@@ -85,7 +86,7 @@ class TestVersionedRunnerImageTag:
         runner_img = _FakeImage()
         stack = _FakeServiceStack({"runner": runner_img})  # no db-service
 
-        orch._ensure_versioned_runner_image_tag(stack)
+        orch._ensure_engine_image_local_aliases(stack)
 
         assert runner_img.calls == [("tolokaforge-runner", "local")]
         orch.logger.debug.assert_called_once()
@@ -98,14 +99,30 @@ class TestVersionedRunnerImageTag:
         orch = _make_orchestrator()
         orch.logger = MagicMock()
         runner_img = _FakeImage()
-        runner_img.should_raise = RuntimeError("docker daemon rejected the tag")
+        runner_img.should_raise = ImageError(
+            "tag", "tolokaforge-runner:hashhash", "daemon rejected the tag"
+        )
         db_img = _FakeImage()
         stack = _FakeServiceStack({"runner": runner_img, "db-service": db_img})
 
-        orch._ensure_versioned_runner_image_tag(stack)  # no raise
+        orch._ensure_engine_image_local_aliases(stack)  # no raise
 
         # runner alias failed — logged as warning.
         orch.logger.warning.assert_called_once()
         assert "Failed to apply engine-image alias tag" in (orch.logger.warning.call_args.args[0])
         # db-service alias still succeeded — loop continued.
         assert db_img.calls == [("tolokaforge-db-service", "local")]
+
+    def test_non_image_error_bubbles_up_as_bug(self) -> None:
+        """The best-effort catch narrows to :class:`ImageError` — a
+        generic exception (``AttributeError`` / ``TypeError``) signals
+        a genuine coding bug (wrong-typed return from ``get_image``,
+        broken ``add_alias_tag`` signature) and should not be silently
+        logged. Rule 1 fail-fast."""
+        orch = _make_orchestrator()
+        runner_img = _FakeImage()
+        runner_img.should_raise = AttributeError("get_image returned a wrong-typed object")
+        stack = _FakeServiceStack({"runner": runner_img})
+
+        with pytest.raises(AttributeError, match="wrong-typed object"):
+            orch._ensure_engine_image_local_aliases(stack)

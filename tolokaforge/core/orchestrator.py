@@ -537,7 +537,7 @@ class Orchestrator:
     is the source of truth for each image's content, and the alias step
     surfaces it under a stable name."""
 
-    def _ensure_versioned_runner_image_tag(self, service_stack: Any) -> None:
+    def _ensure_engine_image_local_aliases(self, service_stack: Any) -> None:
         """Apply ``:local`` aliases on the freshly-built engine images so
         task compose files can reference stable names that outlive
         content-hash rebuilds and release-version bumps.
@@ -553,12 +553,15 @@ class Orchestrator:
         ``main`` / ``master`` / ``edge`` / ``stable`` / ``dev`` /
         ``develop`` / ``nightly`` / ``head``).
 
-        Each alias step is best-effort: logged and swallowed on failure
-        so the shared-stack path stays green whether or not the aliases
-        apply. Only per-trial task compose files referencing the ``:local``
-        tags would then fail — a user-visible error at that point, not
-        at run-start.
+        Each alias step is best-effort against :class:`ImageError` — the
+        expected daemon-rejection path is narrowed to that type, so a
+        genuine coding bug (``AttributeError`` / ``TypeError``) surfaces
+        loudly instead of masquerading as a WARNING. Only per-trial task
+        compose files referencing the ``:local`` tags would then fail —
+        a user-visible error at that point, not at run-start.
         """
+        from tolokaforge.docker.image import ImageError
+
         for service_name, alias_repository in self._PER_TRIAL_ALIASED_SERVICES:
             image = service_stack.get_image(service_name)
             if image is None:
@@ -569,7 +572,7 @@ class Orchestrator:
                 continue
             try:
                 image.add_alias_tag(alias_repository, self._LOCAL_ALIAS_TAG)
-            except Exception as e:  # noqa: BLE001 — best-effort by design
+            except ImageError as e:
                 self.logger.warning(
                     "Failed to apply engine-image alias tag; "
                     "task compose files referencing the :local tag will fail",
@@ -579,12 +582,6 @@ class Orchestrator:
                     error=str(e),
                 )
                 continue
-            self.logger.info(
-                "Aliased engine image with stable local tag",
-                service_name=service_name,
-                alias_repository=alias_repository,
-                alias_tag=self._LOCAL_ALIAS_TAG,
-            )
 
     def _build_trial_executor(
         self, runtime_backend: RuntimeBackend, conductor: Conductor
@@ -1033,7 +1030,7 @@ class Orchestrator:
                     "(this may take a few minutes on first run)..."
                 )
                 service_stack.start_all(wait=True)
-                self._ensure_versioned_runner_image_tag(service_stack)
+                self._ensure_engine_image_local_aliases(service_stack)
                 # Use localhost address — the orchestrator runs on the host,
                 # not inside Docker, so Docker container names don't resolve.
                 runner_url = service_stack.get_service_url("runner", 50051)
