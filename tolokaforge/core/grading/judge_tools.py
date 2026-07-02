@@ -60,9 +60,12 @@ class GetDbStateTool(Tool):
         super().__init__(
             name="get_db_state",
             description=(
-                "Read the final database state of the trial. Optionally pass a list "
-                "of table names to narrow the result; omit to return all tables. "
-                "Read-only."
+                "LAST RESORT — returns the ENTIRE final database state as raw JSON, "
+                "which can be very large and is truncated at a fixed size. Prefer the "
+                "initial → final state diff already provided in your instructions, and "
+                "use query_db for specific values. Only call this when you must see a "
+                "whole table the diff does not cover; pass a list of table names to "
+                "narrow the result. Read-only."
             ),
             policy=_read_only_policy(),
         )

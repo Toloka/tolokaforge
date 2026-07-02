@@ -146,3 +146,79 @@ def test_judge_model_rides_on_trial_spec():
     rehydrated = TrialSpec.model_validate_json(spec.model_dump_json())
     assert rehydrated.judge_model_config == judge_model
     assert rehydrated.judge_model_config.temperature == 0.0
+
+
+# ---------------------------------------------------------------------------
+# _build_judge_state_diff — the diff-first default's runner-side seam
+# ---------------------------------------------------------------------------
+
+
+def _trial_context(initial_state):
+    """A minimal stand-in exposing only what _build_judge_state_diff reads."""
+    import types
+
+    task_desc = types.SimpleNamespace(initial_state=initial_state)
+    return types.SimpleNamespace(task_description=task_desc)
+
+
+class _FakeDBClient:
+    """Async db_client returning a fixed final state."""
+
+    def __init__(self, data):
+        self._data = data
+
+    async def get_state(self, trial_id, tables=None):
+        import types
+
+        return types.SimpleNamespace(data=self._data)
+
+
+async def test_build_judge_state_diff_none_when_no_db_client():
+    import types
+
+    from tolokaforge.runner.models import InitialStateConfig
+    from tolokaforge.runner.service import RunnerServiceImpl
+
+    fake_self = types.SimpleNamespace(db_client=None)
+    tc = _trial_context(InitialStateConfig(tables={"orders": [{"id": 1}]}))
+    out = await RunnerServiceImpl._build_judge_state_diff(fake_self, "trial", tc)
+    assert out is None
+
+
+async def test_build_judge_state_diff_none_when_no_initial_tables():
+    import types
+
+    from tolokaforge.runner.models import InitialStateConfig
+    from tolokaforge.runner.service import RunnerServiceImpl
+
+    fake_self = types.SimpleNamespace(db_client=_FakeDBClient({"orders": []}))
+    tc = _trial_context(InitialStateConfig(tables={}))
+    out = await RunnerServiceImpl._build_judge_state_diff(fake_self, "trial", tc)
+    assert out is None
+
+
+async def test_build_judge_state_diff_renders_modified_row():
+    import types
+
+    from tolokaforge.runner.models import InitialStateConfig, TableSchema
+    from tolokaforge.runner.service import RunnerServiceImpl
+
+    initial = InitialStateConfig(
+        tables={"orders": [{"id": 1, "status": "open"}]},
+        schemas=[
+            TableSchema(
+                table_name="orders",
+                fields={"id": "integer", "status": "string"},
+                primary_key="id",
+            )
+        ],
+    )
+    fake_self = types.SimpleNamespace(
+        db_client=_FakeDBClient({"orders": [{"id": 1, "status": "shipped"}]})
+    )
+    out = await RunnerServiceImpl._build_judge_state_diff(
+        fake_self, "trial", _trial_context(initial)
+    )
+    assert out is not None
+    assert "orders: 1 modified" in out
+    assert 'status: "open" → "shipped"' in out

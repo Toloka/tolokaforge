@@ -332,22 +332,55 @@ def _serialize_judge_transcript(messages: list[Message]) -> tuple[dict[str, Any]
     return tuple(out)
 
 
-def _build_opening_message(agent_system_prompt: str, transcript: list[dict[str, Any]]) -> str:
-    """Inject the agent's policy (system prompt) + transcript into the judge context."""
+def _build_opening_message(
+    agent_system_prompt: str,
+    transcript: list[dict[str, Any]],
+    state_diff: str | None = None,
+) -> str:
+    """Inject the agent's policy (system prompt) + transcript into the judge context.
+
+    When a ``state_diff`` is supplied (the ``initial → final`` delta of the DB
+    state — exactly what the agent changed), it is injected as the judge's
+    default view of the outcome. It is deliberately NOT the trial-vs-golden diff:
+    it reveals nothing about the expected answer, only the agent's own edits. The
+    judge is steered to read the diff first and reach for ``get_db_state`` /
+    ``query_db`` only to confirm post-conditions the diff does not settle.
+    """
     policy_block = (
         f"The agent under evaluation operated under this policy / system prompt:\n"
         f"---\n{agent_system_prompt.strip()}\n---\n\n"
         if agent_system_prompt and agent_system_prompt.strip()
         else ""
     )
+    if state_diff and state_diff.strip():
+        state_block = (
+            "Below is a diff of the database state the agent changed "
+            "(initial → final): the rows it added, removed, or modified, plus "
+            "which tables it left untouched. Use it as your starting point for "
+            "what the agent did.\n"
+            f"{state_diff.strip()}\n\n"
+        )
+        closing = (
+            "The diff shows changes, not the complete final state. For criteria "
+            "about what must NOT change, invariants, absence, or the quality of a "
+            "full final value, inspect the relevant state directly with query_db "
+            "(or get_db_state as a last resort). Then grade each criterion and "
+            "call submit_report."
+        )
+    else:
+        state_block = ""
+        closing = (
+            "Use your read-only tools to inspect the final state, then grade each "
+            "criterion and call submit_report."
+        )
     return (
         f"{policy_block}"
         "Here is the full transcript of the agent's interaction:\n"
         "===== TRANSCRIPT =====\n"
         f"{_format_transcript(transcript)}\n"
         "===== END TRANSCRIPT =====\n\n"
-        "Use your read-only tools to inspect the final state, then grade each "
-        "criterion and call submit_report."
+        f"{state_block}"
+        f"{closing}"
     )
 
 
@@ -451,6 +484,7 @@ def run_rubric_judge(
     kb_search: KnowledgeSearch | None = None,
     extra_read_tools: list[Tool] | None = None,
     workspace_dir: Path | None = None,
+    state_diff: str | None = None,
     max_turns: int = DEFAULT_JUDGE_MAX_TURNS,
     episode_timeout_s: int = DEFAULT_JUDGE_EPISODE_TIMEOUT_S,
     submit_report_retries: int = DEFAULT_SUBMIT_REPORT_RETRIES,
@@ -459,8 +493,11 @@ def run_rubric_judge(
 ) -> JudgeResult:
     """Run the read-only agentic rubric judge and return its verdict.
 
-    Narrow input surface: ``{agent_system_prompt, transcript, rubric, read-tools}``
-    only. Never receives the deterministic-oracle fields of ``GradingConfig``.
+    Narrow input surface: ``{agent_system_prompt, transcript, rubric, read-tools,
+    state_diff}`` only. Never receives the deterministic-oracle fields of
+    ``GradingConfig``. ``state_diff`` is the ``initial → final`` delta of the
+    agent's own edits (not the trial-vs-golden diff) — it reveals nothing about
+    the expected answer, so it does not bias the judge.
 
     Fail-loud: any judge malfunction — repeated malformed ``submit_report`` past
     ``submit_report_retries``, turn / wall-time exhaustion, or an LLM/tool error
@@ -508,7 +545,7 @@ def run_rubric_judge(
     messages: list[Message] = [
         Message(
             role=MessageRole.USER,
-            content=_build_opening_message(agent_system_prompt, transcript),
+            content=_build_opening_message(agent_system_prompt, transcript, state_diff),
         )
     ]
     rubric_brief = _build_rubric_brief(rubric)

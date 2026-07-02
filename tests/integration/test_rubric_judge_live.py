@@ -153,6 +153,45 @@ def test_rubric_judge_live_passes_good_transcript():
 
 
 @pytest.mark.skipif(_MODEL_REF is None, reason="No OPENROUTER_API_KEY / OPENAI_API_KEY set")
+def test_rubric_judge_live_with_state_diff_injected():
+    """The diff-first default: a rendered initial→final diff is injected as the
+    judge's primary view. Exercises the ``state_diff`` param through the real
+    provider path (real tool schemas / model), on top of the deterministic
+    injection pinned by ``test_judge.py::test_state_diff_injected_into_opening_context``.
+    """
+    from tolokaforge.core.grading.state_diff import render_state_diff
+
+    initial = {"orders": [{"id": "o_1001", "status": "pending", "refund_amount": 0.0}]}
+    state_diff = render_state_diff(
+        initial,
+        _DB_STATE,
+        primary_keys={"orders": "id"},
+    )
+    # Sanity: the renderer produced the transition the judge should grade on.
+    assert "status:" in state_diff and "refunded" in state_diff
+
+    result = run_rubric_judge(
+        rubric=_rubric(),
+        model_config=model_config_from_ref(_MODEL_REF),
+        agent_system_prompt=_AGENT_SYSTEM_PROMPT,
+        transcript=_TRANSCRIPT,
+        db_reader=_DictDBReader(_DB_STATE),
+        state_diff=state_diff,
+        max_turns=10,
+        episode_timeout_s=180,
+    )
+
+    # Passing the diff must not break the live path: judge completes, gate holds,
+    # and the diff is captured verbatim into the judge's own transcript (the
+    # inject+persist contract — the opening message is message[0]).
+    assert result.status is JudgeStatus.COMPLETED, result.reasons
+    assert result.gate_failed is False
+    assert result.score is not None and result.score >= 0.7
+    opening = result.transcript[0]["content"]
+    assert "STATE CHANGES" in opening
+
+
+@pytest.mark.skipif(_MODEL_REF is None, reason="No OPENROUTER_API_KEY / OPENAI_API_KEY set")
 def test_rubric_judge_live_gate_fails_when_refund_missing():
     # Final state shows the order still pending — the required criterion fails.
     pending_state = {"orders": [{"id": "o_1001", "status": "pending", "refund_amount": 0.0}]}

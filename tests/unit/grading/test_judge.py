@@ -702,6 +702,29 @@ def test_agent_system_prompt_injected_into_opening_context():
     assert "do the thing" in captured["first_user"]
 
 
+def test_state_diff_injected_into_opening_context():
+    """The initial→final state diff is injected as the judge's primary view."""
+    rubric = _binary_rubric()
+    captured: dict = {}
+
+    class CapturingClient(ScriptedClient):
+        def generate(self, system, messages, tools, tool_choice="auto"):
+            captured.setdefault("first_user", messages[0].content)
+            return super().generate(system, messages, tools, tool_choice)
+
+    client = CapturingClient([[("submit_report", _submit_args(refund_done=True))]])
+    run_rubric_judge(
+        rubric=rubric,
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="",
+        transcript=[{"role": "user", "content": "do the thing"}],
+        db_reader=FakeDBReader(),
+        state_diff="STATE-DIFF-MARKER: orders: 1 modified",
+        llm_client=client,
+    )
+    assert "STATE-DIFF-MARKER" in captured["first_user"]
+
+
 def test_input_surface_excludes_oracle_fields():
     """Narrow input surface: there is no parameter through which golden_actions /
     expected_hash / jsonpath_checks could leak into the judge."""

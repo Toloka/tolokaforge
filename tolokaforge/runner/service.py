@@ -36,6 +36,7 @@ from pydantic import ValidationError
 from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, run_rubric_judge
 from tolokaforge.core.grading.judge_tools import DelegatingReadTool
 from tolokaforge.core.grading.kb_search import KnowledgeSearch, RagServiceKnowledgeSearch
+from tolokaforge.core.grading.state_diff import render_state_diff
 from tolokaforge.core.models import CriterionResult, LLMJudgeConfig, ModelConfig
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, TrialSpec
 from tolokaforge.runner import runner_pb2 as pb2
@@ -1290,6 +1291,30 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 "models.judge; the orchestrator should have rejected this run up front."
             )
 
+        # Diff-first default: hand the judge the initial → final state delta (the
+        # agent's own edits) as its primary view of the outcome, instead of it
+        # dumping the whole final DB via get_db_state. This is NOT the
+        # trial-vs-golden diff (that would leak the oracle and bias grading, see
+        # rubric_grading.md #7/#8) — it reveals only what the agent changed.
+        # Persisted for free: the opening message it lands in is captured into
+        # judge_trajectory.yaml. Computed here on the loop thread where both
+        # states are in hand.
+        #
+        # This is an aid to the judge, not a grade component: if building it
+        # fails (DB read hiccup, unexpected state shape), degrade to no diff
+        # rather than failing the whole grade — the judge still has its read-only
+        # tools, and the hash / jsonpath components already computed must not be
+        # discarded. The judge's OWN fail-loud contract still governs grading;
+        # this only guards the optional context we hand it.
+        try:
+            state_diff_text = await self._build_judge_state_diff(trial_id, trial_context)
+        except Exception as exc:  # noqa: BLE001 — optional context, never fail the grade
+            logger.warning(
+                "Failed to build judge state diff; grading without it "
+                f"(trial_id={trial_id}, error={exc})"
+            )
+            state_diff_text = None
+
         def _run() -> JudgeResult:
             return run_rubric_judge(
                 rubric=llm_judge_config.rubric,
@@ -1300,9 +1325,37 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 kb_search=kb_search,
                 extra_read_tools=extra_read_tools,
                 workspace_dir=workspace_dir,
+                state_diff=state_diff_text,
             )
 
         return await loop.run_in_executor(None, _run)
+
+    async def _build_judge_state_diff(
+        self, trial_id: str, trial_context: TrialContextRuntime
+    ) -> str | None:
+        """Render the ``initial → final`` DB state diff for the judge, or ``None``.
+
+        Returns ``None`` when there is no DB client or no initial-state tables for
+        this trial (e.g. non-DB tasks) — the judge then falls back to its
+        read-only tools. Otherwise fetches the raw final state (the same shape
+        ``get_db_state`` returns) and diffs it against the pre-run initial tables,
+        matching rows by declared primary key and dropping ``unstable_fields`` as
+        noise so the diff shows only meaningful edits.
+        """
+        db_client = self.db_client
+        task_desc = trial_context.task_description
+        initial_state = task_desc.initial_state if task_desc else None
+        if db_client is None or initial_state is None or not initial_state.tables:
+            return None
+        final_state = (await db_client.get_state(trial_id)).data
+        primary_keys = {s.table_name: s.primary_key for s in initial_state.schemas}
+        unstable_fields = {(u.table_name, u.field_name) for u in initial_state.unstable_fields}
+        return render_state_diff(
+            initial_state.tables,
+            final_state,
+            primary_keys=primary_keys,
+            unstable_fields=unstable_fields,
+        )
 
     def _resolve_judge_kb_search(
         self, trial_id: str, agent_tools: dict[str, Callable]
