@@ -471,6 +471,59 @@ class Orchestrator:
                 error=result.get("error"),
             )
 
+    def _verify_isolation_compatibility(self, runtime_backend: RuntimeBackend) -> None:
+        """Refuse to start the run if any task declares per-trial isolation
+        but the selected runtime backend cannot provide it.
+
+        Called after backend selection and before any trial runs.
+        Silent cross-trial state contamination is the failure mode this
+        guard prevents — a task that declares
+        ``environment_manifest.isolation: per_trial`` would produce wrong
+        verdicts when run against a shared stack.
+
+        Raises :class:`RuntimeError` naming the offending tasks and the
+        concrete fix.
+        """
+        # Local imports keep this method self-contained + avoid any
+        # circular-import risk against per-trial backend modules.
+        from tolokaforge.core.shared_stack_runtime import SharedStackRuntimeBackend
+        from tolokaforge.runner.models import TaskIsolation
+
+        if not isinstance(runtime_backend, SharedStackRuntimeBackend):
+            # PerTrialRuntimeBackend (and any future per-trial impl)
+            # satisfies every isolation requirement.
+            return
+
+        if self.adapter is None:
+            raise RuntimeError(
+                "Isolation-compatibility check requires the adapter to be loaded first."
+            )
+
+        violations: list[str] = []
+        for task in self.tasks:
+            task_desc = self._task_desc_cache.get(task.task_id)
+            if task_desc is None:
+                task_desc = self.adapter.to_task_description(task.task_id)
+                self._task_desc_cache[task.task_id] = task_desc
+            manifest = task_desc.environment_manifest
+            if manifest is None:
+                continue
+            if manifest.isolation is TaskIsolation.PER_TRIAL:
+                violations.append(task.task_id)
+
+        if violations:
+            raise RuntimeError(
+                f"Runtime backend {type(runtime_backend).__name__} shares state "
+                f"across every trial in the run, but {len(violations)} task(s) "
+                f"declare `environment_manifest.isolation: per_trial`: "
+                f"{sorted(violations)!r}. These tasks would silently produce "
+                "wrong verdicts on a shared-stack backend.\n"
+                "  Fix: select a per-trial runtime backend in the run config "
+                "(e.g. PerTrialRuntimeBackend), or set `isolation: shared_ok` "
+                "on the task(s) that genuinely tolerate shared state across "
+                "trials."
+            )
+
     def _build_pending_trials(
         self,
         tasks: list[TaskConfig],
@@ -873,6 +926,7 @@ class Orchestrator:
             shared_stack_runtime = SharedStackRuntimeBackend(runner_address=runner_address)
         shared_stack_runtime.connect()
         self.logger.info("Runtime backend connected")
+        self._verify_isolation_compatibility(shared_stack_runtime)
 
         env_endpoints = _build_env_endpoints(runner_address)
         self.logger.info(
@@ -1205,6 +1259,7 @@ class Orchestrator:
 
             shared_stack_runtime = SharedStackRuntimeBackend(runner_address=runner_address)
         shared_stack_runtime.connect()
+        self._verify_isolation_compatibility(shared_stack_runtime)
 
         env_endpoints = _build_env_endpoints(runner_address)
         self.logger.info(
