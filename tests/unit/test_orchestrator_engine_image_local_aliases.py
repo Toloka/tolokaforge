@@ -61,7 +61,7 @@ class _FakeServiceStack:
         return self._images.get(service_name)
 
 
-class TestVersionedRunnerImageTag:
+class TestEngineImageLocalAliases:
     """The hook aliases every freshly-built engine image with the stable
     ``:local`` tag task compose files reference.
     """

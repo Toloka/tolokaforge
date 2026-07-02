@@ -383,11 +383,10 @@ The alias step is best-effort and logged, not raise-and-fail — the shared-stac
 
 Forward-looking: when the runner image ships to a public registry, task composes will switch to the published reference (e.g. `image: ghcr.io/toloka/tolokaforge-runner:X.Y.Z`) — a task-side edit, not an engine change. `:local` stays as the local-dev alias.
 
-## What this PR does *not* do
+## Follow-up work
 
-- **No runner image publication.** The `tolokaforge/runner` image is still a local build. Real RPC coverage against a task pack that declares `environment_manifest` waits for the validation-gate follow-up.
-- **No opt-in from any real task pack.** Zero task packs declare an `environment_manifest` today; the validation-gate follow-up will migrate one existing multi-service task to prove the design end-to-end. On its green, ADR-0009 / 0010 / 0014 / 0015 flip from `Proposed` to `Accepted`.
-- **No endpoint customisation.** The `runner_service` / `db` service / `rag` service conventions are still hardcoded (see `PerTrialRuntimeBackend`). `runner_port` / `db_service` / `db_port` / `rag_service` / `rag_port` manifest fields remain a follow-up ticket.
+- **No runner image publication.** The `tolokaforge/runner` and `tolokaforge/db-service` images are still local builds — the `:local` alias described above is the sole reference path today. Publishing to a registry (`ghcr.io/toloka/…`) is future work; task compose files switch to the published tag then, `:local` stays as the local-dev alias.
+- **No endpoint customisation.** The `runner_service` / `db` service / `rag` service conventions in the manifest are still hardcoded (see `PerTrialRuntimeBackend`). `runner_port` / `db_service` / `db_port` / `rag_service` / `rag_port` manifest fields remain a follow-up ticket.
 - **No perf optimisations.** Image pre-pull, postgres template-DB, container pool, orphan sweep, resource caps, benchmark harness — all filed as a follow-up umbrella ticket.
 - **No layered-image guide.** The SWE-bench 3-tier pattern (base → environment → instance, cited in ADR-0009) applies transparently to any pinned images the compose file references, but the concrete Dockerfile recipes for task-pack authors are a docs follow-up.
 

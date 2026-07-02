@@ -517,10 +517,11 @@ class Image(BaseModel):
         Idempotent by construction: re-tagging with the same repository +
         tag is a Docker-side no-op.
 
-        Used by the orchestrator to give the content-hash-tagged runner
-        image a pinned-version alias (e.g. ``tolokaforge-runner:0.10.0``)
-        so per-trial task compose files can reference a stable name that
-        passes the manifest validator's pinned-tag requirement.
+        Used by the orchestrator to give the content-hash-tagged engine
+        images a stable ``:local`` alias (e.g. ``tolokaforge-runner:local``,
+        ``tolokaforge-db-service:local``) so per-trial task compose
+        files can reference a stable name that passes the manifest
+        validator's pinned-tag requirement.
         """
         docker_image = self._get_docker_image()
         target = f"{alias_repository}:{alias_tag}"
