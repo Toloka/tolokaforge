@@ -66,6 +66,10 @@ dependencies = [
     "grpcio>=1.60.0",
     "grpcio-tools>=1.60.0",
     "grpcio-health-checking>=1.60.0",
+    # Per-trial runtime backend uses testcontainers to materialise one
+    # docker-compose project per trial. Imported at module level by
+    # tolokaforge.core.per_trial_runtime, so it must ship with the wheel.
+    "testcontainers>=4.14.2,<5",
     # MCP server support — needed by any task that declares an mcp_server.py.
     # Previously optional, promoted to core because the recommended task
     # authoring pattern (FastMCP server subprocess) requires it.
@@ -297,7 +301,6 @@ dev = [
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.0.0",
     "pytest-docker>=2.0.0",
-    "testcontainers>=4.14.2,<5",
     "psutil>=5.9.0",
     "black==26.3.1",
     "ruff==0.14.4",
