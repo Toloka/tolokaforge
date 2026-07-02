@@ -531,7 +531,7 @@ class Orchestrator:
         ("runner", "tolokaforge-runner"),
         ("db-service", "tolokaforge-db-service"),
     )
-    """(service_name, alias_repository) pairs the versioned-tag hook
+    """(service_name, alias_repository) pairs the ``:local``-alias hook
     aliases. Task compose files that declare a per-trial substrate
     reference these images by ``<repo>:local``; the shared-stack build
     is the source of truth for each image's content, and the alias step

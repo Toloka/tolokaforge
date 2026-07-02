@@ -900,7 +900,7 @@ class ServiceStack(BaseModel):
         if the service builds no image or hasn't been built yet.
 
         Public accessor over ``self._images``; used by callers (the
-        orchestrator's pinned-version-alias hook) that need to apply
+        orchestrator's ``:local``-alias hook) that need to apply
         secondary tags to an already-built image without duplicating
         the build.
         """
