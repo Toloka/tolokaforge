@@ -296,6 +296,23 @@ class Capability(str, Enum):
     the ``knowledge_base_*`` family that captures the documented
     failure pattern."""
 
+    RECURSIVE_REF_TOOL_CALL = "recursive_ref_tool_call"
+    """Model emits a recursive self-referential tool argument — a node
+    whose ``children`` are themselves nodes (a recursive ``$ref`` cycle)
+    — as a native nested object, not a stringified blob nor a
+    flattened/truncated tree. Mirrors the JSON Schema Test Suite
+    recursive-``$ref`` surface."""
+
+    HETEROGENEOUS_ARRAY_TOOL_CALL = "heterogeneous_array_tool_call"
+    """Model emits a polymorphic array argument — each element a
+    discriminated union over distinct variants — with the correct
+    per-element branch, not flattened to a single type nor stringified."""
+
+    ALLOF_MERGE_TOOL_CALL = "allof_merge_tool_call"
+    """Model emits an argument that satisfies an ``allOf`` composition,
+    populating fields required by BOTH merged subschemas, not just one
+    side of the merge."""
+
     PROGRESS_AFTER_SUCCESS = "progress_after_success"
     """Model advances past a successfully-completed tool call rather
     than re-issuing it.
