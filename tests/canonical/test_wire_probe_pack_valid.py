@@ -3,7 +3,7 @@
 Asserts every task under ``tests/data/tasks/wire_probes`` is NON-SCORING
 (combine-only grading, no oracle / scoring component sections) and is
 structurally coherent (task_id matches its dir, domain + grading refs
-present). Runs in the fast unit gate — no Docker, no provider calls.
+present). Runs statically as a canonical contract check (no Docker, no provider calls).
 
 This is the STATIC half of the wire-probe smoke set; the live behavioural
 half (per-model orchestrator run) is a planned follow-up
@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-pytestmark = pytest.mark.unit
+pytestmark = pytest.mark.canonical
 
 _PACK = Path(__file__).resolve().parents[1] / "data" / "tasks" / "wire_probes" / "dataset"
 _TASKS = sorted((_PACK / "testcases").glob("*/task.yaml"))
@@ -50,7 +50,7 @@ def test_grading_non_scoring(task_yaml: Path) -> None:
     g = yaml.safe_load(grading.read_text()) or {}
     present = _SCORING_KEYS & set(g)
     assert not present, (
-        f"{task_yaml.parent.name}: NON-SCORING contract violated — found scoring "
+        f"{task_yaml.parent.name}: NON-SCORING contract violated - found scoring "
         f"section(s) {sorted(present)} in {grading.name}"
     )
     assert "combine" in g, f"{task_yaml.parent.name}: expected combine-only grading"
