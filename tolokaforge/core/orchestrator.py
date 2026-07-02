@@ -6,12 +6,17 @@ import random
 import socket
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from tolokaforge.adapters import BaseAdapter, ensure_registered_adapter, get_adapter
-from tolokaforge.core.conductor import Conductor, InProcessConductor
+from tolokaforge.core.conductor import (
+    Conductor,
+    ConductorContext,
+    InProcessConductor,
+)
 from tolokaforge.core.engine_run_state import (
     read_persisted_run_id,
     write_engine_run_state,
@@ -190,6 +195,26 @@ def _build_env_endpoints(runner_address: str) -> EnvEndpoints:
     )
 
 
+@dataclass(frozen=True)
+class OrchestratorDeps:
+    """Pluggable seams the :class:`Orchestrator` delegates to.
+
+    Packs the four independent injection points (per-trial artifact
+    writer, run-level aggregate writer, execution runtime, per-trial
+    executor factory) into a single frozen record so the constructor
+    doesn't grow a kwarg per seam. Default construction preserves the
+    legacy behaviour: fresh :class:`FileArtifactWriter` /
+    :class:`FileAggregateWriter` defaults, no runtime backend override
+    (``run()`` builds :class:`DockerRuntime`), no factory override
+    (``_build_conductor`` builds :class:`InProcessConductor`).
+    """
+
+    artifact_writer: TrialArtifactWriter = field(default_factory=FileArtifactWriter)
+    run_aggregate_writer: RunAggregateWriter = field(default_factory=FileAggregateWriter)
+    runtime_backend: RuntimeBackend | None = None
+    conductor_factory: Callable[[ConductorContext], Conductor] | None = None
+
+
 class Orchestrator:
     """Orchestrates benchmark runs across tasks and trials"""
 
@@ -199,10 +224,7 @@ class Orchestrator:
         resume: bool = False,
         verbose: bool = False,
         strict: bool = False,
-        run_aggregate_writer: RunAggregateWriter | None = None,
-        runtime_backend: RuntimeBackend | None = None,
-        conductor_factory: Callable[..., Conductor] | None = None,
-        artifact_writer: TrialArtifactWriter | None = None,
+        deps: OrchestratorDeps | None = None,
     ):
         self.config = config
         self.resume = resume
@@ -212,31 +234,27 @@ class Orchestrator:
         self.results: list[Trajectory] = []
         self.state_manager: RunStateManager | None = None
         self.adapter: BaseAdapter | None = None
-        # Shared artifact writer — every per-trial write goes through it
+        # Shared per-trial writer — every per-trial write goes through it
         # so the orchestrator stays decoupled from filesystem details and
         # alternative writers (in-memory tests, remote stores) can plug in.
-        self._artifact_writer: TrialArtifactWriter = (
-            artifact_writer if artifact_writer is not None else FileArtifactWriter()
-        )
         # Run-level analogue: the four post-run aggregate JSONs go through
-        # this writer instead of inline ``json.dump`` calls. Injectable so
-        # tests / alternate backends (remote object store, in-memory) can
-        # substitute without touching the orchestrator.
-        self._run_aggregate_writer: RunAggregateWriter = (
-            run_aggregate_writer if run_aggregate_writer is not None else FileAggregateWriter()
-        )
+        # the aggregate writer instead of inline ``json.dump`` calls.
         # Execution surface: the orchestrator depends on the
         # :class:`RuntimeBackend` Protocol, not a concrete class. When
         # ``None``, ``run()`` / ``run_worker()`` construct a default
         # :class:`SharedStackRuntimeBackend` from the resolved runner address — the
-        # legacy behaviour. Tests / alternate backends inject here.
-        self._injected_runtime_backend: RuntimeBackend | None = runtime_backend
-        # Per-trial executor: the orchestrator schedules trials and
-        # delegates each one to a :class:`Conductor`. ``run()`` /
-        # ``run_worker()`` build the conductor (or invoke the injected
-        # factory) once the adapter and per-run dependencies are
-        # resolved. Default factory constructs :class:`InProcessConductor`.
-        self._conductor_factory: Callable[..., Conductor] | None = conductor_factory
+        # legacy behaviour. Tests / alternate backends inject via ``deps``.
+        # Per-trial executor: the orchestrator delegates each trial to a
+        # :class:`Conductor`. ``_build_conductor`` invokes the injected
+        # factory (typed against :class:`ConductorContext`) when one is
+        # supplied; otherwise it constructs :class:`InProcessConductor`.
+        resolved_deps = deps if deps is not None else OrchestratorDeps()
+        self._artifact_writer: TrialArtifactWriter = resolved_deps.artifact_writer
+        self._run_aggregate_writer: RunAggregateWriter = resolved_deps.run_aggregate_writer
+        self._injected_runtime_backend: RuntimeBackend | None = resolved_deps.runtime_backend
+        self._conductor_factory: Callable[[ConductorContext], Conductor] | None = (
+            resolved_deps.conductor_factory
+        )
         # Per-run cache of resolved ``TaskDescription`` objects keyed by
         # task_id. ``adapter.to_task_description()`` reads the system
         # prompt, tool schemas, fixtures, and base64-bundles the task_dir
@@ -369,21 +387,7 @@ class Orchestrator:
 
         trial_grader = RunnerRPCTrialGrader(runtime_backend=runtime_backend, logger=self.logger)
 
-        if self._conductor_factory is not None:
-            return self._conductor_factory(
-                adapter=self.adapter,
-                artifact_writer=self._artifact_writer,
-                config=self.config,
-                logger=self.logger,
-                verbose=self.verbose,
-                strict=self.strict,
-                agent_client=agent_client,
-                runtime_backend=runtime_backend,
-                trial_grader=trial_grader,
-                output_dir=output_dir,
-                request_limiter=request_limiter,
-            )
-        return InProcessConductor(
+        ctx = ConductorContext(
             adapter=self.adapter,
             artifact_writer=self._artifact_writer,
             config=self.config,
@@ -395,6 +399,21 @@ class Orchestrator:
             trial_grader=trial_grader,
             output_dir=output_dir,
             request_limiter=request_limiter,
+        )
+        if self._conductor_factory is not None:
+            return self._conductor_factory(ctx)
+        return InProcessConductor(
+            adapter=ctx.adapter,
+            artifact_writer=ctx.artifact_writer,
+            config=ctx.config,
+            logger=ctx.logger,
+            verbose=ctx.verbose,
+            strict=ctx.strict,
+            agent_client=ctx.agent_client,
+            runtime_backend=ctx.runtime_backend,
+            trial_grader=ctx.trial_grader,
+            output_dir=ctx.output_dir,
+            request_limiter=ctx.request_limiter,
         )
 
     def _build_trial_spec(

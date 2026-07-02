@@ -654,14 +654,14 @@ class TestGenerateReports:
         assert "failures" in fa
 
     def test_run_aggregate_writer_kwarg_swaps_writer(self, tmp_path: Path) -> None:
-        """The ``run_aggregate_writer`` kwarg accepts any
+        """``OrchestratorDeps.run_aggregate_writer`` accepts any
         :class:`RunAggregateWriter` impl and routes the four aggregates
         through it instead of the default disk-backed writer."""
-        from tolokaforge.core.orchestrator import Orchestrator
+        from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
         from tolokaforge.core.output.aggregates import InMemoryAggregateWriter
 
         writer = InMemoryAggregateWriter()
-        orch = Orchestrator(_make_run_config(), run_aggregate_writer=writer)
+        orch = Orchestrator(_make_run_config(), deps=OrchestratorDeps(run_aggregate_writer=writer))
         orch.tasks = [_make_task_config("T1")]
         orch.results = [_make_trajectory("T1", 0, score=1.0, binary_pass=True)]
 
@@ -682,11 +682,11 @@ class TestGenerateReports:
     def test_empty_results_does_not_invoke_writer(self, tmp_path: Path) -> None:
         """The empty-results early-return guard runs before the writer call,
         so no aggregates are recorded when the run produced zero trials."""
-        from tolokaforge.core.orchestrator import Orchestrator
+        from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
         from tolokaforge.core.output.aggregates import InMemoryAggregateWriter
 
         writer = InMemoryAggregateWriter()
-        orch = Orchestrator(_make_run_config(), run_aggregate_writer=writer)
+        orch = Orchestrator(_make_run_config(), deps=OrchestratorDeps(run_aggregate_writer=writer))
         orch.results = []
 
         orch._generate_reports(tmp_path)
@@ -1230,8 +1230,8 @@ class TestJudgeModelGate:
         if a refactor moved the gate below the scheduling loop, the conductor's
         ``call_log.runs`` would be non-empty and this test would fail.
         """
-        from tolokaforge.core.conductor import InMemoryConductor
-        from tolokaforge.core.orchestrator import Orchestrator
+        from tolokaforge.core.conductor import ConductorContext, InMemoryConductor
+        from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
 
         config = _make_run_config()  # agent only, no judge model
 
@@ -1239,10 +1239,10 @@ class TestJudgeModelGate:
         # we can assert on its call_log after the run_worker raises.
         recording_conductor = InMemoryConductor()
 
-        def conductor_factory(**_kwargs):
+        def conductor_factory(_ctx: ConductorContext) -> InMemoryConductor:
             return recording_conductor
 
-        orch = Orchestrator(config, conductor_factory=conductor_factory)
+        orch = Orchestrator(config, deps=OrchestratorDeps(conductor_factory=conductor_factory))
         orch.tasks = [_make_task_config("TASK-needs-judge")]
         adapter = MagicMock()
         adapter.to_task_description.side_effect = lambda tid: _task_description_with_judge(
@@ -1440,42 +1440,43 @@ class TestRunOutputDirBasenameGuard:
 
 
 # ===================================================================
-# Orchestrator(runtime_backend=...) kwarg
+# Orchestrator(deps=OrchestratorDeps(runtime_backend=...))
 # ===================================================================
 
 
 @pytest.mark.unit
 class TestRuntimeBackendInjection:
-    """The ``runtime_backend`` kwarg accepts any :class:`RuntimeBackend`
-    impl. The orchestrator stores the injected instance and uses it
-    instead of constructing :class:`SharedStackRuntimeBackend`.
+    """``OrchestratorDeps.runtime_backend`` accepts any
+    :class:`RuntimeBackend` impl. The orchestrator stores the injected
+    instance and uses it instead of constructing
+    :class:`SharedStackRuntimeBackend`.
     """
 
-    def test_kwarg_default_is_none(self) -> None:
+    def test_default_is_none(self) -> None:
         from tolokaforge.core.orchestrator import Orchestrator
 
         orch = Orchestrator(_make_run_config())
-        assert orch._injected_runtime_backend is None
+        assert orch._runtime_backend is None
 
-    def test_kwarg_stores_injected_instance(self) -> None:
-        from tolokaforge.core.orchestrator import Orchestrator
+    def test_stores_injected_instance(self) -> None:
+        from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
         from tolokaforge.core.runtime import InMemoryRuntimeBackend
 
         backend = InMemoryRuntimeBackend()
-        orch = Orchestrator(_make_run_config(), runtime_backend=backend)
+        orch = Orchestrator(_make_run_config(), deps=OrchestratorDeps(runtime_backend=backend))
 
-        assert orch._injected_runtime_backend is backend
+        assert orch._runtime_backend is backend
 
     def test_injection_does_not_invoke_backend_lifecycle(self) -> None:
         """Construction must not call ``connect``/``close`` on the injected
         backend — that happens only when ``run()`` / ``run_worker()`` are
         invoked. Tests that construct an Orchestrator with an in-memory
         backend rely on this to assert lifecycle from a known-empty log."""
-        from tolokaforge.core.orchestrator import Orchestrator
+        from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
         from tolokaforge.core.runtime import InMemoryRuntimeBackend
 
         backend = InMemoryRuntimeBackend()
-        Orchestrator(_make_run_config(), runtime_backend=backend)
+        Orchestrator(_make_run_config(), deps=OrchestratorDeps(runtime_backend=backend))
 
         assert backend.call_log.connect_calls == []
         assert backend.call_log.close_calls == 0
@@ -1483,30 +1484,31 @@ class TestRuntimeBackendInjection:
 
 
 # ===================================================================
-# Orchestrator(artifact_writer=...) kwarg
+# Orchestrator(deps=OrchestratorDeps(artifact_writer=...))
 # ===================================================================
 
 
 @pytest.mark.unit
 class TestArtifactWriterInjection:
-    """The ``artifact_writer`` kwarg accepts any :class:`TrialArtifactWriter`
-    impl. The orchestrator stores the injected instance and uses it
-    instead of constructing :class:`FileArtifactWriter`.
+    """``OrchestratorDeps.artifact_writer`` accepts any
+    :class:`TrialArtifactWriter` impl. The orchestrator stores the
+    injected instance and uses it instead of constructing
+    :class:`FileArtifactWriter`.
     """
 
-    def test_kwarg_default_is_file_writer(self) -> None:
+    def test_default_is_file_writer(self) -> None:
         from tolokaforge.core.orchestrator import Orchestrator
         from tolokaforge.core.output.artifacts import FileArtifactWriter
 
         orch = Orchestrator(_make_run_config())
         assert isinstance(orch._artifact_writer, FileArtifactWriter)
 
-    def test_kwarg_stores_injected_instance(self) -> None:
-        from tolokaforge.core.orchestrator import Orchestrator
+    def test_stores_injected_instance(self) -> None:
+        from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
         from tolokaforge.core.output.artifacts import InMemoryArtifactWriter
 
         writer = InMemoryArtifactWriter()
-        orch = Orchestrator(_make_run_config(), artifact_writer=writer)
+        orch = Orchestrator(_make_run_config(), deps=OrchestratorDeps(artifact_writer=writer))
 
         assert orch._artifact_writer is writer
 
@@ -1514,21 +1516,20 @@ class TestArtifactWriterInjection:
         """The conductor constructed by ``_build_conductor`` receives the
         same writer the orchestrator was given — not a fresh
         :class:`FileArtifactWriter`."""
-        from tolokaforge.core.conductor import InMemoryConductor
-        from tolokaforge.core.orchestrator import Orchestrator
+        from tolokaforge.core.conductor import ConductorContext, InMemoryConductor
+        from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
         from tolokaforge.core.output.artifacts import InMemoryArtifactWriter
 
         writer = InMemoryArtifactWriter()
-        captured: dict = {}
+        captured: dict[str, ConductorContext] = {}
 
-        def factory(**kwargs):
-            captured.update(kwargs)
+        def factory(ctx: ConductorContext) -> InMemoryConductor:
+            captured["ctx"] = ctx
             return InMemoryConductor()
 
         orch = Orchestrator(
             _make_run_config(),
-            artifact_writer=writer,
-            conductor_factory=factory,
+            deps=OrchestratorDeps(artifact_writer=writer, conductor_factory=factory),
         )
         orch.adapter = MagicMock()
 
@@ -1539,35 +1540,36 @@ class TestArtifactWriterInjection:
             request_limiter=None,
         )
 
-        assert captured["artifact_writer"] is writer
+        assert captured["ctx"].artifact_writer is writer
 
 
 # ===================================================================
-# Orchestrator(conductor_factory=...) kwarg
+# Orchestrator(deps=OrchestratorDeps(conductor_factory=...))
 # ===================================================================
 
 
 @pytest.mark.unit
 class TestConductorInjection:
-    """The ``conductor_factory`` kwarg accepts a Callable[..., Conductor]
-    that the orchestrator invokes inside ``run()`` / ``run_worker()``
-    once the adapter and per-run dependencies are resolved.
+    """``OrchestratorDeps.conductor_factory`` accepts a
+    ``Callable[[ConductorContext], Conductor]`` that the orchestrator
+    invokes inside ``run()`` / ``run_worker()`` once the adapter and
+    per-run dependencies are resolved.
     """
 
-    def test_kwarg_default_is_none(self) -> None:
+    def test_default_is_none(self) -> None:
         from tolokaforge.core.orchestrator import Orchestrator
 
         orch = Orchestrator(_make_run_config())
         assert orch._conductor_factory is None
 
-    def test_kwarg_stores_injected_factory(self) -> None:
-        from tolokaforge.core.conductor import InMemoryConductor
-        from tolokaforge.core.orchestrator import Orchestrator
+    def test_stores_injected_factory(self) -> None:
+        from tolokaforge.core.conductor import ConductorContext, InMemoryConductor
+        from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
 
-        def factory(**_kwargs):
+        def factory(_ctx: ConductorContext) -> InMemoryConductor:
             return InMemoryConductor()
 
-        orch = Orchestrator(_make_run_config(), conductor_factory=factory)
+        orch = Orchestrator(_make_run_config(), deps=OrchestratorDeps(conductor_factory=factory))
         assert orch._conductor_factory is factory
 
     def test_default_factory_builds_in_process_conductor(self, tmp_path: Path) -> None:
@@ -1606,20 +1608,21 @@ class TestConductorInjection:
                 request_limiter=MagicMock(),
             )
 
-    def test_injected_factory_is_invoked_with_per_run_dependencies(self, tmp_path: Path) -> None:
-        """The orchestrator calls the factory with its resolved per-run
-        deps. Pinned so a future refactor that changes the dependency
-        surface forces this test to update deliberately."""
-        from tolokaforge.core.conductor import InMemoryConductor
-        from tolokaforge.core.orchestrator import Orchestrator
+    def test_injected_factory_receives_conductor_context(self, tmp_path: Path) -> None:
+        """The orchestrator calls the factory with a
+        :class:`ConductorContext` carrying its resolved per-run deps.
+        Pinned so a future refactor that changes the dependency surface
+        forces this test to update deliberately."""
+        from tolokaforge.core.conductor import ConductorContext, InMemoryConductor
+        from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
 
-        captured: dict = {}
+        captured: dict[str, ConductorContext] = {}
 
-        def factory(**kwargs):
-            captured.update(kwargs)
+        def factory(ctx: ConductorContext) -> InMemoryConductor:
+            captured["ctx"] = ctx
             return InMemoryConductor()
 
-        orch = Orchestrator(_make_run_config(), conductor_factory=factory)
+        orch = Orchestrator(_make_run_config(), deps=OrchestratorDeps(conductor_factory=factory))
         orch.adapter = MagicMock()
 
         orch._build_conductor(
@@ -1629,16 +1632,10 @@ class TestConductorInjection:
             request_limiter=MagicMock(),
         )
 
-        assert set(captured.keys()) == {
-            "adapter",
-            "artifact_writer",
-            "config",
-            "logger",
-            "verbose",
-            "strict",
-            "agent_client",
-            "runtime_backend",
-            "trial_grader",
-            "output_dir",
-            "request_limiter",
-        }
+        ctx = captured["ctx"]
+        assert isinstance(ctx, ConductorContext)
+        assert ctx.adapter is orch.adapter
+        assert ctx.artifact_writer is orch._artifact_writer
+        assert ctx.config is orch.config
+        assert ctx.output_dir == tmp_path
+        assert ctx.trial_grader is not None

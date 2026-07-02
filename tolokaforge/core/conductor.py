@@ -61,9 +61,38 @@ if TYPE_CHECKING:
 __all__ = [
     "Conductor",
     "ConductorCallLog",
+    "ConductorContext",
     "InMemoryConductor",
     "InProcessConductor",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Factory contract — the typed argument for a ``Conductor`` factory
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ConductorContext:
+    """Per-run dependencies the orchestrator hands to a Conductor factory.
+
+    Packs the arguments :class:`InProcessConductor` takes at construction
+    into a single typed value so factory signatures stay stable as new
+    orchestrator-side dependencies land. The factory contract is
+    ``Callable[[ConductorContext], Conductor]``.
+    """
+
+    adapter: BaseAdapter
+    artifact_writer: TrialArtifactWriter
+    config: RunConfig
+    logger: StructuredLogger
+    verbose: bool
+    strict: bool
+    agent_client: LLMClient
+    runtime_backend: RuntimeBackend
+    trial_grader: TrialGrader
+    output_dir: Path
+    request_limiter: GlobalRateLimiter | None
 
 
 # ---------------------------------------------------------------------------
