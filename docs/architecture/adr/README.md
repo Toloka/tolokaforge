@@ -42,3 +42,4 @@ Day-to-day implementation choices that don't affect the system shape do *not* ne
 | [0009](0009-environment-manifest.md) | `EnvironmentManifest` — typed schema for per-trial multicontainer environments | Proposed |
 | [0010](0010-runtime-backend-provisioning-contract.md) | `RuntimeBackend` provisioning contract — `provision` / `await_ready` / `endpoints` / `teardown` | Proposed |
 | [0011](0011-seam-and-declaration-conventions.md) | Seam-definition and data-declaration conventions for new components | Proposed |
+| [0013](0013-runtime-backend-per-trial-rpc-methods.md) | `RuntimeBackend` owns per-trial RPC methods — collapse `DockerRunnerAdapter` | Proposed |
