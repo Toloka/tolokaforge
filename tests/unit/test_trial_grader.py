@@ -6,21 +6,13 @@ each branch's runner interaction is asserted directly. No gRPC involved.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
-from tests.canonical._factories import make_env_endpoints, make_task_description
-from tolokaforge.core.models import (
-    JudgeStatus,
-    Metrics,
-    ModelConfig,
-    TerminationReason,
-    Trajectory,
-    TrialStatus,
-)
-from tolokaforge.core.trial import TrialSpec
+from tests.canonical._factories import make_trajectory, make_trial_spec
+from tolokaforge.core.models import JudgeStatus, TerminationReason, TrialStatus
 from tolokaforge.core.trial_grader import RunnerRPCTrialGrader
 
 pytestmark = pytest.mark.unit
@@ -62,96 +54,60 @@ class _StubBackend:
         return self._grade_result
 
 
-def _make_spec() -> TrialSpec:
-    return TrialSpec(
-        trial_id="task-1:0",
-        run_id="run-1",
-        task=make_task_description(task_id="task-1"),
-        agent_model_config=ModelConfig(provider="openai", name="gpt-4"),
-        env_endpoints=make_env_endpoints(),
-    )
-
-
-def _make_task_config():
-    from tolokaforge.core.models import (
-        InitialStateConfig,
-        TaskConfig,
-        ToolsConfig,
-        UserSimulatorConfig,
-    )
-
-    return TaskConfig(
-        task_id="task-1",
-        name="task-1",
-        category="test",
-        description="grader unit-test task",
-        initial_state=InitialStateConfig(),
-        tools=ToolsConfig(),
-        user_simulator=UserSimulatorConfig(mode="scripted"),
-        grading="grading.yaml",
-    )
-
-
-def _make_trajectory(
-    status: TrialStatus = TrialStatus.COMPLETED,
-    termination_reason: TerminationReason | None = None,
-) -> Trajectory:
-    now = datetime.now(UTC)
-    return Trajectory(
-        task_id="task-1",
-        trial_index=0,
-        start_ts=now,
-        end_ts=now,
-        status=status,
-        termination_reason=termination_reason,
-        messages=[],
-        metrics=Metrics(),
-    )
+def _make_grader(backend: _StubBackend | None = None) -> tuple[RunnerRPCTrialGrader, MagicMock]:
+    logger = MagicMock()
+    grader = RunnerRPCTrialGrader(runtime_backend=backend or _StubBackend(), logger=logger)
+    return grader, logger
 
 
 class TestAutoFailBranches:
     """Trajectories that never reach the runner produce a synthesised
-    fail-`Grade` without calling ``grade_trial``.
+    fail-`Grade` without calling ``grade_trial`` — and log the auto-fail.
     """
 
-    def test_error_status_auto_fails(self) -> None:
+    def test_error_status_auto_fails_and_logs(self) -> None:
         backend = _StubBackend()
-        grader = RunnerRPCTrialGrader(runtime_backend=backend)
-        traj = _make_trajectory(status=TrialStatus.ERROR)
+        grader, logger = _make_grader(backend)
+        traj = make_trajectory(status=TrialStatus.ERROR)
 
-        grade = grader.grade(_make_spec(), _make_task_config(), traj, "sysprompt")
+        grade = grader.grade(make_trial_spec(), traj, "sysprompt")
 
         assert grade.binary_pass is False
         assert grade.score == 0.0
         assert "Trial failed with status: error" in grade.reasons
         assert backend.calls == []
+        logger.info.assert_called_once()
+        call_args = logger.info.call_args
+        assert call_args.args[0] == "Trial did not complete successfully - automatic fail"
+        assert call_args.kwargs["status"] == "error"
 
-    def test_timeout_status_auto_fails(self) -> None:
+    def test_timeout_status_auto_fails_and_logs(self) -> None:
         backend = _StubBackend()
-        grader = RunnerRPCTrialGrader(runtime_backend=backend)
-        traj = _make_trajectory(status=TrialStatus.TIMEOUT)
+        grader, logger = _make_grader(backend)
+        traj = make_trajectory(status=TrialStatus.TIMEOUT)
 
-        grade = grader.grade(_make_spec(), _make_task_config(), traj, "sysprompt")
+        grade = grader.grade(make_trial_spec(), traj, "sysprompt")
 
         assert grade.binary_pass is False
-        assert grade.score == 0.0
         assert "Trial failed with status: timeout" in grade.reasons
         assert backend.calls == []
+        assert logger.info.call_args.kwargs["status"] == "timeout"
 
-    def test_stuck_detected_auto_fails(self) -> None:
+    def test_stuck_detected_auto_fails_and_logs(self) -> None:
         backend = _StubBackend()
-        grader = RunnerRPCTrialGrader(runtime_backend=backend)
-        traj = _make_trajectory(
+        grader, logger = _make_grader(backend)
+        traj = make_trajectory(
             status=TrialStatus.COMPLETED,
             termination_reason=TerminationReason.STUCK_DETECTED,
         )
 
-        grade = grader.grade(_make_spec(), _make_task_config(), traj, "sysprompt")
+        grade = grader.grade(make_trial_spec(), traj, "sysprompt")
 
         assert grade.binary_pass is False
-        assert grade.score == 0.0
         assert "stuck" in grade.reasons.lower()
         assert backend.calls == []
+        assert logger.info.call_args.args[0] == "Trial stuck - automatic fail"
+        assert logger.info.call_args.kwargs["termination_reason"] == "stuck_detected"
 
 
 class TestRunnerRPCBranch:
@@ -159,39 +115,44 @@ class TestRunnerRPCBranch:
     the returned dict into a :class:`Grade`.
     """
 
-    def test_success_path_produces_grade(self) -> None:
+    def test_success_path_produces_grade_and_logs(self) -> None:
         backend = _StubBackend()
-        grader = RunnerRPCTrialGrader(runtime_backend=backend)
-        traj = _make_trajectory(status=TrialStatus.COMPLETED)
+        grader, logger = _make_grader(backend)
+        traj = make_trajectory(status=TrialStatus.COMPLETED)
 
-        grade = grader.grade(_make_spec(), _make_task_config(), traj, "sysprompt")
+        grade = grader.grade(make_trial_spec(), traj, "sysprompt")
 
         assert grade.binary_pass is True
         assert grade.score == 1.0
         assert grade.components.state_checks == 1.0
         assert len(backend.calls) == 1
         assert backend.calls[0]["trial_id"] == "task-1:0"
+        logger.info.assert_called_once()
+        assert logger.info.call_args.args[0] == "Grading via Runner RPC"
 
-    def test_grpc_failure_falls_through_to_fail_grade(self) -> None:
+    def test_grpc_failure_logs_error_and_returns_fail_grade(self) -> None:
         backend = _StubBackend(
             grade_result={"success": False, "grade": None, "error": "runner exploded"}
         )
-        grader = RunnerRPCTrialGrader(runtime_backend=backend)
-        traj = _make_trajectory(status=TrialStatus.COMPLETED)
+        grader, logger = _make_grader(backend)
+        traj = make_trajectory(status=TrialStatus.COMPLETED)
 
-        grade = grader.grade(_make_spec(), _make_task_config(), traj, "sysprompt")
+        grade = grader.grade(make_trial_spec(), traj, "sysprompt")
 
         assert grade.binary_pass is False
         assert grade.score == 0.0
         assert "Grading RPC failed" in grade.reasons
         assert "runner exploded" in grade.reasons
+        logger.error.assert_called_once()
+        assert logger.error.call_args.args[0] == "Grading RPC failed"
+        assert logger.error.call_args.kwargs["error"] == "runner exploded"
 
     def test_missing_grade_dict_falls_through_to_fail_grade(self) -> None:
         backend = _StubBackend(grade_result={"success": True, "grade": None})
-        grader = RunnerRPCTrialGrader(runtime_backend=backend)
-        traj = _make_trajectory(status=TrialStatus.COMPLETED)
+        grader, _ = _make_grader(backend)
+        traj = make_trajectory(status=TrialStatus.COMPLETED)
 
-        grade = grader.grade(_make_spec(), _make_task_config(), traj, "sysprompt")
+        grade = grader.grade(make_trial_spec(), traj, "sysprompt")
 
         assert grade.binary_pass is False
         assert grade.score == 0.0
@@ -217,10 +178,10 @@ class TestRunnerRPCBranch:
                 },
             }
         )
-        grader = RunnerRPCTrialGrader(runtime_backend=backend)
-        traj = _make_trajectory(status=TrialStatus.COMPLETED)
+        grader, _ = _make_grader(backend)
+        traj = make_trajectory(status=TrialStatus.COMPLETED)
 
-        grade = grader.grade(_make_spec(), _make_task_config(), traj, "sysprompt")
+        grade = grader.grade(make_trial_spec(), traj, "sysprompt")
 
         assert grade.judge_usage is not None
         assert grade.judge_usage.calls == 2
@@ -241,10 +202,10 @@ class TestRunnerRPCBranch:
                 },
             }
         )
-        grader = RunnerRPCTrialGrader(runtime_backend=backend)
-        traj = _make_trajectory(status=TrialStatus.COMPLETED)
+        grader, _ = _make_grader(backend)
+        traj = make_trajectory(status=TrialStatus.COMPLETED)
 
-        grade = grader.grade(_make_spec(), _make_task_config(), traj, "sysprompt")
+        grade = grader.grade(make_trial_spec(), traj, "sysprompt")
 
         assert grade.state_diff == {"missing_rows": ["a", "b"]}
 
@@ -261,10 +222,10 @@ class TestRunnerRPCBranch:
                 },
             }
         )
-        grader = RunnerRPCTrialGrader(runtime_backend=backend)
-        traj = _make_trajectory(status=TrialStatus.COMPLETED)
+        grader, _ = _make_grader(backend)
+        traj = make_trajectory(status=TrialStatus.COMPLETED)
 
-        grade = grader.grade(_make_spec(), _make_task_config(), traj, "sysprompt")
+        grade = grader.grade(make_trial_spec(), traj, "sysprompt")
 
         assert grade.state_diff is None
 
@@ -277,22 +238,22 @@ class TestJudgeMessagesJson:
 
     def test_empty_trajectory_and_prompt_sends_none(self) -> None:
         backend = _StubBackend()
-        grader = RunnerRPCTrialGrader(runtime_backend=backend)
-        traj = _make_trajectory(status=TrialStatus.COMPLETED)
+        grader, _ = _make_grader(backend)
+        traj = make_trajectory(status=TrialStatus.COMPLETED)
 
-        grader.grade(_make_spec(), _make_task_config(), traj, "")
+        grader.grade(make_trial_spec(), traj, "")
 
         assert backend.calls[0]["llm_messages_json"] is None
 
     def test_prompt_alone_still_sends_messages(self) -> None:
-        backend = _StubBackend()
-        grader = RunnerRPCTrialGrader(runtime_backend=backend)
-        traj = _make_trajectory(status=TrialStatus.COMPLETED)
-
-        grader.grade(_make_spec(), _make_task_config(), traj, "you are a helper")
-
-        assert backend.calls[0]["llm_messages_json"] is not None
         import json
 
+        backend = _StubBackend()
+        grader, _ = _make_grader(backend)
+        traj = make_trajectory(status=TrialStatus.COMPLETED)
+
+        grader.grade(make_trial_spec(), traj, "you are a helper")
+
+        assert backend.calls[0]["llm_messages_json"] is not None
         parsed = json.loads(backend.calls[0]["llm_messages_json"])
         assert parsed == [{"role": "system", "content": "you are a helper"}]

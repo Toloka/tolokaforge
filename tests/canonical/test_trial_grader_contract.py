@@ -2,20 +2,19 @@
 
 Every concrete grader must satisfy the Protocol via ``isinstance`` (not
 just structural type-hint compatibility) and produce a :class:`Grade`
-with the same shape the conductor's grading phase used to produce
-directly. This file is the load-bearing contract when future
-implementations land (Judge-lift per GH #131, remote grader for the
-multi-container future).
+with the expected shape. This file is the load-bearing contract when
+future implementations land (Judge-lift per GH #131, remote grader for
+the multi-container future).
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from unittest.mock import MagicMock
 
 import pytest
 
-from tests.canonical._factories import make_env_endpoints, make_task_description
-from tolokaforge.core.models import Grade, Metrics, ModelConfig, Trajectory, TrialStatus
+from tests.canonical._factories import make_trajectory, make_trial_spec
+from tolokaforge.core.models import Grade, TrialStatus
 from tolokaforge.core.trial import TrialSpec
 from tolokaforge.core.trial_grader import RunnerRPCTrialGrader, TrialGrader
 
@@ -38,14 +37,20 @@ class _StubRuntimeBackendForGrading:
         }
 
 
+def _make_grader() -> RunnerRPCTrialGrader:
+    return RunnerRPCTrialGrader(
+        runtime_backend=_StubRuntimeBackendForGrading(),
+        logger=MagicMock(),
+    )
+
+
 class TestProtocolRuntimeCheck:
     """The Protocol is ``@runtime_checkable``; every implementation
     satisfies it structurally.
     """
 
     def test_runner_rpc_trial_grader_passes_isinstance(self) -> None:
-        grader = RunnerRPCTrialGrader(runtime_backend=_StubRuntimeBackendForGrading())
-        assert isinstance(grader, TrialGrader)
+        assert isinstance(_make_grader(), TrialGrader)
 
     def test_random_object_does_not_pass_isinstance(self) -> None:
         class _NotAGrader:
@@ -57,8 +62,7 @@ class TestProtocolRuntimeCheck:
         class _DuckGrader:
             def grade(
                 self,
-                spec: object,
-                task_config: object,
+                spec: TrialSpec,
                 trajectory: object,
                 agent_system_prompt: str,
             ) -> Grade:  # pragma: no cover — never called
@@ -68,55 +72,16 @@ class TestProtocolRuntimeCheck:
 
 
 class TestGradeShapeParity:
-    """The Grade returned by the grader matches the shape the conductor
-    used to produce inline. A regression here would silently break
-    downstream consumers.
+    """The :class:`Grade` returned by the grader matches the shape the
+    conductor's grading phase produces. A regression here would silently
+    break downstream consumers.
     """
 
-    def _make_task_config(self):
-        from tolokaforge.core.models import (
-            InitialStateConfig,
-            TaskConfig,
-            ToolsConfig,
-            UserSimulatorConfig,
-        )
-
-        return TaskConfig(
-            task_id="task-1",
-            name="task-1",
-            category="test",
-            description="grader contract test",
-            initial_state=InitialStateConfig(),
-            tools=ToolsConfig(),
-            user_simulator=UserSimulatorConfig(mode="scripted"),
-            grading="grading.yaml",
-        )
-
-    def _make_spec(self) -> TrialSpec:
-        return TrialSpec(
-            trial_id="task-1:0",
-            run_id="run-1",
-            task=make_task_description(task_id="task-1"),
-            agent_model_config=ModelConfig(provider="openai", name="gpt-4"),
-            env_endpoints=make_env_endpoints(),
-        )
-
-    def _make_trajectory(self) -> Trajectory:
-        now = datetime.now(UTC)
-        return Trajectory(
-            task_id="task-1",
-            trial_index=0,
-            start_ts=now,
-            end_ts=now,
-            status=TrialStatus.COMPLETED,
-            messages=[],
-            metrics=Metrics(),
-        )
-
     def test_success_grade_has_required_fields(self) -> None:
-        grader = RunnerRPCTrialGrader(runtime_backend=_StubRuntimeBackendForGrading())
+        grader = _make_grader()
+
         grade = grader.grade(
-            self._make_spec(), self._make_task_config(), self._make_trajectory(), "sys"
+            make_trial_spec(), make_trajectory(status=TrialStatus.COMPLETED), "sys"
         )
 
         assert isinstance(grade, Grade)

@@ -589,9 +589,7 @@ class InProcessConductor:
         system prompt, delegate.
         """
         agent_system_prompt = runner.effective_system_prompt or system_prompt
-        trajectory.grade = self.trial_grader.grade(
-            spec, task_config, trajectory, agent_system_prompt
-        )
+        trajectory.grade = self.trial_grader.grade(spec, trajectory, agent_system_prompt)
         self.logger.info(
             "Trial graded",
             task_id=task_config.task_id,

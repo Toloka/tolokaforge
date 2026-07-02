@@ -23,24 +23,23 @@ class TrialGrader(Protocol):
     def grade(
         self,
         spec: TrialSpec,
-        task_config: TaskConfig,
         trajectory: Trajectory,
         agent_system_prompt: str,
     ) -> Grade: ...
 ```
 
-The concrete `RunnerRPCTrialGrader(runtime_backend)` implementation carries all three current strategies internally — the two auto-fail branches plus the gRPC `grade_trial` dispatch and `Grade` materialisation. Constructor takes the `RuntimeBackend` it needs for the RPC branch.
+The concrete `RunnerRPCTrialGrader(runtime_backend, logger)` implementation carries all three current strategies internally — the two auto-fail branches plus the gRPC `grade_trial` dispatch and `Grade` materialisation. Constructor takes the `RuntimeBackend` it needs for the RPC branch and the per-run `StructuredLogger` used for per-branch observability.
 
 `InProcessConductor` accepts a `trial_grader: TrialGrader` via constructor injection. The `_grade` phase collapses to one call:
 
 ```python
 trajectory.grade = self.trial_grader.grade(
-    spec, task_config, trajectory,
+    spec, trajectory,
     runner.effective_system_prompt or system_prompt,
 )
 ```
 
-The `Orchestrator._build_conductor` helper constructs `RunnerRPCTrialGrader(runtime_backend)` at conductor-build time and passes it in.
+The `Orchestrator._build_conductor` helper constructs `RunnerRPCTrialGrader(runtime_backend, logger)` at conductor-build time and passes it in.
 
 ## Consequences
 

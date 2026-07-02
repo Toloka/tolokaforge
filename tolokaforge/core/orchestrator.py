@@ -345,7 +345,7 @@ class Orchestrator:
             )
         from tolokaforge.core.trial_grader import RunnerRPCTrialGrader
 
-        trial_grader = RunnerRPCTrialGrader(runtime_backend=runtime_backend)
+        trial_grader = RunnerRPCTrialGrader(runtime_backend=runtime_backend, logger=self.logger)
 
         if self._conductor_factory is not None:
             return self._conductor_factory(

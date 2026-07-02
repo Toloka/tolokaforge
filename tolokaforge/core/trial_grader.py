@@ -28,7 +28,7 @@ remote grader service, or route to an entirely different Judge component
 from __future__ import annotations
 
 import json
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from tolokaforge.core.models import (
     CriterionResult,
@@ -36,13 +36,15 @@ from tolokaforge.core.models import (
     GradeComponents,
     JudgeStatus,
     JudgeUsage,
-    TaskConfig,
     TerminationReason,
     Trajectory,
     TrialStatus,
 )
 from tolokaforge.core.runtime import RuntimeBackend
 from tolokaforge.core.trial import TrialSpec
+
+if TYPE_CHECKING:
+    from tolokaforge.core.logging import StructuredLogger
 
 __all__ = [
     "RunnerRPCTrialGrader",
@@ -68,19 +70,17 @@ class TrialGrader(Protocol):
     def grade(
         self,
         spec: TrialSpec,
-        task_config: TaskConfig,
         trajectory: Trajectory,
         agent_system_prompt: str,
     ) -> Grade:
         """Return the :class:`Grade` for a completed trial.
 
-        ``spec`` carries trial identity and per-trial metadata (kept on the
-        Protocol so future variants can route on ``spec.attempt_id`` or
-        similar). ``task_config`` is the orchestrator-side rich task type
-        the runner-side projection is derived from. ``trajectory`` carries
-        the full message trace, tool log, and termination reason.
-        ``agent_system_prompt`` is the post-policy system prompt the
-        judge receives as the agent's policy for rubric evaluation.
+        ``spec`` carries trial identity, per-trial metadata, and the
+        runner-side ``spec.task`` projection needed for dispatch.
+        ``trajectory`` carries the full message trace, tool log, status
+        and termination reason. ``agent_system_prompt`` is the
+        post-policy system prompt the judge receives as the agent's
+        policy for rubric evaluation.
         """
         ...
 
@@ -91,23 +91,30 @@ class RunnerRPCTrialGrader:
     auto-fail :class:`Grade` when the trajectory shape rules out a
     meaningful judge result.
 
-    Instantiated per-run with a bound ``runtime_backend``. The
-    orchestrator constructs one and injects it into every conductor.
+    Instantiated per-run with a bound ``runtime_backend`` and the
+    per-run :class:`StructuredLogger`. The orchestrator constructs one
+    and injects it into every conductor.
     """
 
-    def __init__(self, runtime_backend: RuntimeBackend) -> None:
+    def __init__(self, runtime_backend: RuntimeBackend, logger: StructuredLogger) -> None:
         self.runtime_backend = runtime_backend
+        self.logger = logger
 
     def grade(
         self,
         spec: TrialSpec,
-        task_config: TaskConfig,
         trajectory: Trajectory,
         agent_system_prompt: str,
     ) -> Grade:
-        _ = spec  # kept for signature symmetry / future per-attempt gating
+        task_id, trial_idx = _split_trial_id(spec.trial_id)
 
         if trajectory.status in (TrialStatus.ERROR, TrialStatus.TIMEOUT):
+            self.logger.info(
+                "Trial did not complete successfully - automatic fail",
+                task_id=task_id,
+                trial_index=trial_idx,
+                status=trajectory.status.value,
+            )
             return Grade(
                 binary_pass=False,
                 score=0.0,
@@ -116,6 +123,12 @@ class RunnerRPCTrialGrader:
             )
 
         if trajectory.termination_reason == TerminationReason.STUCK_DETECTED:
+            self.logger.info(
+                "Trial stuck - automatic fail",
+                task_id=task_id,
+                trial_index=trial_idx,
+                termination_reason=trajectory.termination_reason.value,
+            )
             return Grade(
                 binary_pass=False,
                 score=0.0,
@@ -130,6 +143,12 @@ class RunnerRPCTrialGrader:
 
         if not (grade_result["success"] and grade_result["grade"]):
             error_msg = grade_result.get("error", "Unknown grading error")
+            self.logger.error(
+                "Grading RPC failed",
+                task_id=task_id,
+                trial_index=trial_idx,
+                error=error_msg,
+            )
             return Grade(
                 binary_pass=False,
                 score=0.0,
@@ -137,7 +156,21 @@ class RunnerRPCTrialGrader:
                 reasons=f"Grading RPC failed: {error_msg}",
             )
 
-        return _parse_grade_result(grade_result["grade"])
+        grade = _parse_grade_result(grade_result["grade"])
+        self.logger.info(
+            "Grading via Runner RPC",
+            task_id=task_id,
+            trial_index=trial_idx,
+            score=grade.score,
+            binary_pass=grade.binary_pass,
+        )
+        return grade
+
+
+def _split_trial_id(trial_id: str) -> tuple[str, int]:
+    """Return ``(task_id, trial_index)`` from a canonical ``"{task_id}:{idx}"`` id."""
+    task_id, idx_s = trial_id.rsplit(":", 1)
+    return task_id, int(idx_s)
 
 
 def _build_judge_messages_json(
