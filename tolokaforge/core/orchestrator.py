@@ -321,7 +321,7 @@ class Orchestrator:
         self,
         *,
         agent_client: LLMClient,
-        shared_stack_runtime: RuntimeBackend,
+        runtime_backend: RuntimeBackend,
         output_dir: Path,
         request_limiter: GlobalRateLimiter | None,
     ) -> Conductor:
@@ -343,6 +343,10 @@ class Orchestrator:
                 "Conductor cannot be built before the adapter is loaded. "
                 "Ensure load_tasks() has run successfully."
             )
+        from tolokaforge.core.trial_grader import RunnerRPCTrialGrader
+
+        trial_grader = RunnerRPCTrialGrader(runtime_backend=runtime_backend, logger=self.logger)
+
         if self._conductor_factory is not None:
             return self._conductor_factory(
                 adapter=self.adapter,
@@ -352,7 +356,8 @@ class Orchestrator:
                 verbose=self.verbose,
                 strict=self.strict,
                 agent_client=agent_client,
-                shared_stack_runtime=shared_stack_runtime,
+                runtime_backend=runtime_backend,
+                trial_grader=trial_grader,
                 output_dir=output_dir,
                 request_limiter=request_limiter,
             )
@@ -364,7 +369,8 @@ class Orchestrator:
             verbose=self.verbose,
             strict=self.strict,
             agent_client=agent_client,
-            shared_stack_runtime=shared_stack_runtime,
+            runtime_backend=runtime_backend,
+            trial_grader=trial_grader,
             output_dir=output_dir,
             request_limiter=request_limiter,
         )
@@ -437,7 +443,7 @@ class Orchestrator:
 
     def _cleanup_runner_state_for_retry(
         self,
-        shared_stack_runtime: RuntimeBackend,
+        runtime_backend: RuntimeBackend,
         task_id: str,
         trial_idx: int,
     ) -> None:
@@ -454,7 +460,7 @@ class Orchestrator:
         """
         trial_id = f"{task_id}:{trial_idx}"
         try:
-            result = shared_stack_runtime.cleanup_trial(trial_id)
+            result = runtime_backend.cleanup_trial(trial_id)
         except Exception as e:
             self.logger.warning(
                 "Cleanup before retry raised; continuing with re-registration",
@@ -943,14 +949,14 @@ class Orchestrator:
         if runner_address is None:
             runner_address = os.environ.get("EXECUTOR_ADDRESS", "executor:50051")
 
-        shared_stack_runtime: RuntimeBackend
+        runtime_backend: RuntimeBackend
         if self._injected_runtime_backend is not None:
-            shared_stack_runtime = self._injected_runtime_backend
+            runtime_backend = self._injected_runtime_backend
         else:
-            shared_stack_runtime = self._construct_runtime_backend(runner_address)
-        shared_stack_runtime.connect()
+            runtime_backend = self._construct_runtime_backend(runner_address)
+        runtime_backend.connect()
         self.logger.info("Runtime backend connected")
-        self._verify_isolation_compatibility(shared_stack_runtime)
+        self._verify_isolation_compatibility(runtime_backend)
 
         env_endpoints = _build_env_endpoints(runner_address)
         self.logger.info(
@@ -962,12 +968,12 @@ class Orchestrator:
 
         conductor = self._build_conductor(
             agent_client=agent_client,
-            shared_stack_runtime=shared_stack_runtime,
+            runtime_backend=runtime_backend,
             output_dir=output_dir,
             request_limiter=request_limiter,
         )
 
-        executor_healthy = shared_stack_runtime.health_check()
+        executor_healthy = runtime_backend.health_check()
         self.logger.info("Docker runtime health check", executor_healthy=executor_healthy)
 
         # Build pending task/trial pairs and initialize durable queue.
@@ -1093,7 +1099,7 @@ class Orchestrator:
                             )
                             if should_retry:
                                 self._cleanup_runner_state_for_retry(
-                                    shared_stack_runtime, task_id, trial_idx
+                                    runtime_backend, task_id, trial_idx
                                 )
                                 self.logger.warning(
                                     "Retrying trial after transient failure",
@@ -1151,7 +1157,7 @@ class Orchestrator:
                         )
                         if should_retry:
                             self._cleanup_runner_state_for_retry(
-                                shared_stack_runtime, task_id, trial_idx
+                                runtime_backend, task_id, trial_idx
                             )
                         else:
                             # Mark as failed only when retries are exhausted.
@@ -1189,8 +1195,8 @@ class Orchestrator:
             self.state_manager.mark_run_completed()
 
         # Cleanup Docker runtime if used
-        if shared_stack_runtime:
-            shared_stack_runtime.close()
+        if runtime_backend:
+            runtime_backend.close()
             self.logger.info("Docker runtime closed")
 
         # Stop TypeSense BEFORE destroying the ServiceStack.
@@ -1275,13 +1281,13 @@ class Orchestrator:
 
         runner_address = os.environ.get("EXECUTOR_ADDRESS", "executor:50051")
 
-        shared_stack_runtime: RuntimeBackend
+        runtime_backend: RuntimeBackend
         if self._injected_runtime_backend is not None:
-            shared_stack_runtime = self._injected_runtime_backend
+            runtime_backend = self._injected_runtime_backend
         else:
-            shared_stack_runtime = self._construct_runtime_backend(runner_address)
-        shared_stack_runtime.connect()
-        self._verify_isolation_compatibility(shared_stack_runtime)
+            runtime_backend = self._construct_runtime_backend(runner_address)
+        runtime_backend.connect()
+        self._verify_isolation_compatibility(runtime_backend)
 
         env_endpoints = _build_env_endpoints(runner_address)
         self.logger.info(
@@ -1293,7 +1299,7 @@ class Orchestrator:
 
         conductor = self._build_conductor(
             agent_client=agent_client,
-            shared_stack_runtime=shared_stack_runtime,
+            runtime_backend=runtime_backend,
             output_dir=output_dir,
             request_limiter=request_limiter,
         )
@@ -1376,7 +1382,7 @@ class Orchestrator:
                             lease.id, f"Retryable failure: {reason}", retryable=True
                         ):
                             self._cleanup_runner_state_for_retry(
-                                shared_stack_runtime, lease.task_id, lease.trial_index
+                                runtime_backend, lease.task_id, lease.trial_index
                             )
                             requeued += 1
                         else:
@@ -1387,7 +1393,7 @@ class Orchestrator:
                 except Exception as e:
                     if run_queue.mark_failed(lease.id, str(e), retryable=True):
                         self._cleanup_runner_state_for_retry(
-                            shared_stack_runtime, lease.task_id, lease.trial_index
+                            runtime_backend, lease.task_id, lease.trial_index
                         )
                         requeued += 1
                     else:
@@ -1401,8 +1407,8 @@ class Orchestrator:
 
                 processed += 1
         finally:
-            if shared_stack_runtime:
-                shared_stack_runtime.close()
+            if runtime_backend:
+                runtime_backend.close()
             if hasattr(self, "_typesense_server") and self._typesense_server:
                 try:
                     self._typesense_server.stop()
