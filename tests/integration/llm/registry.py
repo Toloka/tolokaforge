@@ -1741,7 +1741,7 @@ _ALL: list[MC] = [
                 # arrays, allOf merge) share the native mis-shaping /
                 # stringification failure mode of dict_map below, and the
                 # minimax preset is `minimax_m3_tags` (tag-unwrap), NOT
-                # `json_coerce` — so there is no stringify recovery. Local
+                # `json_coerce`, so there is no stringify recovery. Local
                 # raw run 2026-06-30 stringified these heavily, unrecovered.
                 # Kept known_unsupported (ratchet target).
                 # Typed Dict[str, T] tool args are flaky: the model
