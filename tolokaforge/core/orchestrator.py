@@ -123,6 +123,26 @@ def _tasks_need_full_stack(tasks: list[Any]) -> bool:
     return False
 
 
+def _run_needs_full_stack(tasks: list[Any], stack_requirements: Any) -> bool:
+    """Return True iff the run needs ``full_stack``.
+
+    Combines the task-level signals (:func:`_tasks_need_full_stack`) with the
+    adapter's declarative stack needs
+    (``DockerStackRequirements.needs_rag_service``). Adapters whose search
+    signal is not visible in task tool names or ``initial_state`` (e.g. a
+    domain-shipped ``docindex/`` knowledge base surfaced as
+    ``TaskDescription.search.enabled``) declare the rag-service need on their
+    :meth:`BaseAdapter.docker_stack_requirements`. The Runner hard-fails
+    ``RegisterTrial`` for search-enabled tasks when no RAG client is
+    configured (``runner/service.py``), so the provisioning decision must
+    follow the same signal the Runner enforces. Duck-typed like its sibling
+    so unit tests can pass lightweight stand-ins.
+    """
+    if stack_requirements is not None and getattr(stack_requirements, "needs_rag_service", False):
+        return True
+    return _tasks_need_full_stack(tasks)
+
+
 _DEFAULT_DB_SERVICE_URL = "http://tolokaforge-db-service:8000"
 """Runner-perspective DB service URL the docker stack injects into the runner
 container at start (`tolokaforge/docker/stacks/core.py`). The orchestrator
@@ -797,15 +817,21 @@ class Orchestrator:
                     )
                     core_stack_kwargs["enable_playwright"] = True
                 # Pick full_stack (db-service + runner + rag-service +
-                # mock-web) when any task talks to mock-web or rag — see
-                # ``_FULL_STACK_TOOL_NAMES`` for the routing matrix.
+                # mock-web) when any task talks to mock-web or rag (see
+                # ``_FULL_STACK_TOOL_NAMES`` for the routing matrix) OR when
+                # the adapter declares a rag-service need
+                # (``DockerStackRequirements.needs_rag_service``).
                 # ``full_stack`` accepts every kwarg ``core_stack`` does,
                 # so the playwright/binds plumbing above still applies.
-                if _tasks_need_full_stack(self.tasks):
+                if _run_needs_full_stack(self.tasks, stack_requirements):
                     self.logger.info(
-                        "Full-stack-dependent task detected (browser/mobile/search_kb or "
-                        "initial_state.mock_web/rag) — using full_stack (db-service + runner "
-                        "+ rag-service + mock-web)"
+                        "Full-stack-dependent run detected (task browser/mobile/search_kb, "
+                        "initial_state.mock_web/rag, or adapter-declared rag-service need) "
+                        "- using full_stack (db-service + runner + rag-service + mock-web)",
+                        adapter_needs_rag_service=bool(
+                            stack_requirements is not None
+                            and getattr(stack_requirements, "needs_rag_service", False)
+                        ),
                     )
                     stack_factory = full_stack
                 else:
