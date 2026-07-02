@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.7.0 (2026-07-02)
+
+### Feat
+
+- **core**: PerTrialRuntimeBackend + trial-isolation enforcement + --runtime CLI (#148)
+
+### Fix
+
+- **db-service**: support JSONPath filter expressions in /query (#157)
+
 ## v0.6.0 (2026-07-02)
 
 ### Feat
