@@ -24,6 +24,7 @@ this suite loudly.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 
@@ -70,12 +71,17 @@ def _make_trajectory(
     cost_usd: float | None = 0.021,
     status: TrialStatus = TrialStatus.COMPLETED,
     termination_reason: TerminationReason | None = None,
+    tool_log: list[dict[str, Any]] | None = None,
 ) -> Trajectory:
     """Build a Trajectory populated on every field the aggregate path reads.
 
     Every ``Usage`` field is nonzero so the round-trip catches drops in
     the ``avg_*`` / ``total_*`` slots. ``binary_pass=False`` (with a
     non-``COMPLETED`` status) drives the failure-attribution path.
+    ``tool_log`` drives the tool-execution branch of
+    :func:`attribute_failure`, which produces ``evidence`` entries
+    carrying a ``tool`` key — the source of the ``by_tool`` counter in
+    :func:`summarize_failure_attributions`.
     """
     now = datetime.now(tz=UTC)
     return Trajectory(
@@ -86,6 +92,7 @@ def _make_trajectory(
         status=status,
         termination_reason=termination_reason,
         messages=[],
+        tool_log=tool_log or [],
         metrics=Metrics(
             latency_total_s=latency_s,
             turns=turns,
@@ -106,6 +113,28 @@ def _make_trajectory(
             score=score,
             components=GradeComponents(state_checks=score),
         ),
+    )
+
+
+def _make_tool_execution_failure() -> Trajectory:
+    """A tool-execution failure trajectory — ``attribute_failure`` produces
+    an ``evidence`` entry with a ``tool`` key, so the summary's
+    ``by_tool`` counter increments.
+
+    Without this shape every failure path in this suite hits the TIMEOUT
+    branch of ``attribute_failure``, whose evidence carries only a
+    ``termination_reason`` — leaving ``by_tool`` empty and the byte-identity
+    gate blind to a future field-order or type divergence on that dict.
+    """
+    return _make_trajectory(
+        task_id="task-tool-fail",
+        binary_pass=False,
+        score=0.0,
+        status=TrialStatus.FAILED,
+        termination_reason=None,
+        tool_log=[
+            {"tool": "run_python", "success": False, "error": "SyntaxError: unexpected EOF"},
+        ],
     )
 
 
@@ -269,7 +298,14 @@ def test_failure_summary_round_trip_zero_failures() -> None:
 
 def test_failure_summary_round_trip_with_failures() -> None:
     """Populated summary — attribution records feed the by-class / by-tool
-    counters and drive coverage above 0."""
+    counters and drive coverage above 0.
+
+    Mixes TIMEOUT (populates ``by_failure_class['timeout_or_resource']``)
+    with tool-execution failures (populates
+    ``by_failure_class['tool_execution']`` AND ``by_tool[<tool_name>]``)
+    so both counters land non-empty — the previous suite exercised only
+    the TIMEOUT branch and left ``by_tool`` as ``{}`` on every dump.
+    """
     attributions = [
         attribute_failure(
             _make_trajectory(
@@ -279,9 +315,11 @@ def test_failure_summary_round_trip_with_failures() -> None:
                 termination_reason=TerminationReason.TIMEOUT,
             )
         )
-        for i in range(3)
+        for i in range(2)
     ]
+    attributions.append(attribute_failure(_make_tool_execution_failure()))
     payload = summarize_failure_attributions(attributions)
+    assert payload["by_tool"], "guard: by_tool must be non-empty for this test to matter"
 
     _round_trip(FailureSummary, payload)
 
