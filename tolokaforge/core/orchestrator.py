@@ -519,45 +519,54 @@ class Orchestrator:
             endpoints=_build_env_endpoints(runner_address),
         )
 
+    _RUNNER_LOCAL_ALIAS_TAG: str = "local"
+    """Stable secondary tag applied to the freshly-built runner image after
+    ``ServiceStack.start_all()``. Decoupled from ``tolokaforge.__version__``
+    so task compose files referencing ``tolokaforge-runner:local`` don't
+    have to rotate on every release. When a public registry lands, task
+    composes will reference the published tag directly (e.g.
+    ``ghcr.io/toloka/tolokaforge-runner:X.Y.Z``); ``:local`` stays as the
+    local-dev alias."""
+
     def _ensure_versioned_runner_image_tag(self, service_stack: Any) -> None:
-        """Apply ``tolokaforge-runner:<version>`` as an alias on the freshly-built
-        runner image, so task compose files can reference a stable pinned tag.
+        """Apply ``tolokaforge-runner:local`` as an alias on the freshly-built
+        runner image, so task compose files can reference a stable name
+        that outlives content-hash rebuilds and release-version bumps.
 
         The shared-stack build tags the runner image with a content-hash
         suffix that changes on every source edit — unreachable from a
         task-pack compose file. After the stack starts, this hook applies
-        the current package version as a secondary tag on the same
-        underlying image (no rebuild, no data copy). Per-trial task
-        compose files reference ``tolokaforge-runner:<version>``, which
-        is a legal pinned tag (not one of the floating-tag names the
-        :class:`EnvironmentManifest` validator rejects).
+        ``:local`` as a secondary tag on the same underlying image (no
+        rebuild, no data copy). Per-trial task compose files reference
+        ``tolokaforge-runner:local``, which is a legal pinned tag (not
+        one of the floating-tag names the :class:`EnvironmentManifest`
+        validator rejects: ``latest`` / ``main`` / ``master`` / ``edge``
+        / ``stable`` / ``dev`` / ``develop`` / ``nightly`` / ``head``).
 
         Logged and swallowed if the alias step fails — the shared-stack
-        path already works with the content-hash tag; the alias is purely
-        for future per-trial task-pack authors, so a Docker daemon that
+        path already works with the content-hash tag; the alias is
+        purely for per-trial task-pack authors, so a Docker daemon that
         refuses the extra tag shouldn't fail the whole run.
         """
-        from tolokaforge import __version__
-
         runner_image = service_stack.get_image("runner")
         if runner_image is None:
             self.logger.debug(
-                "runner image not built by service stack; skipping version-tag alias",
+                "runner image not built by service stack; skipping alias-tag hook",
             )
             return
         try:
-            runner_image.add_alias_tag("tolokaforge-runner", __version__)
+            runner_image.add_alias_tag("tolokaforge-runner", self._RUNNER_LOCAL_ALIAS_TAG)
         except Exception as e:  # noqa: BLE001 — best-effort by design
             self.logger.warning(
-                "Failed to apply versioned runner-image alias tag; "
-                "task compose files referencing the pinned tag will fail",
-                version=__version__,
+                "Failed to apply runner-image alias tag; "
+                "task compose files referencing 'tolokaforge-runner:local' will fail",
+                alias=self._RUNNER_LOCAL_ALIAS_TAG,
                 error=str(e),
             )
             return
         self.logger.info(
-            "Aliased runner image with pinned version tag",
-            version=__version__,
+            "Aliased runner image with stable local tag",
+            alias=self._RUNNER_LOCAL_ALIAS_TAG,
         )
 
     def _build_trial_executor(

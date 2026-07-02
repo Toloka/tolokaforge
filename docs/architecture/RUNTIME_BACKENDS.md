@@ -360,14 +360,14 @@ The Protocol boundary is what future variants slot into — a `RemoteTrialExecut
 
 ## Referencing the runner image from task manifests
 
-`PerTrialRuntimeBackend` materialises each trial's compose stack via Testcontainers. When a task's `environment_manifest.compose_file` declares a `runner` service, the compose entry needs an `image:` ref — a *pinned* tag (the manifest validator rejects floating tags like `:latest`, `:main`, `:edge` for reproducibility).
+`PerTrialRuntimeBackend` materialises each trial's compose stack via Testcontainers. When a task's `environment_manifest.compose_file` declares a `runner` service, the compose entry needs an `image:` ref — a *pinned* name (the manifest validator rejects floating tags like `:latest`, `:main`, `:edge` for reproducibility).
 
-The tolokaforge runner image is built locally on every run (content-hash-tagged, cache-hit-driven). To give task-pack authors a stable name to reference, the orchestrator applies a **pinned-version alias** on top of the content-hash build: after `ServiceStack.start_all()`, `Orchestrator._ensure_versioned_runner_image_tag()` runs `docker tag tolokaforge-runner:<content-hash> tolokaforge-runner:<version>` — same image, two names. Task compose files reference the pinned tag:
+The tolokaforge runner image is built locally on every run (content-hash-tagged, cache-hit-driven). To give task-pack authors a stable name to reference, the orchestrator applies a **`:local` alias** on top of the content-hash build: after `ServiceStack.start_all()`, `Orchestrator._ensure_versioned_runner_image_tag()` runs `docker tag tolokaforge-runner:<content-hash> tolokaforge-runner:local` — same image, two names. Task compose files reference the alias:
 
 ```yaml
 services:
   runner:
-    image: tolokaforge-runner:0.10.0
+    image: tolokaforge-runner:local
     ports:
       - "50051"
   db:
@@ -377,9 +377,11 @@ services:
       - "5432"
 ```
 
-The alias step is best-effort and logged, not raise-and-fail — the shared-stack path still works with the content-hash tag whether or not the alias applies. Only per-trial task compose files referencing the pinned tag would then fail, at which point the operator sees the aliasing warning from run start and knows what to fix.
+`:local` is a legal pinned tag (not one of the floating names — `latest` / `main` / `master` / `edge` / `stable` / `dev` / `develop` / `nightly` / `head` — that the validator rejects) and is decoupled from the tolokaforge release version, so task compose files don't rotate on every package bump.
 
-Forward-looking: this pattern is what publish-to-registry work will slot into — the same `tolokaforge-runner:<version>` reference in task composes will resolve against a public registry (e.g. `ghcr.io/toloka/tolokaforge-runner:0.10.0`) instead of the local Docker cache, with no task-side change.
+The alias step is best-effort and logged, not raise-and-fail — the shared-stack path still works with the content-hash tag whether or not the alias applies. Only per-trial task compose files referencing `tolokaforge-runner:local` would then fail, at which point the operator sees the aliasing warning from run start and knows what to fix.
+
+Forward-looking: when the runner image ships to a public registry, task composes will switch to the published reference (e.g. `image: ghcr.io/toloka/tolokaforge-runner:X.Y.Z`) — a task-side edit, not an engine change. `:local` stays as the local-dev alias.
 
 ## What this PR does *not* do
 
