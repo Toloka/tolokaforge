@@ -165,6 +165,17 @@ class TestEnvironmentManifestConstruction:
         content = m.load_compose()
         assert set(content["services"]) == {"db", "default"}
 
+    def test_load_compose_returns_cached_snapshot(self, tmp_path: Path) -> None:
+        """The manifest snapshots the compose file at construction time.
+        Later edits to the file on disk are not reflected — callers see the
+        content the safety validators inspected."""
+        compose = tmp_path / "compose.yaml"
+        compose.write_text("services:\n  default:\n    image: postgres:16\n")
+        m = EnvironmentManifest(compose_file=compose)
+        assert m.load_compose()["services"] == {"default": {"image": "postgres:16"}}
+        compose.write_text("services:\n  changed:\n    image: postgres:16\n")
+        assert m.load_compose()["services"] == {"default": {"image": "postgres:16"}}
+
 
 # ---------------------------------------------------------------------------
 # EnvironmentManifest — safety validators against loaded compose contents
@@ -199,7 +210,7 @@ class TestComposeSafetyValidators:
             EnvironmentManifest(compose_file=_fixture("unsafe_host_network.yaml"))
 
     def test_privileged_true_is_rejected(self) -> None:
-        with pytest.raises(ValidationError, match="privileged: true"):
+        with pytest.raises(ValidationError, match="privileged"):
             EnvironmentManifest(compose_file=_fixture("unsafe_privileged.yaml"))
 
     def test_cap_add_is_rejected(self) -> None:
@@ -213,6 +224,104 @@ class TestComposeSafetyValidators:
     def test_bind_mount_with_absolute_path_is_rejected(self) -> None:
         with pytest.raises(ValidationError, match="relative path"):
             EnvironmentManifest(compose_file=_fixture("unsafe_bind_absolute.yaml"))
+
+    def test_bind_mount_with_env_var_expansion_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="shell-expansion"):
+            EnvironmentManifest(compose_file=_fixture("unsafe_bind_env_var.yaml"))
+
+    def test_bind_mount_with_tilde_prefix_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="home-directory"):
+            EnvironmentManifest(compose_file=_fixture("unsafe_bind_tilde.yaml"))
+
+    def test_privileged_true_string_is_rejected(self, tmp_path: Path) -> None:
+        """A quoted `\"true\"` parses as a string but must still fail the
+        safety check — otherwise a bare-string edit slips a privileged
+        container past the validator."""
+        compose = tmp_path / "compose.yaml"
+        compose.write_text(
+            'services:\n  default:\n    image: postgres:16\n    privileged: "true"\n'
+        )
+        with pytest.raises(ValidationError, match="privileged"):
+            EnvironmentManifest(compose_file=compose)
+
+    def test_privileged_integer_one_is_rejected(self, tmp_path: Path) -> None:
+        compose = tmp_path / "compose.yaml"
+        compose.write_text("services:\n  default:\n    image: postgres:16\n    privileged: 1\n")
+        with pytest.raises(ValidationError, match="privileged"):
+            EnvironmentManifest(compose_file=compose)
+
+    def test_privileged_false_is_accepted(self, tmp_path: Path) -> None:
+        compose = tmp_path / "compose.yaml"
+        compose.write_text("services:\n  default:\n    image: postgres:16\n    privileged: false\n")
+        EnvironmentManifest(compose_file=compose)  # must not raise
+
+    def test_floating_image_tag_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="floating tag"):
+            EnvironmentManifest(compose_file=_fixture("unsafe_floating_tag.yaml"))
+
+    def test_bare_image_reference_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="explicit tag or digest"):
+            EnvironmentManifest(compose_file=_fixture("unsafe_bare_image.yaml"))
+
+    @pytest.mark.parametrize(
+        "tag",
+        ["latest", "main", "master", "edge", "stable", "dev", "develop", "nightly", "head"],
+    )
+    def test_every_floating_tag_variant_is_rejected(self, tag: str, tmp_path: Path) -> None:
+        compose = tmp_path / "compose.yaml"
+        compose.write_text(f"services:\n  default:\n    image: postgres:{tag}\n")
+        with pytest.raises(ValidationError, match="floating tag"):
+            EnvironmentManifest(compose_file=compose)
+
+    def test_sha256_digest_reference_is_accepted(self, tmp_path: Path) -> None:
+        compose = tmp_path / "compose.yaml"
+        digest = "sha256:" + "a" * 64
+        compose.write_text(f"services:\n  default:\n    image: postgres@{digest}\n")
+        EnvironmentManifest(compose_file=compose)  # must not raise
+
+    def test_malformed_digest_is_rejected(self, tmp_path: Path) -> None:
+        compose = tmp_path / "compose.yaml"
+        compose.write_text("services:\n  default:\n    image: postgres@sha256:short\n")
+        with pytest.raises(ValidationError, match="digest"):
+            EnvironmentManifest(compose_file=compose)
+
+    def test_build_only_service_is_accepted(self, tmp_path: Path) -> None:
+        """A service that declares `build:` instead of `image:` is exempt
+        from the pinning check — no tag to pin."""
+        compose = tmp_path / "compose.yaml"
+        compose.write_text("services:\n  default:\n    build: ./ctx\n")
+        EnvironmentManifest(compose_file=compose)  # must not raise
+
+    def test_depends_on_undeclared_service_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="not declared in the compose file"):
+            EnvironmentManifest(compose_file=_fixture("unsafe_missing_depends_on.yaml"))
+
+    def test_depends_on_long_form_undeclared_service_is_rejected(self, tmp_path: Path) -> None:
+        compose = tmp_path / "compose.yaml"
+        compose.write_text(
+            "services:\n"
+            "  default:\n"
+            "    image: tolokaforge/runner:0.5.0\n"
+            "    depends_on:\n"
+            "      db_typo:\n"
+            "        condition: service_healthy\n"
+        )
+        with pytest.raises(ValidationError, match="not declared in the compose file"):
+            EnvironmentManifest(compose_file=compose)
+
+    def test_depends_on_scalar_is_rejected(self, tmp_path: Path) -> None:
+        compose = tmp_path / "compose.yaml"
+        compose.write_text("services:\n  default:\n    image: postgres:16\n    depends_on: 5\n")
+        with pytest.raises(ValidationError, match="must be a list or a mapping"):
+            EnvironmentManifest(compose_file=compose)
+
+    def test_volumes_scalar_is_rejected(self, tmp_path: Path) -> None:
+        """A non-list `volumes:` value must fail explicitly rather than be
+        silently swallowed as empty."""
+        compose = tmp_path / "compose.yaml"
+        compose.write_text("services:\n  default:\n    image: postgres:16\n    volumes: ''\n")
+        with pytest.raises(ValidationError, match="must be a list"):
+            EnvironmentManifest(compose_file=compose)
 
     def test_named_volume_reference_is_accepted(self, tmp_path: Path) -> None:
         compose = tmp_path / "compose.yaml"

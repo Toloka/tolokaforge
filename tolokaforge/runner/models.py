@@ -20,7 +20,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
 
 # =============================================================================
 # Enums (from TASK_DESCRIPTION_SCHEMA.md)
@@ -520,11 +520,23 @@ InitialStateKind = Literal["sql", "copy", "script"]
 
 def _check_safe_relative_path(value: str, field_label: str) -> None:
     """Raise ``ValueError`` unless ``value`` is a non-empty relative path with
-    no ``..`` segments. Used to keep manifest-declared paths inside the task
-    pack root.
+    no ``..`` segments, no shell-expansion sequences, and no home-directory
+    expansion. Used to keep manifest-declared paths inside the task pack root.
     """
     if not value:
         raise ValueError(f"{field_label} must be a non-empty path.")
+    if "$" in value:
+        raise ValueError(
+            f"{field_label} contains a shell-expansion sequence ({value!r}); "
+            "not allowed — expansion happens at provision time and escapes "
+            "the load-time safety check."
+        )
+    if value.startswith("~"):
+        raise ValueError(
+            f"{field_label} starts with '~' ({value!r}); home-directory "
+            "expansion happens at provision time and escapes the load-time "
+            "safety check."
+        )
     path = PurePosixPath(value)
     if path.is_absolute():
         raise ValueError(f"{field_label} must be a relative path; got absolute {value!r}.")
@@ -621,11 +633,16 @@ def _check_no_host_network(services: dict[str, dict[str, Any]]) -> None:
 
 def _check_no_privileged(services: dict[str, dict[str, Any]]) -> None:
     for name, body in services.items():
-        if body.get("privileged") is True:
-            raise ValueError(
-                f"compose service {name!r} sets `privileged: true`; not allowed "
-                "under the manifest's safety contract."
-            )
+        privileged = body.get("privileged")
+        if privileged is None or privileged is False:
+            continue
+        # Reject any truthy or non-bool value; catches `privileged: true`,
+        # `privileged: "true"` (quoted string), `privileged: 1`, and stray
+        # non-bool declarations that YAML would parse to a truthy value.
+        raise ValueError(
+            f"compose service {name!r} declares `privileged: {privileged!r}`; not "
+            "allowed under the manifest's safety contract."
+        )
 
 
 def _check_no_cap_add(services: dict[str, dict[str, Any]]) -> None:
@@ -641,14 +658,116 @@ def _check_no_cap_add(services: dict[str, dict[str, Any]]) -> None:
 
 def _check_safe_bind_mounts(services: dict[str, dict[str, Any]]) -> None:
     for name, body in services.items():
-        volumes = body.get("volumes") or []
+        if "volumes" not in body:
+            continue
+        volumes = body["volumes"]
         if not isinstance(volumes, list):
-            raise ValueError(f"compose service {name!r}: `volumes:` must be a list")
+            raise ValueError(
+                f"compose service {name!r}: `volumes:` must be a list; got "
+                f"{type(volumes).__name__}"
+            )
         for idx, entry in enumerate(volumes):
             source = _bind_mount_source(entry)
             if source is None:
                 continue
             _check_safe_relative_path(source, f"compose service {name!r} volumes[{idx}].source")
+
+
+_FLOATING_IMAGE_TAGS = frozenset(
+    {
+        "latest",
+        "main",
+        "master",
+        "edge",
+        "stable",
+        "dev",
+        "develop",
+        "nightly",
+        "head",
+    }
+)
+
+_IMAGE_DIGEST_RE = re.compile(r"^(?:sha256:[a-fA-F0-9]{64}|sha512:[a-fA-F0-9]{128})$")
+
+
+def _image_tag_or_digest(image: str) -> tuple[str | None, str | None]:
+    """Return ``(tag, digest)`` from a docker image reference. Either may be
+    ``None``. When a digest is set, the tag is reported as ``None`` even if a
+    tag is also present in the reference (digest takes precedence)."""
+    if "@" in image:
+        _, digest = image.rsplit("@", 1)
+        return None, digest
+    last_segment = image.rsplit("/", 1)[-1]
+    if ":" not in last_segment:
+        return None, None
+    return last_segment.split(":", 1)[1], None
+
+
+def _check_pinned_images(services: dict[str, dict[str, Any]]) -> None:
+    """Reject floating tags (:latest, :main, :master, :edge, :stable, :dev,
+    :develop, :nightly, :head) and bare image references; require an
+    immutable tag or a ``sha256`` / ``sha512`` digest. Compose services that
+    declare ``build:`` instead of ``image:`` are exempt (no tag to check)."""
+    for name, body in services.items():
+        image = body.get("image")
+        if image is None:
+            continue
+        if not isinstance(image, str) or not image:
+            raise ValueError(
+                f"compose service {name!r}: `image:` must be a non-empty string; got {image!r}"
+            )
+        tag, digest = _image_tag_or_digest(image)
+        if digest is not None:
+            if not _IMAGE_DIGEST_RE.fullmatch(digest):
+                raise ValueError(
+                    f"compose service {name!r}: image digest must be a well-formed "
+                    f"`sha256:<64-hex>` or `sha512:<128-hex>` reference; got {image!r}."
+                )
+            continue
+        if tag is None:
+            raise ValueError(
+                f"compose service {name!r}: `image: {image!r}` must include an "
+                "explicit tag or digest for reproducibility."
+            )
+        if tag == "":
+            raise ValueError(
+                f"compose service {name!r}: image tag must be non-empty; got {image!r}."
+            )
+        if tag.lower() in _FLOATING_IMAGE_TAGS:
+            raise ValueError(
+                f"compose service {name!r}: `image: {image!r}` uses a floating tag "
+                f"({tag!r}); pin to an immutable tag or a digest for reproducibility."
+            )
+
+
+def _check_depends_on_resolves(services: dict[str, dict[str, Any]]) -> None:
+    """Every service named in a ``depends_on`` entry must be declared in
+    the compose file. Supports both short form (list of service names) and
+    long form (mapping from service name to a condition dict)."""
+    for name, body in services.items():
+        deps = body.get("depends_on")
+        if deps is None:
+            continue
+        if isinstance(deps, list):
+            dep_names = deps
+        elif isinstance(deps, dict):
+            dep_names = list(deps.keys())
+        else:
+            raise ValueError(
+                f"compose service {name!r}: `depends_on:` must be a list or a "
+                f"mapping; got {type(deps).__name__}"
+            )
+        for dep in dep_names:
+            if not isinstance(dep, str):
+                raise ValueError(
+                    f"compose service {name!r}: `depends_on` entries must be strings; got {dep!r}"
+                )
+            if dep not in services:
+                raise ValueError(
+                    f"compose service {name!r}: `depends_on: {dep!r}` references a "
+                    f"service not declared in the compose file; declared services "
+                    f"are {sorted(services)!r}."
+                )
 
 
 def _bind_mount_source(entry: Any) -> str | None:
@@ -721,6 +840,10 @@ class EnvironmentManifest(BaseModel):
 
     model_config = {"extra": "forbid"}
 
+    _compose_content: dict[str, Any] = PrivateAttr(default_factory=dict)
+    """Parsed compose file contents cached at construction time. Populated
+    by the model_validator; returned verbatim from :meth:`load_compose`."""
+
     @model_validator(mode="after")
     def _load_and_validate_compose(self) -> EnvironmentManifest:
         if not self.compose_file.is_file():
@@ -740,17 +863,20 @@ class EnvironmentManifest(BaseModel):
         _check_no_privileged(services)
         _check_no_cap_add(services)
         _check_safe_bind_mounts(services)
+        _check_pinned_images(services)
+        _check_depends_on_resolves(services)
         _check_runner_service_declared(services, self.runner_service)
         _check_initial_state_keys(services, self.initial_state)
+        self._compose_content = content
         return self
 
     def load_compose(self) -> dict[str, Any]:
-        """Return the parsed compose file. Callers re-read from disk each
-        time; the manifest does not cache."""
-        with self.compose_file.open() as f:
-            content = yaml.safe_load(f)
-        assert isinstance(content, dict)
-        return content
+        """Return the parsed compose file cached at construction time.
+
+        The manifest snapshots the compose file when the validator runs;
+        callers get the same content the safety validators inspected. Later
+        edits to the compose file on disk are not reflected."""
+        return self._compose_content
 
 
 # =============================================================================
