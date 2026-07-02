@@ -70,6 +70,11 @@ class _LocalEnvHandle:
     Satisfies the :class:`EnvHandle` Protocol structurally via
     ``trial_id``. Every other field is backend-private — callers use
     the handle as an opaque token.
+
+    ``endpoints`` is resolved at provision time and snapshot here so
+    :meth:`LocalRuntimeBackend.endpoints` is a pure read (no re-query,
+    no side effects). If endpoint resolution fails, provision itself
+    raises :class:`ProvisionError` before the handle is returned.
     """
 
     trial_id: str
@@ -77,6 +82,7 @@ class _LocalEnvHandle:
     runner_service: str
     runner_port: int
     temp_dir: Path
+    endpoints: EnvEndpoints
 
 
 @dataclass
@@ -137,9 +143,7 @@ class LocalRuntimeBackend:
             if client is None:
                 continue
             try:
-                close = getattr(client, "close", None)
-                if callable(close):
-                    close()
+                client.close()
             except Exception:  # noqa: BLE001 — best-effort teardown
                 logger.exception("LocalRuntimeBackend.close: client shutdown failed")
         self._clients.clear()
@@ -202,6 +206,15 @@ class LocalRuntimeBackend:
                 reason=f"failed to construct runner client for {runner_service!r}: {exc}",
             ) from exc
 
+        try:
+            endpoints = self._resolve_endpoints(
+                compose, runner_service, runner_port, trial_id=spec.trial_id
+            )
+        except ProvisionError:
+            _shutdown_compose(compose)
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            raise
+
         # Client is constructed but not yet connected. Connect is deferred
         # to first per-trial RPC use — see :attr:`_connected_trials`.
         self._clients[spec.trial_id] = client
@@ -211,6 +224,43 @@ class LocalRuntimeBackend:
             runner_service=runner_service,
             runner_port=runner_port,
             temp_dir=temp_dir,
+            endpoints=endpoints,
+        )
+
+    def _resolve_endpoints(
+        self,
+        compose: DockerCompose,
+        runner_service: str,
+        runner_port: int,
+        *,
+        trial_id: str,
+    ) -> EnvEndpoints:
+        runner_host, runner_host_port = _resolve_host_port(compose, runner_service, runner_port)
+        if runner_host is None or runner_host_port is None:
+            raise ProvisionError(
+                trial_id=trial_id,
+                stage="provision",
+                reason=(
+                    f"runner_service {runner_service!r} does not expose port "
+                    f"{runner_port} in the compose stack"
+                ),
+            )
+        db_host, db_port = _resolve_host_port(compose, _DB_SERVICE_DEFAULT, _DB_PORT_DEFAULT)
+        if db_host is None or db_port is None:
+            raise ProvisionError(
+                trial_id=trial_id,
+                stage="provision",
+                reason=(
+                    f"LocalRuntimeBackend requires a compose service named "
+                    f"{_DB_SERVICE_DEFAULT!r} exposing port {_DB_PORT_DEFAULT}; "
+                    "compose file does not declare one. Endpoint-resolution "
+                    "customisation is a follow-up ticket."
+                ),
+            )
+        return EnvEndpoints(
+            db_url=f"http://{db_host}:{db_port}",
+            rag_url=_resolve_rag_url(compose),
+            runner_url=f"http://{runner_host}:{runner_host_port}",
         )
 
     def await_ready(self, handle: EnvHandle) -> None:
@@ -221,34 +271,16 @@ class LocalRuntimeBackend:
         del handle
 
     def endpoints(self, handle: EnvHandle) -> EnvEndpoints:
+        """Return the endpoints snapshot resolved at :meth:`provision`
+        time. Pure read — no re-query against the compose stack, no
+        side effects. Callers can invoke ``endpoints`` and ``teardown``
+        in any order (or from a ``finally``) without double-cleanup
+        concerns."""
         if not isinstance(handle, _LocalEnvHandle):
             raise TypeError(
                 f"LocalRuntimeBackend.endpoints requires a _LocalEnvHandle; got {type(handle).__name__}"
             )
-        runner_host, runner_port = _resolve_host_port(
-            handle.compose, handle.runner_service, handle.runner_port
-        )
-        db_host, db_port = _resolve_host_port(handle.compose, _DB_SERVICE_DEFAULT, _DB_PORT_DEFAULT)
-        if db_host is None or db_port is None:
-            _shutdown_compose(handle.compose)
-            shutil.rmtree(handle.temp_dir, ignore_errors=True)
-            self._clients.pop(handle.trial_id, None)
-            raise ProvisionError(
-                trial_id=handle.trial_id,
-                stage="provision",
-                reason=(
-                    f"LocalRuntimeBackend requires a compose service named "
-                    f"{_DB_SERVICE_DEFAULT!r} exposing port {_DB_PORT_DEFAULT}; "
-                    "compose file does not declare one. Endpoint-resolution "
-                    "customisation is a follow-up ticket."
-                ),
-            )
-        rag_url = _resolve_rag_url(handle.compose)
-        return EnvEndpoints(
-            db_url=f"http://{db_host}:{db_port}",
-            rag_url=rag_url,
-            runner_url=f"http://{runner_host}:{runner_port}",
-        )
+        return handle.endpoints
 
     def teardown(self, handle: EnvHandle) -> None:
         if not isinstance(handle, _LocalEnvHandle):
@@ -259,15 +291,13 @@ class LocalRuntimeBackend:
         was_connected = handle.trial_id in self._connected_trials
         self._connected_trials.discard(handle.trial_id)
         if client is not None and was_connected:
-            close = getattr(client, "close", None)
-            if callable(close):
-                try:
-                    close()
-                except Exception:  # noqa: BLE001 — best-effort
-                    logger.exception(
-                        "LocalRuntimeBackend.teardown: runner client close failed for %s",
-                        handle.trial_id,
-                    )
+            try:
+                client.close()
+            except Exception:  # noqa: BLE001 — best-effort
+                logger.exception(
+                    "LocalRuntimeBackend.teardown: runner client close failed for %s",
+                    handle.trial_id,
+                )
         _shutdown_compose(handle.compose)
         shutil.rmtree(handle.temp_dir, ignore_errors=True)
 
@@ -348,12 +378,10 @@ class LocalRuntimeBackend:
                 "provision() must be called before any per-trial RPC method."
             )
         if trial_id not in self._connected_trials:
-            connect = getattr(client, "connect", None)
-            if callable(connect):
-                connect(
-                    timeout=self.connect_timeout,
-                    retry_interval=self.connect_retry_interval,
-                )
+            client.connect(
+                timeout=self.connect_timeout,
+                retry_interval=self.connect_retry_interval,
+            )
             self._connected_trials.add(trial_id)
         return client
 
@@ -411,21 +439,40 @@ def _resolve_host_port(
 ) -> tuple[str | None, int | None]:
     """Look up the host + host-side port that map to
     ``service_name``'s ``container_port``. Returns ``(None, None)`` if
-    the service or the port is not exposed."""
+    the service or the port is not exposed.
+
+    Testcontainers raises varied exception types (``KeyError``,
+    ``ValueError``, ``NoSuchPortExposed``, and any ``subprocess`` error
+    a docker call can surface). Catch broadly and treat every failure
+    as "not exposed" — but ``logger.debug`` the exception so a genuine
+    daemon issue is diagnosable (otherwise it silently reads as a
+    compose-file misconfiguration downstream)."""
     try:
         return compose.get_service_host_and_port(service_name=service_name, port=container_port)
-    except Exception:  # noqa: BLE001 — testcontainers raises varied types
+    except Exception as exc:  # noqa: BLE001 — testcontainers raises varied types
+        logger.debug(
+            "LocalRuntimeBackend: service %r port %d not resolvable: %s",
+            service_name,
+            container_port,
+            exc,
+        )
         return None, None
 
 
 def _resolve_rag_url(compose: DockerCompose) -> str | None:
     """Best-effort ``rag_url`` — resolve the first RAG service found in
     the compose stack. Returns ``None`` when no such service is
-    declared or its port is not exposed."""
+    declared or its port is not exposed. Lookup failures are treated
+    as "no rag" but ``logger.debug``-logged for diagnosability."""
     for candidate in _RAG_SERVICE_CANDIDATES:
         try:
             container = compose.get_container(service_name=candidate)
-        except Exception:  # noqa: BLE001 — service not declared
+        except Exception as exc:  # noqa: BLE001 — service not declared
+            logger.debug(
+                "LocalRuntimeBackend: rag candidate %r not in compose: %s",
+                candidate,
+                exc,
+            )
             continue
         published = _first_published_port(container)
         if published is None:

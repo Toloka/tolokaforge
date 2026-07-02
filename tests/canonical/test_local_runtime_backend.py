@@ -435,9 +435,14 @@ class TestEndpoints:
         assert endpoints.db_url == "http://127.0.0.1:55432"
         assert endpoints.rag_url is None
 
-    def test_missing_db_service_raises_provision_error(
+    def test_missing_db_service_raises_at_provision_time(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """Endpoint resolution runs at provision time — a compose stack
+        without a ``db`` service fails fast before a handle is returned.
+        Prior design deferred the check to :meth:`endpoints` which then
+        had to tear down mid-call; that surprising side effect is gone."""
+
         class _NoDbCompose(_FakeCompose):
             def __init__(self, *args: Any, **kwargs: Any) -> None:
                 super().__init__(*args, **kwargs)
@@ -447,12 +452,11 @@ class TestEndpoints:
         monkeypatch.setattr(local_runtime_module, "GrpcRunnerClient", _FakeRunnerClient)
         backend = LocalRuntimeBackend()
         spec = _make_trial_spec(compose_file=_FIXTURES / "safe_one_service.yaml")
-        handle = backend.provision(spec)
         with pytest.raises(ProvisionError) as exc:
-            backend.endpoints(handle)
+            backend.provision(spec)
         assert exc.value.stage == "provision"
         assert "compose service named 'db'" in exc.value.reason
-        # endpoints() failure tears down as part of the raise.
+        # No handle returned → no cache entry, no lingering client.
         assert spec.trial_id not in backend._clients
 
     def test_rag_service_resolves_when_present(self, monkeypatch: pytest.MonkeyPatch) -> None:

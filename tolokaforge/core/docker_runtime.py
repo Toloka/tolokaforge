@@ -47,13 +47,18 @@ logger = logging.getLogger(__name__)
 class RunnerClient(Protocol):
     """The runner-RPC surface :class:`DockerRuntime` delegates to.
 
-    Seven methods — six per-trial RPCs plus a lifecycle probe — cover
-    every runner-side call the docker runtime makes on behalf of a
+    Nine methods — six per-trial RPCs plus a lifecycle triplet
+    (``connect`` / ``close`` / ``health_check``) — cover every
+    runner-side call the docker runtime makes on behalf of a
     :class:`RuntimeBackend`. A non-gRPC caller (in-process subprocess,
     remote conductor over a different transport) can satisfy this
     Protocol structurally without pulling in the gRPC stack.
     :class:`GrpcRunnerClient` is the sole production implementation.
     """
+
+    def connect(self, timeout: float = 30.0, retry_interval: float = 1.0) -> None: ...
+
+    def close(self) -> None: ...
 
     def register_trial(
         self,
