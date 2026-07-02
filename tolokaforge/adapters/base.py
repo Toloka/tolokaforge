@@ -36,18 +36,33 @@ class DockerStackRequirements:
             Runner so it can drive the host Docker daemon directly.
         enable_dind: Add a Docker-in-Docker sidecar so the Runner can manage
             Docker Compose stacks without touching the host daemon.
+        needs_rag_service: The adapter emits search-enabled TaskDescriptions
+            (``TaskDescription.search.enabled``), so the run must use the
+            stack that actually provisions ``rag-service`` (``full_stack``).
+            The Runner hard-fails ``RegisterTrial`` for search-enabled tasks
+            when no RAG client is configured, and ``core_stack`` deliberately
+            omits ``RAG_SERVICE_URL`` (issue #95: "env present" ==
+            "rag-service running") - so adapters whose search signal is not
+            visible in task tool names or ``initial_state`` (e.g. a
+            domain-shipped ``docindex/`` knowledge base) must declare the
+            need here for the orchestrator's stack selection.
     """
 
     task_pack_mounts: list[Path] = field(default_factory=list)
     extra_runner_binds: list[tuple[Path, str]] = field(default_factory=list)
     mount_docker_socket: bool = False
     enable_dind: bool = False
+    needs_rag_service: bool = False
 
     def to_core_stack_kwargs(self) -> dict[str, Any]:
         """Render to ``core_stack()`` kwargs, omitting empty defaults.
 
         An empty requirements object yields ``{}`` so default callers stay
         unchanged.
+
+        ``needs_rag_service`` is deliberately NOT rendered: it selects the
+        stack factory (``core_stack`` vs ``full_stack``), it is not a stack
+        kwarg - neither factory accepts it.
         """
         kwargs: dict[str, Any] = {}
         if self.task_pack_mounts:
