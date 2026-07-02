@@ -11,11 +11,15 @@ This module contains all Pydantic models used by the Runner service:
 All models use Pydantic v2 BaseModel for validation and serialization.
 """
 
+from __future__ import annotations
+
+import re
 from datetime import datetime
 from enum import Enum
+from pathlib import PurePosixPath
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # =============================================================================
 # Enums (from TASK_DESCRIPTION_SCHEMA.md)
@@ -346,7 +350,7 @@ class Rubric(BaseModel):
     _SAFE_ID_PATTERN = r"^[A-Za-z][A-Za-z0-9_]*$"
 
     @model_validator(mode="after")
-    def _validate_criterion_ids(self) -> "Rubric":
+    def _validate_criterion_ids(self) -> Rubric:
         """Fail loud on unsafe / colliding criterion ids.
 
         Guards the construction seam so a malformed rubric is rejected at
@@ -507,6 +511,361 @@ class GradingConfig(BaseModel):
 
 
 # =============================================================================
+# EnvironmentManifest — typed schema for multi-service environments
+# =============================================================================
+
+
+HealthProbeKind = Literal["tcp", "http"]
+
+
+class HealthProbe(BaseModel):
+    """Readiness probe for a service, typed by protocol."""
+
+    kind: HealthProbeKind
+    """``"tcp"`` opens a socket; ``"http"`` issues a GET."""
+
+    port: int
+    """Container port to probe."""
+
+    path: str | None = None
+    """HTTP path. Required when ``kind == "http"``; must be unset for ``"tcp"``."""
+
+    initial_delay_seconds: int = 0
+    """Seconds to wait after container start before the first probe attempt."""
+
+    interval_seconds: int = 5
+    """Seconds between probe attempts."""
+
+    timeout_seconds: int = 3
+    """Seconds a single probe attempt may run before it counts as failed."""
+
+    retries: int = 10
+    """Failed attempts (after the initial delay) before the service is unhealthy."""
+
+    model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def _path_consistent_with_kind(self) -> HealthProbe:
+        if self.kind == "http" and not self.path:
+            raise ValueError("HealthProbe.path is required when kind == 'http'.")
+        if self.kind == "tcp" and self.path is not None:
+            raise ValueError("HealthProbe.path is not allowed when kind == 'tcp'.")
+        return self
+
+
+class PortSpec(BaseModel):
+    """A container port declaration. The runtime backend assigns the host port."""
+
+    container_port: int
+    protocol: Literal["tcp", "udp"] = "tcp"
+
+    model_config = {"extra": "forbid"}
+
+
+VolumeKind = Literal["named", "bind"]
+
+
+def _check_safe_relative_path(value: str, field_label: str) -> None:
+    """Raise ``ValueError`` unless ``value`` is a non-empty relative path with
+    no ``..`` segments. Used to keep manifest-declared paths inside the task
+    pack root.
+
+    POSIX-targeted (uses ``PurePosixPath``) because the runtime backends in
+    scope (docker-compose Linux containers) interpret paths as POSIX. A
+    Windows-style ``..\\escape`` is not flagged on POSIX; that is correct for
+    the substrates we target, and would need a separate guard if the engine
+    ever runs on a non-POSIX provisioner.
+    """
+    if not value:
+        raise ValueError(f"{field_label} must be a non-empty path.")
+    path = PurePosixPath(value)
+    if path.is_absolute():
+        raise ValueError(f"{field_label} must be a relative path; got absolute {value!r}.")
+    if any(part == ".." for part in path.parts):
+        raise ValueError(f"{field_label} must not contain '..' segments; got {value!r}.")
+
+
+class VolumeMount(BaseModel):
+    """A volume mounted into a service container."""
+
+    kind: VolumeKind = "bind"
+    """``"named"`` — ``source`` is a named volume identifier.
+    ``"bind"`` — ``source`` is a path relative to the task pack root."""
+
+    source: str
+    """Volume name (when ``kind == "named"``) or path (when ``kind == "bind"``).
+    Bind sources are validated as relative, ``..``-free paths."""
+
+    target: str
+    """Path inside the container."""
+
+    read_only: bool = False
+
+    model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def _bind_source_stays_inside_task_pack(self) -> VolumeMount:
+        if self.kind == "bind":
+            _check_safe_relative_path(self.source, "VolumeMount.source (bind)")
+        return self
+
+
+class Resources(BaseModel):
+    """Resource limits / requests as Kubernetes quantity strings."""
+
+    cpu: str | None = None
+    """E.g. ``"2"`` or ``"500m"``."""
+
+    memory: str | None = None
+    """E.g. ``"4Gi"`` or ``"512Mi"``."""
+
+    model_config = {"extra": "forbid"}
+
+
+InitialStateKind = Literal["sql", "copy", "script"]
+
+
+class InitialStateRef(BaseModel):
+    """Reference to a fixture that initialises a service's state."""
+
+    from_: str = Field(alias="from")
+    """Path to the fixture, relative to the task pack root. Non-empty."""
+
+    kind: InitialStateKind = "copy"
+    """How the provisioner applies the fixture: ``"sql"`` pipes through the
+    service's SQL client, ``"copy"`` writes the file inside the container,
+    ``"script"`` executes it as a script in the container."""
+
+    model_config = {"extra": "forbid", "populate_by_name": True}
+
+    @field_validator("from_")
+    @classmethod
+    def _from_is_safe_relative_path(cls, v: str) -> str:
+        _check_safe_relative_path(v, "InitialStateRef.from")
+        return v
+
+
+class SecurityContext(BaseModel):
+    """Per-container security policy declarations."""
+
+    run_as_user: int | None = None
+    """UID the container process runs as. ``None`` defers to the image default."""
+
+    run_as_group: int | None = None
+    """GID the container process runs as. ``None`` defers to the image default."""
+
+    read_only_root_filesystem: bool = False
+    """When ``True``, the container's root filesystem is mounted read-only.
+    Writable paths must be declared as volumes."""
+
+    no_new_privileges: bool = True
+    """When ``True``, the container cannot gain new privileges via setuid
+    binaries or file capabilities. Default ``True`` — safer posture."""
+
+    capabilities_drop: list[str] = Field(default_factory=lambda: ["ALL"])
+    """Linux capabilities to drop. Default drops ``ALL`` — start from no
+    capabilities and add back only what's needed via ``capabilities_add``."""
+
+    capabilities_add: list[str] = Field(default_factory=list)
+    """Linux capabilities to add back after ``capabilities_drop`` runs."""
+
+    model_config = {"extra": "forbid"}
+
+
+NetworkMode = Literal["isolated", "external"]
+
+
+DependsOnCondition = Literal["service_started", "service_healthy"]
+
+
+class DependsOn(BaseModel):
+    """Service dependency with a wait condition.
+
+    String entries in ``ServiceSpec.depends_on`` are shorthand for
+    ``DependsOn(service=name, condition="service_started")``.
+    """
+
+    service: str
+    """Name of another service declared in the same manifest."""
+
+    condition: DependsOnCondition = "service_started"
+    """``"service_started"`` waits only for the container to start.
+    ``"service_healthy"`` also waits for the service's ``HealthProbe`` to pass."""
+
+    model_config = {"extra": "forbid"}
+
+
+_VALID_SERVICE_NAME_RE = re.compile(r"^[a-z]([-a-z0-9]*[a-z0-9])?$")
+_MAX_DNS_LABEL_LENGTH = 63
+
+_FLOATING_IMAGE_TAGS = frozenset(
+    {
+        "latest",
+        "main",
+        "master",
+        "edge",
+        "stable",
+        "dev",
+        "develop",
+        "nightly",
+        "head",
+    }
+)
+
+# Accept the two algorithms in common use; reject malformed lengths and any
+# unknown algorithm string. Hex is case-insensitive (Docker normalises to lower).
+_IMAGE_DIGEST_RE = re.compile(r"^(?:sha256:[a-fA-F0-9]{64}|sha512:[a-fA-F0-9]{128})$")
+
+
+def _image_tag_or_digest(image: str) -> tuple[str | None, str | None]:
+    """Return ``(tag, digest)`` from a docker image reference.
+
+    Either may be ``None``. The digest (if any) takes precedence — when the
+    digest is set, the tag is reported as ``None`` even if a tag is also
+    present in the reference.
+    """
+    if "@" in image:
+        head, digest = image.rsplit("@", 1)
+        return None, digest
+    last_segment = image.rsplit("/", 1)[-1]
+    if ":" not in last_segment:
+        return None, None
+    return last_segment.split(":", 1)[1], None
+
+
+class ServiceSpec(BaseModel):
+    """One service in an environment manifest."""
+
+    name: str
+    """Unique within the manifest. Lowercase DNS label up to 63 characters."""
+
+    image: str
+    """Container image with an immutable tag or a ``@sha256:`` digest.
+    Floating tags (``:latest``, ``:main``, ``:edge``, ``:stable``, ``:dev``,
+    ``:develop``, ``:nightly``, ``:head``) are rejected."""
+
+    command: list[str] | None = None
+    env: dict[str, str] = Field(default_factory=dict)
+    ports: list[PortSpec] = Field(default_factory=list)
+    volumes: list[VolumeMount] = Field(default_factory=list)
+    depends_on: list[str | DependsOn] = Field(default_factory=list)
+    """Other services this one depends on. String entries are shorthand for
+    ``DependsOn(service=name, condition="service_started")``."""
+
+    health: HealthProbe | None = None
+    resources: Resources | None = None
+    """Per-service overrides for the manifest-level ``resources`` defaults."""
+
+    security_context: SecurityContext | None = None
+    """Per-container security policy. ``None`` means the container runs with
+    the runtime backend's default posture."""
+
+    model_config = {"extra": "forbid"}
+
+    @field_validator("name")
+    @classmethod
+    def _name_is_valid_dns_label(cls, v: str) -> str:
+        if len(v) > _MAX_DNS_LABEL_LENGTH:
+            raise ValueError(
+                f"ServiceSpec.name must be at most {_MAX_DNS_LABEL_LENGTH} "
+                f"characters (RFC 1123 DNS label); got {len(v)}."
+            )
+        if not _VALID_SERVICE_NAME_RE.fullmatch(v):
+            raise ValueError(
+                f"ServiceSpec.name must be a lowercase DNS label "
+                f"(matching ^[a-z]([-a-z0-9]*[a-z0-9])?$); got {v!r}."
+            )
+        return v
+
+    @field_validator("image")
+    @classmethod
+    def _image_is_pinned(cls, v: str) -> str:
+        if not v:
+            raise ValueError("ServiceSpec.image must not be empty.")
+        tag, digest = _image_tag_or_digest(v)
+        if digest is not None:
+            if not _IMAGE_DIGEST_RE.fullmatch(digest):
+                raise ValueError(
+                    f"ServiceSpec.image digest must be a well-formed "
+                    f"`sha256:<64-hex>` or `sha512:<128-hex>` reference; "
+                    f"got {v!r}."
+                )
+            return v
+        if tag is None:
+            raise ValueError(
+                f"ServiceSpec.image must include an explicit tag or " f"digest; got {v!r}."
+            )
+        if tag == "":
+            raise ValueError(f"ServiceSpec.image tag must be non-empty; got {v!r}.")
+        if tag.lower() in _FLOATING_IMAGE_TAGS:
+            raise ValueError(
+                f"ServiceSpec.image must be pinned to an immutable tag or "
+                f"digest; floating tag {tag!r} is not deterministic."
+            )
+        return v
+
+
+def _dep_service_name(dep: str | DependsOn) -> str:
+    return dep if isinstance(dep, str) else dep.service
+
+
+class EnvironmentManifest(BaseModel):
+    """Typed declaration of a task's multi-service environment."""
+
+    services: list[ServiceSpec]
+    """Non-empty. The first entry is the default / runner service."""
+
+    initial_state: dict[str, InitialStateRef] = Field(default_factory=dict)
+    """Keyed by service name. Each value declares a fixture the provisioner
+    applies to that service before the readiness gate."""
+
+    resources: Resources | None = None
+    """Manifest-level resource defaults applied when a service declares no
+    ``resources`` of its own."""
+
+    network: NetworkMode = "isolated"
+    """Network posture the provisioner is asked to enforce.
+    ``"isolated"`` — services reach each other on the per-trial network only;
+    no path out to the public internet or to other trials.
+    ``"external"`` — services may reach the public internet (still no path to
+    other trials). Opt in explicitly; the safe default is ``"isolated"``."""
+
+    model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def _validate_cross_service_references(self) -> EnvironmentManifest:
+        if not self.services:
+            raise ValueError("EnvironmentManifest.services must be non-empty.")
+
+        names = [s.name for s in self.services]
+        seen: set[str] = set()
+        for name in names:
+            if name in seen:
+                raise ValueError(f"EnvironmentManifest.services has duplicate name {name!r}.")
+            seen.add(name)
+
+        for service in self.services:
+            for dep in service.depends_on:
+                dep_name = _dep_service_name(dep)
+                if dep_name not in seen:
+                    raise ValueError(
+                        f"ServiceSpec({service.name!r}).depends_on references "
+                        f"unknown service {dep_name!r}; manifest declares "
+                        f"{sorted(seen)!r}."
+                    )
+
+        for state_key in self.initial_state:
+            if state_key not in seen:
+                raise ValueError(
+                    f"EnvironmentManifest.initial_state has key {state_key!r} "
+                    f"that does not match any declared service; manifest "
+                    f"declares {sorted(seen)!r}."
+                )
+
+        return self
+
+
+# =============================================================================
 # Main TaskDescription (from TASK_DESCRIPTION_SCHEMA.md)
 # =============================================================================
 
@@ -565,6 +924,11 @@ class TaskDescription(BaseModel):
         description="Base64-encoded Python files for tool reconstruction. "
         "Keys are relative paths, values are base64 content.",
     )
+
+    # --- Environment ---
+    environment_manifest: EnvironmentManifest | None = None
+    """Typed declaration of the task's multi-service environment. ``None``
+    means the task does not declare one."""
 
     model_config = {"extra": "forbid"}
 

@@ -39,3 +39,4 @@ Day-to-day implementation choices that don't affect the system shape do *not* ne
 | [0006](0006-typed-env-endpoints.md) | `EnvEndpoints` — typed runner service URLs on `TrialSpec` | Accepted |
 | [0007](0007-runtime-backend-protocol.md) | `RuntimeBackend` Protocol — lift `DockerRuntime` behind a typed seam | Accepted |
 | [0008](0008-conductor-protocol.md) | `Conductor` Protocol — per-trial executor seam | Accepted |
+| [0009](0009-environment-manifest.md) | `EnvironmentManifest` — typed schema for per-trial multicontainer environments | Proposed |

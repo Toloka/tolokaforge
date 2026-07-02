@@ -1,4 +1,9 @@
-"""TrialSpec and TrialResult — the typed ``RegisterTrial`` wire format."""
+"""TrialSpec and TrialResult — the typed ``RegisterTrial`` wire format.
+
+``EnvironmentManifest`` and its supporting models live alongside
+``TaskDescription`` in :mod:`tolokaforge.runner.models`; they are re-exported
+here for callers that work against the trial-spec surface.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +12,23 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from tolokaforge.core.models import ModelConfig, Trajectory
-from tolokaforge.runner.models import TaskDescription
+from tolokaforge.runner.models import (
+    DependsOn,
+    DependsOnCondition,
+    EnvironmentManifest,
+    HealthProbe,
+    HealthProbeKind,
+    InitialStateKind,
+    InitialStateRef,
+    NetworkMode,
+    PortSpec,
+    Resources,
+    SecurityContext,
+    ServiceSpec,
+    TaskDescription,
+    VolumeKind,
+    VolumeMount,
+)
 
 DEFAULT_TOOL_TIMEOUT_S = 30.0
 """Fallback per-tool execution timeout when a trial does not specify one.
@@ -128,4 +149,23 @@ class TrialResult(BaseModel):
         return cls(trial_id=trial_id, trajectory=trajectory, worker_id=worker_id)
 
 
-__all__ = ["DEFAULT_TOOL_TIMEOUT_S", "EnvEndpoints", "TrialResult", "TrialSpec"]
+__all__ = [
+    "DEFAULT_TOOL_TIMEOUT_S",
+    "DependsOn",
+    "DependsOnCondition",
+    "EnvEndpoints",
+    "EnvironmentManifest",
+    "HealthProbe",
+    "HealthProbeKind",
+    "InitialStateKind",
+    "InitialStateRef",
+    "NetworkMode",
+    "PortSpec",
+    "Resources",
+    "SecurityContext",
+    "ServiceSpec",
+    "TrialResult",
+    "TrialSpec",
+    "VolumeKind",
+    "VolumeMount",
+]
