@@ -214,3 +214,91 @@ def test_rubric_judge_live_gate_fails_when_refund_missing():
     assert result.gate_failed is True
     assert "refund_issued" in result.failed_required_ids
     assert result.binary_pass is False
+
+
+class _RealDbServiceReader:
+    """Read-only DBReader backed by the REAL json_db_service via its HTTP API.
+
+    Unlike ``_DictDBReader`` (which evaluates JSONPath locally with
+    ``jsonpath_ng.ext``), this drives the actual service ``/query`` endpoint, so
+    the judge's queries hit the same parser production uses. Mirrors the
+    production ``DBServiceClient`` contract: a non-200 response raises, which
+    ``QueryDbTool`` surfaces to the judge as a tool error. Every query is
+    recorded so the test can assert the real parser never rejected one.
+
+    This is the seam the bug in PR #157 slipped through: the old live test used
+    an in-memory reader, so a DB-service-side JSONPath parser bug was invisible.
+    """
+
+    def __init__(self, test_client, trial_id: str):
+        self._client = test_client
+        self._trial_id = trial_id
+        self.queries: list[tuple[str, int, str]] = []  # (jsonpath, status, detail)
+
+    def get_state(self, tables=None):
+        params = {"tables": ",".join(tables)} if tables else {}
+        resp = self._client.get(f"/trials/{self._trial_id}/state", params=params)
+        resp.raise_for_status()
+        return resp.json()["data"]
+
+    def query(self, jsonpath):
+        resp = self._client.post(f"/trials/{self._trial_id}/query", json={"jsonpath": jsonpath})
+        detail = "" if resp.status_code == 200 else resp.json().get("detail", resp.text)
+        self.queries.append((jsonpath, resp.status_code, detail))
+        if resp.status_code != 200:
+            raise RuntimeError(f"query_db failed: {detail}")
+        return {"results": resp.json()["results"]}
+
+
+@pytest.mark.skipif(_MODEL_REF is None, reason="No OPENROUTER_API_KEY / OPENAI_API_KEY set")
+def test_rubric_judge_live_against_real_db_service(db_test_client):
+    """End-to-end: real LLM judge driving the REAL DB service query endpoint.
+
+    Regression guard for PR #157 — the judge's natural "look up an entity by id"
+    move (``$.orders[?(@.id=="...")]``) must succeed against the real service.
+    The previous live test backed the judge with an in-memory reader, so a
+    service-side parser bug (base ``jsonpath_ng`` rejecting filter expressions)
+    reached production undetected.
+    """
+    trial_id = "judge_live_dbsvc"
+    # Several orders so the judge filters by id rather than dumping the table.
+    tables = {
+        "orders": [
+            {"id": "o_1001", "status": "refunded", "refund_amount": 328.50},
+            {"id": "o_1002", "status": "pending", "refund_amount": 0.0},
+            {"id": "o_1003", "status": "shipped", "refund_amount": 0.0},
+        ]
+    }
+    init = db_test_client.post(f"/trials/{trial_id}/init", json={"tables": tables})
+    assert init.status_code == 200, init.text
+
+    reader = _RealDbServiceReader(db_test_client, trial_id)
+    result = run_rubric_judge(
+        rubric=_rubric(),
+        model_config=model_config_from_ref(_MODEL_REF),
+        agent_system_prompt=_AGENT_SYSTEM_PROMPT,
+        transcript=_TRANSCRIPT,
+        db_reader=reader,
+        max_turns=10,
+        episode_timeout_s=180,
+    )
+
+    # The judge grades correctly against the real service (o_1001 is refunded).
+    assert result.status is JudgeStatus.COMPLETED, result.reasons
+    assert result.gate_failed is False
+
+    # The load-bearing guard (never flaky): no query the judge issued was
+    # rejected by the real parser. Under the pre-#157 bug, every `[?(...)]`
+    # filter returned 400 "Unexpected character: ?" — this would fail.
+    parse_failures = [q for q in reader.queries if q[1] != 200]
+    assert not parse_failures, f"real DB service rejected judge queries: {parse_failures}"
+
+    # Deterministic belt-and-suspenders: exercise a filter expression through the
+    # real service directly, so the regression is caught even on a run where the
+    # model happened to only use `[*]` wildcards.
+    direct = db_test_client.post(
+        f"/trials/{trial_id}/query",
+        json={"jsonpath": '$.orders[?(@.id=="o_1001")].status'},
+    )
+    assert direct.status_code == 200, direct.text
+    assert direct.json()["results"] == ["refunded"]

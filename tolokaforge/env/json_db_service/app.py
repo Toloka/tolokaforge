@@ -17,7 +17,7 @@ from threading import Lock
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
-from jsonpath_ng import parse
+from jsonpath_ng.ext import parse  # .ext: supports filter exprs, superset of base grammar
 from pydantic import BaseModel, Field, PrivateAttr
 
 logger = logging.getLogger(__name__)
