@@ -362,7 +362,7 @@ The Protocol boundary is what future variants slot into — a `RemoteTrialExecut
 
 `PerTrialRuntimeBackend` materialises each trial's compose stack via Testcontainers. When a task's `environment_manifest.compose_file` declares a `runner` service, the compose entry needs an `image:` ref — a *pinned* name (the manifest validator rejects floating tags like `:latest`, `:main`, `:edge` for reproducibility).
 
-The tolokaforge runner image is built locally on every run (content-hash-tagged, cache-hit-driven). To give task-pack authors a stable name to reference, the orchestrator applies a **`:local` alias** on top of the content-hash build: after `ServiceStack.start_all()`, `Orchestrator._ensure_versioned_runner_image_tag()` runs `docker tag tolokaforge-runner:<content-hash> tolokaforge-runner:local` — same image, two names. Task compose files reference the alias:
+The tolokaforge runner + db-service images are built locally on every run (content-hash-tagged, cache-hit-driven). To give task-pack authors stable names to reference, the orchestrator applies **`:local` aliases** on top of each content-hash build: after `ServiceStack.start_all()`, `Orchestrator._ensure_engine_image_local_aliases()` runs `docker tag tolokaforge-runner:<content-hash> tolokaforge-runner:local` (and the same for `tolokaforge-db-service`) — same images, two names each. Task compose files reference the aliases:
 
 ```yaml
 services:
