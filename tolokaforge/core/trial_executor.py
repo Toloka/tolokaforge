@@ -35,7 +35,7 @@ from tolokaforge.core.models import (
     Trajectory,
     TrialStatus,
 )
-from tolokaforge.core.runtime import ProvisionError, RuntimeBackend
+from tolokaforge.core.runtime import EnvHandle, ProvisionError, RuntimeBackend
 from tolokaforge.core.trial import TrialResult, TrialSpec
 
 if TYPE_CHECKING:
@@ -136,7 +136,7 @@ class ProvisioningTrialExecutor:
         finally:
             self._safe_teardown(handle, task_id, trial_idx)
 
-    def _safe_teardown(self, handle: object, task_id: str, trial_idx: int) -> None:
+    def _safe_teardown(self, handle: EnvHandle, task_id: str, trial_idx: int) -> None:
         """Best-effort teardown that logs failures instead of swallowing them.
 
         Substrate teardown after a failed trial body must not mask the
@@ -145,7 +145,7 @@ class ProvisioningTrialExecutor:
         gives operators visibility without changing control flow.
         """
         try:
-            self.runtime_backend.teardown(handle)  # type: ignore[arg-type]
+            self.runtime_backend.teardown(handle)
         except Exception as teardown_err:  # noqa: BLE001 — best-effort by contract
             self.logger.warning(
                 "Teardown raised; continuing",
