@@ -214,6 +214,38 @@ Existing tasks running through `DockerRuntime` see no behavioural change. The Pr
 
 The first behavioural change lands with the follow-up PR that ships `LocalRuntimeBackend` — and even then, tasks default to `DockerRuntime` (backward-compat) until a run's config opts into `runtime.backend: local`. Per-trial isolation is opt-in until the first workload validates it end-to-end.
 
+## Industry precedents studied
+
+The four-method surface (`provision` / `await_ready` / `endpoints` / `teardown`) is not novel — it is the widely-used shape of per-scope environment materialisation. Anchoring the ADR against these precedents makes clear what we are and are not inventing.
+
+### Testcontainers — primary precedent
+
+The Testcontainers family of libraries (https://testcontainers.com, Java/Python/Go/Node) is the closest direct precedent. Their per-container lifecycle is `start()` + `waitingFor(strategy)` + `getMappedPort(...)` + `stop()`; our per-trial surface is the same shape one abstraction up (a handle over a *set* of services, not a single container). Testcontainers' `WaitStrategy` is the pattern our `HealthProbe` (ADR-0009) compiles to at runtime; their `ContainerState` is the analog of our opaque `EnvHandle`.
+
+### Inspect AI sandbox providers — same seam decision
+
+Inspect AI (UK AI Safety Institute, https://inspect.aisi.org.uk/sandboxing.html) chose the same "one Protocol, many backends" seam we are choosing here: a single `SandboxEnvironment` interface implemented by a docker provider, a Kubernetes provider, and a local provider. Our `RuntimeBackend` plays the same role. Cross-checking against Inspect's provider set validated that four lifecycle methods are sufficient — no substrate they support requires a fifth.
+
+### Docker Compose CLI — the substrate `LocalRuntimeBackend` will target
+
+`docker compose up -d --wait` (provision + readiness), `docker compose port` (endpoint resolution), `docker compose down -v` (teardown). This is the substrate the first concrete backend compiles the manifest to; the per-trial-project naming convention (`{prefix}-{trial_id}`) is standard Compose usage.
+
+### Kubernetes Pod lifecycle — pattern preserved, not backend committed
+
+The four-phase pattern (create → readinessProbe → Service DNS → delete) is the same shape one substrate over. Called out here as *the pattern the contract preserves* — not a commitment that a Kubernetes backend is planned. If a cluster backend later materialises, **Kubernetes Agent Sandbox** (kubernetes-sigs SIG-Apps, https://agent-sandbox.sigs.k8s.io) is the natural forward target: it is explicitly designed for one multi-container Pod per sandbox with declarative health probes and per-invocation teardown.
+
+### SWE-bench harness — per-trial isolation posture
+
+Per-instance ephemeral container per trial, torn down at end. Establishes the isolation posture our `provision` / `teardown` obligations codify: no cross-trial reachability, no shared mutable state, one lifecycle per trial.
+
+### HashiCorp Terraform providers — the staged-failure model
+
+The per-substrate provider pattern is directly analogous; more specifically, Terraform's staged failure model (`plan` vs. `apply` vs. `refresh` errors) is the precedent for our `ProvisionError.stage: Literal["provision", "await_ready"]`. A caller distinguishing "couldn't bring it up" from "brought it up but it isn't healthy" is a well-known distinction; conflating them loses retry-policy nuance.
+
+### Opaque-handle convention
+
+`EnvHandle` follows a common cloud-SDK pattern: AWS SDK waiters return service-side identifiers the caller treats as opaque; the Kubernetes dynamic client returns `*unstructured.Unstructured` wrapping only the object identity; Testcontainers' `ContainerState` is the same idea. The typing does not commit to Python-object handles — a serializable dict handle (`{trial_id, provider, lease_id}`) is a valid future extension for a remote backend without breaking the Protocol.
+
 ## Consequences
 
 ### Positive
