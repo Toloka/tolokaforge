@@ -24,6 +24,7 @@ from tolokaforge.core.trial import (
     InitialStateRef,
     NetworkPolicy,
     SecurityContext,
+    TaskIsolation,
 )
 from tolokaforge.runner.models import TaskDescription
 
@@ -122,6 +123,46 @@ class TestNetworkPolicyContract:
     def test_string_construction(self) -> None:
         assert NetworkPolicy("no_internet") is NetworkPolicy.NO_INTERNET
         assert NetworkPolicy("full_internet") is NetworkPolicy.FULL_INTERNET
+
+
+# ---------------------------------------------------------------------------
+# TaskIsolation — per-task isolation-requirement enum
+# ---------------------------------------------------------------------------
+
+
+class TestTaskIsolationContract:
+    @pytest.mark.parametrize(
+        "value",
+        [TaskIsolation.PER_TRIAL, TaskIsolation.SHARED_OK],
+    )
+    def test_member_values_are_isolation_strings(self, value: TaskIsolation) -> None:
+        assert value.value in {"per_trial", "shared_ok"}
+
+    def test_string_construction(self) -> None:
+        assert TaskIsolation("per_trial") is TaskIsolation.PER_TRIAL
+        assert TaskIsolation("shared_ok") is TaskIsolation.SHARED_OK
+
+    def test_default_on_manifest_is_per_trial(self) -> None:
+        """Safety default: a manifest that does not opt out requires
+        per-trial isolation. This is the load-bearing invariant that
+        prevents silent cross-trial state contamination."""
+        m = EnvironmentManifest(compose_file=_fixture("safe_one_service.yaml"))
+        assert m.isolation is TaskIsolation.PER_TRIAL
+
+    def test_shared_ok_is_accepted(self) -> None:
+        m = EnvironmentManifest(
+            compose_file=_fixture("safe_one_service.yaml"),
+            isolation=TaskIsolation.SHARED_OK,
+        )
+        assert m.isolation is TaskIsolation.SHARED_OK
+
+    def test_round_trip_preserves_isolation(self) -> None:
+        m = EnvironmentManifest(
+            compose_file=_fixture("safe_two_service.yaml"),
+            isolation=TaskIsolation.SHARED_OK,
+        )
+        reloaded = EnvironmentManifest.model_validate_json(m.model_dump_json())
+        assert reloaded.isolation is TaskIsolation.SHARED_OK
 
 
 # ---------------------------------------------------------------------------
@@ -403,9 +444,11 @@ class TestManifestWireShape:
             "initial_state",
             "network_policy",
             "security_context_defaults",
+            "isolation",
         }
         assert wire["runner_service"] == "default"
         assert wire["network_policy"] == "no_internet"
+        assert wire["isolation"] == "per_trial"
         assert wire["initial_state"] == {"db": {"from_": "./fixtures/seed.sql", "kind": "sql"}}
         assert wire["security_context_defaults"] == {
             "run_as_user": None,

@@ -91,7 +91,26 @@ class EnvironmentManifest(BaseModel):
     security_context_defaults: SecurityContext | None = None
     """Applied by the provisioner to every service that does not override
     the equivalent settings in the compose file."""
+
+    isolation: TaskIsolation = TaskIsolation.PER_TRIAL
+    """Isolation requirement. Defaults to per-trial — the orchestrator
+    refuses to run a per-trial task on `SharedStackRuntimeBackend`.
+    Set to `shared_ok` to opt out for stateless tasks that tolerate
+    a shared stack."""
 ```
+
+### `TaskIsolation` — declares per-task isolation intent
+
+Two literal states:
+
+| Value | Semantics |
+|---|---|
+| `per_trial` (default) | Task requires a fresh environment per trial. Orchestrator refuses to run on `SharedStackRuntimeBackend`. |
+| `shared_ok` | Task tolerates a stack shared with other trials. Orchestrator accepts either backend. |
+
+The default is `per_trial` because a task's decision to declare an `EnvironmentManifest` at all almost always signals per-trial semantic intent (per-trial fixtures, per-trial db, per-trial file state). Silent cross-trial contamination on a shared backend is the failure mode this default prevents. `shared_ok` is the explicit opt-out for stateless tasks that would otherwise pay the per-trial cold-start cost unnecessarily.
+
+Enforcement lives at the orchestrator layer, not on the manifest itself: the orchestrator iterates every task in the run at start, and if any task's `isolation == per_trial` while the selected runtime backend is `SharedStackRuntimeBackend`, the orchestrator raises before any trial runs. See ADR-0010 for the runtime-backend contract; see the `RUNTIME_BACKENDS.md` doc for the concrete enforcement site.
 
 Load-time safety validators run against the loaded compose contents. Failing any of them raises `ValidationError` at construction:
 
