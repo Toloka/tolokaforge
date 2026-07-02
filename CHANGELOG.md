@@ -2,6 +2,23 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.5.0 (2026-07-02)
+
+### Feat
+
+- **core**: RuntimeBackend provisioning contract (ADR-0010) (#133)
+- **core**: add EnvironmentManifest typed schema for multicontainer environments (#121)
+
+### Fix
+
+- **orchestrator**: select full_stack when the adapter declares rag-service need (#140)
+
+### Refactor
+
+- **runtime**: move per-trial RPC methods onto RuntimeBackend (ADR-0013) (#141)
+- **runtime**: promote RunnerClient to a Protocol; rename concrete to GrpcRunnerClient (#135)
+- **core**: EnvironmentManifest as compose-as-source-of-truth (#139)
+
 ## v0.4.1 (2026-07-01)
 
 ### Feat
