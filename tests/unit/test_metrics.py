@@ -12,7 +12,14 @@ from tolokaforge.core.metrics import (
     calculate_task_metrics,
     compute_pass_at_k,
 )
-from tolokaforge.core.models import Grade, GradeComponents, JudgeUsage, Metrics, Trajectory
+from tolokaforge.core.models import (
+    Grade,
+    GradeComponents,
+    JudgeStatus,
+    JudgeUsage,
+    Metrics,
+    Trajectory,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -195,9 +202,35 @@ class TestJudgeCost:
         assert m["total_cost_incl_judge_usd"] == pytest.approx(0.03)
 
     def test_aggregate_rolls_up_judge_cost_across_tasks(self):
-        task_a = calculate_task_metrics([self._trial(0, 0.01, 0.005)])
+        # A multi-trial task in one group so the rollup can't pass by treating
+        # per-task totals as per-trial (sum-of-task-totals, not an average).
+        task_a = calculate_task_metrics([self._trial(0, 0.01, 0.005), self._trial(1, 0.01, 0.005)])
         task_b = calculate_task_metrics([self._trial(0, 0.02, 0.005)])
         agg = calculate_aggregate_metrics([task_a, task_b])
-        assert agg["total_cost_usd"] == pytest.approx(0.03)
-        assert agg["judge_cost_usd"] == pytest.approx(0.01)
-        assert agg["total_cost_incl_judge_usd"] == pytest.approx(0.04)
+        assert agg["total_cost_usd"] == pytest.approx(0.04)  # 0.01+0.01+0.02
+        assert agg["judge_cost_usd"] == pytest.approx(0.015)  # 3 × 0.005
+        assert agg["total_cost_incl_judge_usd"] == pytest.approx(0.055)
+
+    def test_mixed_judge_and_no_judge_trials_in_one_task(self):
+        # Only trials that actually ran a judge contribute to judge_cost_usd.
+        trajectories = [self._trial(0, 0.01, 0.005), self._trial(1, 0.02, None)]
+        m = calculate_task_metrics(trajectories)
+        assert m["total_cost_usd"] == pytest.approx(0.03)
+        assert m["judge_cost_usd"] == pytest.approx(0.005)
+        assert m["total_cost_incl_judge_usd"] == pytest.approx(0.035)
+
+    def test_zero_judge_cost_counted_not_treated_as_absent(self):
+        # A real 0.0 judge cost must not be conflated with "no judge ran" (None).
+        m = calculate_task_metrics([self._trial(0, 0.01, 0.0)])
+        assert m["judge_cost_usd"] == 0.0
+        assert m["judge_cost_usd"] is not None
+        assert m["total_cost_incl_judge_usd"] == pytest.approx(0.01)
+
+    def test_errored_judge_cost_is_still_counted(self):
+        # An ERRORED judge still spent tokens; its cost must roll up (metrics are
+        # judge-status-agnostic — they sum whatever judge_usage.cost_usd exists).
+        traj = self._trial(0, 0.01, 0.003)
+        traj.grade.judge_status = JudgeStatus.ERRORED
+        m = calculate_task_metrics([traj])
+        assert m["judge_cost_usd"] == pytest.approx(0.003)
+        assert m["total_cost_incl_judge_usd"] == pytest.approx(0.013)
