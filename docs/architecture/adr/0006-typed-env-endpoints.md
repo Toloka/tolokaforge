@@ -73,5 +73,5 @@ We adopt **Option 1**.
 
 - **Producer side only.** This PR ships the type, the producer (orchestrator), and the contract tests. The runner-side consumer is a separate PR.
 - **TypeSense is engine-internal.** Co-located with the orchestrator; flows through `TaskDescription.search_config`. Not in `EnvEndpoints`.
-- **`executor:50051` literals** in `orchestrator.py` and `docker_runtime.py` are runner-address defaults, not separate-executor URLs. They belong to the `RuntimeBackend` seam, not here.
+- **`executor:50051` literals** in `orchestrator.py` and `shared_stack_runtime.py` are runner-address defaults, not separate-executor URLs. They belong to the `RuntimeBackend` seam, not here.
 - **Dual-path fallback loops** in the orchestrator (`_run_trial`) are dev-mode-only host→service URL lookups, separate from runner-perspective URLs carried on `EnvEndpoints`. Out of scope.

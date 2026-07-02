@@ -33,8 +33,8 @@ graph TB
         Cond --> RB{"RuntimeBackend<br/>Protocol"}
     end
 
-    RB -.implements.-> DR["DockerRuntime<br/>(shared stack)"]
-    RB -.implements.-> LRB["LocalRuntimeBackend<br/>(per-trial)"]
+    RB -.implements.-> DR["SharedStackRuntimeBackend<br/>(shared stack)"]
+    RB -.implements.-> LRB["PerTrialRuntimeBackend<br/>(per-trial)"]
     RB -.implements.-> IMB["InMemoryRuntimeBackend<br/>(tests only)"]
 
     subgraph Docker["Docker daemon"]
@@ -48,33 +48,33 @@ graph TB
     LRB -->|"one client per trial<br/>keyed by trial_id"| T2
 ```
 
-Selection is a run-level config choice: `DockerRuntime` is the default
+Selection is a run-level config choice: `SharedStackRuntimeBackend` is the default
 (preserves today's behaviour); a task that declares an `environment_manifest`
-runs on `LocalRuntimeBackend` when the orchestrator opts in. That wiring is
+runs on `PerTrialRuntimeBackend` when the orchestrator opts in. That wiring is
 the next PR (Conductor + Orchestrator injection); this PR ships the backend.
 
 ## Concrete backends
 
-**`DockerRuntime`** — the original. One compose project brought up at
+**`SharedStackRuntimeBackend`** — the original. One compose project brought up at
 `connect()` time and shared across every trial in the run. Per-trial
 "isolation" is `trial_id`-in-URL only; cross-trial state contamination is
 structural. `provision` / `teardown` are no-ops on the run-wide stack. Fine
 for single-tenant, sequential runs; caps concurrency at one trial per
 service that has stateful side effects.
 
-**`LocalRuntimeBackend`** — this PR. One compose project per trial via
+**`PerTrialRuntimeBackend`** — this PR. One compose project per trial via
 `testcontainers.compose.DockerCompose`. Each `provision` call materialises
 an isolated stack; the trial's runner container is only reachable through
 its own network + host-side port. Concurrent trials each get independent
 containers, networks, and volumes. Backwards-compatible because it is
 opt-in: tasks that do not declare an `environment_manifest` still run on
-`DockerRuntime`.
+`SharedStackRuntimeBackend`.
 
 **`InMemoryRuntimeBackend`** — test-only. Records every method call on a
 `RuntimeBackendCallLog`; no Docker daemon required. Used by canonical
 contract tests.
 
-## A trial's lifecycle on `LocalRuntimeBackend`
+## A trial's lifecycle on `PerTrialRuntimeBackend`
 
 The following sequence covers one trial end-to-end. Reads left-to-right in
 time; each arrow is a real method call on the class instances named at the
@@ -85,7 +85,7 @@ sequenceDiagram
     autonumber
     participant Orch as Orchestrator
     participant Cond as Conductor
-    participant LRB as LocalRuntimeBackend
+    participant LRB as PerTrialRuntimeBackend
     participant DC as Testcontainers<br/>DockerCompose
     participant GRC as GrpcRunnerClient<br/>(this trial's)
     participant Docker as Docker daemon
@@ -149,13 +149,13 @@ sequenceDiagram
     Note right of LRB: closes any leftover<br/>connected clients
 ```
 
-Every step above is a single method call in `tolokaforge/core/local_runtime.py`.
+Every step above is a single method call in `tolokaforge/core/per_trial_runtime.py`.
 
 ## Deep-dive — `provision()`
 
 Nine steps, in order. Failure at any step raises `ProvisionError(stage="provision")` and cleans up whatever ran successfully before the raise.
 
-1. **Guard on manifest presence.** `spec.task.environment_manifest is None` → raise. Tasks without a manifest belong on `DockerRuntime`, not this backend.
+1. **Guard on manifest presence.** `spec.task.environment_manifest is None` → raise. Tasks without a manifest belong on `SharedStackRuntimeBackend`, not this backend.
 2. **Make a per-trial temp directory.** Path like `/tmp/tolokaforge-<sanitised-trial-id>-<random>/`. The basename is what Docker Compose reads for its auto-generated project name — encoding the trial id here is what gives each concurrent trial its own project.
 3. **Copy the compose context.** Everything in the compose file's parent directory (compose YAML, adjacent bind-mount source files, initial-state fixtures) copies into the temp dir. Bind mounts declared as relative paths resolve inside the copied context; safety validators (ADR-0009) already reject `..` and absolute paths, so the copy is closed and complete.
 4. **Construct `DockerCompose`** with `context=<temp_dir>`, `compose_file_name=<manifest.compose_file.name>`, `pull=False`, `build=False`, `wait=True`.
@@ -181,7 +181,7 @@ All three are resolved via `compose.get_service_host_and_port(name, port)`, whic
 
 ## Per-trial isolation
 
-Testcontainers' `DockerCompose` does not accept a `project_name` parameter. Docker Compose derives the project name from the context directory basename by default. `LocalRuntimeBackend` leverages that: each trial's compose file is copied into a temp directory whose name embeds the trial id, so each trial's `DockerCompose` instance sees a unique project name.
+Testcontainers' `DockerCompose` does not accept a `project_name` parameter. Docker Compose derives the project name from the context directory basename by default. `PerTrialRuntimeBackend` leverages that: each trial's compose file is copied into a temp directory whose name embeds the trial id, so each trial's `DockerCompose` instance sees a unique project name.
 
 ```mermaid
 graph TB
@@ -222,7 +222,7 @@ Same compose file → two independent projects → independent networks (no cros
 ## Lazy runner-client connect
 
 `GrpcRunnerClient.connect()` runs a gRPC health-check retry loop (up to 30s
-by default). For a run-wide backend like `DockerRuntime`, that cost is
+by default). For a run-wide backend like `SharedStackRuntimeBackend`, that cost is
 amortised — one connect at run start covers every trial. For a per-trial
 backend, connecting eagerly at `provision()` time would add the connect cost
 to every trial's provisioning latency, even for trials that never actually
@@ -234,7 +234,7 @@ The industry pattern is lazy: gRPC channels connect on first RPC call; boto3,
 itself separates "container up" (via `--wait`) from "application-level
 connect" (caller's problem).
 
-`LocalRuntimeBackend` follows suit:
+`PerTrialRuntimeBackend` follows suit:
 
 - `provision()` constructs the `GrpcRunnerClient` but does not call `.connect()`.
 - The `_connected_trials: set[str]` tracks which trials' clients have already been through their connect health check.
@@ -275,12 +275,12 @@ A second `teardown(handle)` call finds nothing in the cache, exits quickly. Fore
 
 The provisioning contract (ADR-0010) requires provisioners to make a
 best-effort teardown of anything partially materialised before raising.
-`LocalRuntimeBackend` honours that at every failure point above — no
+`PerTrialRuntimeBackend` honours that at every failure point above — no
 half-provisioned resources leaked to the daemon.
 
-## `DockerRuntime` vs `LocalRuntimeBackend` side-by-side
+## `SharedStackRuntimeBackend` vs `PerTrialRuntimeBackend` side-by-side
 
-| Concern | `DockerRuntime` | `LocalRuntimeBackend` |
+| Concern | `SharedStackRuntimeBackend` | `PerTrialRuntimeBackend` |
 |---|---|---|
 | Compose scope | One project per **run** | One project per **trial** |
 | Container lifetime | Whole run | Bracketed by `provision` / `teardown` |
@@ -306,9 +306,9 @@ Both satisfy the same `RuntimeBackend` Protocol. Callers depend only on the Prot
 
 ## Where to read next
 
-- `tolokaforge/core/local_runtime.py` — implementation.
+- `tolokaforge/core/per_trial_runtime.py` — implementation.
 - `tolokaforge/core/runtime.py` — the `RuntimeBackend` Protocol + `InMemoryRuntimeBackend`.
-- `tolokaforge/core/docker_runtime.py` — `DockerRuntime` + `RunnerClient` Protocol + `GrpcRunnerClient`.
-- `tests/canonical/test_local_runtime_backend.py` — the unit tests exercise every lifecycle branch documented above with fakes.
-- `tests/integration/docker/test_local_runtime_backend_integration.py` — the real-daemon lifecycle smoke.
+- `tolokaforge/core/shared_stack_runtime.py` — `SharedStackRuntimeBackend` + `RunnerClient` Protocol + `GrpcRunnerClient`.
+- `tests/canonical/test_per_trial_runtime_backend.py` — the unit tests exercise every lifecycle branch documented above with fakes.
+- `tests/integration/docker/test_per_trial_runtime_backend_integration.py` — the real-daemon lifecycle smoke.
 - `docs/architecture/adr/0010-runtime-backend-provisioning-contract.md` — the contract this document implements.

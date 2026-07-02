@@ -1,10 +1,10 @@
 """Pin the ``RuntimeBackend`` Protocol contract — runtime check + parity.
 
-Two implementations are checked: :class:`DockerRuntime` (real gRPC client
+Two implementations are checked: :class:`SharedStackRuntimeBackend` (real gRPC client
 wrapper, never ``connect()``-ed in this test) and
 :class:`InMemoryRuntimeBackend` (no-network test fixture). Lifecycle
 methods and the retry-cleanup method are exercised on both; ``connect()``
-itself is *not* invoked on ``DockerRuntime`` because that would require
+itself is *not* invoked on ``SharedStackRuntimeBackend`` because that would require
 a real runner gRPC server.
 
 The lower half of the file pins the ADR-0010 provisioning surface:
@@ -19,7 +19,6 @@ from pathlib import Path
 import pytest
 
 from tests.canonical._factories import make_env_endpoints, make_task_description
-from tolokaforge.core.docker_runtime import DockerRuntime
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.runtime import (
     EnvHandle,
@@ -28,6 +27,7 @@ from tolokaforge.core.runtime import (
     RuntimeBackend,
     RuntimeBackendCallLog,
 )
+from tolokaforge.core.shared_stack_runtime import SharedStackRuntimeBackend
 from tolokaforge.core.trial import EnvEndpoints, EnvironmentManifest, TrialSpec
 from tolokaforge.runner.models import TaskDescription
 
@@ -42,16 +42,18 @@ class TestProtocolRuntimeCheck:
     compatibility).
     """
 
-    def test_docker_runtime_passes_isinstance(self) -> None:
-        assert isinstance(DockerRuntime(runner_address="sentinel:50051"), RuntimeBackend)
+    def test_shared_stack_runtime_backend_passes_isinstance(self) -> None:
+        assert isinstance(
+            SharedStackRuntimeBackend(runner_address="sentinel:50051"), RuntimeBackend
+        )
 
     def test_in_memory_runtime_backend_passes_isinstance(self) -> None:
         assert isinstance(InMemoryRuntimeBackend(), RuntimeBackend)
 
-    def test_local_runtime_backend_passes_isinstance(self) -> None:
-        from tolokaforge.core.local_runtime import LocalRuntimeBackend
+    def test_per_trial_runtime_backend_passes_isinstance(self) -> None:
+        from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
 
-        assert isinstance(LocalRuntimeBackend(), RuntimeBackend)
+        assert isinstance(PerTrialRuntimeBackend(), RuntimeBackend)
 
     def test_random_object_does_not_pass_isinstance(self) -> None:
         class _NotARuntime:
@@ -70,9 +72,12 @@ class TestLifecycleMethodParity:
 
     @pytest.fixture
     def implementations(self) -> list[RuntimeBackend]:
-        # ``DockerRuntime`` is constructed but never ``connect()``-ed —
+        # ``SharedStackRuntimeBackend`` is constructed but never ``connect()``-ed —
         # construction is cheap and side-effect-free until ``connect()``.
-        return [InMemoryRuntimeBackend(), DockerRuntime(runner_address="sentinel:50051")]
+        return [
+            InMemoryRuntimeBackend(),
+            SharedStackRuntimeBackend(runner_address="sentinel:50051"),
+        ]
 
     def test_connect_signature_is_present(self, implementations: list[RuntimeBackend]) -> None:
         for impl in implementations:
@@ -159,7 +164,7 @@ class TestInMemoryBackendSemantics:
         assert backend.call_log.cleanup_trial_calls == ["a:0", "b:0", "a:0"]
 
     def test_cleanup_trial_is_idempotent_on_unknown_trial(self) -> None:
-        """Mirrors ``DockerRuntime``: cleaning a trial that was never
+        """Mirrors ``SharedStackRuntimeBackend``: cleaning a trial that was never
         registered must succeed so retry paths don't crash."""
         backend = InMemoryRuntimeBackend()
         result = backend.cleanup_trial("never_registered:0")
@@ -182,7 +187,7 @@ class TestInMemoryBackendSemantics:
         RPC-method impls raise :class:`NotImplementedError` with a pointer
         at the right alternative."""
         backend = InMemoryRuntimeBackend()
-        with pytest.raises(NotImplementedError, match="DockerRuntime or mock"):
+        with pytest.raises(NotImplementedError, match="SharedStackRuntimeBackend or mock"):
             method_call(backend)
 
     def test_fresh_backend_has_empty_call_log(self) -> None:
@@ -234,8 +239,8 @@ def _make_one_service_manifest() -> EnvironmentManifest:
 
 
 class TestProvisioningProtocolConformance:
-    def test_docker_runtime_has_provisioning_methods(self) -> None:
-        backend = DockerRuntime(runner_address="sentinel:50051")
+    def test_shared_stack_runtime_backend_has_provisioning_methods(self) -> None:
+        backend = SharedStackRuntimeBackend(runner_address="sentinel:50051")
         for method in ("provision", "await_ready", "endpoints", "teardown"):
             assert callable(getattr(backend, method))
 
@@ -362,29 +367,29 @@ class TestTeardownLifecycle:
         backend.teardown(handle)  # no exception
 
 
-class TestDockerRuntimeSharedStackCompat:
+class TestSharedStackRuntimeBackendCompat:
     def test_provision_returns_handle_with_trial_id(self) -> None:
-        backend = DockerRuntime(runner_address="localhost:50051")
+        backend = SharedStackRuntimeBackend(runner_address="localhost:50051")
         spec = _make_trial_spec(trial_id="task-1:0")
         handle = backend.provision(spec)
         assert handle.trial_id == "task-1:0"
         assert isinstance(handle, EnvHandle)
 
     def test_endpoints_returns_shared_run_wide_urls(self) -> None:
-        backend = DockerRuntime(runner_address="localhost:50051")
+        backend = SharedStackRuntimeBackend(runner_address="localhost:50051")
         handle_a = backend.provision(_make_trial_spec(trial_id="task-1:0"))
         handle_b = backend.provision(_make_trial_spec(trial_id="task-1:1"))
         # Shared-stack semantics: both handles resolve to the same endpoints.
         assert backend.endpoints(handle_a) == backend.endpoints(handle_b)
 
     def test_teardown_is_no_op(self) -> None:
-        backend = DockerRuntime(runner_address="localhost:50051")
+        backend = SharedStackRuntimeBackend(runner_address="localhost:50051")
         handle = backend.provision(_make_trial_spec())
         backend.teardown(handle)  # no exception
         backend.teardown(handle)  # idempotent
 
     def test_await_ready_is_no_op(self) -> None:
-        backend = DockerRuntime(runner_address="localhost:50051")
+        backend = SharedStackRuntimeBackend(runner_address="localhost:50051")
         handle = backend.provision(_make_trial_spec())
         assert backend.await_ready(handle) is None
 

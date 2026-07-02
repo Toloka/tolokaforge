@@ -1,4 +1,4 @@
-"""Integration tests for :class:`LocalRuntimeBackend`.
+"""Integration tests for :class:`PerTrialRuntimeBackend`.
 
 Real docker-daemon coverage: spins up a two-service compose stack
 (``postgres:16`` + ``nginx:alpine`` — both public images), verifies
@@ -8,9 +8,9 @@ across concurrent instances.
 The fixture stops short of the runner RPC surface: nginx does not
 speak gRPC, so ``register_trial`` / ``execute_tool`` / etc. are not
 exercised here. That coverage arrives in the validation-gate PR
-against a real workload; see the LocalRuntimeBackend Jira sub-task.
+against a real workload; see the PerTrialRuntimeBackend Jira sub-task.
 Unit-level RPC coverage lives in
-``tests/canonical/test_local_runtime_backend.py``.
+``tests/canonical/test_per_trial_runtime_backend.py``.
 """
 
 from __future__ import annotations
@@ -21,8 +21,8 @@ import pytest
 
 from tests.canonical._factories import make_task_description
 from tests.utils.docker_helpers import is_docker_daemon_available
-from tolokaforge.core.local_runtime import LocalRuntimeBackend, _LocalEnvHandle
 from tolokaforge.core.models import ModelConfig
+from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend, _LocalEnvHandle
 from tolokaforge.core.trial import EnvEndpoints, EnvironmentManifest, TrialSpec
 
 pytestmark = [pytest.mark.integration, pytest.mark.docker]
@@ -46,7 +46,7 @@ def _make_trial_spec(trial_id: str) -> TrialSpec:
             task_id="task-1",
             name="probe",
             category="general",
-            description="LocalRuntimeBackend integration test",
+            description="PerTrialRuntimeBackend integration test",
             environment_manifest=manifest,
         ),
         agent_model_config=ModelConfig(name="claude-sonnet-4-6", provider="anthropic"),
@@ -58,7 +58,7 @@ def _make_trial_spec(trial_id: str) -> TrialSpec:
 
 
 @pytest.mark.skipif(not is_docker_daemon_available(), reason="Docker not available")
-class TestLocalRuntimeBackendLifecycle:
+class TestPerTrialRuntimeBackendLifecycle:
     """End-to-end lifecycle against a real Docker daemon.
 
     Uses the public-images fixture. Each test provisions, resolves
@@ -67,7 +67,7 @@ class TestLocalRuntimeBackendLifecycle:
     """
 
     def test_provision_endpoints_teardown_cycle(self) -> None:
-        backend = LocalRuntimeBackend()
+        backend = PerTrialRuntimeBackend()
         spec = _make_trial_spec(trial_id="lifecycle:0")
         handle = backend.provision(spec)
         try:
@@ -92,7 +92,7 @@ class TestLocalRuntimeBackendLifecycle:
         """Two concurrent trials get different compose projects and
         resolve to different host-side ports for the same container
         port. Proves per-trial isolation."""
-        backend = LocalRuntimeBackend()
+        backend = PerTrialRuntimeBackend()
         spec_a = _make_trial_spec(trial_id="lifecycle:a")
         spec_b = _make_trial_spec(trial_id="lifecycle:b")
         handle_a = backend.provision(spec_a)
@@ -116,7 +116,7 @@ class TestLocalRuntimeBackendLifecycle:
         """After teardown, the compose stack's containers and network
         are gone. Verified by observing that a subsequent provision
         with the same trial_id succeeds without collision."""
-        backend = LocalRuntimeBackend()
+        backend = PerTrialRuntimeBackend()
         spec = _make_trial_spec(trial_id="lifecycle:cleanup")
         handle_first = backend.provision(spec)
         backend.teardown(handle_first)

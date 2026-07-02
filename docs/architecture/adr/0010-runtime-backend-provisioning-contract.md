@@ -8,7 +8,7 @@
 
 ## Context and Problem Statement
 
-ADR-0007 lifted `DockerRuntime` behind a typed `RuntimeBackend` Protocol; ADR-0009 introduced `EnvironmentManifest` as the typed declaration of a task's multi-service environment. Two halves of the multicontainer arc are in place: a Protocol for **where** a trial runs, and a schema for **what** it looks like. The half missing is **how** a backend consumes the manifest — the lifecycle contract between "orchestrator hands the backend a `TrialSpec`" and "backend hands back the endpoints the trial's runner talks to".
+ADR-0007 lifted `SharedStackRuntimeBackend` behind a typed `RuntimeBackend` Protocol; ADR-0009 introduced `EnvironmentManifest` as the typed declaration of a task's multi-service environment. Two halves of the multicontainer arc are in place: a Protocol for **where** a trial runs, and a schema for **what** it looks like. The half missing is **how** a backend consumes the manifest — the lifecycle contract between "orchestrator hands the backend a `TrialSpec`" and "backend hands back the endpoints the trial's runner talks to".
 
 Today's `RuntimeBackend` surface (`connect` / `close` / `health_check` / `cleanup_trial` + a `RunnerClient` attribute) predates the manifest. It has no method for "bring up this trial's environment", no notion of a per-trial handle, no lifecycle semantics for the trial-scoped services the manifest can declare. Without the missing contract, ADR-0009's safety declarations (`read_only`, `network: isolated`, `resources` caps, `security_context`, health probes) are theatre — no one is contractually obligated to honour them.
 
@@ -71,15 +71,15 @@ Concurrent trials each get their own EnvHandle → their own isolated stack.
 - **Lock the enforcement obligations.** ADR-0009's safety declarations are only meaningful if some contract requires a provisioner to honour them. This ADR is where that requirement lives.
 - **Fail loud, not silent.** A provisioner that cannot enforce a declared property (`read_only`, `network: isolated`, resource caps, security context) must reject the manifest at `provision` time, not silently degrade to a weaker posture.
 - **Local-first.** The `local` runtime backend must always work without a cluster or a remote surface. The contract's typing (opaque `EnvHandle`, in-process today) must leave room for future remote provisioning without forcing it now.
-- **Backwards compatible with the shared-stack path.** Every existing task continues to run through `DockerRuntime` unchanged. The new methods have no-op or shared-stack semantics on that backend.
-- **Same iterate-cheaply property as ADR-0009.** Land ADR + Protocol + canonical contract tests together; keep status `Proposed` until the first concrete consumer (`LocalRuntimeBackend`) validates the contract end-to-end.
+- **Backwards compatible with the shared-stack path.** Every existing task continues to run through `SharedStackRuntimeBackend` unchanged. The new methods have no-op or shared-stack semantics on that backend.
+- **Same iterate-cheaply property as ADR-0009.** Land ADR + Protocol + canonical contract tests together; keep status `Proposed` until the first concrete consumer (`PerTrialRuntimeBackend`) validates the contract end-to-end.
 
 ## Considered Options
 
-1. **Extend `RuntimeBackend` with four methods (`provision` / `await_ready` / `endpoints` / `teardown`), an opaque `EnvHandle`, and a typed `ProvisionError`.** Encode every safety-relevant enforcement obligation in the ADR's contract clauses. Ship the extension, contract tests, and no-op adapter on `DockerRuntime` as one PR. **This ADR.**
+1. **Extend `RuntimeBackend` with four methods (`provision` / `await_ready` / `endpoints` / `teardown`), an opaque `EnvHandle`, and a typed `ProvisionError`.** Encode every safety-relevant enforcement obligation in the ADR's contract clauses. Ship the extension, contract tests, and no-op adapter on `SharedStackRuntimeBackend` as one PR. **This ADR.**
 2. **Separate `Provisioner` Protocol distinct from `RuntimeBackend`.** Splits the abstraction into two: the runtime (lifecycle, RPC surface) vs. the provisioner (environment materialisation). Cleaner in theory; doubles the injection points and the Protocol-promotion work; no near-term backend legitimately implements one without the other.
 3. **Inline the provisioning calls in `Conductor`.** The conductor already runs one trial end-to-end; it could hand-roll the compose lifecycle itself. Rejected: couples the conductor to the substrate; every future backend would need conductor changes; loses the "swappable execution surface" property ADR-0007 was written to establish.
-4. **Defer until the first concrete backend needs it.** Ship `LocalRuntimeBackend` first, then extract the contract from what actually shipped. Rejected for the same reason ADR-0009 was written before its first consumer: the contract iterates cheaply against a Pydantic + tests surface, and expensively against a deployed backend.
+4. **Defer until the first concrete backend needs it.** Ship `PerTrialRuntimeBackend` first, then extract the contract from what actually shipped. Rejected for the same reason ADR-0009 was written before its first consumer: the contract iterates cheaply against a Pydantic + tests surface, and expensively against a deployed backend.
 
 ## Decision
 
@@ -185,20 +185,20 @@ runtime:
   backend: local        # "local" | "shared"; default "shared" preserves today's behaviour
 ```
 
-`shared` = `DockerRuntime` (today's shared-stack path). `local` = `LocalRuntimeBackend` (per-trial isolation; the concrete consumer landing in a follow-up PR). Additional backends slot in behind the same key without breaking existing configs.
+`shared` = `SharedStackRuntimeBackend` (today's shared-stack path). `local` = `PerTrialRuntimeBackend` (per-trial isolation; the concrete consumer landing in a follow-up PR). Additional backends slot in behind the same key without breaking existing configs.
 
 The existing `auto_start_services` flag stays as-is; it controls whether the orchestrator brings services up at all, not which backend materialises them.
 
 ### Backwards compatibility
 
-`DockerRuntime` implements the four new methods with **shared-stack semantics**:
+`SharedStackRuntimeBackend` implements the four new methods with **shared-stack semantics**:
 
 - `provision(spec)` — no-op that returns a handle pointing at the run-wide shared stack. All trials in the run receive equivalent handles referencing the same stack.
 - `await_ready(handle)` — no-op if the shared stack was already brought up at `connect` time.
 - `endpoints(handle)` — returns the run-wide shared `EnvEndpoints` unchanged.
 - `teardown(handle)` — no-op; the shared stack lives for the whole run and is torn down at `close`.
 
-Existing tasks running through `DockerRuntime` see no behavioural change. The Protocol widens; nothing that already worked breaks.
+Existing tasks running through `SharedStackRuntimeBackend` see no behavioural change. The Protocol widens; nothing that already worked breaks.
 
 `InMemoryRuntimeBackend` (the ADR-0007 test fixture) is extended with deterministic stub implementations of the four methods, adding call-log entries so orchestrator-level tests can assert lifecycle ordering without spinning up Docker.
 
@@ -211,9 +211,9 @@ Existing tasks running through `DockerRuntime` see no behavioural change. The Pr
 
 ## Impact on existing tasks
 
-**None in the PR that lands this ADR.** The Protocol widens; `DockerRuntime` adapts with no-op semantics that preserve the shared-stack path exactly. Every existing task continues to run unchanged.
+**None in the PR that lands this ADR.** The Protocol widens; `SharedStackRuntimeBackend` adapts with no-op semantics that preserve the shared-stack path exactly. Every existing task continues to run unchanged.
 
-The first behavioural change lands with the follow-up PR that ships `LocalRuntimeBackend` — and even then, tasks default to `DockerRuntime` (backward-compat) until a run's config opts into `runtime.backend: local`. Per-trial isolation is opt-in until the first workload validates it end-to-end.
+The first behavioural change lands with the follow-up PR that ships `PerTrialRuntimeBackend` — and even then, tasks default to `SharedStackRuntimeBackend` (backward-compat) until a run's config opts into `runtime.backend: local`. Per-trial isolation is opt-in until the first workload validates it end-to-end.
 
 ## Industry precedents studied
 
@@ -227,7 +227,7 @@ The Testcontainers family of libraries (https://testcontainers.com, Java/Python/
 
 Inspect AI (UK AI Safety Institute, https://inspect.aisi.org.uk/sandboxing.html) chose the same "one Protocol, many backends" seam we are choosing here: a single `SandboxEnvironment` interface implemented by a docker provider, a Kubernetes provider, and a local provider. Our `RuntimeBackend` plays the same role. Cross-checking against Inspect's provider set validated that four lifecycle methods are sufficient — no substrate they support requires a fifth.
 
-### Docker Compose CLI — the substrate `LocalRuntimeBackend` will target
+### Docker Compose CLI — the substrate `PerTrialRuntimeBackend` will target
 
 `docker compose up -d --wait` (provision + readiness), `docker compose port` (endpoint resolution), `docker compose down -v` (teardown). This is the substrate the first concrete backend compiles the manifest to; the per-trial-project naming convention (`{prefix}-{trial_id}`) is standard Compose usage.
 
@@ -254,8 +254,8 @@ The per-substrate provider pattern is directly analogous; more specifically, Ter
 - Every manifest safety declaration now has a contract clause requiring a provisioner to honour it. `read_only`, `network`, `resources`, `security_context`, health probes — all move from "the schema says so" to "the backend is required to enforce so".
 - The lifecycle picture is written down in one place: who calls `provision`, who calls `teardown`, when, and what happens on failure. Future readers do not re-derive it.
 - The `EnvHandle` abstraction leaves room for remote provisioning without forcing it. The typing does not commit to Python-object handles.
-- `DockerRuntime` continues to satisfy the widened Protocol; no existing task is disturbed by the change.
-- The `Conductor` becomes ready to compose against any provisioning backend without further conductor-side changes. The next PR (`LocalRuntimeBackend`) is a pure Protocol implementation, not a call-site refactor.
+- `SharedStackRuntimeBackend` continues to satisfy the widened Protocol; no existing task is disturbed by the change.
+- The `Conductor` becomes ready to compose against any provisioning backend without further conductor-side changes. The next PR (`PerTrialRuntimeBackend`) is a pure Protocol implementation, not a call-site refactor.
 
 ### Negative / Trade-offs
 
@@ -265,7 +265,7 @@ The per-substrate provider pattern is directly analogous; more specifically, Ter
 
 ### Follow-ups
 
-- **`LocalRuntimeBackend`** — the first concrete consumer that actually enforces the obligations. Ships with its own PR immediately after this ADR lands; also flips ADR-0010 status from `Proposed` to `Accepted` once end-to-end validation is green.
+- **`PerTrialRuntimeBackend`** — the first concrete consumer that actually enforces the obligations. Ships with its own PR immediately after this ADR lands; also flips ADR-0010 status from `Proposed` to `Accepted` once end-to-end validation is green.
 - **`stream_logs` method** — added when a consumer appears (live-tail, observability sink).
 - **Remote provisioner ADR** — settles the on-the-wire `EnvHandle` shape for out-of-process backends. Blocked on a concrete remote workload materialising.
 - **Orphan-sweep policy formalisation** — today's "best-effort on `connect`" is a reasonable default; a future ADR may tighten it if crash-resilience becomes a hard requirement.
@@ -281,5 +281,5 @@ The per-substrate provider pattern is directly analogous; more specifically, Ter
 - **Method placement.** The four new methods live on `RuntimeBackend`, not on a helper class the backend composes with. Rationale: any provisioner is a backend from the orchestrator's perspective; putting the methods on the backend keeps the injection surface flat.
 - **`connect` / `close` unchanged.** The existing lifecycle methods keep their meaning (bring the *backend* up / down for the run). `provision` / `teardown` are per-trial; they are strictly nested inside `connect` / `close` for the lifetime of the run.
 - **No gRPC `.proto` change.** This ADR types the orchestrator ↔ backend surface, not the runner gRPC wire.
-- **Contract tests are canonical.** `tests/canonical/test_runtime_backend_contract.py` grows to pin every new method's contract: handle round-trip, idempotent teardown, `ProvisionError` semantics for both `stage` values, no-op compat semantics on `DockerRuntime`. Any silent drift fails CI.
-- **Status stays `Proposed` until end-to-end validation.** Same discipline ADR-0009 used: land the design + contract tests; flip to `Accepted` when the first concrete consumer (`LocalRuntimeBackend`) validates the contract against a real workload.
+- **Contract tests are canonical.** `tests/canonical/test_runtime_backend_contract.py` grows to pin every new method's contract: handle round-trip, idempotent teardown, `ProvisionError` semantics for both `stage` values, no-op compat semantics on `SharedStackRuntimeBackend`. Any silent drift fails CI.
+- **Status stays `Proposed` until end-to-end validation.** Same discipline ADR-0009 used: land the design + contract tests; flip to `Accepted` when the first concrete consumer (`PerTrialRuntimeBackend`) validates the contract against a real workload.

@@ -49,7 +49,7 @@ Use for a runtime component behind a swappable boundary. Every occurrence must s
 |---|---|---|---|---|---|
 | Per-trial artifacts | `TrialArtifactWriter` | `FileArtifactWriter` | `InMemoryArtifactWriter` | `test_artifact_writer_contract.py` | [0004](0004-trial-artifact-writer-seam.md) |
 | Run aggregates | `RunAggregateWriter` | `FileRunAggregateWriter` | `InMemoryRunAggregateWriter` | `test_run_aggregate_writer_contract.py` | [0005](0005-run-aggregate-writer-seam.md) |
-| Execution surface | `RuntimeBackend` | `DockerRuntime` | `InMemoryRuntimeBackend` | `test_runtime_backend_contract.py` | [0007](0007-runtime-backend-protocol.md) |
+| Execution surface | `RuntimeBackend` | `SharedStackRuntimeBackend` | `InMemoryRuntimeBackend` | `test_runtime_backend_contract.py` | [0007](0007-runtime-backend-protocol.md) |
 | Per-trial executor | `Conductor` | `InProcessConductor` | `InMemoryConductor` | `test_conductor_contract.py` | [0008](0008-conductor-protocol.md) |
 
 ### Pattern B — data declaration

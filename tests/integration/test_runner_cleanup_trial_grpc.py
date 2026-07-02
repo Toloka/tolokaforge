@@ -13,8 +13,8 @@ from typing import Any
 import grpc
 import pytest
 
-from tolokaforge.core.docker_runtime import GrpcRunnerClient, RunnerClient
 from tolokaforge.core.models import ModelConfig
+from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient, RunnerClient
 from tolokaforge.core.trial import EnvEndpoints, TrialSpec
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.models import TaskDescription

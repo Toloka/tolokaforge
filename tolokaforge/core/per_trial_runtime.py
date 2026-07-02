@@ -1,10 +1,10 @@
-"""``LocalRuntimeBackend`` — per-trial docker-compose materialisation.
+"""``PerTrialRuntimeBackend`` — per-trial docker-compose materialisation.
 
 The concrete :class:`~tolokaforge.core.runtime.RuntimeBackend` for local,
 laptop-class development and CI. Each trial materialises as an isolated
 docker-compose project via ``testcontainers.compose.DockerCompose``:
 
-* :meth:`LocalRuntimeBackend.provision` copies the compose file (and any
+* :meth:`PerTrialRuntimeBackend.provision` copies the compose file (and any
   adjacent bind-mount source files) into a per-trial temp directory so
   Docker Compose auto-generates a unique project name per trial, then
   starts the stack via ``.start()`` (which runs ``docker compose up -d
@@ -19,7 +19,7 @@ docker-compose project via ``testcontainers.compose.DockerCompose``:
 The per-trial RPC methods (``register_trial`` / ``execute_tool`` /
 ``grade_trial`` / ``get_state`` / ``reset_trial`` / ``cleanup_trial``,
 ADR-0013) delegate to a :class:`RunnerClient` cached at provision time
-and keyed by ``trial_id``. Contrast with :class:`DockerRuntime` which
+and keyed by ``trial_id``. Contrast with :class:`SharedStackRuntimeBackend` which
 carries a single client for the whole run.
 
 Endpoint resolution uses conventions (defaults + customisation later —
@@ -41,8 +41,8 @@ from typing import TYPE_CHECKING, Any
 
 from testcontainers.compose import DockerCompose
 
-from tolokaforge.core.docker_runtime import GrpcRunnerClient, RunnerClient
 from tolokaforge.core.runtime import EnvHandle, ProvisionError
+from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient, RunnerClient
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, EnvEndpoints
 
 if TYPE_CHECKING:
@@ -65,14 +65,14 @@ _RAG_SERVICE_CANDIDATES = ("rag", "rag-service")
 
 @dataclass(frozen=True)
 class _LocalEnvHandle:
-    """Concrete handle type returned by :class:`LocalRuntimeBackend`.
+    """Concrete handle type returned by :class:`PerTrialRuntimeBackend`.
 
     Satisfies the :class:`EnvHandle` Protocol structurally via
     ``trial_id``. Every other field is backend-private — callers use
     the handle as an opaque token.
 
     ``endpoints`` is resolved at provision time and snapshot here so
-    :meth:`LocalRuntimeBackend.endpoints` is a pure read (no re-query,
+    :meth:`PerTrialRuntimeBackend.endpoints` is a pure read (no re-query,
     no side effects). If endpoint resolution fails, provision itself
     raises :class:`ProvisionError` before the handle is returned.
     """
@@ -86,7 +86,7 @@ class _LocalEnvHandle:
 
 
 @dataclass
-class LocalRuntimeBackend:
+class PerTrialRuntimeBackend:
     """Per-trial ``RuntimeBackend`` backed by ``testcontainers.compose.DockerCompose``.
 
     Each :meth:`provision` call materialises an isolated docker-compose
@@ -145,7 +145,7 @@ class LocalRuntimeBackend:
             try:
                 client.close()
             except Exception:  # noqa: BLE001 — best-effort teardown
-                logger.exception("LocalRuntimeBackend.close: client shutdown failed")
+                logger.exception("PerTrialRuntimeBackend.close: client shutdown failed")
         self._clients.clear()
         self._connected_trials.clear()
 
@@ -169,8 +169,8 @@ class LocalRuntimeBackend:
                 trial_id=spec.trial_id,
                 stage="provision",
                 reason=(
-                    "LocalRuntimeBackend requires TaskDescription.environment_manifest; "
-                    "task did not declare one. Use DockerRuntime for shared-stack tasks."
+                    "PerTrialRuntimeBackend requires TaskDescription.environment_manifest; "
+                    "task did not declare one. Use SharedStackRuntimeBackend for shared-stack tasks."
                 ),
             )
 
@@ -251,7 +251,7 @@ class LocalRuntimeBackend:
                 trial_id=trial_id,
                 stage="provision",
                 reason=(
-                    f"LocalRuntimeBackend requires a compose service named "
+                    f"PerTrialRuntimeBackend requires a compose service named "
                     f"{_DB_SERVICE_DEFAULT!r} exposing port {_DB_PORT_DEFAULT}; "
                     "compose file does not declare one. Endpoint-resolution "
                     "customisation is a follow-up ticket."
@@ -278,7 +278,7 @@ class LocalRuntimeBackend:
         concerns."""
         if not isinstance(handle, _LocalEnvHandle):
             raise TypeError(
-                f"LocalRuntimeBackend.endpoints requires a _LocalEnvHandle; got {type(handle).__name__}"
+                f"PerTrialRuntimeBackend.endpoints requires a _LocalEnvHandle; got {type(handle).__name__}"
             )
         return handle.endpoints
 
@@ -295,7 +295,7 @@ class LocalRuntimeBackend:
                 client.close()
             except Exception:  # noqa: BLE001 — best-effort
                 logger.exception(
-                    "LocalRuntimeBackend.teardown: runner client close failed for %s",
+                    "PerTrialRuntimeBackend.teardown: runner client close failed for %s",
                     handle.trial_id,
                 )
         _shutdown_compose(handle.compose)
@@ -374,7 +374,7 @@ class LocalRuntimeBackend:
         client = self._clients.get(trial_id)
         if client is None:
             raise RuntimeError(
-                f"LocalRuntimeBackend has no runner client for trial_id={trial_id!r}. "
+                f"PerTrialRuntimeBackend has no runner client for trial_id={trial_id!r}. "
                 "provision() must be called before any per-trial RPC method."
             )
         if trial_id not in self._connected_trials:
@@ -451,7 +451,7 @@ def _resolve_host_port(
         return compose.get_service_host_and_port(service_name=service_name, port=container_port)
     except Exception as exc:  # noqa: BLE001 — testcontainers raises varied types
         logger.debug(
-            "LocalRuntimeBackend: service %r port %d not resolvable: %s",
+            "PerTrialRuntimeBackend: service %r port %d not resolvable: %s",
             service_name,
             container_port,
             exc,
@@ -469,7 +469,7 @@ def _resolve_rag_url(compose: DockerCompose) -> str | None:
             container = compose.get_container(service_name=candidate)
         except Exception as exc:  # noqa: BLE001 — service not declared
             logger.debug(
-                "LocalRuntimeBackend: rag candidate %r not in compose: %s",
+                "PerTrialRuntimeBackend: rag candidate %r not in compose: %s",
                 candidate,
                 exc,
             )
@@ -501,4 +501,4 @@ def _shutdown_compose(compose: DockerCompose) -> None:
     try:
         compose.stop(down=True)
     except Exception:  # noqa: BLE001 — best-effort teardown
-        logger.exception("LocalRuntimeBackend: docker compose down failed")
+        logger.exception("PerTrialRuntimeBackend: docker compose down failed")

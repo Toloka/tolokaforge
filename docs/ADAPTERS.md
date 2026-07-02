@@ -36,7 +36,7 @@ stable hash grading.
 | **File**    | `tolokaforge/core/orchestrator.py` — `_run_trial()` post-trial state sync |
 | **Symptom** | All trials write identical `env.yaml` showing only the initial state. Actual tool-induced changes are invisible in post-mortem diagnostics. |
 | **Root cause** | After trial execution, the orchestrator synced `adapter_env.data` — a snapshot taken during `create_environment()`. In Docker mode, tool execution happens through the Runner's DB service, so the adapter's local `InMemoryDatabase` never reflects actual changes. Additionally, `create_environment()` stores its DB at `self._db_instances[task_id]` (keyed by task ID, not trial ID), so concurrent trials on the same task overwrite each other's DB reference. |
-| **Fix** | After trial execution in Docker mode, fetch the actual post-trial state from the Runner's DB service via `docker_runtime.get_state(trial_id)`. Falls back to adapter data if the RPC fails. Non-Docker mode still uses adapter data directly. |
+| **Fix** | After trial execution in Docker mode, fetch the actual post-trial state from the Runner's DB service via `shared_stack_runtime.get_state(trial_id)`. Falls back to adapter data if the RPC fails. Non-Docker mode still uses adapter data directly. |
 
 ### Open Issues (Not Fixed)
 
@@ -141,7 +141,7 @@ Issues that affect all adapters or the harness infrastructure.
 | **Status**  | ✅ Fixed |
 | **File**    | `tolokaforge/core/orchestrator.py` — grade construction in `_run_trial()` |
 | **Symptom** | `grade.yaml` always shows `state_diff: null` even when the grading RPC computes a detailed diff (e.g., "1 different in table X"). Makes post-mortem debugging of grading mismatches impossible without re-running. |
-| **Root cause** | The Runner's `GradeTrial` RPC returns `state_diff_json` in the Grade proto, and `docker_runtime.grade_trial()` extracts it to `g["state_diff_json"]`. But the orchestrator at `_run_trial()` line 1262 never parsed it — the `Grade(...)` constructor was not passed `state_diff`. |
+| **Root cause** | The Runner's `GradeTrial` RPC returns `state_diff_json` in the Grade proto, and `shared_stack_runtime.grade_trial()` extracts it to `g["state_diff_json"]`. But the orchestrator at `_run_trial()` line 1262 never parsed it — the `Grade(...)` constructor was not passed `state_diff`. |
 | **Fix** | Parse `g["state_diff_json"]` via `json.loads()` and pass it as `state_diff=state_diff_parsed` to the `Grade` constructor. Now `grade.yaml` contains the full per-table diff (missing, extra, different records with field details). |
 
 #### gRPC Runner health check takes ~20s on startup

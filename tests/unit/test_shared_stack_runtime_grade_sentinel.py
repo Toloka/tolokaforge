@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from tolokaforge.core.docker_runtime import _proto_score_to_optional
+from tolokaforge.core.shared_stack_runtime import _proto_score_to_optional
 
 pytestmark = pytest.mark.unit
 

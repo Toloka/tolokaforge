@@ -1,6 +1,6 @@
 """Pin the ``RunnerClient`` Protocol contract.
 
-The Protocol declares the runner-RPC surface :class:`DockerRuntime`
+The Protocol declares the runner-RPC surface :class:`SharedStackRuntimeBackend`
 delegates to when :class:`~tolokaforge.core.runtime.RuntimeBackend`'s
 per-trial RPC methods (register / execute / grade / get_state / reset /
 cleanup) are invoked. Six per-trial RPCs plus a lifecycle triplet
@@ -18,7 +18,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tolokaforge.core.docker_runtime import GrpcRunnerClient, RunnerClient
+from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient, RunnerClient
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S
 from tolokaforge.tools.registry import ToolResult
 

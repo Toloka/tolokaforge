@@ -1,8 +1,8 @@
-"""Unit tests for :class:`LocalRuntimeBackend`.
+"""Unit tests for :class:`PerTrialRuntimeBackend`.
 
 Uses monkey-patched ``DockerCompose`` and ``GrpcRunnerClient`` so tests
 run without a Docker daemon. Real-daemon coverage lives in
-``tests/integration/docker/test_local_runtime_backend_integration.py``,
+``tests/integration/docker/test_per_trial_runtime_backend_integration.py``,
 gated by ``@pytest.mark.docker``.
 
 Every code path this file exercises is Protocol-level: does the backend
@@ -18,9 +18,9 @@ from typing import Any
 import pytest
 
 from tests.canonical._factories import make_task_description
-from tolokaforge.core import local_runtime as local_runtime_module
-from tolokaforge.core.local_runtime import LocalRuntimeBackend, _LocalEnvHandle
+from tolokaforge.core import per_trial_runtime as per_trial_runtime_module
 from tolokaforge.core.models import ModelConfig
+from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend, _LocalEnvHandle
 from tolokaforge.core.runtime import EnvHandle, ProvisionError, RuntimeBackend
 from tolokaforge.core.trial import EnvEndpoints, EnvironmentManifest, TrialSpec
 
@@ -204,12 +204,12 @@ class _FakeRunnerClient:
 
 
 @pytest.fixture
-def patched_backend(monkeypatch: pytest.MonkeyPatch) -> LocalRuntimeBackend:
-    """LocalRuntimeBackend with DockerCompose + GrpcRunnerClient patched
+def patched_backend(monkeypatch: pytest.MonkeyPatch) -> PerTrialRuntimeBackend:
+    """PerTrialRuntimeBackend with DockerCompose + GrpcRunnerClient patched
     to record-only fakes. Every test in this file uses this fixture."""
-    monkeypatch.setattr(local_runtime_module, "DockerCompose", _FakeCompose)
-    monkeypatch.setattr(local_runtime_module, "GrpcRunnerClient", _FakeRunnerClient)
-    return LocalRuntimeBackend()
+    monkeypatch.setattr(per_trial_runtime_module, "DockerCompose", _FakeCompose)
+    monkeypatch.setattr(per_trial_runtime_module, "GrpcRunnerClient", _FakeRunnerClient)
+    return PerTrialRuntimeBackend()
 
 
 def _make_trial_spec(
@@ -241,19 +241,19 @@ def _make_trial_spec(
 
 
 class TestProtocolConformance:
-    def test_local_runtime_backend_satisfies_runtime_backend(
-        self, patched_backend: LocalRuntimeBackend
+    def test_per_trial_runtime_backend_satisfies_runtime_backend(
+        self, patched_backend: PerTrialRuntimeBackend
     ) -> None:
         assert isinstance(patched_backend, RuntimeBackend)
 
     def test_all_provisioning_methods_are_present(
-        self, patched_backend: LocalRuntimeBackend
+        self, patched_backend: PerTrialRuntimeBackend
     ) -> None:
         for method in ("provision", "await_ready", "endpoints", "teardown"):
             assert callable(getattr(patched_backend, method))
 
     def test_all_per_trial_rpc_methods_are_present(
-        self, patched_backend: LocalRuntimeBackend
+        self, patched_backend: PerTrialRuntimeBackend
     ) -> None:
         for method in (
             "register_trial",
@@ -272,16 +272,16 @@ class TestProtocolConformance:
 
 
 class TestRunLevelLifecycle:
-    def test_connect_is_a_no_op(self, patched_backend: LocalRuntimeBackend) -> None:
+    def test_connect_is_a_no_op(self, patched_backend: PerTrialRuntimeBackend) -> None:
         # Must not raise; no side effects tests can check beyond that.
         patched_backend.connect(timeout=5.0, retry_interval=0.1)
 
     def test_health_check_returns_true_with_no_trials(
-        self, patched_backend: LocalRuntimeBackend
+        self, patched_backend: PerTrialRuntimeBackend
     ) -> None:
         assert patched_backend.health_check() is True
 
-    def test_close_drops_all_cached_clients(self, patched_backend: LocalRuntimeBackend) -> None:
+    def test_close_drops_all_cached_clients(self, patched_backend: PerTrialRuntimeBackend) -> None:
         handle = patched_backend.provision(
             _make_trial_spec(compose_file=_FIXTURES / "safe_two_service.yaml")
         )
@@ -297,7 +297,7 @@ class TestRunLevelLifecycle:
 
 class TestProvision:
     def test_returns_handle_with_matching_trial_id(
-        self, patched_backend: LocalRuntimeBackend
+        self, patched_backend: PerTrialRuntimeBackend
     ) -> None:
         spec = _make_trial_spec(
             trial_id="task-1:0", compose_file=_FIXTURES / "safe_two_service.yaml"
@@ -306,7 +306,9 @@ class TestProvision:
         assert isinstance(handle, EnvHandle)
         assert handle.trial_id == "task-1:0"
 
-    def test_populates_per_trial_client_cache(self, patched_backend: LocalRuntimeBackend) -> None:
+    def test_populates_per_trial_client_cache(
+        self, patched_backend: PerTrialRuntimeBackend
+    ) -> None:
         spec = _make_trial_spec(compose_file=_FIXTURES / "safe_two_service.yaml")
         patched_backend.provision(spec)
         assert spec.trial_id in patched_backend._clients
@@ -317,7 +319,7 @@ class TestProvision:
         assert client.connected is False
         assert spec.trial_id not in patched_backend._connected_trials
 
-    def test_first_rpc_call_triggers_connect(self, patched_backend: LocalRuntimeBackend) -> None:
+    def test_first_rpc_call_triggers_connect(self, patched_backend: PerTrialRuntimeBackend) -> None:
         spec = _make_trial_spec(compose_file=_FIXTURES / "safe_two_service.yaml")
         patched_backend.provision(spec)
         patched_backend.register_trial(trial_id=spec.trial_id, trial_spec_json="{}")
@@ -339,9 +341,9 @@ class TestProvision:
                 self.connect_calls += 1
                 super().connect(timeout=timeout, retry_interval=retry_interval)
 
-        monkeypatch.setattr(local_runtime_module, "DockerCompose", _FakeCompose)
-        monkeypatch.setattr(local_runtime_module, "GrpcRunnerClient", _CountingClient)
-        backend = LocalRuntimeBackend()
+        monkeypatch.setattr(per_trial_runtime_module, "DockerCompose", _FakeCompose)
+        monkeypatch.setattr(per_trial_runtime_module, "GrpcRunnerClient", _CountingClient)
+        backend = PerTrialRuntimeBackend()
         spec = _make_trial_spec(compose_file=_FIXTURES / "safe_two_service.yaml")
         backend.provision(spec)
         backend.register_trial(trial_id=spec.trial_id, trial_spec_json="{}")
@@ -351,13 +353,15 @@ class TestProvision:
         assert isinstance(client, _CountingClient)
         assert client.connect_calls == 1
 
-    def test_starts_the_compose_stack(self, patched_backend: LocalRuntimeBackend) -> None:
+    def test_starts_the_compose_stack(self, patched_backend: PerTrialRuntimeBackend) -> None:
         spec = _make_trial_spec(compose_file=_FIXTURES / "safe_two_service.yaml")
         handle = patched_backend.provision(spec)
         assert isinstance(handle, _LocalEnvHandle)
         assert handle.compose.started is True
 
-    def test_creates_per_trial_temp_directory(self, patched_backend: LocalRuntimeBackend) -> None:
+    def test_creates_per_trial_temp_directory(
+        self, patched_backend: PerTrialRuntimeBackend
+    ) -> None:
         spec = _make_trial_spec(compose_file=_FIXTURES / "safe_two_service.yaml")
         handle = patched_backend.provision(spec)
         assert isinstance(handle, _LocalEnvHandle)
@@ -365,7 +369,7 @@ class TestProvision:
         assert handle.temp_dir.is_dir()
 
     def test_missing_manifest_raises_provision_error(
-        self, patched_backend: LocalRuntimeBackend
+        self, patched_backend: PerTrialRuntimeBackend
     ) -> None:
         spec = _make_trial_spec(compose_file=None)  # manifest = None
         with pytest.raises(ProvisionError) as exc:
@@ -381,9 +385,9 @@ class TestProvision:
             def start(self) -> None:
                 raise RuntimeError("simulated compose up failure")
 
-        monkeypatch.setattr(local_runtime_module, "DockerCompose", _FailingCompose)
-        monkeypatch.setattr(local_runtime_module, "GrpcRunnerClient", _FakeRunnerClient)
-        backend = LocalRuntimeBackend()
+        monkeypatch.setattr(per_trial_runtime_module, "DockerCompose", _FailingCompose)
+        monkeypatch.setattr(per_trial_runtime_module, "GrpcRunnerClient", _FakeRunnerClient)
+        backend = PerTrialRuntimeBackend()
         spec = _make_trial_spec(compose_file=_FIXTURES / "safe_two_service.yaml")
         with pytest.raises(ProvisionError) as exc:
             backend.provision(spec)
@@ -393,7 +397,7 @@ class TestProvision:
         assert spec.trial_id not in backend._clients
 
     def test_concurrent_trials_get_independent_temp_dirs(
-        self, patched_backend: LocalRuntimeBackend
+        self, patched_backend: PerTrialRuntimeBackend
     ) -> None:
         spec_a = _make_trial_spec(
             trial_id="task-1:0", compose_file=_FIXTURES / "safe_two_service.yaml"
@@ -414,7 +418,7 @@ class TestProvision:
 
 
 class TestAwaitReady:
-    def test_no_op_after_provision(self, patched_backend: LocalRuntimeBackend) -> None:
+    def test_no_op_after_provision(self, patched_backend: PerTrialRuntimeBackend) -> None:
         spec = _make_trial_spec(compose_file=_FIXTURES / "safe_two_service.yaml")
         handle = patched_backend.provision(spec)
         assert patched_backend.await_ready(handle) is None
@@ -426,7 +430,7 @@ class TestAwaitReady:
 
 
 class TestEndpoints:
-    def test_returns_env_endpoints(self, patched_backend: LocalRuntimeBackend) -> None:
+    def test_returns_env_endpoints(self, patched_backend: PerTrialRuntimeBackend) -> None:
         spec = _make_trial_spec(compose_file=_FIXTURES / "safe_two_service.yaml")
         handle = patched_backend.provision(spec)
         endpoints = patched_backend.endpoints(handle)
@@ -448,9 +452,9 @@ class TestEndpoints:
                 super().__init__(*args, **kwargs)
                 self.exposed_services = {"default": {50051: 50100}}
 
-        monkeypatch.setattr(local_runtime_module, "DockerCompose", _NoDbCompose)
-        monkeypatch.setattr(local_runtime_module, "GrpcRunnerClient", _FakeRunnerClient)
-        backend = LocalRuntimeBackend()
+        monkeypatch.setattr(per_trial_runtime_module, "DockerCompose", _NoDbCompose)
+        monkeypatch.setattr(per_trial_runtime_module, "GrpcRunnerClient", _FakeRunnerClient)
+        backend = PerTrialRuntimeBackend()
         spec = _make_trial_spec(compose_file=_FIXTURES / "safe_one_service.yaml")
         with pytest.raises(ProvisionError) as exc:
             backend.provision(spec)
@@ -469,15 +473,17 @@ class TestEndpoints:
                     "rag": {8080: 58080},
                 }
 
-        monkeypatch.setattr(local_runtime_module, "DockerCompose", _WithRagCompose)
-        monkeypatch.setattr(local_runtime_module, "GrpcRunnerClient", _FakeRunnerClient)
-        backend = LocalRuntimeBackend()
+        monkeypatch.setattr(per_trial_runtime_module, "DockerCompose", _WithRagCompose)
+        monkeypatch.setattr(per_trial_runtime_module, "GrpcRunnerClient", _FakeRunnerClient)
+        backend = PerTrialRuntimeBackend()
         spec = _make_trial_spec(compose_file=_FIXTURES / "safe_two_service.yaml")
         handle = backend.provision(spec)
         endpoints = backend.endpoints(handle)
         assert endpoints.rag_url == "http://127.0.0.1:58080"
 
-    def test_endpoints_rejects_foreign_handle(self, patched_backend: LocalRuntimeBackend) -> None:
+    def test_endpoints_rejects_foreign_handle(
+        self, patched_backend: PerTrialRuntimeBackend
+    ) -> None:
         class _NotAHandle:
             trial_id = "x"
 
@@ -491,7 +497,9 @@ class TestEndpoints:
 
 
 class TestTeardown:
-    def test_stops_compose_and_removes_temp_dir(self, patched_backend: LocalRuntimeBackend) -> None:
+    def test_stops_compose_and_removes_temp_dir(
+        self, patched_backend: PerTrialRuntimeBackend
+    ) -> None:
         spec = _make_trial_spec(compose_file=_FIXTURES / "safe_two_service.yaml")
         handle = patched_backend.provision(spec)
         assert isinstance(handle, _LocalEnvHandle)
@@ -502,7 +510,7 @@ class TestTeardown:
         assert not temp_dir.exists()
 
     def test_closes_the_cached_runner_client_when_connected(
-        self, patched_backend: LocalRuntimeBackend
+        self, patched_backend: PerTrialRuntimeBackend
     ) -> None:
         """Only clients that were actually connected via first RPC use
         get closed on teardown — a client that was never connected has
@@ -519,7 +527,7 @@ class TestTeardown:
         assert spec.trial_id not in patched_backend._connected_trials
 
     def test_never_connected_client_is_not_closed_on_teardown(
-        self, patched_backend: LocalRuntimeBackend
+        self, patched_backend: PerTrialRuntimeBackend
     ) -> None:
         """A trial that never called an RPC has a cached-but-unconnected
         client. teardown removes it from the cache but does not call
@@ -532,13 +540,13 @@ class TestTeardown:
         assert client.closed is False
         assert spec.trial_id not in patched_backend._clients
 
-    def test_teardown_is_idempotent(self, patched_backend: LocalRuntimeBackend) -> None:
+    def test_teardown_is_idempotent(self, patched_backend: PerTrialRuntimeBackend) -> None:
         spec = _make_trial_spec(compose_file=_FIXTURES / "safe_two_service.yaml")
         handle = patched_backend.provision(spec)
         patched_backend.teardown(handle)
         patched_backend.teardown(handle)  # must not raise
 
-    def test_teardown_ignores_foreign_handle(self, patched_backend: LocalRuntimeBackend) -> None:
+    def test_teardown_ignores_foreign_handle(self, patched_backend: PerTrialRuntimeBackend) -> None:
         class _NotAHandle:
             trial_id = "x"
 
@@ -553,7 +561,7 @@ class TestTeardown:
 
 class TestPerTrialRpcDelegation:
     def test_register_trial_delegates_to_cached_client(
-        self, patched_backend: LocalRuntimeBackend
+        self, patched_backend: PerTrialRuntimeBackend
     ) -> None:
         spec = _make_trial_spec(compose_file=_FIXTURES / "safe_two_service.yaml")
         patched_backend.provision(spec)
@@ -563,7 +571,7 @@ class TestPerTrialRpcDelegation:
         assert isinstance(client, _FakeRunnerClient)
         assert client.calls[-1][0] == "register_trial"
 
-    def test_execute_tool_delegates(self, patched_backend: LocalRuntimeBackend) -> None:
+    def test_execute_tool_delegates(self, patched_backend: PerTrialRuntimeBackend) -> None:
         spec = _make_trial_spec(compose_file=_FIXTURES / "safe_two_service.yaml")
         patched_backend.provision(spec)
         patched_backend.execute_tool(trial_id=spec.trial_id, tool_name="echo", arguments={"x": 1})
@@ -572,7 +580,7 @@ class TestPerTrialRpcDelegation:
         assert client.calls[-1][0] == "execute_tool"
         assert client.calls[-1][2]["arguments"] == {"x": 1}
 
-    def test_grade_trial_delegates(self, patched_backend: LocalRuntimeBackend) -> None:
+    def test_grade_trial_delegates(self, patched_backend: PerTrialRuntimeBackend) -> None:
         spec = _make_trial_spec(compose_file=_FIXTURES / "safe_two_service.yaml")
         patched_backend.provision(spec)
         patched_backend.grade_trial(trial_id=spec.trial_id)
@@ -580,7 +588,7 @@ class TestPerTrialRpcDelegation:
         assert isinstance(client, _FakeRunnerClient)
         assert client.calls[-1][0] == "grade_trial"
 
-    def test_get_state_delegates(self, patched_backend: LocalRuntimeBackend) -> None:
+    def test_get_state_delegates(self, patched_backend: PerTrialRuntimeBackend) -> None:
         spec = _make_trial_spec(compose_file=_FIXTURES / "safe_two_service.yaml")
         patched_backend.provision(spec)
         patched_backend.get_state(trial_id=spec.trial_id)
@@ -588,7 +596,7 @@ class TestPerTrialRpcDelegation:
         assert isinstance(client, _FakeRunnerClient)
         assert client.calls[-1][0] == "get_state"
 
-    def test_reset_trial_delegates(self, patched_backend: LocalRuntimeBackend) -> None:
+    def test_reset_trial_delegates(self, patched_backend: PerTrialRuntimeBackend) -> None:
         spec = _make_trial_spec(compose_file=_FIXTURES / "safe_two_service.yaml")
         patched_backend.provision(spec)
         patched_backend.reset_trial(trial_id=spec.trial_id, execute_init_actions=True)
@@ -598,7 +606,7 @@ class TestPerTrialRpcDelegation:
         assert client.calls[-1][2]["execute_init_actions"] is True
 
     def test_cleanup_trial_delegates_when_client_present(
-        self, patched_backend: LocalRuntimeBackend
+        self, patched_backend: PerTrialRuntimeBackend
     ) -> None:
         spec = _make_trial_spec(compose_file=_FIXTURES / "safe_two_service.yaml")
         patched_backend.provision(spec)
@@ -606,14 +614,14 @@ class TestPerTrialRpcDelegation:
         assert result == {"success": True, "error": None}
 
     def test_cleanup_trial_is_idempotent_when_no_client(
-        self, patched_backend: LocalRuntimeBackend
+        self, patched_backend: PerTrialRuntimeBackend
     ) -> None:
         # No provision → no client. Contract says cleanup_trial is idempotent.
         result = patched_backend.cleanup_trial("never-provisioned:0")
         assert result == {"success": True, "error": None}
 
     def test_rpc_before_provision_raises_clear_error(
-        self, patched_backend: LocalRuntimeBackend
+        self, patched_backend: PerTrialRuntimeBackend
     ) -> None:
         with pytest.raises(RuntimeError, match="provision"):
             patched_backend.register_trial(trial_id="never-provisioned:0", trial_spec_json="{}")

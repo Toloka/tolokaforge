@@ -2,7 +2,7 @@
 
 The orchestrator dispatches trials to an execution environment through a
 runtime backend. Today's only concrete backend is
-:class:`tolokaforge.core.docker_runtime.DockerRuntime` (a thin gRPC
+:class:`tolokaforge.core.shared_stack_runtime.SharedStackRuntimeBackend` (a thin gRPC
 client wrapper around the runner container); this module declares the
 Protocol that decouples the orchestrator from that single implementation.
 
@@ -14,7 +14,7 @@ Protocol that decouples the orchestrator from that single implementation.
   test fixture and as proof the seam is swappable. Records lifecycle,
   cleanup, and provisioning calls on a :class:`RuntimeBackendCallLog`;
   the per-trial RPC methods raise :class:`NotImplementedError` (tests
-  that exercise the runner RPC surface must use :class:`DockerRuntime`
+  that exercise the runner RPC surface must use :class:`SharedStackRuntimeBackend`
   or mock the methods on the backend instance).
 """
 
@@ -112,7 +112,7 @@ class RuntimeBackend(Protocol):
     def connect(self, timeout: float = 30.0, retry_interval: float = 1.0) -> None:
         """Establish the runtime connection (or no-op for an in-memory impl).
 
-        ``DockerRuntime`` waits for the gRPC server to become healthy
+        ``SharedStackRuntimeBackend`` waits for the gRPC server to become healthy
         under a timeout / retry loop; in-memory implementations record
         the call and return immediately.
 
@@ -320,7 +320,7 @@ class InMemoryRuntimeBackend:
 
     Records lifecycle, cleanup, and provisioning calls on :attr:`call_log`.
     The per-trial RPC methods raise :class:`NotImplementedError` — tests
-    that exercise the RPC surface must use :class:`DockerRuntime` or
+    that exercise the RPC surface must use :class:`SharedStackRuntimeBackend` or
     mock the methods on the backend instance.
 
     Constructor knobs let orchestrator-level tests exercise the failure
@@ -409,8 +409,8 @@ class InMemoryRuntimeBackend:
 
     # ---- Per-trial RPC operations (ADR-0013) ----
     # The in-memory backend has no runner service to talk to; every RPC
-    # method raises with a pointer to the DockerRuntime alternative.
-    # Tests that exercise the RPC surface must use ``DockerRuntime`` or
+    # method raises with a pointer to the SharedStackRuntimeBackend alternative.
+    # Tests that exercise the RPC surface must use ``SharedStackRuntimeBackend`` or
     # mock the methods on this instance directly.
     def register_trial(
         self,
@@ -421,7 +421,7 @@ class InMemoryRuntimeBackend:
         raise NotImplementedError(
             "InMemoryRuntimeBackend.register_trial is not implemented. "
             "Tests that exercise the runner RPC surface must use "
-            "DockerRuntime or mock the method on the backend instance."
+            "SharedStackRuntimeBackend or mock the method on the backend instance."
         )
 
     def execute_tool(
@@ -435,7 +435,7 @@ class InMemoryRuntimeBackend:
         raise NotImplementedError(
             "InMemoryRuntimeBackend.execute_tool is not implemented. "
             "Tests that exercise the runner RPC surface must use "
-            "DockerRuntime or mock the method on the backend instance."
+            "SharedStackRuntimeBackend or mock the method on the backend instance."
         )
 
     def grade_trial(
@@ -447,7 +447,7 @@ class InMemoryRuntimeBackend:
         raise NotImplementedError(
             "InMemoryRuntimeBackend.grade_trial is not implemented. "
             "Tests that exercise the runner RPC surface must use "
-            "DockerRuntime or mock the method on the backend instance."
+            "SharedStackRuntimeBackend or mock the method on the backend instance."
         )
 
     def get_state(
@@ -459,12 +459,12 @@ class InMemoryRuntimeBackend:
         raise NotImplementedError(
             "InMemoryRuntimeBackend.get_state is not implemented. "
             "Tests that exercise the runner RPC surface must use "
-            "DockerRuntime or mock the method on the backend instance."
+            "SharedStackRuntimeBackend or mock the method on the backend instance."
         )
 
     def reset_trial(self, trial_id: str, execute_init_actions: bool = False) -> dict[str, Any]:
         raise NotImplementedError(
             "InMemoryRuntimeBackend.reset_trial is not implemented. "
             "Tests that exercise the runner RPC surface must use "
-            "DockerRuntime or mock the method on the backend instance."
+            "SharedStackRuntimeBackend or mock the method on the backend instance."
         )

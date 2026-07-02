@@ -7,7 +7,7 @@ relies on this by invoking ``connect()`` unconditionally at the start
 of every run.
 
 This test exercises the only production implementation
-(:class:`RunnerClient`, which :class:`DockerRuntime.connect` delegates
+(:class:`RunnerClient`, which :class:`SharedStackRuntimeBackend.connect` delegates
 to) to prove the contract holds: a second ``connect()`` on an
 already-healthy client does not raise, does not recreate the gRPC
 channel, and just re-runs the health probe.
@@ -19,7 +19,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tolokaforge.core.docker_runtime import DockerRuntime, GrpcRunnerClient
+from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient, SharedStackRuntimeBackend
 
 pytestmark = pytest.mark.unit
 
@@ -88,15 +88,15 @@ class TestRunnerClientConnectIdempotency:
         assert health_check_calls == 2
 
 
-class TestDockerRuntimeConnectDelegates:
-    """``DockerRuntime.connect`` is a one-line wrapper that delegates to
+class TestSharedStackRuntimeBackendConnectDelegates:
+    """``SharedStackRuntimeBackend.connect`` is a one-line wrapper that delegates to
     ``RunnerClient.connect``. The Protocol's idempotency promise rides on
     that delegation; pin it so a future refactor (e.g. adding pre-connect
     side-effects) can't silently weaken the contract.
     """
 
     def test_connect_calls_through_to_runner_client(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        runtime = DockerRuntime(runner_address="sentinel:50051")
+        runtime = SharedStackRuntimeBackend(runner_address="sentinel:50051")
 
         call_log: list[dict] = []
 
