@@ -10,7 +10,8 @@
 # context by the host-side wheel resolver (tolokaforge.docker.wheel_resolver).
 # The container never clones a repo or reaches PyPI — the wheel is local.
 
-FROM python:3.11-slim
+ARG PYTHON_VERSION=3.12
+FROM python:${PYTHON_VERSION}-slim
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \

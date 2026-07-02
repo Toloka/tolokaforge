@@ -59,7 +59,7 @@ jobs:
         uses: astral-sh/setup-uv@v7
 
       - name: Install Python
-        run: uv python install 3.12
+        run: uv python install "$(cat .python-version)"
 
       - name: Install commitizen
         run: uv sync --group dev

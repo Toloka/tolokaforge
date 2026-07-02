@@ -39,6 +39,23 @@ def repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def _pinned_python_version() -> str:
+    """Read the pinned Python minor version from ``.python-version``.
+
+    Single source of truth for the runtime Python version — dev, CI,
+    devcontainer, and every runtime Docker image resolve from this file.
+    Passed to Dockerfiles as the ``PYTHON_VERSION`` build arg so
+    ``FROM python:${PYTHON_VERSION}-slim`` follows automatically. The
+    Dockerfiles still default to the current pin so a manual
+    ``docker build`` without the arg produces the same image.
+    """
+    return (repo_root() / ".python-version").read_text().strip()
+
+
+PYTHON_VERSION = _pinned_python_version()
+_PYTHON_BUILD_ARGS: dict[str, str] = {"PYTHON_VERSION": PYTHON_VERSION}
+
+
 # =============================================================================
 # Image Definitions — Single Source of Truth
 # =============================================================================
@@ -64,6 +81,7 @@ IMAGE_DEFINITIONS: dict[str, dict[str, Any]] = {
         "context_files": [
             "tolokaforge/env/json_db_service/",
         ],
+        "build_args": dict(_PYTHON_BUILD_ARGS),
     },
     "runner": {
         "name": "tolokaforge-runner",
@@ -82,6 +100,7 @@ IMAGE_DEFINITIONS: dict[str, dict[str, Any]] = {
         "dockerfile": "tolokaforge/docker/dockerfiles/mock_web.Dockerfile",
         "context": ".",
         "context_files": [],
+        "build_args": dict(_PYTHON_BUILD_ARGS),
     },
 }
 
@@ -107,7 +126,7 @@ def _runner_definition() -> dict[str, Any]:
     return {
         **IMAGE_DEFINITIONS["runner"],
         "context_files": [str(artifact.path)],  # absolute path to the .whl
-        "build_args": {"WHEEL_FILENAME": artifact.path.name},
+        "build_args": {**_PYTHON_BUILD_ARGS, "WHEEL_FILENAME": artifact.path.name},
     }
 
 
@@ -125,7 +144,7 @@ def _rag_definition() -> dict[str, Any]:
             str(artifact.path),  # wheel (absolute → flat copy)
             "tolokaforge/env/rag_service/",  # service files (relative)
         ],
-        "build_args": {"WHEEL_FILENAME": artifact.path.name},
+        "build_args": {**_PYTHON_BUILD_ARGS, "WHEEL_FILENAME": artifact.path.name},
     }
 
 
