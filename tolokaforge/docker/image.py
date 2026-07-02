@@ -509,6 +509,27 @@ class Image(BaseModel):
         """
         return self.context_hash
 
+    def add_alias_tag(self, alias_repository: str, alias_tag: str) -> None:
+        """Apply an additional tag pointing at the same underlying image.
+
+        Wraps ``docker tag`` — no rebuild, no data copy; the daemon just
+        records a new (repository, tag) pointer to the same image ID.
+        Idempotent by construction: re-tagging with the same repository +
+        tag is a Docker-side no-op.
+
+        Used by the orchestrator to give the content-hash-tagged runner
+        image a pinned-version alias (e.g. ``tolokaforge-runner:0.10.0``)
+        so per-trial task compose files can reference a stable name that
+        passes the manifest validator's pinned-tag requirement.
+        """
+        docker_image = self._get_docker_image()
+        target = f"{alias_repository}:{alias_tag}"
+        try:
+            docker_image.tag(alias_repository, tag=alias_tag)
+        except APIError as e:
+            raise ImageError("tag", self.full_tag, f"Failed to add alias {target}: {e}") from e
+        logger.info("Aliased image '%s' as '%s'", self.full_tag, target)
+
     def remove(self, force: bool = False) -> None:
         """Remove this image from the local Docker daemon.
 

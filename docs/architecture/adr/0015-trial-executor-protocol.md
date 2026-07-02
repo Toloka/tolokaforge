@@ -1,6 +1,6 @@
 # 0015. `TrialExecutor` Protocol — per-trial substrate-lifecycle seam
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-07-02
 - **Deciders:** @CiroGamboa
 - **Supersedes:** —

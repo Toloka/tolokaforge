@@ -895,6 +895,17 @@ class ServiceStack(BaseModel):
         container_name = f"{self.prefix}-{name}"
         return f"{container_name}:{port}"
 
+    def get_image(self, service_name: str) -> Image | None:
+        """Return the built :class:`Image` for ``service_name``, or ``None``
+        if the service builds no image or hasn't been built yet.
+
+        Public accessor over ``self._images``; used by callers (the
+        orchestrator's pinned-version-alias hook) that need to apply
+        secondary tags to an already-built image without duplicating
+        the build.
+        """
+        return self._images.get(service_name)
+
     def get_status(self) -> dict[str, ServiceStatus]:
         """Get current status of all services.
 

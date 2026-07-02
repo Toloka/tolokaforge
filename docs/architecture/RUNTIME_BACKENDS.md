@@ -358,6 +358,29 @@ The `Orchestrator._build_trial_executor(runtime_backend, conductor)` helper comp
 
 The Protocol boundary is what future variants slot into — a `RemoteTrialExecutor` (gRPC client to a trial-plane worker per CLOUD_RUNTIME §6.4) replaces `ProvisioningTrialExecutor` behind the same interface, and neither the Orchestrator nor the Conductor changes.
 
+## Referencing the runner image from task manifests
+
+`PerTrialRuntimeBackend` materialises each trial's compose stack via Testcontainers. When a task's `environment_manifest.compose_file` declares a `runner` service, the compose entry needs an `image:` ref — a *pinned* tag (the manifest validator rejects floating tags like `:latest`, `:main`, `:edge` for reproducibility).
+
+The tolokaforge runner image is built locally on every run (content-hash-tagged, cache-hit-driven). To give task-pack authors a stable name to reference, the orchestrator applies a **pinned-version alias** on top of the content-hash build: after `ServiceStack.start_all()`, `Orchestrator._ensure_versioned_runner_image_tag()` runs `docker tag tolokaforge-runner:<content-hash> tolokaforge-runner:<version>` — same image, two names. Task compose files reference the pinned tag:
+
+```yaml
+services:
+  runner:
+    image: tolokaforge-runner:0.10.0
+    ports:
+      - "50051"
+  db:
+    image: postgres:16.6-alpine3.21@sha256:...
+    environment: {...}
+    ports:
+      - "5432"
+```
+
+The alias step is best-effort and logged, not raise-and-fail — the shared-stack path still works with the content-hash tag whether or not the alias applies. Only per-trial task compose files referencing the pinned tag would then fail, at which point the operator sees the aliasing warning from run start and knows what to fix.
+
+Forward-looking: this pattern is what publish-to-registry work will slot into — the same `tolokaforge-runner:<version>` reference in task composes will resolve against a public registry (e.g. `ghcr.io/toloka/tolokaforge-runner:0.10.0`) instead of the local Docker cache, with no task-side change.
+
 ## What this PR does *not* do
 
 - **No runner image publication.** The `tolokaforge/runner` image is still a local build. Real RPC coverage against a task pack that declares `environment_manifest` waits for the validation-gate follow-up.

@@ -1,6 +1,6 @@
 # 0009. `EnvironmentManifest` — compose-as-source-of-truth for per-trial environments
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-07-02
 - **Deciders:** @CiroGamboa
 - **Supersedes:** —

@@ -519,6 +519,47 @@ class Orchestrator:
             endpoints=_build_env_endpoints(runner_address),
         )
 
+    def _ensure_versioned_runner_image_tag(self, service_stack: Any) -> None:
+        """Apply ``tolokaforge-runner:<version>`` as an alias on the freshly-built
+        runner image, so task compose files can reference a stable pinned tag.
+
+        The shared-stack build tags the runner image with a content-hash
+        suffix that changes on every source edit — unreachable from a
+        task-pack compose file. After the stack starts, this hook applies
+        the current package version as a secondary tag on the same
+        underlying image (no rebuild, no data copy). Per-trial task
+        compose files reference ``tolokaforge-runner:<version>``, which
+        is a legal pinned tag (not one of the floating-tag names the
+        :class:`EnvironmentManifest` validator rejects).
+
+        Logged and swallowed if the alias step fails — the shared-stack
+        path already works with the content-hash tag; the alias is purely
+        for future per-trial task-pack authors, so a Docker daemon that
+        refuses the extra tag shouldn't fail the whole run.
+        """
+        from tolokaforge import __version__
+
+        runner_image = service_stack.get_image("runner")
+        if runner_image is None:
+            self.logger.debug(
+                "runner image not built by service stack; skipping version-tag alias",
+            )
+            return
+        try:
+            runner_image.add_alias_tag("tolokaforge-runner", __version__)
+        except Exception as e:  # noqa: BLE001 — best-effort by design
+            self.logger.warning(
+                "Failed to apply versioned runner-image alias tag; "
+                "task compose files referencing the pinned tag will fail",
+                version=__version__,
+                error=str(e),
+            )
+            return
+        self.logger.info(
+            "Aliased runner image with pinned version tag",
+            version=__version__,
+        )
+
     def _build_trial_executor(
         self, runtime_backend: RuntimeBackend, conductor: Conductor
     ) -> TrialExecutor:
@@ -966,6 +1007,7 @@ class Orchestrator:
                     "(this may take a few minutes on first run)..."
                 )
                 service_stack.start_all(wait=True)
+                self._ensure_versioned_runner_image_tag(service_stack)
                 # Use localhost address — the orchestrator runs on the host,
                 # not inside Docker, so Docker container names don't resolve.
                 runner_url = service_stack.get_service_url("runner", 50051)
