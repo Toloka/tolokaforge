@@ -1,11 +1,12 @@
 """Byte-identity round-trip for the run-level aggregate Pydantic models.
 
-Stage 1 of TECHDEL-407 — the models in
-:mod:`tolokaforge.core.output.aggregate_models` exist alongside the
-current dict-typed writer surface. This suite proves that the models
-faithfully round-trip every field the metric-calc functions produce
-today, so stages 2 and 3 (function-return migration + consumer
-migration) can rely on the on-wire shape being unchanged.
+The models in :mod:`tolokaforge.core.output.aggregate_models` exist
+alongside the current dict-typed writer surface. This suite proves the
+models faithfully round-trip every field the production metric-calc
+functions produce today, so a later change that swaps the writer to
+accept the models — or migrates in-process consumers to attribute
+access — can be verified against the same on-disk shape rather than
+being trusted on inspection.
 
 Each test:
 

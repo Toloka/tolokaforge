@@ -14,11 +14,12 @@ writer surface these payloads flow through.
 * :class:`FailureAttribution`, :class:`FailureSummary`,
   :class:`FailureRecord` — the ``failure_attribution.json`` envelope.
 
-Stage 1 of TECHDEL-407: these models exist alongside the current
-dict-typed writer surface. Stage 2 migrates the metric-calc functions
-and the writer Protocol to return / accept them; stage 3 migrates
-in-process consumers to attribute access. Round-trip byte-identity is
-pinned by ``tests/canonical/test_run_aggregate_models_snapshot.py``.
+The models exist alongside the current dict-typed writer surface —
+they do not yet flow through the metric-calc functions or the writer
+Protocol. Round-trip byte-identity against the current on-disk shape
+is pinned by ``tests/canonical/test_run_aggregate_models_snapshot.py``,
+so a later change that swaps the writer to accept models can be
+verified against the same wire format.
 
 The ``pass@k`` / ``pass_hat@k`` keys aren't valid Python identifiers,
 so they carry :class:`~pydantic.Field` ``alias`` values. Dump with
