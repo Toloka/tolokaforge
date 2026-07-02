@@ -175,6 +175,7 @@ class PerTrialRuntimeBackend:
             )
 
         temp_dir = _make_per_trial_temp_dir(spec.trial_id)
+        compose: DockerCompose | None = None
         try:
             _copy_compose_context(manifest.compose_file, temp_dir)
             compose = DockerCompose(
@@ -186,7 +187,7 @@ class PerTrialRuntimeBackend:
             )
             compose.start()
         except Exception as exc:  # noqa: BLE001 — surface as typed ProvisionError
-            shutil.rmtree(temp_dir, ignore_errors=True)
+            _cleanup_partial_provision(compose, temp_dir)
             raise ProvisionError(
                 trial_id=spec.trial_id,
                 stage="provision",
@@ -196,27 +197,24 @@ class PerTrialRuntimeBackend:
         runner_service = manifest.runner_service
         runner_port = _RUNNER_PORT_DEFAULT
         try:
-            client = self._make_runner_client(compose, runner_service, runner_port)
-        except Exception as exc:
-            _shutdown_compose(compose)
-            shutil.rmtree(temp_dir, ignore_errors=True)
-            raise ProvisionError(
-                trial_id=spec.trial_id,
-                stage="provision",
-                reason=f"failed to construct runner client for {runner_service!r}: {exc}",
-            ) from exc
-
-        try:
-            endpoints = self._resolve_endpoints(
+            runner_host, runner_host_port = self._resolve_runner_endpoint(
                 compose, runner_service, runner_port, trial_id=spec.trial_id
             )
         except ProvisionError:
-            _shutdown_compose(compose)
-            shutil.rmtree(temp_dir, ignore_errors=True)
+            _cleanup_partial_provision(compose, temp_dir)
+            raise
+
+        try:
+            endpoints = self._resolve_endpoints(
+                compose, runner_host, runner_host_port, trial_id=spec.trial_id
+            )
+        except ProvisionError:
+            _cleanup_partial_provision(compose, temp_dir)
             raise
 
         # Client is constructed but not yet connected. Connect is deferred
         # to first per-trial RPC use — see :attr:`_connected_trials`.
+        client = GrpcRunnerClient(runner_address=f"{runner_host}:{runner_host_port}")
         self._clients[spec.trial_id] = client
         return _LocalEnvHandle(
             trial_id=spec.trial_id,
@@ -227,16 +225,16 @@ class PerTrialRuntimeBackend:
             endpoints=endpoints,
         )
 
-    def _resolve_endpoints(
+    def _resolve_runner_endpoint(
         self,
         compose: DockerCompose,
         runner_service: str,
         runner_port: int,
         *,
         trial_id: str,
-    ) -> EnvEndpoints:
-        runner_host, runner_host_port = _resolve_host_port(compose, runner_service, runner_port)
-        if runner_host is None or runner_host_port is None:
+    ) -> tuple[str, int]:
+        host, port = _resolve_host_port(compose, runner_service, runner_port)
+        if host is None or port is None:
             raise ProvisionError(
                 trial_id=trial_id,
                 stage="provision",
@@ -245,6 +243,16 @@ class PerTrialRuntimeBackend:
                     f"{runner_port} in the compose stack"
                 ),
             )
+        return host, port
+
+    def _resolve_endpoints(
+        self,
+        compose: DockerCompose,
+        runner_host: str,
+        runner_port: int,
+        *,
+        trial_id: str,
+    ) -> EnvEndpoints:
         db_host, db_port = _resolve_host_port(compose, _DB_SERVICE_DEFAULT, _DB_PORT_DEFAULT)
         if db_host is None or db_port is None:
             raise ProvisionError(
@@ -260,7 +268,7 @@ class PerTrialRuntimeBackend:
         return EnvEndpoints(
             db_url=f"http://{db_host}:{db_port}",
             rag_url=_resolve_rag_url(compose),
-            runner_url=f"http://{runner_host}:{runner_host_port}",
+            runner_url=f"http://{runner_host}:{runner_port}",
         )
 
     def await_ready(self, handle: EnvHandle) -> None:
@@ -385,23 +393,23 @@ class PerTrialRuntimeBackend:
             self._connected_trials.add(trial_id)
         return client
 
-    def _make_runner_client(
-        self, compose: DockerCompose, runner_service: str, runner_port: int
-    ) -> RunnerClient:
-        host, port = _resolve_host_port(compose, runner_service, runner_port)
-        if host is None or port is None:
-            raise ValueError(
-                f"runner_service {runner_service!r} does not expose port {runner_port} "
-                "in the compose stack"
-            )
-        # Construct but do not connect — first RPC use triggers connect via
-        # :meth:`_client_for`.
-        return GrpcRunnerClient(runner_address=f"{host}:{port}")
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _cleanup_partial_provision(compose: DockerCompose | None, temp_dir: Path) -> None:
+    """Best-effort teardown after a partial-provision failure.
+
+    Called from every ``except`` block inside :meth:`provision` before
+    the typed :class:`ProvisionError` is re-raised. Handles both the
+    early-failure case (``compose is None`` — the DockerCompose was
+    never constructed) and the late-failure case (containers up but
+    endpoint resolution failed)."""
+    if compose is not None:
+        _shutdown_compose(compose)
+    shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def _make_per_trial_temp_dir(trial_id: str) -> Path:
