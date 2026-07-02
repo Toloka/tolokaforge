@@ -1581,6 +1581,8 @@ class Orchestrator:
             latency_p90_s=aggregate.get("latency_p90_s"),
             latency_p99_s=aggregate.get("latency_p99_s"),
             total_cost_usd=aggregate.get("total_cost_usd"),
+            judge_cost_usd=aggregate.get("judge_cost_usd"),
+            total_cost_incl_judge_usd=aggregate.get("total_cost_incl_judge_usd"),
             avg_turns=aggregate["avg_turns"],
             avg_tool_calls=aggregate["avg_tool_calls"],
             stuck_rate=aggregate["stuck_rate"],
