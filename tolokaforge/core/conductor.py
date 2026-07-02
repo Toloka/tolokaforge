@@ -434,9 +434,7 @@ class InProcessConductor:
 
         trial_id = f"{task.task_id}:{trial_idx}"
 
-        tool_executor = DockerRunnerAdapter(
-            runner_client=docker_runtime.executor_client, trial_id=trial_id
-        )
+        tool_executor = DockerRunnerAdapter(runtime=docker_runtime, trial_id=trial_id)
 
         # The spec is the single source of truth for the timeout; the proto
         # field is filled from it so the two cannot diverge silently. The

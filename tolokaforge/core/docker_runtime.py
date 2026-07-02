@@ -769,12 +769,13 @@ class DockerRuntime:
         self,
         trial_id: str,
         trial_spec_json: str,
-        default_tool_timeout_s: float | None = None,
+        default_tool_timeout_s: float = DEFAULT_TOOL_TIMEOUT_S,
     ) -> dict:
-        kwargs: dict[str, Any] = {}
-        if default_tool_timeout_s is not None:
-            kwargs["default_tool_timeout_s"] = default_tool_timeout_s
-        return self.runner_client.register_trial(trial_id, trial_spec_json, **kwargs)
+        return self.runner_client.register_trial(
+            trial_id=trial_id,
+            trial_spec_json=trial_spec_json,
+            default_tool_timeout_s=default_tool_timeout_s,
+        )
 
     def execute_tool(
         self,

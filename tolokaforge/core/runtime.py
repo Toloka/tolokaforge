@@ -23,7 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
-from tolokaforge.core.trial import EnvEndpoints, TrialSpec
+from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, EnvEndpoints, TrialSpec
 
 if TYPE_CHECKING:  # pragma: no cover — type-only imports
     from tolokaforge.core.docker_runtime import RunnerClient
@@ -146,15 +146,17 @@ class RuntimeBackend(Protocol):
         self,
         trial_id: str,
         trial_spec_json: str,
-        default_tool_timeout_s: float | None = None,
+        default_tool_timeout_s: float = DEFAULT_TOOL_TIMEOUT_S,
     ) -> dict[str, Any]:
         """Register a new trial with the runtime service.
 
         ``trial_spec_json`` is a serialised :class:`TrialSpec` — the runner
         reads ``spec.task`` for tool reconstruction and uses the rest of
-        the spec for per-trial execution context. ``default_tool_timeout_s``
-        defaults to :data:`tolokaforge.core.trial.DEFAULT_TOOL_TIMEOUT_S`
-        when ``None``; the concrete backend applies the default.
+        the spec for per-trial execution context. The default
+        ``default_tool_timeout_s`` is
+        :data:`tolokaforge.core.trial.DEFAULT_TOOL_TIMEOUT_S`; every
+        backend uses the same default so a caller who supplies no timeout
+        sees identical behaviour across implementations.
 
         Returns a dict shaped like
         ``{"success": bool, "error": str | None, "tool_schemas": list,
@@ -283,18 +285,17 @@ class RuntimeBackend(Protocol):
         """
         ...
 
-    # ---- Per-trial adapter handoff (legacy — see ADR-0013 follow-ups) ----
+    # ---- Vestigial legacy handoff (removal is an ADR-0013 follow-up) ----
     executor_client: RunnerClient
-    """The RPC client used by :class:`DockerRunnerAdapter` for the tool
-    execution path (``.execute()`` + ``tool_logs`` bookkeeping).
+    """Legacy runner-RPC handle. No production caller reads this attribute
+    after ADR-0013 — every per-trial RPC (including tool execution via
+    :meth:`execute_tool`) flows through :class:`RuntimeBackend` directly.
 
-    Every other per-trial RPC method now lives on :class:`RuntimeBackend`
-    directly (see ADR-0013). ``executor_client`` remains only because
-    :class:`DockerRunnerAdapter` — now a slim per-trial ``ToolExecutor`` —
-    still routes ``execute_tool`` through it. Follow-up ticket:
-    remove ``executor_client`` from the Protocol once every ``execute``
-    call site is proven safe to route through
-    :meth:`execute_tool` directly."""
+    Preserved only as a backwards-compatibility hook for out-of-tree
+    callers that may still bind to it. Removal is a follow-up: delete the
+    field from the Protocol, drop the ``_UnusableExecutorClient`` stub
+    and the ``DockerRuntime.executor_client`` alias, migrate the two
+    tests that assert on the stub's behaviour."""
 
 
 # ---------------------------------------------------------------------------
@@ -451,7 +452,7 @@ class InMemoryRuntimeBackend:
         self,
         trial_id: str,
         trial_spec_json: str,
-        default_tool_timeout_s: float | None = None,
+        default_tool_timeout_s: float = DEFAULT_TOOL_TIMEOUT_S,
     ) -> dict[str, Any]:
         raise NotImplementedError(
             "InMemoryRuntimeBackend.register_trial is not implemented. "

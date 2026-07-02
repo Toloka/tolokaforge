@@ -66,16 +66,16 @@ The `ToolExecutor` surface is already established (`tolokaforge.tools.registry`,
 
 ## Consequences
 
-- **`RuntimeBackend` Protocol grows by five methods.** All take `trial_id: str` as their first positional argument. Every backend implements them.
-- **`DockerRunnerAdapter` shrinks to `execute()` + `tool_logs` bookkeeping.** Its docstring and class name-purpose narrow to "per-trial `ToolExecutor` for the docker runtime path." A rename could follow in a later PR; kept out of scope for this ADR to minimise churn.
+- **`RuntimeBackend` Protocol grows by five methods.** All take `trial_id: str` as their first positional argument. `register_trial`'s `default_tool_timeout_s` uses the explicit `DEFAULT_TOOL_TIMEOUT_S` default at every layer — no None-signals-use-default trick — so the two-layer defaults can't drift silently.
+- **`DockerRunnerAdapter` shrinks to `execute()` + `tool_logs` bookkeeping and now depends on `RuntimeBackend` (not `RunnerClient`).** Its constructor takes `runtime: RuntimeBackend` and `execute()` calls `runtime.execute_tool(trial_id, ...)`. The adapter no longer touches `RunnerClient` — every path from `TrialRunner` down flows through the `RuntimeBackend` seam. A rename to `DockerToolExecutor` could follow in a later PR; kept out of scope for this ADR to minimise churn.
 - **`InMemoryRuntimeBackend` gains the five methods.** They raise `NotImplementedError` matching the existing `_UnusableExecutorClient` pattern — the in-memory backend is for lifecycle-and-provisioning testing, not RPC testing.
-- **`RuntimeBackend.executor_client` remains** for now — `DockerRunnerAdapter.execute()` still needs an object to route `execute_tool` through. A follow-up ADR can retire it once every call site of `.execute()` on `DockerRunnerAdapter` is proven safe to switch to `runtime.execute_tool(trial_id, ...)` directly.
+- **`RuntimeBackend.executor_client` is now vestigial.** No production caller reads it after this PR — `DockerRunnerAdapter` routes tool execution through `RuntimeBackend.execute_tool` instead. The attribute stays for backwards compatibility only; removal is a follow-up.
 - **`Conductor.run()` bodies get simpler.** Instead of `DockerRunnerAdapter(runner_client=runtime.executor_client, trial_id=…).register_trial(spec_json)`, the body reads `runtime.register_trial(trial_id, spec_json)`. One less object; the seam is visible at the call site.
 - **Contract tests widen.** `tests/canonical/test_runtime_backend_contract.py` pins the five new methods; `tests/canonical/test_runner_client_contract.py` (from ADR-0011 landing) still pins the `RunnerClient` seven-method surface — the two Protocols are now genuinely different.
 
 ## Follow-ups
 
-- Remove `executor_client` from `RuntimeBackend` once `DockerRunnerAdapter.execute()` is proven safe to route through `runtime.execute_tool` directly (a small dedicated ticket — needs to verify no test or code path still reaches for adapter attributes tied to the underlying client).
+- Delete `RuntimeBackend.executor_client` from the Protocol and drop the paired stubs (`_UnusableExecutorClient`, `DockerRuntime.executor_client = self.runner_client`). This is now a straight deletion — no production caller remains. The two tests that assert on the stub's behaviour migrate to asserting on the direct `NotImplementedError` from `InMemoryRuntimeBackend`'s RPC methods (already exercised elsewhere in the same file).
 - Consider renaming `DockerRunnerAdapter` → `DockerToolExecutor` in a documentation-only PR, now that its purpose is narrower.
 - Delete `tests/unit/test_docker_adapter_cleanup_trial.py` in this PR (already dead once `cleanup_trial` disappears from the adapter's surface).
 

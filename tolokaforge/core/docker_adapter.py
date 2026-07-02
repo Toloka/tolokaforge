@@ -1,31 +1,38 @@
-"""Per-trial :class:`~tolokaforge.tools.registry.ToolExecutor` for the docker runtime.
+"""Per-trial :class:`~tolokaforge.tools.registry.ToolExecutor` backed by a
+:class:`~tolokaforge.core.runtime.RuntimeBackend`.
 
 :class:`DockerRunnerAdapter` binds a ``trial_id`` and an executor identity
-(``"agent"`` / ``"user"``) to a :class:`RunnerClient`, exposing the
+(``"agent"`` / ``"user"``) to a runtime backend, exposing the
 ``ToolExecutor`` protocol (``execute()`` + ``tool_logs`` bookkeeping) that
 :class:`TrialRunner` speaks to.
 
 Every non-tool-execution RPC (``register_trial``, ``grade_trial``,
-``get_state``, ``reset_trial``, ``cleanup_trial``) has moved onto
+``get_state``, ``reset_trial``, ``cleanup_trial``) lives on
 :class:`~tolokaforge.core.runtime.RuntimeBackend` per ADR-0013; call sites
-use ``runtime.method(trial_id, ...)`` directly. This module is now scoped
-strictly to the ``ToolExecutor`` shape.
+use ``runtime.method(trial_id, ...)`` directly. Tool execution routes
+through the runtime backend too (``runtime.execute_tool(...)``), so this
+module has no dependency on the concrete ``RunnerClient`` type — every
+call flows through the ``RuntimeBackend`` seam.
 """
 
-import logging
-from typing import Any
+from __future__ import annotations
 
-from tolokaforge.core.docker_runtime import RunnerClient
+import logging
+from typing import TYPE_CHECKING, Any
+
 from tolokaforge.tools.registry import ToolResult
+
+if TYPE_CHECKING:  # pragma: no cover — type-only imports
+    from tolokaforge.core.runtime import RuntimeBackend
 
 logger = logging.getLogger(__name__)
 
 
 class DockerRunnerAdapter:
-    """Per-trial ``ToolExecutor`` backed by a :class:`RunnerClient`.
+    """Per-trial ``ToolExecutor`` backed by a :class:`RuntimeBackend`.
 
     Binds ``trial_id`` and executor identity (``"agent"`` / ``"user"``)
-    to a :class:`RunnerClient` so :class:`TrialRunner` can call
+    to a runtime backend so :class:`TrialRunner` can call
     ``.execute(tool_name, arguments)`` without threading trial identity
     through every call. Records every tool execution on :attr:`tool_logs`
     so the metrics pipeline and the stuck-detector can read the per-trial
@@ -34,17 +41,17 @@ class DockerRunnerAdapter:
     All other per-trial RPCs are on :class:`RuntimeBackend` — see ADR-0013.
     """
 
-    def __init__(self, runner_client: RunnerClient, trial_id: str, executor: str = "agent"):
+    def __init__(self, runtime: RuntimeBackend, trial_id: str, executor: str = "agent"):
         """
         Initialize adapter.
 
         Args:
-            runner_client: RPC client for the runner service.
+            runtime: Runtime backend the tool call routes through.
             trial_id: Trial identifier bound to every ``execute()`` call.
             executor: Environment identity for the runner-side routing
                 (``"agent"`` or ``"user"``).
         """
-        self.runner_client = runner_client
+        self.runtime = runtime
         self.trial_id = trial_id
         self.executor = executor
         self.tool_logs: list[dict[str, Any]] = []
@@ -57,7 +64,7 @@ class DockerRunnerAdapter:
         timeout_seconds: float = 30.0,
         **kwargs,
     ) -> ToolResult:
-        """Execute a tool via the runner service under the bound
+        """Execute a tool via the runtime backend under the bound
         ``trial_id`` / ``executor`` and record the call on
         :attr:`tool_logs`.
 
@@ -68,7 +75,7 @@ class DockerRunnerAdapter:
             arguments = {}
         arguments.update(kwargs)
 
-        result = self.runner_client.execute_tool(
+        result = self.runtime.execute_tool(
             trial_id=self.trial_id,
             tool_name=tool_name,
             arguments=arguments,
