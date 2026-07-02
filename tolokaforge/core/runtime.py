@@ -13,9 +13,9 @@ Protocol that decouples the orchestrator from that single implementation.
 * :class:`InMemoryRuntimeBackend` — a non-gRPC implementation used as a
   test fixture and as proof the seam is swappable. Records lifecycle,
   cleanup, and provisioning calls on a :class:`RuntimeBackendCallLog`;
-  the ``executor_client`` stub raises :class:`NotImplementedError` on
-  RPC methods (callers that need a real RPC must use
-  :class:`DockerRuntime` or mock ``RunnerClient`` directly).
+  the per-trial RPC methods raise :class:`NotImplementedError` (tests
+  that exercise the runner RPC surface must use :class:`DockerRuntime`
+  or mock the methods on the backend instance).
 """
 
 from __future__ import annotations
@@ -26,7 +26,6 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, EnvEndpoints, TrialSpec
 
 if TYPE_CHECKING:  # pragma: no cover — type-only imports
-    from tolokaforge.core.docker_runtime import RunnerClient
     from tolokaforge.tools.registry import ToolResult
 
 __all__ = [
@@ -107,10 +106,6 @@ class RuntimeBackend(Protocol):
       / ``cleanup_trial``. Every method takes ``trial_id`` explicitly;
       callers no longer construct an intermediate wrapper class to bind
       it.
-
-    :attr:`executor_client` remains a legacy handoff kept only for
-    :class:`DockerRunnerAdapter`'s ``execute()`` path — see the field's
-    own docstring.
     """
 
     # ---- Run-level lifecycle ----
@@ -285,18 +280,6 @@ class RuntimeBackend(Protocol):
         """
         ...
 
-    # ---- Vestigial legacy handoff (removal is an ADR-0013 follow-up) ----
-    executor_client: RunnerClient
-    """Legacy runner-RPC handle. No production caller reads this attribute
-    after ADR-0013 — every per-trial RPC (including tool execution via
-    :meth:`execute_tool`) flows through :class:`RuntimeBackend` directly.
-
-    Preserved only as a backwards-compatibility hook for out-of-tree
-    callers that may still bind to it. Removal is a follow-up: delete the
-    field from the Protocol, drop the ``_UnusableExecutorClient`` stub
-    and the ``DockerRuntime.executor_client`` alias, migrate the two
-    tests that assert on the stub's behaviour."""
-
 
 # ---------------------------------------------------------------------------
 # InMemoryRuntimeBackend — non-gRPC, test fixture
@@ -332,30 +315,13 @@ class _InMemoryEnvHandle:
     trial_id: str
 
 
-class _UnusableExecutorClient:
-    """Stub for ``InMemoryRuntimeBackend.executor_client``.
-
-    The in-memory backend is for lifecycle-and-cleanup testing only;
-    code that needs to exercise the runner RPC surface (``register_trial``,
-    ``execute_tool``, ``grade_trial``, …) must either use
-    :class:`DockerRuntime` or mock :class:`RunnerClient` directly.
-    Every attribute access raises ``NotImplementedError`` with that
-    message so the failure mode is obvious.
-    """
-
-    def __getattr__(self, name: str) -> Any:
-        raise NotImplementedError(
-            f"Access to InMemoryRuntimeBackend.executor_client.{name} is not "
-            "implemented. Tests that exercise the runner RPC surface must use "
-            "DockerRuntime or mock RunnerClient directly."
-        )
-
-
 class InMemoryRuntimeBackend:
     """Non-gRPC :class:`RuntimeBackend` implementation.
 
     Records lifecycle, cleanup, and provisioning calls on :attr:`call_log`.
-    Exposes a stub :attr:`executor_client` that raises on RPC method access.
+    The per-trial RPC methods raise :class:`NotImplementedError` — tests
+    that exercise the RPC surface must use :class:`DockerRuntime` or
+    mock the methods on the backend instance.
 
     Constructor knobs let orchestrator-level tests exercise the failure
     branches of the provisioning contract without a real substrate:
@@ -382,7 +348,6 @@ class InMemoryRuntimeBackend:
         await_ready_times_out: bool = False,
     ) -> None:
         self.call_log = RuntimeBackendCallLog()
-        self.executor_client: Any = _UnusableExecutorClient()
         self._fail_provision_after_service = fail_provision_after_service
         self._await_ready_times_out = await_ready_times_out
 
@@ -444,10 +409,9 @@ class InMemoryRuntimeBackend:
 
     # ---- Per-trial RPC operations (ADR-0013) ----
     # The in-memory backend has no runner service to talk to; every RPC
-    # method raises with a pointer to the DockerRuntime alternative, in
-    # the same spirit as the ``_UnusableExecutorClient`` stub. Tests that
-    # exercise the RPC surface must use ``DockerRuntime`` or mock the
-    # methods on this instance directly.
+    # method raises with a pointer to the DockerRuntime alternative.
+    # Tests that exercise the RPC surface must use ``DockerRuntime`` or
+    # mock the methods on this instance directly.
     def register_trial(
         self,
         trial_id: str,

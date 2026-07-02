@@ -1,11 +1,13 @@
 """Pin the ``RunnerClient`` Protocol contract.
 
-The Protocol declares the runner-RPC surface any
-:class:`RuntimeBackend.executor_client` must expose. Six per-trial RPCs
-plus a lifecycle probe. The concrete :class:`GrpcRunnerClient` (the
-only production impl today) is checked here for structural conformance;
-a canonical stub proves the shape is genuinely swappable and pins the
-method signatures against silent drift.
+The Protocol declares the runner-RPC surface :class:`DockerRuntime`
+delegates to when :class:`~tolokaforge.core.runtime.RuntimeBackend`'s
+per-trial RPC methods (register / execute / grade / get_state / reset /
+cleanup) are invoked. Six per-trial RPCs plus a lifecycle probe. The
+concrete :class:`GrpcRunnerClient` (the only production impl today) is
+checked here for structural conformance; a canonical stub proves the
+shape is genuinely swappable and pins the method signatures against
+silent drift.
 """
 
 from __future__ import annotations

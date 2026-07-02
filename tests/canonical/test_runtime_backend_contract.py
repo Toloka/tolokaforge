@@ -86,12 +86,6 @@ class TestLifecycleMethodParity:
         for impl in implementations:
             assert callable(getattr(impl, "cleanup_trial", None))
 
-    def test_executor_client_attribute_is_present(
-        self, implementations: list[RuntimeBackend]
-    ) -> None:
-        for impl in implementations:
-            assert hasattr(impl, "executor_client")
-
     @pytest.mark.parametrize(
         "method_name",
         [
@@ -166,16 +160,6 @@ class TestInMemoryBackendSemantics:
         assert result["success"] is True
         assert result["error"] is None
 
-    def test_executor_client_raises_on_rpc_method_access(self) -> None:
-        """The in-memory backend is for lifecycle and cleanup only;
-        attempts to use it as a runner-RPC client fail with a clear
-        message that points at the right alternative."""
-        backend = InMemoryRuntimeBackend()
-        with pytest.raises(NotImplementedError, match="register_trial"):
-            backend.executor_client.register_trial()
-        with pytest.raises(NotImplementedError, match="execute_tool"):
-            backend.executor_client.execute_tool()
-
     @pytest.mark.parametrize(
         "method_call",
         [
@@ -190,8 +174,7 @@ class TestInMemoryBackendSemantics:
     def test_per_trial_rpc_methods_raise_not_implemented(self, method_call) -> None:
         """The in-memory backend has no runner service to talk to; its
         RPC-method impls raise :class:`NotImplementedError` with a pointer
-        at the right alternative — same failure mode as the legacy
-        ``executor_client`` stub."""
+        at the right alternative."""
         backend = InMemoryRuntimeBackend()
         with pytest.raises(NotImplementedError, match="DockerRuntime or mock"):
             method_call(backend)

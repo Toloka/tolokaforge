@@ -45,15 +45,14 @@ logger = logging.getLogger(__name__)
 
 @runtime_checkable
 class RunnerClient(Protocol):
-    """The runner-RPC surface any :class:`RuntimeBackend` implementation
-    must expose through :attr:`RuntimeBackend.executor_client`.
+    """The runner-RPC surface :class:`DockerRuntime` delegates to.
 
     Seven methods — six per-trial RPCs plus a lifecycle probe — cover
-    every call site downstream of ``DockerRunnerAdapter``. A non-gRPC
-    backend (in-process subprocess, remote conductor over a different
-    transport) satisfies this Protocol structurally without pulling in
-    the gRPC stack. :class:`GrpcRunnerClient` is the sole production
-    implementation.
+    every runner-side call the docker runtime makes on behalf of a
+    :class:`RuntimeBackend`. A non-gRPC caller (in-process subprocess,
+    remote conductor over a different transport) can satisfy this
+    Protocol structurally without pulling in the gRPC stack.
+    :class:`GrpcRunnerClient` is the sole production implementation.
     """
 
     def register_trial(
@@ -673,11 +672,6 @@ class DockerRuntime:
             runner_address: gRPC address for Runner service
         """
         self.runner_client: GrpcRunnerClient = GrpcRunnerClient(runner_address)
-        # Keep executor_client as alias for backward compatibility. Typed
-        # as the concrete gRPC impl (not the Protocol) so downstream code
-        # can still reach ``runner_address`` and other implementation
-        # attributes when needed.
-        self.executor_client: GrpcRunnerClient = self.runner_client
         logger.info("Docker runtime initialized")
 
     def connect(self, timeout: float = 30.0, retry_interval: float = 1.0) -> None:
