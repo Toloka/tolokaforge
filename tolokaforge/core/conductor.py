@@ -434,16 +434,17 @@ class InProcessConductor:
 
         trial_id = f"{task.task_id}:{trial_idx}"
 
-        tool_executor = DockerRunnerAdapter(
-            runner_client=docker_runtime.executor_client, trial_id=trial_id
-        )
+        tool_executor = DockerRunnerAdapter(runtime=docker_runtime, trial_id=trial_id)
 
         # The spec is the single source of truth for the timeout; the proto
         # field is filled from it so the two cannot diverge silently. The
         # adapter-registry guard runs orchestrator-side before the spec is
         # constructed, so the runner reads ``spec.task`` directly without
-        # re-resolving the adapter here.
-        register_result = tool_executor.register_trial(
+        # re-resolving the adapter here. Registration goes straight to the
+        # runtime backend now (ADR-0013); the tool executor is only used
+        # for the runner's ``execute()`` path.
+        register_result = docker_runtime.register_trial(
+            trial_id=trial_id,
             trial_spec_json=spec.model_dump_json(),
             default_tool_timeout_s=spec.default_tool_timeout_s or DEFAULT_TOOL_TIMEOUT_S,
         )
@@ -550,7 +551,7 @@ class InProcessConductor:
         # before reading, so the read covers every adapter.
         runner_state: dict[str, Any] | None = None
         try:
-            state_result = docker_runtime.executor_client.get_state(trial_id)
+            state_result = docker_runtime.get_state(trial_id)
             if state_result.get("success") and state_result.get("state_json"):
                 import json as _json
 
@@ -627,7 +628,7 @@ class InProcessConductor:
             llm_messages_json = self._build_judge_messages_json(
                 task, trajectory, runner.effective_system_prompt or system_prompt
             )
-            grade_result = docker_runtime.executor_client.grade_trial(
+            grade_result = docker_runtime.grade_trial(
                 trial_id=trial_id, llm_messages_json=llm_messages_json
             )
             if grade_result["success"] and grade_result["grade"]:

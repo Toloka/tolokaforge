@@ -86,11 +86,26 @@ class TestLifecycleMethodParity:
         for impl in implementations:
             assert callable(getattr(impl, "cleanup_trial", None))
 
-    def test_executor_client_attribute_is_present(
-        self, implementations: list[RuntimeBackend]
+    @pytest.mark.parametrize(
+        "method_name",
+        [
+            "register_trial",
+            "execute_tool",
+            "grade_trial",
+            "get_state",
+            "reset_trial",
+        ],
+    )
+    def test_per_trial_rpc_methods_are_present(
+        self, implementations: list[RuntimeBackend], method_name: str
     ) -> None:
+        """ADR-0013 — the five per-trial RPC methods live on the Protocol,
+        not on a per-trial adapter wrapper. Guards against a future edit
+        dropping one from a backend and re-introducing the adapter shape."""
         for impl in implementations:
-            assert hasattr(impl, "executor_client")
+            assert callable(
+                getattr(impl, method_name, None)
+            ), f"{type(impl).__name__} is missing RuntimeBackend.{method_name}"
 
 
 class TestInMemoryBackendSemantics:
@@ -145,15 +160,24 @@ class TestInMemoryBackendSemantics:
         assert result["success"] is True
         assert result["error"] is None
 
-    def test_executor_client_raises_on_rpc_method_access(self) -> None:
-        """The in-memory backend is for lifecycle and cleanup only;
-        attempts to use it as a runner-RPC client fail with a clear
-        message that points at the right alternative."""
+    @pytest.mark.parametrize(
+        "method_call",
+        [
+            lambda b: b.register_trial("t:0", "{}"),
+            lambda b: b.execute_tool("t:0", "noop", {}),
+            lambda b: b.grade_trial("t:0"),
+            lambda b: b.get_state("t:0"),
+            lambda b: b.reset_trial("t:0"),
+        ],
+        ids=["register_trial", "execute_tool", "grade_trial", "get_state", "reset_trial"],
+    )
+    def test_per_trial_rpc_methods_raise_not_implemented(self, method_call) -> None:
+        """The in-memory backend has no runner service to talk to; its
+        RPC-method impls raise :class:`NotImplementedError` with a pointer
+        at the right alternative."""
         backend = InMemoryRuntimeBackend()
-        with pytest.raises(NotImplementedError, match="register_trial"):
-            backend.executor_client.register_trial()
-        with pytest.raises(NotImplementedError, match="execute_tool"):
-            backend.executor_client.execute_tool()
+        with pytest.raises(NotImplementedError, match="DockerRuntime or mock"):
+            method_call(backend)
 
     def test_fresh_backend_has_empty_call_log(self) -> None:
         backend = InMemoryRuntimeBackend()

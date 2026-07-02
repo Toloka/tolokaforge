@@ -36,7 +36,7 @@ stable hash grading.
 | **File**    | `tolokaforge/core/orchestrator.py` — `_run_trial()` post-trial state sync |
 | **Symptom** | All trials write identical `env.yaml` showing only the initial state. Actual tool-induced changes are invisible in post-mortem diagnostics. |
 | **Root cause** | After trial execution, the orchestrator synced `adapter_env.data` — a snapshot taken during `create_environment()`. In Docker mode, tool execution happens through the Runner's DB service, so the adapter's local `InMemoryDatabase` never reflects actual changes. Additionally, `create_environment()` stores its DB at `self._db_instances[task_id]` (keyed by task ID, not trial ID), so concurrent trials on the same task overwrite each other's DB reference. |
-| **Fix** | After trial execution in Docker mode, fetch the actual post-trial state from the Runner's DB service via `docker_runtime.executor_client.get_state(trial_id)` gRPC call. Falls back to adapter data if the RPC fails. Non-Docker mode still uses adapter data directly. |
+| **Fix** | After trial execution in Docker mode, fetch the actual post-trial state from the Runner's DB service via `docker_runtime.get_state(trial_id)`. Falls back to adapter data if the RPC fails. Non-Docker mode still uses adapter data directly. |
 
 ### Open Issues (Not Fixed)
 

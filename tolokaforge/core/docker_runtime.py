@@ -45,15 +45,14 @@ logger = logging.getLogger(__name__)
 
 @runtime_checkable
 class RunnerClient(Protocol):
-    """The runner-RPC surface any :class:`RuntimeBackend` implementation
-    must expose through :attr:`RuntimeBackend.executor_client`.
+    """The runner-RPC surface :class:`DockerRuntime` delegates to.
 
     Seven methods — six per-trial RPCs plus a lifecycle probe — cover
-    every call site downstream of ``DockerRunnerAdapter``. A non-gRPC
-    backend (in-process subprocess, remote conductor over a different
-    transport) satisfies this Protocol structurally without pulling in
-    the gRPC stack. :class:`GrpcRunnerClient` is the sole production
-    implementation.
+    every runner-side call the docker runtime makes on behalf of a
+    :class:`RuntimeBackend`. A non-gRPC caller (in-process subprocess,
+    remote conductor over a different transport) can satisfy this
+    Protocol structurally without pulling in the gRPC stack.
+    :class:`GrpcRunnerClient` is the sole production implementation.
     """
 
     def register_trial(
@@ -673,11 +672,6 @@ class DockerRuntime:
             runner_address: gRPC address for Runner service
         """
         self.runner_client: GrpcRunnerClient = GrpcRunnerClient(runner_address)
-        # Keep executor_client as alias for backward compatibility. Typed
-        # as the concrete gRPC impl (not the Protocol) so downstream code
-        # can still reach ``runner_address`` and other implementation
-        # attributes when needed.
-        self.executor_client: GrpcRunnerClient = self.runner_client
         logger.info("Docker runtime initialized")
 
     def connect(self, timeout: float = 30.0, retry_interval: float = 1.0) -> None:
@@ -759,6 +753,69 @@ class DockerRuntime:
     def teardown(self, handle: EnvHandle) -> None:  # noqa: ARG002 — Protocol conformance
         """No-op: the shared stack lives for the whole run and is torn
         down at :meth:`close`, not per-trial. Idempotent by construction."""
+
+    # ---- Per-trial RPC operations (ADR-0013) ----
+    # Thin delegates to ``self.runner_client``. Kept as explicit methods
+    # (not ``__getattr__`` proxy magic) so the ``RuntimeBackend`` Protocol
+    # surface is discoverable in the class definition.
+
+    def register_trial(
+        self,
+        trial_id: str,
+        trial_spec_json: str,
+        default_tool_timeout_s: float = DEFAULT_TOOL_TIMEOUT_S,
+    ) -> dict:
+        return self.runner_client.register_trial(
+            trial_id=trial_id,
+            trial_spec_json=trial_spec_json,
+            default_tool_timeout_s=default_tool_timeout_s,
+        )
+
+    def execute_tool(
+        self,
+        trial_id: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        timeout_seconds: float = 30.0,
+        executor: str = "agent",
+    ) -> ToolResult:
+        return self.runner_client.execute_tool(
+            trial_id=trial_id,
+            tool_name=tool_name,
+            arguments=arguments,
+            timeout_seconds=timeout_seconds,
+            executor=executor,
+        )
+
+    def grade_trial(
+        self,
+        trial_id: str,
+        llm_messages_json: str | None = None,
+        grading_components: list[str] | None = None,
+    ) -> dict:
+        return self.runner_client.grade_trial(
+            trial_id=trial_id,
+            llm_messages_json=llm_messages_json,
+            grading_components=grading_components,
+        )
+
+    def get_state(
+        self,
+        trial_id: str,
+        include_unstable: bool = True,
+        tables: list[str] | None = None,
+    ) -> dict:
+        return self.runner_client.get_state(
+            trial_id=trial_id,
+            include_unstable=include_unstable,
+            tables=tables,
+        )
+
+    def reset_trial(self, trial_id: str, execute_init_actions: bool = False) -> dict:
+        return self.runner_client.reset_trial(
+            trial_id=trial_id,
+            execute_init_actions=execute_init_actions,
+        )
 
     def __enter__(self):
         """Context manager entry"""

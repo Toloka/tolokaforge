@@ -51,23 +51,3 @@ class TestInMemoryRuntimeBackendConstruction:
         a.cleanup_trial("x:0")
         assert a.call_log.cleanup_trial_calls == ["x:0"]
         assert b.call_log.cleanup_trial_calls == []
-
-
-class TestInMemoryRuntimeBackendExecutorClient:
-    """The ``executor_client`` stub is the safety net for tests that try
-    to exercise the runner RPC surface against an in-memory backend
-    (which can't fulfil it)."""
-
-    def test_unknown_method_raises_with_method_name(self) -> None:
-        backend = InMemoryRuntimeBackend()
-        with pytest.raises(NotImplementedError) as excinfo:
-            _ = backend.executor_client.some_unknown_method
-        assert "some_unknown_method" in str(excinfo.value)
-
-    def test_error_message_points_at_alternatives(self) -> None:
-        backend = InMemoryRuntimeBackend()
-        with pytest.raises(NotImplementedError) as excinfo:
-            _ = backend.executor_client.register_trial
-        message = str(excinfo.value)
-        assert "DockerRuntime" in message
-        assert "RunnerClient" in message
