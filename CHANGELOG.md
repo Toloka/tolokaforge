@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.6.0 (2026-07-02)
+
+### Feat
+
+- **grading**: diff-first default state view for the rubric judge (#151)
+
 ## v0.5.0 (2026-07-02)
 
 ### Feat
