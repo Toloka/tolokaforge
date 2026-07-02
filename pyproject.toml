@@ -227,7 +227,8 @@ omit = [
     "tolokaforge/runner/rag_client.py",
     "tolokaforge/runner/tool_factory.py",
     # Docker runtime clients
-    "tolokaforge/core/docker_runtime.py",
+    "tolokaforge/core/shared_stack_runtime.py",
+    "tolokaforge/core/per_trial_runtime.py",
     "tolokaforge/core/docker_adapter.py",
     # Docker SDK wrappers (require Docker daemon)
     "tolokaforge/docker/builder.py",
