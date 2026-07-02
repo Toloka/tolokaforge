@@ -105,8 +105,11 @@ class QueryDbTool(Tool):
         super().__init__(
             name="query_db",
             description=(
-                "Query the final database state with a JSONPath expression "
-                "(e.g. '$.orders[*].status'). Returns matching values. Read-only."
+                "Query the final database state with a JSONPath expression, "
+                "including filter expressions to look up a specific row — e.g. "
+                "'$.orders[?(@.id==\"PO-1\")]' to fetch one order by id, or "
+                "'$.orders[*].status' for a whole column. Returns matching values. "
+                "Read-only."
             ),
             policy=_read_only_policy(),
         )
