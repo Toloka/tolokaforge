@@ -48,10 +48,13 @@ graph TB
     LRB -->|"one client per trial<br/>keyed by trial_id"| T2
 ```
 
-Selection is a run-level config choice: `SharedStackRuntimeBackend` is the default
-(preserves today's behaviour); a task that declares an `environment_manifest`
-runs on `PerTrialRuntimeBackend` when the orchestrator opts in. That wiring is
-the next PR (Conductor + Orchestrator injection); this PR ships the backend.
+Selection is a run-level choice with two knobs and a safety enforcement:
+
+- **Config**: `orchestrator.runtime: shared | per_trial` in the run config YAML. Default `shared`.
+- **CLI override**: `tolokaforge run --runtime {shared,per_trial}` overrides the config for a single invocation. The banner printed at run start names the backend and the source (`cli-flag` vs `config` vs `default`) so operators can see what actually got chosen.
+- **Task-side enforcement**: every task's `environment_manifest.isolation` declares its requirement (`per_trial` default, `shared_ok` opt-out). The orchestrator refuses to start the run if any task requires `per_trial` and the selected backend is `SharedStackRuntimeBackend` — silent cross-trial state contamination is what this guard prevents. See "Isolation enforcement" below.
+
+Legacy `orchestrator.runtime: docker` is accepted as a deprecated alias for `shared` with a `DeprecationWarning` at config load.
 
 ## Concrete backends
 
@@ -257,6 +260,30 @@ A second `teardown(handle)` call finds nothing in the cache, exits quickly. Fore
 
 `close()` (run-level) walks every connected trial, closes their clients, clears the cache. Rarely necessary in practice because the conductor calls `teardown(handle)` in a `finally`; `close()` catches trials that leaked past that (e.g., a caller that forgot to teardown).
 
+## Isolation enforcement
+
+Every `EnvironmentManifest` declares a `TaskIsolation` (default `per_trial`, opt-out `shared_ok`). The orchestrator reads this immediately after backend selection and refuses the run if the combination is unsafe.
+
+```mermaid
+flowchart TD
+    Start[Orchestrator.run] --> Backend[Construct RuntimeBackend<br/>per config / CLI override]
+    Backend --> Check{{"For each task in the run:<br/>manifest.isolation ?"}}
+    Check -->|None or shared_ok| OK[Compatible]
+    Check -->|per_trial + PerTrialRuntimeBackend| OK
+    Check -->|per_trial + SharedStackRuntimeBackend| Refuse["Refuse run<br/>RuntimeError names offending tasks<br/>+ two concrete fixes"]
+    OK --> Trials[Run trials]
+    Refuse --> Stop[Zero trials executed]
+```
+
+Fail-loud fix message names both remedies:
+
+- Switch the runtime: pass `--runtime per_trial` or set `orchestrator.runtime: per_trial` in the config.
+- Opt the task out: set `environment_manifest.isolation: shared_ok` (only appropriate for genuinely stateless tasks).
+
+Enforcement lives at the orchestrator layer, not on `SharedStackRuntimeBackend.provision()`. Refusing the run BEFORE any trial starts (rather than trial-by-trial) means the operator sees the whole failure at once instead of watching trials time out or produce garbage verdicts.
+
+`PerTrialRuntimeBackend` accepts every task — per-trial isolation is a superset of shared-stack semantics for correctness purposes. Cost of per-trial provisioning for genuinely stateless tasks is a separate concern (the loud-defaults banner surfaces the cost/benefit trade so operators can pick the right backend for their workload).
+
 ## Failure modes
 
 | Where | What is raised | What is cleaned up before the raise |
@@ -297,12 +324,13 @@ Both satisfy the same `RuntimeBackend` Protocol. Callers depend only on the Prot
 
 ## What this PR does *not* do
 
-- **No Conductor / Orchestrator wiring.** `Conductor.run()` still uses the pre-ADR-0013 call sites for the shared-stack path; nothing in this PR changes those. Wiring the conductor to call `provision(spec)` / `endpoints(handle)` / `teardown(handle)` around every trial is the next PR (Phase 3.D).
+- **No Conductor wiring for per-trial provisioning.** `Conductor.run()` still uses the pre-ADR-0013 call sites for the shared-stack path — this PR ships `PerTrialRuntimeBackend` as a functioning backend, but the conductor doesn't call its `provision` / `endpoints` / `teardown` methods per trial yet. That wiring is the next PR (Phase 3.D).
 - **No runner image publication.** The `tolokaforge/runner` image is still a local build. The integration test in this PR uses a public-images-only fixture (`postgres:16` + `nginx:alpine`) so the lifecycle can be exercised without our runner image; real RPC coverage waits for a follow-up that publishes the runner image or builds it in CI.
 - **No opt-in from any real task pack.** Zero task packs declare an `environment_manifest` today; the validation-gate PR (Phase 3.E) will migrate one existing multi-service task to prove the design end-to-end. On that PR's green, ADR-0009 and ADR-0010 flip from `Proposed` to `Accepted`.
 - **No endpoint customisation.** The `runner_service` / `db` service / `rag` service conventions are hardcoded here. `runner_port` / `db_service` / `db_port` / `rag_service` / `rag_port` manifest fields are a follow-up ticket.
 - **No perf optimisations.** Image pre-pull, postgres template-DB, container pool, orphan sweep, resource caps, benchmark harness — all filed as a follow-up umbrella ticket.
 - **No layered-image guide.** The SWE-bench 3-tier pattern (base → environment → instance, cited in ADR-0009) applies transparently to any pinned images the compose file references, but the concrete Dockerfile recipes for task-pack authors are a docs follow-up.
+- **`shared_stack_runtime` local variable rename.** After the class rename, the local variable name that used to be `docker_runtime` was renamed to `shared_stack_runtime` — but that name is now misleading (the variable can hold either backend type). Follow-up cleanup: rename the local + kwarg to `runtime_backend` across `orchestrator.py` + `conductor.py` (55 refs across ~10 files).
 
 ## Where to read next
 
