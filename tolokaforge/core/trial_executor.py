@@ -120,10 +120,7 @@ class ProvisioningTrialExecutor:
                 stage=e.stage,
                 error=e.reason,
             )
-            try:
-                self.runtime_backend.teardown(handle)
-            except Exception:  # noqa: BLE001 — teardown is best-effort
-                pass
+            self._safe_teardown(handle, task_id, trial_idx)
             return _synthesize_provision_failure_result(spec, e)
 
         try:
@@ -137,12 +134,31 @@ class ProvisioningTrialExecutor:
             )
             return self.conductor.run(final_spec, task_config)
         finally:
-            self.runtime_backend.teardown(handle)
-            self.logger.info(
-                "Trial env teardown complete",
+            self._safe_teardown(handle, task_id, trial_idx)
+
+    def _safe_teardown(self, handle: object, task_id: str, trial_idx: int) -> None:
+        """Best-effort teardown that logs failures instead of swallowing them.
+
+        Substrate teardown after a failed trial body must not mask the
+        original error the caller cares about, but a silent ``except:
+        pass`` leaves orphaned resources undiagnosable. Log-and-continue
+        gives operators visibility without changing control flow.
+        """
+        try:
+            self.runtime_backend.teardown(handle)  # type: ignore[arg-type]
+        except Exception as teardown_err:  # noqa: BLE001 — best-effort by contract
+            self.logger.warning(
+                "Teardown raised; continuing",
                 task_id=task_id,
                 trial_index=trial_idx,
+                error=str(teardown_err),
             )
+            return
+        self.logger.info(
+            "Trial env teardown complete",
+            task_id=task_id,
+            trial_index=trial_idx,
+        )
 
 
 def _split_trial_id(trial_id: str) -> tuple[str, int]:

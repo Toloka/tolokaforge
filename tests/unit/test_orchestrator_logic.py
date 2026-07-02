@@ -231,6 +231,19 @@ class TestIsRetryableTrajectory:
         traj = _make_trajectory(status=TrialStatus.ERROR)
         assert Orchestrator._is_retryable_trajectory(traj) is True
 
+    def test_provision_error_is_not_retryable(self) -> None:
+        """Substrate provisioning failures short-circuit to non-retryable —
+        ``failure_attribution`` marks them ``deterministic=True`` and
+        retrying a deterministic config fault (bad compose file, missing
+        manifest) burns cycles without changing the outcome."""
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        traj = _make_trajectory(
+            status=TrialStatus.ERROR,
+            termination_reason=TerminationReason.PROVISION_ERROR,
+        )
+        assert Orchestrator._is_retryable_trajectory(traj) is False
+
     def test_timeout_status_is_retryable(self) -> None:
         from tolokaforge.core.orchestrator import Orchestrator
 

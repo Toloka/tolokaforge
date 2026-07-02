@@ -306,7 +306,20 @@ class Orchestrator:
 
     @staticmethod
     def _is_retryable_trajectory(trajectory: Trajectory) -> bool:
-        """Classify retryable infrastructure failures."""
+        """Classify retryable infrastructure failures.
+
+        Substrate provisioning failures (``TerminationReason.PROVISION_ERROR``)
+        short-circuit to non-retryable — ``failure_attribution`` classifies
+        them as ``deterministic=True``, and retrying a deterministic
+        config fault (bad compose file, missing manifest) burns cycles
+        without changing the outcome. When we later gain a way to
+        distinguish transient substrate faults (image pull timeout, docker
+        daemon flake) from deterministic config faults, this branch will
+        gate on that finer signal; today, fail-fast preserves diagnostic
+        clarity and matches AGENTS.md rule 1.
+        """
+        if trajectory.termination_reason == TerminationReason.PROVISION_ERROR:
+            return False
         if trajectory.status in (TrialStatus.ERROR, TrialStatus.TIMEOUT):
             return True
         if trajectory.termination_reason in (

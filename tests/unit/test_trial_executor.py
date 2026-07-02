@@ -163,6 +163,29 @@ class TestProvisionErrorBranches:
         assert backend.call_log.torn_down_trials, "teardown must fire after await_ready failure"
 
 
+class TestSafeTeardown:
+    """Teardown after a failed body / failed await_ready is best-effort:
+    exceptions are logged, not silently swallowed, and control flow
+    continues (the primary error is preserved).
+    """
+
+    def test_teardown_exception_in_finally_is_logged_not_masked(self) -> None:
+        backend = InMemoryRuntimeBackend()
+
+        def _raising_teardown(_handle: object) -> None:
+            raise RuntimeError("teardown blew up")
+
+        backend.teardown = _raising_teardown  # type: ignore[method-assign]
+        executor, _, _, logger = _make_executor(backend=backend)
+
+        # Body succeeds; only teardown raises.
+        result = executor.execute(make_trial_spec(), make_task_config())
+        assert result.trial_id == "task-1:0"  # body result returned normally
+
+        warn_msgs = [c.args[0] for c in logger.warning.call_args_list]
+        assert "Teardown raised; continuing" in warn_msgs
+
+
 class TestSynthesizedFailureShape:
     """Direct test of the synthesis helper — pins the failure trajectory
     shape independent of the executor's dispatch flow."""
