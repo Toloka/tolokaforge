@@ -87,10 +87,10 @@ def test_stub_runner_client_satisfies_protocol() -> None:
     assert isinstance(_StubRunnerClient(), RunnerClient)
 
 
-def test_mock_without_methods_fails_protocol() -> None:
-    """A ``MagicMock`` with the seven attributes still satisfies (they're
-    all magic-attributed), but an object with only some of the methods
-    should fail the runtime check."""
+def test_partial_impl_fails_protocol_check() -> None:
+    """An object that implements only some of the required methods must
+    fail ``isinstance(..., RunnerClient)`` — the check has real teeth
+    beyond just accepting anything that walks like a duck."""
 
     class _Partial:
         def register_trial(self, *args: Any, **kwargs: Any) -> dict:

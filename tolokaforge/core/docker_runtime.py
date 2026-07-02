@@ -5,7 +5,8 @@ Tolokaforge inside Docker. The agent loop stays inside the orchestrator
 process, so only Runner connectivity is handled here.
 
 This module provides:
-- RunnerClient: Protocol for the runner-RPC surface callers depend on.
+- RunnerClient: Protocol declaring the seven-method runner-RPC surface
+  (six per-trial RPCs plus a lifecycle health probe) callers depend on.
 - GrpcRunnerClient: concrete gRPC implementation of RunnerClient.
 - DockerRuntime: High-level wrapper for Docker runtime management.
 
