@@ -5,8 +5,9 @@ Tolokaforge inside Docker. The agent loop stays inside the orchestrator
 process, so only Runner connectivity is handled here.
 
 This module provides:
-- RunnerClient: gRPC client for Host ↔ Runner communication
-- DockerRuntime: High-level wrapper for Docker runtime management
+- RunnerClient: Protocol for the runner-RPC surface callers depend on.
+- GrpcRunnerClient: concrete gRPC implementation of RunnerClient.
+- DockerRuntime: High-level wrapper for Docker runtime management.
 
 See docs/GRPC_PROTOCOL.md for the full protocol specification.
 """
@@ -17,7 +18,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import grpc
 
@@ -36,6 +37,61 @@ if TYPE_CHECKING:  # pragma: no cover — type-only imports for provisioning sur
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Protocol
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class RunnerClient(Protocol):
+    """The runner-RPC surface any :class:`RuntimeBackend` implementation
+    must expose through :attr:`RuntimeBackend.executor_client`.
+
+    Seven methods — six per-trial RPCs plus a lifecycle probe — cover
+    every call site downstream of ``DockerRunnerAdapter``. A non-gRPC
+    backend (in-process subprocess, remote conductor over a different
+    transport) satisfies this Protocol structurally without pulling in
+    the gRPC stack. :class:`GrpcRunnerClient` is the sole production
+    implementation.
+    """
+
+    def register_trial(
+        self,
+        trial_id: str,
+        trial_spec_json: str,
+        default_tool_timeout_s: float = DEFAULT_TOOL_TIMEOUT_S,
+    ) -> dict: ...
+
+    def execute_tool(
+        self,
+        trial_id: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        timeout_seconds: float = 30.0,
+        executor: str = "agent",
+    ) -> ToolResult: ...
+
+    def grade_trial(
+        self,
+        trial_id: str,
+        llm_messages_json: str | None = None,
+        grading_components: list[str] | None = None,
+    ) -> dict: ...
+
+    def get_state(
+        self,
+        trial_id: str,
+        include_unstable: bool = True,
+        tables: list[str] | None = None,
+    ) -> dict: ...
+
+    def reset_trial(self, trial_id: str, execute_init_actions: bool = False) -> dict: ...
+
+    def cleanup_trial(self, trial_id: str) -> dict: ...
+
+    def health_check(self) -> bool: ...
+
+
 def _proto_score_to_optional(value: float) -> float | None:
     """Convert proto sentinel -1.0 to None for unconfigured grade components.
 
@@ -46,7 +102,7 @@ def _proto_score_to_optional(value: float) -> float | None:
     return None if value < 0 else value
 
 
-class RunnerClient:
+class GrpcRunnerClient:
     """Client for communicating with Runner service via gRPC
 
     This client implements the Host side of the Host ↔ Runner protocol
@@ -72,7 +128,7 @@ class RunnerClient:
         self.runner_address = runner_address
         self.channel: grpc.Channel | None = None
         self.stub: runner_pb2_grpc.RunnerServiceStub | None = None
-        logger.info(f"RunnerClient initialized with address: {runner_address}")
+        logger.info(f"GrpcRunnerClient initialized with address: {runner_address}")
 
     def connect(self, timeout: float = 30.0, retry_interval: float = 1.0) -> None:
         """Establish connection to Runner service with health check retry.
@@ -581,7 +637,7 @@ class RunnerClient:
 
 
 # Backward compatibility alias
-ExecutorClient = RunnerClient
+ExecutorClient = GrpcRunnerClient
 
 
 @dataclass(frozen=True)
@@ -598,7 +654,7 @@ class _SharedStackHandle:
 class DockerRuntime:
     """Docker runtime manager - coordinates Runner connectivity
 
-    This is a high-level wrapper that manages the RunnerClient lifecycle.
+    This is a high-level wrapper that manages the GrpcRunnerClient lifecycle.
     Use as a context manager for automatic connection management.
 
     Example:
@@ -615,9 +671,12 @@ class DockerRuntime:
         Args:
             runner_address: gRPC address for Runner service
         """
-        self.runner_client = RunnerClient(runner_address)
-        # Keep executor_client as alias for backward compatibility
-        self.executor_client = self.runner_client
+        self.runner_client: GrpcRunnerClient = GrpcRunnerClient(runner_address)
+        # Keep executor_client as alias for backward compatibility. Typed
+        # as the concrete gRPC impl (not the Protocol) so downstream code
+        # can still reach ``runner_address`` and other implementation
+        # attributes when needed.
+        self.executor_client: GrpcRunnerClient = self.runner_client
         logger.info("Docker runtime initialized")
 
     def connect(self, timeout: float = 30.0, retry_interval: float = 1.0) -> None:

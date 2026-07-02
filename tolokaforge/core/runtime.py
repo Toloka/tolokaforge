@@ -190,9 +190,11 @@ class RuntimeBackend(Protocol):
     """The RPC client used by :class:`DockerRunnerAdapter` for per-trial
     operations after a trial is registered.
 
-    Typed as the concrete :class:`RunnerClient` for now. Promoting it to
-    its own Protocol is a follow-up if a non-gRPC backend ever wants to
-    fake the runner-RPC surface without the gRPC stack."""
+    Typed as the :class:`RunnerClient` Protocol so a non-gRPC backend can
+    satisfy the RuntimeBackend contract without pulling in the gRPC
+    stack. :class:`DockerRuntime` sets this to a :class:`GrpcRunnerClient`
+    instance; ``InMemoryRuntimeBackend`` sets it to a stub that raises on
+    any RPC method access."""
 
 
 # ---------------------------------------------------------------------------

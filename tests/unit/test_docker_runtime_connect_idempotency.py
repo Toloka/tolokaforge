@@ -19,7 +19,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tolokaforge.core.docker_runtime import DockerRuntime, RunnerClient
+from tolokaforge.core.docker_runtime import DockerRuntime, GrpcRunnerClient
 
 pytestmark = pytest.mark.unit
 
@@ -33,7 +33,7 @@ class TestRunnerClientConnectIdempotency:
     def test_second_connect_does_not_recreate_channel(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        client = RunnerClient(runner_address="sentinel:50051")
+        client = GrpcRunnerClient(runner_address="sentinel:50051")
 
         # Pre-populate the channel + stub as if a previous connect() succeeded.
         existing_channel = MagicMock()
@@ -56,7 +56,7 @@ class TestRunnerClientConnectIdempotency:
         """The orchestrator invokes connect() unconditionally at the start of
         every run. If the runtime is already healthy (e.g. an injected
         pre-connected backend), connect() must return cleanly — not raise."""
-        client = RunnerClient(runner_address="sentinel:50051")
+        client = GrpcRunnerClient(runner_address="sentinel:50051")
         client.channel = MagicMock()
         client.stub = MagicMock()
         monkeypatch.setattr(client, "health_check", lambda: True)
@@ -69,7 +69,7 @@ class TestRunnerClientConnectIdempotency:
         docstring promises the health check re-runs; pin that explicitly so a
         future implementation that turns it into a no-op (skipping the probe)
         fails this test loudly."""
-        client = RunnerClient(runner_address="sentinel:50051")
+        client = GrpcRunnerClient(runner_address="sentinel:50051")
         client.channel = MagicMock()
         client.stub = MagicMock()
 
