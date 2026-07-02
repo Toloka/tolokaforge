@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import pytest
 
+from tests.canonical._factories import make_env_endpoints, make_task_description
 from tolokaforge.core.docker_runtime import DockerRuntime
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.runtime import (
@@ -167,22 +168,13 @@ class TestInMemoryBackendSemantics:
 
 
 def _make_task_description(manifest: EnvironmentManifest | None = None) -> TaskDescription:
-    return TaskDescription(
+    return make_task_description(
         task_id="task-1",
         name="probe",
         category="general",
         description="Contract-test task",
-        adapter_type="native",
         system_prompt="You are a helpful assistant.",
         environment_manifest=manifest,
-    )
-
-
-def _make_env_endpoints() -> EnvEndpoints:
-    return EnvEndpoints(
-        db_url="http://db.local:8000",
-        rag_url=None,
-        runner_url="http://runner.local:50051",
     )
 
 
@@ -195,7 +187,7 @@ def _make_trial_spec(
         run_id="run_contract_test",
         task=_make_task_description(manifest),
         agent_model_config=ModelConfig(name="claude-sonnet-4-6", provider="anthropic"),
-        env_endpoints=_make_env_endpoints(),
+        env_endpoints=make_env_endpoints(),
     )
 
 

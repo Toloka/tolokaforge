@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 
 import grpc
 
-from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S
+from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, EnvEndpoints
 from tolokaforge.runner import (
     ExecutionStatus,
     runner_pb2,
@@ -31,7 +31,7 @@ from tolokaforge.tools.registry import ToolResult
 
 if TYPE_CHECKING:  # pragma: no cover — type-only imports for provisioning surface
     from tolokaforge.core.runtime import EnvHandle
-    from tolokaforge.core.trial import EnvEndpoints, TrialSpec
+    from tolokaforge.core.trial import TrialSpec
 
 logger = logging.getLogger(__name__)
 
@@ -690,8 +690,6 @@ class DockerRuntime:
         backend (e.g. ``LocalRuntimeBackend``, which resolves real URLs
         from its per-trial ``ServiceStack``).
         """
-        from tolokaforge.core.trial import EnvEndpoints
-
         return EnvEndpoints(
             db_url=f"http://{self.runner_client.runner_address}/db-shared",
             rag_url=None,

@@ -17,6 +17,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from tests.canonical._factories import make_env_endpoints, make_task_description
 from tolokaforge.core.models import (
     Grade,
     GradeComponents,
@@ -33,12 +34,11 @@ pytestmark = pytest.mark.canonical
 
 
 def _make_task_description() -> TaskDescription:
-    return TaskDescription(
+    return make_task_description(
         task_id="airline_001",
         name="Book a flight",
         category="airline",
         description="The user wants to book a one-way flight from JFK to LAX.",
-        adapter_type="native",
         system_prompt="You are a helpful airline assistant.",
     )
 
@@ -48,11 +48,7 @@ def _make_model_config() -> ModelConfig:
 
 
 def _make_env_endpoints(rag: bool = False) -> EnvEndpoints:
-    return EnvEndpoints(
-        db_url="http://db.local:8000",
-        rag_url="http://rag.local:8001" if rag else None,
-        runner_url="http://runner.local:50051",
-    )
+    return make_env_endpoints(rag_url="http://rag.local:8001" if rag else None)
 
 
 # ---------------------------------------------------------------------------
