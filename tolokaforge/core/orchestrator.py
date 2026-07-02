@@ -15,6 +15,7 @@ from tolokaforge.adapters import BaseAdapter, ensure_registered_adapter, get_ada
 from tolokaforge.core.conductor import (
     Conductor,
     ConductorContext,
+    ConductorFactory,
     InProcessConductor,
 )
 from tolokaforge.core.engine_run_state import (
@@ -212,7 +213,7 @@ class OrchestratorDeps:
     artifact_writer: TrialArtifactWriter = field(default_factory=FileArtifactWriter)
     run_aggregate_writer: RunAggregateWriter = field(default_factory=FileAggregateWriter)
     runtime_backend: RuntimeBackend | None = None
-    conductor_factory: Callable[[ConductorContext], Conductor] | None = None
+    conductor_factory: ConductorFactory | None = None
 
 
 class Orchestrator:
@@ -252,9 +253,7 @@ class Orchestrator:
         self._artifact_writer: TrialArtifactWriter = resolved_deps.artifact_writer
         self._run_aggregate_writer: RunAggregateWriter = resolved_deps.run_aggregate_writer
         self._injected_runtime_backend: RuntimeBackend | None = resolved_deps.runtime_backend
-        self._conductor_factory: Callable[[ConductorContext], Conductor] | None = (
-            resolved_deps.conductor_factory
-        )
+        self._conductor_factory: ConductorFactory | None = resolved_deps.conductor_factory
         # Per-run cache of resolved ``TaskDescription`` objects keyed by
         # task_id. ``adapter.to_task_description()`` reads the system
         # prompt, tool schemas, fixtures, and base64-bundles the task_dir
@@ -402,19 +401,12 @@ class Orchestrator:
         )
         if self._conductor_factory is not None:
             return self._conductor_factory(ctx)
-        return InProcessConductor(
-            adapter=ctx.adapter,
-            artifact_writer=ctx.artifact_writer,
-            config=ctx.config,
-            logger=ctx.logger,
-            verbose=ctx.verbose,
-            strict=ctx.strict,
-            agent_client=ctx.agent_client,
-            runtime_backend=ctx.runtime_backend,
-            trial_grader=ctx.trial_grader,
-            output_dir=ctx.output_dir,
-            request_limiter=ctx.request_limiter,
-        )
+        # ``ConductorContext`` fields are a 1:1 match for
+        # ``InProcessConductor.__init__`` kwargs. Shallow-unpack via
+        # ``vars`` (``dataclasses.asdict`` would deep-copy) so a new
+        # field on the context surfaces as a loud unexpected-kwarg
+        # error here instead of a silent omission.
+        return InProcessConductor(**vars(ctx))
 
     def _build_trial_spec(
         self,

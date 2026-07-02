@@ -62,6 +62,7 @@ __all__ = [
     "Conductor",
     "ConductorCallLog",
     "ConductorContext",
+    "ConductorFactory",
     "InMemoryConductor",
     "InProcessConductor",
 ]
@@ -146,6 +147,14 @@ class Conductor(Protocol):
     def run(self, spec: TrialSpec, task_config: TaskConfig) -> TrialResult:
         """Execute one trial end-to-end."""
         ...
+
+
+ConductorFactory = Callable[[ConductorContext], Conductor]
+"""Type of the ``Orchestrator.deps.conductor_factory`` seam.
+
+A callable that receives a :class:`ConductorContext` and returns any
+implementation of the :class:`Conductor` Protocol.
+"""
 
 
 # ---------------------------------------------------------------------------
