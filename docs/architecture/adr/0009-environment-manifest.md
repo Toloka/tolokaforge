@@ -91,7 +91,26 @@ class EnvironmentManifest(BaseModel):
     security_context_defaults: SecurityContext | None = None
     """Applied by the provisioner to every service that does not override
     the equivalent settings in the compose file."""
+
+    isolation: TaskIsolation = TaskIsolation.PER_TRIAL
+    """Isolation requirement. Defaults to per-trial — the orchestrator
+    refuses to run a per-trial task on `SharedStackRuntimeBackend`.
+    Set to `shared_ok` to opt out for stateless tasks that tolerate
+    a shared stack."""
 ```
+
+### `TaskIsolation` — declares per-task isolation intent
+
+Two literal states:
+
+| Value | Semantics |
+|---|---|
+| `per_trial` (default) | Task requires a fresh environment per trial. Orchestrator refuses to run on `SharedStackRuntimeBackend`. |
+| `shared_ok` | Task tolerates a stack shared with other trials. Orchestrator accepts either backend. |
+
+The default is `per_trial` because a task's decision to declare an `EnvironmentManifest` at all almost always signals per-trial semantic intent (per-trial fixtures, per-trial db, per-trial file state). Silent cross-trial contamination on a shared backend is the failure mode this default prevents. `shared_ok` is the explicit opt-out for stateless tasks that would otherwise pay the per-trial cold-start cost unnecessarily.
+
+Enforcement lives at the orchestrator layer, not on the manifest itself: the orchestrator iterates every task in the run at start, and if any task's `isolation == per_trial` while the selected runtime backend is `SharedStackRuntimeBackend`, the orchestrator raises before any trial runs. See ADR-0010 for the runtime-backend contract; see the `RUNTIME_BACKENDS.md` doc for the concrete enforcement site.
 
 Load-time safety validators run against the loaded compose contents. Failing any of them raises `ValidationError` at construction:
 
@@ -173,8 +192,8 @@ Every task in the engine — not just multi-service ones — moves to per-trial 
 
 ### What happens to existing tasks across the arc
 
-- Tasks that do not declare an `environment_manifest` continue to run on the shared-stack path (`DockerRuntime`, unchanged). No behavioural change from this ADR.
-- Tasks that opt into a manifest run through the per-trial provisioning path (ADR-0010 + `LocalRuntimeBackend`, follow-up PR). The manifest is validated at load time; unsafe configurations fail before any container starts.
+- Tasks that do not declare an `environment_manifest` continue to run on the shared-stack path (`SharedStackRuntimeBackend`, unchanged). No behavioural change from this ADR.
+- Tasks that opt into a manifest run through the per-trial provisioning path (ADR-0010 + `PerTrialRuntimeBackend`, follow-up PR). The manifest is validated at load time; unsafe configurations fail before any container starts.
 
 ### Does a task need a manifest to "comply"?
 
@@ -198,7 +217,7 @@ METR's `manifest.yaml` uses permission strings for network access (`no_internet`
 
 ### Testcontainers — the library that consumes the manifest
 
-Testcontainers Python's `testcontainers.compose.DockerCompose` module consumes a compose file directly. Adopting compose as source-of-truth means the concrete `LocalRuntimeBackend` (ADR-0010 follow-up) is a thin adapter over Testcontainers — no Pydantic-to-compose translator to own.
+Testcontainers Python's `testcontainers.compose.DockerCompose` module consumes a compose file directly. Adopting compose as source-of-truth means the concrete `PerTrialRuntimeBackend` (ADR-0010 follow-up) is a thin adapter over Testcontainers — no Pydantic-to-compose translator to own.
 
 ### SWE-bench — layered image caching, not manifest
 
@@ -211,7 +230,7 @@ SWE-bench's harness uses a 3-tier image hierarchy (base → environment → inst
 - Task authors write compose files — an artefact they already know. The engine adds a small typed wrapper on top; the total learning curve is bounded.
 - Every safety-relevant configuration (`network_mode: host`, `privileged: true`, `cap_add`, bind-mount traversal) fails to load. Unsafe manifests never reach a provisioner.
 - Compose files run through `docker compose config` for structural validation, through IDE integrations for authoring, and through `docker compose up` for standalone testing. Zero-cost interop with the surrounding ecosystem.
-- The concrete `LocalRuntimeBackend` consumes the compose file directly via Testcontainers. No engine-owned Pydantic-to-compose translator.
+- The concrete `PerTrialRuntimeBackend` consumes the compose file directly via Testcontainers. No engine-owned Pydantic-to-compose translator.
 - Alignment with Inspect AI's docker sandbox convention makes ecosystem interop trivial: an Inspect-authored compose sandbox spec runs through `EnvironmentManifest` with no adapter code.
 
 ### Negative / Trade-offs
@@ -222,7 +241,8 @@ SWE-bench's harness uses a 3-tier image hierarchy (base → environment → inst
 
 ### Follow-ups
 
-- **`LocalRuntimeBackend`** — the first concrete provisioner. Consumes `manifest.compose_file` directly via `testcontainers.compose.DockerCompose`.
+- **`PerTrialRuntimeBackend`** — the first concrete provisioner. Consumes `manifest.compose_file` directly via `testcontainers.compose.DockerCompose`.
+- **Endpoint-resolution conventions** — `PerTrialRuntimeBackend` resolves `EnvEndpoints` from the compose file via convention: `runner_service` (default `"default"`) at gRPC port `50051` → `runner_url`; a compose service named `db` at port `5432` → `db_url`; a compose service named `rag` or `rag-service` at its declared port → `rag_url`. Task packs whose services deviate from these names or ports will get manifest-level overrides (`runner_port`, `db_service`, `db_port`, `rag_service`, `rag_port`) in a follow-up PR — the current shape prioritises simplicity for the common case.
 - **`NetworkPolicy.LIMITED_INTERNET` allowlist mechanism** — provisioner-defined; separate ADR when the first workload requires it.
 - **`K8sRuntimeBackend` design ADR** — filed when the K8s backend becomes concrete work.
 

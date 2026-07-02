@@ -24,7 +24,7 @@ from typing import Any
 
 import pytest
 
-from tolokaforge.core.docker_runtime import GrpcRunnerClient
+from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient
 
 pytestmark = [pytest.mark.integration, pytest.mark.requires_docker]
 

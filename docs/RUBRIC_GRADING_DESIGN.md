@@ -40,7 +40,7 @@ orchestrator ──GradeTrial─────▶ runner._grade_trial_async
                                         └─ aggregate_rubric      → score + gate
                                   └─ Grade{ binary_pass, score, components, criterion_results,
                                             judge_status, judge_report(usage+transcript) }
-orchestrator ◀──GradeTrialResponse── proto Grade ── docker_runtime ── Pydantic Grade ── TrialArtifactWriter
+orchestrator ◀──GradeTrialResponse── proto Grade ── shared_stack_runtime ── Pydantic Grade ── TrialArtifactWriter
                                                                                           grade.yaml + judge_trajectory.yaml
 ```
 

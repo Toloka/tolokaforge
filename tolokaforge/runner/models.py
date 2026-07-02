@@ -608,6 +608,30 @@ class NetworkPolicy(str, Enum):
     """Unrestricted egress. Still no cross-trial reachability."""
 
 
+class TaskIsolation(str, Enum):
+    """Isolation requirement the task declares to the runtime backend.
+
+    A task that mutates state (writes DB rows, applies fixtures, modifies
+    per-trial files) needs a fresh environment per trial to grade
+    correctly. Running such a task on a shared-stack backend produces
+    silent cross-trial contamination — the manifest's declaration lets
+    the orchestrator refuse an incompatible backend before any trial
+    runs.
+    """
+
+    PER_TRIAL = "per_trial"
+    """Task requires a fresh environment per trial. The orchestrator
+    refuses to run the task on ``SharedStackRuntimeBackend``. Safe
+    default — any task that has a manifest almost certainly wants this
+    (it is why the task declared a manifest in the first place)."""
+
+    SHARED_OK = "shared_ok"
+    """Task tolerates running against a stack shared with other trials.
+    Opt-out for stateless tasks that would otherwise pay the per-trial
+    cold-start cost unnecessarily. The orchestrator accepts either
+    backend for these tasks."""
+
+
 def _compose_services(content: dict[str, Any]) -> dict[str, dict[str, Any]]:
     services = content.get("services")
     if not isinstance(services, dict) or not services:
@@ -837,6 +861,12 @@ class EnvironmentManifest(BaseModel):
     security_context_defaults: SecurityContext | None = None
     """Applied by the provisioner to every service that does not override
     the equivalent settings in the compose file."""
+
+    isolation: TaskIsolation = TaskIsolation.PER_TRIAL
+    """Isolation requirement. Defaults to per-trial — the orchestrator
+    refuses to run a per-trial task on ``SharedStackRuntimeBackend``.
+    Set to ``shared_ok`` to opt out for stateless tasks that tolerate
+    a shared stack."""
 
     model_config = {"extra": "forbid"}
 

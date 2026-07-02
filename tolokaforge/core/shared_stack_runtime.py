@@ -8,7 +8,7 @@ This module provides:
 - RunnerClient: Protocol declaring the seven-method runner-RPC surface
   (six per-trial RPCs plus a lifecycle health probe) callers depend on.
 - GrpcRunnerClient: concrete gRPC implementation of RunnerClient.
-- DockerRuntime: High-level wrapper for Docker runtime management.
+- SharedStackRuntimeBackend: High-level wrapper for Docker runtime management.
 
 See docs/GRPC_PROTOCOL.md for the full protocol specification.
 """
@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import grpc
 
+from tolokaforge.core.runtime import IsolationMode
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, EnvEndpoints
 from tolokaforge.runner import (
     ExecutionStatus,
@@ -45,15 +46,20 @@ logger = logging.getLogger(__name__)
 
 @runtime_checkable
 class RunnerClient(Protocol):
-    """The runner-RPC surface :class:`DockerRuntime` delegates to.
+    """The runner-RPC surface :class:`SharedStackRuntimeBackend` delegates to.
 
-    Seven methods — six per-trial RPCs plus a lifecycle probe — cover
-    every runner-side call the docker runtime makes on behalf of a
+    Nine methods — six per-trial RPCs plus a lifecycle triplet
+    (``connect`` / ``close`` / ``health_check``) — cover every
+    runner-side call the docker runtime makes on behalf of a
     :class:`RuntimeBackend`. A non-gRPC caller (in-process subprocess,
     remote conductor over a different transport) can satisfy this
     Protocol structurally without pulling in the gRPC stack.
     :class:`GrpcRunnerClient` is the sole production implementation.
     """
+
+    def connect(self, timeout: float = 30.0, retry_interval: float = 1.0) -> None: ...
+
+    def close(self) -> None: ...
 
     def register_trial(
         self,
@@ -642,7 +648,7 @@ ExecutorClient = GrpcRunnerClient
 
 @dataclass(frozen=True)
 class _SharedStackHandle:
-    """Handle returned by :meth:`DockerRuntime.provision`.
+    """Handle returned by :meth:`SharedStackRuntimeBackend.provision`.
 
     Points at the run-wide shared stack rather than a per-trial materialisation.
     Two trials in the same run receive equivalent handles.
@@ -651,18 +657,23 @@ class _SharedStackHandle:
     trial_id: str
 
 
-class DockerRuntime:
+class SharedStackRuntimeBackend:
     """Docker runtime manager - coordinates Runner connectivity
 
     This is a high-level wrapper that manages the GrpcRunnerClient lifecycle.
     Use as a context manager for automatic connection management.
 
     Example:
-        with DockerRuntime("runner:50051") as runtime:
+        with SharedStackRuntimeBackend("runner:50051") as runtime:
             if runtime.health_check():
                 # Use runtime.runner_client for operations
                 pass
     """
+
+    isolation_mode: IsolationMode = IsolationMode.SHARED_STACK
+    """Every trial in the run talks to the same runner container. Read by
+    the orchestrator's compatibility check to refuse runs whose tasks
+    declare ``environment_manifest.isolation: per_trial``."""
 
     def __init__(self, runner_address: str = "runner:50051"):
         """
@@ -707,14 +718,14 @@ class DockerRuntime:
 
     # ---- Per-trial provisioning (ADR-0010) — shared-stack compat path ----
     #
-    # DockerRuntime keeps the run-wide shared-stack semantics that existed
+    # SharedStackRuntimeBackend keeps the run-wide shared-stack semantics that existed
     # before ADR-0010. The new methods satisfy the extended
     # ``RuntimeBackend`` Protocol without changing behaviour: provision
     # returns a handle pointing at the shared stack; endpoints returns the
     # run-wide URLs the shared stack exposes; teardown is a no-op because
     # the shared stack lives for the whole run and is torn down at
-    # ``close``. Per-trial isolation is a ``LocalRuntimeBackend`` concern,
-    # not a ``DockerRuntime`` concern.
+    # ``close``. Per-trial isolation is a ``PerTrialRuntimeBackend`` concern,
+    # not a ``SharedStackRuntimeBackend`` concern.
 
     def provision(self, spec: TrialSpec) -> EnvHandle:
         """Return a handle pointing at the run-wide shared stack.
@@ -733,7 +744,7 @@ class DockerRuntime:
     def endpoints(self, handle: EnvHandle) -> EnvEndpoints:  # noqa: ARG002 — Protocol conformance
         """Return **sentinel** URLs for the shared-stack path.
 
-        DockerRuntime does not carry the per-trial URLs the manifest
+        SharedStackRuntimeBackend does not carry the per-trial URLs the manifest
         would resolve to; the returned strings are placeholders scoped
         to the runner address (``…/db-shared``) purely to satisfy
         :class:`EnvEndpoints`' non-empty ``db_url`` / ``runner_url``
@@ -741,7 +752,7 @@ class DockerRuntime:
         addresses on the shared-stack path come from the orchestrator's
         existing ``EnvEndpoints`` construction site, not from this
         method. Callers that need per-trial URLs should use a per-trial
-        backend (e.g. ``LocalRuntimeBackend``, which resolves real URLs
+        backend (e.g. ``PerTrialRuntimeBackend``, which resolves real URLs
         from its per-trial ``ServiceStack``).
         """
         return EnvEndpoints(

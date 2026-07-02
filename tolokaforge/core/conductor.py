@@ -224,7 +224,7 @@ class InProcessConductor:
         verbose: bool = False,
         strict: bool = False,
         agent_client: LLMClient,
-        docker_runtime: RuntimeBackend,
+        shared_stack_runtime: RuntimeBackend,
         output_dir: Path,
         request_limiter: GlobalRateLimiter | None = None,
     ) -> None:
@@ -235,7 +235,7 @@ class InProcessConductor:
         self.verbose = verbose
         self.strict = strict
         self.agent_client = agent_client
-        self.docker_runtime = docker_runtime
+        self.shared_stack_runtime = shared_stack_runtime
         self.output_dir = output_dir
         self.request_limiter = request_limiter
 
@@ -292,7 +292,7 @@ class InProcessConductor:
         agent_client = self.agent_client
         user_config = spec.user_model_config
         output_dir = self.output_dir
-        docker_runtime = self.docker_runtime
+        shared_stack_runtime = self.shared_stack_runtime
         request_limiter = self.request_limiter
         worker_id = spec.worker_id
         judge_config = spec.judge_model_config
@@ -391,7 +391,7 @@ class InProcessConductor:
 
         trial_id = f"{task.task_id}:{trial_idx}"
 
-        tool_executor = DockerRunnerAdapter(runtime=docker_runtime, trial_id=trial_id)
+        tool_executor = DockerRunnerAdapter(runtime=shared_stack_runtime, trial_id=trial_id)
 
         # The spec is the single source of truth for the timeout; the proto
         # field is filled from it so the two cannot diverge silently. The
@@ -400,7 +400,7 @@ class InProcessConductor:
         # re-resolving the adapter here. Registration goes straight to the
         # runtime backend now (ADR-0013); the tool executor is only used
         # for the runner's ``execute()`` path.
-        register_result = docker_runtime.register_trial(
+        register_result = shared_stack_runtime.register_trial(
             trial_id=trial_id,
             trial_spec_json=spec.model_dump_json(),
             default_tool_timeout_s=spec.default_tool_timeout_s or DEFAULT_TOOL_TIMEOUT_S,
@@ -508,7 +508,7 @@ class InProcessConductor:
         # before reading, so the read covers every adapter.
         runner_state: dict[str, Any] | None = None
         try:
-            state_result = docker_runtime.get_state(trial_id)
+            state_result = shared_stack_runtime.get_state(trial_id)
             if state_result.get("success") and state_result.get("state_json"):
                 import json as _json
 
@@ -585,7 +585,7 @@ class InProcessConductor:
             llm_messages_json = self._build_judge_messages_json(
                 task, trajectory, runner.effective_system_prompt or system_prompt
             )
-            grade_result = docker_runtime.grade_trial(
+            grade_result = shared_stack_runtime.grade_trial(
                 trial_id=trial_id, llm_messages_json=llm_messages_json
             )
             if grade_result["success"] and grade_result["grade"]:

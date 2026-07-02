@@ -431,7 +431,7 @@ class TestBuildSystemPrompt:
             verbose=False,
             strict=False,
             agent_client=MagicMock(),
-            docker_runtime=MagicMock(),
+            shared_stack_runtime=MagicMock(),
             output_dir=Path("/tmp"),
             request_limiter=MagicMock(),
         )
@@ -1236,13 +1236,15 @@ class TestJudgeModelGate:
         )
         orch.adapter = adapter
 
-        with patch("tolokaforge.core.docker_runtime.DockerRuntime") as docker_runtime:
+        with patch(
+            "tolokaforge.core.shared_stack_runtime.SharedStackRuntimeBackend"
+        ) as shared_stack_runtime:
             with pytest.raises(ValueError, match="TASK-needs-judge"):
                 orch.run_worker(tmp_path)
 
         # No trial was dispatched, and the run never reached Docker setup.
         assert recording_conductor.call_log.runs == []
-        docker_runtime.assert_not_called()
+        shared_stack_runtime.assert_not_called()
 
     def test_run_worker_requires_engine_run_state(self, tmp_path: Path) -> None:
         """``run_worker`` reads the canonical ``run_id`` from
@@ -1432,7 +1434,7 @@ class TestRunOutputDirBasenameGuard:
 class TestRuntimeBackendInjection:
     """The ``runtime_backend`` kwarg accepts any :class:`RuntimeBackend`
     impl. The orchestrator stores the injected instance and uses it
-    instead of constructing :class:`DockerRuntime`.
+    instead of constructing :class:`SharedStackRuntimeBackend`.
     """
 
     def test_kwarg_default_is_none(self) -> None:
@@ -1518,7 +1520,7 @@ class TestArtifactWriterInjection:
 
         orch._build_conductor(
             agent_client=MagicMock(),
-            docker_runtime=MagicMock(),
+            shared_stack_runtime=MagicMock(),
             output_dir=tmp_path,
             request_limiter=None,
         )
@@ -1566,7 +1568,7 @@ class TestConductorInjection:
 
         conductor = orch._build_conductor(
             agent_client=MagicMock(),
-            docker_runtime=MagicMock(),
+            shared_stack_runtime=MagicMock(),
             output_dir=tmp_path,
             request_limiter=MagicMock(),
         )
@@ -1585,7 +1587,7 @@ class TestConductorInjection:
         with pytest.raises(RuntimeError, match="adapter is loaded"):
             orch._build_conductor(
                 agent_client=MagicMock(),
-                docker_runtime=MagicMock(),
+                shared_stack_runtime=MagicMock(),
                 output_dir=tmp_path,
                 request_limiter=MagicMock(),
             )
@@ -1608,7 +1610,7 @@ class TestConductorInjection:
 
         orch._build_conductor(
             agent_client=MagicMock(),
-            docker_runtime=MagicMock(),
+            shared_stack_runtime=MagicMock(),
             output_dir=tmp_path,
             request_limiter=MagicMock(),
         )
@@ -1621,7 +1623,7 @@ class TestConductorInjection:
             "verbose",
             "strict",
             "agent_client",
-            "docker_runtime",
+            "shared_stack_runtime",
             "output_dir",
             "request_limiter",
         }

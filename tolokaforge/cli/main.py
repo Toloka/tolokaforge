@@ -49,6 +49,34 @@ _secrets.export_to_environ(
 console = Console()
 
 
+def _print_runtime_banner(*, console: Console, runtime_choice: str, source: str) -> None:
+    """Print a loud banner naming the selected runtime backend and the
+    isolation posture callers should expect.
+
+    Called after the run config is resolved and before the orchestrator
+    starts. Users see the effective backend + how it was chosen — no
+    silent defaults."""
+    backend_class = {
+        "shared": "SharedStackRuntimeBackend",
+        "per_trial": "PerTrialRuntimeBackend",
+    }.get(runtime_choice, runtime_choice)
+    isolation_line = {
+        "shared": (
+            "one docker-compose stack shared across every trial (fastest, "
+            "no cross-trial isolation)"
+        ),
+        "per_trial": (
+            "one docker-compose stack per trial via Testcontainers "
+            "(concurrent trials fully isolated)"
+        ),
+    }.get(runtime_choice, "unknown")
+    console.print(
+        f"[bold cyan]Runtime backend:[/bold cyan] {backend_class} "
+        f"([dim]{runtime_choice}, from {source}[/dim])"
+    )
+    console.print(f"[cyan]  → {isolation_line}[/cyan]")
+
+
 @click.group()
 def cli():
     """Universal LLM Tool-Use Benchmarking Harness (ULB-H)"""
@@ -146,6 +174,19 @@ def _activate_presets_overlay(
         "the run config. See docs/CONFIG.md."
     ),
 )
+@click.option(
+    "--runtime",
+    "runtime",
+    type=click.Choice(["shared", "per_trial"]),
+    default=None,
+    help=(
+        "Runtime backend. Overrides orchestrator.runtime in the run config. "
+        "'shared' (default) uses one docker-compose stack across every trial; "
+        "'per_trial' materialises an isolated stack per trial via Testcontainers "
+        "(required by tasks whose environment_manifest declares "
+        "isolation: per_trial). See docs/architecture/RUNTIME_BACKENDS.md."
+    ),
+)
 def run(
     config: str,
     resume: bool,
@@ -154,6 +195,7 @@ def run(
     user_model: str | None,
     judge_model: str | None,
     presets_file: str | None,
+    runtime: str | None,
 ):
     """Run benchmark with specified configuration"""
     console.print(f"[bold blue]Loading configuration from {config}...[/bold blue]")
@@ -192,7 +234,18 @@ def run(
         }
         console.print(f"[cyan]Judge model: {judge_model_override}[/cyan]")
 
+    # Apply --runtime CLI override before RunConfig construction so the
+    # value survives every downstream config lookup.
+    if runtime is not None:
+        config_data.setdefault("orchestrator", {})["runtime"] = runtime
+
     run_config = RunConfig(**config_data)
+
+    _print_runtime_banner(
+        console=console,
+        runtime_choice=run_config.orchestrator.runtime,
+        source="cli-flag" if runtime is not None else "config",
+    )
 
     console.print(f"[green]Output directory: {run_config.evaluation.output_dir}[/green]")
 

@@ -15,7 +15,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tolokaforge.core.docker_runtime import GrpcRunnerClient
 from tolokaforge.core.models import (
     CriterionResult,
     Grade,
@@ -23,6 +22,7 @@ from tolokaforge.core.models import (
     JudgeStatus,
     JudgeUsage,
 )
+from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient
 from tolokaforge.runner import runner_pb2
 
 pytestmark = pytest.mark.unit

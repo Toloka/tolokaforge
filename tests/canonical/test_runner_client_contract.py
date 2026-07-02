@@ -1,13 +1,14 @@
 """Pin the ``RunnerClient`` Protocol contract.
 
-The Protocol declares the runner-RPC surface :class:`DockerRuntime`
+The Protocol declares the runner-RPC surface :class:`SharedStackRuntimeBackend`
 delegates to when :class:`~tolokaforge.core.runtime.RuntimeBackend`'s
 per-trial RPC methods (register / execute / grade / get_state / reset /
-cleanup) are invoked. Six per-trial RPCs plus a lifecycle probe. The
-concrete :class:`GrpcRunnerClient` (the only production impl today) is
-checked here for structural conformance; a canonical stub proves the
-shape is genuinely swappable and pins the method signatures against
-silent drift.
+cleanup) are invoked. Six per-trial RPCs plus a lifecycle triplet
+(``connect`` / ``close`` / ``health_check``). The concrete
+:class:`GrpcRunnerClient` (the only production impl today) is checked
+here for structural conformance; a canonical stub proves the shape is
+genuinely swappable and pins the method signatures against silent
+drift.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tolokaforge.core.docker_runtime import GrpcRunnerClient, RunnerClient
+from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient, RunnerClient
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S
 from tolokaforge.tools.registry import ToolResult
 
@@ -27,6 +28,12 @@ pytestmark = pytest.mark.canonical
 class _StubRunnerClient:
     """Minimal structural implementation used to prove the Protocol is
     satisfiable without the gRPC stack."""
+
+    def connect(self, timeout: float = 30.0, retry_interval: float = 1.0) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
 
     def register_trial(
         self,
@@ -104,6 +111,8 @@ def test_partial_impl_fails_protocol_check() -> None:
 @pytest.mark.parametrize(
     "method_name",
     [
+        "connect",
+        "close",
         "register_trial",
         "execute_tool",
         "grade_trial",
@@ -114,7 +123,7 @@ def test_partial_impl_fails_protocol_check() -> None:
     ],
 )
 def test_protocol_surface_pins_expected_methods(method_name: str) -> None:
-    """The seven methods callers depend on are declared on the Protocol.
+    """The nine methods callers depend on are declared on the Protocol.
 
     Guards against a future edit accidentally dropping a method from the
     Protocol without a corresponding removal at every call site."""

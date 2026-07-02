@@ -23,7 +23,7 @@ class TestDockerGradingVerification:
 
     def test_docker_containers_healthy(self, runner_container, json_db_container):
         """Verify Docker containers are running and healthy."""
-        from tolokaforge.core.docker_runtime import GrpcRunnerClient
+        from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient
 
         host = runner_container.get_container_host_ip()
         port = runner_container.get_exposed_port(50051)

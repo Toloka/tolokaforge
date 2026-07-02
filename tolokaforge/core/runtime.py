@@ -2,7 +2,7 @@
 
 The orchestrator dispatches trials to an execution environment through a
 runtime backend. Today's only concrete backend is
-:class:`tolokaforge.core.docker_runtime.DockerRuntime` (a thin gRPC
+:class:`tolokaforge.core.shared_stack_runtime.SharedStackRuntimeBackend` (a thin gRPC
 client wrapper around the runner container); this module declares the
 Protocol that decouples the orchestrator from that single implementation.
 
@@ -14,13 +14,14 @@ Protocol that decouples the orchestrator from that single implementation.
   test fixture and as proof the seam is swappable. Records lifecycle,
   cleanup, and provisioning calls on a :class:`RuntimeBackendCallLog`;
   the per-trial RPC methods raise :class:`NotImplementedError` (tests
-  that exercise the runner RPC surface must use :class:`DockerRuntime`
+  that exercise the runner RPC surface must use :class:`SharedStackRuntimeBackend`
   or mock the methods on the backend instance).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, EnvEndpoints, TrialSpec
@@ -31,11 +32,31 @@ if TYPE_CHECKING:  # pragma: no cover — type-only imports
 __all__ = [
     "EnvHandle",
     "InMemoryRuntimeBackend",
+    "IsolationMode",
     "ProvisionError",
     "ProvisionStage",
     "RuntimeBackend",
     "RuntimeBackendCallLog",
 ]
+
+
+class IsolationMode(str, Enum):
+    """The isolation posture a :class:`RuntimeBackend` provides.
+
+    Every backend advertises its mode via :attr:`RuntimeBackend.isolation_mode`.
+    The orchestrator's task-vs-backend compatibility check reads this attribute
+    rather than inspecting the concrete class — so a future backend on a
+    different substrate (Kubernetes, Modal, ...) only has to set the attribute
+    correctly to slot into the enforcement path.
+
+    * ``SHARED_STACK`` — one substrate materialisation shared across every
+      trial in the run. Cross-trial state contamination is structural.
+    * ``PER_TRIAL_STACK`` — one substrate materialisation per trial.
+      Concurrent trials are fully isolated.
+    """
+
+    SHARED_STACK = "shared_stack"
+    PER_TRIAL_STACK = "per_trial_stack"
 
 
 # ---------------------------------------------------------------------------
@@ -106,13 +127,27 @@ class RuntimeBackend(Protocol):
       / ``cleanup_trial``. Every method takes ``trial_id`` explicitly;
       callers no longer construct an intermediate wrapper class to bind
       it.
+
+    Every implementation advertises its :attr:`isolation_mode` — the
+    orchestrator's task-vs-backend compatibility check reads that attribute
+    rather than inspecting the concrete class, so future backends on other
+    substrates (Kubernetes, Modal, ...) plug into the enforcement path by
+    setting the attribute correctly.
     """
+
+    isolation_mode: IsolationMode
+    """The isolation posture this backend provides. Read by the orchestrator
+    to refuse runs whose tasks declare an incompatible isolation
+    requirement. Substrate-agnostic: any backend that shares state across
+    trials sets :attr:`IsolationMode.SHARED_STACK`; any backend that
+    materialises an independent substrate per trial sets
+    :attr:`IsolationMode.PER_TRIAL_STACK`."""
 
     # ---- Run-level lifecycle ----
     def connect(self, timeout: float = 30.0, retry_interval: float = 1.0) -> None:
         """Establish the runtime connection (or no-op for an in-memory impl).
 
-        ``DockerRuntime`` waits for the gRPC server to become healthy
+        ``SharedStackRuntimeBackend`` waits for the gRPC server to become healthy
         under a timeout / retry loop; in-memory implementations record
         the call and return immediately.
 
@@ -316,12 +351,25 @@ class _InMemoryEnvHandle:
 
 
 class InMemoryRuntimeBackend:
-    """Non-gRPC :class:`RuntimeBackend` implementation.
+    """Recording test-fixture — records every :class:`RuntimeBackend`
+    method call on :attr:`call_log` and never talks to Docker or gRPC.
+    Production code never constructs this class; contract tests and
+    orchestrator-level tests inject it to exercise the Protocol surface
+    without a real backend.
 
-    Records lifecycle, cleanup, and provisioning calls on :attr:`call_log`.
-    The per-trial RPC methods raise :class:`NotImplementedError` — tests
-    that exercise the RPC surface must use :class:`DockerRuntime` or
-    mock the methods on the backend instance.
+    Named ``InMemory`` for consistency with the codebase's
+    ``InMemory{ProtocolName}`` test-fixture prefix (see also
+    :class:`~tolokaforge.core.trial_artifact_writer.InMemoryArtifactWriter`,
+    :class:`~tolokaforge.core.conductor.InMemoryConductor`). "InMemory"
+    here reads as "no external state" rather than literal
+    in-memory-data storage — the class records call history in a dict
+    for tests to assert against.
+
+    Non-gRPC by design. Records lifecycle, cleanup, and provisioning
+    calls on :attr:`call_log`. The per-trial RPC methods raise
+    :class:`NotImplementedError` — tests that exercise the RPC surface
+    must use :class:`SharedStackRuntimeBackend` or mock the methods on
+    the backend instance.
 
     Constructor knobs let orchestrator-level tests exercise the failure
     branches of the provisioning contract without a real substrate:
@@ -341,15 +389,24 @@ class InMemoryRuntimeBackend:
     substrate to be in an anomalous state.
     """
 
+    isolation_mode: IsolationMode = IsolationMode.SHARED_STACK
+    """Test fixture keeps the shared-stack posture by default so tests that
+    inject it against tasks with no isolation requirement continue to work.
+    Tests exercising the per-trial-required-but-shared-provided branch of
+    :meth:`Orchestrator._verify_isolation_compatibility` can override the
+    attribute on the instance."""
+
     def __init__(
         self,
         *,
         fail_provision_after_service: str | None = None,
         await_ready_times_out: bool = False,
+        isolation_mode: IsolationMode = IsolationMode.SHARED_STACK,
     ) -> None:
         self.call_log = RuntimeBackendCallLog()
         self._fail_provision_after_service = fail_provision_after_service
         self._await_ready_times_out = await_ready_times_out
+        self.isolation_mode = isolation_mode
 
     # ---- Run-level lifecycle ----
     def connect(self, timeout: float = 30.0, retry_interval: float = 1.0) -> None:
@@ -409,8 +466,8 @@ class InMemoryRuntimeBackend:
 
     # ---- Per-trial RPC operations (ADR-0013) ----
     # The in-memory backend has no runner service to talk to; every RPC
-    # method raises with a pointer to the DockerRuntime alternative.
-    # Tests that exercise the RPC surface must use ``DockerRuntime`` or
+    # method raises with a pointer to the SharedStackRuntimeBackend alternative.
+    # Tests that exercise the RPC surface must use ``SharedStackRuntimeBackend`` or
     # mock the methods on this instance directly.
     def register_trial(
         self,
@@ -421,7 +478,7 @@ class InMemoryRuntimeBackend:
         raise NotImplementedError(
             "InMemoryRuntimeBackend.register_trial is not implemented. "
             "Tests that exercise the runner RPC surface must use "
-            "DockerRuntime or mock the method on the backend instance."
+            "SharedStackRuntimeBackend or mock the method on the backend instance."
         )
 
     def execute_tool(
@@ -435,7 +492,7 @@ class InMemoryRuntimeBackend:
         raise NotImplementedError(
             "InMemoryRuntimeBackend.execute_tool is not implemented. "
             "Tests that exercise the runner RPC surface must use "
-            "DockerRuntime or mock the method on the backend instance."
+            "SharedStackRuntimeBackend or mock the method on the backend instance."
         )
 
     def grade_trial(
@@ -447,7 +504,7 @@ class InMemoryRuntimeBackend:
         raise NotImplementedError(
             "InMemoryRuntimeBackend.grade_trial is not implemented. "
             "Tests that exercise the runner RPC surface must use "
-            "DockerRuntime or mock the method on the backend instance."
+            "SharedStackRuntimeBackend or mock the method on the backend instance."
         )
 
     def get_state(
@@ -459,12 +516,12 @@ class InMemoryRuntimeBackend:
         raise NotImplementedError(
             "InMemoryRuntimeBackend.get_state is not implemented. "
             "Tests that exercise the runner RPC surface must use "
-            "DockerRuntime or mock the method on the backend instance."
+            "SharedStackRuntimeBackend or mock the method on the backend instance."
         )
 
     def reset_trial(self, trial_id: str, execute_init_actions: bool = False) -> dict[str, Any]:
         raise NotImplementedError(
             "InMemoryRuntimeBackend.reset_trial is not implemented. "
             "Tests that exercise the runner RPC surface must use "
-            "DockerRuntime or mock the method on the backend instance."
+            "SharedStackRuntimeBackend or mock the method on the backend instance."
         )

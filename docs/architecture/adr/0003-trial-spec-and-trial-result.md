@@ -73,7 +73,7 @@ The orchestrator builds one `TrialSpec` at the top of its per-trial helper and a
 ### Follow-ups
 
 - **Typed `EnvEndpoints` model.** Replace the `dict[str, str]` annotation on `TrialSpec.env_endpoints` with a typed model and remove the hardcoded localhost / port defaults that currently flow through `Orchestrator._run_trial`.
-- **`RuntimeBackend` Protocol.** Read from `spec.runtime_context` and `spec.env_endpoints`; ships with a `LocalRuntimeBackend` shim wrapping today's docker path.
+- **`RuntimeBackend` Protocol.** Read from `spec.runtime_context` and `spec.env_endpoints`; ships with a `PerTrialRuntimeBackend` shim wrapping today's docker path.
 - **`Conductor` Protocol.** Promotes `TrialRunner` to the default implementation of `Conductor.run(spec) → TrialResult`. The signature is already named; the existing `TrialRunner.run()` adapter contract is unchanged in this ADR.
 - **Process-split remote Conductor.** Becomes a transport choice — the wire format is already `TrialSpec` over JSON-in-gRPC.
 

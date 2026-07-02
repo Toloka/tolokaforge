@@ -1,4 +1,4 @@
-# 0007. `RuntimeBackend` Protocol — lift `DockerRuntime` behind a typed seam
+# 0007. `RuntimeBackend` Protocol — lift `SharedStackRuntimeBackend` behind a typed seam
 
 - **Status:** Accepted
 - **Date:** 2026-06-26
@@ -10,14 +10,14 @@
 
 The Phase 1 seam-definition arc has typed the control↔trial wire format (`TrialSpec`/`TrialResult`, ADR-0003), both halves of the data plane (`TrialArtifactWriter` ADR-0004, `RunAggregateWriter` ADR-0005), and the trial-scoped service URLs on the wire (`EnvEndpoints`, ADR-0006). One Phase-1 seam remains: the abstraction the orchestrator uses to dispatch a trial to its execution environment.
 
-Today `tolokaforge/core/orchestrator.py` imports `DockerRuntime` from `tolokaforge.core.docker_runtime` concretely. `DockerRuntime` is misleadingly named — it isn't a Docker daemon client; it's a thin gRPC client wrapper that talks to a runner gRPC server. It exposes three lifecycle methods (`connect`, `close`, `health_check`) and one attribute (`executor_client: RunnerClient`) the orchestrator passes to `DockerRunnerAdapter` for per-trial operations. The retry-cleanup path also reaches through `executor_client.cleanup_trial(trial_id)` directly — that's the one call the orchestrator makes *before* a per-trial adapter exists.
+Today `tolokaforge/core/orchestrator.py` imports `SharedStackRuntimeBackend` from `tolokaforge.core.shared_stack_runtime` concretely. `SharedStackRuntimeBackend` is misleadingly named — it isn't a Docker daemon client; it's a thin gRPC client wrapper that talks to a runner gRPC server. It exposes three lifecycle methods (`connect`, `close`, `health_check`) and one attribute (`executor_client: RunnerClient`) the orchestrator passes to `DockerRunnerAdapter` for per-trial operations. The retry-cleanup path also reaches through `executor_client.cleanup_trial(trial_id)` directly — that's the one call the orchestrator makes *before* a per-trial adapter exists.
 
 There is no typed surface that says "this is how the orchestrator talks to its execution environment." A future where the runner is in a different process, a different machine, or a different runtime altogether (Firecracker, local subprocess, remote conductor) has no contract to plug into.
 
 ## Decision Drivers
 
 - **Symmetry with the other Phase-1 seams.** Each plane has a `@runtime_checkable` Protocol with at least two implementations. The execution surface should match.
-- **Lean code.** The orchestrator's two `DockerRuntime(...)` construction sites and one direct `executor_client.cleanup_trial` call can route through a Protocol without losing any behaviour.
+- **Lean code.** The orchestrator's two `SharedStackRuntimeBackend(...)` construction sites and one direct `executor_client.cleanup_trial` call can route through a Protocol without losing any behaviour.
 - **Fail-fast.** A backend that doesn't satisfy the Protocol fails at instance creation, not deep in the retry path.
 - **The seam is the precondition for the `Conductor` Protocol** (ADR-0008), which reads `RuntimeBackend` to know where to send a trial.
 
@@ -38,11 +38,11 @@ We will adopt **Option 1**.
   - `health_check() -> bool`
   - `cleanup_trial(trial_id) -> dict[str, Any]` — the one operation the orchestrator calls before a per-trial adapter exists.
   - `executor_client: RunnerClient` — the per-trial adapter handoff.
-- Add `cleanup_trial(trial_id)` to `DockerRuntime`. One-line delegate to `self.runner_client.cleanup_trial(trial_id)`. `DockerRuntime` becomes a structural implementation of `RuntimeBackend` (no `class DockerRuntime(RuntimeBackend)` declaration — Python Protocols are duck-typed).
-- Add `InMemoryRuntimeBackend` — a no-network implementation that records lifecycle and cleanup calls on a `RuntimeBackendCallLog` dataclass. Its `executor_client` is a stub whose attribute access raises `NotImplementedError` with a message pointing at `DockerRuntime` or `RunnerClient`-mocking as alternatives. Two purposes: (a) prove the seam is swappable; (b) serve as a test fixture for lifecycle-and-cleanup paths.
-- `Orchestrator.__init__` accepts an optional `runtime_backend: RuntimeBackend | None = None` kwarg. When `None`, the orchestrator constructs `DockerRuntime(runner_address=...)` inline (the legacy behaviour). When provided, the orchestrator uses the injected backend.
-- The `docker_runtime` local variable in `run()` and `run_worker()` is type-annotated as `RuntimeBackend` (Protocol), not `DockerRuntime` (concrete).
-- The one direct `docker_runtime.executor_client.cleanup_trial(trial_id)` call in `_cleanup_runner_state_for_retry` becomes `docker_runtime.cleanup_trial(trial_id)`.
+- Add `cleanup_trial(trial_id)` to `SharedStackRuntimeBackend`. One-line delegate to `self.runner_client.cleanup_trial(trial_id)`. `SharedStackRuntimeBackend` becomes a structural implementation of `RuntimeBackend` (no `class SharedStackRuntimeBackend(RuntimeBackend)` declaration — Python Protocols are duck-typed).
+- Add `InMemoryRuntimeBackend` — a no-network implementation that records lifecycle and cleanup calls on a `RuntimeBackendCallLog` dataclass. Its `executor_client` is a stub whose attribute access raises `NotImplementedError` with a message pointing at `SharedStackRuntimeBackend` or `RunnerClient`-mocking as alternatives. Two purposes: (a) prove the seam is swappable; (b) serve as a test fixture for lifecycle-and-cleanup paths.
+- `Orchestrator.__init__` accepts an optional `runtime_backend: RuntimeBackend | None = None` kwarg. When `None`, the orchestrator constructs `SharedStackRuntimeBackend(runner_address=...)` inline (the legacy behaviour). When provided, the orchestrator uses the injected backend.
+- The `shared_stack_runtime` local variable in `run()` and `run_worker()` is type-annotated as `RuntimeBackend` (Protocol), not `SharedStackRuntimeBackend` (concrete).
+- The one direct `shared_stack_runtime.executor_client.cleanup_trial(trial_id)` call in `_cleanup_runner_state_for_retry` becomes `shared_stack_runtime.cleanup_trial(trial_id)`.
 
 ## Consequences
 
@@ -74,6 +74,6 @@ We will adopt **Option 1**.
 ## Scope notes
 
 - **Only `cleanup_trial` lifts to the Protocol** as a direct method (besides lifecycle). Two other `executor_client` calls remain in the orchestrator — `executor_client.get_state(trial_id)` at the final-state-sync point and `executor_client.grade_trial(trial_id, ...)` on the agentic-judge path. Both happen *after* a per-trial adapter exists and could be routed through the adapter; doing so is a separate refactor and out of scope for this ADR.
-- **The orchestrator's default factory is unchanged.** When no `runtime_backend` is injected, the orchestrator constructs `DockerRuntime(runner_address=...)` as before. Existing callers see no behavioural difference.
+- **The orchestrator's default factory is unchanged.** When no `runtime_backend` is injected, the orchestrator constructs `SharedStackRuntimeBackend(runner_address=...)` as before. Existing callers see no behavioural difference.
 - **No gRPC `.proto` change.** This ADR types the orchestrator-side execution surface, not the gRPC wire.
 - **`EXECUTOR_ADDRESS` env-var default** stays at `"executor:50051"` (Docker DNS name). Moving it requires the centralized-config follow-up from ADR-0006.

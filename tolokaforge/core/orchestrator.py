@@ -164,7 +164,7 @@ def _build_env_endpoints(runner_address: str) -> EnvEndpoints:
     Field semantics:
 
     * ``runner_url`` — derived from the orchestrator's known runner
-      address (the value passed to :class:`DockerRuntime`). Always set.
+      address (the value passed to :class:`SharedStackRuntimeBackend`). Always set.
     * ``db_url`` — required on the wire. Reads ``DB_SERVICE_URL`` from
       the environment if set, otherwise the runner-container default
       the docker stack injects (``_DEFAULT_DB_SERVICE_URL``).
@@ -219,7 +219,7 @@ class Orchestrator:
         # Execution surface: the orchestrator depends on the
         # :class:`RuntimeBackend` Protocol, not a concrete class. When
         # ``None``, ``run()`` / ``run_worker()`` construct a default
-        # :class:`DockerRuntime` from the resolved runner address — the
+        # :class:`SharedStackRuntimeBackend` from the resolved runner address — the
         # legacy behaviour. Tests / alternate backends inject here.
         self._injected_runtime_backend: RuntimeBackend | None = runtime_backend
         # Per-trial executor: the orchestrator schedules trials and
@@ -321,7 +321,7 @@ class Orchestrator:
         self,
         *,
         agent_client: LLMClient,
-        docker_runtime: RuntimeBackend,
+        shared_stack_runtime: RuntimeBackend,
         output_dir: Path,
         request_limiter: GlobalRateLimiter | None,
     ) -> Conductor:
@@ -352,7 +352,7 @@ class Orchestrator:
                 verbose=self.verbose,
                 strict=self.strict,
                 agent_client=agent_client,
-                docker_runtime=docker_runtime,
+                shared_stack_runtime=shared_stack_runtime,
                 output_dir=output_dir,
                 request_limiter=request_limiter,
             )
@@ -364,7 +364,7 @@ class Orchestrator:
             verbose=self.verbose,
             strict=self.strict,
             agent_client=agent_client,
-            docker_runtime=docker_runtime,
+            shared_stack_runtime=shared_stack_runtime,
             output_dir=output_dir,
             request_limiter=request_limiter,
         )
@@ -437,7 +437,7 @@ class Orchestrator:
 
     def _cleanup_runner_state_for_retry(
         self,
-        docker_runtime: RuntimeBackend,
+        shared_stack_runtime: RuntimeBackend,
         task_id: str,
         trial_idx: int,
     ) -> None:
@@ -454,7 +454,7 @@ class Orchestrator:
         """
         trial_id = f"{task_id}:{trial_idx}"
         try:
-            result = docker_runtime.cleanup_trial(trial_id)
+            result = shared_stack_runtime.cleanup_trial(trial_id)
         except Exception as e:
             self.logger.warning(
                 "Cleanup before retry raised; continuing with re-registration",
@@ -469,6 +469,85 @@ class Orchestrator:
                 task_id=task_id,
                 trial_index=trial_idx,
                 error=result.get("error"),
+            )
+
+    def _construct_runtime_backend(self, runner_address: str) -> RuntimeBackend:
+        """Construct the runtime backend from ``config.orchestrator.runtime``.
+
+        ``shared`` (default) → :class:`SharedStackRuntimeBackend`;
+        ``per_trial`` → :class:`PerTrialRuntimeBackend`. Called when no
+        backend is injected via ``Orchestrator.__init__(runtime_backend=...)``.
+        """
+        runtime_choice = self.config.orchestrator.runtime
+        if runtime_choice == "per_trial":
+            from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
+
+            self.logger.info(
+                "runtime.backend.selected", backend="PerTrialRuntimeBackend", source="config"
+            )
+            return PerTrialRuntimeBackend()
+        from tolokaforge.core.shared_stack_runtime import SharedStackRuntimeBackend
+
+        self.logger.info(
+            "runtime.backend.selected",
+            backend="SharedStackRuntimeBackend",
+            source="config" if runtime_choice == "shared" else "default",
+        )
+        return SharedStackRuntimeBackend(runner_address=runner_address)
+
+    def _verify_isolation_compatibility(self, runtime_backend: RuntimeBackend) -> None:
+        """Refuse to start the run if any task declares per-trial isolation
+        but the selected runtime backend cannot provide it.
+
+        Called after backend selection and before any trial runs.
+        Silent cross-trial state contamination is the failure mode this
+        guard prevents — a task that declares
+        ``environment_manifest.isolation: per_trial`` would produce wrong
+        verdicts when run against a shared stack.
+
+        Reads :attr:`RuntimeBackend.isolation_mode` rather than inspecting
+        the concrete class, so a future backend on a different substrate
+        (Kubernetes, Modal, ...) plugs into this check by setting the
+        attribute correctly.
+
+        Raises :class:`RuntimeError` naming the offending tasks and the
+        concrete fix.
+        """
+        from tolokaforge.core.runtime import IsolationMode
+        from tolokaforge.runner.models import TaskIsolation
+
+        if runtime_backend.isolation_mode is IsolationMode.PER_TRIAL_STACK:
+            # Any per-trial backend satisfies every isolation requirement.
+            return
+
+        if self.adapter is None:
+            raise RuntimeError(
+                "Isolation-compatibility check requires the adapter to be loaded first."
+            )
+
+        violations: list[str] = []
+        for task in self.tasks:
+            task_desc = self._task_desc_cache.get(task.task_id)
+            if task_desc is None:
+                task_desc = self.adapter.to_task_description(task.task_id)
+                self._task_desc_cache[task.task_id] = task_desc
+            manifest = task_desc.environment_manifest
+            if manifest is None:
+                continue
+            if manifest.isolation is TaskIsolation.PER_TRIAL:
+                violations.append(task.task_id)
+
+        if violations:
+            raise RuntimeError(
+                f"Runtime backend {type(runtime_backend).__name__} shares state "
+                f"across every trial in the run, but {len(violations)} task(s) "
+                f"declare `environment_manifest.isolation: per_trial`: "
+                f"{sorted(violations)!r}. These tasks would silently produce "
+                "wrong verdicts on a shared-stack backend.\n"
+                "  Fix: select a per-trial runtime backend in the run config "
+                "(e.g. PerTrialRuntimeBackend), or set `isolation: shared_ok` "
+                "on the task(s) that genuinely tolerate shared state across "
+                "trials."
             )
 
     def _build_pending_trials(
@@ -860,19 +939,18 @@ class Orchestrator:
             runner_address = None
 
         # Resolve the runtime backend: injected for tests / alternate
-        # backends, default :class:`DockerRuntime` otherwise.
+        # backends, default :class:`SharedStackRuntimeBackend` otherwise.
         if runner_address is None:
             runner_address = os.environ.get("EXECUTOR_ADDRESS", "executor:50051")
 
-        docker_runtime: RuntimeBackend
+        shared_stack_runtime: RuntimeBackend
         if self._injected_runtime_backend is not None:
-            docker_runtime = self._injected_runtime_backend
+            shared_stack_runtime = self._injected_runtime_backend
         else:
-            from tolokaforge.core.docker_runtime import DockerRuntime
-
-            docker_runtime = DockerRuntime(runner_address=runner_address)
-        docker_runtime.connect()
+            shared_stack_runtime = self._construct_runtime_backend(runner_address)
+        shared_stack_runtime.connect()
         self.logger.info("Runtime backend connected")
+        self._verify_isolation_compatibility(shared_stack_runtime)
 
         env_endpoints = _build_env_endpoints(runner_address)
         self.logger.info(
@@ -884,12 +962,12 @@ class Orchestrator:
 
         conductor = self._build_conductor(
             agent_client=agent_client,
-            docker_runtime=docker_runtime,
+            shared_stack_runtime=shared_stack_runtime,
             output_dir=output_dir,
             request_limiter=request_limiter,
         )
 
-        executor_healthy = docker_runtime.health_check()
+        executor_healthy = shared_stack_runtime.health_check()
         self.logger.info("Docker runtime health check", executor_healthy=executor_healthy)
 
         # Build pending task/trial pairs and initialize durable queue.
@@ -1015,7 +1093,7 @@ class Orchestrator:
                             )
                             if should_retry:
                                 self._cleanup_runner_state_for_retry(
-                                    docker_runtime, task_id, trial_idx
+                                    shared_stack_runtime, task_id, trial_idx
                                 )
                                 self.logger.warning(
                                     "Retrying trial after transient failure",
@@ -1072,7 +1150,9 @@ class Orchestrator:
                             will_retry=should_retry,
                         )
                         if should_retry:
-                            self._cleanup_runner_state_for_retry(docker_runtime, task_id, trial_idx)
+                            self._cleanup_runner_state_for_retry(
+                                shared_stack_runtime, task_id, trial_idx
+                            )
                         else:
                             # Mark as failed only when retries are exhausted.
                             run_state.mark_failed(task_id, trial_idx, str(e))
@@ -1109,8 +1189,8 @@ class Orchestrator:
             self.state_manager.mark_run_completed()
 
         # Cleanup Docker runtime if used
-        if docker_runtime:
-            docker_runtime.close()
+        if shared_stack_runtime:
+            shared_stack_runtime.close()
             self.logger.info("Docker runtime closed")
 
         # Stop TypeSense BEFORE destroying the ServiceStack.
@@ -1195,14 +1275,13 @@ class Orchestrator:
 
         runner_address = os.environ.get("EXECUTOR_ADDRESS", "executor:50051")
 
-        docker_runtime: RuntimeBackend
+        shared_stack_runtime: RuntimeBackend
         if self._injected_runtime_backend is not None:
-            docker_runtime = self._injected_runtime_backend
+            shared_stack_runtime = self._injected_runtime_backend
         else:
-            from tolokaforge.core.docker_runtime import DockerRuntime
-
-            docker_runtime = DockerRuntime(runner_address=runner_address)
-        docker_runtime.connect()
+            shared_stack_runtime = self._construct_runtime_backend(runner_address)
+        shared_stack_runtime.connect()
+        self._verify_isolation_compatibility(shared_stack_runtime)
 
         env_endpoints = _build_env_endpoints(runner_address)
         self.logger.info(
@@ -1214,7 +1293,7 @@ class Orchestrator:
 
         conductor = self._build_conductor(
             agent_client=agent_client,
-            docker_runtime=docker_runtime,
+            shared_stack_runtime=shared_stack_runtime,
             output_dir=output_dir,
             request_limiter=request_limiter,
         )
@@ -1297,7 +1376,7 @@ class Orchestrator:
                             lease.id, f"Retryable failure: {reason}", retryable=True
                         ):
                             self._cleanup_runner_state_for_retry(
-                                docker_runtime, lease.task_id, lease.trial_index
+                                shared_stack_runtime, lease.task_id, lease.trial_index
                             )
                             requeued += 1
                         else:
@@ -1308,7 +1387,7 @@ class Orchestrator:
                 except Exception as e:
                     if run_queue.mark_failed(lease.id, str(e), retryable=True):
                         self._cleanup_runner_state_for_retry(
-                            docker_runtime, lease.task_id, lease.trial_index
+                            shared_stack_runtime, lease.task_id, lease.trial_index
                         )
                         requeued += 1
                     else:
@@ -1322,8 +1401,8 @@ class Orchestrator:
 
                 processed += 1
         finally:
-            if docker_runtime:
-                docker_runtime.close()
+            if shared_stack_runtime:
+                shared_stack_runtime.close()
             if hasattr(self, "_typesense_server") and self._typesense_server:
                 try:
                     self._typesense_server.stop()

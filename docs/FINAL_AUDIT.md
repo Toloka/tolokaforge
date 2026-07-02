@@ -106,9 +106,9 @@ except ImportError:
 
 ## Category C: Pydantic Models (Rule 2)
 
-### C.1 [MINOR] Dict Return Types in docker_runtime.py
+### C.1 [MINOR] Dict Return Types in shared_stack_runtime.py
 
-**File:** [`tolokaforge/core/docker_runtime.py`](../tolokaforge/core/docker_runtime.py:121)
+**File:** [`tolokaforge/core/shared_stack_runtime.py`](../tolokaforge/core/shared_stack_runtime.py:121)
 
 **Issue:** Several methods return raw `dict` instead of Pydantic models. This is acceptable at the gRPC boundary but could be improved.
 

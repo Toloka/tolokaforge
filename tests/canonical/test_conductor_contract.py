@@ -40,7 +40,7 @@ def _make_in_process_conductor() -> InProcessConductor:
         verbose=False,
         strict=False,
         agent_client=MagicMock(),
-        docker_runtime=MagicMock(),
+        shared_stack_runtime=MagicMock(),
         output_dir=Path("/tmp"),
         request_limiter=MagicMock(),
     )
