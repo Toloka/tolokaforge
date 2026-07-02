@@ -1,0 +1,82 @@
+task_id: "cascade_registry_calendar_finance"
+name: "Registry probe: calendar + finance + devices cascade (repeated meta-tool, multi-step)"
+description: >
+  Non-scoring wire-shape probe derived from the public API-Bank meta-tool
+  benchmark (policy stripped). A cooperative llm user-sim asks for a string of
+  errands WITHOUT naming the tools, so the model must call search_tools FRESH
+  for each unfamiliar request, read the returned descriptor, and call the tool
+  it names (output-selects-next-tool) - repeating that meta-tool selection
+  several times across the cascade. It logs in once and threads that access
+  token into every account-modifying call (lifecycle), reads a balance and then
+  transfers a Decimal amount between two accounts named across separate turns
+  (fan-in + decimal_field), and registers a device dict-map whose entries carry
+  an enum-typed device_type plus a label (dict_map). Long multi-turn chain so
+  more tool calls = more chances to mis-shape.
+domain: ../../_shared/domain.yaml
+max_turns: 22
+
+initial_user_message: >
+  Hi - I have a few errands and I'm honestly not sure which of your tools does
+  what. Can you start by finding the tool that puts a meeting on my calendar?
+  I'll hand you the details once you've found it.
+
+initial_state: {}
+
+tools:
+  agent:
+    enabled:
+      - search_tools
+      - get_access_token
+      - add_meeting
+      - add_reminder
+      - query_balance
+      - transfer_funds
+      - register_devices
+      - add_alarm
+
+user_simulator:
+  mode: llm
+  persona: cooperative
+  backstory: >
+    You are organising a small team offsite and you want the assistant to look
+    up the right tool for each errand before doing it, and to log you in the
+    first time a tool needs it (your username is dana and your password is
+    offsite2026). Work through these strictly one at a time, and wait for the
+    assistant to confirm each one is done before you reveal the next:
+    (1) ask it to find the tool for putting a meeting on a calendar, then have it
+        schedule a meeting about the offsite kickoff on the fourth of July
+        twenty-twenty-six at ten in the morning, with priya and marcus and lena
+        attending;
+    (2) ask it to find the tool for setting a reminder, then have it remind you
+        to book the venue on the first of July twenty-twenty-six at nine in the
+        morning;
+    (3) ask it to check the balance on account ACCT-1100, and once it tells you
+        the balance, have it move ninety-nine dollars and fifty cents from
+        account ACCT-1100 to account ACCT-2200;
+    (4) ask it to find the tool for registering devices, then have it register
+        two devices: a laptop under the label podium and a tablet under the
+        label signin-desk;
+    (5) finally, have it set an alarm for six thirty in the morning.
+    Give the assistant only the values above in plain words; never describe how
+    to format anything and never spell out fields or structure. Once all five
+    are confirmed, thank the assistant and end. Keep your replies short.
+
+metadata:
+  expected_failure_modes:
+    - tool_selection_relevance
+    - schema_at_volume
+    - lifecycle_threading
+    - fan_in
+    - dict_map
+    - decimal_field
+    - stringified_dict
+    - placeholder_id
+  tags:
+    - smoke
+    - wire-probe
+    - non-scoring
+    - multi-turn
+    - apibank-derived
+    - meta-tool
+
+grading: "grading.yaml"

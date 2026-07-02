@@ -1,0 +1,7 @@
+# NON-SCORING by design. Combine-only, no component sections,
+# no oracle / golden actions. Records wire-shape behaviour only.
+combine:
+  method: weighted
+  weights:
+    state_checks: 1.0
+  pass_threshold: 1.0

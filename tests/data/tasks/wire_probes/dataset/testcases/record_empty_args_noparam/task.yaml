@@ -1,0 +1,31 @@
+task_id: "record_empty_args_noparam"
+name: "Wire-probe: empty arguments for a no-param tool"
+description: >
+  Non-scoring wire-shape probe. Elicits the empty-string-vs-{} envelope quirk: a parameterless tool whose arguments must be exactly {} (not "").
+domain: ../../_shared/domain.yaml
+max_turns: 3
+
+initial_user_message: >
+  Check the current system status, then you're done.
+
+initial_state: {}
+
+tools:
+  agent:
+    enabled:
+      - get_status
+
+user_simulator:
+  scripted_flow:
+    - role: user
+      content: "###STOP###"
+
+metadata:
+  expected_failure_modes:
+    - empty_args
+  tags:
+    - smoke
+    - wire-probe
+    - non-scoring
+
+grading: "grading.yaml"

@@ -1,0 +1,67 @@
+task_id: "cascade_registry_meta_retrieval"
+name: "Registry probe: meta-tool discovery cascade (multi-step)"
+description: >
+  Non-scoring wire-shape probe derived from the public API-Bank meta-tool
+  benchmark (policy stripped). A sonnet-4.6 user-sim asks for things WITHOUT
+  naming the tool, so the model must call search_tools, read the returned
+  descriptor, and call the tool it names (output-selects-next-tool) while
+  threading an access token (lifecycle) and ids across calls (fan-in). Exercises
+  tool selection from a returned result over a large catalog (schema-at-volume).
+domain: ../../_shared/domain.yaml
+max_turns: 20
+
+initial_user_message: >
+  Hi - I'm not sure exactly which of your tools I need. Can you look up the right
+  tool for putting a meeting on my calendar? I'll give you the details once you
+  find it.
+
+initial_state: {}
+
+tools:
+  agent:
+    enabled:
+      - search_tools
+      - get_access_token
+      - add_meeting
+      - add_reminder
+      - transfer_funds
+      - register_devices
+
+user_simulator:
+  mode: llm
+  persona: cooperative
+  backstory: >
+    You want the assistant to find the right tool for each request before doing
+    it, and to log you in when a tool needs it (your username is alice and your
+    password is demo1234). Drive these one at a time, waiting for confirmation of
+    each before the next:
+    (1) find the tool for adding a meeting to a calendar, then schedule a meeting
+        about the quarterly review on the second of July twenty-twenty-six at
+        three in the afternoon, with bob and carol attending;
+    (2) find the tool for moving money, then transfer forty dollars from account
+        A-1 to account A-2;
+    (3) find the tool for registering devices, then register two devices: a phone
+        under the label work and a laptop under the label home.
+    Give the assistant only the values above in plain words; do not describe how
+    to format anything. Once all three are confirmed, thank the assistant and
+    end. Keep replies short.
+
+metadata:
+  expected_failure_modes:
+    - tool_selection_relevance
+    - schema_at_volume
+    - lifecycle_threading
+    - fan_in
+    - dict_map
+    - discriminated_union
+    - decimal_field
+    - stringified_dict
+  tags:
+    - smoke
+    - wire-probe
+    - non-scoring
+    - multi-turn
+    - apibank-derived
+    - meta-tool
+
+grading: "grading.yaml"

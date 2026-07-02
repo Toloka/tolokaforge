@@ -1,0 +1,77 @@
+task_id: "cascade_allocation_multi_sku"
+name: "Samples probe: two-SKU split-lot allocation cascade (multi-step)"
+description: >
+  Non-scoring wire-shape probe derived from the real manufacturing allocation
+  flow (policy stripped). A sonnet-4.6 user-sim drives a long two-SKU cascade on
+  one order: each SKU is allocated across two lots (create_allocation with the
+  `lots` dict-map, twice), then a single modify_order carries BOTH SKUs in the
+  `upsert_lines` dict-map (fan-in), one short lot triggers a CAPA discriminated
+  union (create_capa, target=lot), all four lots are marked consumed, and
+  inventory is recomputed for both SKUs. Exercises repeated dict-maps, a
+  discriminated union, id-threading across SKUs/lots/order, fan-in, and the long
+  call-ordering / lifecycle dimension in one trial.
+domain: ../../_shared/domain.yaml
+max_turns: 22
+
+initial_user_message: >
+  Hi - I need to allocate materials on order ORD-44 for two different parts, and
+  I want to take it one step at a time. Can we start with the first part, SKU
+  SKU-RED?
+
+initial_state: {}
+
+tools:
+  agent:
+    enabled:
+      - get_entity_info
+      - create_allocation
+      - modify_order
+      - create_capa
+      - modify_lot
+      - modify_inventory
+
+user_simulator:
+  mode: llm
+  persona: cooperative
+  backstory: >
+    You are an operations user processing order ORD-44, which needs two different
+    parts allocated. You want the assistant to work through this one step at a
+    time, waiting for it to confirm each before you ask for the next:
+    (1) allocate the first part, SKU-RED: 80 units total on ORD-44, taking 50
+        from lot LOT-100 and 30 from lot LOT-101;
+    (2) allocate the second part, SKU-BLUE: 120 units total on ORD-44, taking 70
+        from lot LOT-200 and 50 from lot LOT-201;
+    (3) update the order so it carries both lines at once: for SKU-RED requested
+        80 and allocated 80, and for SKU-BLUE requested 120 and allocated 120;
+    (4) mention that lot LOT-201 came up short on inspection, so open a corrective
+        action against that lot, LOT-201, with the reason "shortfall found during
+        receiving inspection";
+    (5) now close out all four lots as fully consumed: LOT-100 now has 0
+        remaining and is consumed, LOT-101 now has 0 remaining and is consumed,
+        LOT-200 now has 0 remaining and is consumed, and LOT-201 now has 0
+        remaining and is consumed;
+    (6) recompute inventory for both parts: for SKU-RED set in stock 420,
+        reserved 0, available to promise 420; and for SKU-BLUE set in stock 360,
+        reserved 0, available to promise 360.
+    Give the assistant only the values above in plain words; do not describe how
+    to format anything. Once every step is confirmed, thank the assistant and
+    end. Keep replies short.
+
+metadata:
+  expected_failure_modes:
+    - dict_map
+    - discriminated_union
+    - dict_flatten
+    - stringified_dict
+    - array_dict_map
+    - lifecycle_threading
+    - fan_in
+  tags:
+    - smoke
+    - wire-probe
+    - non-scoring
+    - multi-turn
+    - manufacturing-derived
+    - cascade
+
+grading: "grading.yaml"

@@ -1,0 +1,83 @@
+task_id: "cascade_subscriber_onboarding"
+name: "Telecom probe: new-subscriber onboarding cascade (multi-step)"
+description: >
+  Non-scoring wire-shape probe derived from the public tau2-bench telecom domain
+  (policy stripped). A cooperative llm user-sim drives a fresh-account ONBOARDING
+  cascade across many turns - distinct from the dispute and resolution cascades
+  by framing (a newly provisioned line that ships suspended until billing is set
+  up) and by step mix. The agent looks up the subscriber from a phone number,
+  reads the profile to discover the service-line id, sets the nested billing
+  address, registers TWO payment methods in one call (a card AND a voucher under
+  named labels - the dict-map-of-discriminated-union, two branches in a single
+  payload), pays the overdue activation invoice in full (a Decimal amount), flips
+  the suspended line to active (a single closed-enum transition), and tops up the
+  starter data bundle (multiple-of-five constraint). The long chain threads
+  subscriber_id, service_id and invoice_id forward and fans them into later
+  calls, so a model reveals its id-threading / fan-in habits AND the request-side
+  shapes (nested object, dict-map-of-union, Decimal, enum, numeric constraint) in
+  one trial.
+domain: ../../_shared/domain.yaml
+max_turns: 20
+
+initial_user_message: >
+  Hi - I just signed up for mobile service and need to finish setting up my
+  account. My number is +15552003041. Can you pull up my account first?
+
+initial_state: {}
+
+tools:
+  agent:
+    enabled:
+      - lookup_subscriber
+      - get_subscriber_details
+      - get_invoices
+      - update_address
+      - register_payment_methods
+      - send_payment_request
+      - set_service_status
+      - top_up_data
+
+user_simulator:
+  mode: llm
+  persona: cooperative
+  backstory: >
+    You are a brand-new mobile subscriber whose phone number is +15552003041.
+    Your line was just provisioned and is sitting suspended until you finish
+    onboarding. You want the assistant to walk through setup one step at a time,
+    waiting for it to confirm each step before you ask for the next:
+    (1) look up your account from your phone number, then pull up your profile so
+        you can see your service line and list your invoices;
+    (2) set your billing address to eighty-eight Cedar Hollow Road, city
+        Northgate, postal code six zero six one six, country US;
+    (3) add two payment methods to the account: under the label main, a card
+        ending five one one one that expires March twenty-twenty-eight; and under
+        the label promo, a voucher whose code is WELCOME20 worth thirty dollars;
+    (4) pay off the overdue activation invoice in full - it's forty-two dollars
+        and fifty cents;
+    (5) your first service line is still suspended - ask to set it to active;
+    (6) finally, add fifteen gigabytes of data to that same service line.
+    Give the assistant only the values above in plain words; do not describe how
+    to format anything, and do not mention payment kinds, branches, or fields.
+    Once all six are confirmed, thank the assistant and end. Keep replies short.
+
+metadata:
+  expected_failure_modes:
+    - discriminated_union
+    - dict_map
+    - dict_flatten
+    - stringified_dict
+    - deep_nesting
+    - decimal_field
+    - enum_membership
+    - validation_constraints
+    - lifecycle_threading
+    - fan_in
+  tags:
+    - smoke
+    - wire-probe
+    - non-scoring
+    - multi-turn
+    - tau2-derived
+    - cascade
+
+grading: "grading.yaml"
