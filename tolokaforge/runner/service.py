@@ -1318,9 +1318,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         Binding to the same ``rag_client`` + ``trial_id`` means the judge
         retrieves from the SAME per-trial index by construction: if the agent's
-        ``search_kb`` works the judge's does too, and if it 404s both do. (The
-        host-side global ``/index`` POST and per-trial indexing gating are
-        pre-existing and out of scope here.)
+        ``search_kb`` works the judge's does too, and if it 404s both do.
+        Per-trial indexing gating is a separate concern.
         """
         if self.rag_client is None:
             return None
