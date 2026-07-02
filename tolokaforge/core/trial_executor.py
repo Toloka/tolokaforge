@@ -175,9 +175,11 @@ def _synthesize_provision_failure_result(spec: TrialSpec, error: ProvisionError)
     :attr:`TerminationReason.PROVISION_ERROR` and a fail-:class:`Grade`
     that carries the exception's ``reason`` so downstream analytics
     (failure attribution, dashboards) can distinguish substrate failures
-    from tool / grader / model-reasoning failures. The orchestrator's
-    existing retry logic sees a retryable trajectory and re-enqueues;
-    the next attempt gets a fresh ``provision()``.
+    from tool / grader / model-reasoning failures. Provisioning failures
+    are deterministic, so
+    :meth:`~tolokaforge.core.orchestrator.Orchestrator._is_retryable_trajectory`
+    classifies ``PROVISION_ERROR`` as non-retryable and fails fast rather
+    than burning a fresh ``provision()`` on each attempt.
     """
     task_id, trial_idx = _split_trial_id(spec.trial_id)
     now = datetime.now(UTC)
