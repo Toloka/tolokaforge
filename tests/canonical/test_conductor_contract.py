@@ -14,6 +14,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from tests.canonical._factories import make_task_description
 from tolokaforge.core.conductor import (
     Conductor,
     ConductorCallLog,
@@ -47,13 +48,10 @@ def _make_in_process_conductor() -> InProcessConductor:
 
 def _make_task_description(task_id: str = "t1") -> TaskDescription:
     """Build the minimal :class:`TaskDescription` Pydantic requires."""
-    return TaskDescription(
+    return make_task_description(
         task_id=task_id,
         name=task_id,
-        category="test",
         description="contract-test stub",
-        adapter_type="native",
-        system_prompt="",
     )
 
 

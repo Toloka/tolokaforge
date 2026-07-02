@@ -11,20 +11,27 @@ This module provides:
 See docs/GRPC_PROTOCOL.md for the full protocol specification.
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import time
-from typing import Any
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 import grpc
 
-from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S
+from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, EnvEndpoints
 from tolokaforge.runner import (
     ExecutionStatus,
     runner_pb2,
     runner_pb2_grpc,
 )
 from tolokaforge.tools.registry import ToolResult
+
+if TYPE_CHECKING:  # pragma: no cover — type-only imports for provisioning surface
+    from tolokaforge.core.runtime import EnvHandle
+    from tolokaforge.core.trial import TrialSpec
 
 logger = logging.getLogger(__name__)
 
@@ -577,6 +584,17 @@ class RunnerClient:
 ExecutorClient = RunnerClient
 
 
+@dataclass(frozen=True)
+class _SharedStackHandle:
+    """Handle returned by :meth:`DockerRuntime.provision`.
+
+    Points at the run-wide shared stack rather than a per-trial materialisation.
+    Two trials in the same run receive equivalent handles.
+    """
+
+    trial_id: str
+
+
 class DockerRuntime:
     """Docker runtime manager - coordinates Runner connectivity
 
@@ -632,6 +650,55 @@ class DockerRuntime:
         to the gRPC client). Idempotent on the runner side.
         """
         return self.runner_client.cleanup_trial(trial_id)
+
+    # ---- Per-trial provisioning (ADR-0010) — shared-stack compat path ----
+    #
+    # DockerRuntime keeps the run-wide shared-stack semantics that existed
+    # before ADR-0010. The new methods satisfy the extended
+    # ``RuntimeBackend`` Protocol without changing behaviour: provision
+    # returns a handle pointing at the shared stack; endpoints returns the
+    # run-wide URLs the shared stack exposes; teardown is a no-op because
+    # the shared stack lives for the whole run and is torn down at
+    # ``close``. Per-trial isolation is a ``LocalRuntimeBackend`` concern,
+    # not a ``DockerRuntime`` concern.
+
+    def provision(self, spec: TrialSpec) -> EnvHandle:
+        """Return a handle pointing at the run-wide shared stack.
+
+        No per-trial containers are brought up — the shared stack is
+        already running from ``connect()``. Every trial receives an
+        equivalent handle referencing the same stack.
+        """
+        return _SharedStackHandle(trial_id=spec.trial_id)
+
+    def await_ready(self, handle: EnvHandle) -> None:  # noqa: ARG002 — Protocol conformance
+        """No-op: the shared stack becomes ready at ``connect`` time, not
+        per-trial. Health probes for the shared services are already
+        applied by :meth:`connect`'s health-check loop."""
+
+    def endpoints(self, handle: EnvHandle) -> EnvEndpoints:  # noqa: ARG002 — Protocol conformance
+        """Return **sentinel** URLs for the shared-stack path.
+
+        DockerRuntime does not carry the per-trial URLs the manifest
+        would resolve to; the returned strings are placeholders scoped
+        to the runner address (``…/db-shared``) purely to satisfy
+        :class:`EnvEndpoints`' non-empty ``db_url`` / ``runner_url``
+        constraint. **Do not wire a client to these values** — real
+        addresses on the shared-stack path come from the orchestrator's
+        existing ``EnvEndpoints`` construction site, not from this
+        method. Callers that need per-trial URLs should use a per-trial
+        backend (e.g. ``LocalRuntimeBackend``, which resolves real URLs
+        from its per-trial ``ServiceStack``).
+        """
+        return EnvEndpoints(
+            db_url=f"http://{self.runner_client.runner_address}/db-shared",
+            rag_url=None,
+            runner_url=f"http://{self.runner_client.runner_address}",
+        )
+
+    def teardown(self, handle: EnvHandle) -> None:  # noqa: ARG002 — Protocol conformance
+        """No-op: the shared stack lives for the whole run and is torn
+        down at :meth:`close`, not per-trial. Idempotent by construction."""
 
     def __enter__(self):
         """Context manager entry"""
