@@ -459,9 +459,17 @@ def _resolve_host_port(
     a docker call can surface). Catch broadly and treat every failure
     as "not exposed" — but ``logger.debug`` the exception so a genuine
     daemon issue is diagnosable (otherwise it silently reads as a
-    compose-file misconfiguration downstream)."""
+    compose-file misconfiguration downstream).
+
+    Testcontainers returns ``0.0.0.0`` as the host on macOS / Linux —
+    correct as a listen address inside the container, but not reachable
+    as a client host from the orchestrator process. Rewrite it to
+    ``localhost`` so a gRPC/HTTP client on the host can actually
+    connect."""
     try:
-        return compose.get_service_host_and_port(service_name=service_name, port=container_port)
+        host, port = compose.get_service_host_and_port(
+            service_name=service_name, port=container_port
+        )
     except Exception as exc:  # noqa: BLE001 — testcontainers raises varied types
         logger.debug(
             "PerTrialRuntimeBackend: service %r port %d not resolvable: %s",
@@ -470,6 +478,9 @@ def _resolve_host_port(
             exc,
         )
         return None, None
+    if host == "0.0.0.0":  # noqa: S104 — testcontainers returns this on macOS/Linux
+        host = "localhost"
+    return host, port
 
 
 def _resolve_rag_url(compose: DockerCompose) -> str | None:

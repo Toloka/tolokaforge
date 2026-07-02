@@ -3,6 +3,7 @@
   "adapter_type": "native",
   "category": "tool_use",
   "description": "Use store tools to browse the product catalog, place a customer order, and confirm payment. The task has persistent DB side effects: stock is reduced and customer balance is deducted upon successful checkout.\n",
+  "environment_manifest": null,
   "grading": "grading.yaml",
   "initial_state": {
     "device_overrides": null,

@@ -140,7 +140,29 @@ def load_task_yaml(task_path: Path) -> tuple[TaskConfig, Path]:
 
     task_data = _apply_domain(task_path, task_data, task_root)
 
+    # Resolve environment_manifest.compose_file to an absolute path
+    # against the task root so ``EnvironmentManifest``'s file-existence
+    # validator can locate the file regardless of the CWD at load time.
+    # No-op if the manifest is absent or the path is already absolute.
+    _resolve_environment_manifest_paths(task_data, task_root)
+
     return TaskConfig(**task_data), task_root
+
+
+def _resolve_environment_manifest_paths(task_data: dict, task_root: Path) -> None:
+    """Rewrite ``environment_manifest.compose_file`` to an absolute path
+    when it appears as a task-relative string. In-place edit on the
+    ``task_data`` dict before Pydantic constructs :class:`TaskConfig`."""
+    manifest = task_data.get("environment_manifest")
+    if not isinstance(manifest, dict):
+        return
+    compose_file = manifest.get("compose_file")
+    if not isinstance(compose_file, str):
+        return
+    resolved = Path(compose_file)
+    if not resolved.is_absolute():
+        resolved = (task_root / resolved).resolve()
+    manifest["compose_file"] = str(resolved)
 
 
 def _detect_task_root(task_path: Path) -> Path:

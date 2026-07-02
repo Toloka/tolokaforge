@@ -3,6 +3,7 @@
   "adapter_type": "native",
   "category": "tool_use",
   "description": "Canonical fixture exercising the shared-domain layout.",
+  "environment_manifest": null,
   "grading": "testcases/case_a/grading.yaml",
   "initial_state": {
     "device_overrides": null,

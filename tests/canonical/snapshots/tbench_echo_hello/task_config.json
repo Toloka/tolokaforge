@@ -11,6 +11,7 @@
   "adapter_type": "terminal_bench",
   "category": "terminal",
   "description": "Create a file /tmp/hello.txt containing the text \"Hello, World!\".\n",
+  "environment_manifest": null,
   "grading": "__adapter__",
   "initial_state": {
     "device_overrides": null,
