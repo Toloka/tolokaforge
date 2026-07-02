@@ -42,18 +42,6 @@ __all__ = [
 ]
 
 
-# Fields that appear identically on both PerTaskMetrics and AggregateMetrics —
-# the per-usage-field averages the Metrics.usage dataclass exposes.
-_USAGE_FIELDS = (
-    "prompt_tokens",
-    "completion_tokens",
-    "reasoning_tokens",
-    "cached_tokens",
-    "cache_creation_input_tokens",
-    "cache_read_input_tokens",
-)
-
-
 class PerTaskMetrics(BaseModel):
     """One row of ``per_task_metrics.json`` — a task's aggregate across trials.
 
