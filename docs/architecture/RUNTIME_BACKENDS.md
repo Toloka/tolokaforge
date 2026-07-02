@@ -335,15 +335,36 @@ Concretely, when the next substrate lands (e.g. Kubernetes):
 
 The isolation axis (shared vs per-trial) and the substrate axis (docker compose vs kubernetes vs hosted sandbox) are orthogonal — a substrate can support either isolation mode, or specialise in one. Class names today collapse the substrate axis (both current backends are docker-compose-based) because there is only one substrate; when a second substrate arrives, the naming can grow to make the substrate explicit alongside the mode.
 
+## Per-trial substrate bracket (`TrialExecutor`)
+
+The orchestrator brackets each `conductor.run` call with the substrate contract through a dedicated seam: the `TrialExecutor` Protocol (ADR-0015). The production concrete `ProvisioningTrialExecutor` composes a `RuntimeBackend`, a `Conductor`, and a `StructuredLogger`, and owns exactly this shape:
+
+```python
+handle = runtime_backend.provision(spec)
+try:
+    runtime_backend.await_ready(handle)
+    real_endpoints = runtime_backend.endpoints(handle)
+    final_spec = spec.model_copy(update={"env_endpoints": real_endpoints})
+    return conductor.run(final_spec, task_config)
+except ProvisionError as e:
+    return synthesize_failed_result(spec, e)
+finally:
+    runtime_backend.teardown(handle)
+```
+
+The `Orchestrator._build_trial_executor(runtime_backend, conductor)` helper composes one per run; both dispatch sites (`Orchestrator.run()` and `Orchestrator.run_worker()`) submit `trial_executor.execute` to their worker pools in place of `conductor.run`. Provisioning parallelism = worker count. Both backends now uniformly source per-trial endpoints from `endpoints(handle)`, so the `env_endpoints` substitution is substrate-agnostic — a no-op for the shared-stack path (same value across trials, resolved once at backend construction) and load-bearing for the per-trial path (real per-trial URLs).
+
+`ProvisionError` at any provisioning stage synthesises a failed `TrialResult` with `TerminationReason.PROVISION_ERROR`; `attribute_failure()` classifies it as `provision_failure` (deterministic=True) in `DETERMINISTIC_CLASSES`, so retry logic and dashboards can distinguish substrate failures from tool / grader / model-reasoning failures.
+
+The Protocol boundary is what future variants slot into — a `RemoteTrialExecutor` (gRPC client to a trial-plane worker per CLOUD_RUNTIME §6.4) replaces `ProvisioningTrialExecutor` behind the same interface, and neither the Orchestrator nor the Conductor changes.
+
 ## What this PR does *not* do
 
-- **No Conductor wiring for per-trial provisioning.** `Conductor.run()` still uses the pre-ADR-0013 call sites for the shared-stack path — this PR ships `PerTrialRuntimeBackend` as a functioning backend, but the conductor doesn't call its `provision` / `endpoints` / `teardown` methods per trial yet. That wiring is the next PR (Phase 3.D).
-- **No runner image publication.** The `tolokaforge/runner` image is still a local build. The integration test in this PR uses a public-images-only fixture (`postgres:16` + `nginx:alpine`) so the lifecycle can be exercised without our runner image; real RPC coverage waits for a follow-up that publishes the runner image or builds it in CI.
-- **No opt-in from any real task pack.** Zero task packs declare an `environment_manifest` today; the validation-gate PR (Phase 3.E) will migrate one existing multi-service task to prove the design end-to-end. On that PR's green, ADR-0009 and ADR-0010 flip from `Proposed` to `Accepted`.
-- **No endpoint customisation.** The `runner_service` / `db` service / `rag` service conventions are hardcoded here. `runner_port` / `db_service` / `db_port` / `rag_service` / `rag_port` manifest fields are a follow-up ticket.
+- **No runner image publication.** The `tolokaforge/runner` image is still a local build. Real RPC coverage against a task pack that declares `environment_manifest` waits for the validation-gate follow-up.
+- **No opt-in from any real task pack.** Zero task packs declare an `environment_manifest` today; the validation-gate follow-up will migrate one existing multi-service task to prove the design end-to-end. On its green, ADR-0009 / 0010 / 0014 / 0015 flip from `Proposed` to `Accepted`.
+- **No endpoint customisation.** The `runner_service` / `db` service / `rag` service conventions are still hardcoded (see `PerTrialRuntimeBackend`). `runner_port` / `db_service` / `db_port` / `rag_service` / `rag_port` manifest fields remain a follow-up ticket.
 - **No perf optimisations.** Image pre-pull, postgres template-DB, container pool, orphan sweep, resource caps, benchmark harness — all filed as a follow-up umbrella ticket.
 - **No layered-image guide.** The SWE-bench 3-tier pattern (base → environment → instance, cited in ADR-0009) applies transparently to any pinned images the compose file references, but the concrete Dockerfile recipes for task-pack authors are a docs follow-up.
-- **`shared_stack_runtime` local variable rename.** After the class rename, the local variable name that used to be `docker_runtime` was renamed to `shared_stack_runtime` — but that name is now misleading (the variable can hold either backend type). Follow-up cleanup: rename the local + kwarg to `runtime_backend` across `orchestrator.py` + `conductor.py` (55 refs across ~10 files).
 
 ## Where to read next
 
