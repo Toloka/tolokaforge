@@ -1,4 +1,4 @@
-"""Capability test — :attr:`Capability.ALLOF_MERGE_TOOL_CALL`.
+"""Capability test - :attr:`Capability.ALLOF_MERGE_TOOL_CALL`.
 
 A parameter typed as an ``allOf`` composition must satisfy BOTH merged
 subschemas at once. Models (and some schema sanitizers) historically
@@ -77,7 +77,7 @@ def test_allof_merge_tool_call(
 
     1. ``result.tool_calls`` is non-empty.
     2. ``arguments["payload"]`` is a dict.
-    3. It has a string ``a`` AND an integer ``b`` — proves both allOf
+    3. It has a string ``a`` AND an integer ``b`` - proves both allOf
        branches were honoured, not just one.
     """
     skip_unless_capability_declared(cert, Capability.ALLOF_MERGE_TOOL_CALL)
@@ -116,10 +116,10 @@ def test_allof_merge_tool_call(
         f"{cert.model_id}: `payload` must be a native dict, got {type(payload).__name__}: {payload!r}"
     )
     assert isinstance(payload.get("a"), str), (
-        f"{cert.model_id}: allOf field `a` (string) missing/wrong — only one merge "
+        f"{cert.model_id}: allOf field `a` (string) missing/wrong - only one merge "
         f"branch honoured. Payload: {payload!r}"
     )
     assert isinstance(payload.get("b"), int) and not isinstance(payload.get("b"), bool), (
-        f"{cert.model_id}: allOf field `b` (integer) missing/wrong — only one merge "
+        f"{cert.model_id}: allOf field `b` (integer) missing/wrong - only one merge "
         f"branch honoured. Payload: {payload!r}"
     )

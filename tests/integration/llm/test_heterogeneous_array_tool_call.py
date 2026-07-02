@@ -1,4 +1,4 @@
-"""Capability test — :attr:`Capability.HETEROGENEOUS_ARRAY_TOOL_CALL`.
+"""Capability test - :attr:`Capability.HETEROGENEOUS_ARRAY_TOOL_CALL`.
 
 A list whose elements are a discriminated union (text block | image
 block) compiles to an array of ``oneOf``/``anyOf`` branches. Models
@@ -72,7 +72,7 @@ def test_heterogeneous_array_tool_call(
 
     1. ``result.tool_calls`` is non-empty.
     2. ``arguments["blocks"]`` is a list of dicts (not stringified).
-    3. Both a ``text`` element and an ``image`` element are present —
+    3. Both a ``text`` element and an ``image`` element are present -
        proves the array carried >1 variant and was not flattened.
     """
     skip_unless_capability_declared(cert, Capability.HETEROGENEOUS_ARRAY_TOOL_CALL)

@@ -5,8 +5,8 @@ description: >
   flow (policy stripped). A cooperative llm user-sim drives a long cascade one
   step at a time: read an order entity (get_entity_info), open a corrective
   action against a lot (create_capa, target=lot branch), then a SECOND corrective
-  action against the order (create_capa, target=order branch) — exercising BOTH
-  arms of the discriminated union back-to-back in one trial — mark two lots
+  action against the order (create_capa, target=order branch) - exercising BOTH
+  arms of the discriminated union back-to-back in one trial - mark two lots
   consumed (modify_lot, the consumed enum value), and finally recompute the SKU's
   inventory counters (modify_inventory, the ATP fan-in). Targets discriminated-
   union mis-shape across both branches, oneOf/$ref dialect handling, enum

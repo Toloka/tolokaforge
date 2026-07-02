@@ -1,4 +1,4 @@
-"""Capability test — :attr:`Capability.RECURSIVE_REF_TOOL_CALL`.
+"""Capability test - :attr:`Capability.RECURSIVE_REF_TOOL_CALL`.
 
 A tool whose argument is a recursive self-referential object (a node
 whose ``children`` are themselves nodes) compiles to a recursive
@@ -61,7 +61,7 @@ def test_recursive_ref_tool_call(
     skip_unless_capability_declared,
 ) -> None:
     """``root`` must round-trip as a native nested dict with a recursive
-    ``children`` list — not a stringified blob nor a flattened tree.
+    ``children`` list - not a stringified blob nor a flattened tree.
 
     Assertions:
 
@@ -126,6 +126,6 @@ def test_recursive_ref_tool_call(
         if isinstance(gc, dict)
     ]
     assert grandchildren, (
-        f"{cert.model_id}: no depth>=2 node — recursion was flattened/truncated. "
+        f"{cert.model_id}: no depth>=2 node - recursion was flattened/truncated. "
         f"Full root: {root!r}"
     )
