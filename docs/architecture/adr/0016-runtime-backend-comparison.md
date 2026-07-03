@@ -44,12 +44,12 @@ The grade a task produces is **independent** of the runtime backend, by construc
 
 **Empirical confirmation.** `coding_public_example_01` was run repeats=3 in each mode with identical model configuration (openrouter → sonnet-4-6, temperature=0.0):
 
-| Mode | Trial 0 | Trial 1 | Trial 2 | Avg | Cost | Avg latency |
+| Mode | Trial 0 | Trial 1 | Trial 2 | Avg grade | Total cost | Avg latency |
 |---|---|---|---|---|---|---|
 | `shared` | 0.783 | 0.783 | 0.783 | **0.783** | $0.225 | 44 s |
 | `per_trial` | 0.783 | 0.783 | 0.783 | **0.783** | $0.246 | 54 s |
 
-Grades match exactly. Latency and cost diverge by the substrate-provisioning overhead (~10 s and ~$0.02 per trial for the extra compose up / down), not by anything in the grading path.
+**Grade convergence, not trajectory identity.** All six trials scored exactly 0.783, but the underlying trajectories varied within LLM non-determinism (per_trial trial 0 took 8 turns / 8 tool calls; the other 5 trials took 5–6 turns / 7 tool calls). Grade equivalence is therefore the stronger property: the grade is robust to small trajectory perturbations, and the substrate contributes zero systematic bias to the outcome.
 
 **Caveat.** Grading equivalence is deterministic modulo LLM stochasticity. Runs at non-zero temperature or with LLM-judge rubrics will still produce the same *expected* grade distribution across modes, but individual trials will diverge on the LLM axis, not on the substrate axis.
 
@@ -68,7 +68,12 @@ Order-of-magnitude framing, not exhaustive benchmarks — enough for capacity pl
 | Docker daemon load | Constant | Bounded by worker count × per-trial compose service count |
 | Cross-trial concurrency ceiling | One trial per stateful engine service (writes to the same DB) | Bounded by host CPU / memory / daemon throughput, not by task shape |
 
-The A/B run above burned $0.246 / 44 s per trial on `shared` and $0.225 / 54 s per trial on `per_trial`. The overhead is real but modest for tasks with small compose stacks. Tasks that declare many services or slow-starting services (large postgres seeds, image pulls) pay the overhead each trial in `per_trial`.
+The A/B run above burned $0.225 total on `shared` (avg 44 s/trial) and $0.246 total on `per_trial` (avg 54 s/trial). Two effects to separate:
+
+1. **Latency premium is real and reproducible.** ~10 s per trial for a 3-service compose (up + healthchecks + gRPC connect + teardown). A second run of a domain-specific MCP-served task at higher turn cap saw a larger +25 s premium — the compose-up cost scales with service startup time (postgres warm-up, image cache state, healthcheck poll interval). Operators should budget per-trial isolation's wall-clock cost against expected trial duration.
+2. **$-cost premium is not systematic at this sample size.** The 3-trial `per_trial` arm's $0.021 total premium was concentrated on the cold-start trial 0 ($0.099 vs shared trial 0's $0.077, driven by a 2-turn-longer trajectory) — trials 1 and 2 costs matched shared within one cent. A follow-up run of `CAP-001` in each mode saw `per_trial` come in *cheaper* than `shared` ($0.068 vs $0.079), which contradicts a systematic per-trial-mode $-overhead hypothesis. At this sample size, cost noise between LLM routing / token counts / trajectory length dominates any putative substrate-driven cost premium. See the follow-up in "Consequences → Follow-ups" for the measurement work needed to characterise this properly.
+
+Tasks that declare many services or slow-starting services (large postgres seeds, image pulls) pay the compose-up latency each trial in `per_trial`. That translates to LLM cost only if the trial clock keeps ticking during compose-up in a way that consumes tokens — an open question flagged for follow-up measurement.
 
 ## Failure-mode differences
 
@@ -115,6 +120,7 @@ Logging, metrics, and artifact writes do **not** vary by mode:
 - **Task-pack migration to per-trial.** Migration of the existing task packs that declare `isolation: per_trial` semantics (or need it in principle) into `environment_manifest`-shaped tasks is separate task-pack work. This ADR does not gate that migration.
 - **Runner image publication.** `RUNTIME_BACKENDS.md` "Follow-up work" already tracks publishing engine images to a public registry so task compose files can reference published tags directly (`:local` stays as the local-dev alias). Independent of this ADR.
 - **Per-trial concurrency benchmarks.** The resource profile table gives order-of-magnitude framing; a proper benchmark harness would produce numbers on a range of task shapes and daemon configurations. Filed as a follow-up.
+- **Cost-premium characterisation.** The small-sample runs cited above don't distinguish LLM-routing noise from any putative substrate-driven $-cost premium. Open questions: does the trial clock consume LLM tokens during compose-up (e.g. via user-simulator warm-up or agent context establishment)? Does openrouter route consistently at temperature=0 across mode-differentiated runs? A ≥20-trial-per-arm run with token-level accounting would settle both. Filed as a follow-up.
 - **Multi-service adapter compatibility.** Some existing adapters materialise their own per-task compose stacks inside the tool-invocation path (see `RUNTIME_BACKENDS.md` "Adapter compatibility with `per_trial`") rather than through `environment_manifest`. Unifying those paths is future work.
 
 ## Links
