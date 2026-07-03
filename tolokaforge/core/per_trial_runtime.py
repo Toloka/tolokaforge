@@ -22,12 +22,8 @@ ADR-0013) delegate to a :class:`RunnerClient` cached at provision time
 and keyed by ``trial_id``. Contrast with :class:`SharedStackRuntimeBackend` which
 carries a single client for the whole run.
 
-Endpoint resolution uses conventions (defaults + customisation later —
-see the follow-up ticket): ``runner_service`` from the manifest at port
-50051 → ``runner_url``; a compose service named ``db`` at port 5432 →
-``db_url``; a compose service named ``rag`` (or ``rag-service``) at its
-declared port → ``rag_url``. Task packs that need to override the
-service names or ports will get manifest fields in a follow-up PR.
+Endpoint resolution delegates to :mod:`tolokaforge.core.compose_materialisation`;
+see that module for the conventions and their defaults.
 """
 
 from __future__ import annotations

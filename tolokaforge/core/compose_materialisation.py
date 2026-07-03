@@ -126,7 +126,9 @@ def resolve_host_port(
             exc,
         )
         return None, None
-    if host == "0.0.0.0":  # noqa: S104 — testcontainers returns this on macOS/Linux
+    if (
+        host == "0.0.0.0"
+    ):  # noqa: S104 — comparing to (not binding) the testcontainers macOS/Linux return value
         host = "localhost"
     return host, port
 
