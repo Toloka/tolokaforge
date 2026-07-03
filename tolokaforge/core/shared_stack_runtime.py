@@ -17,14 +17,26 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import grpc
+from testcontainers.compose import DockerCompose
 
-from tolokaforge.core.runtime import IsolationMode
-from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, EnvEndpoints
+from tolokaforge.core.compose_materialisation import (
+    RUNNER_PORT_DEFAULT,
+    cleanup_partial_materialisation,
+    copy_compose_context,
+    make_project_temp_dir,
+    resolve_env_endpoints,
+    resolve_runner_endpoint,
+    shutdown_compose,
+)
+from tolokaforge.core.runtime import IsolationMode, ProvisionError
+from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, EnvEndpoints, EnvironmentManifest
 from tolokaforge.runner import (
     ExecutionStatus,
     runner_pb2,
@@ -679,46 +691,163 @@ class SharedStackRuntimeBackend:
         self,
         runner_address: str = "runner:50051",
         endpoints: EnvEndpoints | None = None,
+        env_manifest: EnvironmentManifest | None = None,
+        run_id: str = "run",
     ):
         """Initialize the shared-stack runtime.
 
-        ``runner_address`` is the gRPC host:port for the shared runner
-        service. ``endpoints`` carries the fully-resolved per-trial URLs
-        (db / rag / runner) the run's shared stack exposes; every call to
-        :meth:`endpoints` returns them verbatim. The orchestrator builds
-        this value once via ``_build_env_endpoints(runner_address)`` and
-        passes it at construction; ``endpoints=None`` is a
-        backwards-compatibility path for callers that construct the
-        backend outside the orchestrator (typically tests) and derives
-        placeholder URLs from ``runner_address`` alone.
+        Two mutually exclusive modes:
+
+        **Built-in-stack mode** (``env_manifest`` is ``None``, the default).
+        The orchestrator's built-in ``ServiceStack`` has already brought up
+        the shared runner + db-service, and its address / endpoints are
+        passed in. ``connect`` just wires the gRPC client to that address.
+
+        **Task-declared-stack mode** (``env_manifest`` is set). The run's
+        tasks declared a shared, task-authored compose file. The backend
+        materialises it **once at ``connect`` time**, resolves endpoints
+        from the materialised stack, and wires the gRPC client to the
+        task-declared runner. Every trial in the run shares that
+        substrate; ``close`` tears it down. ``run_id`` becomes the temp-
+        dir slug so docker compose auto-generates a unique project name
+        per run.
+
+        In built-in mode ``endpoints=None`` derives placeholder URLs from
+        ``runner_address`` alone — a backwards-compat path for callers
+        that construct the backend outside the orchestrator (typically
+        tests).
         """
-        self.runner_client: GrpcRunnerClient = GrpcRunnerClient(runner_address)
-        if endpoints is None:
-            endpoints = EnvEndpoints(
-                db_url=f"http://{runner_address}/db",
-                rag_url=None,
-                runner_url=f"http://{runner_address}",
-            )
-        self._endpoints = endpoints
+        self._env_manifest = env_manifest
+        self._run_id = run_id
+        self._compose: DockerCompose | None = None
+        self._temp_dir: Path | None = None
+
+        if env_manifest is None:
+            # Built-in-stack mode: runner + endpoints known at construction.
+            self.runner_client: GrpcRunnerClient = GrpcRunnerClient(runner_address)
+            if endpoints is None:
+                endpoints = EnvEndpoints(
+                    db_url=f"http://{runner_address}/db",
+                    rag_url=None,
+                    runner_url=f"http://{runner_address}",
+                )
+            self._endpoints: EnvEndpoints = endpoints
+        else:
+            # Task-declared-stack mode: runner + endpoints resolved at connect() time
+            # from the materialised compose. The type hint here is imprecise
+            # (runner_client is None until connect) — an intentional trade to keep
+            # the read-only ``endpoints(handle)`` surface unchanged for callers.
+            self.runner_client = None  # type: ignore[assignment]
+            self._endpoints = None  # type: ignore[assignment]
+            if endpoints is not None:
+                raise ValueError(
+                    "SharedStackRuntimeBackend: pass either env_manifest OR endpoints, "
+                    "not both. env_manifest mode resolves endpoints from the "
+                    "materialised compose stack at connect() time."
+                )
         logger.info("Docker runtime initialized")
 
     def connect(self, timeout: float = 30.0, retry_interval: float = 1.0) -> None:
         """Connect to Runner service with health check retry.
+
+        In task-declared-stack mode (``env_manifest`` is set) this also
+        materialises the task-declared compose stack once for the whole
+        run and resolves endpoints from it before the gRPC client is
+        wired.
 
         Args:
             timeout: Maximum time to wait for healthy service (seconds)
             retry_interval: Time between health check attempts (seconds)
 
         Raises:
-            ConnectionError: If Runner not healthy after timeout
+            ProvisionError: if the task-declared stack fails to materialise
+                or its declared runner / db service is not exposed.
+            ConnectionError: If Runner not healthy after timeout.
         """
+        if self._env_manifest is not None:
+            self._materialise_manifest()
         self.runner_client.connect(timeout=timeout, retry_interval=retry_interval)
         logger.info("Docker runtime connected")
 
     def close(self):
-        """Close Runner connection"""
-        self.runner_client.close()
+        """Close Runner connection and tear down the task-declared stack
+        (if any). Idempotent: safe to call before ``connect`` or twice."""
+        if self.runner_client is not None:
+            self.runner_client.close()
+        if self._compose is not None:
+            shutdown_compose(self._compose)
+            self._compose = None
+        if self._temp_dir is not None:
+            shutil.rmtree(self._temp_dir, ignore_errors=True)
+            self._temp_dir = None
         logger.info("Docker runtime closed")
+
+    def _materialise_manifest(self) -> None:
+        """Bring up the task-declared compose stack once for the run and
+        wire ``self.runner_client`` + ``self._endpoints`` to it. Called
+        from :meth:`connect` when ``env_manifest`` is set.
+
+        Failure at any stage cleans up any partial materialisation
+        before surfacing a :class:`ProvisionError` — the shared-stack
+        equivalent of PerTrialRuntimeBackend's provision path, but with
+        run scope instead of trial scope.
+        """
+        assert self._env_manifest is not None  # narrowed by caller
+        manifest = self._env_manifest
+
+        temp_dir = make_project_temp_dir(self._run_id)
+        compose: DockerCompose | None = None
+        try:
+            copy_compose_context(manifest.compose_file, temp_dir)
+            compose = DockerCompose(
+                context=str(temp_dir),
+                compose_file_name=manifest.compose_file.name,
+                pull=False,
+                build=False,
+                wait=True,
+            )
+            compose.start()
+        except Exception as exc:  # noqa: BLE001 — surface as typed ProvisionError
+            cleanup_partial_materialisation(compose, temp_dir)
+            raise ProvisionError(
+                trial_id=self._run_id,
+                stage="provision",
+                reason=f"docker compose up failed for shared task-declared stack: {exc}",
+            ) from exc
+
+        runner_endpoint = resolve_runner_endpoint(
+            compose, manifest.runner_service, RUNNER_PORT_DEFAULT
+        )
+        if runner_endpoint is None:
+            cleanup_partial_materialisation(compose, temp_dir)
+            raise ProvisionError(
+                trial_id=self._run_id,
+                stage="provision",
+                reason=(
+                    f"runner_service {manifest.runner_service!r} does not expose port "
+                    f"{RUNNER_PORT_DEFAULT} in the shared task-declared compose stack"
+                ),
+            )
+        runner_host, runner_host_port = runner_endpoint
+
+        endpoints = resolve_env_endpoints(compose, runner_host, runner_host_port)
+        if endpoints is None:
+            cleanup_partial_materialisation(compose, temp_dir)
+            raise ProvisionError(
+                trial_id=self._run_id,
+                stage="provision",
+                reason=(
+                    "SharedStackRuntimeBackend requires a compose service named 'db' "
+                    "exposing port 5432; task-declared compose file does not declare "
+                    "one. Endpoint-resolution customisation is a follow-up ticket."
+                ),
+            )
+
+        # Preserve the materialised state on the backend so close() can tear it down.
+        self._compose = compose
+        self._temp_dir = temp_dir
+        self._endpoints = endpoints
+        self.runner_client = GrpcRunnerClient(runner_address=f"{runner_host}:{runner_host_port}")
 
     def health_check(self) -> bool:
         """Check health of Runner service"""

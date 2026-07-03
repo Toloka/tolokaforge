@@ -46,7 +46,12 @@ from tolokaforge.core.rate_limiter import GlobalRateLimiter
 from tolokaforge.core.resume import RunStateManager
 from tolokaforge.core.run_queue import AttemptLease, create_run_queue
 from tolokaforge.core.runtime import RuntimeBackend
-from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, EnvEndpoints, TrialSpec
+from tolokaforge.core.trial import (
+    DEFAULT_TOOL_TIMEOUT_S,
+    EnvEndpoints,
+    EnvironmentManifest,
+    TrialSpec,
+)
 from tolokaforge.core.trial_executor import TrialExecutor
 from tolokaforge.runner.models import AdapterType, TaskDescription
 
@@ -491,13 +496,63 @@ class Orchestrator:
                 error=result.get("error"),
             )
 
-    def _construct_runtime_backend(self, runner_address: str) -> RuntimeBackend:
+    def _extract_run_env_manifest(self) -> EnvironmentManifest | None:
+        """Return the shared ``environment_manifest`` declared by the run's
+        tasks, or ``None`` if none of them declare one.
+
+        The run's tasks must be consistent: either every task in the run
+        declares the same ``environment_manifest.compose_file`` or none do.
+        Mixed runs (some tasks with, some without; or different compose
+        files across tasks) fail loud — a single ``SharedStackRuntimeBackend``
+        can only materialise one substrate per run, and a mixed declaration
+        signals an ambiguous operator intent.
+        """
+        manifests_by_compose: dict[str, EnvironmentManifest] = {}
+        tasks_by_manifest_status: dict[bool, list[str]] = {True: [], False: []}
+        for task in self.tasks:
+            manifest = task.environment_manifest
+            tasks_by_manifest_status[manifest is not None].append(task.task_id)
+            if manifest is not None:
+                manifests_by_compose[str(manifest.compose_file)] = manifest
+        if not manifests_by_compose:
+            return None
+        if tasks_by_manifest_status[False]:
+            raise RuntimeError(
+                "Run has a mix of tasks with and without environment_manifest — "
+                "SharedStackRuntimeBackend can only materialise one substrate per run. "
+                f"Tasks with manifest: {tasks_by_manifest_status[True]}. "
+                f"Tasks without: {tasks_by_manifest_status[False]}. "
+                "Split into separate runs or declare a consistent manifest for all tasks."
+            )
+        if len(manifests_by_compose) > 1:
+            raise RuntimeError(
+                "Run has tasks declaring different environment_manifest.compose_file "
+                f"values: {sorted(manifests_by_compose)}. A single "
+                "SharedStackRuntimeBackend materialises one substrate for the whole run. "
+                "Split into separate runs or converge on one compose file."
+            )
+        return next(iter(manifests_by_compose.values()))
+
+    def _construct_runtime_backend(
+        self,
+        runner_address: str,
+        env_manifest: EnvironmentManifest | None = None,
+        run_id: str = "run",
+    ) -> RuntimeBackend:
         """Construct the runtime backend from ``config.orchestrator.runtime``.
 
-        ``shared`` (default) → :class:`SharedStackRuntimeBackend` built
-        with :func:`_build_env_endpoints`-resolved URLs; ``per_trial`` →
-        :class:`PerTrialRuntimeBackend`. Called when no backend is
-        injected via ``Orchestrator.__init__(runtime_backend=...)``.
+        ``shared`` (default) → :class:`SharedStackRuntimeBackend`. When
+        ``env_manifest`` is passed the backend materialises the
+        task-declared compose stack once per run at ``connect`` time.
+        When absent, the backend connects to the built-in shared engine
+        at ``runner_address`` with endpoints resolved via
+        :func:`_build_env_endpoints`.
+
+        ``per_trial`` → :class:`PerTrialRuntimeBackend` (env_manifest is
+        consumed per-trial there; ignored here).
+
+        Called when no backend is injected via
+        ``Orchestrator.__init__(runtime_backend=...)``.
         """
         runtime_choice = self.config.orchestrator.runtime
         if runtime_choice == "per_trial":
@@ -513,7 +568,13 @@ class Orchestrator:
             "runtime.backend.selected",
             backend="SharedStackRuntimeBackend",
             source="config" if runtime_choice == "shared" else "default",
+            env_manifest_present=env_manifest is not None,
         )
+        if env_manifest is not None:
+            return SharedStackRuntimeBackend(
+                env_manifest=env_manifest,
+                run_id=run_id,
+            )
         return SharedStackRuntimeBackend(
             runner_address=runner_address,
             endpoints=_build_env_endpoints(runner_address),
@@ -977,6 +1038,11 @@ class Orchestrator:
                 max_requests_per_second=self.config.orchestrator.max_requests_per_second,
             )
 
+        # Task-declared shared-stack manifest (Phase 4): if the run's tasks declare an
+        # environment_manifest, extract the shared manifest here — mixed / divergent
+        # declarations fail loud before we touch docker.
+        run_env_manifest = self._extract_run_env_manifest()
+
         # Auto-start services via ServiceStack if configured
         service_stack = None
         if self.config.orchestrator.auto_start_services:
@@ -1026,10 +1092,16 @@ class Orchestrator:
                     stack_factory = core_stack
                 service_stack = stack_factory(**core_stack_kwargs)
                 per_trial_mode = self.config.orchestrator.runtime == "per_trial"
-                if per_trial_mode:
+                # In per_trial mode OR shared+env_manifest mode the built-in engine
+                # containers go unused — the task-declared compose stack owns the
+                # runner + db-service. The engine images still need to be BUILT so
+                # task compose files can reference the `:local` aliases; skipping
+                # the container-start is the shared-with-per_trial optimisation.
+                task_stack_mode = per_trial_mode or run_env_manifest is not None
+                if task_stack_mode:
                     self.logger.info(
-                        "Preparing Docker engine images (per-trial mode: "
-                        "images built + aliased, containers not started)..."
+                        "Preparing Docker engine images (task-declared-stack mode: "
+                        "images built + aliased, built-in containers not started)..."
                     )
                     service_stack.build_and_prepare()
                     self._ensure_engine_image_local_aliases(service_stack)
@@ -1051,15 +1123,16 @@ class Orchestrator:
 
                 # Connect TypeSense to core stack network so Runner can reach it
                 if hasattr(self, "_typesense_server") and self._typesense_server:
-                    if per_trial_mode:
+                    if task_stack_mode:
                         raise RuntimeError(
-                            "TypeSense KB is enabled but --runtime per_trial does not yet "
-                            "support the TypeSense bridge. The bridge connects TypeSense to "
-                            "the shared 'runner-net' and rewrites the TypeSense config to "
-                            "'typesense:8108' Docker DNS — per-trial runners live on "
-                            "task-side networks and cannot reach that host. Either run with "
-                            "--runtime shared or drop the TypeSense KB block from the run "
-                            "config."
+                            "TypeSense KB is enabled but the run uses a task-declared "
+                            "compose stack (either --runtime per_trial or a run whose tasks "
+                            "declare environment_manifest under --runtime shared). The "
+                            "TypeSense bridge connects TypeSense to the shared 'runner-net' "
+                            "and rewrites the TypeSense config to 'typesense:8108' Docker "
+                            "DNS — task-declared runners live on task-side networks and "
+                            "cannot reach that host. Either drop the TypeSense KB block or "
+                            "drop the task-declared environment_manifest."
                         )
                     self._connect_typesense_to_runner_network(service_stack)
             except Exception as e:
@@ -1077,18 +1150,26 @@ class Orchestrator:
         if self._injected_runtime_backend is not None:
             runtime_backend = self._injected_runtime_backend
         else:
-            runtime_backend = self._construct_runtime_backend(runner_address)
+            runtime_backend = self._construct_runtime_backend(
+                runner_address,
+                env_manifest=run_env_manifest,
+                run_id=run_id,
+            )
         runtime_backend.connect()
         self.logger.info("Runtime backend connected")
         self._verify_isolation_compatibility(runtime_backend)
 
         env_endpoints = _build_env_endpoints(runner_address)
-        if self.config.orchestrator.runtime == "per_trial":
+        if self.config.orchestrator.runtime == "per_trial" or run_env_manifest is not None:
             # Per-trial backend resolves fresh endpoints per trial via
-            # ``endpoints(handle)``. The default values built here would be
-            # phantom values that never reach a trial spec — logging them
-            # here would misdirect log-based diagnosis.
-            self.logger.info("Trial-scoped service endpoints resolved per trial by backend")
+            # ``endpoints(handle)``. Shared+env_manifest resolves them once
+            # at connect time from the materialised stack. In both cases the
+            # default values built here would be phantom values that never
+            # reach a trial spec — logging them here would misdirect
+            # log-based diagnosis.
+            self.logger.info(
+                "Trial-scoped service endpoints resolved by backend from task-declared stack"
+            )
         else:
             self.logger.info(
                 "Resolved trial-scoped service endpoints",
