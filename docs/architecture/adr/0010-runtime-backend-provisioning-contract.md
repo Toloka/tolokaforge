@@ -1,6 +1,6 @@
 # 0010. `RuntimeBackend` provisioning contract — how a backend consumes an environment manifest
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-07-01
 - **Deciders:** @CiroGamboa
 - **Supersedes:** —

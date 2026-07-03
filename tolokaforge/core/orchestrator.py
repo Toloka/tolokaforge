@@ -519,6 +519,70 @@ class Orchestrator:
             endpoints=_build_env_endpoints(runner_address),
         )
 
+    _LOCAL_ALIAS_TAG: str = "local"
+    """Stable secondary tag applied to freshly-built engine images after
+    ``ServiceStack.start_all()``. Decoupled from ``tolokaforge.__version__``
+    so task compose files referencing ``:local`` don't have to rotate on
+    every release. When a public registry lands, task composes will
+    reference the published tag directly; ``:local`` stays as the
+    local-dev alias."""
+
+    _PER_TRIAL_ALIASED_SERVICES: tuple[tuple[str, str], ...] = (
+        ("runner", "tolokaforge-runner"),
+        ("db-service", "tolokaforge-db-service"),
+    )
+    """(service_name, alias_repository) pairs the ``:local``-alias hook
+    aliases. Task compose files that declare a per-trial substrate
+    reference these images by ``<repo>:local``; the shared-stack build
+    is the source of truth for each image's content, and the alias step
+    surfaces it under a stable name."""
+
+    def _ensure_engine_image_local_aliases(self, service_stack: Any) -> None:
+        """Apply ``:local`` aliases on the freshly-built engine images so
+        task compose files can reference stable names that outlive
+        content-hash rebuilds and release-version bumps.
+
+        The shared-stack build tags each engine image with a content-hash
+        suffix that changes on every source edit — unreachable from a
+        task-pack compose file. After the stack starts, this hook applies
+        ``:local`` as a secondary tag on the same underlying images (no
+        rebuild, no data copy). Per-trial task compose files reference
+        ``tolokaforge-runner:local`` + ``tolokaforge-db-service:local``,
+        which are legal pinned tags (not one of the floating-tag names
+        the :class:`EnvironmentManifest` validator rejects: ``latest`` /
+        ``main`` / ``master`` / ``edge`` / ``stable`` / ``dev`` /
+        ``develop`` / ``nightly`` / ``head``).
+
+        Each alias step is best-effort against :class:`ImageError` — the
+        expected daemon-rejection path is narrowed to that type, so a
+        genuine coding bug (``AttributeError`` / ``TypeError``) surfaces
+        loudly instead of masquerading as a WARNING. Only per-trial task
+        compose files referencing the ``:local`` tags would then fail —
+        a user-visible error at that point, not at run-start.
+        """
+        from tolokaforge.docker.image import ImageError
+
+        for service_name, alias_repository in self._PER_TRIAL_ALIASED_SERVICES:
+            image = service_stack.get_image(service_name)
+            if image is None:
+                self.logger.debug(
+                    "engine image not built by service stack; skipping alias-tag hook",
+                    service_name=service_name,
+                )
+                continue
+            try:
+                image.add_alias_tag(alias_repository, self._LOCAL_ALIAS_TAG)
+            except ImageError as e:
+                self.logger.warning(
+                    "Failed to apply engine-image alias tag; "
+                    "task compose files referencing the :local tag will fail",
+                    service_name=service_name,
+                    alias_repository=alias_repository,
+                    alias_tag=self._LOCAL_ALIAS_TAG,
+                    error=str(e),
+                )
+                continue
+
     def _build_trial_executor(
         self, runtime_backend: RuntimeBackend, conductor: Conductor
     ) -> TrialExecutor:
@@ -961,20 +1025,42 @@ class Orchestrator:
                     self.logger.info("Creating service stack (db-service + runner)")
                     stack_factory = core_stack
                 service_stack = stack_factory(**core_stack_kwargs)
-                self.logger.info(
-                    "Building Docker images and starting containers "
-                    "(this may take a few minutes on first run)..."
-                )
-                service_stack.start_all(wait=True)
-                # Use localhost address — the orchestrator runs on the host,
-                # not inside Docker, so Docker container names don't resolve.
-                runner_url = service_stack.get_service_url("runner", 50051)
-                # get_service_url returns "http://localhost:{port}" — strip scheme for gRPC
-                runner_address = runner_url.replace("http://", "")
-                self.logger.info("ServiceStack started", runner_address=runner_address)
+                per_trial_mode = self.config.orchestrator.runtime == "per_trial"
+                if per_trial_mode:
+                    self.logger.info(
+                        "Preparing Docker engine images (per-trial mode: "
+                        "images built + aliased, containers not started)..."
+                    )
+                    service_stack.build_and_prepare()
+                    self._ensure_engine_image_local_aliases(service_stack)
+                    runner_address = None
+                    self.logger.info("ServiceStack prepared (images ready, no containers started)")
+                else:
+                    self.logger.info(
+                        "Building Docker images and starting containers "
+                        "(this may take a few minutes on first run)..."
+                    )
+                    service_stack.start_all(wait=True)
+                    self._ensure_engine_image_local_aliases(service_stack)
+                    # Use localhost address — the orchestrator runs on the host,
+                    # not inside Docker, so Docker container names don't resolve.
+                    runner_url = service_stack.get_service_url("runner", 50051)
+                    # get_service_url returns "http://localhost:{port}" — strip scheme for gRPC
+                    runner_address = runner_url.replace("http://", "")
+                    self.logger.info("ServiceStack started", runner_address=runner_address)
 
                 # Connect TypeSense to core stack network so Runner can reach it
                 if hasattr(self, "_typesense_server") and self._typesense_server:
+                    if per_trial_mode:
+                        raise RuntimeError(
+                            "TypeSense KB is enabled but --runtime per_trial does not yet "
+                            "support the TypeSense bridge. The bridge connects TypeSense to "
+                            "the shared 'runner-net' and rewrites the TypeSense config to "
+                            "'typesense:8108' Docker DNS — per-trial runners live on "
+                            "task-side networks and cannot reach that host. Either run with "
+                            "--runtime shared or drop the TypeSense KB block from the run "
+                            "config."
+                        )
                     self._connect_typesense_to_runner_network(service_stack)
             except Exception as e:
                 self.logger.error("Failed to auto-start services", error=str(e))
@@ -997,12 +1083,19 @@ class Orchestrator:
         self._verify_isolation_compatibility(runtime_backend)
 
         env_endpoints = _build_env_endpoints(runner_address)
-        self.logger.info(
-            "Resolved trial-scoped service endpoints",
-            db_url=env_endpoints.db_url,
-            rag_url=env_endpoints.rag_url,
-            runner_url=env_endpoints.runner_url,
-        )
+        if self.config.orchestrator.runtime == "per_trial":
+            # Per-trial backend resolves fresh endpoints per trial via
+            # ``endpoints(handle)``. The default values built here would be
+            # phantom values that never reach a trial spec — logging them
+            # here would misdirect log-based diagnosis.
+            self.logger.info("Trial-scoped service endpoints resolved per trial by backend")
+        else:
+            self.logger.info(
+                "Resolved trial-scoped service endpoints",
+                db_url=env_endpoints.db_url,
+                rag_url=env_endpoints.rag_url,
+                runner_url=env_endpoints.runner_url,
+            )
 
         conductor = self._build_conductor(
             agent_client=agent_client,

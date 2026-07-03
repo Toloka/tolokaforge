@@ -1,6 +1,6 @@
 # 0014. `TrialGrader` Protocol — swappable trial-grading strategy
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-07-02
 - **Deciders:** @CiroGamboa
 - **Supersedes:** —

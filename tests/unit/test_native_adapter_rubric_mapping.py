@@ -11,15 +11,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-import yaml
 
+from tests.canonical._factories import write_yaml_file
 from tolokaforge.adapters.native import NativeAdapter
 
 pytestmark = pytest.mark.unit
-
-
-def _write_yaml(path: Path, data: dict) -> None:
-    path.write_text(yaml.safe_dump(data, sort_keys=False))
 
 
 def _build_task(tmp_path: Path, grading: dict) -> NativeAdapter:
@@ -27,7 +23,7 @@ def _build_task(tmp_path: Path, grading: dict) -> NativeAdapter:
     task_dir.mkdir(parents=True)
     (task_dir / "system_prompt.md").write_text("system\n")
     (task_dir / "initial_state.json").write_text("{}")
-    _write_yaml(
+    write_yaml_file(
         task_dir / "task.yaml",
         {
             "task_id": "rubric_task",
@@ -41,7 +37,7 @@ def _build_task(tmp_path: Path, grading: dict) -> NativeAdapter:
             "system_prompt": "system_prompt.md",
         },
     )
-    _write_yaml(task_dir / "grading.yaml", grading)
+    write_yaml_file(task_dir / "grading.yaml", grading)
     return NativeAdapter({"base_dir": str(tmp_path), "tasks_glob": "tasks/**/task.yaml"})
 
 

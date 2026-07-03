@@ -338,3 +338,77 @@ def test_start_service_builds_with_isolated_context_when_skipping_build_images(
     # Dockerfile path is resolved against the temp build dir.
     assert captured["dockerfile"].endswith("tolokaforge/docker/dockerfiles/runner.Dockerfile")
     assert captured["dockerfile"].startswith(captured["context"])
+
+
+def test_build_and_prepare_builds_images_and_networks_without_starting_containers(
+    monkeypatch,
+) -> None:
+    """``ServiceStack.build_and_prepare`` builds every declared image and
+    creates every declared network, but skips the container-start phase.
+
+    The per-trial substrate path needs the ``:local``-alias hook to find
+    each engine image on the daemon (via ``get_image()``), yet the shared
+    engine containers themselves go unused — every trial provisions its
+    own runner/db-service through the task's own compose file. This
+    method is the seam the orchestrator uses to avoid the wasted start.
+    """
+    built_names: list[str] = []
+
+    def fake_get_or_build(self, *, name, dockerfile, context, build_args=None):
+        # ``self`` and unused kwargs come from the ImageRegistry.get_or_build
+        # signature we're patching over — the fake records the request and
+        # hands back a synthetic Image.
+        del self  # unused mock kwarg
+        built_names.append(name)
+        return Image(
+            name=name,
+            tag="deadbeef",
+            image_id="dummy",
+            dockerfile=dockerfile,
+            context=context,
+            context_hash="deadbeef",
+            build_args=build_args or {},
+        )
+
+    from tolokaforge.docker import container as container_mod
+    from tolokaforge.docker.registry import ImageRegistry
+
+    monkeypatch.setattr(ImageRegistry, "get_or_build", fake_get_or_build)
+
+    def _refuse_container_create(*_args, **_kwargs):
+        # Positional/keyword arguments are Container.create's signature; the
+        # fake ignores them because reaching this call is itself the failure.
+        raise AssertionError("build_and_prepare must not create containers")
+
+    monkeypatch.setattr(container_mod.Container, "create", classmethod(_refuse_container_create))
+
+    svc_runner = ServiceDefinition(
+        name="runner",
+        image_name="tolokaforge-runner",
+        dockerfile="tolokaforge/docker/dockerfiles/runner.Dockerfile",
+        context=".",
+        context_files=["pyproject.toml", "README.md", "tolokaforge/"],
+        networks=["runner-net"],
+    )
+    svc_db = ServiceDefinition(
+        name="db-service",
+        image_name="tolokaforge-db-service",
+        dockerfile="tolokaforge/docker/dockerfiles/db_service.Dockerfile",
+        context=".",
+        context_files=["pyproject.toml", "README.md", "tolokaforge/"],
+        networks=["runner-net"],
+    )
+    stack = ServiceStack()
+    stack.add_service(svc_runner)
+    stack.add_service(svc_db)
+
+    stack.build_and_prepare()
+
+    assert set(built_names) == {"tolokaforge-runner", "tolokaforge-db-service"}
+    # Both images accessible via the same public lookup ``_ensure_engine_image_local_aliases`` uses.
+    assert stack.get_image("runner") is not None
+    assert stack.get_image("db-service") is not None
+    # Idempotent no-op teardown when no containers were started — proves the
+    # container-lifecycle side of the stack stayed untouched.
+    stack.stop_all()  # would raise if containers had been created via the patched Container.create.
+    stack.destroy(remove_networks=False)

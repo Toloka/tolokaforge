@@ -711,6 +711,13 @@ class NativeAdapter(BaseAdapter):
                     "ascii"
                 )
 
+        # environment_manifest passes through as-is. The task loader
+        # (:func:`_task_loader.load_task_yaml`) resolves the manifest's
+        # ``compose_file`` to an absolute path before ``TaskConfig`` is
+        # constructed, so ``EnvironmentManifest``'s file-existence
+        # validator succeeds regardless of CWD at load time.
+        environment_manifest = task.environment_manifest
+
         # Create TaskDescription
         task_description = TaskDescription(
             task_id=task_id,
@@ -732,6 +739,7 @@ class NativeAdapter(BaseAdapter):
                 "mcp_server_ref": mcp_server_ref,
             },
             tool_artifacts=tool_artifacts,
+            environment_manifest=environment_manifest,
         )
 
         logger.info(

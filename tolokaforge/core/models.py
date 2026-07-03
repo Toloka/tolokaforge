@@ -18,6 +18,7 @@ from tolokaforge.core.llm.usage import CostSource, ProviderRawCall, Usage
 # output and is consumed by the host-side Grade model below.
 from tolokaforge.runner.models import Criterion as Criterion
 from tolokaforge.runner.models import CriterionResult as CriterionResult
+from tolokaforge.runner.models import EnvironmentManifest as EnvironmentManifest
 from tolokaforge.runner.models import LLMJudgeConfig as LLMJudgeConfig
 from tolokaforge.runner.models import Rubric as Rubric
 
@@ -631,6 +632,13 @@ class TaskConfig(BaseModel):
     grading: str  # Path to grading.yaml
     system_prompt: str | None = None  # Path to system prompt file (e.g., wiki.md)
     adapter_settings: dict[str, Any] | None = None  # Opaque dict parsed by each adapter type
+    environment_manifest: EnvironmentManifest | None = None
+    """Per-trial substrate declaration (ADR-0009). When set, the adapter
+    forwards the manifest onto the ``TaskDescription`` it builds and the
+    runtime backend materialises the declared compose stack per trial
+    (``PerTrialRuntimeBackend``). Left ``None`` for tasks that run on the
+    shared stack. ``compose_file`` is resolved relative to the task's
+    directory during ``to_task_description``."""
 
 
 # Grading Configuration Models

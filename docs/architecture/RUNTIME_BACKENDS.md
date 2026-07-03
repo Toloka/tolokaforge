@@ -307,6 +307,8 @@ half-provisioned resources leaked to the daemon.
 
 ## `SharedStackRuntimeBackend` vs `PerTrialRuntimeBackend` side-by-side
 
+See also: [ADR-0016](adr/0016-runtime-backend-comparison.md) — resource-use, grading equivalence (with A/B numbers), failure-mode differences, and the decision rubric.
+
 | Concern | `SharedStackRuntimeBackend` | `PerTrialRuntimeBackend` |
 |---|---|---|
 | Compose scope | One project per **run** | One project per **trial** |
@@ -317,10 +319,29 @@ half-provisioned resources leaked to the daemon.
 | Client connect timing | Eager, at `connect()` | Lazy, at first RPC call |
 | Network isolation | Trial ids in URL paths | Docker network per trial (no cross-project reachability) |
 | Volume isolation | None (shared) | Docker anonymous volumes per trial; removed on `teardown` |
+| Startup cost | Build engine images + start engine containers | Build engine images only; engine containers not started (`build_and_prepare`) |
+| Per-trial latency overhead | None (containers already up) | ~5–15 s per trial for compose up + healthcheck; scales with the task's declared service count |
+| Docker daemon load | Constant | Bounded by worker count × per-trial compose service count |
+| Grading equivalence | Same code path as per_trial — grader dispatches through the mode-specific runner but the runner-side grading algorithm is mode-blind | Same code path as shared — see ADR-0016 for the A/B confirmation |
 | Backwards compat | Yes — default backend | Yes — opt-in via task's `environment_manifest` |
 | Config gate | Always available | Task declares an `environment_manifest`; orchestrator selects the backend based on config |
 
 Both satisfy the same `RuntimeBackend` Protocol. Callers depend only on the Protocol — swapping backends is a construction-time choice, not a callsite change.
+
+## Adapter compatibility with `per_trial`
+
+`--runtime per_trial` is opt-in per task, gated on `TaskConfig.environment_manifest`. An adapter opts a task into orchestrator-driven per-trial isolation by populating that field on the `TaskConfig` it produces. Tasks without a manifest belong on `SharedStackRuntimeBackend`; pointing `PerTrialRuntimeBackend` at them raises `ProvisionError("… task did not declare one")` at provision time — fail-loud by design, no silent fallback.
+
+| Adapter | Populates `environment_manifest` | Compatible with `--runtime per_trial` |
+|---|---|---|
+| `native` | Yes — reads it from the task's `task.yaml` when declared. | Yes. Tested end-to-end with `coding_public_example_01`. |
+| `terminal_bench` | No — the adapter synthesises `TaskConfig` from `TerminalBenchTask` metadata and leaves `environment_manifest = None` by design. | No. Terminal-bench tasks run only under `--runtime shared` today. |
+
+**Why terminal-bench sits outside `PerTrialRuntimeBackend`.** Each terminal-bench task already ships its own `docker-compose.yaml`, which the adapter materialises through the `DOCKER_COMPOSE_EXEC` tool style (see `adapter_settings.compose_file` in the produced `TaskDescription`). That gives terminal-bench tasks *adapter-owned* per-task isolation — a fresh container per task, orchestrated inside the tool-invocation path — but it lives one level below the runtime backend seam. From the orchestrator's perspective, terminal-bench tasks look like shared-stack workloads: the engine services (`runner`, `db-service`) come up once for the run, and the adapter handles each task's own container itself.
+
+The consequence is that terminal-bench tasks cannot currently benefit from the orchestrator-level substrate primitives — `TrialExecutor`'s `provision → await_ready → endpoints → teardown` bracket, per-trial network isolation, `PROVISION_ERROR` failure attribution, or the `IsolationMode` enforcement path — because none of that runs for them. Terminal-bench brings its own equivalents inside the adapter.
+
+Unifying terminal-bench with `PerTrialRuntimeBackend` is future work (see "Follow-up work" below).
 
 ## Extending to new substrates
 
@@ -358,11 +379,36 @@ The `Orchestrator._build_trial_executor(runtime_backend, conductor)` helper comp
 
 The Protocol boundary is what future variants slot into — a `RemoteTrialExecutor` (gRPC client to a trial-plane worker per CLOUD_RUNTIME §6.4) replaces `ProvisioningTrialExecutor` behind the same interface, and neither the Orchestrator nor the Conductor changes.
 
-## What this PR does *not* do
+## Referencing the runner image from task manifests
 
-- **No runner image publication.** The `tolokaforge/runner` image is still a local build. Real RPC coverage against a task pack that declares `environment_manifest` waits for the validation-gate follow-up.
-- **No opt-in from any real task pack.** Zero task packs declare an `environment_manifest` today; the validation-gate follow-up will migrate one existing multi-service task to prove the design end-to-end. On its green, ADR-0009 / 0010 / 0014 / 0015 flip from `Proposed` to `Accepted`.
-- **No endpoint customisation.** The `runner_service` / `db` service / `rag` service conventions are still hardcoded (see `PerTrialRuntimeBackend`). `runner_port` / `db_service` / `db_port` / `rag_service` / `rag_port` manifest fields remain a follow-up ticket.
+`PerTrialRuntimeBackend` materialises each trial's compose stack via Testcontainers. When a task's `environment_manifest.compose_file` declares a `runner` service, the compose entry needs an `image:` ref — a *pinned* name (the manifest validator rejects floating tags like `:latest`, `:main`, `:edge` for reproducibility).
+
+The tolokaforge runner + db-service images are built locally on every run (content-hash-tagged, cache-hit-driven). To give task-pack authors stable names to reference, the orchestrator applies **`:local` aliases** on top of each content-hash build: right after the images are built and the shared network created, `Orchestrator._ensure_engine_image_local_aliases()` runs `docker tag tolokaforge-runner:<content-hash> tolokaforge-runner:local` (and the same for `tolokaforge-db-service`) — same images, two names each. In `--runtime shared` this happens right after `ServiceStack.start_all()`; in `--runtime per_trial` it happens right after `ServiceStack.build_and_prepare()` (build + network only — the shared containers are not started, since the conductor talks to the per-trial runner). Task compose files reference the aliases:
+
+```yaml
+services:
+  runner:
+    image: tolokaforge-runner:local
+    ports:
+      - "50051"
+  db:
+    image: postgres:16.6-alpine3.21@sha256:...
+    environment: {...}
+    ports:
+      - "5432"
+```
+
+`:local` is a legal pinned tag (not one of the floating names — `latest` / `main` / `master` / `edge` / `stable` / `dev` / `develop` / `nightly` / `head` — that the validator rejects) and is decoupled from the tolokaforge release version, so task compose files don't rotate on every package bump.
+
+The alias step is best-effort and logged, not raise-and-fail — the shared-stack path still works with the content-hash tag whether or not the alias applies. Only per-trial task compose files referencing `tolokaforge-runner:local` would then fail, at which point the operator sees the aliasing warning from run start and knows what to fix.
+
+Forward-looking: when the runner image ships to a public registry, task composes will switch to the published reference (e.g. `image: ghcr.io/toloka/tolokaforge-runner:X.Y.Z`) — a task-side edit, not an engine change. `:local` stays as the local-dev alias.
+
+## Follow-up work
+
+- **Terminal-bench + `per_trial`.** The `terminal_bench` adapter today materialises each task's own compose stack inside the tool-invocation path (see "Adapter compatibility with `per_trial`" above). Lifting that into the orchestrator's substrate seam — either by having the adapter synthesise an `environment_manifest` from the task's `docker-compose.yaml`, or by defining a second manifest kind that reads `adapter_settings.compose_file` — would let terminal-bench tasks use `--runtime per_trial` and pick up `TrialExecutor`'s bracket, per-trial network isolation, and `PROVISION_ERROR` attribution. The manifest-synthesis path aligns better with the "one substrate primitive, adapters produce a manifest" direction — the alternative couples `PerTrialRuntimeBackend` to adapter-specific fields.
+- **No runner image publication.** The `tolokaforge/runner` and `tolokaforge/db-service` images are still local builds — the `:local` alias described above is the sole reference path today. Publishing to a registry (`ghcr.io/toloka/…`) is future work; task compose files switch to the published tag then, `:local` stays as the local-dev alias.
+- **No endpoint customisation.** The `runner_service` / `db` service / `rag` service conventions in the manifest are still hardcoded (see `PerTrialRuntimeBackend`). `runner_port` / `db_service` / `db_port` / `rag_service` / `rag_port` manifest fields remain a follow-up ticket.
 - **No perf optimisations.** Image pre-pull, postgres template-DB, container pool, orphan sweep, resource caps, benchmark harness — all filed as a follow-up umbrella ticket.
 - **No layered-image guide.** The SWE-bench 3-tier pattern (base → environment → instance, cited in ADR-0009) applies transparently to any pinned images the compose file references, but the concrete Dockerfile recipes for task-pack authors are a docs follow-up.
 

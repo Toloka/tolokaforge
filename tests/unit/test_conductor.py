@@ -7,6 +7,7 @@ in ``tests/canonical/test_conductor_contract.py``.
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -17,7 +18,7 @@ from tolokaforge.core.conductor import (
     _default_success_trajectory,
 )
 from tolokaforge.core.models import ModelConfig
-from tolokaforge.core.trial import EnvEndpoints, TrialSpec
+from tolokaforge.core.trial import EnvEndpoints, EnvironmentManifest, TrialSpec
 from tolokaforge.runner.models import TaskDescription
 
 pytestmark = pytest.mark.unit
@@ -156,3 +157,61 @@ class TestInMemoryConductorRun:
         backend = InMemoryConductor()
         result = backend.run(_make_spec(), MagicMock(task_id="t1"))
         assert result.worker_id is None
+
+
+class TestTrialSpecWireExclusion:
+    """``environment_manifest`` describes the orchestrator's substrate
+    provisioning intent; the runner runs inside that substrate and never
+    consumes the manifest. The register_trial RPC therefore serialises
+    ``TrialSpec`` with ``exclude={"task": {"environment_manifest"}}`` so
+    the runner-side ``TaskDescription`` validator doesn't attempt to
+    re-validate a ``compose_file`` path resolved on the orchestrator's
+    local filesystem.
+    """
+
+    def test_environment_manifest_is_excluded_from_wire_dump(self) -> None:
+        fixture = (
+            Path(__file__).parent.parent
+            / "canonical"
+            / "fixtures"
+            / "environment_manifest"
+            / "safe_one_service.yaml"
+        )
+        spec = _make_spec()
+        spec = spec.model_copy(
+            update={
+                "task": spec.task.model_copy(
+                    update={"environment_manifest": EnvironmentManifest(compose_file=fixture)}
+                )
+            }
+        )
+
+        wire_json = spec.model_dump_json(exclude={"task": {"environment_manifest"}})
+
+        assert "environment_manifest" not in wire_json
+        assert "compose_file" not in wire_json
+
+    def test_other_task_fields_survive_exclusion(self) -> None:
+        """The exclusion is scoped to ``environment_manifest`` alone —
+        the rest of ``TaskDescription`` still crosses the wire so the
+        runner can identify the trial's task."""
+        fixture = (
+            Path(__file__).parent.parent
+            / "canonical"
+            / "fixtures"
+            / "environment_manifest"
+            / "safe_one_service.yaml"
+        )
+        spec = _make_spec(task_id="t1")
+        spec = spec.model_copy(
+            update={
+                "task": spec.task.model_copy(
+                    update={"environment_manifest": EnvironmentManifest(compose_file=fixture)}
+                )
+            }
+        )
+
+        wire_json = spec.model_dump_json(exclude={"task": {"environment_manifest"}})
+
+        assert '"task_id":"t1"' in wire_json
+        assert '"adapter_type":"native"' in wire_json

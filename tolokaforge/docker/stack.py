@@ -486,6 +486,19 @@ class ServiceStack(BaseModel):
             svc = active_services[name]
             self._start_service(svc, wait=wait)
 
+    def build_and_prepare(self) -> None:
+        """Build images and create networks without starting containers.
+
+        Prepares the daemon so ``get_image()`` returns each service's built
+        :class:`Image` — enough for a caller that only needs the engine
+        images to exist (e.g. a per-trial substrate whose own compose file
+        references them via ``:local`` alias) but doesn't need the shared
+        engine containers running. ``stop_all`` and ``destroy`` remain
+        safe no-ops when no containers were started.
+        """
+        self.build_images()
+        self.create_networks()
+
     def _filter_by_profiles(self, profiles: list[str] | None) -> dict[str, ServiceDefinition]:
         """Filter services by profile tags.
 
@@ -894,6 +907,17 @@ class ServiceStack(BaseModel):
         """
         container_name = f"{self.prefix}-{name}"
         return f"{container_name}:{port}"
+
+    def get_image(self, service_name: str) -> Image | None:
+        """Return the built :class:`Image` for ``service_name``, or ``None``
+        if the service builds no image or hasn't been built yet.
+
+        Public accessor over ``self._images``; used by callers (the
+        orchestrator's ``:local``-alias hook) that need to apply
+        secondary tags to an already-built image without duplicating
+        the build.
+        """
+        return self._images.get(service_name)
 
     def get_status(self) -> dict[str, ServiceStatus]:
         """Get current status of all services.
