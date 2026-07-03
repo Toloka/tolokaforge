@@ -9,6 +9,9 @@ as keyword overrides.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
+
+import yaml
 
 from tolokaforge.core.models import (
     InitialStateConfig,
@@ -90,6 +93,17 @@ def make_trial_spec(
         agent_model_config=agent_model_config or ModelConfig(provider="openai", name="gpt-4"),
         env_endpoints=env_endpoints or make_env_endpoints(),
     )
+
+
+def write_yaml_file(path: Path, data: dict) -> None:
+    """Write ``data`` to ``path`` as YAML, creating parent dirs as needed.
+
+    Shared by the native-adapter tests that stage a task-directory
+    fixture on tmp_path; centralised so a schema/serialisation tweak
+    lands in one place instead of drifting across N duplicated helpers.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(data, sort_keys=False))
 
 
 def make_trajectory(

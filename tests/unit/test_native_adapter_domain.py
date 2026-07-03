@@ -14,16 +14,11 @@ import base64
 from pathlib import Path
 
 import pytest
-import yaml
 
+from tests.canonical._factories import write_yaml_file
 from tolokaforge.adapters.native import NativeAdapter
 
 pytestmark = pytest.mark.unit
-
-
-def _write_yaml(path: Path, data: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(data, sort_keys=False))
 
 
 @pytest.fixture
@@ -48,7 +43,7 @@ def domain_fixture(tmp_path: Path) -> Path:
     root = tmp_path / "dataset" / "dom"
 
     shared = root / "_shared"
-    _write_yaml(
+    write_yaml_file(
         shared / "domain.yaml",
         {
             "category": "tool_use",
@@ -67,7 +62,7 @@ def domain_fixture(tmp_path: Path) -> Path:
         case_dir = root / "testcases" / case
         case_dir.mkdir(parents=True)
         (case_dir / "initial_state.json").write_text("{}")
-        _write_yaml(
+        write_yaml_file(
             case_dir / "task.yaml",
             {
                 "task_id": f"dom_{case}",
@@ -78,7 +73,7 @@ def domain_fixture(tmp_path: Path) -> Path:
                 "grading": "grading.yaml",
             },
         )
-        _write_yaml(
+        write_yaml_file(
             case_dir / "grading.yaml",
             {
                 "combine": {
@@ -180,7 +175,7 @@ def test_flat_layout_get_task_dir_is_task_parent(tmp_path: Path) -> None:
     task_dir.mkdir(parents=True)
     (task_dir / "system_prompt.md").write_text("hi\n")
     (task_dir / "initial_state.json").write_text("{}")
-    _write_yaml(
+    write_yaml_file(
         task_dir / "task.yaml",
         {
             "task_id": "flat",
@@ -194,7 +189,7 @@ def test_flat_layout_get_task_dir_is_task_parent(tmp_path: Path) -> None:
             "system_prompt": "system_prompt.md",
         },
     )
-    _write_yaml(
+    write_yaml_file(
         task_dir / "grading.yaml",
         {
             "combine": {

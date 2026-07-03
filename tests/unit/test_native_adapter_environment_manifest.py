@@ -13,15 +13,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-import yaml
 
+from tests.canonical._factories import write_yaml_file
 from tolokaforge.adapters.native import NativeAdapter
 
 pytestmark = pytest.mark.unit
-
-
-def _write_yaml(path: Path, data: dict) -> None:
-    path.write_text(yaml.safe_dump(data, sort_keys=False))
 
 
 def _build_task(
@@ -46,8 +42,8 @@ def _build_task(
     }
     if environment_manifest is not None:
         task_yaml["environment_manifest"] = environment_manifest
-    _write_yaml(task_dir / "task.yaml", task_yaml)
-    _write_yaml(
+    write_yaml_file(task_dir / "task.yaml", task_yaml)
+    write_yaml_file(
         task_dir / "grading.yaml",
         {
             "combine": {
@@ -60,7 +56,7 @@ def _build_task(
     )
     # Compose file that satisfies the manifest validator (public postgres,
     # pinned tag).
-    _write_yaml(
+    write_yaml_file(
         task_dir / "environment.compose.yaml",
         {
             "services": {
