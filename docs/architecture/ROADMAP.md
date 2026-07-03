@@ -32,8 +32,28 @@ independently shippable and builds on the previous one.
   Control-plane API + state store + scheduler dispatching trials through the
   `RuntimeBackend` interface. The control plane is backend-agnostic, so
   adding an at-scale backend later needs no control-plane change.
+- **Phase 7 — Runner as consumable artifact**
+  The runner is packaged as an independently-distributable Docker image with
+  a documented, versioned gRPC contract. External harnesses can pull the
+  runner, connect their own agent, and drive trials without depending on the
+  orchestrator. Prerequisites: strict internal module boundaries so the
+  runner directory imports only from typed core models + the tool registry,
+  no orchestrator leakage.
+- **Phase 8 — Open agent loop**
+  Extends the `Conductor` Protocol with streaming event emission as a
+  baseline (every conductor emits `TurnStarted`, `ToolCalled`,
+  `MessageEmitted`, `Graded`, etc.). Opt-in `ConductorControl` companion
+  Protocol adds pause/resume checkpoints and external-message injection for
+  conductors that need interactive or live-observability use cases.
+  Standalone ADR precedes the implementation.
+- **Phase 9 — Extension-point documentation**
+  Every entry point in the plugin-first architecture (runtime backend,
+  conductor, grader, adapter, tool, artifact writer, state store, secret
+  provider, observability sink) gets a "how to plug in" guide: which class to
+  subclass, which entry point to register under, which contract test to
+  satisfy, an end-to-end example. Documentation-heavy; no runtime code.
 
-**Later (directional, not committed).** Beyond Phase 6 the direction is
+**Later (directional, not committed).** Beyond Phase 9 the direction is
 set but scope may shift as infrastructure needs evolve: an at-scale runtime
 backend (Kubernetes / Agent Sandbox), autoscaling and centralized
 observability, shared-cluster operation with quotas and per-team secrets,
@@ -56,6 +76,9 @@ demands it, and additional runtime backends (microVM, Modal, EC2).
 | 0.11.0    | Phase 4             | Multi-container complex adapter — db + backend + frontend materialised via `PerTrialRuntimeBackend`.                                                                                                                                                                                                                                                                                                                                                | Planned    | tbd                        |
 | 0.12.0    | Phase 5             | Remote runner: orchestrator and runner on separate hosts; mTLS + health + retry.                                                                                                                                                                                                                                                                                                                                                                    | Planned    | tbd                        |
 | 1.0.0+    | Phase 6             | Control plane API + state store; backend-agnostic scheduler.                                                                                                                                                                                                                                                                                                                                                                                        | Planned    | tbd                        |
+| tbd       | Phase 7             | Runner as consumable artifact — packaged Docker image + documented, versioned gRPC contract for external harnesses.                                                                                                                                                                                                                                                                                                                                | Planned    | tbd                        |
+| tbd       | Phase 8             | Open agent loop — streaming event emission on `Conductor`; opt-in `ConductorControl` Protocol for pause/resume + external-message injection.                                                                                                                                                                                                                                                                                                        | Planned    | tbd (ADR-0017 will land first) |
+| tbd       | Phase 9             | Extension-point documentation — a "how to plug in" guide per entry point in the plugin-first architecture.                                                                                                                                                                                                                                                                                                                                          | Planned    | —                          |
 
 Versions past the current release are **targets, not commitments** — scope
 may shift between phases as we land each one. The phase order is fixed.
