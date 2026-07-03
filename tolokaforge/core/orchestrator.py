@@ -1494,6 +1494,22 @@ class Orchestrator:
 
         runner_address = os.environ.get("EXECUTOR_ADDRESS", "executor:50051")
 
+        # Workers join an already-materialised run; if the run's tasks declare
+        # env_manifest, the parent orchestrator materialised a task-declared
+        # stack whose runner address is dynamic (testcontainers-allocated),
+        # not the EXECUTOR_ADDRESS a worker reads from its own env. Fail loud
+        # rather than silently connect to a stale/wrong address.
+        run_env_manifest = self._extract_run_env_manifest()
+        if run_env_manifest is not None and self._injected_runtime_backend is None:
+            raise RuntimeError(
+                "Distributed worker mode does not currently support runs with "
+                "environment_manifest. The parent orchestrator materialises a "
+                "task-declared compose stack at a testcontainers-allocated "
+                "address; that address is not propagated to workers. Run the "
+                "orchestrator single-process (no worker split) for env_manifest "
+                "runs, or drop the manifest and use the built-in shared stack."
+            )
+
         runtime_backend: RuntimeBackend
         if self._injected_runtime_backend is not None:
             runtime_backend = self._injected_runtime_backend

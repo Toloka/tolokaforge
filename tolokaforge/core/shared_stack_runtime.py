@@ -722,23 +722,24 @@ class SharedStackRuntimeBackend:
         self._compose: DockerCompose | None = None
         self._temp_dir: Path | None = None
 
+        self.runner_client: GrpcRunnerClient | None
+        self._endpoints: EnvEndpoints | None
         if env_manifest is None:
             # Built-in-stack mode: runner + endpoints known at construction.
-            self.runner_client: GrpcRunnerClient = GrpcRunnerClient(runner_address)
+            self.runner_client = GrpcRunnerClient(runner_address)
             if endpoints is None:
                 endpoints = EnvEndpoints(
                     db_url=f"http://{runner_address}/db",
                     rag_url=None,
                     runner_url=f"http://{runner_address}",
                 )
-            self._endpoints: EnvEndpoints = endpoints
+            self._endpoints = endpoints
         else:
             # Task-declared-stack mode: runner + endpoints resolved at connect() time
-            # from the materialised compose. The type hint here is imprecise
-            # (runner_client is None until connect) — an intentional trade to keep
-            # the read-only ``endpoints(handle)`` surface unchanged for callers.
-            self.runner_client = None  # type: ignore[assignment]
-            self._endpoints = None  # type: ignore[assignment]
+            # from the materialised compose. Both are populated inside
+            # :meth:`_materialise_manifest`.
+            self.runner_client = None
+            self._endpoints = None
             if endpoints is not None:
                 raise ValueError(
                     "SharedStackRuntimeBackend: pass either env_manifest OR endpoints, "
@@ -771,15 +772,23 @@ class SharedStackRuntimeBackend:
 
     def close(self):
         """Close Runner connection and tear down the task-declared stack
-        (if any). Idempotent: safe to call before ``connect`` or twice."""
-        if self.runner_client is not None:
-            self.runner_client.close()
-        if self._compose is not None:
-            shutdown_compose(self._compose)
-            self._compose = None
-        if self._temp_dir is not None:
-            shutil.rmtree(self._temp_dir, ignore_errors=True)
-            self._temp_dir = None
+        (if any). Idempotent: safe to call before ``connect`` or twice.
+
+        A runner-client close failure (e.g. broken gRPC channel) must not
+        prevent the compose stack + temp dir from being cleaned up — the
+        downstream teardown runs in a ``try/finally`` so a leaked docker
+        project doesn't outlive the run.
+        """
+        try:
+            if self.runner_client is not None:
+                self.runner_client.close()
+        finally:
+            if self._compose is not None:
+                shutdown_compose(self._compose)
+                self._compose = None
+            if self._temp_dir is not None:
+                shutil.rmtree(self._temp_dir, ignore_errors=True)
+                self._temp_dir = None
         logger.info("Docker runtime closed")
 
     def _materialise_manifest(self) -> None:
@@ -787,11 +796,20 @@ class SharedStackRuntimeBackend:
         wire ``self.runner_client`` + ``self._endpoints`` to it. Called
         from :meth:`connect` when ``env_manifest`` is set.
 
+        Idempotent: a second call while the stack is up returns without
+        re-materialising, matching :class:`GrpcRunnerClient.connect`'s
+        ``if self.channel is None`` guard. A double-materialisation would
+        leak the first stack + temp dir.
+
         Failure at any stage cleans up any partial materialisation
         before surfacing a :class:`ProvisionError` — the shared-stack
         equivalent of PerTrialRuntimeBackend's provision path, but with
         run scope instead of trial scope.
         """
+        if self._compose is not None:
+            # Already materialised — a second connect() (e.g. after a
+            # transient reconnect) must not clobber the running stack.
+            return
         assert self._env_manifest is not None  # narrowed by caller
         manifest = self._env_manifest
 
@@ -891,12 +909,15 @@ class SharedStackRuntimeBackend:
         """Return the run-wide shared-stack URLs.
 
         Same value for every trial in the run — the shared stack exposes
-        one set of service addresses that all trials share. The
-        orchestrator resolves these via ``_build_env_endpoints`` at
-        construction and passes them via the constructor's ``endpoints``
-        argument. Callers that need per-trial URLs should use a per-trial
-        backend (e.g. ``PerTrialRuntimeBackend``, which resolves real
-        URLs from its per-trial ``ServiceStack``).
+        one set of service addresses that all trials share. In built-in
+        mode the orchestrator resolves these via ``_build_env_endpoints``
+        at construction and passes them via ``endpoints``; in
+        task-declared-stack mode :meth:`_materialise_manifest` resolves
+        them from the materialised compose stack at ``connect`` time.
+        Either way the value is snapshot on the backend by the time this
+        method is called. Callers that need per-trial URLs should use a
+        per-trial backend (e.g. ``PerTrialRuntimeBackend``, which
+        resolves real URLs from its per-trial substrate).
         """
         return self._endpoints
 

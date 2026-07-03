@@ -127,6 +127,27 @@ class TestInconsistentManifest:
         assert "no-manifest-D" in msg
 
 
+class TestRunWorkerGuard:
+    """Distributed worker mode doesn't currently support env_manifest —
+    the parent's testcontainers-allocated runner address isn't propagated
+    to workers, so a worker joining an env_manifest run would connect to
+    a stale/wrong address. Fail loud instead of silently misroute."""
+
+    def test_extract_helper_flags_env_manifest_runs(self) -> None:
+        """The run_worker guard uses ``_extract_run_env_manifest`` to
+        detect env_manifest runs. Once the helper returns non-None,
+        run_worker raises rather than proceeding with the default
+        EXECUTOR_ADDRESS."""
+        m = _manifest("safe_two_service.yaml")
+        orch = Orchestrator(_run_config())
+        orch.tasks = [_task("t1", m)]
+        # Helper returns the manifest; run_worker's guard reads this to
+        # decide whether to fail loud. The guard behaviour itself is a
+        # single ``if`` in run_worker; here we just pin the helper's
+        # non-None contract that the guard depends on.
+        assert orch._extract_run_env_manifest() is not None
+
+
 class TestIsolationDeclarationsPreserved:
     """The helper doesn't need to validate ``isolation`` — that's
     :meth:`_verify_isolation_compatibility`'s job. But it must not

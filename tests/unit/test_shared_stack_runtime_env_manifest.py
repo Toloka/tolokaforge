@@ -258,3 +258,50 @@ class TestCloseIdempotency:
 
         backend.close()
         backend.close()  # must not raise
+
+    def test_close_tears_down_compose_even_if_client_close_raises(self, tmp_path: Path) -> None:
+        """If the runner client's close raises (e.g. broken gRPC channel),
+        the compose stack + temp dir must still be cleaned up — otherwise
+        a leaked docker project outlives the run."""
+        manifest = _make_manifest(tmp_path)
+        backend = SharedStackRuntimeBackend(env_manifest=manifest, run_id="run-x")
+        fake_compose = MagicMock()
+        real_temp = tmp_path / "materialised"
+        real_temp.mkdir()
+        fake_client = MagicMock()
+        fake_client.close.side_effect = RuntimeError("gRPC channel broken")
+        backend._compose = fake_compose
+        backend._temp_dir = real_temp
+        backend.runner_client = fake_client
+
+        with pytest.raises(RuntimeError, match="gRPC channel broken"):
+            backend.close()
+
+        # Downstream teardown still ran.
+        fake_compose.stop.assert_called_once_with(down=True)
+        assert not real_temp.exists()
+
+
+class TestMaterialiseIdempotent:
+    """A second ``connect()`` in env_manifest mode must not clobber the
+    running stack. Mirrors ``GrpcRunnerClient.connect``'s
+    ``if self.channel is None`` guard."""
+
+    def test_double_connect_does_not_re_materialise(self, tmp_path: Path) -> None:
+        manifest = _make_manifest(tmp_path)
+        backend = SharedStackRuntimeBackend(env_manifest=manifest, run_id="run-x")
+        # Simulate a successful first materialisation.
+        fake_compose = MagicMock()
+        backend._compose = fake_compose
+        backend._temp_dir = tmp_path / "already-there"
+        backend._temp_dir.mkdir()
+        backend._endpoints = EnvEndpoints(db_url="http://x", rag_url=None, runner_url="http://y")
+        backend.runner_client = MagicMock()
+
+        # Second _materialise_manifest is the early-return guard.
+        with patch("tolokaforge.core.shared_stack_runtime.DockerCompose") as mock_docker_compose:
+            backend._materialise_manifest()
+            mock_docker_compose.assert_not_called()
+
+        # State preserved — no clobber.
+        assert backend._compose is fake_compose
