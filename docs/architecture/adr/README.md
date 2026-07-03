@@ -45,4 +45,5 @@ Day-to-day implementation choices that don't affect the system shape do *not* ne
 | [0013](0013-runtime-backend-per-trial-rpc-methods.md) | `RuntimeBackend` owns per-trial RPC methods — collapse `DockerRunnerAdapter` | Proposed |
 | [0014](0014-trial-grader-protocol.md) | `TrialGrader` Protocol — swappable trial-grading strategy | Accepted |
 | [0015](0015-trial-executor-protocol.md) | `TrialExecutor` Protocol — per-trial substrate-lifecycle seam | Accepted |
-| [0016](0016-runtime-backend-comparison.md) | Runtime backend comparison: `shared` vs `per_trial` | Accepted |
+| [0016](0016-runtime-backend-comparison.md) | Runtime backend comparison: `shared` vs `per_trial` (lifecycle axis) | Accepted |
+| [0018](0018-multi-container-under-shared-runtime.md) | Multi-container capability under shared runtime (composition axis) | Proposed |

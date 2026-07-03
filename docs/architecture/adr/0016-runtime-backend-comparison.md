@@ -18,6 +18,15 @@ Two `RuntimeBackend` implementations ship: `SharedStackRuntimeBackend` and `PerT
 
 This ADR fills those gaps. It documents the shipped state (both backends validated end-to-end) rather than proposing new work. It cites the empirical A/B run conducted on `coding_public_example_01` under both modes to confirm grading equivalence.
 
+## Scope note — this ADR covers one of two independent axes
+
+Runtime backends live on a **2×2 matrix**, not a line:
+
+- **Axis 1 — Stack lifecycle** *(this ADR)*: `shared` vs `per_trial` — is the substrate materialised once per run or once per trial?
+- **Axis 2 — Stack composition** *([ADR-0018](0018-multi-container-under-shared-runtime.md))*: **built-in stack** (engine's `core_stack`/`full_stack` defaults) vs **task-declared stack** (a task's `environment_manifest` compose file). Is the substrate composed of engine services or task-declared services?
+
+The **lifecycle** axis and the **composition** axis are orthogonal — a run occupies one cell of the 2×2, and each cell has distinct trade-offs. ADR-0018 documents the composition axis end-to-end (with sequence diagrams for each case) and the 2×2 as a whole. This ADR focuses on grading equivalence, resource profile, and decision rubric along the *lifecycle* axis; those claims hold regardless of composition.
+
 ## Decision Drivers
 
 - **Operator clarity.** Cost, throughput, and isolation are the real trade-off surface — capture them in one place so operators don't have to reverse-engineer from source.
