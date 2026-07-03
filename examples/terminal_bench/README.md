@@ -78,7 +78,12 @@ docker compose -p billing_smoke down -v --remove-orphans
 You should see some tests pass (baseline health + pre-bug assertions) and a
 reward printed to stdout.
 
+## Runtime compatibility
+
+Terminal-bench tasks run under `--runtime shared` only. `TerminalBenchAdapter` synthesises `TaskConfig` from `TerminalBenchTask` metadata and leaves `environment_manifest` unset by design — the per-task compose stack lives on `adapter_settings.compose_file` and is materialised through the `bash` tool's `DOCKER_COMPOSE_EXEC` invocation style, not through `PerTrialRuntimeBackend`. Pointing `--runtime per_trial` at terminal-bench tasks raises `ProvisionError` at provision time (fail-loud, no silent fallback). See `docs/architecture/RUNTIME_BACKENDS.md` "Adapter compatibility with `per_trial`" for the boundary rationale and the follow-up to unify the two paths.
+
 ## Related docs
 
 - `docs/ADAPTER_ARCHITECTURE.md` — how adapters plug into the orchestrator
+- `docs/architecture/RUNTIME_BACKENDS.md` — runtime backends + adapter compatibility
 - `external_adapters/tolokaforge-adapter-terminal-bench/` — the adapter source

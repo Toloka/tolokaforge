@@ -322,6 +322,21 @@ half-provisioned resources leaked to the daemon.
 
 Both satisfy the same `RuntimeBackend` Protocol. Callers depend only on the Protocol — swapping backends is a construction-time choice, not a callsite change.
 
+## Adapter compatibility with `per_trial`
+
+`--runtime per_trial` is opt-in per task, gated on `TaskConfig.environment_manifest`. An adapter opts a task into orchestrator-driven per-trial isolation by populating that field on the `TaskConfig` it produces. Tasks without a manifest belong on `SharedStackRuntimeBackend`; pointing `PerTrialRuntimeBackend` at them raises `ProvisionError("… task did not declare one")` at provision time — fail-loud by design, no silent fallback.
+
+| Adapter | Populates `environment_manifest` | Compatible with `--runtime per_trial` |
+|---|---|---|
+| `native` | Yes — reads it from the task's `task.yaml` when declared. | Yes. Tested end-to-end with `coding_public_example_01`. |
+| `terminal_bench` | No — the adapter synthesises `TaskConfig` from `TerminalBenchTask` metadata and leaves `environment_manifest = None` by design. | No. Terminal-bench tasks run only under `--runtime shared` today. |
+
+**Why terminal-bench sits outside `PerTrialRuntimeBackend`.** Each terminal-bench task already ships its own `docker-compose.yaml`, which the adapter materialises through the `DOCKER_COMPOSE_EXEC` tool style (see `adapter_settings.compose_file` in the produced `TaskDescription`). That gives terminal-bench tasks *adapter-owned* per-task isolation — a fresh container per task, orchestrated inside the tool-invocation path — but it lives one level below the runtime backend seam. From the orchestrator's perspective, terminal-bench tasks look like shared-stack workloads: the engine services (`runner`, `db-service`) come up once for the run, and the adapter handles each task's own container itself.
+
+The consequence is that terminal-bench tasks cannot currently benefit from the orchestrator-level substrate primitives — `TrialExecutor`'s `provision → await_ready → endpoints → teardown` bracket, per-trial network isolation, `PROVISION_ERROR` failure attribution, or the `IsolationMode` enforcement path — because none of that runs for them. Terminal-bench brings its own equivalents inside the adapter.
+
+Unifying terminal-bench with `PerTrialRuntimeBackend` is future work (see "Follow-up work" below).
+
 ## Extending to new substrates
 
 The manifest is **substrate-neutral by design**: `EnvironmentManifest` points at a Docker Compose file, but compose is the *vocabulary* the manifest speaks — every backend owns the *translation* from compose to its own substrate. Adding a new substrate means adding a new `RuntimeBackend` implementation; task manifests do not change.
@@ -385,6 +400,7 @@ Forward-looking: when the runner image ships to a public registry, task composes
 
 ## Follow-up work
 
+- **Terminal-bench + `per_trial`.** The `terminal_bench` adapter today materialises each task's own compose stack inside the tool-invocation path (see "Adapter compatibility with `per_trial`" above). Lifting that into the orchestrator's substrate seam — either by having the adapter synthesise an `environment_manifest` from the task's `docker-compose.yaml`, or by defining a second manifest kind that reads `adapter_settings.compose_file` — would let terminal-bench tasks use `--runtime per_trial` and pick up `TrialExecutor`'s bracket, per-trial network isolation, and `PROVISION_ERROR` attribution. The manifest-synthesis path aligns better with the "one substrate primitive, adapters produce a manifest" direction — the alternative couples `PerTrialRuntimeBackend` to adapter-specific fields.
 - **No runner image publication.** The `tolokaforge/runner` and `tolokaforge/db-service` images are still local builds — the `:local` alias described above is the sole reference path today. Publishing to a registry (`ghcr.io/toloka/…`) is future work; task compose files switch to the published tag then, `:local` stays as the local-dev alias.
 - **No endpoint customisation.** The `runner_service` / `db` service / `rag` service conventions in the manifest are still hardcoded (see `PerTrialRuntimeBackend`). `runner_port` / `db_service` / `db_port` / `rag_service` / `rag_port` manifest fields remain a follow-up ticket.
 - **No perf optimisations.** Image pre-pull, postgres template-DB, container pool, orphan sweep, resource caps, benchmark harness — all filed as a follow-up umbrella ticket.
