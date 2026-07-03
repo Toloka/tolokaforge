@@ -109,6 +109,13 @@ class TerminalBenchAdapter(BaseAdapter):
     # -- task loading ---------------------------------------------------------
 
     def get_task(self, task_id: str) -> TaskConfig:
+        # ``environment_manifest`` is intentionally left unset: this
+        # adapter synthesises ``TaskConfig`` from ``TerminalBenchTask``
+        # metadata (no user-authored ``task.yaml``), and terminal-bench
+        # tasks bring their own compose flow via ``adapter_settings.
+        # compose_file`` — not the ``PerTrialRuntimeBackend`` provisioning
+        # path. Tasks that want ``environment_manifest`` semantics go
+        # through the ``native`` adapter.
         self._ensure_discovered()
         meta = self._tasks[task_id]
         return TaskConfig(
