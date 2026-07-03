@@ -358,6 +358,53 @@ class TestLoadTaskYaml:
         with pytest.raises(RuntimeError, match="not a YAML mapping"):
             load_task_yaml(bad)
 
+    def test_non_string_compose_file_raises_with_task_path(self, tmp_path: Path) -> None:
+        """A malformed ``environment_manifest.compose_file`` (e.g. an int
+        or list) fails loud at load time with the task-file path in the
+        message, instead of silently dropping the manifest and
+        surfacing later as a confusing ``ProvisionError`` from the
+        substrate layer."""
+        task_path = tmp_path / "task.yaml"
+        task_path.write_text(
+            yaml.safe_dump(
+                {
+                    "task_id": "x",
+                    "name": "x",
+                    "category": "x",
+                    "description": "x",
+                    "initial_state": {},
+                    "tools": {"agent": {"enabled": []}, "user": {"enabled": []}},
+                    "user_simulator": {"mode": "scripted", "scripted_flow": []},
+                    "grading": "g.yaml",
+                    "environment_manifest": {"compose_file": 42},
+                }
+            )
+        )
+        with pytest.raises(RuntimeError, match="compose_file.*must be a string"):
+            load_task_yaml(task_path)
+
+    def test_non_mapping_environment_manifest_raises_with_task_path(self, tmp_path: Path) -> None:
+        """``environment_manifest`` present but not a mapping is a
+        malformed task file; fail loud."""
+        task_path = tmp_path / "task.yaml"
+        task_path.write_text(
+            yaml.safe_dump(
+                {
+                    "task_id": "x",
+                    "name": "x",
+                    "category": "x",
+                    "description": "x",
+                    "initial_state": {},
+                    "tools": {"agent": {"enabled": []}, "user": {"enabled": []}},
+                    "user_simulator": {"mode": "scripted", "scripted_flow": []},
+                    "grading": "g.yaml",
+                    "environment_manifest": "not-a-mapping",
+                }
+            )
+        )
+        with pytest.raises(RuntimeError, match="environment_manifest.*YAML mapping"):
+            load_task_yaml(task_path)
+
     def test_dangling_domain_ref_raises(self, tmp_path: Path) -> None:
         task_path = tmp_path / "testcases" / "c" / "task.yaml"
         task_path.parent.mkdir(parents=True)
