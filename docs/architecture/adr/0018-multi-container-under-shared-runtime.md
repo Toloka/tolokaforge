@@ -54,6 +54,41 @@ legal but pointless combination (per-trial isolation on a built-in stack buys
 nothing — you pay compose-up cost every trial to get an identical substrate);
 the engine won't refuse to run it, but no task packs opt in.
 
+## Package composition is a separate concern
+
+This ADR is about **which services live in the substrate** and **when they
+come up**. It does **not** decide **how those services are packaged for
+distribution**. Those are independent axes:
+
+- **Substrate composition** (this ADR): the runtime backend materialises
+  either the engine's built-in services (`core_stack` = runner + db-service,
+  optionally augmented to `full_stack` = mock-web + rag-service) or the
+  task-declared services from `environment_manifest.compose_file`.
+- **Package composition** (roadmap, not this ADR): today all engine services
+  ship in a single PyPI package (`tolokaforge`) and are referenced by a
+  single `:local` engine image alias. Runner and db-service are already
+  independent *services* — they talk over HTTP with a configurable
+  `DB_SERVICE_URL` — but they share a package and a build. The **D16**
+  decision in `CLOUD_RUNTIME_ARCHITECTURE.md` commits to designing internal
+  module boundaries as if a future split into multiple published
+  artifacts is inevitable; **Phase 7** in the public roadmap ("Runner as
+  consumable artifact") makes the split concrete.
+
+Every cell of the 2×2 is compatible with either package shape. A Case A run
+uses the engine's built-in services regardless of whether they ship as one
+package or ten. A Case B/C run declares services in its own compose file
+regardless of which engine images those services reference. The
+composition axis and the packaging axis do not interact.
+
+One subtlety worth flagging for Phase 7 planning: the runner currently
+**assumes** a reachable db-service (some tool-execution paths error out
+if the db HTTP endpoint returns errors). The **seam is decoupled**, but
+the runner's current dependency shape **assumes the seam is filled**.
+Standalone-runner distribution will need to pick one of: null-tolerant
+runner (unfilled seams become no-ops), ship db-service alongside the
+runner in the same distribution, or make db-service opt-in via runner
+config. That's Phase 7 design territory — out of scope for this ADR.
+
 ## What each case looks like — end to end
 
 ### Case A — `shared` + built-in stack (default, unchanged)
