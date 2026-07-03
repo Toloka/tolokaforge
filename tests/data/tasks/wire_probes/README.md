@@ -14,10 +14,11 @@ tools it needs.
   (tau2-bench telecom, API-Bank tool-registry) and a policy-stripped
   manufacturing operations domain. See `NOTICE`.
 
-Runners:
-- static gate (no API): `tests/canonical/test_wire_probe_pack_valid.py`
-- live behavioural (per-model, API-gated): `tests/integration/test_wire_probe_smoke.py`
-  - planned follow-up, not in this pack yet.
+How to run:
+- Run via the engine: `tolokaforge run --config <run.yaml whose task_packs point at dataset/>`,
+  then inspect the trajectories / wire-shapes in the output. NON-SCORING: you observe the
+  emitted shapes (stringified args, dropped ids, flattened unions, ...), there is no pass/fail.
+- A per-model pytest driver is a planned follow-up: `tests/integration/test_wire_probe_smoke.py`.
 
 The convertible atomic probes are separate capability tests under
 `tests/integration/llm/` (dict-map, decimal, discriminated-union, recursive,
