@@ -307,6 +307,8 @@ half-provisioned resources leaked to the daemon.
 
 ## `SharedStackRuntimeBackend` vs `PerTrialRuntimeBackend` side-by-side
 
+See also: [ADR-0016](adr/0016-runtime-backend-comparison.md) — resource-use, grading equivalence (with A/B numbers), failure-mode differences, and the decision rubric.
+
 | Concern | `SharedStackRuntimeBackend` | `PerTrialRuntimeBackend` |
 |---|---|---|
 | Compose scope | One project per **run** | One project per **trial** |
@@ -317,6 +319,10 @@ half-provisioned resources leaked to the daemon.
 | Client connect timing | Eager, at `connect()` | Lazy, at first RPC call |
 | Network isolation | Trial ids in URL paths | Docker network per trial (no cross-project reachability) |
 | Volume isolation | None (shared) | Docker anonymous volumes per trial; removed on `teardown` |
+| Startup cost | Build engine images + start engine containers | Build engine images only; engine containers not started (`build_and_prepare`) |
+| Per-trial latency overhead | None (containers already up) | ~5–15 s per trial for compose up + healthcheck; scales with the task's declared service count |
+| Docker daemon load | Constant | Bounded by worker count × per-trial compose service count |
+| Grading equivalence | Same code path as per_trial — grader dispatches through the mode-specific runner but the runner-side grading algorithm is mode-blind | Same code path as shared — see ADR-0016 for the A/B confirmation |
 | Backwards compat | Yes — default backend | Yes — opt-in via task's `environment_manifest` |
 | Config gate | Always available | Task declares an `environment_manifest`; orchestrator selects the backend based on config |
 
