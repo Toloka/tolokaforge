@@ -1,6 +1,6 @@
-"""Integration tests for ServiceStack lifecycle.
+"""Integration tests for EngineStack lifecycle.
 
-These tests verify that ServiceStack can create, start, health-check,
+These tests verify that EngineStack can create, start, health-check,
 stop, and destroy containers using the foundation layer.
 
 Requires Docker to be running.
@@ -42,16 +42,16 @@ def simple_dockerfile(tmp_path):
 
 @pytest.mark.skipif(not is_docker_daemon_available(), reason="Docker not available")
 class TestDockerStack:
-    """Integration tests for ServiceStack lifecycle."""
+    """Integration tests for EngineStack lifecycle."""
 
     def test_start_stop_single_service(self, simple_dockerfile):
         """Start and stop a single service."""
         from tolokaforge.docker.ports import PortConfig
-        from tolokaforge.docker.stack import ServiceDefinition, ServiceStack
+        from tolokaforge.docker.stack import EngineStack, ServiceDefinition
 
         context_dir, dockerfile = simple_dockerfile
 
-        stack = ServiceStack(prefix=f"test-single-{uuid.uuid4().hex[:6]}")
+        stack = EngineStack(prefix=f"test-single-{uuid.uuid4().hex[:6]}")
         svc = ServiceDefinition(
             name="web",
             image_name="test-stack-web",
@@ -71,11 +71,11 @@ class TestDockerStack:
     def test_dependency_ordering(self, simple_dockerfile):
         """Services start in dependency order."""
         from tolokaforge.docker.ports import PortConfig
-        from tolokaforge.docker.stack import ServiceDefinition, ServiceStack
+        from tolokaforge.docker.stack import EngineStack, ServiceDefinition
 
         context_dir, dockerfile = simple_dockerfile
 
-        stack = ServiceStack(prefix=f"test-deps-{uuid.uuid4().hex[:6]}")
+        stack = EngineStack(prefix=f"test-deps-{uuid.uuid4().hex[:6]}")
 
         svc_a = ServiceDefinition(
             name="base",
@@ -109,11 +109,11 @@ class TestDockerStack:
     def test_profile_filtering(self, simple_dockerfile):
         """Profile filtering includes/excludes services correctly."""
         from tolokaforge.docker.ports import PortConfig
-        from tolokaforge.docker.stack import ServiceDefinition, ServiceStack
+        from tolokaforge.docker.stack import EngineStack, ServiceDefinition
 
         context_dir, dockerfile = simple_dockerfile
 
-        stack = ServiceStack(prefix=f"test-profiles-{uuid.uuid4().hex[:6]}")
+        stack = EngineStack(prefix=f"test-profiles-{uuid.uuid4().hex[:6]}")
 
         core_svc = ServiceDefinition(
             name="core",
@@ -145,11 +145,11 @@ class TestDockerStack:
     def test_auto_port_allocation(self, simple_dockerfile):
         """Auto port allocation assigns unique host ports."""
         from tolokaforge.docker.ports import PortConfig
-        from tolokaforge.docker.stack import ServiceDefinition, ServiceStack
+        from tolokaforge.docker.stack import EngineStack, ServiceDefinition
 
         context_dir, dockerfile = simple_dockerfile
 
-        stack = ServiceStack(prefix=f"test-autoport-{uuid.uuid4().hex[:6]}")
+        stack = EngineStack(prefix=f"test-autoport-{uuid.uuid4().hex[:6]}")
         svc = ServiceDefinition(
             name="auto",
             image_name="test-autoport-svc",
@@ -169,11 +169,11 @@ class TestDockerStack:
     def test_destroy_cleanup(self, simple_dockerfile):
         """Destroy removes all containers and networks."""
         from tolokaforge.docker.ports import PortConfig
-        from tolokaforge.docker.stack import ServiceDefinition, ServiceStack
+        from tolokaforge.docker.stack import EngineStack, ServiceDefinition
 
         context_dir, dockerfile = simple_dockerfile
 
-        stack = ServiceStack(prefix=f"test-cleanup-{uuid.uuid4().hex[:6]}")
+        stack = EngineStack(prefix=f"test-cleanup-{uuid.uuid4().hex[:6]}")
         svc = ServiceDefinition(
             name="cleanup",
             image_name="test-cleanup-svc",
@@ -193,13 +193,13 @@ class TestDockerStack:
         assert len(stack._images) == 0
 
     def test_context_manager(self, simple_dockerfile):
-        """ServiceStack works as a context manager."""
+        """EngineStack works as a context manager."""
         from tolokaforge.docker.ports import PortConfig
-        from tolokaforge.docker.stack import ServiceDefinition, ServiceStack
+        from tolokaforge.docker.stack import EngineStack, ServiceDefinition
 
         context_dir, dockerfile = simple_dockerfile
 
-        stack = ServiceStack(prefix=f"test-ctxmgr-{uuid.uuid4().hex[:6]}")
+        stack = EngineStack(prefix=f"test-ctxmgr-{uuid.uuid4().hex[:6]}")
         svc = ServiceDefinition(
             name="ctxmgr",
             image_name="test-ctxmgr-svc",
@@ -220,7 +220,7 @@ class TestDockerStack:
         """health_check_all returns status for all services."""
         from tolokaforge.docker.health import HealthProbe
         from tolokaforge.docker.ports import PortConfig
-        from tolokaforge.docker.stack import ServiceDefinition, ServiceStack
+        from tolokaforge.docker.stack import EngineStack, ServiceDefinition
 
         context_dir = tmp_path / "context"
         context_dir.mkdir()
@@ -254,7 +254,7 @@ class TestDockerStack:
         _prefix = f"test-health-{uuid.uuid4().hex[:6]}"
         # Use fixed host port so health probe URL can reference it directly
         _host_port = 28080
-        stack = ServiceStack(prefix=_prefix)
+        stack = EngineStack(prefix=_prefix)
         svc = ServiceDefinition(
             name="healthsvc",
             image_name="test-health-svc",

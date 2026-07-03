@@ -54,6 +54,37 @@ legal but pointless combination (per-trial isolation on a built-in stack buys
 nothing — you pay compose-up cost every trial to get an identical substrate);
 the engine won't refuse to run it, but no task packs opt in.
 
+## Naming note: `EngineStack` is deliberately docker-only and non-Protocol
+
+The engine's built-in service bring-up primitive is called `EngineStack`
+(in `tolokaforge/docker/stack.py`, previously named `ServiceStack`). Two
+deliberate constraints on its shape are worth stating so future readers
+don't try to "generalise" it:
+
+1. **Docker-only.** `EngineStack` drives `docker-py` directly. It is not
+   a substrate-agnostic abstraction. A future Kubernetes / Modal / EC2
+   backend would ship its own engine-bring-up primitive (or not need one
+   at all if that substrate is always task-declared). "Engine" in the
+   class name signals the scope (the engine's built-in services); the
+   docker-mode-ness is signalled by the module path
+   (`tolokaforge/docker/stack.py`).
+2. **Not a Protocol.** `EngineStack` sits below the
+   :class:`RuntimeBackend` seam as a docker-mode implementation detail.
+   The substrate-agnostic seam is `RuntimeBackend` (ADR-0007), and the
+   design doc's D15 plug-in list does not include `EngineStack`. We
+   don't have a second implementation, we don't know the shape of a
+   second implementation (a k8s engine-bring-up might not even look
+   like a compose-shaped stack), and premature abstraction risks
+   locking in the wrong shape. If a second implementation arrives with
+   a demonstrable shape, we Protocol-ise then — that's a 1-hour
+   mechanical refactor when the demand is real, and zero cost to defer.
+
+In the case diagrams below, `EngineStack` appears as an actor only in
+Case A (shared + built-in). Cases B and C use it only as an *image
+builder* via `build_and_prepare()` — the actual substrate materialisation
+happens inside the `RuntimeBackend` implementation via
+testcontainers-`DockerCompose` (see `compose_materialisation.py`).
+
 ## Package composition is a separate concern
 
 This ADR is about **which services live in the substrate** and **when they
@@ -93,7 +124,7 @@ config. That's Phase 7 design territory — out of scope for this ADR.
 
 ### Case A — `shared` + built-in stack (default, unchanged)
 
-The engine's shared substrate. `ServiceStack` brings up `core_stack`
+The engine's shared substrate. `EngineStack` brings up `core_stack`
 (runner + db-service) or `full_stack` (adds mock-web + rag-service based on
 task tools) once at run start. Every trial connects to the same containers.
 
@@ -101,7 +132,7 @@ task tools) once at run start. Every trial connects to the same containers.
 sequenceDiagram
   autonumber
   participant O as Orchestrator
-  participant S as ServiceStack
+  participant S as EngineStack
   participant B as SharedStackRuntimeBackend
   participant R as Runner (engine builtin)
   participant T as Trial
@@ -135,7 +166,7 @@ happens at run end.
 sequenceDiagram
   autonumber
   participant O as Orchestrator
-  participant S as ServiceStack
+  participant S as EngineStack
   participant B as SharedStackRuntimeBackend
   participant DC as DockerCompose (task-declared)
   participant R as Runner (from task compose)
@@ -164,7 +195,7 @@ Key differences from Case A:
   compose file gets `docker compose up`'d when the backend connects.
   Endpoints are resolved *from* the running stack — testcontainers-python
   allocates host ports; the backend reads them back.
-- **`ServiceStack` takes the `build_and_prepare()` path** (build engine
+- **`EngineStack` takes the `build_and_prepare()` path** (build engine
   images + apply `:local` aliases, no built-in container start). The
   engine's runner + db-service go unused; the task's compose owns them via
   `:local` alias references.
@@ -182,7 +213,7 @@ Every trial gets an isolated substrate; teardown happens per trial.
 sequenceDiagram
   autonumber
   participant O as Orchestrator
-  participant S as ServiceStack
+  participant S as EngineStack
   participant B as PerTrialRuntimeBackend
   participant DC as DockerCompose (per-trial)
   participant R as Runner (per trial)

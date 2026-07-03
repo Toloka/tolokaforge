@@ -9,7 +9,7 @@ This is the primary orchestration layer that replaces docker-compose.yaml and
 bash Docker management scripts.
 
 Example:
-    >>> from tolokaforge.docker.stack import ServiceDefinition, ServiceStack
+    >>> from tolokaforge.docker.stack import ServiceDefinition, EngineStack
     >>> from tolokaforge.docker import HealthProbe, PortConfig, Mount
     >>>
     >>> svc = ServiceDefinition(
@@ -19,7 +19,7 @@ Example:
     ...     ports=[PortConfig(container_port=8000, host_port=8000)],
     ...     health_probe=HealthProbe.http("http://localhost:8000/health"),
     ... )
-    >>> stack = ServiceStack()
+    >>> stack = EngineStack()
     >>> stack.add_service(svc)
     >>> stack.start_all(wait=True)
     >>> stack.stop_all()
@@ -52,7 +52,7 @@ class ServiceDefinition(BaseModel):
 
     A ServiceDefinition captures all the configuration needed to build
     an image, create a container, and start a service. It is declarative
-    and immutable — the ServiceStack uses it to orchestrate lifecycle.
+    and immutable — the EngineStack uses it to orchestrate lifecycle.
 
     Attributes:
         name: Unique service name (used as container name prefix).
@@ -182,15 +182,42 @@ class ServiceStatus(BaseModel):
     }
 
 
-class ServiceStack(BaseModel):
-    """Manages a collection of ServiceDefinitions with lifecycle orchestration.
+class EngineStack(BaseModel):
+    """Local-dev / docker-mode primitive for the engine's built-in services.
 
-    ServiceStack is the primary replacement for docker-compose.yaml. It handles:
-    - Image building via ImageRegistry (with content-hash caching)
+    Manages a collection of :class:`ServiceDefinition`s (the engine's runner,
+    db-service, and optionally mock-web + rag-service) with lifecycle
+    orchestration on ``docker-py``. Concretely:
+
+    - Image building via ``ImageRegistry`` (with content-hash caching)
     - Network creation (idempotent)
-    - Topological sort of services by depends_on
+    - Topological sort of services by ``depends_on``
     - Container creation, start, health wait
     - Ordered stop and destroy
+
+    **Scope and non-scope.** ``EngineStack`` is deliberately docker-specific
+    and engine-specific:
+
+    - **Docker-specific**: it drives ``docker-py`` directly. It is not a
+      substrate-agnostic abstraction. A future Kubernetes or Modal backend
+      would ship its own engine-bring-up primitive (or not need one at all
+      if that substrate is always task-declared) — it would NOT extend or
+      subclass ``EngineStack``.
+    - **Engine-specific**: it materialises the engine's *built-in* services
+      (``core_stack`` = runner + db-service, ``full_stack`` adds mock-web +
+      rag-service). Task-declared services (from
+      ``environment_manifest.compose_file``) are materialised elsewhere via
+      testcontainers-``DockerCompose`` inside the concrete
+      :class:`RuntimeBackend` implementations (see
+      ``tolokaforge/core/compose_materialisation.py``).
+
+    **Not a Protocol.** ``EngineStack`` is intentionally not lifted behind a
+    Protocol/seam. The substrate-agnostic seam is :class:`RuntimeBackend`
+    (ADR-0007); ``EngineStack`` sits below that layer as a docker-mode
+    implementation detail used by the orchestrator's Case A path (shared
+    runtime + built-in stack) and as the engine-image builder for the
+    ``:local`` alias hook Cases B and C consume. See ADR-0018 for the full
+    case matrix and the deliberate non-Protocol rationale.
 
     Supports context manager protocol for automatic cleanup.
 
@@ -200,7 +227,7 @@ class ServiceStack(BaseModel):
         prefix: Prefix for container and network names.
 
     Example:
-        >>> stack = ServiceStack()
+        >>> stack = EngineStack()
         >>> stack.add_service(db_service_def)
         >>> stack.add_service(runner_def)
         >>> with stack:
@@ -941,7 +968,7 @@ class ServiceStack(BaseModel):
 
     # ── Context Manager ─────────────────────────────────────────────────
 
-    def __enter__(self) -> ServiceStack:
+    def __enter__(self) -> EngineStack:
         """Start all services when entering context."""
         self.start_all()
         return self

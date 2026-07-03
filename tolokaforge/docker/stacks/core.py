@@ -20,7 +20,7 @@ from tolokaforge.docker.health import HealthProbe
 from tolokaforge.docker.mount import Mount
 from tolokaforge.docker.policy import Capability, ResourcePolicy
 from tolokaforge.docker.ports import PortConfig
-from tolokaforge.docker.stack import ServiceDefinition, ServiceStack
+from tolokaforge.docker.stack import EngineStack, ServiceDefinition
 from tolokaforge.docker.wheel_resolver import resolve_wheel
 
 
@@ -34,7 +34,7 @@ def core_stack(
     extra_runner_binds: list[tuple[Path, str]] | None = None,
     mount_docker_socket: bool = False,
     rag_service_url: str | None = None,
-) -> ServiceStack:
+) -> EngineStack:
     """Create a core service stack with DB service and Runner.
 
     Args:
@@ -66,9 +66,9 @@ def core_stack(
             value, keeping "env present" == "rag-service running".
 
     Returns:
-        ServiceStack configured with db-service and runner.
+        EngineStack configured with db-service and runner.
     """
-    stack = ServiceStack(config=config or DockerConfig())
+    stack = EngineStack(config=config or DockerConfig())
 
     # Build health probe only when the host port is known upfront.
     # When auto-allocated, _start_service will construct the probe

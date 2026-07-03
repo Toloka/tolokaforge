@@ -481,7 +481,7 @@ class OrchestratorConfig(BaseModel):
     queue_postgres_dsn: str | None = None
     timeouts: TimeoutConfig = Field(default_factory=TimeoutConfig)
     max_turns: int = 50
-    auto_start_services: bool = True  # Auto-start Docker services via ServiceStack
+    auto_start_services: bool = True  # Auto-start Docker services via EngineStack
     continue_prompt: str = "Please proceed to the next step."
     stuck_heuristics: StuckHeuristics = Field(default_factory=StuckHeuristics)
     runtime: Literal["shared", "per_trial"] = "shared"

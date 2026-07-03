@@ -21,7 +21,7 @@ from tolokaforge.docker.config import DockerConfig
 from tolokaforge.docker.health import HealthProbe
 from tolokaforge.docker.mount import Mount
 from tolokaforge.docker.ports import PortConfig
-from tolokaforge.docker.stack import ServiceDefinition, ServiceStack
+from tolokaforge.docker.stack import EngineStack, ServiceDefinition
 from tolokaforge.docker.stacks.core import core_stack
 from tolokaforge.docker.wheel_resolver import resolve_wheel
 
@@ -37,7 +37,7 @@ def full_stack(
     task_pack_mounts: list[Path] | None = None,
     extra_runner_binds: list[tuple[Path, str]] | None = None,
     mount_docker_socket: bool = False,
-) -> ServiceStack:
+) -> EngineStack:
     """Create a full service stack with all services.
 
     Includes:
@@ -59,7 +59,7 @@ def full_stack(
         mount_docker_socket: Forwarded to ``core_stack``.
 
     Returns:
-        ServiceStack configured with all services.
+        EngineStack configured with all services.
     """
     stack = core_stack(
         config=config,

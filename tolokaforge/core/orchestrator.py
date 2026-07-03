@@ -582,7 +582,7 @@ class Orchestrator:
 
     _LOCAL_ALIAS_TAG: str = "local"
     """Stable secondary tag applied to freshly-built engine images after
-    ``ServiceStack.start_all()``. Decoupled from ``tolokaforge.__version__``
+    ``EngineStack.start_all()``. Decoupled from ``tolokaforge.__version__``
     so task compose files referencing ``:local`` don't have to rotate on
     every release. When a public registry lands, task composes will
     reference the published tag directly; ``:local`` stays as the
@@ -1043,13 +1043,13 @@ class Orchestrator:
         # declarations fail loud before we touch docker.
         run_env_manifest = self._extract_run_env_manifest()
 
-        # Auto-start services via ServiceStack if configured
+        # Auto-start services via EngineStack if configured
         service_stack = None
         if self.config.orchestrator.auto_start_services:
             try:
                 from tolokaforge.docker.stacks import core_stack, full_stack
 
-                self.logger.info("Auto-starting Docker services via ServiceStack")
+                self.logger.info("Auto-starting Docker services via EngineStack")
                 stack_requirements = (
                     self.adapter.docker_stack_requirements() if self.adapter is not None else None
                 )
@@ -1106,7 +1106,7 @@ class Orchestrator:
                     service_stack.build_and_prepare()
                     self._ensure_engine_image_local_aliases(service_stack)
                     runner_address = None
-                    self.logger.info("ServiceStack prepared (images ready, no containers started)")
+                    self.logger.info("EngineStack prepared (images ready, no containers started)")
                 else:
                     self.logger.info(
                         "Building Docker images and starting containers "
@@ -1119,7 +1119,7 @@ class Orchestrator:
                     runner_url = service_stack.get_service_url("runner", 50051)
                     # get_service_url returns "http://localhost:{port}" — strip scheme for gRPC
                     runner_address = runner_url.replace("http://", "")
-                    self.logger.info("ServiceStack started", runner_address=runner_address)
+                    self.logger.info("EngineStack started", runner_address=runner_address)
 
                 # Connect TypeSense to core stack network so Runner can reach it
                 if hasattr(self, "_typesense_server") and self._typesense_server:
@@ -1412,7 +1412,7 @@ class Orchestrator:
             runtime_backend.close()
             self.logger.info("Docker runtime closed")
 
-        # Stop TypeSense BEFORE destroying the ServiceStack.
+        # Stop TypeSense BEFORE destroying the EngineStack.
         # TypeSense is connected to runner-net (via _connect_typesense_to_runner_network),
         # so it must be removed from that network before the stack can tear it down.
         if hasattr(self, "_typesense_server") and self._typesense_server:
@@ -1422,13 +1422,13 @@ class Orchestrator:
             except Exception as e:
                 self.logger.warning(f"Failed to stop TypeSense server: {e}")
 
-        # Cleanup ServiceStack if auto-started
+        # Cleanup EngineStack if auto-started
         if service_stack is not None:
             try:
                 service_stack.destroy()
-                self.logger.info("ServiceStack destroyed")
+                self.logger.info("EngineStack destroyed")
             except Exception as e:
-                self.logger.warning("Failed to destroy ServiceStack", error=str(e))
+                self.logger.warning("Failed to destroy EngineStack", error=str(e))
 
         # Generate reports
         self._generate_reports(output_dir)

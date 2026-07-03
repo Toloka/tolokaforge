@@ -699,7 +699,7 @@ class SharedStackRuntimeBackend:
         Two mutually exclusive modes:
 
         **Built-in-stack mode** (``env_manifest`` is ``None``, the default).
-        The orchestrator's built-in ``ServiceStack`` has already brought up
+        The orchestrator's built-in ``EngineStack`` has already brought up
         the shared runner + db-service, and its address / endpoints are
         passed in. ``connect`` just wires the gRPC client to that address.
 

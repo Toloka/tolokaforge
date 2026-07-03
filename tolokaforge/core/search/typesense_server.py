@@ -4,7 +4,7 @@ This module provides orchestrator-managed TypeSense server lifecycle management.
 In local mode, it automatically starts a Docker container before trials run and
 stops it after completion.
 
-Uses the tolokaforge.docker ServiceStack and typesense_service() for container
+Uses the tolokaforge.docker EngineStack and typesense_service() for container
 lifecycle, replacing raw Docker SDK calls.
 """
 
@@ -16,7 +16,7 @@ import httpx
 
 # Check if Docker foundation layer is available
 try:
-    from tolokaforge.docker.stack import ServiceStack  # noqa: F401
+    from tolokaforge.docker.stack import EngineStack  # noqa: F401
 
     DOCKER_AVAILABLE = True
 except ImportError:
@@ -63,7 +63,7 @@ class TypeSenseServerManager:
     """Manages TypeSense server lifecycle using Docker foundation layer.
 
     This class handles starting, stopping, and monitoring a TypeSense Docker
-    container for local development and testing. Uses ServiceStack from the
+    container for local development and testing. Uses EngineStack from the
     tolokaforge.docker foundation layer for container management.
 
     Supports context manager protocol for automatic cleanup.
@@ -138,13 +138,13 @@ class TypeSenseServerManager:
     def start(self) -> bool:
         """Start TypeSense server container.
 
-        Uses ServiceStack and typesense_service() from the foundation layer.
+        Uses EngineStack and typesense_service() from the foundation layer.
 
         Returns:
             True if server started successfully, False otherwise
         """
         try:
-            from tolokaforge.docker.stack import ServiceStack
+            from tolokaforge.docker.stack import EngineStack
             from tolokaforge.docker.stacks.typesense import typesense_service
         except ImportError:
             logger.error(
@@ -200,7 +200,7 @@ class TypeSenseServerManager:
                 ) from pull_err
 
             # Create and start the stack
-            self._stack = ServiceStack(prefix=self.container_name)
+            self._stack = EngineStack(prefix=self.container_name)
             self._stack.add_service(svc_def)
 
             logger.info(
