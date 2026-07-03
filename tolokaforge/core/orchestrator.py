@@ -1025,21 +1025,42 @@ class Orchestrator:
                     self.logger.info("Creating service stack (db-service + runner)")
                     stack_factory = core_stack
                 service_stack = stack_factory(**core_stack_kwargs)
-                self.logger.info(
-                    "Building Docker images and starting containers "
-                    "(this may take a few minutes on first run)..."
-                )
-                service_stack.start_all(wait=True)
-                self._ensure_engine_image_local_aliases(service_stack)
-                # Use localhost address — the orchestrator runs on the host,
-                # not inside Docker, so Docker container names don't resolve.
-                runner_url = service_stack.get_service_url("runner", 50051)
-                # get_service_url returns "http://localhost:{port}" — strip scheme for gRPC
-                runner_address = runner_url.replace("http://", "")
-                self.logger.info("ServiceStack started", runner_address=runner_address)
+                per_trial_mode = self.config.orchestrator.runtime == "per_trial"
+                if per_trial_mode:
+                    self.logger.info(
+                        "Preparing Docker engine images (per-trial mode: "
+                        "images built + aliased, containers not started)..."
+                    )
+                    service_stack.build_and_prepare()
+                    self._ensure_engine_image_local_aliases(service_stack)
+                    runner_address = None
+                    self.logger.info("ServiceStack prepared (images ready, no containers started)")
+                else:
+                    self.logger.info(
+                        "Building Docker images and starting containers "
+                        "(this may take a few minutes on first run)..."
+                    )
+                    service_stack.start_all(wait=True)
+                    self._ensure_engine_image_local_aliases(service_stack)
+                    # Use localhost address — the orchestrator runs on the host,
+                    # not inside Docker, so Docker container names don't resolve.
+                    runner_url = service_stack.get_service_url("runner", 50051)
+                    # get_service_url returns "http://localhost:{port}" — strip scheme for gRPC
+                    runner_address = runner_url.replace("http://", "")
+                    self.logger.info("ServiceStack started", runner_address=runner_address)
 
                 # Connect TypeSense to core stack network so Runner can reach it
                 if hasattr(self, "_typesense_server") and self._typesense_server:
+                    if per_trial_mode:
+                        raise RuntimeError(
+                            "TypeSense KB is enabled but --runtime per_trial does not yet "
+                            "support the TypeSense bridge. The bridge connects TypeSense to "
+                            "the shared 'runner-net' and rewrites the TypeSense config to "
+                            "'typesense:8108' Docker DNS — per-trial runners live on "
+                            "task-side networks and cannot reach that host. Either run with "
+                            "--runtime shared or drop the TypeSense KB block from the run "
+                            "config."
+                        )
                     self._connect_typesense_to_runner_network(service_stack)
             except Exception as e:
                 self.logger.error("Failed to auto-start services", error=str(e))
@@ -1062,12 +1083,19 @@ class Orchestrator:
         self._verify_isolation_compatibility(runtime_backend)
 
         env_endpoints = _build_env_endpoints(runner_address)
-        self.logger.info(
-            "Resolved trial-scoped service endpoints",
-            db_url=env_endpoints.db_url,
-            rag_url=env_endpoints.rag_url,
-            runner_url=env_endpoints.runner_url,
-        )
+        if self.config.orchestrator.runtime == "per_trial":
+            # Per-trial backend resolves fresh endpoints per trial via
+            # ``endpoints(handle)``. The default values built here would be
+            # phantom values that never reach a trial spec — logging them
+            # here would misdirect log-based diagnosis.
+            self.logger.info("Trial-scoped service endpoints resolved per trial by backend")
+        else:
+            self.logger.info(
+                "Resolved trial-scoped service endpoints",
+                db_url=env_endpoints.db_url,
+                rag_url=env_endpoints.rag_url,
+                runner_url=env_endpoints.runner_url,
+            )
 
         conductor = self._build_conductor(
             agent_client=agent_client,
