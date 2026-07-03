@@ -22,25 +22,29 @@ ADR-0013) delegate to a :class:`RunnerClient` cached at provision time
 and keyed by ``trial_id``. Contrast with :class:`SharedStackRuntimeBackend` which
 carries a single client for the whole run.
 
-Endpoint resolution uses conventions (defaults + customisation later —
-see the follow-up ticket): ``runner_service`` from the manifest at port
-50051 → ``runner_url``; a compose service named ``db`` at port 5432 →
-``db_url``; a compose service named ``rag`` (or ``rag-service``) at its
-declared port → ``rag_url``. Task packs that need to override the
-service names or ports will get manifest fields in a follow-up PR.
+Endpoint resolution delegates to :mod:`tolokaforge.core.compose_materialisation`;
+see that module for the conventions and their defaults.
 """
 
 from __future__ import annotations
 
 import logging
 import shutil
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from testcontainers.compose import DockerCompose
 
+from tolokaforge.core.compose_materialisation import (
+    RUNNER_PORT_DEFAULT,
+    cleanup_partial_materialisation,
+    copy_compose_context,
+    make_project_temp_dir,
+    resolve_env_endpoints,
+    resolve_runner_endpoint,
+    shutdown_compose,
+)
 from tolokaforge.core.runtime import EnvHandle, IsolationMode, ProvisionError
 from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient, RunnerClient
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, EnvEndpoints
@@ -50,17 +54,6 @@ if TYPE_CHECKING:
     from tolokaforge.tools.registry import ToolResult
 
 logger = logging.getLogger(__name__)
-
-
-_RUNNER_PORT_DEFAULT = 50051
-"""gRPC port the tolokaforge runner container listens on. Matches
-``GrpcRunnerClient``'s default ``runner:50051``. Task-pack authors that
-need to override this will get a manifest field in a follow-up PR."""
-
-_DB_SERVICE_DEFAULT = "db"
-_DB_PORT_DEFAULT = 5432
-
-_RAG_SERVICE_CANDIDATES = ("rag", "rag-service")
 
 
 @dataclass(frozen=True)
@@ -179,10 +172,10 @@ class PerTrialRuntimeBackend:
                 ),
             )
 
-        temp_dir = _make_per_trial_temp_dir(spec.trial_id)
+        temp_dir = make_project_temp_dir(spec.trial_id)
         compose: DockerCompose | None = None
         try:
-            _copy_compose_context(manifest.compose_file, temp_dir)
+            copy_compose_context(manifest.compose_file, temp_dir)
             compose = DockerCompose(
                 context=str(temp_dir),
                 compose_file_name=manifest.compose_file.name,
@@ -192,7 +185,7 @@ class PerTrialRuntimeBackend:
             )
             compose.start()
         except Exception as exc:  # noqa: BLE001 — surface as typed ProvisionError
-            _cleanup_partial_provision(compose, temp_dir)
+            cleanup_partial_materialisation(compose, temp_dir)
             raise ProvisionError(
                 trial_id=spec.trial_id,
                 stage="provision",
@@ -200,22 +193,32 @@ class PerTrialRuntimeBackend:
             ) from exc
 
         runner_service = manifest.runner_service
-        runner_port = _RUNNER_PORT_DEFAULT
-        try:
-            runner_host, runner_host_port = self._resolve_runner_endpoint(
-                compose, runner_service, runner_port, trial_id=spec.trial_id
+        runner_port = RUNNER_PORT_DEFAULT
+        runner_endpoint = resolve_runner_endpoint(compose, runner_service, runner_port)
+        if runner_endpoint is None:
+            cleanup_partial_materialisation(compose, temp_dir)
+            raise ProvisionError(
+                trial_id=spec.trial_id,
+                stage="provision",
+                reason=(
+                    f"runner_service {runner_service!r} does not expose port "
+                    f"{runner_port} in the compose stack"
+                ),
             )
-        except ProvisionError:
-            _cleanup_partial_provision(compose, temp_dir)
-            raise
+        runner_host, runner_host_port = runner_endpoint
 
-        try:
-            endpoints = self._resolve_endpoints(
-                compose, runner_host, runner_host_port, trial_id=spec.trial_id
+        endpoints = resolve_env_endpoints(compose, runner_host, runner_host_port)
+        if endpoints is None:
+            cleanup_partial_materialisation(compose, temp_dir)
+            raise ProvisionError(
+                trial_id=spec.trial_id,
+                stage="provision",
+                reason=(
+                    "PerTrialRuntimeBackend requires a compose service named 'db' "
+                    "exposing port 5432; compose file does not declare one. "
+                    "Endpoint-resolution customisation is a follow-up ticket."
+                ),
             )
-        except ProvisionError:
-            _cleanup_partial_provision(compose, temp_dir)
-            raise
 
         # Client is constructed but not yet connected. Connect is deferred
         # to first per-trial RPC use — see :attr:`_connected_trials`.
@@ -228,52 +231,6 @@ class PerTrialRuntimeBackend:
             runner_port=runner_port,
             temp_dir=temp_dir,
             endpoints=endpoints,
-        )
-
-    def _resolve_runner_endpoint(
-        self,
-        compose: DockerCompose,
-        runner_service: str,
-        runner_port: int,
-        *,
-        trial_id: str,
-    ) -> tuple[str, int]:
-        host, port = _resolve_host_port(compose, runner_service, runner_port)
-        if host is None or port is None:
-            raise ProvisionError(
-                trial_id=trial_id,
-                stage="provision",
-                reason=(
-                    f"runner_service {runner_service!r} does not expose port "
-                    f"{runner_port} in the compose stack"
-                ),
-            )
-        return host, port
-
-    def _resolve_endpoints(
-        self,
-        compose: DockerCompose,
-        runner_host: str,
-        runner_port: int,
-        *,
-        trial_id: str,
-    ) -> EnvEndpoints:
-        db_host, db_port = _resolve_host_port(compose, _DB_SERVICE_DEFAULT, _DB_PORT_DEFAULT)
-        if db_host is None or db_port is None:
-            raise ProvisionError(
-                trial_id=trial_id,
-                stage="provision",
-                reason=(
-                    f"PerTrialRuntimeBackend requires a compose service named "
-                    f"{_DB_SERVICE_DEFAULT!r} exposing port {_DB_PORT_DEFAULT}; "
-                    "compose file does not declare one. Endpoint-resolution "
-                    "customisation is a follow-up ticket."
-                ),
-            )
-        return EnvEndpoints(
-            db_url=f"http://{db_host}:{db_port}",
-            rag_url=_resolve_rag_url(compose),
-            runner_url=f"http://{runner_host}:{runner_port}",
         )
 
     def await_ready(self, handle: EnvHandle) -> None:
@@ -311,7 +268,7 @@ class PerTrialRuntimeBackend:
                     "PerTrialRuntimeBackend.teardown: runner client close failed for %s",
                     handle.trial_id,
                 )
-        _shutdown_compose(handle.compose)
+        shutdown_compose(handle.compose)
         shutil.rmtree(handle.temp_dir, ignore_errors=True)
 
     # ---- Per-trial RPC operations (ADR-0013) ----
@@ -397,132 +354,3 @@ class PerTrialRuntimeBackend:
             )
             self._connected_trials.add(trial_id)
         return client
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _cleanup_partial_provision(compose: DockerCompose | None, temp_dir: Path) -> None:
-    """Best-effort teardown after a partial-provision failure.
-
-    Called from every ``except`` block inside :meth:`provision` before
-    the typed :class:`ProvisionError` is re-raised. Handles both the
-    early-failure case (``compose is None`` — the DockerCompose was
-    never constructed) and the late-failure case (containers up but
-    endpoint resolution failed)."""
-    if compose is not None:
-        _shutdown_compose(compose)
-    shutil.rmtree(temp_dir, ignore_errors=True)
-
-
-def _make_per_trial_temp_dir(trial_id: str) -> Path:
-    """Create a per-trial temp directory whose name embeds ``trial_id``.
-
-    Docker Compose auto-generates a project name from the context
-    directory basename; encoding the trial id in that name gives each
-    concurrent trial a unique compose project.
-    """
-    safe = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in trial_id)
-    return Path(tempfile.mkdtemp(prefix=f"tolokaforge-{safe}-"))
-
-
-def _copy_compose_context(compose_file: Path, dest_dir: Path) -> None:
-    """Copy the compose file (and its directory's sibling files) to
-    ``dest_dir`` so Docker Compose sees an isolated context with a
-    unique project-name basename. Bind mount source paths declared with
-    relative paths inside the original compose file are resolved
-    relative to the context directory, so copying the whole directory
-    preserves them.
-    """
-    src_dir = compose_file.parent
-    if not dest_dir.exists():
-        dest_dir.mkdir(parents=True)
-    for entry in src_dir.iterdir():
-        target = dest_dir / entry.name
-        if entry.is_dir():
-            shutil.copytree(entry, target, dirs_exist_ok=True)
-        else:
-            shutil.copy2(entry, target)
-
-
-def _resolve_host_port(
-    compose: DockerCompose, service_name: str, container_port: int
-) -> tuple[str | None, int | None]:
-    """Look up the host + host-side port that map to
-    ``service_name``'s ``container_port``. Returns ``(None, None)`` if
-    the service or the port is not exposed.
-
-    Testcontainers raises varied exception types (``KeyError``,
-    ``ValueError``, ``NoSuchPortExposed``, and any ``subprocess`` error
-    a docker call can surface). Catch broadly and treat every failure
-    as "not exposed" — but ``logger.debug`` the exception so a genuine
-    daemon issue is diagnosable (otherwise it silently reads as a
-    compose-file misconfiguration downstream).
-
-    Testcontainers returns ``0.0.0.0`` as the host on macOS / Linux —
-    correct as a listen address inside the container, but not reachable
-    as a client host from the orchestrator process. Rewrite it to
-    ``localhost`` so a gRPC/HTTP client on the host can actually
-    connect."""
-    try:
-        host, port = compose.get_service_host_and_port(
-            service_name=service_name, port=container_port
-        )
-    except Exception as exc:  # noqa: BLE001 — testcontainers raises varied types
-        logger.debug(
-            "PerTrialRuntimeBackend: service %r port %d not resolvable: %s",
-            service_name,
-            container_port,
-            exc,
-        )
-        return None, None
-    if host == "0.0.0.0":  # noqa: S104 — testcontainers returns this on macOS/Linux
-        host = "localhost"
-    return host, port
-
-
-def _resolve_rag_url(compose: DockerCompose) -> str | None:
-    """Best-effort ``rag_url`` — resolve the first RAG service found in
-    the compose stack. Returns ``None`` when no such service is
-    declared or its port is not exposed. Lookup failures are treated
-    as "no rag" but ``logger.debug``-logged for diagnosability."""
-    for candidate in _RAG_SERVICE_CANDIDATES:
-        try:
-            container = compose.get_container(service_name=candidate)
-        except Exception as exc:  # noqa: BLE001 — service not declared
-            logger.debug(
-                "PerTrialRuntimeBackend: rag candidate %r not in compose: %s",
-                candidate,
-                exc,
-            )
-            continue
-        published = _first_published_port(container)
-        if published is None:
-            continue
-        host, port = _resolve_host_port(compose, candidate, published)
-        if host is None or port is None:
-            continue
-        return f"http://{host}:{port}"
-    return None
-
-
-def _first_published_port(container: Any) -> int | None:
-    """Extract the first published container-side port from a
-    Testcontainers ``ComposeContainer``. Returns ``None`` when nothing
-    is published (or the shape is not what we expect)."""
-    ports = getattr(container, "Publishers", None) or []
-    for entry in ports:
-        target = getattr(entry, "TargetPort", None)
-        if isinstance(target, int) and target > 0:
-            return target
-    return None
-
-
-def _shutdown_compose(compose: DockerCompose) -> None:
-    """Best-effort ``docker compose down --volumes``. Never raises."""
-    try:
-        compose.stop(down=True)
-    except Exception:  # noqa: BLE001 — best-effort teardown
-        logger.exception("PerTrialRuntimeBackend: docker compose down failed")
