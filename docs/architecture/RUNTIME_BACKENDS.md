@@ -307,7 +307,7 @@ half-provisioned resources leaked to the daemon.
 
 ## `SharedStackRuntimeBackend` vs `PerTrialRuntimeBackend` side-by-side
 
-See also: [ADR-0016](adr/0016-runtime-backend-comparison.md) — resource-use, grading equivalence (with A/B numbers), failure-mode differences, and the decision rubric.
+See also: [ADR-0016](adr/0016-runtime-backend-comparison.md) — resource-use, grading equivalence (with A/B numbers), failure-mode differences, and the decision rubric (**lifecycle axis**: shared vs per_trial). And [ADR-0018](adr/0018-multi-container-under-shared-runtime.md) — end-to-end sequence diagrams and 2×2 decision flow (**composition axis**: built-in stack vs task-declared stack).
 
 | Concern | `SharedStackRuntimeBackend` | `PerTrialRuntimeBackend` |
 |---|---|---|
