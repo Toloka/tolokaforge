@@ -94,6 +94,13 @@ class PerTaskMetrics(BaseModel):
     total_cost_usd: float | None = None
     avg_cost_usd: float | None = None
 
+    # Judge-cost split — ``judge_cost_usd`` is the LLM-judge grader's
+    # spend, tracked separately so the agent-vs-judge cost breakdown
+    # survives round-trips. ``total_cost_incl_judge_usd`` = agent +
+    # judge; ``None`` when neither is known.
+    judge_cost_usd: float | None = None
+    total_cost_incl_judge_usd: float | None = None
+
     # Per-trial wall-time percentiles.
     latency_p50_s: float = 0.0
     latency_p90_s: float = 0.0
@@ -161,6 +168,11 @@ class AggregateMetrics(BaseModel):
 
     total_cost_usd: float | None = None
     avg_cost_usd: float | None = None
+
+    # Judge-cost split at the run/slice level — same shape as
+    # ``PerTaskMetrics`` but aggregated across the tasks/slice.
+    judge_cost_usd: float | None = None
+    total_cost_incl_judge_usd: float | None = None
 
     latency_p50_s_macro: float = 0.0
     latency_p90_s_macro: float = 0.0
