@@ -1,7 +1,7 @@
 # 0018. Multi-container capability under shared runtime
 
-- **Status:** Proposed
-- **Date:** 2026-07-03
+- **Status:** Accepted
+- **Date:** 2026-07-04
 - **Deciders:** @CiroGamboa
 - **Supersedes:** —
 - **Superseded by:** —
@@ -322,12 +322,13 @@ flowchart TB
 
 ### Follow-ups
 
-- **`environment_manifest.compose_file` extension flexibility** — the
-  built-in endpoint conventions (`runner_service` from the manifest, `db`
-  at port 5432, `rag`/`rag-service` at declared port) are hard-coded
-  in `compose_materialisation.py`. A future manifest field
-  (`runner_port` / `db_service` / `db_port` / etc.) lets tasks override.
-  Tracked separately.
+- **Task-declared `db_service` / `db_port` overrides** — the well-known
+  endpoint convention now looks for `db-service` at port 8000, matching
+  the HTTP JSON state backend the engine ships (and dropping the earlier
+  phantom `db:5432` postgres requirement). Task compose files that name
+  their state backend differently would need optional manifest fields
+  to override the defaults. Not needed for any current task; deferred
+  until a real use case surfaces.
 - **TypeSense + task-declared substrates** — a dedicated follow-up ticket
   tracks the unblock (design options: task-declared TypeSense in the
   compose file, per-run bridge to the task-declared network, per-trial
@@ -354,3 +355,7 @@ flowchart TB
   - `tolokaforge/core/orchestrator.py` — `_extract_run_env_manifest`, `task_stack_mode`, backend construction
 - Related docs:
   - `docs/architecture/RUNTIME_BACKENDS.md` — mechanics deep-dive
+- Case B examples (all under `examples/native/`):
+  - `multi_service/` — minimum Case B: one task-specific HTTP service (nginx + static JSON)
+  - `multi_service_advanced/` — multi-endpoint join across two task-specific HTTP services + smaller-model tier (Haiku)
+  - `multi_service_postgres/` — three-tier stack (agent → PostgREST → real `postgres:16`); the task's application backend is a genuine relational database
