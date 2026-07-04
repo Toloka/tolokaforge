@@ -1,0 +1,32 @@
+task_id: "multi_service_example_01"
+name: "Product Catalog Summary"
+category: "multi_service"
+description: "Query a running product-catalog HTTP service, summarise the top-3 most expensive in-stock products in a handoff note."
+max_turns: 10
+initial_user_message: |
+  We're preparing an executive brief. Please query the product-catalog service
+  at http://app-service/products.json and write a short summary to
+  `submissions/catalog_summary.md` listing the top-3 most expensive products
+  that are currently in stock (in_stock = true). Include the product name and
+  price for each. Rank by price descending.
+adapter_type: "native"
+environment_manifest:
+  compose_file: "./environment.compose.yaml"
+  isolation: "shared_ok"
+  runner_service: "runner"
+initial_state:
+  filesystem: {}
+tools:
+  agent:
+    enabled: ["bash", "write_file"]
+  user:
+    enabled: []
+user_simulator:
+  mode: llm
+  persona: cooperative
+  backstory: "You are a product manager waiting on the summary. Ask brief clarifying questions only when strictly necessary and end with ###STOP### once the summary is delivered."
+policies:
+  guidance:
+    - "Use `bash` with curl / wget to reach the catalog service — the runner container joins the same docker network as `app-service` and reaches it by service name."
+    - "Only list products where `in_stock: true`. Skip out-of-stock items."
+grading: "grading.yaml"
