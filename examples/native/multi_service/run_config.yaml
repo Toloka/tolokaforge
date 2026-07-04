@@ -1,8 +1,8 @@
 # Multi-service example — `Product Catalog Summary` task.
 #
 # Exercises the shared-runtime + task-declared-stack path (Case B in
-# ADR-0018). The task declares its own compose file with four services
-# (runner + db-service + db + app-service). The engine materialises them
+# ADR-0018). The task declares its own compose file with three services
+# (runner + db-service + app-service). The engine materialises them
 # **once at run start** under `--runtime shared`.
 #
 # Requirements:

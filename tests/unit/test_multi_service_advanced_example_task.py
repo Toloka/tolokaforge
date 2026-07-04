@@ -154,3 +154,22 @@ class TestFixtureAggregation:
         values = [total for _, total in ranked]
         assert names == ["Acme Robotics", "Vector Industries", "Nimbus Analytics"]
         assert values == [12000, 8500, 5000]
+
+    def test_status_filter_actually_matters(self) -> None:
+        """The fixture must include non-``paid`` orders large enough to
+        change the ranking if an agent skips the ``status: paid`` filter.
+        Without this the task-yaml's "only count paid orders" instruction
+        is a formality — the grading would pass whether or not the agent
+        respects it. Pins that the fixture actually exercises the filter."""
+        orders = self._load_json("orders.json")
+        customers = {c["customer_id"]: c for c in self._load_json("customers.json")}
+        totals_unfiltered: dict[str, int] = {}
+        for order in orders:
+            totals_unfiltered[order["customer_id"]] = (
+                totals_unfiltered.get(order["customer_id"], 0) + order["amount"]
+            )
+        wrong_ranked = sorted(totals_unfiltered.items(), key=lambda kv: kv[1], reverse=True)[:3]
+        wrong_names = [customers[cid]["name"] for cid, _ in wrong_ranked]
+        # The unfiltered top-3 must be different from the filtered top-3
+        # (otherwise the filter is decorative).
+        assert wrong_names != ["Acme Robotics", "Vector Industries", "Nimbus Analytics"]

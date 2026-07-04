@@ -207,7 +207,6 @@ class TestResolveEnvEndpoints:
 
         endpoints = resolve_env_endpoints(compose, "localhost", 60051)
 
-        assert endpoints is not None
         assert endpoints.runner_url == "http://localhost:60051"
         assert endpoints.db_url == "http://localhost:68000"
         assert endpoints.rag_url == "http://localhost:68080"
@@ -224,7 +223,6 @@ class TestResolveEnvEndpoints:
 
         endpoints = resolve_env_endpoints(compose, "localhost", 60051)
 
-        assert endpoints is not None
         assert endpoints.runner_url == "http://localhost:60051"
         assert endpoints.db_url is None
         assert endpoints.rag_url is None
@@ -247,7 +245,6 @@ class TestResolveEnvEndpoints:
 
         endpoints = resolve_env_endpoints(compose, "localhost", 60051)
 
-        assert endpoints is not None
         assert endpoints.db_url == "http://localhost:68000"
         assert endpoints.rag_url is None
 

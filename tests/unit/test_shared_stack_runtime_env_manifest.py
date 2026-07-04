@@ -32,8 +32,8 @@ def _make_manifest(tmp_path: Path) -> EnvironmentManifest:
 
     ``EnvironmentManifest`` validates that ``compose_file`` exists and
     parses as a YAML mapping; the fixture here writes a two-service stub
-    (runner + db) that satisfies the manifest validator without needing
-    a real docker daemon."""
+    (runner + db-service) that satisfies the manifest validator without
+    needing a real docker daemon."""
     compose_file = tmp_path / "environment.compose.yaml"
     compose_file.write_text(
         "services:\n"
@@ -41,10 +41,10 @@ def _make_manifest(tmp_path: Path) -> EnvironmentManifest:
         "    image: tolokaforge-runner:local\n"
         "    ports:\n"
         '      - "50051"\n'
-        "  db:\n"
-        "    image: postgres:16\n"
+        "  db-service:\n"
+        "    image: tolokaforge-db-service:local\n"
         "    ports:\n"
-        '      - "5432"\n'
+        '      - "8000"\n'
     )
     return EnvironmentManifest(compose_file=compose_file, runner_service="runner")
 
