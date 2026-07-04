@@ -108,7 +108,7 @@ sequenceDiagram
     DC->>Docker: docker compose up -d --wait
     Docker-->>DC: containers up +<br/>healthchecks pass
     LRB->>DC: get_service_host_and_port(<br/> runner_service, 50051)
-    LRB->>DC: get_service_host_and_port(<br/> "db", 5432)
+    LRB->>DC: get_service_host_and_port(<br/> "db-service", 8000) — best-effort
     LRB->>DC: rag lookup (optional)
     LRB->>GRC: new GrpcRunnerClient(<br/> host:port)
     Note right of GRC: constructed —<br/>NOT connected
@@ -164,21 +164,23 @@ Nine steps, in order. Failure at any step raises `ProvisionError(stage="provisio
 4. **Construct `DockerCompose`** with `context=<temp_dir>`, `compose_file_name=<manifest.compose_file.name>`, `pull=False`, `build=False`, `wait=True`.
 5. **`compose.start()`.** Runs `docker compose up -d --wait`. Blocks until every service's compose `healthcheck:` reports healthy. On failure, raise `ProvisionError` and rmtree the temp dir.
 6. **Construct the runner client** — `GrpcRunnerClient(runner_address="<host>:<port>")`. Host + port come from `compose.get_service_host_and_port(manifest.runner_service, 50051)`. **The client is not connected here** — `connect()` is deferred to first RPC use (see next section).
-7. **Snapshot endpoints on the handle.** `_resolve_endpoints(...)` looks up `runner_service` at 50051 and the conventional `db` service at 5432, plus an optional `rag` service. Missing `db` raises `ProvisionError` (see follow-up ticket for making this customisable).
+7. **Snapshot endpoints on the handle.** `_resolve_endpoints(...)` looks up `runner_service` at 50051 (required) and, best-effort, the conventional `db-service` at 8000 and `rag` service. Missing `db-service` leaves `EnvEndpoints.db_url = None`; the runner-side `DBServiceClient` binds to `DB_SERVICE_URL` from its container env and `db_json.py` tools fall back to the same env var, so a missing `db_url` is not a provisioning failure. Runner-missing still raises `ProvisionError`.
 8. **Cache the client** — `self._clients[spec.trial_id] = client`. This is the map every per-trial RPC method reads from.
 9. **Return `_LocalEnvHandle`** carrying the trial_id (public), the compose stack, the runner service name + port, the temp dir, and the endpoints snapshot. All except `trial_id` are backend-private; callers treat the handle as an opaque token.
 
 ## Endpoint resolution
 
-`endpoints(handle)` is a **pure read** — it returns `handle.endpoints`, resolved once at provision time. This is a deliberate departure from an earlier design where `endpoints()` re-queried the compose stack every call: a method named `endpoints` mutating state on missing-service was surprising, and the missing-db check now fails fast at provision time before a handle exists.
+`endpoints(handle)` is a **pure read** — it returns `handle.endpoints`, resolved once at provision time. This is a deliberate departure from an earlier design where `endpoints()` re-queried the compose stack every call: a method named `endpoints` mutating state on missing-service was surprising.
 
-Where each URL comes from (defaults; customisation is a follow-up):
+Where each URL comes from:
 
-| Field | Source | Port |
-|---|---|---|
-| `runner_url` | `manifest.runner_service` (default `"default"`) | `50051` |
-| `db_url` | compose service named **`db`** | `5432` |
-| `rag_url` | compose service named `rag` or `rag-service`; else `None` | service's declared port |
+| Field | Source | Port | Required? |
+|---|---|---|---|
+| `runner_url` | `manifest.runner_service` (default `"default"`) | `50051` | Yes — missing raises `ProvisionError` |
+| `db_url` | compose service named `db-service` | `8000` | Best-effort — absent leaves `db_url = None` |
+| `rag_url` | compose service named `rag` or `rag-service`; else `None` | service's declared port | Best-effort |
+
+`db_url` is best-effort because the runner-side `DBServiceClient` binds to `DB_SERVICE_URL` from its own container env (task compose files set it on the `runner` service), and `db_json.py` tools fall back to the same env var when constructed without a URL. A task compose file that omits `db-service` still provisions; the `db_url` field on the wire is populated only for callers that need to reach the state backend from outside the runner container.
 
 All three are resolved via `compose.get_service_host_and_port(name, port)`, which returns the host-assigned port that maps to a service's container port. Two concurrent trials of the same task get **different** host-assigned ports for the same container port — that is what makes concurrent stacks not clash.
 
@@ -291,7 +293,7 @@ Enforcement lives at the orchestrator layer, not on `SharedStackRuntimeBackend.p
 | `provision` — no manifest | `ProvisionError(stage="provision")` | Nothing to clean |
 | `provision` — compose start fails | `ProvisionError(stage="provision")` wrapping the compose error | Per-trial temp dir removed |
 | `provision` — runner-client construction (host/port unresolvable) | `ProvisionError(stage="provision")` | Compose stack torn down + temp dir removed |
-| `provision` — endpoint resolution (missing `db` service) | `ProvisionError(stage="provision")` | Compose stack torn down + temp dir removed |
+| `provision` — endpoint resolution (missing `db-service`) | Not a failure — `EnvEndpoints.db_url` stays `None`; the runner reads `DB_SERVICE_URL` from its container env | — |
 | `await_ready` | Never raises today (`--wait` gates during provision); reserved for future backends | — |
 | `endpoints` — foreign handle | `TypeError` | — |
 | `endpoints` — everything else | Never raises (pure read on the handle's snapshot) | — |

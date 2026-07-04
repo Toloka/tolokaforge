@@ -63,7 +63,7 @@ class _FakeCompose:
         self.start_raises: Exception | None = None
         self.exposed_services: dict[str, dict[int, int]] = {
             "default": {50051: 50100},
-            "db": {5432: 55432},
+            "db-service": {8000: 58000},
         }
 
     def start(self) -> None:
@@ -436,16 +436,16 @@ class TestEndpoints:
         endpoints = patched_backend.endpoints(handle)
         assert isinstance(endpoints, EnvEndpoints)
         assert endpoints.runner_url == "http://127.0.0.1:50100"
-        assert endpoints.db_url == "http://127.0.0.1:55432"
+        assert endpoints.db_url == "http://127.0.0.1:58000"
         assert endpoints.rag_url is None
 
-    def test_missing_db_service_raises_at_provision_time(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Endpoint resolution runs at provision time — a compose stack
-        without a ``db`` service fails fast before a handle is returned.
-        Prior design deferred the check to :meth:`endpoints` which then
-        had to tear down mid-call; that surprising side effect is gone."""
+    def test_missing_db_service_yields_db_url_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``db_url`` is best-effort — a task compose file that omits
+        ``db-service:8000`` yields ``EnvEndpoints(db_url=None, ...)``
+        and provisioning proceeds. The runner-side ``DBServiceClient``
+        binds to ``DB_SERVICE_URL`` from its container env, so a missing
+        ``db_url`` is not a provisioning failure. Load-bearing contract
+        change (was: ProvisionError at provision time)."""
 
         class _NoDbCompose(_FakeCompose):
             def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -456,12 +456,12 @@ class TestEndpoints:
         monkeypatch.setattr(per_trial_runtime_module, "GrpcRunnerClient", _FakeRunnerClient)
         backend = PerTrialRuntimeBackend()
         spec = _make_trial_spec(compose_file=_FIXTURES / "safe_one_service.yaml")
-        with pytest.raises(ProvisionError) as exc:
-            backend.provision(spec)
-        assert exc.value.stage == "provision"
-        assert "compose service named 'db'" in exc.value.reason
-        # No handle returned → no cache entry, no lingering client.
-        assert spec.trial_id not in backend._clients
+        handle = backend.provision(spec)
+        endpoints = backend.endpoints(handle)
+        assert endpoints.db_url is None
+        assert endpoints.runner_url == "http://127.0.0.1:50100"
+        # Client was constructed and cached — no lingering-failure state.
+        assert spec.trial_id in backend._clients
 
     def test_rag_service_resolves_when_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
         class _WithRagCompose(_FakeCompose):
@@ -469,7 +469,7 @@ class TestEndpoints:
                 super().__init__(*args, **kwargs)
                 self.exposed_services = {
                     "default": {50051: 50100},
-                    "db": {5432: 55432},
+                    "db-service": {8000: 58000},
                     "rag": {8080: 58080},
                 }
 

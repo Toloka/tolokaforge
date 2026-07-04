@@ -1,0 +1,11 @@
+[
+  {"order_id": "O-001", "customer_id": "C-101", "amount": 7500, "status": "paid"},
+  {"order_id": "O-002", "customer_id": "C-101", "amount": 4500, "status": "paid"},
+  {"order_id": "O-003", "customer_id": "C-102", "amount": 3200, "status": "paid"},
+  {"order_id": "O-004", "customer_id": "C-102", "amount": 1800, "status": "paid"},
+  {"order_id": "O-005", "customer_id": "C-103", "amount": 8500, "status": "paid"},
+  {"order_id": "O-006", "customer_id": "C-104", "amount": 2500, "status": "paid"},
+  {"order_id": "O-007", "customer_id": "C-105", "amount": 900, "status": "paid"},
+  {"order_id": "O-008", "customer_id": "C-104", "amount": 9000, "status": "pending"},
+  {"order_id": "O-009", "customer_id": "C-105", "amount": 6500, "status": "cancelled"}
+]

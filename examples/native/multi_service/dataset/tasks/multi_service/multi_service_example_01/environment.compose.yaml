@@ -1,0 +1,65 @@
+# Task-declared compose stack for `multi_service_example_01`.
+#
+# Three services on the same docker-compose network:
+#   - `runner`      — tolokaforge-runner, the gRPC server the conductor talks to.
+#                     References the `:local` alias applied by the engine at run
+#                     start; see docs/architecture/RUNTIME_BACKENDS.md.
+#   - `db-service`  — tolokaforge-db-service, the runner's state / grading backend
+#                     (in-memory sqlite behind an HTTP JSON interface).
+#   - `app-service` — nginx serving `fixtures/products.json` — the task-specific
+#                     application the agent inspects. Reachable from the runner
+#                     container via `http://app-service/products.json` (docker-
+#                     compose DNS resolves service names on the shared network).
+#
+# ``runner_service: runner`` in the sibling task.yaml points the conductor at
+# the runner. All other services join the same auto-generated network.
+services:
+  runner:
+    image: tolokaforge-runner:local
+    environment:
+      DB_SERVICE_URL: "http://db-service:8000"
+    ports:
+      - "50051"
+    depends_on:
+      db-service:
+        condition: service_healthy
+      app-service:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import grpc; grpc.channel_ready_future(grpc.insecure_channel('localhost:50051')).result(timeout=2)"
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+  db-service:
+    image: tolokaforge-db-service:local
+    ports:
+      - "8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 3s
+
+  app-service:
+    image: nginx:1.27-alpine
+    ports:
+      - "80"
+    volumes:
+      - ./fixtures/products.json:/usr/share/nginx/html/products.json:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost/products.json"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 3s

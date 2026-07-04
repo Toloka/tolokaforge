@@ -171,9 +171,12 @@ def _build_env_endpoints(runner_address: str) -> EnvEndpoints:
 
     * ``runner_url`` — derived from the orchestrator's known runner
       address (the value passed to :class:`SharedStackRuntimeBackend`). Always set.
-    * ``db_url`` — required on the wire. Reads ``DB_SERVICE_URL`` from
-      the environment if set, otherwise the runner-container default
-      the docker stack injects (``_DEFAULT_DB_SERVICE_URL``).
+    * ``db_url`` — populated in built-in-stack mode from
+      ``DB_SERVICE_URL`` in the environment (or the default the docker
+      stack injects, ``_DEFAULT_DB_SERVICE_URL``). Env_manifest mode
+      resolves it best-effort from the task-declared compose stack; a
+      missing ``db-service`` leaves it ``None`` — see
+      :class:`EnvEndpoints`.
     * ``rag_url`` — optional. Reads ``RAG_SERVICE_URL`` from the
       environment if set, otherwise stays ``None``. ``rag-service``
       ships in ``full_stack`` only, so a ``core_stack`` run with no

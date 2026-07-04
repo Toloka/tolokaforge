@@ -1,0 +1,9 @@
+[
+  {"id": 1, "name": "Nebula Laptop 15", "price": 1899.00, "in_stock": true},
+  {"id": 2, "name": "Cascade Desktop Pro", "price": 2499.50, "in_stock": true},
+  {"id": 3, "name": "Meridian Ultrabook 14", "price": 1599.99, "in_stock": false},
+  {"id": 4, "name": "Prism Workstation", "price": 3299.00, "in_stock": true},
+  {"id": 5, "name": "Solstice Mini PC", "price": 799.00, "in_stock": true},
+  {"id": 6, "name": "Halo Tablet 11", "price": 649.99, "in_stock": true},
+  {"id": 7, "name": "Vantage Studio Monitor", "price": 1199.00, "in_stock": false}
+]

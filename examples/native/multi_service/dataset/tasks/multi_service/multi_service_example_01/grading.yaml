@@ -1,0 +1,35 @@
+combine:
+  method: weighted
+  weights:
+    state_checks: 0.7
+    transcript_rules: 0.3
+  pass_threshold: 0.5
+state_checks:
+  jsonpaths:
+    - path_glob: "/env/fs/agent-visible/submissions/*"
+      contains_ci: "Prism Workstation"
+      description: "Report names the most expensive in-stock product"
+    - path_glob: "/env/fs/agent-visible/submissions/*"
+      contains_ci: "Cascade Desktop Pro"
+      description: "Report names the second most expensive in-stock product"
+    - path_glob: "/env/fs/agent-visible/submissions/*"
+      contains_ci: "Nebula Laptop 15"
+      description: "Report names the third most expensive in-stock product"
+    - path_glob: "/env/fs/agent-visible/submissions/*"
+      contains_ci: "3299"
+      description: "Report includes the top price (numeric)"
+transcript_rules:
+  max_turns: 10
+  disallow_regex:
+    - "(?i)(cannot complete|unable to complete|i refuse)"
+  required_actions:
+    - action_id: "query_catalog"
+      requestor: assistant
+      name: bash
+      arguments: {}
+      compare_args: []
+    - action_id: "write_summary"
+      requestor: assistant
+      name: write_file
+      arguments: {}
+      compare_args: []

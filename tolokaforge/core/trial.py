@@ -40,8 +40,14 @@ class EnvEndpoints(BaseModel):
     ``TaskDescription.search_config``.
     """
 
-    db_url: str
-    """URL of the per-trial DB service the runner's tool layer calls."""
+    db_url: str | None = None
+    """URL of the DB service the runner's tool layer calls. ``None``
+    when the run's substrate does not publish a discoverable ``db-service``
+    endpoint on port 8000 — in env_manifest mode the runner-side
+    ``DBServiceClient`` binds to ``DB_SERVICE_URL`` from its container
+    environment (set in the task's compose file), and ``db_json.py``
+    tools fall back to the same env var when constructed without a
+    URL. Built-in-stack mode always populates this field."""
 
     rag_url: str | None = None
     """URL of the RAG service the runner's tool layer calls. ``None``
