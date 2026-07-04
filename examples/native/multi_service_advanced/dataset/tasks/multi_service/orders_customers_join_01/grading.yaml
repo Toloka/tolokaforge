@@ -1,0 +1,41 @@
+combine:
+  method: weighted
+  weights:
+    state_checks: 0.7
+    transcript_rules: 0.3
+  pass_threshold: 0.5
+state_checks:
+  jsonpaths:
+    - path_glob: "/env/fs/agent-visible/submissions/*"
+      contains_ci: "Acme Robotics"
+      description: "Report names the #1 customer by paid-order total"
+    - path_glob: "/env/fs/agent-visible/submissions/*"
+      contains_ci: "Vector Industries"
+      description: "Report names the #2 customer by paid-order total"
+    - path_glob: "/env/fs/agent-visible/submissions/*"
+      contains_ci: "Nimbus Analytics"
+      description: "Report names the #3 customer by paid-order total"
+    - path_glob: "/env/fs/agent-visible/submissions/*"
+      contains_ci: "12000"
+      description: "Report shows the #1 customer's total (12000)"
+    - path_glob: "/env/fs/agent-visible/submissions/*"
+      contains_ci: "8500"
+      description: "Report shows the #2 customer's total (8500)"
+    - path_glob: "/env/fs/agent-visible/submissions/*"
+      contains_ci: "5000"
+      description: "Report shows the #3 customer's total (5000)"
+transcript_rules:
+  max_turns: 12
+  disallow_regex:
+    - "(?i)(cannot complete|unable to complete|i refuse)"
+  required_actions:
+    - action_id: "query_orders"
+      requestor: assistant
+      name: bash
+      arguments: {}
+      compare_args: []
+    - action_id: "write_report"
+      requestor: assistant
+      name: write_file
+      arguments: {}
+      compare_args: []

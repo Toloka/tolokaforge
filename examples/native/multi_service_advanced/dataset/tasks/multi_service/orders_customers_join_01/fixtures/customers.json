@@ -1,0 +1,7 @@
+[
+  {"customer_id": "C-101", "name": "Acme Robotics", "tier": "gold"},
+  {"customer_id": "C-102", "name": "Nimbus Analytics", "tier": "silver"},
+  {"customer_id": "C-103", "name": "Vector Industries", "tier": "gold"},
+  {"customer_id": "C-104", "name": "Helix Bio", "tier": "silver"},
+  {"customer_id": "C-105", "name": "Orbit Media", "tier": "bronze"}
+]

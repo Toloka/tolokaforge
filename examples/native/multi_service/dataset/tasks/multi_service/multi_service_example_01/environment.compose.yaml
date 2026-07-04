@@ -1,17 +1,26 @@
 # Task-declared compose stack for `multi_service_example_01`.
 #
-# Three services on the same docker-compose network:
+# Four services on the same docker-compose network:
 #   - `runner`      — tolokaforge-runner, the gRPC server the conductor talks to.
 #                     References the `:local` alias applied by the engine at run
 #                     start; see docs/architecture/RUNTIME_BACKENDS.md.
 #   - `db-service`  — tolokaforge-db-service, the runner's state / grading backend.
+#   - `db`          — postgres 16, required by the shared+env_manifest endpoint
+#                     resolver's current contract. `db-service` itself uses an
+#                     in-memory sqlite backend and does not consume this
+#                     container; it's declared purely to satisfy the
+#                     endpoint-resolution requirement (a "db:5432" service must
+#                     exist in the task-declared compose stack). See the note in
+#                     `SharedStackRuntimeBackend._materialise_manifest` — a
+#                     follow-up ticket generalises endpoint resolution so the
+#                     stub can go away.
 #   - `app-service` — nginx serving `fixtures/products.json` — the task-specific
 #                     application the agent inspects. Reachable from the runner
 #                     container via `http://app-service/products.json` (docker-
 #                     compose DNS resolves service names on the shared network).
 #
 # ``runner_service: runner`` in the sibling task.yaml points the conductor at
-# the first service. All other services join the same auto-generated network.
+# the runner. All other services join the same auto-generated network.
 services:
   runner:
     image: tolokaforge-runner:local
@@ -49,6 +58,20 @@ services:
       timeout: 3s
       retries: 30
       start_period: 3s
+
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: tolokaforge
+      POSTGRES_PASSWORD: tolokaforge
+      POSTGRES_DB: tolokaforge
+    ports:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tolokaforge"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
 
   app-service:
     image: nginx:1.27-alpine

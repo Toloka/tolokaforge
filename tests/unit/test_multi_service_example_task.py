@@ -93,18 +93,19 @@ class TestTaskYaml:
 
 
 class TestComposeShape:
-    """The compose file must declare the three services the Case B
+    """The compose file must declare the four services the Case B
     materialisation path needs to resolve: the ``runner`` named by the
-    manifest, the ``db-service`` endpoint the runner talks to, plus
-    the task-specific ``app-service`` this example exists to
-    demonstrate."""
+    manifest, the ``db-service`` endpoint the runner talks to, the
+    ``db`` postgres stub the endpoint resolver currently requires
+    (see follow-up ticket), plus the task-specific ``app-service``
+    this example exists to demonstrate."""
 
     def _load_compose(self) -> dict:
         return yaml.safe_load((_TASK_DIR / "environment.compose.yaml").read_text())
 
-    def test_declares_three_services(self) -> None:
+    def test_declares_four_services(self) -> None:
         compose = self._load_compose()
-        assert set(compose["services"].keys()) == {"runner", "db-service", "app-service"}
+        assert set(compose["services"].keys()) == {"runner", "db-service", "db", "app-service"}
 
     def test_runner_uses_local_alias(self) -> None:
         """The runner service references the ``:local`` alias applied

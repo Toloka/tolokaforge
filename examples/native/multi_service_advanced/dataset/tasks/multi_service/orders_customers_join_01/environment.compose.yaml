@@ -1,0 +1,99 @@
+# Task-declared compose stack for `orders_customers_join_01`.
+#
+# Five services on the same docker-compose network:
+#   - `runner`         — tolokaforge-runner, the gRPC server the conductor talks to.
+#   - `db-service`     — tolokaforge-db-service (in-memory sqlite), the runner's
+#                        state / grading backend.
+#   - `db`             — postgres 16 stub. Required by the shared+env_manifest
+#                        endpoint resolver's current contract (a service named
+#                        `db` on port 5432 must exist). `db-service` does not
+#                        consume it; a follow-up ticket generalises endpoint
+#                        resolution so the stub can go away.
+#   - `orders-api`     — nginx serving `fixtures/orders.json`. Reachable as
+#                        `http://orders-api/orders.json` from inside the
+#                        runner.
+#   - `customers-api`  — nginx serving `fixtures/customers.json`. Reachable as
+#                        `http://customers-api/customers.json` from inside
+#                        the runner.
+#
+# ``runner_service: runner`` in the sibling task.yaml points the conductor at
+# the runner. All other services join the same auto-generated network.
+services:
+  runner:
+    image: tolokaforge-runner:local
+    environment:
+      DB_SERVICE_URL: "http://db-service:8000"
+    ports:
+      - "50051"
+    depends_on:
+      db-service:
+        condition: service_healthy
+      orders-api:
+        condition: service_healthy
+      customers-api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import grpc; grpc.channel_ready_future(grpc.insecure_channel('localhost:50051')).result(timeout=2)"
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+  db-service:
+    image: tolokaforge-db-service:local
+    ports:
+      - "8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 3s
+
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: tolokaforge
+      POSTGRES_PASSWORD: tolokaforge
+      POSTGRES_DB: tolokaforge
+    ports:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tolokaforge"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  orders-api:
+    image: nginx:1.27-alpine
+    ports:
+      - "80"
+    volumes:
+      - ./fixtures/orders.json:/usr/share/nginx/html/orders.json:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost/orders.json"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 3s
+
+  customers-api:
+    image: nginx:1.27-alpine
+    ports:
+      - "80"
+    volumes:
+      - ./fixtures/customers.json:/usr/share/nginx/html/customers.json:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost/customers.json"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 3s

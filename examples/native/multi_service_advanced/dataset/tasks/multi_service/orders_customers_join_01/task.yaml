@@ -1,0 +1,40 @@
+task_id: "orders_customers_join_01"
+name: "Customer Value Analysis"
+category: "multi_service"
+description: "Fetch orders + customers from two separate HTTP services, join them, and write the top-3 customers by paid-order total."
+max_turns: 12
+initial_user_message: |
+  Please build a customer-value ranking. Two services are running inside the
+  substrate:
+
+    * Orders API:    http://orders-api/orders.json
+    * Customers API: http://customers-api/customers.json
+
+  Join the two datasets on `customer_id`, sum the `amount` of every order with
+  `status == "paid"` per customer, and write a report to
+  `submissions/customer_value.md` listing the top-3 customers by paid total.
+  For each ranked customer include the customer name and the total value as a
+  plain integer (no currency symbol, no comma separators — e.g. `12000`, not
+  `$12,000`). Rank descending by total value.
+adapter_type: "native"
+environment_manifest:
+  compose_file: "./environment.compose.yaml"
+  isolation: "shared_ok"
+  runner_service: "runner"
+initial_state:
+  filesystem: {}
+tools:
+  agent:
+    enabled: ["bash", "write_file"]
+  user:
+    enabled: []
+user_simulator:
+  mode: llm
+  persona: cooperative
+  backstory: "You are an operations analyst waiting on the customer-value report. Ask brief clarifying questions only when strictly necessary and end with ###STOP### once the report is delivered."
+policies:
+  guidance:
+    - "Use `bash` with `python3 -c 'import urllib.request; ...'` to reach both HTTP services — the runner container joins the same docker network so both are addressable by service name. (The bash allowlist permits python but not curl/wget.)"
+    - "Only count orders with `status: paid`. Skip any order in a different status."
+    - "Aggregate totals per customer BEFORE ranking; do not treat individual orders as candidates."
+grading: "grading.yaml"
