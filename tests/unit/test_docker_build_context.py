@@ -18,7 +18,7 @@ from tolokaforge.docker.builder import (
     service_name_for_image,
 )
 from tolokaforge.docker.image import Image
-from tolokaforge.docker.stack import ServiceDefinition, ServiceStack
+from tolokaforge.docker.stack import EngineStack, ServiceDefinition
 from tolokaforge.docker.wheel_resolver import WheelArtifact
 
 pytestmark = pytest.mark.unit
@@ -325,7 +325,7 @@ def test_start_service_builds_with_isolated_context_when_skipping_build_images(
         context=".",
         context_files=["pyproject.toml", "README.md", "tolokaforge/"],
     )
-    stack = ServiceStack()
+    stack = EngineStack()
     stack.add_service(svc)
 
     with pytest.raises(_Sentinel):
@@ -343,7 +343,7 @@ def test_start_service_builds_with_isolated_context_when_skipping_build_images(
 def test_build_and_prepare_builds_images_and_networks_without_starting_containers(
     monkeypatch,
 ) -> None:
-    """``ServiceStack.build_and_prepare`` builds every declared image and
+    """``EngineStack.build_and_prepare`` builds every declared image and
     creates every declared network, but skips the container-start phase.
 
     The per-trial substrate path needs the ``:local``-alias hook to find
@@ -398,7 +398,7 @@ def test_build_and_prepare_builds_images_and_networks_without_starting_container
         context_files=["pyproject.toml", "README.md", "tolokaforge/"],
         networks=["runner-net"],
     )
-    stack = ServiceStack()
+    stack = EngineStack()
     stack.add_service(svc_runner)
     stack.add_service(svc_db)
 

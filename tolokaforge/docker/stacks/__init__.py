@@ -1,6 +1,6 @@
 """Predefined service stacks for TolokaForge.
 
-Provides factory functions that return pre-configured ServiceStack instances
+Provides factory functions that return pre-configured EngineStack instances
 for common deployment scenarios.
 
 Available stacks:

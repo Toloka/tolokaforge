@@ -15,12 +15,12 @@ from __future__ import annotations
 from tolokaforge.docker.config import DockerConfig
 from tolokaforge.docker.policy import Capability, ResourcePolicy
 from tolokaforge.docker.ports import PortConfig
-from tolokaforge.docker.stack import ServiceDefinition, ServiceStack
+from tolokaforge.docker.stack import EngineStack, ServiceDefinition
 
 
 def test_stack(
     config: DockerConfig | None = None,
-) -> ServiceStack:
+) -> EngineStack:
     """Create a test service stack with auto-allocated ports.
 
     All host ports are "auto" to avoid conflicts in CI environments.
@@ -29,9 +29,9 @@ def test_stack(
         config: Optional DockerConfig. Uses defaults if None.
 
     Returns:
-        ServiceStack configured for testing.
+        EngineStack configured for testing.
     """
-    stack = ServiceStack(
+    stack = EngineStack(
         config=config or DockerConfig(),
         prefix="tolokaforge-test",
     )

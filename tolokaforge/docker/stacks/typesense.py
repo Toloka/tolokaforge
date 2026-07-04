@@ -1,4 +1,4 @@
-"""TypeSense service definition for use with ServiceStack.
+"""TypeSense service definition for use with EngineStack.
 
 Provides a factory function that creates a ServiceDefinition for
 a TypeSense search server, replacing raw Docker SDK usage in
@@ -6,10 +6,10 @@ typesense_server.py.
 
 Example:
     >>> from tolokaforge.docker.stacks.typesense import typesense_service
-    >>> from tolokaforge.docker.stack import ServiceStack
+    >>> from tolokaforge.docker.stack import EngineStack
     >>>
     >>> svc = typesense_service(port=8108, api_key="test-key")
-    >>> stack = ServiceStack()
+    >>> stack = EngineStack()
     >>> stack.add_service(svc)
     >>> stack.start_all()
 """

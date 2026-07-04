@@ -1,4 +1,4 @@
-"""Unit tests for ServiceDefinition, ServiceStatus, and ServiceStack dependency ordering.
+"""Unit tests for ServiceDefinition, ServiceStatus, and EngineStack dependency ordering.
 
 These tests validate the Pydantic models and topological sort logic
 without requiring Docker.
@@ -6,17 +6,17 @@ without requiring Docker.
 
 import pytest
 
-from tolokaforge.docker.stack import ServiceDefinition, ServiceStack
+from tolokaforge.docker.stack import EngineStack, ServiceDefinition
 
 pytestmark = pytest.mark.unit
 
 # =============================================================================
-# ServiceStack Dependency Ordering Tests
+# EngineStack Dependency Ordering Tests
 # =============================================================================
 
 
-class TestServiceStackDependencyOrdering:
-    """Tests for ServiceStack._topological_sort() — no Docker required."""
+class TestEngineStackDependencyOrdering:
+    """Tests for EngineStack._topological_sort() — no Docker required."""
 
     @pytest.mark.unit
     def test_no_dependencies(self):
@@ -26,7 +26,7 @@ class TestServiceStackDependencyOrdering:
             "b": ServiceDefinition(name="b", image_name="img-b"),
             "c": ServiceDefinition(name="c", image_name="img-c"),
         }
-        order = ServiceStack._topological_sort(services)
+        order = EngineStack._topological_sort(services)
         assert set(order) == {"a", "b", "c"}
         assert order == ["a", "b", "c"]
 
@@ -38,7 +38,7 @@ class TestServiceStackDependencyOrdering:
             "b": ServiceDefinition(name="b", image_name="img-b", depends_on=["a"]),
             "c": ServiceDefinition(name="c", image_name="img-c", depends_on=["b"]),
         }
-        order = ServiceStack._topological_sort(services)
+        order = EngineStack._topological_sort(services)
         assert order.index("a") < order.index("b")
         assert order.index("b") < order.index("c")
 
@@ -51,7 +51,7 @@ class TestServiceStackDependencyOrdering:
             "c": ServiceDefinition(name="c", image_name="img", depends_on=["a"]),
             "d": ServiceDefinition(name="d", image_name="img", depends_on=["b", "c"]),
         }
-        order = ServiceStack._topological_sort(services)
+        order = EngineStack._topological_sort(services)
         assert order.index("a") < order.index("b")
         assert order.index("a") < order.index("c")
         assert order.index("b") < order.index("d")
@@ -65,7 +65,7 @@ class TestServiceStackDependencyOrdering:
             "b": ServiceDefinition(name="b", image_name="img", depends_on=["a"]),
         }
         with pytest.raises(ValueError, match="Circular dependency"):
-            ServiceStack._topological_sort(services)
+            EngineStack._topological_sort(services)
 
     @pytest.mark.unit
     def test_missing_dependency_raises(self):
@@ -74,21 +74,21 @@ class TestServiceStackDependencyOrdering:
             "a": ServiceDefinition(name="a", image_name="img", depends_on=["nonexistent"]),
         }
         with pytest.raises(ValueError, match="not in the stack"):
-            ServiceStack._topological_sort(services)
+            EngineStack._topological_sort(services)
 
 
 # =============================================================================
-# ServiceStack Service Management Tests
+# EngineStack Service Management Tests
 # =============================================================================
 
 
-class TestServiceStackManagement:
-    """Tests for ServiceStack add/filter methods — no Docker required."""
+class TestEngineStackManagement:
+    """Tests for EngineStack add/filter methods — no Docker required."""
 
     @pytest.mark.unit
     def test_add_service(self):
         """add_service() adds a service to the stack."""
-        stack = ServiceStack()
+        stack = EngineStack()
         svc = ServiceDefinition(name="test", image_name="img")
         stack.add_service(svc)
         assert "test" in stack.services
@@ -97,7 +97,7 @@ class TestServiceStackManagement:
     @pytest.mark.unit
     def test_add_duplicate_raises(self):
         """add_service() raises on duplicate name."""
-        stack = ServiceStack()
+        stack = EngineStack()
         svc = ServiceDefinition(name="test", image_name="img")
         stack.add_service(svc)
         with pytest.raises(ValueError, match="already exists"):
@@ -106,7 +106,7 @@ class TestServiceStackManagement:
     @pytest.mark.unit
     def test_filter_by_profiles_match(self):
         """Profile filtering includes matching and no-profile services."""
-        stack = ServiceStack()
+        stack = EngineStack()
         stack.add_service(ServiceDefinition(name="core-svc", image_name="img", profiles=["core"]))
         stack.add_service(ServiceDefinition(name="rag-svc", image_name="img", profiles=["rag"]))
         stack.add_service(ServiceDefinition(name="always", image_name="img"))

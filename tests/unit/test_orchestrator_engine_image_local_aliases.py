@@ -5,7 +5,7 @@ shared stack starts, giving per-trial task compose files stable names
 to reference (the raw content-hash tags change on every source edit
 and would break any external reference).
 
-Uses a fake ``ServiceStack`` / ``Image`` pair so the tests don't touch
+Uses a fake ``EngineStack`` / ``Image`` pair so the tests don't touch
 the Docker daemon or the real image-build path — the hook's contract
 under test is "look up each engine image, apply the alias, log", not
 "actually rebuild an image."
@@ -51,8 +51,8 @@ class _FakeImage:
         self.calls.append((alias_repository, alias_tag))
 
 
-class _FakeServiceStack:
-    """Minimal stand-in for :class:`ServiceStack` — only ``get_image`` is used."""
+class _FakeEngineStack:
+    """Minimal stand-in for :class:`EngineStack` — only ``get_image`` is used."""
 
     def __init__(self, images: dict[str, _FakeImage] | None = None) -> None:
         self._images = images or {}
@@ -70,7 +70,7 @@ class TestEngineImageLocalAliases:
         orch = _make_orchestrator()
         runner_img = _FakeImage()
         db_img = _FakeImage()
-        stack = _FakeServiceStack({"runner": runner_img, "db-service": db_img})
+        stack = _FakeEngineStack({"runner": runner_img, "db-service": db_img})
 
         orch._ensure_engine_image_local_aliases(stack)
 
@@ -84,7 +84,7 @@ class TestEngineImageLocalAliases:
         orch = _make_orchestrator()
         orch.logger = MagicMock()
         runner_img = _FakeImage()
-        stack = _FakeServiceStack({"runner": runner_img})  # no db-service
+        stack = _FakeEngineStack({"runner": runner_img})  # no db-service
 
         orch._ensure_engine_image_local_aliases(stack)
 
@@ -103,7 +103,7 @@ class TestEngineImageLocalAliases:
             "tag", "tolokaforge-runner:hashhash", "daemon rejected the tag"
         )
         db_img = _FakeImage()
-        stack = _FakeServiceStack({"runner": runner_img, "db-service": db_img})
+        stack = _FakeEngineStack({"runner": runner_img, "db-service": db_img})
 
         orch._ensure_engine_image_local_aliases(stack)  # no raise
 
@@ -122,7 +122,7 @@ class TestEngineImageLocalAliases:
         orch = _make_orchestrator()
         runner_img = _FakeImage()
         runner_img.should_raise = AttributeError("get_image returned a wrong-typed object")
-        stack = _FakeServiceStack({"runner": runner_img})
+        stack = _FakeEngineStack({"runner": runner_img})
 
         with pytest.raises(AttributeError, match="wrong-typed object"):
             orch._ensure_engine_image_local_aliases(stack)
