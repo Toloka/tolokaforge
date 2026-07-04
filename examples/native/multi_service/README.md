@@ -37,15 +37,19 @@ uv run tolokaforge validate --tasks "examples/native/multi_service/dataset/**/ta
 scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service/run_config.yaml
 ```
 
-## Task layout
+## Layout
 
 ```
-multi_service_example_01/
-├── task.yaml                    # declares environment_manifest + tools
-├── environment.compose.yaml     # 4-service compose
-├── grading.yaml                 # state checks + transcript rules
-└── fixtures/
-    └── products.json            # served by app-service (nginx)
+examples/native/multi_service/
+├── run_config.yaml                # models + orchestrator + evaluation
+├── README.md                      # this file
+└── dataset/tasks/multi_service/
+    └── multi_service_example_01/
+        ├── task.yaml              # declares environment_manifest + tools
+        ├── environment.compose.yaml # 3-service compose
+        ├── grading.yaml           # state checks + transcript rules
+        └── fixtures/
+            └── products.json      # served by app-service (nginx)
 ```
 
 ## Design notes
