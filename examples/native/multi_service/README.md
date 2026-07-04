@@ -1,9 +1,8 @@
 # Multi-service example — Product Catalog Summary
 
 A **task-declared multi-service** example. The task ships its own
-`environment.compose.yaml` declaring four services (runner + db-service +
-a stub `db` postgres required by the current endpoint resolver + a
-task-specific `app-service`), and the engine materialises them **once at
+`environment.compose.yaml` declaring three services (runner + db-service +
+a task-specific `app-service`), and the engine materialises them **once at
 run start** under `--runtime shared` (Case B in
 [ADR-0018](../../../docs/architecture/adr/0018-multi-container-under-shared-runtime.md)).
 
@@ -47,7 +46,7 @@ examples/native/multi_service/
 └── dataset/tasks/multi_service/
     └── multi_service_example_01/
         ├── task.yaml              # declares environment_manifest + tools
-        ├── environment.compose.yaml # 4-service compose
+        ├── environment.compose.yaml # 3-service compose
         ├── grading.yaml           # state checks + transcript rules
         └── fixtures/
             └── products.json      # served by app-service (nginx)
@@ -62,12 +61,6 @@ examples/native/multi_service/
   file. The point of the example is to demonstrate the multi-service
   materialisation path, not to be a realistic application. Real task
   packs would ship a proper backend + database + …
-- **The `db` postgres service is a stub.** `db-service` uses an in-memory
-  sqlite backend and does not talk to postgres, but the current
-  shared+env_manifest endpoint resolver requires a compose service named
-  `db` on port 5432 to satisfy `EnvEndpoints.db_url` construction. A
-  follow-up ticket generalises endpoint resolution so this stub can go
-  away.
 - **The runner reaches `app-service` by service name.** Docker Compose
   auto-networks all services in a compose file; container-name-based DNS
   resolution works from any service to any other on the same network.

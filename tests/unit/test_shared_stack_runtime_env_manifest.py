@@ -163,13 +163,22 @@ class TestConnectMaterialises:
         # Partial materialisation cleaned up before we raised.
         mock_cleanup.assert_called_once()
 
-    def test_connect_raises_provision_error_when_db_missing(self, tmp_path: Path) -> None:
-        """A compose file missing the ``db`` service (or its 5432 port)
-        fails loud — same shape as PerTrialRuntimeBackend."""
+    def test_connect_accepts_db_url_none(self, tmp_path: Path) -> None:
+        """``db_url`` is best-effort in env_manifest mode. When the task's
+        compose file omits ``db-service:8000`` the resolver returns
+        ``EnvEndpoints(db_url=None, ...)`` and connect proceeds — the
+        runner-side ``DBServiceClient`` binds to ``DB_SERVICE_URL`` from
+        its container env, so a missing db_url is not a provisioning
+        failure. Load-bearing contract change (was: ProvisionError)."""
         manifest = _make_manifest(tmp_path)
         backend = SharedStackRuntimeBackend(env_manifest=manifest, run_id="run-x")
 
         fake_compose = MagicMock()
+        fake_endpoints = EnvEndpoints(
+            db_url=None,
+            rag_url=None,
+            runner_url="http://localhost:60051",
+        )
         with (
             patch("tolokaforge.core.shared_stack_runtime.DockerCompose", return_value=fake_compose),
             patch(
@@ -182,15 +191,15 @@ class TestConnectMaterialises:
             ),
             patch(
                 "tolokaforge.core.shared_stack_runtime.resolve_env_endpoints",
-                return_value=None,
+                return_value=fake_endpoints,
             ),
-            patch(
-                "tolokaforge.core.shared_stack_runtime.cleanup_partial_materialisation"
-            ) as mock_cleanup,
-            pytest.raises(ProvisionError, match="db"),
+            patch("tolokaforge.core.shared_stack_runtime.GrpcRunnerClient") as mock_client_cls,
         ):
+            mock_client_cls.return_value = MagicMock()
             backend.connect()
-        mock_cleanup.assert_called_once()
+
+        assert backend._endpoints is fake_endpoints
+        assert backend._endpoints.db_url is None
 
     def test_connect_raises_provision_error_on_compose_start_failure(self, tmp_path: Path) -> None:
         """A docker daemon failure during compose up surfaces as a typed

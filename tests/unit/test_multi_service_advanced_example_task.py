@@ -79,19 +79,18 @@ class TestTaskYaml:
 
 
 class TestComposeShape:
-    """The compose file must declare five services: the runner + db-service
-    + db postgres stub (endpoint-resolver constraint) + the two
-    task-specific HTTP services (orders-api + customers-api)."""
+    """The compose file must declare four services: the runner +
+    db-service + the two task-specific HTTP services (orders-api +
+    customers-api)."""
 
     def _load_compose(self) -> dict:
         return yaml.safe_load((_TASK_DIR / "environment.compose.yaml").read_text())
 
-    def test_declares_five_services(self) -> None:
+    def test_declares_four_services(self) -> None:
         compose = self._load_compose()
         assert set(compose["services"].keys()) == {
             "runner",
             "db-service",
-            "db",
             "orders-api",
             "customers-api",
         }

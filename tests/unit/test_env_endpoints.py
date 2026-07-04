@@ -35,9 +35,14 @@ class TestEnvEndpointsShape:
         )
         assert endpoints.rag_url == "http://rag:8001"
 
-    def test_db_url_is_required(self) -> None:
-        with pytest.raises(ValidationError):
-            EnvEndpoints(runner_url="http://runner:50051")
+    def test_db_url_is_optional(self) -> None:
+        """``db_url`` is best-effort in env_manifest mode — a task compose
+        that omits ``db-service:8000`` yields ``db_url=None``. The
+        runner-side ``DBServiceClient`` reads ``DB_SERVICE_URL`` from its
+        container env, and ``db_json.py`` tools fall back to the same
+        env var, so a missing ``db_url`` is not a construction failure."""
+        endpoints = EnvEndpoints(runner_url="http://runner:50051")
+        assert endpoints.db_url is None
 
     def test_runner_url_is_required(self) -> None:
         with pytest.raises(ValidationError):

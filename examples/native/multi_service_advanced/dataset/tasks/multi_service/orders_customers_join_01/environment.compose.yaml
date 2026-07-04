@@ -1,14 +1,9 @@
 # Task-declared compose stack for `orders_customers_join_01`.
 #
-# Five services on the same docker-compose network:
+# Four services on the same docker-compose network:
 #   - `runner`         — tolokaforge-runner, the gRPC server the conductor talks to.
 #   - `db-service`     — tolokaforge-db-service (in-memory sqlite), the runner's
 #                        state / grading backend.
-#   - `db`             — postgres 16 stub. Required by the shared+env_manifest
-#                        endpoint resolver's current contract (a service named
-#                        `db` on port 5432 must exist). `db-service` does not
-#                        consume it; a follow-up ticket generalises endpoint
-#                        resolution so the stub can go away.
 #   - `orders-api`     — nginx serving `fixtures/orders.json`. Reachable as
 #                        `http://orders-api/orders.json` from inside the
 #                        runner.
@@ -57,20 +52,6 @@ services:
       timeout: 3s
       retries: 30
       start_period: 3s
-
-  db:
-    image: postgres:16
-    environment:
-      POSTGRES_USER: tolokaforge
-      POSTGRES_PASSWORD: tolokaforge
-      POSTGRES_DB: tolokaforge
-    ports:
-      - "5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U tolokaforge"]
-      interval: 2s
-      timeout: 3s
-      retries: 30
 
   orders-api:
     image: nginx:1.27-alpine

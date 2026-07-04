@@ -15,10 +15,10 @@ Case B in [ADR-0018](../../../docs/architecture/adr/0018-multi-container-under-s
 
 ## What this example demonstrates
 
-- **Multi-endpoint aggregation under shared runtime.** Five-service compose
-  stack (runner + db-service + db stub + `orders-api` + `customers-api`),
+- **Multi-endpoint aggregation under shared runtime.** Four-service compose
+  stack (runner + db-service + `orders-api` + `customers-api`),
   materialised once at run start and shared across every trial.
-- **Docker Compose DNS discovery.** All five services join the same
+- **Docker Compose DNS discovery.** All four services join the same
   auto-generated docker-compose network, so the runner container reaches
   both APIs by service name (`http://orders-api/orders.json` and
   `http://customers-api/customers.json`).
@@ -47,7 +47,7 @@ examples/native/multi_service_advanced/
 └── dataset/tasks/multi_service/
     └── orders_customers_join_01/
         ├── task.yaml              # declares environment_manifest + tools
-        ├── environment.compose.yaml # 5-service compose
+        ├── environment.compose.yaml # 4-service compose
         ├── grading.yaml           # state checks + transcript rules
         └── fixtures/
             ├── orders.json        # served by orders-api (nginx)
@@ -58,11 +58,6 @@ examples/native/multi_service_advanced/
 
 - **`isolation: shared_ok`** — the task's grading only inspects the agent's
   written output; both APIs are read-only static content.
-- **The `db` postgres service is a stub.** Same reason as the sibling
-  `multi_service` example — the current shared+env_manifest endpoint
-  resolver requires a compose service named `db` on port 5432 to satisfy
-  `EnvEndpoints.db_url` construction. `db-service` uses in-memory sqlite
-  and does not consume it.
 - **Both APIs use pinned nginx tags (`1.27-alpine`)** so runs are
   reproducible; the manifest validator rejects floating tags.
 

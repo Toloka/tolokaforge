@@ -207,18 +207,12 @@ class PerTrialRuntimeBackend:
             )
         runner_host, runner_host_port = runner_endpoint
 
+        # resolve_env_endpoints is best-effort for db_url + rag_url — a task
+        # compose file that omits `db-service:8000` gets endpoints with
+        # `db_url=None`. The runner-side DBServiceClient reads DB_SERVICE_URL
+        # from its container env, and `db_json.py` tools fall back to the
+        # same env var, so a missing db_url is not a provisioning failure.
         endpoints = resolve_env_endpoints(compose, runner_host, runner_host_port)
-        if endpoints is None:
-            cleanup_partial_materialisation(compose, temp_dir)
-            raise ProvisionError(
-                trial_id=spec.trial_id,
-                stage="provision",
-                reason=(
-                    "PerTrialRuntimeBackend requires a compose service named 'db' "
-                    "exposing port 5432; compose file does not declare one. "
-                    "Endpoint-resolution customisation is a follow-up ticket."
-                ),
-            )
 
         # Client is constructed but not yet connected. Connect is deferred
         # to first per-trial RPC use — see :attr:`_connected_trials`.

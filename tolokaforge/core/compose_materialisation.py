@@ -42,12 +42,15 @@ RUNNER_PORT_DEFAULT = 50051
 ``GrpcRunnerClient``'s default ``runner:50051``. Task-pack authors that
 need to override this will get a manifest field in a follow-up PR."""
 
-DB_SERVICE_DEFAULT = "db"
-"""Compose service name convention for the raw database backing the
-runner's state (the ``db-service`` HTTP wrapper sits on top of this)."""
+DB_SERVICE_DEFAULT = "db-service"
+"""Compose service name convention for the HTTP JSON state backend the
+runner's tool layer POSTs to (the in-memory-sqlite service that lives
+behind the ``/query|/update|/sql|/schema`` endpoints)."""
 
-DB_PORT_DEFAULT = 5432
-"""Postgres default port for the ``db`` service."""
+DB_SERVICE_PORT_DEFAULT = 8000
+"""HTTP port ``db-service`` listens on. Matches the port the built-in
+core stack exposes and the port task compose files publish for the
+``tolokaforge-db-service:local`` alias."""
 
 RAG_SERVICE_CANDIDATES = ("rag", "rag-service")
 """Compose service names checked when resolving the RAG endpoint.
@@ -191,21 +194,32 @@ def resolve_env_endpoints(
     runner_port: int,
     *,
     db_service: str = DB_SERVICE_DEFAULT,
-    db_port: int = DB_PORT_DEFAULT,
-) -> EnvEndpoints | None:
-    """Resolve the full :class:`EnvEndpoints` triple (runner_url, db_url,
-    rag_url) from a running compose stack. Returns ``None`` if the
-    required db service does not exist or its port is not exposed —
-    callers surface that as a typed error with their own context.
+    db_port: int = DB_SERVICE_PORT_DEFAULT,
+) -> EnvEndpoints:
+    """Resolve the :class:`EnvEndpoints` triple (runner_url, db_url,
+    rag_url) from a running compose stack.
 
-    ``rag_url`` is best-effort: absent means ``None`` on the endpoints,
-    not a resolution failure.
+    ``runner_url`` is required — the caller already resolved the runner
+    endpoint before invoking this function and passes the host/port in.
+
+    ``db_url`` and ``rag_url`` are **both best-effort**. When the task's
+    compose file declares ``db-service`` on port 8000 (the well-known
+    convention that matches the engine's built-in stack), the returned
+    ``db_url`` points at the host-mapped HTTP endpoint. When the compose
+    file omits ``db-service``, ``db_url`` stays ``None`` — the runner
+    container reads ``DB_SERVICE_URL`` from its own environment (task
+    compose files set it via the ``runner`` service's ``environment``
+    block), and ``db_json.py`` tools fall back to the same env var when
+    constructed without a URL, so a missing ``db_url`` is not a failure.
     """
     db_host, db_host_port = resolve_host_port(compose, db_service, db_port)
+    db_url: str | None
     if db_host is None or db_host_port is None:
-        return None
+        db_url = None
+    else:
+        db_url = f"http://{db_host}:{db_host_port}"
     return EnvEndpoints(
-        db_url=f"http://{db_host}:{db_host_port}",
+        db_url=db_url,
         rag_url=resolve_rag_url(compose),
         runner_url=f"http://{runner_host}:{runner_port}",
     )

@@ -192,8 +192,8 @@ class TestResolveEnvEndpoints:
         compose = MagicMock()
 
         def _host_port(service_name: str, port: int) -> tuple[str | None, int | None]:
-            if service_name == "db":
-                return ("localhost", 65432)
+            if service_name == "db-service":
+                return ("localhost", 68000)
             if service_name == "rag":
                 return ("localhost", 68080)
             return (None, None)
@@ -209,17 +209,25 @@ class TestResolveEnvEndpoints:
 
         assert endpoints is not None
         assert endpoints.runner_url == "http://localhost:60051"
-        assert endpoints.db_url == "http://localhost:65432"
+        assert endpoints.db_url == "http://localhost:68000"
         assert endpoints.rag_url == "http://localhost:68080"
 
-    def test_returns_none_when_db_not_exposed(self) -> None:
-        """The db service is required (endpoint-resolution
-        customisation is a follow-up). Absent db → typed None,
-        caller surfaces a ProvisionError."""
+    def test_db_absent_yields_none_not_failure(self) -> None:
+        """db_url is best-effort — a task compose file that omits
+        ``db-service:8000`` gets ``EnvEndpoints(db_url=None, ...)``.
+        The runner-side ``DBServiceClient`` binds to ``DB_SERVICE_URL``
+        from its container env, and ``db_json.py`` tools fall back to
+        the same env var when constructed without a URL."""
         compose = MagicMock()
-        compose.get_service_host_and_port.side_effect = KeyError("no db")
+        compose.get_service_host_and_port.side_effect = KeyError("no db-service")
+        compose.get_container.side_effect = KeyError("no rag either")
 
-        assert resolve_env_endpoints(compose, "localhost", 60051) is None
+        endpoints = resolve_env_endpoints(compose, "localhost", 60051)
+
+        assert endpoints is not None
+        assert endpoints.runner_url == "http://localhost:60051"
+        assert endpoints.db_url is None
+        assert endpoints.rag_url is None
 
     def test_rag_absent_is_none_not_failure(self) -> None:
         """rag is best-effort — absent rag doesn't fail endpoint
@@ -228,8 +236,8 @@ class TestResolveEnvEndpoints:
         compose = MagicMock()
 
         def _host_port(service_name: str, port: int) -> tuple[str | None, int | None]:
-            if service_name == "db":
-                return ("localhost", 65432)
+            if service_name == "db-service":
+                return ("localhost", 68000)
             return (None, None)
 
         compose.get_service_host_and_port.side_effect = lambda service_name, port: _host_port(
@@ -240,7 +248,7 @@ class TestResolveEnvEndpoints:
         endpoints = resolve_env_endpoints(compose, "localhost", 60051)
 
         assert endpoints is not None
-        assert endpoints.db_url == "http://localhost:65432"
+        assert endpoints.db_url == "http://localhost:68000"
         assert endpoints.rag_url is None
 
 
