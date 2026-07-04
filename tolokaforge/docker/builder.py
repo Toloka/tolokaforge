@@ -24,6 +24,7 @@ import logging
 import shutil
 import tempfile
 from collections.abc import Callable
+from importlib import resources
 from pathlib import Path
 from typing import Any
 
@@ -48,7 +49,32 @@ def _pinned_python_version() -> str:
     ``FROM python:${PYTHON_VERSION}-slim`` follows automatically. The
     Dockerfiles still default to the current pin so a manual
     ``docker build`` without the arg produces the same image.
+
+    Resolution order:
+
+    1. ``tolokaforge/_python_version.txt`` inside the installed package.
+       Populated at wheel-build time by hatchling's ``force-include``
+       (see ``pyproject.toml``). This is the path a wheel install sees
+       — ``site-packages/tolokaforge/_python_version.txt``.
+    2. ``.python-version`` at the repo root. This is the path a source
+       checkout / editable install sees. The repo-root file is the
+       single source of truth at *write* time; the packaged copy is a
+       *build artifact* of it.
+
+    Both branches read the same value on a matching install; the
+    two-branch shape only exists to cover the wheel-install case where
+    the repo-root dotfile is not available in ``site-packages``.
     """
+    try:
+        packaged = resources.files("tolokaforge").joinpath("_python_version.txt")
+        if packaged.is_file():
+            return packaged.read_text().strip()
+    except (ModuleNotFoundError, FileNotFoundError, OSError):
+        # ``resources.files`` may raise when the package isn't fully
+        # discoverable yet (e.g. during hatchling's own build
+        # introspection, or on some editable-install layouts). Fall
+        # through to the repo-root read.
+        pass
     return (repo_root() / ".python-version").read_text().strip()
 
 

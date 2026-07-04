@@ -121,3 +121,70 @@ def test_bundle_writer_module_imports_cleanly() -> None:
     # sys.modules registration proves the import actually took effect
     # (rather than a stale cache satisfying attribute lookups).
     assert "tolokaforge.adapters.bundle_writer" in sys.modules
+
+
+@pytest.mark.skipif(not _uv_available(), reason="uv CLI not available")
+def test_python_version_pin_ships_in_the_built_wheel(tmp_path: Path) -> None:
+    """``tolokaforge/_python_version.txt`` must be present in the wheel.
+
+    ``tolokaforge.docker.builder._pinned_python_version`` reads this
+    file at module import to populate ``PYTHON_VERSION``. If the wheel
+    ships without it, ``import tolokaforge.docker.builder`` crashes
+    with ``FileNotFoundError`` on every wheel install — every consumer
+    of the engine that touches the docker submodule breaks.
+
+    The file is copied from the repo-root ``.python-version`` via
+    hatchling's ``[tool.hatch.build.targets.wheel.force-include]`` in
+    ``pyproject.toml``. This test pins that the copy actually happens
+    and the value in the wheel matches the repo-root single source.
+    """
+    build_result = subprocess.run(
+        ["uv", "build", "--wheel", "--out-dir", str(tmp_path)],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    assert build_result.returncode == 0, (
+        f"uv build failed (rc={build_result.returncode}):\n"
+        f"stdout:\n{build_result.stdout}\nstderr:\n{build_result.stderr}"
+    )
+
+    wheels = sorted(tmp_path.glob("tolokaforge-*.whl"))
+    assert wheels, f"No tolokaforge wheel produced under {tmp_path}"
+    wheel = wheels[-1]
+
+    with zipfile.ZipFile(wheel) as zf:
+        members = set(zf.namelist())
+        assert "tolokaforge/_python_version.txt" in members, (
+            "Wheel is missing tolokaforge/_python_version.txt — "
+            "force-include in [tool.hatch.build.targets.wheel] not applied. "
+            f"Members starting with 'tolokaforge/_': "
+            f"{sorted(m for m in members if m.startswith('tolokaforge/_'))}"
+        )
+        packaged_value = zf.read("tolokaforge/_python_version.txt").decode().strip()
+
+    repo_root_value = (_REPO_ROOT / ".python-version").read_text().strip()
+    assert packaged_value == repo_root_value, (
+        f"Packaged pin ({packaged_value!r}) does not match repo-root pin "
+        f"({repo_root_value!r}) — the force-include produced stale content."
+    )
+
+
+def test_pinned_python_version_reads_cleanly_in_process() -> None:
+    """In-process guard: ``_pinned_python_version()`` must return a
+    non-empty string that matches the repo-root pin.
+
+    Complements the wheel-inspection test above by proving the read
+    path itself is sound — the wheel-inspection test only proves the
+    file is present, not that the loader reads it.
+    """
+    from tolokaforge.docker.builder import _pinned_python_version
+
+    value = _pinned_python_version()
+    assert value, "_pinned_python_version() returned an empty string"
+    repo_root_value = (_REPO_ROOT / ".python-version").read_text().strip()
+    assert value == repo_root_value, (
+        f"_pinned_python_version() returned {value!r} but repo-root pin is " f"{repo_root_value!r}"
+    )
