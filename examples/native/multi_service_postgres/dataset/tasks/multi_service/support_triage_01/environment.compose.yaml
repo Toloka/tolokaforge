@@ -1,0 +1,88 @@
+# Task-declared compose stack for `support_triage_01`.
+#
+# Four services on the same docker-compose network:
+#   - `runner`      — tolokaforge-runner, the gRPC server the conductor talks to.
+#   - `db-service`  — tolokaforge-db-service (in-memory sqlite), the engine's
+#                     state / grading backend. Same convention as every other
+#                     multi-service example.
+#   - `app-service` — PostgREST auto-generating REST endpoints from the
+#                     `api` schema in `app-db`. Reachable from the runner
+#                     container as `http://app-service:3000/` (docker-
+#                     compose DNS resolves service names on the shared
+#                     network).
+#   - `app-db`      — real postgres:16 backing the task's application. Seeded
+#                     at start via `./app-db/init.sql` bind-mounted into
+#                     postgres's docker-entrypoint-initdb.d.
+#
+# Unlike the sibling examples that serve static JSON from nginx, this one
+# exercises a genuine three-tier stack: the agent → HTTP API → postgres.
+# PostgREST introspects the schema and generates endpoints automatically
+# so no custom application code is shipped in the task pack.
+services:
+  runner:
+    image: tolokaforge-runner:local
+    environment:
+      DB_SERVICE_URL: "http://db-service:8000"
+    ports:
+      - "50051"
+    depends_on:
+      db-service:
+        condition: service_healthy
+      app-service:
+        condition: service_started
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import grpc; grpc.channel_ready_future(grpc.insecure_channel('localhost:50051')).result(timeout=2)"
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 8s
+
+  db-service:
+    image: tolokaforge-db-service:local
+    ports:
+      - "8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 3s
+
+  app-service:
+    image: postgrest/postgrest:v12.2.0
+    environment:
+      PGRST_DB_URI: "postgres://authenticator:auth_pass@app-db:5432/support"
+      PGRST_DB_ANON_ROLE: "web_anon"
+      PGRST_DB_SCHEMAS: "api"
+      PGRST_SERVER_PORT: "3000"
+      PGRST_OPENAPI_SERVER_PROXY_URI: "http://app-service:3000"
+    ports:
+      - "3000"
+    depends_on:
+      app-db:
+        condition: service_healthy
+
+  app-db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: "support"
+      POSTGRES_USER: "authenticator"
+      POSTGRES_PASSWORD: "auth_pass"
+    ports:
+      - "5432"
+    volumes:
+      - ./app-db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U authenticator -d support"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 3s

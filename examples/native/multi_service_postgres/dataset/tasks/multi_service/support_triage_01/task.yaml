@@ -1,0 +1,47 @@
+task_id: "support_triage_01"
+name: "Enterprise Support Triage"
+category: "multi_service"
+description: "Query a REST API (PostgREST) backed by a real postgres database. Join tickets and customers, filter to open enterprise-tier tickets, rank by priority, and produce a triage report for the top-3."
+max_turns: 15
+initial_user_message: |
+  Please produce a triage report for the on-call team. A support REST API
+  runs at http://app-service:3000. Two endpoints are relevant:
+
+    * GET /tickets    — every support ticket. Fields: ticket_id, customer_id,
+                        status ("open" | "closed" | "resolved"), priority
+                        (integer, lower = more urgent), subject.
+    * GET /customers  — every customer. Fields: customer_id, name,
+                        tier ("enterprise" | "business" | "individual").
+
+  Both endpoints return JSON arrays.
+
+  Produce a triage report and write it to `submissions/triage_report.md`
+  listing the top-3 open enterprise-tier tickets, ranked by priority
+  ascending (lowest priority number first). For each, include the customer
+  name and the ticket priority (as a plain integer — no formatting, no
+  currency symbols).
+
+  Only include tickets where `status == "open"` AND the ticket's customer
+  has `tier == "enterprise"`. Skip everything else.
+adapter_type: "native"
+environment_manifest:
+  compose_file: "./environment.compose.yaml"
+  isolation: "shared_ok"
+  runner_service: "runner"
+initial_state:
+  filesystem: {}
+tools:
+  agent:
+    enabled: ["bash", "write_file"]
+  user:
+    enabled: []
+user_simulator:
+  mode: llm
+  persona: cooperative
+  backstory: "You are the incident-management lead waiting on the triage report. Ask brief clarifying questions only when strictly necessary and end with ###STOP### once the report is delivered."
+policies:
+  guidance:
+    - "Use `bash` with `python3 -c 'import urllib.request; ...'` to reach the REST API — the runner container joins the same docker network as `app-service` and reaches it by service name. (The bash allowlist permits python but not curl/wget.)"
+    - "Both the status filter and the tier filter matter — skipping either changes the ranking. Apply both before you sort by priority."
+    - "Aggregate per ticket, not per customer — this is a ticket-triage report, not a customer-volume report."
+grading: "grading.yaml"

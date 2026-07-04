@@ -1,0 +1,41 @@
+combine:
+  method: weighted
+  weights:
+    state_checks: 0.7
+    transcript_rules: 0.3
+  pass_threshold: 0.5
+state_checks:
+  jsonpaths:
+    - path_glob: "/env/fs/agent-visible/submissions/*"
+      contains_ci: "Acme Corp"
+      description: "Report names the #1 open enterprise-tier ticket's customer"
+    - path_glob: "/env/fs/agent-visible/submissions/*"
+      contains_ci: "Corex Systems"
+      description: "Report names the #2 open enterprise-tier ticket's customer"
+    - path_glob: "/env/fs/agent-visible/submissions/*"
+      contains_ci: "Enterprise Co"
+      description: "Report names the #3 open enterprise-tier ticket's customer"
+    - path_glob: "/env/fs/agent-visible/submissions/*"
+      contains_ci: "Login failures spike"
+      description: "Report references the #1 ticket's subject"
+    - path_glob: "/env/fs/agent-visible/submissions/*"
+      contains_ci: "Data export timing out"
+      description: "Report references the #2 ticket's subject"
+    - path_glob: "/env/fs/agent-visible/submissions/*"
+      contains_ci: "SSO integration broken"
+      description: "Report references the #3 ticket's subject"
+transcript_rules:
+  max_turns: 15
+  disallow_regex:
+    - "(?i)(cannot complete|unable to complete|i refuse)"
+  required_actions:
+    - action_id: "query_tickets"
+      requestor: assistant
+      name: bash
+      arguments: {}
+      compare_args: []
+    - action_id: "write_report"
+      requestor: assistant
+      name: write_file
+      arguments: {}
+      compare_args: []
