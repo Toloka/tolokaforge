@@ -61,9 +61,39 @@ if TYPE_CHECKING:
 __all__ = [
     "Conductor",
     "ConductorCallLog",
+    "ConductorContext",
+    "ConductorFactory",
     "InMemoryConductor",
     "InProcessConductor",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Factory contract — the typed argument for a ``Conductor`` factory
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ConductorContext:
+    """Per-run dependencies the orchestrator hands to a Conductor factory.
+
+    Packs the arguments :class:`InProcessConductor` takes at construction
+    into a single typed value so factory signatures stay stable as new
+    orchestrator-side dependencies land. The factory contract is
+    ``Callable[[ConductorContext], Conductor]``.
+    """
+
+    adapter: BaseAdapter
+    artifact_writer: TrialArtifactWriter
+    config: RunConfig
+    logger: StructuredLogger
+    verbose: bool
+    strict: bool
+    agent_client: LLMClient
+    runtime_backend: RuntimeBackend
+    trial_grader: TrialGrader
+    output_dir: Path
+    request_limiter: GlobalRateLimiter | None
 
 
 # ---------------------------------------------------------------------------
@@ -117,6 +147,14 @@ class Conductor(Protocol):
     def run(self, spec: TrialSpec, task_config: TaskConfig) -> TrialResult:
         """Execute one trial end-to-end."""
         ...
+
+
+ConductorFactory = Callable[[ConductorContext], Conductor]
+"""Type of the ``Orchestrator.deps.conductor_factory`` seam.
+
+A callable that receives a :class:`ConductorContext` and returns any
+implementation of the :class:`Conductor` Protocol.
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +261,11 @@ class InMemoryConductor:
 class InProcessConductor:
     """Production :class:`Conductor`. Runs each trial in the orchestrator
     process.
+
+    The constructor kwargs are a 1:1 match for :class:`ConductorContext`
+    fields — the orchestrator unpacks the context via ``**vars(ctx)`` on
+    the default-factory path, so field-name / kwarg-name parity between
+    the two is a load-bearing contract.
 
     Captures the orchestrator's per-run dependencies (adapter, artifact
     writer, config, logger, verbose / strict flags, agent client,
