@@ -8,7 +8,9 @@ initial_user_message: |
   at http://app-service/products.json and write a short summary to
   `submissions/catalog_summary.md` listing the top-3 most expensive products
   that are currently in stock (in_stock = true). Include the product name and
-  price for each. Rank by price descending.
+  price for each, ranked by price descending. Render each price as a plain
+  number without a currency symbol, thousands separators, or trailing zeros
+  (e.g. `3299` rather than `$3,299.00`).
 adapter_type: "native"
 environment_manifest:
   compose_file: "./environment.compose.yaml"
@@ -27,6 +29,6 @@ user_simulator:
   backstory: "You are a product manager waiting on the summary. Ask brief clarifying questions only when strictly necessary and end with ###STOP### once the summary is delivered."
 policies:
   guidance:
-    - "Use `bash` with curl / wget to reach the catalog service — the runner container joins the same docker network as `app-service` and reaches it by service name."
+    - "Use `bash` with curl to reach the catalog service — the runner container joins the same docker network as `app-service` and reaches it by service name."
     - "Only list products where `in_stock: true`. Skip out-of-stock items."
 grading: "grading.yaml"

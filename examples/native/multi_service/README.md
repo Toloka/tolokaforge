@@ -1,9 +1,9 @@
 # Multi-service example — Product Catalog Summary
 
 A **task-declared multi-service** example. The task ships its own
-`environment.compose.yaml` declaring four services (runner + db-service +
-db + a task-specific `app-service`), and the engine materialises them
-**once at run start** under `--runtime shared` (Case B in
+`environment.compose.yaml` declaring three services (runner + db-service +
+a task-specific `app-service`), and the engine materialises them **once at
+run start** under `--runtime shared` (Case B in
 [ADR-0018](../../../docs/architecture/adr/0018-multi-container-under-shared-runtime.md)).
 
 The agent's job is to query the running product-catalog HTTP service and
@@ -16,7 +16,7 @@ products.
   environment (real running HTTP service the agent hits) without paying
   per-trial substrate cost. Contrast with the per-trial isolation path,
   which materialises a fresh substrate per trial.
-- Docker Compose service discovery inside the substrate. All four services
+- Docker Compose service discovery inside the substrate. All three services
   join the same auto-generated docker-compose network, so the runner
   container reaches `app-service` by service name via docker DNS
   (`http://app-service/products.json` from inside the runner).

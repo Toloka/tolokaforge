@@ -93,18 +93,18 @@ class TestTaskYaml:
 
 
 class TestComposeShape:
-    """The compose file must declare the four services the Case B
+    """The compose file must declare the three services the Case B
     materialisation path needs to resolve: the ``runner`` named by the
-    manifest, the ``db`` service the endpoint-resolver looks up, plus
+    manifest, the ``db-service`` endpoint the runner talks to, plus
     the task-specific ``app-service`` this example exists to
     demonstrate."""
 
     def _load_compose(self) -> dict:
         return yaml.safe_load((_TASK_DIR / "environment.compose.yaml").read_text())
 
-    def test_declares_four_services(self) -> None:
+    def test_declares_three_services(self) -> None:
         compose = self._load_compose()
-        assert set(compose["services"].keys()) == {"runner", "db-service", "db", "app-service"}
+        assert set(compose["services"].keys()) == {"runner", "db-service", "app-service"}
 
     def test_runner_uses_local_alias(self) -> None:
         """The runner service references the ``:local`` alias applied
@@ -155,9 +155,5 @@ class TestProductFixture:
         names = [p["name"] for p in top_three]
         # Names the grading references.
         assert names == ["Prism Workstation", "Cascade Desktop Pro", "Nebula Laptop 15"]
-
-    def test_top_price_matches_grading_reference(self) -> None:
-        products = self._load_products()
-        in_stock = [p for p in products if p["in_stock"]]
-        top = max(in_stock, key=lambda p: p["price"])
-        assert int(top["price"]) == 3299
+        # And the price the grading references (as an unformatted integer).
+        assert int(top_three[0]["price"]) == 3299
