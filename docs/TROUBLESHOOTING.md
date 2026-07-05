@@ -28,7 +28,8 @@ convention is: `db-service` on 8000, `mock-web` on 8080,
   ```bash
   uv run playwright install --with-deps chromium
   ```
-- For Docker runtime, make sure the executor container is healthy.
+- For Docker runtime, make sure the `runner` container is healthy —
+  `tolokaforge docker status` shows per-container state.
 
 ## RAG Search Returns Empty
 

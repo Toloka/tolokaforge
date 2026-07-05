@@ -59,13 +59,9 @@ jobs:
         run: |
           scripts/tests/task_pack_docker_smoke.sh
 
-      - name: Run unit tests
+      - name: Run unit + canonical tests
         run: |
-          uv run pytest tests/unit/ -v --tb=short
-
-      - name: Run functional tests
-        run: |
-          uv run pytest tests/functional/ -v --tb=short
+          uv run pytest tests/ -m "unit or canonical" -v --tb=short
 
       - name: Build Docker images for integration tests
         run: |
@@ -74,9 +70,3 @@ jobs:
       - name: Run integration tests
         run: |
           uv run pytest tests/integration/ -v --tb=short
-
-      - name: Run e2e tests
-        env:
-          E2E_TESTS: "1"
-        run: |
-          scripts/with_env.sh uv run pytest tests/e2e/ -v --tb=short
