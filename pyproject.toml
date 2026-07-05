@@ -123,6 +123,16 @@ exclude = [
 [tool.hatch.build.targets.wheel]
 packages = ["tolokaforge"]
 
+# Ship `.python-version` inside the built wheel as
+# ``tolokaforge/_python_version.txt``. The repo-root dotfile is the
+# single source of truth (dev, CI, docker-build all read it) — this
+# force-include copies it into the wheel so runtime code that reads the
+# pinned version (``tolokaforge.docker.builder._pinned_python_version``)
+# still finds it when installed as a wheel, where the repo-root file is
+# absent from ``site-packages``.
+[tool.hatch.build.targets.wheel.force-include]
+".python-version" = "tolokaforge/_python_version.txt"
+
 [tool.hatch.build.targets.sdist]
 
 [tool.black]

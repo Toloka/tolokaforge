@@ -24,6 +24,7 @@ import logging
 import shutil
 import tempfile
 from collections.abc import Callable
+from importlib import resources
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,48 @@ logger = logging.getLogger(__name__)
 def repo_root() -> Path:
     """Repository root, resolved relative to this module — independent of CWD."""
     return Path(__file__).resolve().parents[2]
+
+
+def _pinned_python_version() -> str:
+    """Read the pinned Python minor version from ``.python-version``.
+
+    Single source of truth for the runtime Python version — dev, CI,
+    devcontainer, and every runtime Docker image resolve from this file.
+    Passed to Dockerfiles as the ``PYTHON_VERSION`` build arg so
+    ``FROM python:${PYTHON_VERSION}-slim`` follows automatically. The
+    Dockerfiles still default to the current pin so a manual
+    ``docker build`` without the arg produces the same image.
+
+    Resolution order:
+
+    1. ``tolokaforge/_python_version.txt`` inside the installed package.
+       Populated at wheel-build time by hatchling's ``force-include``
+       (see ``pyproject.toml``). This is the path a wheel install sees
+       — ``site-packages/tolokaforge/_python_version.txt``.
+    2. ``.python-version`` at the repo root. This is the path a source
+       checkout / editable install sees. The repo-root file is the
+       single source of truth at *write* time; the packaged copy is a
+       *build artifact* of it.
+
+    Both branches read the same value on a matching install; the
+    two-branch shape only exists to cover the wheel-install case where
+    the repo-root dotfile is not available in ``site-packages``.
+    """
+    try:
+        packaged = resources.files("tolokaforge").joinpath("_python_version.txt")
+        if packaged.is_file():
+            return packaged.read_text().strip()
+    except (ModuleNotFoundError, FileNotFoundError, OSError):
+        # ``resources.files`` may raise when the package isn't fully
+        # discoverable yet (e.g. during hatchling's own build
+        # introspection, or on some editable-install layouts). Fall
+        # through to the repo-root read.
+        pass
+    return (repo_root() / ".python-version").read_text().strip()
+
+
+PYTHON_VERSION = _pinned_python_version()
+_PYTHON_BUILD_ARGS: dict[str, str] = {"PYTHON_VERSION": PYTHON_VERSION}
 
 
 # =============================================================================
@@ -64,6 +107,7 @@ IMAGE_DEFINITIONS: dict[str, dict[str, Any]] = {
         "context_files": [
             "tolokaforge/env/json_db_service/",
         ],
+        "build_args": dict(_PYTHON_BUILD_ARGS),
     },
     "runner": {
         "name": "tolokaforge-runner",
@@ -82,6 +126,7 @@ IMAGE_DEFINITIONS: dict[str, dict[str, Any]] = {
         "dockerfile": "tolokaforge/docker/dockerfiles/mock_web.Dockerfile",
         "context": ".",
         "context_files": [],
+        "build_args": dict(_PYTHON_BUILD_ARGS),
     },
 }
 
@@ -107,7 +152,7 @@ def _runner_definition() -> dict[str, Any]:
     return {
         **IMAGE_DEFINITIONS["runner"],
         "context_files": [str(artifact.path)],  # absolute path to the .whl
-        "build_args": {"WHEEL_FILENAME": artifact.path.name},
+        "build_args": {**_PYTHON_BUILD_ARGS, "WHEEL_FILENAME": artifact.path.name},
     }
 
 
@@ -125,7 +170,7 @@ def _rag_definition() -> dict[str, Any]:
             str(artifact.path),  # wheel (absolute → flat copy)
             "tolokaforge/env/rag_service/",  # service files (relative)
         ],
-        "build_args": {"WHEEL_FILENAME": artifact.path.name},
+        "build_args": {**_PYTHON_BUILD_ARGS, "WHEEL_FILENAME": artifact.path.name},
     }
 
 
