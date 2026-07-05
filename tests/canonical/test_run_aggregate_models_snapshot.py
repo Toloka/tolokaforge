@@ -23,6 +23,7 @@ this suite loudly.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from typing import Any
 
@@ -404,8 +405,6 @@ def test_int_valued_numeric_fields_preserve_int_type() -> None:
     future producer refactor introducing ``int`` output — the model
     must handle it correctly without a coordinated widening. Closes #153.
     """
-    import json
-
     # Hand-construct a payload with int-valued token counts + latency
     # percentiles. The producer path today never emits these as int,
     # so this is the only way to exercise the int branch of the union.
@@ -544,7 +543,6 @@ def test_current_producer_output_matches_model_dump_byte_for_byte() -> None:
     catches any accidental type coercion in the round trip for the
     fields we DID narrow (``success_rate_*``, ``avg_score_*``,
     ``pass_at_*_macro``)."""
-    import json
 
     def _canonical(payload: dict[str, Any]) -> str:
         return json.dumps(payload, sort_keys=True, default=str)
