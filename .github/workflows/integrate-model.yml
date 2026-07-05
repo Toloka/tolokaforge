@@ -1,0 +1,203 @@
+name: Model auto-integration (observe)
+
+# First stage of the model auto-integration pipeline: when a maintainer adds
+# the trigger label to an onboarding PR, run the capability integration suite
+# and the wire-probe task-pack against the candidate model on the DEFAULT
+# preset (raw, pre-fix observation), then upload the results as a single
+# artifact for the next step (agent classification + fix-loop) to consume.
+#
+# PR title convention (the workflow reads the model from it):
+#   integrate: <openrouter-model-slug>
+# e.g.  "integrate: anthropic/claude-opus-4.8"
+# The provider is always openrouter (the arena routing); the slug is the exact
+# OpenRouter model id.
+
+on:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  # One in-flight observe run per PR; a re-label never double-fans-out.
+  group: integrate-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  observe:
+    # Only the trigger label starts the pipeline; any other label is a no-op.
+    if: github.event.label.name == 'automation:integrate-model'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number }}
+      # Untrusted input: only ever referenced as "$PR_TITLE" inside a shell,
+      # never interpolated into the script body.
+      PR_TITLE: ${{ github.event.pull_request.title }}
+      IS_FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
+    steps:
+      - name: Reject fork PRs (no secrets on the pull_request event)
+        if: env.IS_FORK == 'true'
+        run: |
+          gh pr edit "$PR" -R "$REPO" \
+            --remove-label 'automation:integrate-model' \
+            --add-label 'automation:integrate-needs-human'
+          gh pr comment "$PR" -R "$REPO" --body \
+            "Auto-integration does not run on fork PRs (secrets are unavailable on the \`pull_request\` event). A maintainer must re-open this from a branch in this repo, or run the observe stage manually. Marked \`automation:integrate-needs-human\`."
+          echo "::error::Fork PR - refusing to run with secrets. Marked needs-human."
+          exit 1
+
+      - name: Label-once guard (drop trigger, mark running)
+        run: |
+          gh pr edit "$PR" -R "$REPO" \
+            --remove-label 'automation:integrate-model' \
+            --add-label 'automation:integrate-running'
+
+      - name: Parse candidate model from PR title
+        id: parse
+        run: |
+          set -euo pipefail
+          if [[ "$PR_TITLE" =~ ^integrate:[[:space:]]+([^[:space:]]+)[[:space:]]*$ ]]; then
+            NAME="${BASH_REMATCH[1]}"
+          else
+            gh pr edit "$PR" -R "$REPO" \
+              --remove-label 'automation:integrate-running' \
+              --add-label 'automation:integrate-needs-human'
+            gh pr comment "$PR" -R "$REPO" --body \
+              "Could not parse the candidate model from the PR title. Expected the convention \`integrate: <openrouter-model-slug>\` (e.g. \`integrate: anthropic/claude-opus-4.8\`). Marked \`automation:integrate-needs-human\`."
+            echo "::error::PR title does not match 'integrate: <slug>'."
+            exit 1
+          fi
+          {
+            echo "provider=openrouter"
+            echo "name=$NAME"
+          } >> "$GITHUB_OUTPUT"
+          echo "Parsed candidate: openrouter / $NAME"
+
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.9.5"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - run: uv python install 3.12
+
+      - run: uv sync --dev --locked
+
+      - name: Create .env (candidate model + user-sim run on the pipeline key)
+        run: echo "OPENROUTER_API_KEY=${{ secrets.ARENA_AUTOMATION_OPENROUTER_API_KEY }}" > .env
+
+      - name: Resolve candidate model_id slug
+        id: slug
+        env:
+          TF_PROVIDER: ${{ steps.parse.outputs.provider }}
+          TF_NAME: ${{ steps.parse.outputs.name }}
+        run: |
+          set -euo pipefail
+          MODEL_ID="$(uv run python -c 'import os; from tolokaforge.core.output.artifacts import model_id_slug; print(model_id_slug(os.environ["TF_PROVIDER"], os.environ["TF_NAME"]))')"
+          echo "model_id=$MODEL_ID" >> "$GITHUB_OUTPUT"
+          echo "Candidate model_id: $MODEL_ID"
+
+      - name: Capability integration probes (report-only)
+        # All capabilities run against the candidate (ephemeral all-required
+        # cert injected via TF_CANDIDATE_*); a miss is data for the next step,
+        # not a gate, so failures do not fail the job.
+        env:
+          TF_CANDIDATE_PROVIDER: ${{ steps.parse.outputs.provider }}
+          TF_CANDIDATE_NAME: ${{ steps.parse.outputs.name }}
+          MODEL_ID: ${{ steps.slug.outputs.model_id }}
+        run: |
+          mkdir -p observation
+          uv run pytest tests/integration/llm/ \
+            -k "$MODEL_ID" \
+            --junitxml=observation/capability_report.xml \
+            -v --tb=short || true
+
+      - name: Build core runner image (for the wire probes)
+        run: uv run tolokaforge docker build --core
+
+      - name: Wire-probe task-pack on the default preset (report-only)
+        env:
+          TF_PROVIDER: ${{ steps.parse.outputs.provider }}
+          TF_NAME: ${{ steps.parse.outputs.name }}
+        run: |
+          set -euo pipefail
+          cat > observation/candidate_run.yaml <<YAML
+          models:
+            agent:
+              provider: "${TF_PROVIDER}"
+              name: "${TF_NAME}"
+              temperature: 0.0
+              max_tokens: 4096
+            user:
+              provider: "openrouter"
+              name: "anthropic/claude-sonnet-4.6"
+              temperature: 0.2
+          orchestrator:
+            workers: 1
+            repeats: 2
+            max_turns: 10
+            queue_backend: sqlite
+          evaluation:
+            task_packs:
+              - "tests/data/tasks/wire_probes/dataset"
+            tasks_glob: "**/task.yaml"
+            output_dir: "observation/wire_probes"
+          YAML
+          uv run tolokaforge run --config observation/candidate_run.yaml --verbose || true
+
+      - name: Assemble handoff manifest
+        env:
+          TF_PROVIDER: ${{ steps.parse.outputs.provider }}
+          TF_NAME: ${{ steps.parse.outputs.name }}
+          MODEL_ID: ${{ steps.slug.outputs.model_id }}
+        run: |
+          uv run python - <<'PY'
+          import glob, json, os, pathlib
+
+          runs = sorted(glob.glob("observation/wire_probes_*"))
+          wire_dir = runs[-1] if runs else None
+          manifest = {
+              "schema_version": 1,
+              "stage": "observe",
+              "candidate": {
+                  "provider": os.environ["TF_PROVIDER"],
+                  "name": os.environ["TF_NAME"],
+                  "model_id": os.environ["MODEL_ID"],
+              },
+              "preset": "default",
+              "engine_ref": os.environ.get("GITHUB_SHA", ""),
+              "pr": int(os.environ.get("PR", "0")),
+              "capability_report": "capability_report.xml",
+              "wire_probe_dir": (
+                  os.path.relpath(wire_dir, "observation") if wire_dir else None
+              ),
+          }
+          pathlib.Path("observation/manifest.json").write_text(
+              json.dumps(manifest, indent=2) + "\n"
+          )
+          print(json.dumps(manifest, indent=2))
+          PY
+
+      - name: Upload observation bundle (handoff to the next step)
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: integration-observation-pr${{ github.event.pull_request.number }}
+          path: observation/
+          retention-days: 30
+
+      - name: Post observation summary on the PR
+        if: always()
+        run: |
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          gh pr comment "$PR" -R "$REPO" --body \
+            "Observation stage ran for \`${{ steps.parse.outputs.name }}\` on the \`default\` preset. Capability report + wire-probe trajectories uploaded as artifact \`integration-observation-pr${PR}\` for the next step. Run: ${RUN_URL}"

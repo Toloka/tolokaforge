@@ -25,6 +25,8 @@ Capability coverage discipline is a canonical test responsibility — see
 
 from __future__ import annotations
 
+import os
+
 from ._capability import Capability as C
 from ._capability import ModelCertificate as MC
 
@@ -1798,6 +1800,47 @@ def _validate_unique_model_ids(certificates: list[MC]) -> None:
             f"Duplicate model_id in ALL_MODELS: {duplicates}. "
             "Every certificate must have a unique filesystem-safe slug."
         )
+
+
+def _candidate_from_env() -> MC | None:
+    """Build an ad-hoc, all-capabilities-required certificate from env vars.
+
+    Set by the model auto-integration workflow's observe stage
+    (``TF_CANDIDATE_PROVIDER`` + ``TF_CANDIDATE_NAME``) to run the full
+    capability suite against a candidate model that is NOT yet listed in
+    :data:`ALL_MODELS`. Every capability is declared ``required`` so no probe
+    auto-skips: the workflow runs the suite report-only, so a capability the
+    candidate does not support is recorded as a failure for the next step to
+    classify, not a hard gate. ``model_id`` is derived through the same
+    :func:`model_id_slug` the invariant checks against, so the injected cert
+    satisfies the slug-consistency contract.
+
+    Returns ``None`` when the env vars are unset, so normal test collection
+    and the canonical capability-registry test are untouched.
+    """
+    provider = os.environ.get("TF_CANDIDATE_PROVIDER", "").strip()
+    name = os.environ.get("TF_CANDIDATE_NAME", "").strip()
+    if not provider or not name:
+        return None
+
+    from tolokaforge.core.output.artifacts import model_id_slug
+
+    return MC(
+        model_id=model_id_slug(provider, name),
+        provider=provider,
+        name=name,
+        env_key=f"{provider.upper()}_API_KEY",
+        required=frozenset(C),
+        known_unsupported=frozenset(),
+    )
+
+
+# Append the onboarding candidate (if any) before the uniqueness check so a
+# re-onboarding of an already-listed model reuses its curated certificate
+# rather than colliding.
+_candidate = _candidate_from_env()
+if _candidate is not None and _candidate.model_id not in {c.model_id for c in _ALL}:
+    _ALL.append(_candidate)
 
 
 _validate_unique_model_ids(_ALL)
