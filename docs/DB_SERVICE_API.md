@@ -811,8 +811,8 @@ pydantic>=2.0.0
 
 ### Dockerfile Changes
 
-The existing [`docker/json_db.Dockerfile`](docker/json_db.Dockerfile) requires no changes.
-The service code in [`tolokaforge/env/json_db_service/app.py`](tolokaforge/env/json_db_service/app.py) will be extended.
+The existing [`tolokaforge/docker/dockerfiles/db_service.Dockerfile`](../tolokaforge/docker/dockerfiles/db_service.Dockerfile) requires no changes.
+The service code in [`tolokaforge/env/json_db_service/app.py`](../tolokaforge/env/json_db_service/app.py) will be extended.
 
 ### Thread Safety
 

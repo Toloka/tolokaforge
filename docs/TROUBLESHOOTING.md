@@ -2,19 +2,25 @@
 
 ## Services Not Running
 
-Browser, JSON DB, and RAG tasks require services:
+Browser, JSON DB, and RAG tasks require services. `tolokaforge run`
+auto-starts them, but a cold first run can be slow while images build.
+Pre-build once:
 
 ```bash
-docker compose up -d json-db mock-web rag-service
+uv run tolokaforge docker build
 ```
 
-Check health:
+Inspect running containers + their host-mapped ports with:
 
 ```bash
-curl http://localhost:8000/health   # json-db
-curl http://localhost:8080/health   # mock-web
-curl http://localhost:8001/health   # rag-service
+uv run tolokaforge docker status
 ```
+
+Health of a running service is reachable at `/health` on the
+host-mapped port `docker status` reports (e.g.
+`http://localhost:<mapped>/health`). The container-internal
+convention is: `db-service` on 8000, `mock-web` on 8080,
+`rag-service` on 8001.
 
 ## Browser Tool Errors
 
@@ -22,7 +28,8 @@ curl http://localhost:8001/health   # rag-service
   ```bash
   uv run playwright install --with-deps chromium
   ```
-- For Docker runtime, make sure the executor container is healthy.
+- For Docker runtime, make sure the `runner` container is healthy —
+  `tolokaforge docker status` shows per-container state.
 
 ## RAG Search Returns Empty
 
