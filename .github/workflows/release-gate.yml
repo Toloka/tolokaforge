@@ -19,9 +19,14 @@ jobs:
           lfs: true
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@v7
         with:
-          version: "latest"
+          # Pinned (not "latest") so CI resolves the lockfile with the SAME uv that
+          # generated it. With `uv sync --locked`, a "latest" uv that ever changes
+          # lock resolution/format would fail CI repo-wide on its release day, for
+          # nobody's change. Bump this deliberately alongside a relock. Must stay
+          # within [tool.uv] required-version in pyproject.toml.
+          version: "0.9.5"
           enable-cache: true
           cache-dependency-glob: "uv.lock"
 
@@ -64,7 +69,7 @@ jobs:
 
       - name: Build Docker images for integration tests
         run: |
-          docker compose build json-db mock-web rag-service executor
+          uv run tolokaforge docker build
 
       - name: Run integration tests
         run: |

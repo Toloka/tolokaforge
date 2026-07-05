@@ -43,13 +43,17 @@ OPENROUTER_API_KEY=sk-or-...
 # or OPENAI_API_KEY / ANTHROPIC_API_KEY / GOOGLE_API_KEY
 ```
 
-## Start Environment Services (Recommended)
+## Build Environment Services (Recommended)
 
-Browser, JSON DB, and RAG tasks rely on services. Start them with Docker:
+Browser, JSON DB, and RAG tasks rely on services. Build them once:
 
 ```bash
-docker compose up -d json-db mock-web rag-service
+uv run tolokaforge docker build
 ```
+
+The engine auto-starts required services on `tolokaforge run`; you do
+not need to launch them manually. This step just pre-builds the images
+so the first run isn't slowed down by a cold docker build.
 
 ## Set Up Tasks
 

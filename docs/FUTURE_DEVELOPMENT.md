@@ -58,12 +58,6 @@ Domain directories currently baked in:
 - `tasks/telecom/tau_tools/`
 - `tasks/telecom/data/`
 
-### Issue 2 — `docker/` directory: still needed?
-
-The `docker/` directory contains Dockerfiles. Questions:
-- Do `json_db.Dockerfile` and `db_service.Dockerfile` overlap?
-- Is `orchestrator.Dockerfile` still wanted? `tolokaforge` ships as a CLI; the orchestrator does not need its own image unless we add a hosted execution surface.
-
 ### Issue 3 — No end-to-end validation for native and tau adapters
 
 We have not:
@@ -169,11 +163,9 @@ The key question for removing baked-in domain files is: how does each adapter de
 | Dockerfile | Purpose | Status to verify |
 |-----------|---------|-----------------|
 | `db_service.Dockerfile` | JSON DB state service | Needed |
-| `json_db.Dockerfile` | Legacy alias? | May overlap with `db_service.Dockerfile` |
 | `runner.Dockerfile` | gRPC runner service | Needed — simplify per 9.3 |
 | `rag.Dockerfile` | RAG search service | Needed |
 | `mock_web.Dockerfile` | Mock web service | Needed |
-| `orchestrator.Dockerfile` | Orchestrator container | Audit — engine ships as a CLI; image may be unused |
 
 ### 9.5 Verification gate
 
