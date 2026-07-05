@@ -1815,14 +1815,14 @@
       "cache_read": 0.24
     },
     "z-ai/glm-5.1": {
-      "input": 0.975,
-      "output": 4.3,
-      "cache_read": 0.182
+      "input": 0.966,
+      "output": 3.036,
+      "cache_read": 0.1794
     },
     "z-ai/glm-5.2": {
-      "input": 0.93,
-      "output": 3.0,
-      "cache_read": 0.26
+      "input": 0.574,
+      "output": 1.804,
+      "cache_read": 0.1066
     },
     "z-ai/glm-5v-turbo": {
       "input": 1.2,
