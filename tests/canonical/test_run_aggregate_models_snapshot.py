@@ -345,3 +345,121 @@ def test_failure_attribution_envelope_round_trip() -> None:
     }
 
     _round_trip(FailureAttribution, payload)
+
+
+# ---------------------------------------------------------------------------
+# Wire-format invariants (closes #152, #153)
+# ---------------------------------------------------------------------------
+
+
+def test_schema_version_survives_exclude_unset() -> None:
+    """``RunAggregate.schema_version`` must appear in the dumped output
+    even when the model is constructed without an explicit value AND
+    dumped with ``exclude_unset=True`` (the mode the migrated writer
+    will use to preserve wire-format parity with the current dict path).
+
+    The regression this catches: once the writer migrates from
+    ``json.dump(dict)`` to ``model.model_dump_json(exclude_unset=True)``,
+    a ``RunAggregate`` whose ``schema_version`` was left at the model
+    default would silently drop the envelope field — every downstream
+    dashboard that dispatches on ``schema_version`` would break. The
+    model's ``@model_serializer`` forces the field into the dump
+    regardless. Closes #152.
+    """
+    # Payload deliberately omits ``schema_version`` — the model must
+    # still emit it via the default.
+    payload = calculate_aggregate_metrics(_sample_task_metrics_list(), weighted=True)
+    assert "schema_version" not in payload, "guard: payload must not stamp schema_version"
+
+    model = RunAggregate.model_validate(payload)
+    dumped = model.model_dump(by_alias=True, mode="json", exclude_unset=True)
+
+    assert "schema_version" in dumped, (
+        "schema_version must survive exclude_unset=True on RunAggregate — "
+        f"got dumped keys: {sorted(dumped.keys())}"
+    )
+    assert (
+        dumped["schema_version"] == 1
+    ), f"schema_version default drifted; expected 1, got {dumped['schema_version']!r}"
+
+    # And it survives a JSON round-trip too.
+    reloaded = RunAggregate.model_validate_json(
+        model.model_dump_json(by_alias=True, exclude_unset=True)
+    )
+    assert reloaded.schema_version == 1
+
+
+def test_int_float_json_string_no_drift() -> None:
+    """The producer emits ``int`` for empty-sum aggregates
+    (``sum([]) == 0``) and ``float`` for populated ones. The model's
+    ``int | float`` unions preserve the source type on validation so
+    the dumped JSON is byte-identical to the source dict's JSON — no
+    ``0`` → ``0.0`` drift on the wire.
+
+    A pre-fix version of the model with `float` fields would coerce
+    ``0`` to ``0.0`` on validation, and the JSON dump would carry
+    ``0.0`` where the source dict carries ``0`` — a wire-format break
+    invisible to Python-dict comparison (``0 == 0.0``) but real when
+    downstream tooling diffs the JSON files byte-for-byte. Closes #153.
+    """
+    import json
+
+    def _canonical(payload: dict[str, Any]) -> str:
+        return json.dumps(payload, sort_keys=True, default=str)
+
+    # Empty aggregates — the harshest test for int/float drift because
+    # every ``total_*`` / ``avg_*`` is ``sum([]) == 0`` on the source.
+    empty_traj = _make_trajectory()
+    task_payload = calculate_task_metrics([empty_traj])
+    _augment_task_metrics(task_payload, task_id="task-int-float")
+
+    # PerTaskMetrics — source dict JSON vs. model-dumped JSON must match
+    # byte-for-byte.
+    model = PerTaskMetrics.model_validate(task_payload)
+    dumped_dict = model.model_dump(by_alias=True, mode="json", exclude_unset=True)
+    source_json = _canonical(task_payload)
+    dumped_json = _canonical(dumped_dict)
+    assert source_json == dumped_json, (
+        "PerTaskMetrics JSON drift between dict path and model path.\n"
+        f"source: {source_json}\n"
+        f"model:  {dumped_json}"
+    )
+
+    # AggregateMetrics — same story; empty-aggregate `total_*_tokens`
+    # start as ``int`` from the producer.
+    agg_payload = calculate_aggregate_metrics([task_payload], weighted=True)
+    agg_model = AggregateMetrics.model_validate(agg_payload)
+    agg_dumped = agg_model.model_dump(by_alias=True, mode="json", exclude_unset=True)
+    assert _canonical(agg_payload) == _canonical(agg_dumped), (
+        "AggregateMetrics JSON drift between dict path and model path.\n"
+        f"source: {_canonical(agg_payload)}\n"
+        f"model:  {_canonical(agg_dumped)}"
+    )
+
+    # RunAggregate — model injects `schema_version`. Compare with the
+    # source dict stamped to match.
+    run_payload = dict(agg_payload)
+    run_payload["schema_version"] = 1
+    run_model = RunAggregate.model_validate(run_payload)
+    run_dumped = run_model.model_dump(by_alias=True, mode="json", exclude_unset=True)
+    assert _canonical(run_payload) == _canonical(run_dumped), (
+        "RunAggregate JSON drift between dict path and model path.\n"
+        f"source: {_canonical(run_payload)}\n"
+        f"model:  {_canonical(run_dumped)}"
+    )
+
+    # FailureAttribution — the envelope isn't a numeric-heavy shape,
+    # but we exercise it to prove the invariant holds for every
+    # writer artifact.
+    attributions = [attribute_failure(empty_traj)]
+    fa_payload = {
+        "summary": summarize_failure_attributions(attributions),
+        "failures": attributions,
+    }
+    fa_model = FailureAttribution.model_validate(fa_payload)
+    fa_dumped = fa_model.model_dump(by_alias=True, mode="json", exclude_unset=True)
+    assert _canonical(fa_payload) == _canonical(fa_dumped), (
+        "FailureAttribution JSON drift between dict path and model path.\n"
+        f"source: {_canonical(fa_payload)}\n"
+        f"model:  {_canonical(fa_dumped)}"
+    )

@@ -66,8 +66,20 @@ class RunAggregateWriter(Protocol):
     ) -> None:
         """Persist ``output_dir/aggregate.json`` from *aggregate*.
 
-        Callers are responsible for injecting any envelope fields the
-        artifact carries (e.g. ``schema_version``) before calling.
+        Wire-format invariants (also pinned by the canonical tests on
+        :class:`~tolokaforge.core.output.aggregate_models.RunAggregate`):
+
+        * **``schema_version`` is always present** on the written JSON.
+          Callers passing a dict must set it before calling. Callers
+          passing a :class:`~tolokaforge.core.output.aggregate_models.RunAggregate`
+          model get this for free — the model's serializer forces the
+          field into the dump regardless of ``exclude_unset``.
+        * **Numeric fields preserve source type.** Values the producer
+          emitted as ``int`` (e.g. ``sum([]) == 0`` for empty
+          aggregates) stay ``int`` on the wire; values emitted as
+          ``float`` stay ``float``. The model achieves this via
+          ``int | float`` unions; the direct dict path preserves it
+          naturally.
         """
         ...
 

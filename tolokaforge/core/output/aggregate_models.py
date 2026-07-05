@@ -24,13 +24,24 @@ verified against the same wire format.
 The ``pass@k`` / ``pass_hat@k`` keys aren't valid Python identifiers,
 so they carry :class:`~pydantic.Field` ``alias`` values. Dump with
 ``model_dump(by_alias=True, mode="json")`` to produce the wire shape.
+
+Two wire-format invariants pinned by the canonical tests:
+
+1. ``schema_version`` on :class:`RunAggregate` is **always emitted** on
+   dump, regardless of ``exclude_unset``. See the model-serializer on
+   the class for details.
+2. Numeric fields carry ``int | float`` unions so the wire type
+   matches what the producer emitted (``sum([]) == 0`` from an empty
+   aggregate stays ``int`` on the wire; populated fields stay
+   ``float``). This preserves byte-identical JSON between the
+   dict-based writer path and any future model-based writer path.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SerializationInfo, model_serializer
 
 __all__ = [
     "AggregateMetrics",
@@ -76,42 +87,48 @@ class PerTaskMetrics(BaseModel):
     pass_hat_at_5: float | None = Field(default=None, alias="pass_hat@5")
     pass_hat_at_10: float | None = Field(default=None, alias="pass_hat@10")
 
-    # Averages across trials.
-    avg_score: float
-    avg_latency_s: float
-    avg_turns: float
-    avg_tool_calls: float
+    # Averages across trials. Typed as ``int | float`` unions so the
+    # model preserves the numeric type the producer emitted: e.g.
+    # ``sum([]) == 0`` (``int``) for empty aggregates, ``float``
+    # otherwise. Pydantic's smart-union picks the more specific type on
+    # validation, so a source ``0`` round-trips to ``0`` (not ``0.0``)
+    # in the JSON dump — pinning the wire format against the current
+    # dict-based writer path. See :class:`RunAggregateWriter` docstring.
+    avg_score: int | float
+    avg_latency_s: int | float
+    avg_turns: int | float
+    avg_tool_calls: int | float
 
     # Per-usage-field averages (Metrics.usage — six fields).
-    avg_prompt_tokens: float = 0.0
-    avg_completion_tokens: float = 0.0
-    avg_reasoning_tokens: float = 0.0
-    avg_cached_tokens: float = 0.0
-    avg_cache_creation_input_tokens: float = 0.0
-    avg_cache_read_input_tokens: float = 0.0
+    avg_prompt_tokens: int | float = 0
+    avg_completion_tokens: int | float = 0
+    avg_reasoning_tokens: int | float = 0
+    avg_cached_tokens: int | float = 0
+    avg_cache_creation_input_tokens: int | float = 0
+    avg_cache_read_input_tokens: int | float = 0
 
     # Cost is ``None`` when no trial reported a cost (unknown-provider case).
-    total_cost_usd: float | None = None
-    avg_cost_usd: float | None = None
+    total_cost_usd: int | float | None = None
+    avg_cost_usd: int | float | None = None
 
     # Judge-cost split — ``judge_cost_usd`` is the LLM-judge grader's
     # spend, tracked separately so the agent-vs-judge cost breakdown
     # survives round-trips. ``total_cost_incl_judge_usd`` = agent +
     # judge; ``None`` when neither is known.
-    judge_cost_usd: float | None = None
-    total_cost_incl_judge_usd: float | None = None
+    judge_cost_usd: int | float | None = None
+    total_cost_incl_judge_usd: int | float | None = None
 
     # Per-trial wall-time percentiles.
-    latency_p50_s: float = 0.0
-    latency_p90_s: float = 0.0
-    latency_p99_s: float = 0.0
+    latency_p50_s: int | float = 0
+    latency_p90_s: int | float = 0
+    latency_p99_s: int | float = 0
 
     # Per-API-call percentiles aggregated across every call in every trial.
-    api_call_latency_p50_s: float = 0.0
-    api_call_latency_p90_s: float = 0.0
-    api_call_latency_p99_s: float = 0.0
+    api_call_latency_p50_s: int | float = 0
+    api_call_latency_p90_s: int | float = 0
+    api_call_latency_p99_s: int | float = 0
 
-    stuck_rate: float = 0.0
+    stuck_rate: int | float = 0
 
 
 class AggregateMetrics(BaseModel):
@@ -130,65 +147,89 @@ class AggregateMetrics(BaseModel):
     total_tasks: int
     total_trials: int
 
-    # Weighted (micro) averages — set when ``weighted=True``.
-    success_rate_micro: float | None = None
-    avg_score_micro: float | None = None
+    # Weighted (micro) averages — set when ``weighted=True``. Union of
+    # ``int | float | None`` so an empty-aggregate ``int 0`` from the
+    # producer preserves the JSON wire type verbatim (see
+    # :class:`PerTaskMetrics` for the same convention).
+    success_rate_micro: int | float | None = None
+    avg_score_micro: int | float | None = None
 
     # Unweighted (macro) averages — set when ``weighted=False``.
-    success_rate_macro: float | None = None
-    avg_score_macro: float | None = None
+    success_rate_macro: int | float | None = None
+    avg_score_macro: int | float | None = None
 
     # pass@k macro averages across tasks, plus their pass_hat aliases.
-    pass_at_1_macro: float | None = Field(default=None, alias="pass@1_macro")
-    pass_at_5_macro: float | None = Field(default=None, alias="pass@5_macro")
-    pass_at_10_macro: float | None = Field(default=None, alias="pass@10_macro")
-    pass_hat_at_1_macro: float | None = Field(default=None, alias="pass_hat@1_macro")
-    pass_hat_at_5_macro: float | None = Field(default=None, alias="pass_hat@5_macro")
-    pass_hat_at_10_macro: float | None = Field(default=None, alias="pass_hat@10_macro")
+    pass_at_1_macro: int | float | None = Field(default=None, alias="pass@1_macro")
+    pass_at_5_macro: int | float | None = Field(default=None, alias="pass@5_macro")
+    pass_at_10_macro: int | float | None = Field(default=None, alias="pass@10_macro")
+    pass_hat_at_1_macro: int | float | None = Field(default=None, alias="pass_hat@1_macro")
+    pass_hat_at_5_macro: int | float | None = Field(default=None, alias="pass_hat@5_macro")
+    pass_hat_at_10_macro: int | float | None = Field(default=None, alias="pass_hat@10_macro")
 
     # Simple cross-task averages.
-    avg_latency_s: float = 0.0
-    avg_turns: float = 0.0
-    avg_tool_calls: float = 0.0
-    stuck_rate: float = 0.0
+    avg_latency_s: int | float = 0
+    avg_turns: int | float = 0
+    avg_tool_calls: int | float = 0
+    stuck_rate: int | float = 0
 
     # Per-usage-field totals + macro averages.
-    total_prompt_tokens: float = 0.0
-    total_completion_tokens: float = 0.0
-    total_reasoning_tokens: float = 0.0
-    total_cached_tokens: float = 0.0
-    total_cache_creation_input_tokens: float = 0.0
-    total_cache_read_input_tokens: float = 0.0
-    avg_prompt_tokens: float = 0.0
-    avg_completion_tokens: float = 0.0
-    avg_reasoning_tokens: float = 0.0
-    avg_cached_tokens: float = 0.0
-    avg_cache_creation_input_tokens: float = 0.0
-    avg_cache_read_input_tokens: float = 0.0
+    total_prompt_tokens: int | float = 0
+    total_completion_tokens: int | float = 0
+    total_reasoning_tokens: int | float = 0
+    total_cached_tokens: int | float = 0
+    total_cache_creation_input_tokens: int | float = 0
+    total_cache_read_input_tokens: int | float = 0
+    avg_prompt_tokens: int | float = 0
+    avg_completion_tokens: int | float = 0
+    avg_reasoning_tokens: int | float = 0
+    avg_cached_tokens: int | float = 0
+    avg_cache_creation_input_tokens: int | float = 0
+    avg_cache_read_input_tokens: int | float = 0
 
-    total_cost_usd: float | None = None
-    avg_cost_usd: float | None = None
+    total_cost_usd: int | float | None = None
+    avg_cost_usd: int | float | None = None
 
     # Judge-cost split at the run/slice level — same shape as
     # ``PerTaskMetrics`` but aggregated across the tasks/slice.
-    judge_cost_usd: float | None = None
-    total_cost_incl_judge_usd: float | None = None
+    judge_cost_usd: int | float | None = None
+    total_cost_incl_judge_usd: int | float | None = None
 
-    latency_p50_s_macro: float = 0.0
-    latency_p90_s_macro: float = 0.0
-    latency_p99_s_macro: float = 0.0
+    latency_p50_s_macro: int | float = 0
+    latency_p90_s_macro: int | float = 0
+    latency_p99_s_macro: int | float = 0
 
 
 class RunAggregate(AggregateMetrics):
     """The top-level ``aggregate.json`` shape — :class:`AggregateMetrics`
-    plus the ``schema_version`` envelope field the orchestrator stamps
-    before writing.
+    plus the ``schema_version`` envelope field every downstream consumer
+    (dashboards, metric collectors, historical-run readers) reads to
+    dispatch between wire-format generations.
 
     Slice values inside ``metadata_slices.json`` are :class:`AggregateMetrics`
     directly; only the top-level artifact carries the envelope.
+
+    ``schema_version`` is **always emitted** on dump, regardless of
+    whether the caller constructs the model with an explicit value or
+    lets the default apply. Pydantic's ``exclude_unset=True`` normally
+    drops fields left at their default — for this envelope that would
+    silently ship an aggregate.json without a version, which would
+    break every version-dispatching downstream consumer. The
+    :func:`_always_include_schema_version` model-serializer below
+    guarantees the field is present regardless of dump options.
     """
 
     schema_version: int = 1
+
+    @model_serializer(mode="wrap")
+    def _always_include_schema_version(
+        self, handler: Any, info: SerializationInfo
+    ) -> dict[str, Any]:
+        """Wrap the default serializer so ``schema_version`` is always
+        present in the dumped dict, even under ``exclude_unset=True``."""
+        data = handler(self)
+        if isinstance(data, dict) and "schema_version" not in data:
+            data["schema_version"] = self.schema_version
+        return data
 
 
 class MetadataSlices(BaseModel):
