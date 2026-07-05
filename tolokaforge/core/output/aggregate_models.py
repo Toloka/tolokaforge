@@ -30,18 +30,32 @@ Two wire-format invariants pinned by the canonical tests:
 1. ``schema_version`` on :class:`RunAggregate` is **always emitted** on
    dump, regardless of ``exclude_unset``. See the model-serializer on
    the class for details.
-2. Numeric fields carry ``int | float`` unions so the wire type
-   matches what the producer emitted (``sum([]) == 0`` from an empty
-   aggregate stays ``int`` on the wire; populated fields stay
-   ``float``). This preserves byte-identical JSON between the
-   dict-based writer path and any future model-based writer path.
+2. **Type-preserving numeric fields.** Fields that can naturally be
+   ``int`` at the producer (token counts, latency percentiles,
+   stuck-rate counts, cost sums) carry ``int | float`` unions so the
+   wire type matches whatever the producer emitted. Pydantic v2's
+   smart-union picks the more specific type on validation, so a
+   source ``int 42`` round-trips to ``42`` (not ``42.0``) in the
+   JSON dump. Rate-shaped fields (``success_rate``, ``pass@k``,
+   ``avg_score`` and their macro/micro aggregates) stay narrow
+   ``float`` because they're always ``sum(...) / n`` divisions —
+   never ``int`` at the producer.
+
+   The current producers in ``metrics.py`` and
+   ``failure_attribution.py`` happen to emit ``float`` for every
+   widened field today (both metric-calc functions short-circuit on
+   empty input rather than dividing by zero). The union is
+   defensive future-proofing: if a future refactor changes a
+   producer to emit ``int`` (e.g. a counting aggregator that returns
+   ``0`` for empty), the model preserves the wire type without a
+   coordinated model change.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, SerializationInfo, model_serializer
+from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
 __all__ = [
     "AggregateMetrics",
@@ -147,24 +161,26 @@ class AggregateMetrics(BaseModel):
     total_tasks: int
     total_trials: int
 
-    # Weighted (micro) averages — set when ``weighted=True``. Union of
-    # ``int | float | None`` so an empty-aggregate ``int 0`` from the
-    # producer preserves the JSON wire type verbatim (see
-    # :class:`PerTaskMetrics` for the same convention).
-    success_rate_micro: int | float | None = None
-    avg_score_micro: int | float | None = None
+    # Weighted (micro) averages — set when ``weighted=True``. Rate-shaped
+    # ([0, 1] scalar from ``sum(...) / n``): always ``float`` at the
+    # producer. Stays narrow — no ``int`` widening — matching the
+    # ``PerTaskMetrics.success_rate`` / ``avg_score`` siblings.
+    success_rate_micro: float | None = None
+    avg_score_micro: float | None = None
 
-    # Unweighted (macro) averages — set when ``weighted=False``.
-    success_rate_macro: int | float | None = None
-    avg_score_macro: int | float | None = None
+    # Unweighted (macro) averages — set when ``weighted=False``. Same
+    # rate-shaped rationale.
+    success_rate_macro: float | None = None
+    avg_score_macro: float | None = None
 
     # pass@k macro averages across tasks, plus their pass_hat aliases.
-    pass_at_1_macro: int | float | None = Field(default=None, alias="pass@1_macro")
-    pass_at_5_macro: int | float | None = Field(default=None, alias="pass@5_macro")
-    pass_at_10_macro: int | float | None = Field(default=None, alias="pass@10_macro")
-    pass_hat_at_1_macro: int | float | None = Field(default=None, alias="pass_hat@1_macro")
-    pass_hat_at_5_macro: int | float | None = Field(default=None, alias="pass_hat@5_macro")
-    pass_hat_at_10_macro: int | float | None = Field(default=None, alias="pass_hat@10_macro")
+    # Also always ``float`` (macro-average of ``pass@k`` rates).
+    pass_at_1_macro: float | None = Field(default=None, alias="pass@1_macro")
+    pass_at_5_macro: float | None = Field(default=None, alias="pass@5_macro")
+    pass_at_10_macro: float | None = Field(default=None, alias="pass@10_macro")
+    pass_hat_at_1_macro: float | None = Field(default=None, alias="pass_hat@1_macro")
+    pass_hat_at_5_macro: float | None = Field(default=None, alias="pass_hat@5_macro")
+    pass_hat_at_10_macro: float | None = Field(default=None, alias="pass_hat@10_macro")
 
     # Simple cross-task averages.
     avg_latency_s: int | float = 0
@@ -221,11 +237,16 @@ class RunAggregate(AggregateMetrics):
     schema_version: int = 1
 
     @model_serializer(mode="wrap")
-    def _always_include_schema_version(
-        self, handler: Any, info: SerializationInfo
-    ) -> dict[str, Any]:
+    def _always_include_schema_version(self, handler: Any) -> dict[str, Any]:
         """Wrap the default serializer so ``schema_version`` is always
-        present in the dumped dict, even under ``exclude_unset=True``."""
+        present in the dumped dict, even under ``exclude_unset=True``.
+
+        The wrapped handler produces whatever dict the caller's dump
+        options normally would; this method injects ``schema_version``
+        only when the handler's output omitted it (which happens under
+        ``exclude_unset=True`` when the field was left at its default).
+        No forced overwrite of a caller-set value.
+        """
         data = handler(self)
         if isinstance(data, dict) and "schema_version" not in data:
             data["schema_version"] = self.schema_version

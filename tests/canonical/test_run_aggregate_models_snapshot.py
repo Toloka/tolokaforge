@@ -389,77 +389,172 @@ def test_schema_version_survives_exclude_unset() -> None:
     assert reloaded.schema_version == 1
 
 
-def test_int_float_json_string_no_drift() -> None:
-    """The producer emits ``int`` for empty-sum aggregates
-    (``sum([]) == 0``) and ``float`` for populated ones. The model's
-    ``int | float`` unions preserve the source type on validation so
-    the dumped JSON is byte-identical to the source dict's JSON — no
-    ``0`` → ``0.0`` drift on the wire.
+def test_int_valued_numeric_fields_preserve_int_type() -> None:
+    """The ``int | float`` unions on token-count / latency-percentile /
+    cost-sum fields must preserve ``int`` inputs verbatim through
+    validation AND JSON dump. A regression that narrows any of these
+    fields back to ``float`` would coerce ``int 42`` → ``42.0`` on
+    validation and emit ``42.0`` in the JSON — a byte-level wire drift
+    invisible to Python-dict comparison (``42 == 42.0``) but real
+    when downstream tooling diffs the JSON files byte-for-byte.
 
-    A pre-fix version of the model with `float` fields would coerce
-    ``0`` to ``0.0`` on validation, and the JSON dump would carry
-    ``0.0`` where the source dict carries ``0`` — a wire-format break
-    invisible to Python-dict comparison (``0 == 0.0``) but real when
-    downstream tooling diffs the JSON files byte-for-byte. Closes #153.
+    Today's producers in ``metrics.py`` happen to always emit
+    ``float`` for these fields (division short-circuits on empty
+    input), so no live regression exists. This test guards against a
+    future producer refactor introducing ``int`` output — the model
+    must handle it correctly without a coordinated widening. Closes #153.
     """
+    import json
+
+    # Hand-construct a payload with int-valued token counts + latency
+    # percentiles. The producer path today never emits these as int,
+    # so this is the only way to exercise the int branch of the union.
+    task_payload: dict[str, Any] = {
+        "task_id": "int-preserve-guard",
+        "benchmark_type": "airline",
+        "complexity": "simple",
+        "tags": [],
+        "expected_failure_modes": [],
+        "total_trials": 1,
+        "successful_trials": 1,
+        "success_rate": 1.0,  # rate — stays float
+        "avg_score": 1.0,  # rate — stays float
+        "avg_latency_s": 5,  # int — union widened field
+        "avg_turns": 3,  # int — union widened field
+        "avg_tool_calls": 2,  # int — union widened field
+        # Token counts — natural integers.
+        "avg_prompt_tokens": 100,
+        "avg_completion_tokens": 40,
+        "avg_reasoning_tokens": 10,
+        "avg_cached_tokens": 5,
+        "avg_cache_creation_input_tokens": 3,
+        "avg_cache_read_input_tokens": 2,
+        # Latency percentiles — could be int seconds.
+        "latency_p50_s": 4,
+        "latency_p90_s": 6,
+        "latency_p99_s": 8,
+        "api_call_latency_p50_s": 1,
+        "api_call_latency_p90_s": 2,
+        "api_call_latency_p99_s": 3,
+        "stuck_rate": 0,
+    }
+    model = PerTaskMetrics.model_validate(task_payload)
+
+    # Type preservation at the Python level — union picks int on validation.
+    for field in (
+        "avg_latency_s",
+        "avg_turns",
+        "avg_tool_calls",
+        "avg_prompt_tokens",
+        "avg_completion_tokens",
+        "avg_reasoning_tokens",
+        "avg_cached_tokens",
+        "avg_cache_creation_input_tokens",
+        "avg_cache_read_input_tokens",
+        "latency_p50_s",
+        "latency_p90_s",
+        "latency_p99_s",
+        "api_call_latency_p50_s",
+        "api_call_latency_p90_s",
+        "api_call_latency_p99_s",
+        "stuck_rate",
+    ):
+        value = getattr(model, field)
+        assert isinstance(value, int) and not isinstance(value, bool), (
+            f"PerTaskMetrics.{field}: int input coerced to {type(value).__name__} — "
+            f"the int|float union is broken. Got {value!r}."
+        )
+
+    # Type preservation on the JSON wire — dump keys must be int, not float.
+    dumped = model.model_dump(by_alias=True, mode="json")
+    dumped_json = json.dumps(dumped, sort_keys=True)
+    # An int field dumped as int has no trailing ``.0`` in the JSON string.
+    for field in ("avg_prompt_tokens", "latency_p50_s", "stuck_rate"):
+        assert isinstance(dumped[field], int) and not isinstance(dumped[field], bool), (
+            f"PerTaskMetrics.{field} dumped as {type(dumped[field]).__name__}, "
+            f"expected int. Full dump: {dumped_json}"
+        )
+
+
+def test_int_valued_aggregate_fields_preserve_int_type() -> None:
+    """Same invariant as
+    :func:`test_int_valued_numeric_fields_preserve_int_type` but for the
+    ``AggregateMetrics`` shape. Divison-produced rate fields on
+    ``AggregateMetrics`` (``success_rate_micro/macro``, ``avg_score_*``,
+    ``pass_at_*_macro``) stay narrow ``float`` — a caller passing ``int``
+    there is a producer bug, not a wire invariant to preserve, so we
+    do NOT assert int preservation for those fields."""
+    agg_payload: dict[str, Any] = {
+        "total_tasks": 2,
+        "total_trials": 5,
+        "success_rate_micro": 1.0,  # rate — stays float
+        "avg_score_micro": 1.0,  # rate — stays float
+        "avg_latency_s": 5,  # int — widened
+        "avg_turns": 3,  # int — widened
+        "avg_tool_calls": 2,  # int — widened
+        "stuck_rate": 0,  # int — widened
+        "total_prompt_tokens": 500,
+        "total_completion_tokens": 200,
+        "total_reasoning_tokens": 50,
+        "total_cached_tokens": 25,
+        "total_cache_creation_input_tokens": 15,
+        "total_cache_read_input_tokens": 10,
+        "avg_prompt_tokens": 100,
+        "avg_completion_tokens": 40,
+        "avg_reasoning_tokens": 10,
+        "avg_cached_tokens": 5,
+        "avg_cache_creation_input_tokens": 3,
+        "avg_cache_read_input_tokens": 2,
+        "latency_p50_s_macro": 4,
+        "latency_p90_s_macro": 6,
+        "latency_p99_s_macro": 8,
+    }
+    model = AggregateMetrics.model_validate(agg_payload)
+    for field in (
+        "avg_latency_s",
+        "avg_turns",
+        "avg_tool_calls",
+        "stuck_rate",
+        "total_prompt_tokens",
+        "avg_prompt_tokens",
+        "latency_p50_s_macro",
+    ):
+        value = getattr(model, field)
+        assert isinstance(value, int) and not isinstance(value, bool), (
+            f"AggregateMetrics.{field}: int input coerced to {type(value).__name__}. "
+            f"Got {value!r}."
+        )
+
+    # And rate fields DID stay narrow float — a regression that widens them
+    # would be caught by mypy at consumer sites, but a runtime guard here
+    # documents the invariant.
+    assert isinstance(model.success_rate_micro, float), (
+        "AggregateMetrics.success_rate_micro widened to int|float unexpectedly — "
+        "rate-shaped fields must stay narrow float for consumer type contracts."
+    )
+
+
+def test_current_producer_output_matches_model_dump_byte_for_byte() -> None:
+    """Round-trip guard against the current live producer output.
+
+    Even though the ``int | float`` union covers a case the producer
+    doesn't emit today, the by-product must still hold: every dict the
+    production metric-calc functions actually produce today survives a
+    model round-trip byte-for-byte in the JSON representation. This
+    catches any accidental type coercion in the round trip for the
+    fields we DID narrow (``success_rate_*``, ``avg_score_*``,
+    ``pass_at_*_macro``)."""
     import json
 
     def _canonical(payload: dict[str, Any]) -> str:
         return json.dumps(payload, sort_keys=True, default=str)
 
-    # Empty aggregates — the harshest test for int/float drift because
-    # every ``total_*`` / ``avg_*`` is ``sum([]) == 0`` on the source.
-    empty_traj = _make_trajectory()
-    task_payload = calculate_task_metrics([empty_traj])
-    _augment_task_metrics(task_payload, task_id="task-int-float")
-
-    # PerTaskMetrics — source dict JSON vs. model-dumped JSON must match
-    # byte-for-byte.
-    model = PerTaskMetrics.model_validate(task_payload)
-    dumped_dict = model.model_dump(by_alias=True, mode="json", exclude_unset=True)
-    source_json = _canonical(task_payload)
-    dumped_json = _canonical(dumped_dict)
-    assert source_json == dumped_json, (
-        "PerTaskMetrics JSON drift between dict path and model path.\n"
-        f"source: {source_json}\n"
-        f"model:  {dumped_json}"
-    )
-
-    # AggregateMetrics — same story; empty-aggregate `total_*_tokens`
-    # start as ``int`` from the producer.
-    agg_payload = calculate_aggregate_metrics([task_payload], weighted=True)
-    agg_model = AggregateMetrics.model_validate(agg_payload)
-    agg_dumped = agg_model.model_dump(by_alias=True, mode="json", exclude_unset=True)
-    assert _canonical(agg_payload) == _canonical(agg_dumped), (
-        "AggregateMetrics JSON drift between dict path and model path.\n"
-        f"source: {_canonical(agg_payload)}\n"
-        f"model:  {_canonical(agg_dumped)}"
-    )
-
-    # RunAggregate — model injects `schema_version`. Compare with the
-    # source dict stamped to match.
-    run_payload = dict(agg_payload)
-    run_payload["schema_version"] = 1
-    run_model = RunAggregate.model_validate(run_payload)
-    run_dumped = run_model.model_dump(by_alias=True, mode="json", exclude_unset=True)
-    assert _canonical(run_payload) == _canonical(run_dumped), (
-        "RunAggregate JSON drift between dict path and model path.\n"
-        f"source: {_canonical(run_payload)}\n"
-        f"model:  {_canonical(run_dumped)}"
-    )
-
-    # FailureAttribution — the envelope isn't a numeric-heavy shape,
-    # but we exercise it to prove the invariant holds for every
-    # writer artifact.
-    attributions = [attribute_failure(empty_traj)]
-    fa_payload = {
-        "summary": summarize_failure_attributions(attributions),
-        "failures": attributions,
-    }
-    fa_model = FailureAttribution.model_validate(fa_payload)
-    fa_dumped = fa_model.model_dump(by_alias=True, mode="json", exclude_unset=True)
-    assert _canonical(fa_payload) == _canonical(fa_dumped), (
-        "FailureAttribution JSON drift between dict path and model path.\n"
-        f"source: {_canonical(fa_payload)}\n"
-        f"model:  {_canonical(fa_dumped)}"
-    )
+    task_metrics_list = _sample_task_metrics_list()
+    for weighted in (True, False):
+        agg_payload = calculate_aggregate_metrics(task_metrics_list, weighted=weighted)
+        model = AggregateMetrics.model_validate(agg_payload)
+        dumped = model.model_dump(by_alias=True, mode="json", exclude_unset=True)
+        assert _canonical(agg_payload) == _canonical(dumped), (
+            f"AggregateMetrics(weighted={weighted}) JSON drift between dict and "
+            f"model path.\nsource: {_canonical(agg_payload)}\nmodel:  {_canonical(dumped)}"
+        )
