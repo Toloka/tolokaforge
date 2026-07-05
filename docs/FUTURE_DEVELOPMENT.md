@@ -172,9 +172,9 @@ The key question for removing baked-in domain files is: how does each adapter de
 - [ ] Runner image builds with only `tolokaforge/` + `pyproject.toml` + `README.md`
 - [ ] `frozen_mcp_core` tasks execute correctly with minimal runner image
 - [ ] Content hash depends only on `tolokaforge/` source
-- [ ] No orphaned Dockerfiles
-- [ ] `builder.py` IMAGE_DEFINITIONS matches actual files
-- [ ] `tolokaforge docker build --core` succeeds
+- [x] No orphaned Dockerfiles
+- [x] `builder.py` IMAGE_DEFINITIONS matches actual files
+- [x] `tolokaforge docker build --core` succeeds
 
 ---
 
