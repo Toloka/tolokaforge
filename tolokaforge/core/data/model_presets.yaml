@@ -254,35 +254,6 @@ presets:
     schema_sanitizer: gemini
     response_policy: array_dict_map
 
-  # MiniMax-M3 (MiniMax via OpenRouter): reasoning model on the M-series
-  # 1M-context line. The ``openai`` reasoning codec surfaces the
-  # reasoning_content summary in the trajectory logs (observability only;
-  # replay is a no-op on the OpenAI route).
-  #
-  # ``response_policy: minimax_m3_tags`` recovers a provider-specific
-  # corruption: M3's XML -> JSON tool-call conversion mangles the ``tags``
-  # array on every emission (2505/2505 airlines occurrences). Two dominant
-  # shapes — the XML repeated-element ``{"item": X}`` artefact (76 %) and a
-  # JSON-encoded / empty string (23 %) — are recovered by the composite
-  # ``MinimaxM3TagRecoveryResponse`` (JsonRecursiveCoerce then
-  # ItemRecursiveUnwrap), scoped to the declared-array tags sites
-  # ``updates.tags`` / ``item.tags`` only. The scoping is load-bearing: a
-  # schema-agnostic empty-string -> [] is net-harmful (it corrupts scalar
-  # fields on M2.7), so the recovery is tied to the tags-site allowlist and
-  # cannot fire elsewhere. M2.7 emits native ``tags`` lists (0 corrupt) and is
-  # NOT in this preset, so it is unaffected. See gotcha #25 in AGENTS.md.
-  #
-  # Separately, M3 intermittently mis-shapes typed Dict[str, T] /
-  # discriminated unions (turn-2 prose instead of the union call): a genuine
-  # model gap declared known_unsupported in registry.py, distinct from the
-  # tags-conversion artefact the response policy fixes. Live 2026-06-08.
-  minimax:
-    match:
-      - "minimax/minimax-m3*"
-      - "*minimax-m3*"
-    reasoning_codec: openai
-    response_policy: minimax_m3_tags
-
 providers:
   openrouter:
     params:
