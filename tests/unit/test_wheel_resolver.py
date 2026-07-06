@@ -5,6 +5,7 @@ All tests are synthetic — no Docker daemon, no network, no real wheel builds.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import textwrap
 from pathlib import Path
@@ -23,6 +24,8 @@ from tolokaforge.docker.wheel_resolver import (
     WheelResolver,
     _hash_file,
     _is_engine_pyproject,
+    _looks_like_sha,
+    _newest_whl_for_version,
     _pip_wheel_cache_bases,
     _read_pyproject_version,
     _run,
@@ -146,6 +149,51 @@ class TestWheelMatching:
         assert not _wheel_matches_version(bad, "0.3.0")
 
 
+class TestNewestWhlForVersion:
+    """The version-matching selector must not return a stale wheel of a
+    different version, even if that stale wheel is newer on disk."""
+
+    def test_returns_matching_version(self, tmp_path: Path):
+        old = tmp_path / "tolokaforge-0.2.0-py3-none-any.whl"
+        old.write_bytes(b"old")
+        new = tmp_path / "tolokaforge-0.3.0-py3-none-any.whl"
+        new.write_bytes(b"new")
+        assert _newest_whl_for_version(tmp_path, "tolokaforge", "0.3.0") == new
+
+    def test_prefers_matching_version_over_newer_mtime(self, tmp_path: Path):
+        """A newer stale wheel of the wrong version must NOT win by mtime."""
+        target = tmp_path / "tolokaforge-0.3.0-py3-none-any.whl"
+        target.write_bytes(b"target")
+        # Stale wheel with a newer mtime.
+        stale = tmp_path / "tolokaforge-0.5.0-py3-none-any.whl"
+        stale.write_bytes(b"stale")
+        os.utime(stale, (target.stat().st_mtime + 100, target.stat().st_mtime + 100))
+        assert _newest_whl_for_version(tmp_path, "tolokaforge", "0.3.0") == target
+
+    def test_returns_none_when_no_match(self, tmp_path: Path):
+        (tmp_path / "tolokaforge-0.5.0-py3-none-any.whl").write_bytes(b"x")
+        assert _newest_whl_for_version(tmp_path, "tolokaforge", "0.3.0") is None
+
+
+class TestLooksLikeSha:
+    """Detects hex-SHA commit ids so _materialize_git can skip the
+    unsupported `git clone --branch <SHA>` shallow path."""
+
+    @pytest.mark.parametrize(
+        "commit",
+        ["abc1234", "1234567890abcdef", "a" * 40, "0" * 40, "deadbeef"],
+    )
+    def test_hex_shas_recognized(self, commit: str):
+        assert _looks_like_sha(commit)
+
+    @pytest.mark.parametrize(
+        "value",
+        ["main", "v0.7.0", "release/2026-Q1", "abc123z", "abc", "a" * 41, ""],
+    )
+    def test_non_shas_rejected(self, value: str):
+        assert not _looks_like_sha(value)
+
+
 # ===================================================================
 # LocalSourceWheelProvider
 # ===================================================================
@@ -166,12 +214,10 @@ class TestLocalSourceWheelProvider:
         fake_module.touch()
 
         # Patch the build step to just create a dummy wheel.
-        # _build_wheel is a @staticmethod; patch.object replaces it
-        # with a regular function, so accept *args to be safe.
-        def fake_build(*args):
-            # Last arg is out_dir, second-to-last is source_root.
-            cache_d = args[-1]
-            whl = Path(cache_d) / "tolokaforge-0.3.0-py3-none-any.whl"
+        # `_build_wheel` is an instance method; patch.object replaces it
+        # with `fake_build`, so the call receives (self, source_root, out_dir).
+        def fake_build(self, source_root, out_dir):
+            whl = Path(out_dir) / "tolokaforge-0.3.0-py3-none-any.whl"
             whl.write_bytes(b"PK\x03\x04dummy")
 
         with (
@@ -207,10 +253,9 @@ class TestLocalSourceWheelProvider:
 
         build_calls = []
 
-        def tracked_build(*args):
+        def tracked_build(self, source_root, out_dir):
             build_calls.append(1)
-            cache_d = args[-1]
-            whl = Path(cache_d) / "tolokaforge-0.3.0-py3-none-any.whl"
+            whl = Path(out_dir) / "tolokaforge-0.3.0-py3-none-any.whl"
             whl.write_bytes(b"PK\x03\x04dummy")
 
         with (
@@ -456,11 +501,10 @@ class TestUvCacheDirFromCli:
 class TestUvCacheBasesPrecedence:
     """Precedence: ``UV_CACHE_DIR`` env → ``uv cache dir`` CLI → default (all searched).
 
-    Issue #29 fix: the env var is the most explicit signal a user can send
-    (``astral-sh/setup-uv`` sets it directly). Prior to the fix, a stale or
-    unavailable CLI output could mask an env-var-relocated cache. All three
-    candidates are now deduplicated into the search list rather than
-    short-circuiting on the first — so a wheel present in any of them wins.
+    The env var is the most explicit signal a user (or CI action such as
+    ``astral-sh/setup-uv``) can send, so it comes first. All three
+    candidates are deduplicated into the search list rather than
+    short-circuiting on the first — a wheel present in any of them wins.
     """
 
     @pytest.fixture(autouse=True)
@@ -817,8 +861,11 @@ class TestRunUv:
 
 
 class TestReinstallWheelProvider:
-    """The reinstall provider is the fix for wheel-only installs on a cold
-    runner. It reads PEP 610 ``direct_url.json`` and dispatches on origin.
+    """Reads PEP 610 ``direct_url.json`` and dispatches on install origin.
+
+    Covers all four cases (vcs_info, archive_info, dir_info, and no
+    direct_url) plus the by-version fallback when the origin-specific
+    path succeeds but produces no matching wheel.
     """
 
     @staticmethod
@@ -929,16 +976,63 @@ class TestReinstallWheelProvider:
         assert artifact is not None
         assert artifact.provider_name == "reinstall"
 
-    def test_git_failure_falls_back_to_by_version(self, cache_dir: Path):
-        """When git materialize fails, try by-version download as a last resort."""
+    def test_git_failure_does_not_fall_back_to_pypi(self, cache_dir: Path):
+        """A failed git-origin materialize must NOT fall back to a PyPI download.
+
+        A private git commit almost certainly isn't published to PyPI, so
+        the by-version fallback would waste a network round-trip and could
+        silently substitute a different version's wheel if one happens to
+        exist on the configured index.
+        """
         provider = ReinstallWheelProvider()
         direct_url = {
             "url": "https://github.com/Toloka/tolokaforge.git",
             "vcs_info": {"vcs": "git", "commit_id": "abc123"},
         }
+        by_version_calls: list[int] = []
 
-        def fake_git(url, commit, cache_d):
-            return False, "clone: fatal: unable to access"
+        def fake_by_version(ver, cache_d):
+            by_version_calls.append(1)
+            self._drop_wheel(cache_d, ver=ver)
+            return True, ""
+
+        with (
+            patch(
+                "tolokaforge.docker.wheel_resolver._installed_version",
+                return_value="0.3.0",
+            ),
+            patch(
+                "tolokaforge.docker.wheel_resolver._read_direct_url",
+                return_value=direct_url,
+            ),
+            patch.object(
+                ReinstallWheelProvider,
+                "_materialize_git",
+                staticmethod(lambda u, c, d: (False, "clone: fatal: unable to access")),
+            ),
+            patch.object(
+                ReinstallWheelProvider,
+                "_materialize_by_version",
+                staticmethod(fake_by_version),
+            ),
+        ):
+            assert provider.provide(cache_dir) is None
+
+        assert by_version_calls == []  # never tried the PyPI fallback
+        assert "clone: fatal: unable to access" in provider.last_failure
+
+    def test_archive_failure_falls_back_to_by_version(self, cache_dir: Path):
+        """archive_info origin failure DOES fall back to by-version.
+
+        Unlike git commits, an archive URL usually names the exact
+        version, and the same version may still be on the configured
+        index — so falling back is a reasonable recovery.
+        """
+        provider = ReinstallWheelProvider()
+        direct_url = {
+            "url": "https://example.com/tolokaforge-0.3.0-py3-none-any.whl",
+            "archive_info": {},
+        }
 
         def fake_by_version(ver, cache_d):
             self._drop_wheel(cache_d, ver=ver)
@@ -955,8 +1049,8 @@ class TestReinstallWheelProvider:
             ),
             patch.object(
                 ReinstallWheelProvider,
-                "_materialize_git",
-                staticmethod(fake_git),
+                "_materialize_archive",
+                staticmethod(lambda u, d: (False, "connection reset")),
             ),
             patch.object(
                 ReinstallWheelProvider,
@@ -973,8 +1067,8 @@ class TestReinstallWheelProvider:
         """When every path fails, last_failure carries per-attempt stderr."""
         provider = ReinstallWheelProvider()
         direct_url = {
-            "url": "https://github.com/Toloka/tolokaforge.git",
-            "vcs_info": {"vcs": "git", "commit_id": "abc123"},
+            "url": "https://example.com/tolokaforge-0.3.0-py3-none-any.whl",
+            "archive_info": {},
         }
         with (
             patch(
@@ -987,8 +1081,8 @@ class TestReinstallWheelProvider:
             ),
             patch.object(
                 ReinstallWheelProvider,
-                "_materialize_git",
-                staticmethod(lambda u, c, d: (False, "clone failed: auth denied")),
+                "_materialize_archive",
+                staticmethod(lambda u, d: (False, "download: connection reset")),
             ),
             patch.object(
                 ReinstallWheelProvider,
@@ -998,8 +1092,38 @@ class TestReinstallWheelProvider:
         ):
             assert provider.provide(cache_dir) is None
 
-        assert "clone failed: auth denied" in provider.last_failure
+        assert "download: connection reset" in provider.last_failure
         assert "index not reachable" in provider.last_failure
+
+    def test_dir_info_refused_explicitly(self, cache_dir: Path):
+        """direct_url with dir_info (local-path install) must be refused,
+        not silently substituted with a PyPI download of the same version."""
+        provider = ReinstallWheelProvider()
+        by_version_calls: list[int] = []
+
+        with (
+            patch(
+                "tolokaforge.docker.wheel_resolver._installed_version",
+                return_value="0.3.0",
+            ),
+            patch(
+                "tolokaforge.docker.wheel_resolver._read_direct_url",
+                return_value={
+                    "url": "file:///home/dev/tolokaforge-fork",
+                    "dir_info": {},
+                },
+            ),
+            patch.object(
+                ReinstallWheelProvider,
+                "_materialize_by_version",
+                staticmethod(lambda v, d: by_version_calls.append(1) or (True, "")),
+            ),
+        ):
+            assert provider.provide(cache_dir) is None
+
+        assert by_version_calls == []
+        assert "local-path install" in provider.last_failure
+        assert "no reachable origin" in provider.last_failure
 
     def test_vcs_info_missing_fields_recorded(self, cache_dir: Path):
         """A malformed direct_url with no commit_id is surfaced clearly."""
@@ -1033,12 +1157,31 @@ class TestReinstallWheelProvider:
         assert not ok
         assert "git not on PATH" in err
 
-    def test_materialize_archive_rejects_non_wheel_url(self, cache_dir: Path):
+    def test_materialize_archive_rejects_non_archive_url(self, cache_dir: Path):
         ok, err = ReinstallWheelProvider._materialize_archive(
             "https://example.com/some/dir/", cache_dir
         )
         assert not ok
-        assert "does not look like a wheel or sdist" in err
+        assert "does not end in a wheel/sdist suffix" in err
+
+    def test_materialize_archive_accepts_zip_sdist(self, cache_dir: Path, monkeypatch):
+        """Archive filter accepts .zip (a legit Python sdist extension)."""
+        called: list[str] = []
+
+        def fake_urlretrieve(url, dest):
+            called.append(url)
+            Path(dest).write_bytes(b"PK\x03\x04sdist-zip")
+
+        monkeypatch.setattr(
+            "tolokaforge.docker.wheel_resolver.urllib.request.urlretrieve",
+            fake_urlretrieve,
+        )
+        ok, err = ReinstallWheelProvider._materialize_archive(
+            "https://example.com/pkg/tolokaforge-0.3.0.zip", cache_dir
+        )
+        assert ok
+        assert err == ""
+        assert (cache_dir / "tolokaforge-0.3.0.zip").is_file()
 
 
 # ===================================================================
@@ -1106,25 +1249,19 @@ class TestNoWheelErrorMessage:
 
 
 class TestPipDownloadWheelProvider:
-    """Cover the uv-first, pip-fallback, stderr-surfacing behavior (issue #13)."""
+    """Delegates to ReinstallWheelProvider._materialize_by_version so both
+    providers share one implementation of the pip-download path."""
 
     @staticmethod
     def _drop_wheel(cache_dir: Path, ver: str = "0.2.0") -> None:
         whl = cache_dir / f"tolokaforge-{ver}-py3-none-any.whl"
         whl.write_bytes(b"PK\x03\x04pypi-wheel")
 
-    def test_uv_succeeds_first(self, cache_dir: Path):
-        """uv pip download succeeds → pip fallback is never called."""
+    def test_delegates_to_by_version_and_succeeds(self, cache_dir: Path):
         provider = PipDownloadWheelProvider()
-        pip_calls: list[int] = []
 
-        def fake_uv(args, timeout=180):
-            assert args[0:2] == ["pip", "download"]
-            self._drop_wheel(cache_dir)
-            return True, ""
-
-        def fake_pip(args, timeout=180):
-            pip_calls.append(1)
+        def fake_by_version(ver, cache_d):
+            self._drop_wheel(cache_d, ver=ver)
             return True, ""
 
         with (
@@ -1136,47 +1273,19 @@ class TestPipDownloadWheelProvider:
                 "tolokaforge.docker.wheel_resolver._read_direct_url",
                 return_value=None,
             ),
-            patch("tolokaforge.docker.wheel_resolver._run_uv", side_effect=fake_uv),
-            patch("tolokaforge.docker.wheel_resolver._run_pip", side_effect=fake_pip),
+            patch.object(
+                ReinstallWheelProvider,
+                "_materialize_by_version",
+                staticmethod(fake_by_version),
+            ),
         ):
             artifact = provider.provide(cache_dir)
 
         assert artifact is not None
         assert artifact.version == "0.2.0"
         assert artifact.provider_name == "pip-download"
-        assert pip_calls == []  # uv worked, pip untouched
 
-    def test_pip_fallback_when_uv_unavailable(self, cache_dir: Path):
-        """uv missing → pip download is invoked and succeeds."""
-        provider = PipDownloadWheelProvider()
-
-        def fake_uv(args, timeout=180):
-            return False, "uv not on PATH"
-
-        def fake_pip(args, timeout=180):
-            assert args[0] == "download"
-            self._drop_wheel(cache_dir)
-            return True, ""
-
-        with (
-            patch(
-                "tolokaforge.docker.wheel_resolver._installed_version",
-                return_value="0.2.0",
-            ),
-            patch(
-                "tolokaforge.docker.wheel_resolver._read_direct_url",
-                return_value=None,
-            ),
-            patch("tolokaforge.docker.wheel_resolver._run_uv", side_effect=fake_uv),
-            patch("tolokaforge.docker.wheel_resolver._run_pip", side_effect=fake_pip),
-        ):
-            artifact = provider.provide(cache_dir)
-
-        assert artifact is not None
-        assert artifact.provider_name == "pip-download"
-
-    def test_both_fail_surfaces_stderr(self, cache_dir: Path):
-        """When BOTH uv and pip fail, last_failure carries both stderrs (issue #13)."""
+    def test_by_version_failure_surfaces_stderr(self, cache_dir: Path):
         provider = PipDownloadWheelProvider()
         with (
             patch(
@@ -1187,41 +1296,42 @@ class TestPipDownloadWheelProvider:
                 "tolokaforge.docker.wheel_resolver._read_direct_url",
                 return_value=None,
             ),
-            patch(
-                "tolokaforge.docker.wheel_resolver._run_uv",
-                return_value=(False, "uv not on PATH"),
-            ),
-            patch(
-                "tolokaforge.docker.wheel_resolver._run_pip",
-                return_value=(False, "HTTPError: 404 Not Found"),
+            patch.object(
+                ReinstallWheelProvider,
+                "_materialize_by_version",
+                staticmethod(
+                    lambda v, d: (
+                        False,
+                        f"pip download tolokaforge=={v}: HTTPError: 404 Not Found",
+                    )
+                ),
             ),
         ):
             assert provider.provide(cache_dir) is None
-
-        assert "uv not on PATH" in provider.last_failure
         assert "HTTPError: 404 Not Found" in provider.last_failure
 
-    def test_git_install_skipped_with_reason(self, cache_dir: Path):
-        """Git installs skip PyPI download and record a reason on last_failure."""
-        provider = PipDownloadWheelProvider()
-        direct_url = {
-            "url": "https://github.com/Toloka/tolokaforge.git",
-            "vcs_info": {"vcs": "git", "commit_id": "abc123"},
-        }
-        with (
-            patch(
-                "tolokaforge.docker.wheel_resolver._installed_version",
-                return_value="0.3.0",
-            ),
-            patch(
-                "tolokaforge.docker.wheel_resolver._read_direct_url",
-                return_value=direct_url,
-            ),
+    def test_reinstall_owned_origins_are_skipped(self, cache_dir: Path):
+        """git, archive, and dir origins are all owned by ReinstallWheelProvider —
+        PipDownload short-circuits so it never runs a duplicate download."""
+        for origin_key, extra in (
+            ("vcs_info", {"vcs": "git", "commit_id": "abc123"}),
+            ("archive_info", {}),
+            ("dir_info", {}),
         ):
-            assert provider.provide(cache_dir) is None
-
-        assert "vcs_info" in provider.last_failure
-        assert "reinstall" in provider.last_failure
+            provider = PipDownloadWheelProvider()
+            with (
+                patch(
+                    "tolokaforge.docker.wheel_resolver._installed_version",
+                    return_value="0.3.0",
+                ),
+                patch(
+                    "tolokaforge.docker.wheel_resolver._read_direct_url",
+                    return_value={"url": "…", origin_key: extra},
+                ),
+            ):
+                assert provider.provide(cache_dir) is None
+            assert origin_key in provider.last_failure
+            assert "reinstall provider" in provider.last_failure
 
     def test_not_installed_yields_none(self, cache_dir: Path):
         provider = PipDownloadWheelProvider()

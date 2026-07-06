@@ -14,17 +14,17 @@ Four providers are tried in priority order:
    or uv already built in their local caches. Fast-path when the same
    host has previously installed the engine; no-op on a cold runner.
 3. **ReinstallWheelProvider** (priority 25) — materializes a wheel by
-   re-fetching from the installed distribution's origin, using PEP 610
+   re-fetching from the installed distribution's origin using PEP 610
    ``direct_url.json`` metadata: a ``git clone`` at the pinned commit
-   for git installs; a direct download for archive installs; a
-   ``pip download`` / ``uv pip download`` for PyPI installs. Load-bearing
-   for wheel-only installs (PyPI, git tag) on a cold runner without
-   source or cache. Fixed in the fix for issues #29 and #13.
+   for git installs; a direct download for archive-URL installs; a
+   ``pip download --only-binary`` for plain PyPI installs. Refuses
+   ``dir_info`` (local-path) origins so a PyPI wheel is never silently
+   substituted for the user's local checkout.
 4. **PipDownloadWheelProvider** (priority 30) — final fallback:
-   ``uv pip download`` (works in uv envs without pip) then
-   ``python -m pip download`` (with ``ensurepip`` auto-recovery when
-   pip is not installed). Always surfaces subprocess stderr on
-   failure so users can diagnose network / index / permission errors.
+   ``python -m pip download`` for the installed name+version, with
+   ``ensurepip`` auto-recovery when pip is not installed. Delegates to
+   :meth:`ReinstallWheelProvider._materialize_by_version` so both
+   providers share one implementation of the download path.
 
 The resolver stops at the first successful provider. When every
 provider returns ``None``, :class:`NoWheelError` is raised with per-
@@ -52,12 +52,14 @@ Install-scenario matrix (which provider wins in which scenario):
   else Reinstall clones the same git ref and builds a wheel.
 * PyPI wheel install (``pip install tolokaforge`` or ``uv pip install
   tolokaforge``) → PipCache if warm, else Reinstall calls
-  ``uv pip download`` / ``pip download`` for the pinned version.
+  ``pip download --only-binary=:all:`` for the pinned version.
 * Fresh CI runner with relocated ``UV_CACHE_DIR`` → PipCache picks it
   up via env-var-first resolution, or Reinstall re-fetches from origin.
+* Local-path install (``pip install /path/to/checkout``) → Reinstall
+  refuses ``dir_info`` so a PyPI wheel is never silently substituted
+  for the user's local checkout.
 * uv env without pip (bare ``uv venv``) → Reinstall / PipDownload
-  invoke ``uv`` first, then ``ensurepip`` + ``pip`` if uv is not on
-  PATH.
+  invoke ``ensurepip`` to bootstrap pip, then run ``pip download``.
 """
 
 from __future__ import annotations
@@ -70,6 +72,10 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -149,8 +155,13 @@ class WheelProvider(ABC):
     priority: int = 100
     """Lower values are tried first."""
 
-    def __init__(self) -> None:
-        self.last_failure: str = ""
+    last_failure: str = ""
+    """Reason recorded when :meth:`provide` returned ``None``.
+
+    Class-level default is an empty string so subclasses that override
+    ``__init__`` without calling ``super().__init__()`` still expose the
+    attribute — the resolver's failure-message assembly reads it
+    unconditionally."""
 
     @abstractmethod
     def provide(self, cache_dir: Path) -> WheelArtifact | None:
@@ -363,14 +374,13 @@ def _run(argv: list[str], *, timeout: int = 300) -> tuple[bool, str]:
 
 
 def _run_pip(args: list[str], *, timeout: int = 300) -> tuple[bool, str]:
-    """Run ``python -m pip <args>``. If pip is missing, invoke
-    ``ensurepip`` once and retry.
+    """Run ``python -m pip <args>``.
 
-    This is the fix for issue #13: ``uv``-created virtualenvs omit pip
-    by default, so ``python -m pip download …`` throws
-    ``ModuleNotFoundError: No module named pip``. We detect that
-    specific error and bootstrap pip via ``ensurepip``, then retry once.
-    On failure the child stderr is preserved.
+    If pip is missing (as in ``uv``-created virtualenvs that omit pip by
+    default), the first attempt fails with ``ModuleNotFoundError: No
+    module named pip``. We detect that specific error, bootstrap pip via
+    ``ensurepip --upgrade``, and retry the invocation once. Child stderr
+    is preserved on failure.
     """
     for attempt in (1, 2):
         ok, err = _run([sys.executable, "-m", "pip", *args], timeout=timeout)
@@ -414,6 +424,23 @@ def _newest_whl(directory: Path, prefix: str) -> Path | None:
         reverse=True,
     )
     return candidates[0] if candidates else None
+
+
+def _newest_whl_for_version(directory: Path, prefix: str, ver: str) -> Path | None:
+    """Return the newest ``.whl`` in *directory* whose name matches *prefix* AND *ver*.
+
+    Uses :func:`_wheel_matches_version` to filter by the PEP 427 version
+    field so a stale wheel of a different version left in *directory* by a
+    prior provider run is never returned tagged with the current version.
+    """
+    candidates = [
+        p
+        for p in directory.glob(f"{prefix}*.whl")
+        if p.is_file() and _wheel_matches_version(p, ver)
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
 # ---------------------------------------------------------------------------
@@ -463,7 +490,7 @@ def _uv_cache_dir_from_cli() -> Path | None:
 def _uv_cache_bases() -> list[Path]:
     """uv cache roots to search, de-duplicated, in precedence order.
 
-    Order (issue #29 fix):
+    Order:
 
     1. ``UV_CACHE_DIR`` from the process environment — the most explicit
        signal a user can send. CI tools such as ``astral-sh/setup-uv``
@@ -693,29 +720,40 @@ class PipCacheWheelProvider(WheelProvider):
 # ---------------------------------------------------------------------------
 
 
-def _pep440_pin(ver: str) -> str:
-    """Wheel-safe pin: ``tolokaforge==<version>``."""
-    return f"{_ENGINE_PKG}=={ver}"
+_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
+
+
+def _looks_like_sha(commit: str) -> bool:
+    """True when *commit* looks like a hex-encoded git object id.
+
+    ``git clone --branch <ref>`` accepts tags and branches, not commit
+    SHAs. Callers use this to skip the shallow-clone fast path when the
+    recorded ``commit_id`` is a raw SHA (the common PEP 610 shape).
+    """
+    return bool(_SHA_RE.fullmatch(commit))
+
+
+_ARCHIVE_SUFFIXES = (".whl", ".tar.gz", ".tgz", ".zip", ".tar.bz2", ".tar.xz")
 
 
 class ReinstallWheelProvider(WheelProvider):
     """Materialize a wheel from the installed distribution's origin.
 
     Reads PEP 610 ``direct_url.json`` from the installed distribution
-    and dispatches:
+    and dispatches on install origin:
 
     * ``vcs_info`` present (git-installed): clone the same git URL at
       the pinned commit and build a wheel via ``uv build --wheel`` or
       ``pip wheel`` (with ``ensurepip`` fallback if pip is missing).
     * ``archive_info`` present (URL-installed wheel/sdist): download
       the same URL directly.
-    * Neither (PyPI install): ``uv pip download`` first, then
-      ``python -m pip download`` with ``ensurepip`` auto-recovery.
+    * No direct_url (plain PyPI install): ``pip download`` for the
+      pinned name+version, with ``ensurepip`` auto-recovery.
 
-    This provider is the load-bearing path for wheel-only installs on
-    a cold runner — the scenario that broke before the fix for issues
-    #29 (cache assumption) and #13 (uv env without pip). See the
-    module docstring for the full install-scenario matrix.
+    ``dir_info`` (local-path install) is intentionally rejected — a
+    local checkout has no reachable origin the container can materialize
+    the same artifact from, and silently substituting a PyPI wheel of
+    the same version would swap the user's local code for public code.
     """
 
     name = "reinstall"
@@ -730,7 +768,7 @@ class ReinstallWheelProvider(WheelProvider):
         direct_url = _read_direct_url()
         errors: list[str] = []
 
-        # Case A — git install (PEP 610 vcs_info).
+        # Case A — git install.
         if direct_url and "vcs_info" in direct_url:
             url = direct_url.get("url", "")
             vcs_info = direct_url["vcs_info"]
@@ -738,48 +776,77 @@ class ReinstallWheelProvider(WheelProvider):
             if url and commit:
                 ok, err = self._materialize_git(url, commit, cache_dir)
                 if ok:
-                    return self._finalize(cache_dir, ver)
-                errors.append(f"git@{commit[:12] if commit else '<none>'}: {err}")
+                    art = self._finalize(cache_dir, ver)
+                    if art is not None:
+                        return art
+                    errors.append(f"git@{commit[:12]}: {self.last_failure}")
+                else:
+                    errors.append(f"git@{commit[:12]}: {err}")
             else:
                 errors.append(f"direct_url.vcs_info missing url or commit_id: {vcs_info!r}")
-        # Case B — direct URL install (archive_info).
+        # Case B — archive URL install.
         elif direct_url and "archive_info" in direct_url:
             url = direct_url.get("url", "")
             if url:
                 ok, err = self._materialize_archive(url, cache_dir)
                 if ok:
-                    return self._finalize(cache_dir, ver)
-                errors.append(f"archive({url}): {err}")
+                    art = self._finalize(cache_dir, ver)
+                    if art is not None:
+                        return art
+                    errors.append(f"archive({url}): {self.last_failure}")
+                else:
+                    errors.append(f"archive({url}): {err}")
             else:
                 errors.append("direct_url.archive_info missing url")
-        # Case C — no direct_url or PyPI install → download by name+version.
+        # Case C — dir_info: refuse silently substituting a PyPI wheel.
+        elif direct_url and "dir_info" in direct_url:
+            path = direct_url.get("url", "<unknown>")
+            self.last_failure = (
+                f"local-path install ({path}) has no reachable origin — "
+                "install tolokaforge from a git ref, an archive URL, or "
+                "PyPI so the runner can materialize the same artifact"
+            )
+            return None
+        # Case D — no direct_url or PyPI install → download by name+version.
         else:
             ok, err = self._materialize_by_version(ver, cache_dir)
             if ok:
-                return self._finalize(cache_dir, ver)
-            errors.append(err)
+                art = self._finalize(cache_dir, ver)
+                if art is not None:
+                    return art
+                errors.append(f"by-version: {self.last_failure}")
+            else:
+                errors.append(err)
 
-        # If Case A/B failed, also try Case C as a last-resort fallback
-        # (the installed version might still be published to the
-        # configured index).
-        if errors and direct_url is not None:
+        # Only fall back to by-version when the origin isn't already
+        # the index (avoids duplicate work + duplicate error text) and
+        # isn't a git origin (a private commit won't be on the index).
+        origin_is_index_or_vcs = direct_url is None or "vcs_info" in (direct_url or {})
+        if errors and not origin_is_index_or_vcs:
             ok, err = self._materialize_by_version(ver, cache_dir)
             if ok:
-                logger.info(
-                    "%s: origin-specific materialize failed, but by-version " "download succeeded",
-                    self.name,
-                )
-                return self._finalize(cache_dir, ver)
-            errors.append(f"fallback-by-version: {err}")
+                art = self._finalize(cache_dir, ver)
+                if art is not None:
+                    return art
+                errors.append(f"fallback-by-version: {self.last_failure}")
+            else:
+                errors.append(f"fallback-by-version: {err}")
 
         self.last_failure = "; ".join(errors) if errors else "no origin metadata"
         return None
 
     def _finalize(self, cache_dir: Path, ver: str) -> WheelArtifact | None:
-        whl = _newest_whl(cache_dir, _ENGINE_PKG)
+        """Return the wheel matching *ver* in *cache_dir*, or ``None``.
+
+        Filters by version match rather than mtime alone so a stale wheel
+        of a different version left in the shared cache directory by a
+        prior provider run cannot be returned tagged with the current
+        version.
+        """
+        whl = _newest_whl_for_version(cache_dir, _ENGINE_PKG, ver)
         if whl is None:
             self.last_failure = (
-                f"materialize succeeded but no {_ENGINE_PKG}*.whl found in " f"{cache_dir}"
+                f"materialize completed but no {_ENGINE_PKG}-{ver}-*.whl " f"landed in {cache_dir}"
             )
             return None
         return WheelArtifact(
@@ -792,57 +859,64 @@ class ReinstallWheelProvider(WheelProvider):
     @staticmethod
     def _materialize_git(url: str, commit: str, cache_dir: Path) -> tuple[bool, str]:
         """Clone *url* at *commit* into a temp dir + build a wheel into
-        *cache_dir*. Returns ``(ok, stderr_tail)``."""
-        import tempfile
+        *cache_dir*. Returns ``(ok, stderr_tail)``.
 
+        Uses a shallow ``--branch <ref>`` clone only when *commit* looks
+        like a tag/branch name; for hex-SHA commit ids (the common PEP
+        610 shape) ``--branch`` would be rejected by git, so we go
+        straight to full clone + explicit checkout.
+        """
         if shutil.which("git") is None:
             return False, "git not on PATH"
 
         with tempfile.TemporaryDirectory(prefix="tolokaforge-git-") as tmp:
             src = Path(tmp) / "src"
-            # Try a shallow clone at the ref first (works for tags/branches).
-            ok, err = _run(
-                ["git", "clone", "--depth=1", "--branch", commit, url, str(src)],
-                timeout=180,
-            )
-            if not ok:
-                # Fall back: full clone + explicit checkout (works for arbitrary commits).
+            if _looks_like_sha(commit):
+                # Full clone then explicit checkout — git clone --branch
+                # does not accept commit SHAs.
                 ok, err = _run(["git", "clone", url, str(src)], timeout=180)
                 if not ok:
                     return False, f"clone: {err}"
                 ok, err = _run(["git", "-C", str(src), "checkout", commit], timeout=60)
                 if not ok:
                     return False, f"checkout {commit[:12]}: {err}"
+            else:
+                # Tag/branch — shallow clone is safe and fast.
+                ok, err = _run(
+                    ["git", "clone", "--depth=1", "--branch", commit, url, str(src)],
+                    timeout=180,
+                )
+                if not ok:
+                    return False, f"clone --branch {commit}: {err}"
 
-            # Build the wheel — uv first, pip second.
-            ok, err = _run_uv(
+            # Build the wheel — uv first, pip fallback.
+            ok, uv_err = _run_uv(
                 ["build", "--wheel", "--out-dir", str(cache_dir), str(src)],
                 timeout=300,
             )
             if ok:
                 return True, ""
-            uv_err = err
-
-            ok, err = _run_pip(
+            ok, pip_err = _run_pip(
                 ["wheel", str(src), "--no-deps", "-w", str(cache_dir)],
                 timeout=300,
             )
             if ok:
                 return True, ""
-            return False, f"uv build: {uv_err}; pip wheel: {err}"
+            return False, f"uv build: {uv_err}; pip wheel: {pip_err}"
 
     @staticmethod
     def _materialize_archive(url: str, cache_dir: Path) -> tuple[bool, str]:
-        """Download *url* into *cache_dir*. Returns ``(ok, stderr_tail)``."""
-        import urllib.error
-        import urllib.request
-        from urllib.parse import urlparse
+        """Download *url* into *cache_dir*. Returns ``(ok, stderr_tail)``.
 
-        parsed = urlparse(url)
+        Accepts any URL whose path ends in a recognized wheel/sdist
+        extension (``.whl``, ``.tar.gz``, ``.tgz``, ``.zip``,
+        ``.tar.bz2``, ``.tar.xz``) — the same set pip and uv accept as
+        a direct-URL install.
+        """
+        parsed = urllib.parse.urlparse(url)
         filename = Path(parsed.path).name
-        if not filename or not (filename.endswith(".whl") or filename.endswith(".tar.gz")):
-            # Not a directly-usable wheel/sdist filename — bail loud.
-            return False, f"URL does not look like a wheel or sdist: {url}"
+        if not filename or not filename.endswith(_ARCHIVE_SUFFIXES):
+            return False, f"URL path does not end in a wheel/sdist suffix: {url}"
         dest = cache_dir / filename
         try:
             urllib.request.urlretrieve(url, dest)  # noqa: S310
@@ -858,25 +932,20 @@ class ReinstallWheelProvider(WheelProvider):
     def _materialize_by_version(ver: str, cache_dir: Path) -> tuple[bool, str]:
         """Download the wheel from the configured index by name+version.
 
-        Tries ``uv pip download`` first (works in uv envs without pip),
-        then ``python -m pip download`` (with ``ensurepip`` auto-recovery
-        via :func:`_run_pip`). Returns ``(ok, stderr_tail)``.
+        Invokes ``python -m pip download --only-binary=:all:`` via
+        :func:`_run_pip`, which auto-recovers a missing pip via
+        ``ensurepip`` (the fix for uv envs that omit pip). Forces
+        ``--only-binary`` so an sdist can never masquerade as a
+        successful wheel download.
+
+        ``uv pip download`` is intentionally not attempted: uv 0.9+ has
+        no ``pip download`` subcommand — the pip path already handles
+        the ``no pip installed`` case via ``ensurepip`` recovery.
+
+        Returns ``(ok, stderr_tail)``.
         """
-        spec = _pep440_pin(ver)
-        ok, uv_err = _run_uv(
-            [
-                "pip",
-                "download",
-                spec,
-                "--no-deps",
-                "-d",
-                str(cache_dir),
-            ],
-            timeout=180,
-        )
-        if ok:
-            return True, ""
-        ok, pip_err = _run_pip(
+        spec = f"{_ENGINE_PKG}=={ver}"
+        ok, err = _run_pip(
             [
                 "download",
                 spec,
@@ -889,25 +958,22 @@ class ReinstallWheelProvider(WheelProvider):
         )
         if ok:
             return True, ""
-        return False, f"uv pip download: {uv_err}; pip download: {pip_err}"
+        return False, f"pip download {spec}: {err}"
 
 
 class PipDownloadWheelProvider(WheelProvider):
     """Downloads a wheel from PyPI as a last-resort fallback.
 
-    Fires when the installed distribution has no ``direct_url.json``
-    (a plain PyPI install) and the earlier providers all failed. Uses
-    ``uv pip download`` first — the right primary invocation in uv
-    envs, which omit pip by default — and falls back to
-    ``python -m pip download`` with ``ensurepip`` auto-recovery. Both
-    child stderrs are captured and surfaced through
-    ``self.last_failure`` so :class:`NoWheelError` carries the real
-    cause instead of an opaque exit code.
+    Runs only when the installed distribution has no ``direct_url.json``
+    (a plain PyPI install) and earlier providers all missed. Reuses
+    :meth:`ReinstallWheelProvider._materialize_by_version` — a single
+    implementation of the ``pip download --only-binary=:all:`` path
+    (with ``ensurepip`` auto-recovery) so the two providers can't drift
+    on flags, timeout, or error format.
 
-    For git installs the earlier :class:`ReinstallWheelProvider` is the
-    correct source-of-truth (the tag/commit may not be published to any
-    index), so this provider short-circuits with a reason recorded on
-    ``self.last_failure``.
+    For git and archive-URL installs the earlier
+    :class:`ReinstallWheelProvider` is authoritative, so this provider
+    short-circuits with a reason on ``self.last_failure``.
     """
 
     name = "pip-download"
@@ -919,53 +985,29 @@ class PipDownloadWheelProvider(WheelProvider):
             self.last_failure = f"{_ENGINE_PKG!r} is not installed in this environment"
             return None
 
-        # Skip PyPI download for git installs — the git ref may not be
-        # published to any index, and ReinstallWheelProvider already
-        # handled that origin above.
         direct_url = _read_direct_url()
-        if direct_url is not None and "vcs_info" in direct_url:
+        if direct_url is not None and (
+            "vcs_info" in direct_url or "archive_info" in direct_url or "dir_info" in direct_url
+        ):
             self.last_failure = (
-                "skipped: installed from git (vcs_info present); "
-                "reinstall provider owns this origin"
+                f"skipped: install origin ({next(iter(direct_url.keys() - {'url'}))}) "
+                "is owned by the reinstall provider"
             )
             logger.debug("%s: %s", self.name, self.last_failure)
             return None
 
-        logger.info(
-            "%s: downloading wheel for %s==%s",
-            self.name,
-            _ENGINE_PKG,
-            ver,
-        )
-
-        spec = _pep440_pin(ver)
-        # uv first — works in uv envs that omit pip (issue #13).
-        ok, uv_err = _run_uv(
-            ["pip", "download", spec, "--no-deps", "-d", str(cache_dir)],
-            timeout=180,
-        )
+        logger.info("%s: downloading wheel for %s==%s", self.name, _ENGINE_PKG, ver)
+        ok, err = ReinstallWheelProvider._materialize_by_version(ver, cache_dir)
         if not ok:
-            # pip second — with ensurepip auto-recovery via _run_pip.
-            ok, pip_err = _run_pip(
-                [
-                    "download",
-                    spec,
-                    "--no-deps",
-                    "--only-binary=:all:",
-                    "-d",
-                    str(cache_dir),
-                ],
-                timeout=180,
-            )
-            if not ok:
-                self.last_failure = f"uv pip download: {uv_err}; pip download: {pip_err}"
-                logger.warning("%s: %s", self.name, self.last_failure)
-                return None
+            self.last_failure = err
+            logger.warning("%s: %s", self.name, err)
+            return None
 
-        whl = _newest_whl(cache_dir, _ENGINE_PKG)
+        whl = _newest_whl_for_version(cache_dir, _ENGINE_PKG, ver)
         if whl is None:
             self.last_failure = (
-                f"download reported success but no {_ENGINE_PKG}*.whl " f"landed in {cache_dir}"
+                f"pip download reported success but no {_ENGINE_PKG}-{ver}-*.whl "
+                f"landed in {cache_dir}"
             )
             return None
 
@@ -1045,6 +1087,10 @@ class WheelResolver:
         cache_dir.mkdir(parents=True, exist_ok=True)
         failures: list[tuple[str, str]] = []
         for p in self._providers:
+            # Reset before each attempt so a stale reason from a prior
+            # resolve() on a reused provider instance cannot leak into
+            # this call's NoWheelError message.
+            p.last_failure = ""
             artifact = p.provide(cache_dir)
             if artifact is not None:
                 logger.info(
