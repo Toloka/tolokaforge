@@ -2,6 +2,28 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.8.0 (2026-07-06)
+
+### Feat
+
+- **runtime**: SharedStackRuntimeBackend consumes environment_manifest (#167)
+- **runtime**: :local engine-image alias + wire environment_manifest through TaskConfig (#163)
+- **core**: TrialExecutor Protocol + wire per-trial substrate bracket (#162)
+- **metrics**: roll up judge cost at task and run level (#159)
+
+### Fix
+
+- **docker**: materialize engine wheel via reinstall provider (closes #29, #13) (#176)
+
+### Refactor
+
+- **output**: pin schema_version + int/float wire invariants (closes #152, #153) (#174)
+- **output**: typed models for run-level aggregate payloads (stage 1) (#149)
+- **orchestrator**: collapse injection kwargs into OrchestratorDeps (#134)
+- **docker**: rename ServiceStack → EngineStack; document docker-only + non-Protocol (#169)
+- **core**: extract compose-materialisation primitives into shared module (#166)
+- **core**: decompose Conductor + extract TrialGrader Protocol (#161)
+
 ## v0.7.0 (2026-07-02)
 
 ### Feat
