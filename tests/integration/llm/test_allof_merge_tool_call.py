@@ -23,7 +23,6 @@ from tolokaforge.core.models import Message, MessageRole
 from ._capability import Capability, ModelCertificate
 from .registry import ALL_MODELS
 
-
 # A payload that must satisfy BOTH halves: {a: string} AND {b: integer}.
 _ALLOF_TOOL = {
     "type": "function",
@@ -92,10 +91,7 @@ def test_allof_merge_tool_call(
         messages=[
             Message(
                 role=MessageRole.USER,
-                content=(
-                    "Submit a payload where a is hello and b is 42. Then you're "
-                    "done."
-                ),
+                content=("Submit a payload where a is hello and b is 42. Then you're " "done."),
             )
         ],
         tools=tools,
@@ -107,14 +103,14 @@ def test_allof_merge_tool_call(
     args = result.tool_calls[0].arguments
     if isinstance(args, str):
         args = json.loads(args)
-    assert isinstance(args, dict), (
-        f"{cert.model_id}: arguments must parse as dict, got {type(args).__name__}: {args!r}"
-    )
+    assert isinstance(
+        args, dict
+    ), f"{cert.model_id}: arguments must parse as dict, got {type(args).__name__}: {args!r}"
 
     payload = args.get("payload")
-    assert isinstance(payload, dict), (
-        f"{cert.model_id}: `payload` must be a native dict, got {type(payload).__name__}: {payload!r}"
-    )
+    assert isinstance(
+        payload, dict
+    ), f"{cert.model_id}: `payload` must be a native dict, got {type(payload).__name__}: {payload!r}"
     assert isinstance(payload.get("a"), str), (
         f"{cert.model_id}: allOf field `a` (string) missing/wrong - only one merge "
         f"branch honoured. Payload: {payload!r}"

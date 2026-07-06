@@ -14,9 +14,8 @@ types as real objects to derive the schemas.
 from decimal import Decimal
 from typing import Annotated, Literal
 
-from pydantic import Field
-
 from models import Address, PaymentMethod
+from pydantic import Field
 
 from tolokaforge.core.tools_interface import DomainToolRegistry
 
@@ -84,7 +83,9 @@ def register(registry: DomainToolRegistry) -> None:
         data: dict,
         subscriber_id: Annotated[str, Field(description="Subscriber id.", examples=["SUB-7F3A"])],
         invoice_id: Annotated[str, Field(description="Invoice id.", examples=["INV-204"])],
-        amount: Annotated[Decimal, Field(gt=0, description="Amount to request.", examples=["42.50"])],
+        amount: Annotated[
+            Decimal, Field(gt=0, description="Amount to request.", examples=["42.50"])
+        ],
     ) -> dict:
         return {
             "ok": True,
@@ -122,8 +123,7 @@ def register(registry: DomainToolRegistry) -> None:
         return {"ok": True, "subscriber_id": subscriber_id, "address": addr}
 
     @registry.tool(
-        "Top up a service line's monthly data. `gb` must be at least 5 and a "
-        "multiple of 5."
+        "Top up a service line's monthly data. `gb` must be at least 5 and a " "multiple of 5."
     )
     def top_up_data(
         data: dict,
