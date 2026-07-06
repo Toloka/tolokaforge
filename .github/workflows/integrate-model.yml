@@ -187,6 +187,14 @@ jobs:
           print(json.dumps(manifest, indent=2))
           PY
 
+      - name: Aggregate deterministic findings (report-only)
+        run: |
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          uv run python scripts/integration/observe_findings.py observation \
+            --out observation/findings.json \
+            --summary-out observation/summary.md \
+            --run-url "$RUN_URL"
+
       - name: Upload observation bundle (handoff to the next step)
         uses: actions/upload-artifact@v4
         if: always()
@@ -198,6 +206,10 @@ jobs:
       - name: Post observation summary on the PR
         if: always()
         run: |
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          gh pr comment "$PR" -R "$REPO" --body \
-            "Observation stage ran for \`${{ steps.parse.outputs.name }}\` on the \`default\` preset. Capability report + wire-probe trajectories uploaded as artifact \`integration-observation-pr${PR}\` for the next step. Run: ${RUN_URL}"
+          if [ -f observation/summary.md ]; then
+            gh pr comment "$PR" -R "$REPO" --body-file observation/summary.md
+          else
+            RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            gh pr comment "$PR" -R "$REPO" --body \
+              "Observation stage ran for \`${{ steps.parse.outputs.name }}\` but no findings summary was produced (a step failed before aggregation). Run: ${RUN_URL}"
+          fi
