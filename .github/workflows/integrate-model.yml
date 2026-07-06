@@ -44,6 +44,12 @@ jobs:
       # drive the sonnet user-sim (expensive) so run fewer.
       CAPABILITY_K: ${{ vars.OBSERVE_CAPABILITY_K || '15' }}
       WIRE_K: ${{ vars.OBSERVE_WIRE_K || '10' }}
+      # Parallelism (configurable). Wire trials run under the orchestrator's
+      # worker pool; capability repeats run as a bounded xargs pool (pytest-xdist
+      # is not a dependency). Higher = faster wall-clock but more OpenRouter load
+      # (a 429 surfaces in findings.infra.rate_limit).
+      WORKERS: ${{ vars.OBSERVE_WORKERS || '10' }}
+      CAP_PARALLEL: ${{ vars.OBSERVE_CAP_PARALLEL || '4' }}
     steps:
       - name: Reject fork PRs (no secrets on the pull_request event)
         if: env.IS_FORK == 'true'
@@ -123,12 +129,12 @@ jobs:
           MODEL_ID: ${{ steps.slug.outputs.model_id }}
         run: |
           mkdir -p observation/capability
-          for i in $(seq 1 "$CAPABILITY_K"); do
-            uv run pytest tests/integration/llm/ \
-              -k "$MODEL_ID" \
-              --junitxml="observation/capability/rep_$i.xml" \
-              -q --tb=line || true
-          done
+          # Parallelize the repeats (candidate-only calls) with a bounded pool.
+          # pytest-xdist is not installed, so parallelism is at the repeat level
+          # via xargs -P, not pytest -n. Kept modest: a 429 would fail a probe
+          # (report-only) and the extractor's flaky band + human review catch it.
+          seq 1 "$CAPABILITY_K" | xargs -P "$CAP_PARALLEL" -I {} \
+            sh -c 'uv run pytest tests/integration/llm/ -k "$MODEL_ID" --junitxml="observation/capability/rep_$1.xml" -q --tb=line -p no:cacheprovider || true' _ {}
 
       - name: Build core runner image (for the wire probes)
         run: uv run tolokaforge docker build --core
@@ -151,7 +157,7 @@ jobs:
               name: "anthropic/claude-sonnet-4.6"
               temperature: 0.2
           orchestrator:
-            workers: 1
+            workers: ${WORKERS}
             repeats: ${WIRE_K}
             max_turns: 10
             queue_backend: sqlite
