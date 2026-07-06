@@ -111,10 +111,10 @@ in `task.yaml` — the orchestrator refuses to run a `per_trial` task on the
 shared backend so cross-trial contamination is a startup-time error, not a
 silent grading bug.
 
-See [docs/architecture/RUNTIME_BACKENDS.md](docs/architecture/RUNTIME_BACKENDS.md)
-for the full lifecycle deep-dive and
-[ADR-0016](docs/architecture/adr/0016-runtime-backend-comparison.md) for the
-tradeoff analysis.
+Read [docs/guides/isolated_trials.md](docs/guides/isolated_trials.md) for
+a walkthrough (when to use each mode, how to opt in, cost tradeoffs), or
+[docs/architecture/RUNTIME_BACKENDS.md](docs/architecture/RUNTIME_BACKENDS.md)
+for the full lifecycle deep-dive.
 
 ## Multi-container tasks
 
@@ -172,6 +172,7 @@ examples/             # Reference task layouts with runnable run_config.yaml
 | Browser/mobile tools | [docs/BROWSER_TOOLS.md](docs/BROWSER_TOOLS.md) |
 | Runner & distributed execution | [docs/RUNNER.md](docs/RUNNER.md) |
 | Runtime backends (shared vs per-trial) | [docs/architecture/RUNTIME_BACKENDS.md](docs/architecture/RUNTIME_BACKENDS.md) |
+| Isolated trials guide | [docs/guides/isolated_trials.md](docs/guides/isolated_trials.md) |
 | Multi-container task guide | [docs/guides/multi_container_tasks.md](docs/guides/multi_container_tasks.md) |
 | Adapter architecture | [docs/ADAPTER_ARCHITECTURE.md](docs/ADAPTER_ARCHITECTURE.md) |
 | Analytics & failure attribution | [docs/ANALYTICS.md](docs/ANALYTICS.md) |

@@ -14,6 +14,7 @@ list — see the top-level `docs/*.md` files (linked from the repo
 
 | Guide | Anchored to | What it covers |
 | --- | --- | --- |
+| [Isolated trials](isolated_trials.md) | [`examples/native/coding/`](../../examples/native/coding/) (works on any task pack) | Choosing between shared and per-trial runtime backends — what isolation buys you, how to opt in, cost tradeoffs |
 | [Multi-container tasks](multi_container_tasks.md) | [`examples/native/multi_service/`](../../examples/native/multi_service/) | Authoring a task that declares its own docker-compose stack (extra services beyond the engine defaults) |
 
 More guides land here as multi-container capabilities and other authoring
