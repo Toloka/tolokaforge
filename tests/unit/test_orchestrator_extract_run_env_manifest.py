@@ -1,8 +1,8 @@
 """Unit tests for :meth:`Orchestrator._extract_run_env_manifest`.
 
-The Phase 4 shared-stack path materialises exactly one task-declared
-compose file per run. Runs whose tasks declare inconsistent manifests
-would silently pick one (or fail late) — this helper picks up the
+The task-declared shared-stack path materialises exactly one compose
+file per run. Runs whose tasks declare inconsistent manifests would
+silently pick one (or fail late) — this helper picks up the
 inconsistency at run-start and fails loud.
 """
 

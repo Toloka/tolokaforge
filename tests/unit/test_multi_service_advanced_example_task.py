@@ -1,8 +1,8 @@
 """Static-shape tests for the ``orders_customers_join_01`` task pack.
 
 The task pack under ``examples/native/multi_service_advanced/`` is the
-Phase 4 demonstration workload for the shared+task-declared substrate
-path with **multiple** task-specific HTTP services (Case B in ADR-0018).
+demonstration workload for the shared+task-declared substrate path
+with **multiple** task-specific HTTP services (Case B in ADR-0018).
 Real docker execution lives in the docker integration suite; here we pin
 the task pack's static shape so a future refactor doesn't silently break
 the example.

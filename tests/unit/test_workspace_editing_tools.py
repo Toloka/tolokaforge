@@ -1,4 +1,4 @@
-"""Tests for workspace editing tools (Phase 1 tooling parity)."""
+"""Tests for workspace editing tools."""
 
 from pathlib import Path
 

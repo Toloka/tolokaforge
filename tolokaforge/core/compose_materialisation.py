@@ -1,9 +1,10 @@
 """Compose-materialisation primitives shared by runtime backends.
 
 The concrete `RuntimeBackend` implementations that materialise a task's
-``environment_manifest`` via testcontainers-python (``PerTrialRuntimeBackend``
-today, ``SharedStackRuntimeBackend`` under Phase 4) share the same lifecycle
-primitives: copy the compose context into an isolated project directory,
+``environment_manifest`` via testcontainers-python
+(``PerTrialRuntimeBackend`` and ``SharedStackRuntimeBackend``) share the
+same lifecycle primitives: copy the compose context into an isolated
+project directory,
 start the stack with ``.start()``, resolve host-side endpoints via
 ``get_service_host_and_port``, and tear the stack down with
 ``.stop(down=True)``.

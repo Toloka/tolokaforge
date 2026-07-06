@@ -7,7 +7,7 @@ This module tests the full flow end-to-end within a single process (no Docker):
 - RunnerServiceImpl with that client
 - Full trial lifecycle: RegisterTrial → ExecuteTool → GradeTrial
 
-This validates that all Phase 0-3 components work together correctly.
+This validates that the trial-lifecycle components work together correctly.
 """
 
 import json

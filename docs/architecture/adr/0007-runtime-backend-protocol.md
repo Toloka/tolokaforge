@@ -8,7 +8,7 @@
 
 ## Context and Problem Statement
 
-The Phase 1 seam-definition arc has typed the control↔trial wire format (`TrialSpec`/`TrialResult`, ADR-0003), both halves of the data plane (`TrialArtifactWriter` ADR-0004, `RunAggregateWriter` ADR-0005), and the trial-scoped service URLs on the wire (`EnvEndpoints`, ADR-0006). One Phase-1 seam remains: the abstraction the orchestrator uses to dispatch a trial to its execution environment.
+The seam-definition arc so far has typed the control↔trial wire format (`TrialSpec`/`TrialResult`, ADR-0003), both halves of the data plane (`TrialArtifactWriter` ADR-0004, `RunAggregateWriter` ADR-0005), and the trial-scoped service URLs on the wire (`EnvEndpoints`, ADR-0006). One seam remains: the abstraction the orchestrator uses to dispatch a trial to its execution environment.
 
 Today `tolokaforge/core/orchestrator.py` imports `SharedStackRuntimeBackend` from `tolokaforge.core.shared_stack_runtime` concretely. `SharedStackRuntimeBackend` is misleadingly named — it isn't a Docker daemon client; it's a thin gRPC client wrapper that talks to a runner gRPC server. It exposes three lifecycle methods (`connect`, `close`, `health_check`) and one attribute (`executor_client: RunnerClient`) the orchestrator passes to `DockerRunnerAdapter` for per-trial operations. The retry-cleanup path also reaches through `executor_client.cleanup_trial(trial_id)` directly — that's the one call the orchestrator makes *before* a per-trial adapter exists.
 
@@ -16,7 +16,7 @@ There is no typed surface that says "this is how the orchestrator talks to its e
 
 ## Decision Drivers
 
-- **Symmetry with the other Phase-1 seams.** Each plane has a `@runtime_checkable` Protocol with at least two implementations. The execution surface should match.
+- **Symmetry with the other typed seams.** The control↔trial wire (ADR-0003), the data plane (ADR-0004, ADR-0005), and the trial-scoped endpoints (ADR-0006) each land as a `@runtime_checkable` Protocol with at least two implementations. The execution surface should match.
 - **Lean code.** The orchestrator's two `SharedStackRuntimeBackend(...)` construction sites and one direct `executor_client.cleanup_trial` call can route through a Protocol without losing any behaviour.
 - **Fail-fast.** A backend that doesn't satisfy the Protocol fails at instance creation, not deep in the retry path.
 - **The seam is the precondition for the `Conductor` Protocol** (ADR-0008), which reads `RuntimeBackend` to know where to send a trial.
@@ -49,7 +49,7 @@ We will adopt **Option 1**.
 ### Positive
 
 - The orchestrator depends on a Protocol, not a concrete class. The execution surface is now swappable without touching the orchestrator.
-- The Phase-1 seam-definition arc is complete with this Protocol and the `Conductor` Protocol (ADR-0008). Every architectural seam in the engine has a typed contract with at least two implementations.
+- The seam-definition arc is complete with this Protocol and the `Conductor` Protocol (ADR-0008). Every architectural seam in the engine has a typed contract with at least two implementations.
 - `InMemoryRuntimeBackend` is reusable by any test that needs an orchestrator with no Docker dependency.
 - Future plug-in discovery (entry-point-discovered backends) can rely on `isinstance(impl, RuntimeBackend)` for safe injection.
 

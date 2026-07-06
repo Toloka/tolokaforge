@@ -1,7 +1,7 @@
 """Static-shape tests for the ``support_triage_01`` task pack.
 
 The task pack under ``examples/native/multi_service_postgres/`` is the
-Phase 4 realistic-backend demonstration workload for Case B (ADR-0018):
+realistic-backend demonstration workload for Case B (ADR-0018):
 a shared-runtime task-declared compose stack that runs a real
 postgres:16 database plus a PostgREST HTTP API on top of it. Real
 docker execution lives in the docker integration suite; here we pin
