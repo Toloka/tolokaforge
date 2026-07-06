@@ -39,8 +39,10 @@ import yaml
 SCHEMA_VERSION = 2
 
 # Capability band thresholds over the K repeats. A probe that passes >= 90% of the
-# time is a required candidate; <= 10% is a known-unsupported candidate; anything
-# in between is flaky and must go to a human rather than be auto-certified.
+# time is a required candidate; below 10% is a known-unsupported candidate; anything
+# in between (10% through 90%) is flaky and goes to a human rather than being
+# auto-certified. The unsupported bound is strict (< 10%): even one pass out of K
+# means we are not certain the model cannot do it, so that goes to a human.
 BAND_REQUIRED = 0.9
 BAND_UNSUPPORTED = 0.1
 
@@ -52,7 +54,7 @@ _TOOL_ERROR_RE = re.compile(r"Error executing tool ([A-Za-z0-9_.-]+):\s*(.*)", r
 def _band(pass_rate: float) -> str:
     if pass_rate >= BAND_REQUIRED:
         return "required_candidate"
-    if pass_rate <= BAND_UNSUPPORTED:
+    if pass_rate < BAND_UNSUPPORTED:
         return "known_unsupported_candidate"
     return "flaky_needs_human"
 
