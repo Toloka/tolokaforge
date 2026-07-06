@@ -1055,7 +1055,7 @@ _DEFAULT_PROVIDERS: tuple[type[WheelProvider], ...] = (
 class WheelResolver:
     """Tries :class:`WheelProvider` instances in priority order.
 
-    The default chain contains all three built-in providers.
+    The default chain contains all four built-in providers.
     Use :meth:`register` to add custom providers after construction.
     """
 
