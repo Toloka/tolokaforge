@@ -16,7 +16,7 @@ There is no typed surface that says "this is how the orchestrator talks to its e
 
 ## Decision Drivers
 
-- **Symmetry with the other Phase-1 seams.** Each plane has a `@runtime_checkable` Protocol with at least two implementations. The execution surface should match.
+- **Symmetry with the other typed seams.** The control↔trial wire (ADR-0003), the data plane (ADR-0004, ADR-0005), and the trial-scoped endpoints (ADR-0006) each land as a `@runtime_checkable` Protocol with at least two implementations. The execution surface should match.
 - **Lean code.** The orchestrator's two `SharedStackRuntimeBackend(...)` construction sites and one direct `executor_client.cleanup_trial` call can route through a Protocol without losing any behaviour.
 - **Fail-fast.** A backend that doesn't satisfy the Protocol fails at instance creation, not deep in the retry path.
 - **The seam is the precondition for the `Conductor` Protocol** (ADR-0008), which reads `RuntimeBackend` to know where to send a trial.
@@ -49,7 +49,7 @@ We will adopt **Option 1**.
 ### Positive
 
 - The orchestrator depends on a Protocol, not a concrete class. The execution surface is now swappable without touching the orchestrator.
-- The Phase-1 seam-definition arc is complete with this Protocol and the `Conductor` Protocol (ADR-0008). Every architectural seam in the engine has a typed contract with at least two implementations.
+- The seam-definition arc is complete with this Protocol and the `Conductor` Protocol (ADR-0008). Every architectural seam in the engine has a typed contract with at least two implementations.
 - `InMemoryRuntimeBackend` is reusable by any test that needs an orchestrator with no Docker dependency.
 - Future plug-in discovery (entry-point-discovered backends) can rely on `isinstance(impl, RuntimeBackend)` for safe injection.
 

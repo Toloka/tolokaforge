@@ -1052,7 +1052,7 @@ class Orchestrator:
                 max_requests_per_second=self.config.orchestrator.max_requests_per_second,
             )
 
-        # Task-declared shared-stack manifest (Phase 4): if the run's tasks declare an
+        # Task-declared shared-stack manifest: if the run's tasks declare an
         # environment_manifest, extract the shared manifest here — mixed / divergent
         # declarations fail loud before we touch docker.
         run_env_manifest = self._extract_run_env_manifest()

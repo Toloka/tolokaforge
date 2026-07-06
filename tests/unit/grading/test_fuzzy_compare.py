@@ -185,9 +185,9 @@ class TestSysPathIsolation:
 
     NOTE: this test exists because the module currently performs a
     ``sys.path.insert`` of ``contrib/<...>/mcp_core/src`` at import time
-    so that ``mcp_core`` becomes importable when present. Phase 2 of the
-    public-release cleanup removes that ``sys.path`` hack entirely; when
-    that happens, this test becomes obsolete and should be deleted.
+    so that ``mcp_core`` becomes importable when present. A follow-up
+    cleanup removes that ``sys.path`` hack entirely; when that happens,
+    this test becomes obsolete and should be deleted.
     """
 
     def test_module_level_sys_path_does_not_error_when_contrib_missing(self):

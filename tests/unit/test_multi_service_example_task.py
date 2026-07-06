@@ -1,6 +1,6 @@
 """Static-shape tests for the ``multi_service_example_01`` task pack.
 
-The task pack under ``examples/native/multi_service/`` is the Phase 4
+The task pack under ``examples/native/multi_service/`` is the
 demonstration workload for the shared+task-declared substrate path
 (Case B in ADR-0018). Real docker execution lives in the docker
 integration suite; here we pin the task pack's static shape so a

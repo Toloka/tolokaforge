@@ -1960,7 +1960,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     except Exception as e:
                         logger.warning(f"ResetTrial: Failed to stop tool lifecycle: {e}")
 
-        # TODO: Phase 3b — Re-execute initialization_actions if requested
+        # TODO: Re-execute initialization_actions if requested
         # if request.execute_init_actions:
         #     trial_context = self.trials.get(trial_id)
         #     if trial_context:

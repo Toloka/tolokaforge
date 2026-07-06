@@ -1,9 +1,10 @@
 """Unit tests for :class:`SharedStackRuntimeBackend`'s task-declared-stack
 mode.
 
-Covers the Phase 4 extension: when ``env_manifest`` is set at construction,
-the backend materialises the task-declared compose stack **once at
-``connect`` time** for the whole run, resolves endpoints from it, and
+Covers the task-declared-stack extension: when ``env_manifest`` is set
+at construction, the backend materialises the task-declared compose
+stack **once at ``connect`` time** for the whole run, resolves
+endpoints from it, and
 tears it down at ``close``. Contrast with the pre-existing built-in-stack
 mode (``runner_address`` + ``endpoints`` injected at construction), which
 is unchanged and covered by the existing test suite.
