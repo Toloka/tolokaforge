@@ -67,6 +67,60 @@ grading: "grading.yaml"
 - `mock_web.base_url`: base URL for mock web service (`http://mock-web:8080`).
 - `rag.corpus_dir`: directory of `.txt` files for RAG indexing.
 
+## Multi-container environments (`environment_manifest`)
+
+Optional. A task declares `environment_manifest` when it needs its own
+docker-compose stack — extra services beyond the engine's built-in
+`runner` + `db-service`. If omitted, the engine wires up its default
+stack (extended to include mock-web / rag-service if the task uses their
+tools).
+
+The manifest points at a compose file that lives next to `task.yaml`:
+
+```yaml
+environment_manifest:
+  compose_file: "./environment.compose.yaml"
+  runner_service: "runner"
+  isolation: "shared_ok"          # or "per_trial" (default)
+```
+
+Field reference:
+
+| Field | Required | Default | Description |
+| --- | --- | --- | --- |
+| `compose_file` | yes | — | Path to the docker-compose YAML. Relative paths resolve against `task.yaml`. This file is the sole source of truth for services, images, ports, volumes, healthchecks, and `depends_on`. |
+| `runner_service` | no | `"default"` | Which compose service is the tolokaforge runner. Must be a service declared in the compose file. |
+| `isolation` | no | `"per_trial"` | `"per_trial"` (fresh stack per trial) or `"shared_ok"` (all trials share the run's stack). See [multi-container guide](guides/multi_container_tasks.md#choosing-isolation) for how to pick. |
+
+Fields declared on the model but **not yet enforced by the provisioner** —
+declaring them is accepted for forward-compatibility but has no runtime
+effect today:
+
+- `network_policy` — reserved. Default `no_internet` is documented but not
+  yet enforced. Compose-file `network_mode: host` is still rejected by the
+  manifest validator regardless.
+- `security_context_defaults` — reserved. No provisioner consumer yet.
+- `initial_state` (on the manifest itself, not the task-level
+  `initial_state`) — reserved for per-service fixture copy operations. Use
+  compose-file `volumes:` for now.
+
+Compose-file safety invariants the manifest validator enforces at task
+load:
+
+- `network_mode: host` is rejected on any service.
+- `privileged: true` is rejected on any service.
+- `cap_add` is rejected on any service.
+- Bind-mount paths must stay inside the task directory.
+- All image tags must be pinned — `image: nginx:latest` is rejected;
+  `image: nginx:1.27-alpine` is accepted.
+- `depends_on` targets must reference declared services.
+- `runner_service` must be declared in the compose file.
+
+For a full walkthrough anchored to a working example, see the
+[multi-container tasks guide](guides/multi_container_tasks.md). For the
+underlying case matrix (built-in vs task-declared × shared vs per-trial)
+see [ADR-0018](architecture/adr/0018-multi-container-under-shared-runtime.md).
+
 ## User Simulator
 
 Prefer LLM mode (`mode: "llm"`) for realistic conversations. Use `backstory` to define the user's goal and information they reveal over the conversation:
