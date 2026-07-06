@@ -27,9 +27,7 @@ from .registry import ALL_MODELS
 
 class _TreeNode(BaseModel):
     label: str = Field(description="Node label.")
-    children: list["_TreeNode"] = Field(
-        default_factory=list, description="Child nodes (recursive)."
-    )
+    children: list[_TreeNode] = Field(default_factory=list, description="Child nodes (recursive).")
 
 
 _TreeNode.model_rebuild()
@@ -102,22 +100,22 @@ def test_recursive_ref_tool_call(
     args = result.tool_calls[0].arguments
     if isinstance(args, str):
         args = json.loads(args)
-    assert isinstance(args, dict), (
-        f"{cert.model_id}: arguments must parse as dict, got {type(args).__name__}: {args!r}"
-    )
+    assert isinstance(
+        args, dict
+    ), f"{cert.model_id}: arguments must parse as dict, got {type(args).__name__}: {args!r}"
 
     root = args.get("root")
     assert isinstance(root, dict), (
         f"{cert.model_id}: `root` must be a native dict (recursive node), got "
         f"{type(root).__name__}: {root!r}"
     )
-    assert "label" in root and "children" in root, (
-        f"{cert.model_id}: `root` missing label/children. Got: {root!r}"
-    )
+    assert (
+        "label" in root and "children" in root
+    ), f"{cert.model_id}: `root` missing label/children. Got: {root!r}"
     children = root.get("children")
-    assert isinstance(children, list) and children, (
-        f"{cert.model_id}: `root.children` must be a non-empty list, got {children!r}"
-    )
+    assert (
+        isinstance(children, list) and children
+    ), f"{cert.model_id}: `root.children` must be a non-empty list, got {children!r}"
     grandchildren = [
         gc
         for ch in children

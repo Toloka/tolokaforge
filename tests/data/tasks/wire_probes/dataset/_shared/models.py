@@ -19,8 +19,8 @@ from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, Field
 
-
 # --- manufacturing-derived shapes -------------------------------------------
+
 
 class LotAlloc(BaseModel):
     """Per-lot allocation payload: the value half of the ``lots`` dict-map."""
@@ -59,6 +59,7 @@ Capa = Annotated[Union[LotCapa, OrderCapa], Field(discriminator="target")]
 
 # --- telecom (tau2-bench-derived) shapes ------------------------------------
 
+
 class Address(BaseModel):
     """Nested address on a subscriber profile (deep_nesting)."""
 
@@ -92,9 +93,7 @@ class BankMethod(BaseModel):
 
 
 # Discriminated union on ``kind`` -> oneOf + discriminator + $defs/$ref.
-PaymentMethod = Annotated[
-    Union[CardMethod, VoucherMethod, BankMethod], Field(discriminator="kind")
-]
+PaymentMethod = Annotated[Union[CardMethod, VoucherMethod, BankMethod], Field(discriminator="kind")]
 
 
 class LineItem(BaseModel):
@@ -106,18 +105,18 @@ class LineItem(BaseModel):
 
 # --- registry (API-Bank-derived) shapes -------------------------------------
 
+
 class DeviceSpec(BaseModel):
     """Value half of the ``devices`` dict-map."""
 
-    device_type: Annotated[
-        Literal["phone", "laptop", "tablet"], Field(description="Device type.")
-    ]
+    device_type: Annotated[Literal["phone", "laptop", "tablet"], Field(description="Device type.")]
     label: Annotated[
         str, Field(description="Human-readable device label.", examples=["work-phone"])
     ]
 
 
 # --- records sandbox shapes (merged; Address->OrderAddress, LineItem->RecordLine) ---
+
 
 class EntryValue(BaseModel):
     """Value half of a typed dict-map ``key -> {amount}``."""
@@ -184,7 +183,9 @@ class DeepOrder(BaseModel):
 
     order_id: Annotated[str, Field(description="Order id.", examples=["ORD-9001"])]
     customer: Annotated[Customer, Field(description="Customer (nested object).")]
-    items: Annotated[list[OrderItem], Field(min_length=1, description="Line items (array of objects).")]
+    items: Annotated[
+        list[OrderItem], Field(min_length=1, description="Line items (array of objects).")
+    ]
     note: Annotated[str, Field(description="Free-text order note.")]
 
 
@@ -196,7 +197,7 @@ class TreeNode(BaseModel):
 
     label: Annotated[str, Field(description="Node label.")]
     children: Annotated[
-        list["TreeNode"], Field(default_factory=list, description="Child nodes (recursive).")
+        list[TreeNode], Field(default_factory=list, description="Child nodes (recursive).")
     ]
 
 

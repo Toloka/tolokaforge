@@ -7,11 +7,10 @@ no business logic. No ``from __future__ import annotations`` (FastMCP must
 resolve the model types as real objects).
 """
 
-from typing import Annotated, Any, Literal
-
-from pydantic import Field
+from typing import Annotated, Literal
 
 from models import Capa, LotAlloc, OrderLine
+from pydantic import Field
 
 from tolokaforge.core.tools_interface import DomainToolRegistry
 
@@ -78,10 +77,19 @@ def register(registry: DomainToolRegistry) -> None:
     def modify_lot(
         data: dict,
         lot_id: Annotated[str, Field(description="Lot id.", examples=["LOT-01"])],
-        lot_remaining_quantity: Annotated[int, Field(ge=0, description="Remaining quantity after consumption.")],
-        status: Annotated[Literal["released", "consumed", "on_hold"], Field(description="New lot status.")],
+        lot_remaining_quantity: Annotated[
+            int, Field(ge=0, description="Remaining quantity after consumption.")
+        ],
+        status: Annotated[
+            Literal["released", "consumed", "on_hold"], Field(description="New lot status.")
+        ],
     ) -> dict:
-        return {"ok": True, "lot_id": lot_id, "remaining": lot_remaining_quantity, "status": str(status)}
+        return {
+            "ok": True,
+            "lot_id": lot_id,
+            "remaining": lot_remaining_quantity,
+            "status": str(status),
+        }
 
     @registry.tool(
         "Recompute and write a SKU's inventory counters: in_stock, reserved, and "
@@ -92,7 +100,14 @@ def register(registry: DomainToolRegistry) -> None:
         sku_id: Annotated[str, Field(description="SKU id.", examples=["SKU-1"])],
         in_stock: Annotated[int, Field(ge=0, description="On-hand quantity.")],
         reserved: Annotated[int, Field(ge=0, description="Reserved quantity.")],
-        available_to_promise: Annotated[int, Field(ge=0, description="ATP = max(in_stock - hold - reserved, 0).")],
+        available_to_promise: Annotated[
+            int, Field(ge=0, description="ATP = max(in_stock - hold - reserved, 0).")
+        ],
     ) -> dict:
-        return {"ok": True, "sku_id": sku_id, "in_stock": in_stock,
-                "reserved": reserved, "available_to_promise": available_to_promise}
+        return {
+            "ok": True,
+            "sku_id": sku_id,
+            "in_stock": in_stock,
+            "reserved": reserved,
+            "available_to_promise": available_to_promise,
+        }

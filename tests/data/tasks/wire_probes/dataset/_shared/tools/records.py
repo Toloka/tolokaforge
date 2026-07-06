@@ -14,9 +14,8 @@ model types (EntryValue / Item) as real objects, not stringified forward refs.
 from decimal import Decimal
 from typing import Annotated, Any, Literal
 
-from pydantic import Field, WithJsonSchema
-
 from models import Block, DeepOrder, EntryValue, Item, RecordLine, TreeNode
+from pydantic import Field, WithJsonSchema
 
 from tolokaforge.core.tools_interface import DomainToolRegistry
 
@@ -65,9 +64,7 @@ def register(registry: DomainToolRegistry) -> None:
             "tags": list(tags) if isinstance(tags, list) else tags,
         }
 
-    @registry.tool(
-        "Create an item. `item` is a discriminated union on `kind` (note | task)."
-    )
+    @registry.tool("Create an item. `item` is a discriminated union on `kind` (note | task).")
     def create_item(
         data: dict,
         item: Annotated[Item, Field(description="The item to create.")],
@@ -79,9 +76,7 @@ def register(registry: DomainToolRegistry) -> None:
     def set_price(
         data: dict,
         record_id: Annotated[str, Field(description="Record id.", examples=["REC-1001"])],
-        amount: Annotated[
-            Decimal, Field(ge=0, description="Unit price.", examples=["19.99"])
-        ],
+        amount: Annotated[Decimal, Field(ge=0, description="Unit price.", examples=["19.99"])],
     ) -> dict:
         return {"ok": True, "record_id": record_id, "amount": str(amount)}
 
@@ -103,9 +98,7 @@ def register(registry: DomainToolRegistry) -> None:
         keys = list(metadata.keys()) if isinstance(metadata, dict) else []
         return {"ok": True, "record_id": record_id, "metadata_keys": keys}
 
-    @registry.tool(
-        "Set line items on a record. `lines` is a map of SKU -> {qty, unit_price}."
-    )
+    @registry.tool("Set line items on a record. `lines` is a map of SKU -> {qty, unit_price}.")
     def set_line_items(
         data: dict,
         record_id: Annotated[str, Field(description="Record id.", examples=["REC-2001"])],
@@ -121,8 +114,7 @@ def register(registry: DomainToolRegistry) -> None:
         return {"ok": True, "record_id": record_id, "skus": skus}
 
     @registry.tool(
-        "Create a new record. Returns the created record's id, which later "
-        "calls must reference."
+        "Create a new record. Returns the created record's id, which later " "calls must reference."
     )
     def create_record(data: dict) -> dict:
         # Stub returns a fixed, non-guessable id the model must thread into the
@@ -146,7 +138,11 @@ def register(registry: DomainToolRegistry) -> None:
             str, Field(description="Note text (may contain newlines, quotes, unicode).")
         ],
     ) -> dict:
-        return {"ok": True, "record_id": record_id, "len": len(text) if isinstance(text, str) else 0}
+        return {
+            "ok": True,
+            "record_id": record_id,
+            "len": len(text) if isinstance(text, str) else 0,
+        }
 
     @registry.tool("Get the current system status. Takes no parameters.")
     def get_status(data: dict) -> dict:
@@ -169,10 +165,16 @@ def register(registry: DomainToolRegistry) -> None:
         record_id: Annotated[str, Field(description="Record id.", examples=["REC-3003"])],
         codes: Annotated[
             list[str],
-            Field(min_length=2, max_length=2, json_schema_extra={"uniqueItems": True},
-                  description="Exactly 2 unique codes."),
+            Field(
+                min_length=2,
+                max_length=2,
+                json_schema_extra={"uniqueItems": True},
+                description="Exactly 2 unique codes.",
+            ),
         ],
-        amount: Annotated[int, Field(ge=10, multiple_of=5, description="Amount, >=10, multiple of 5.")],
+        amount: Annotated[
+            int, Field(ge=10, multiple_of=5, description="Amount, >=10, multiple of 5.")
+        ],
     ) -> dict:
         return {"ok": True, "record_id": record_id, "codes": codes, "amount": amount}
 
@@ -184,7 +186,8 @@ def register(registry: DomainToolRegistry) -> None:
             str, Field(json_schema_extra={"format": "uuid"}, description="External reference UUID.")
         ],
         when: Annotated[
-            str, Field(json_schema_extra={"format": "date-time"}, description="Timestamp, ISO 8601.")
+            str,
+            Field(json_schema_extra={"format": "date-time"}, description="Timestamp, ISO 8601."),
         ],
     ) -> dict:
         return {"ok": True, "record_id": record_id, "ref_id": ref_id, "when": when}
@@ -216,11 +219,17 @@ def register(registry: DomainToolRegistry) -> None:
         command: Annotated[str, Field(description="Command.", examples=["deploy"])],
         arguments: Annotated[list[str], Field(description="Positional CLI arguments.")],
     ) -> dict:
-        return {"ok": True, "command": command, "argc": len(arguments) if isinstance(arguments, list) else 0}
+        return {
+            "ok": True,
+            "command": command,
+            "argc": len(arguments) if isinstance(arguments, list) else 0,
+        }
 
     # ---- complexity bump: deep nesting + multi-hop/fan-in threading ----
 
-    @registry.tool("Submit an order. `order` is a deeply-nested object (customer.address + line items).")
+    @registry.tool(
+        "Submit an order. `order` is a deeply-nested object (customer.address + line items)."
+    )
     def submit_order(
         data: dict,
         order: Annotated[DeepOrder, Field(description="The order (nested object).")],
@@ -233,7 +242,9 @@ def register(registry: DomainToolRegistry) -> None:
     )
     def add_section(
         data: dict,
-        record_id: Annotated[str, Field(description="Record id from create_record.", examples=["REC-7F3A9"])],
+        record_id: Annotated[
+            str, Field(description="Record id from create_record.", examples=["REC-7F3A9"])
+        ],
     ) -> dict:
         return {"ok": True, "record_id": record_id, "section_id": "SEC-3B1C"}
 
@@ -242,8 +253,12 @@ def register(registry: DomainToolRegistry) -> None:
     )
     def finalize_record(
         data: dict,
-        record_id: Annotated[str, Field(description="Record id from create_record.", examples=["REC-7F3A9"])],
-        section_id: Annotated[str, Field(description="Section id from add_section.", examples=["SEC-3B1C"])],
+        record_id: Annotated[
+            str, Field(description="Record id from create_record.", examples=["REC-7F3A9"])
+        ],
+        section_id: Annotated[
+            str, Field(description="Section id from add_section.", examples=["SEC-3B1C"])
+        ],
     ) -> dict:
         return {"ok": True, "record_id": record_id, "section_id": section_id, "finalized": True}
 
@@ -255,6 +270,7 @@ def register(registry: DomainToolRegistry) -> None:
         def count(n):
             n = n if isinstance(n, dict) else (n.model_dump() if hasattr(n, "model_dump") else {})
             return 1 + sum(count(c) for c in (n.get("children") or []))
+
         return {"ok": True, "node_count": count(root)}
 
     @registry.tool(
@@ -263,9 +279,13 @@ def register(registry: DomainToolRegistry) -> None:
     )
     def submit_blocks(
         data: dict,
-        blocks: Annotated[list[Block], Field(min_length=1, description="Polymorphic array of text|image blocks.")],
+        blocks: Annotated[
+            list[Block], Field(min_length=1, description="Polymorphic array of text|image blocks.")
+        ],
     ) -> dict:
-        kinds = [
-            (b.get("kind") if isinstance(b, dict) else getattr(b, "kind", None)) for b in blocks
-        ] if isinstance(blocks, list) else []
+        kinds = (
+            [(b.get("kind") if isinstance(b, dict) else getattr(b, "kind", None)) for b in blocks]
+            if isinstance(blocks, list)
+            else []
+        )
         return {"ok": True, "kinds": kinds}

@@ -108,17 +108,17 @@ def test_heterogeneous_array_tool_call(
     args = result.tool_calls[0].arguments
     if isinstance(args, str):
         args = json.loads(args)
-    assert isinstance(args, dict), (
-        f"{cert.model_id}: arguments must parse as dict, got {type(args).__name__}: {args!r}"
-    )
+    assert isinstance(
+        args, dict
+    ), f"{cert.model_id}: arguments must parse as dict, got {type(args).__name__}: {args!r}"
 
     blocks = args.get("blocks")
-    assert isinstance(blocks, list) and blocks, (
-        f"{cert.model_id}: `blocks` must be a non-empty list, got {type(blocks).__name__}: {blocks!r}"
-    )
-    assert all(isinstance(b, dict) for b in blocks), (
-        f"{cert.model_id}: every block must be a native dict (not stringified). Got: {blocks!r}"
-    )
+    assert (
+        isinstance(blocks, list) and blocks
+    ), f"{cert.model_id}: `blocks` must be a non-empty list, got {type(blocks).__name__}: {blocks!r}"
+    assert all(
+        isinstance(b, dict) for b in blocks
+    ), f"{cert.model_id}: every block must be a native dict (not stringified). Got: {blocks!r}"
     kinds = {b.get("kind") for b in blocks}
     assert {"text", "image"} <= kinds, (
         f"{cert.model_id}: expected both a text and an image element; the "
