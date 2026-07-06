@@ -1,9 +1,10 @@
 #!/usr/bin/env python
 """Deterministic aggregated findings for the model auto-integration observe stage.
 
-Reads the observe artifact (the capability junit report plus the non-scoring
+Reads the observe artifact (the capability junit reports plus the non-scoring
 wire-probe trajectories) and emits one structured ``findings.json`` that surfaces
-the error signals the graded metrics are blind to.
+the error signals the graded metrics are blind to, as RATES over K repeats so the
+next step can turn them into a capability certificate and a policy-fix target.
 
 Why this exists: the wire-probe pack is NON-SCORING, so ``grade.binary_pass``,
 ``aggregate.success_rate``, ``failure_attribution.json`` and even
@@ -14,8 +15,9 @@ tool-result content in each trajectory. This module extracts that
 deterministically (no LLM) so the next-step verification agent consumes a small,
 curated structure instead of grepping every raw trajectory.
 
-Deterministic facts only: ``mis_shapes[].hint`` is a descriptive shape fact, never
-a formatting-vs-genuine verdict (that judgment is the verification agent's job).
+Deterministic facts only: ``mis_shapes[].hint`` is a descriptive shape fact, and
+the capability ``band`` is a rate threshold, never a formatting-vs-genuine verdict
+(that judgment is the verification agent's job).
 
 Seed of the shared failure-analysis facts emitter; kept as CI glue so the observe
 workflow can call it before that lands.
@@ -34,43 +36,82 @@ from typing import Any
 
 import yaml
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+
+# Capability band thresholds over the K repeats. A probe that passes >= 90% of the
+# time is a required candidate; <= 10% is a known-unsupported candidate; anything
+# in between is flaky and must go to a human rather than be auto-certified.
+BAND_REQUIRED = 0.9
+BAND_UNSUPPORTED = 0.1
 
 # The line the engine writes into a tool-result message when the model's tool-call
 # arguments fail the tool's schema validation.
 _TOOL_ERROR_RE = re.compile(r"Error executing tool ([A-Za-z0-9_.-]+):\s*(.*)", re.DOTALL)
 
 
-def _capability_findings(report_path: Path) -> dict[str, Any]:
-    """Parse the capability junit report into pass/fail counts and failed probe ids."""
-    if not report_path.exists():
+def _band(pass_rate: float) -> str:
+    if pass_rate >= BAND_REQUIRED:
+        return "required_candidate"
+    if pass_rate <= BAND_UNSUPPORTED:
+        return "known_unsupported_candidate"
+    return "flaky_needs_human"
+
+
+def _capability_findings(capability_dir: Path, single_report: Path) -> dict[str, Any]:
+    """Aggregate the capability junit reports across K repeats into per-probe rates.
+
+    Reads every ``*.xml`` under ``capability_dir`` (one per repeat), falling back to
+    a single ``single_report`` file for a K=1 run. Skipped cases are not counted as
+    runs. Each probe gets ``passed/runs`` and a reliability ``band``.
+    """
+    files = sorted(glob.glob(str(capability_dir / "*.xml")))
+    if not files and single_report.exists():
+        files = [str(single_report)]
+    if not files:
         return {
-            "total": 0,
-            "passed": 0,
-            "failed": 0,
-            "skipped": 0,
-            "failed_probes": [],
             "report_present": False,
+            "probes": 0,
+            "runs_per_probe": 0,
+            "bands": {},
+            "per_probe": [],
         }
-    root = ET.parse(report_path).getroot()
-    total = passed = failed = skipped = 0
-    failed_probes: list[str] = []
-    for tc in root.iter("testcase"):
-        total += 1
-        if tc.find("failure") is not None or tc.find("error") is not None:
-            failed += 1
-            failed_probes.append(tc.get("name", ""))
-        elif tc.find("skipped") is not None:
-            skipped += 1
-        else:
-            passed += 1
+
+    passed: Counter = Counter()
+    runs: Counter = Counter()
+    for report in files:
+        root = ET.parse(report).getroot()
+        for case in root.iter("testcase"):
+            name = case.get("name", "")
+            if case.find("skipped") is not None:
+                continue
+            runs[name] += 1
+            if case.find("failure") is None and case.find("error") is None:
+                passed[name] += 1
+
+    per_probe: list[dict[str, Any]] = []
+    bands: Counter = Counter()
+    for name in sorted(runs):
+        n_runs = runs[name]
+        n_pass = passed[name]
+        rate = n_pass / n_runs if n_runs else 0.0
+        band = _band(rate)
+        bands[band] += 1
+        per_probe.append(
+            {
+                "probe": name,
+                "passed": n_pass,
+                "runs": n_runs,
+                "pass_rate": round(rate, 3),
+                "band": band,
+            }
+        )
+
     return {
-        "total": total,
-        "passed": passed,
-        "failed": failed,
-        "skipped": skipped,
-        "failed_probes": sorted(failed_probes),
         "report_present": True,
+        "probes": len(per_probe),
+        "runs_per_probe": max((p["runs"] for p in per_probe), default=0),
+        "bands": dict(bands),
+        "per_probe": per_probe,
     }
 
 
@@ -116,7 +157,8 @@ def _excerpt(obj: Any, limit: int = 300) -> str:
 def _wire_findings(trials_root: Path) -> dict[str, Any]:
     traj_paths = sorted(glob.glob(str(trials_root / "*" / "*" / "trajectory.yaml")))
     tasks: set[str] = set()
-    reps: Counter = Counter()
+    task_trials: Counter = Counter()
+    task_rej_trials: Counter = Counter()
     tool_call_count = 0
     rej_by_task: Counter = Counter()
     rej_by_tool: Counter = Counter()
@@ -135,7 +177,7 @@ def _wire_findings(trials_root: Path) -> dict[str, Any]:
             continue
         task = traj.get("task_id") or Path(path).parent.parent.name
         tasks.add(task)
-        reps[task] += 1
+        task_trials[task] += 1
         if traj.get("termination_reason"):
             term[traj["termination_reason"]] += 1
         if traj.get("status") == "error":
@@ -149,6 +191,7 @@ def _wire_findings(trials_root: Path) -> dict[str, Any]:
                     tool_call_count += 1
                     call_args[call.get("id")] = (call.get("name"), call.get("arguments"))
 
+        trial_rejected = False
         for message in messages_list:
             if message.get("role") != "tool":
                 continue
@@ -156,6 +199,7 @@ def _wire_findings(trials_root: Path) -> dict[str, Any]:
             match = _TOOL_ERROR_RE.search(content)
             if not match:
                 continue
+            trial_rejected = True
             tool = match.group(1)
             rej_by_task[task] += 1
             rej_by_tool[tool] += 1
@@ -169,15 +213,27 @@ def _wire_findings(trials_root: Path) -> dict[str, Any]:
                     "hint": _classify_shape(args),
                     "arguments_excerpt": _excerpt(args),
                 }
+        if trial_rejected:
+            task_rej_trials[task] += 1
 
+    trials = len(traj_paths)
+    rejecting_trials = sum(task_rej_trials.values())
+    by_task_trial_rate = {
+        task: round(task_rej_trials[task] / task_trials[task], 3)
+        for task in sorted(task_rej_trials)
+        if task_trials[task]
+    }
     return {
-        "trials": len(traj_paths),
+        "trials": trials,
         "tasks": len(tasks),
-        "reps_max": max(reps.values()) if reps else 0,
+        "reps_max": max(task_trials.values()) if task_trials else 0,
         "tool_call_count": tool_call_count,
         "tool_arg_rejections": {
             "total": sum(rej_by_task.values()),
+            "rejecting_trials": rejecting_trials,
+            "trial_rate": round(rejecting_trials / trials, 3) if trials else 0.0,
             "by_task": dict(rej_by_task.most_common()),
+            "by_task_trial_rate": by_task_trial_rate,
             "by_tool": dict(rej_by_tool.most_common()),
             "messages": sorted(messages),
         },
@@ -202,12 +258,16 @@ def build_findings(obs_dir: Path) -> dict[str, Any]:
         "stage": "observe",
         "candidate": manifest.get("candidate", {}),
         "preset": manifest.get("preset", "default"),
-        "capability": _capability_findings(obs_dir / "capability_report.xml"),
+        "capability": _capability_findings(
+            obs_dir / "capability", obs_dir / "capability_report.xml"
+        ),
         "wire": _wire_findings(trials_root),
         "notes": [
             "wire probes are non-scoring: grade.binary_pass, aggregate.success_rate,"
             " failure_attribution.json and metrics.tool_success_rate do NOT reflect"
             " tool-argument rejections; wire.tool_arg_rejections is the faithful signal.",
+            "capability.per_probe[].band and wire rates are over K repeats;"
+            " flaky_needs_human means neither required nor known_unsupported was confident.",
             "mis_shapes[].hint is a descriptive shape fact, not a"
             " formatting-vs-genuine verdict (that is the verification agent's job).",
         ],
@@ -221,35 +281,37 @@ def render_summary(findings: dict[str, Any], run_url: str | None = None) -> str:
     rej = wire.get("tool_arg_rejections", {})
     candidate = (findings.get("candidate") or {}).get("name", "?")
     preset = findings.get("preset", "default")
+    bands = cap.get("bands", {})
 
     lines = [f"### Auto-integration observe: `{candidate}` on the `{preset}` preset", ""]
     lines.append(
-        f"- Capability probes: **{cap.get('passed', 0)}/{cap.get('total', 0)} passed**,"
-        f" {cap.get('failed', 0)} failed."
+        f"- Capability ({cap.get('probes', 0)} probes x {cap.get('runs_per_probe', 0)} reps): "
+        f"{bands.get('required_candidate', 0)} required-candidate, "
+        f"{bands.get('known_unsupported_candidate', 0)} known-unsupported-candidate, "
+        f"**{bands.get('flaky_needs_human', 0)} flaky (needs human)**."
     )
-    if cap.get("failed_probes"):
-        lines.append("  - failed: " + ", ".join(f"`{p}`" for p in cap["failed_probes"]))
+    for probe in cap.get("per_probe", []):
+        if probe["band"] != "required_candidate":
+            lines.append(
+                f"  - `{probe['probe']}`: {probe['passed']}/{probe['runs']} ({probe['band']})"
+            )
     lines.append(
-        f"- Wire probes: {wire.get('trials', 0)} trials, {wire.get('tool_call_count', 0)} tool calls."
+        f"- Wire ({wire.get('trials', 0)} trials, {wire.get('tool_call_count', 0)} tool calls): "
+        f"**{rej.get('rejecting_trials', 0)}/{wire.get('trials', 0)} trials with a tool-arg rejection** "
+        f"(rate {rej.get('trial_rate', 0)})."
     )
-    by_task = rej.get("by_task", {})
-    if rej.get("total"):
-        lines.append(
-            f"- **Tool-arg rejections: {rej['total']}** ("
-            + ", ".join(f"`{k}`={v}" for k, v in by_task.items())
-            + ")"
-        )
-        for shape in wire.get("mis_shapes", []):
-            lines.append(f"  - `{shape['task']}` / `{shape['tool']}`: {shape['hint']}")
-    else:
-        lines.append("- Tool-arg rejections: 0")
+    for shape in wire.get("mis_shapes", []):
+        task = shape["task"]
+        rate = rej.get("by_task_trial_rate", {}).get(task)
+        rate_str = f", {rate} of trials" if rate is not None else ""
+        lines.append(f"  - `{task}` / `{shape['tool']}`: {shape['hint']}{rate_str}")
     infra = wire.get("infra", {})
     lines.append(
         f"- Infra: rate_limit={infra.get('rate_limit', 0)}, "
         f"max_turns={infra.get('max_turns', 0)}, stuck={infra.get('stuck', 0)}."
     )
     lines.append("")
-    tail = "Full artifact (capability report + trajectories + `findings.json`) for the next step."
+    tail = "Full artifact (capability reports + trajectories + `findings.json`) for the next step."
     if run_url:
         tail += f" [Run]({run_url})"
     lines.append(tail)
@@ -277,10 +339,11 @@ def main() -> None:
 
     cap = findings["capability"]
     rej = findings["wire"]["tool_arg_rejections"]
+    bands = cap.get("bands", {})
     print(
-        f"findings: capability {cap['passed']}/{cap['total']} passed "
-        f"({cap['failed']} failed); wire tool-arg rejections={rej['total']} "
-        f"across {len(rej['by_task'])} task(s); wrote {out_path}"
+        f"findings: capability {cap.get('probes', 0)} probes x {cap.get('runs_per_probe', 0)} reps "
+        f"({bands.get('flaky_needs_human', 0)} flaky); wire {rej.get('rejecting_trials', 0)}"
+        f"/{findings['wire'].get('trials', 0)} trials rejected; wrote {out_path}"
     )
 
 

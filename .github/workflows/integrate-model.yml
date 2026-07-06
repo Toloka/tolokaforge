@@ -39,6 +39,11 @@ jobs:
       # never interpolated into the script body.
       PR_TITLE: ${{ github.event.pull_request.title }}
       IS_FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
+      # Repeat counts, configurable via repo Actions variables (defaults 15/10).
+      # Capability probes are candidate-only (cheap) so run more; wire probes
+      # drive the sonnet user-sim (expensive) so run fewer.
+      CAPABILITY_K: ${{ vars.OBSERVE_CAPABILITY_K || '15' }}
+      WIRE_K: ${{ vars.OBSERVE_WIRE_K || '10' }}
     steps:
       - name: Reject fork PRs (no secrets on the pull_request event)
         if: env.IS_FORK == 'true'
@@ -106,20 +111,24 @@ jobs:
           echo "model_id=$MODEL_ID" >> "$GITHUB_OUTPUT"
           echo "Candidate model_id: $MODEL_ID"
 
-      - name: Capability integration probes (report-only)
+      - name: Capability integration probes (report-only, CAPABILITY_K repeats)
         # All capabilities run against the candidate (ephemeral all-required
         # cert injected via TF_CANDIDATE_*); a miss is data for the next step,
-        # not a gate, so failures do not fail the job.
+        # not a gate, so failures do not fail the job. Repeated CAPABILITY_K
+        # times (one junit per repeat) so the extractor can band each probe by
+        # pass-rate: required / known-unsupported / flaky-needs-human.
         env:
           TF_CANDIDATE_PROVIDER: ${{ steps.parse.outputs.provider }}
           TF_CANDIDATE_NAME: ${{ steps.parse.outputs.name }}
           MODEL_ID: ${{ steps.slug.outputs.model_id }}
         run: |
-          mkdir -p observation
-          uv run pytest tests/integration/llm/ \
-            -k "$MODEL_ID" \
-            --junitxml=observation/capability_report.xml \
-            -v --tb=short || true
+          mkdir -p observation/capability
+          for i in $(seq 1 "$CAPABILITY_K"); do
+            uv run pytest tests/integration/llm/ \
+              -k "$MODEL_ID" \
+              --junitxml="observation/capability/rep_$i.xml" \
+              -q --tb=line || true
+          done
 
       - name: Build core runner image (for the wire probes)
         run: uv run tolokaforge docker build --core
@@ -143,7 +152,7 @@ jobs:
               temperature: 0.2
           orchestrator:
             workers: 1
-            repeats: 2
+            repeats: ${WIRE_K}
             max_turns: 10
             queue_backend: sqlite
           evaluation:
@@ -176,7 +185,7 @@ jobs:
               "preset": "default",
               "engine_ref": os.environ.get("GITHUB_SHA", ""),
               "pr": int(os.environ.get("PR", "0")),
-              "capability_report": "capability_report.xml",
+              "capability_dir": "capability",
               "wire_probe_dir": (
                   os.path.relpath(wire_dir, "observation") if wire_dir else None
               ),
