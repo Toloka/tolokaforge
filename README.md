@@ -82,6 +82,65 @@ points at always travel together.
 
 For distributed execution and advanced workflows see the [Runner Guide](docs/RUNNER.md).
 
+## Runtime modes
+
+Every trial runs inside a Docker stack. Two runtime backends decide how
+that stack is scoped:
+
+- **`shared`** (default): one stack materialises at run start and every
+  trial hits it. Fast startup, lowest overhead.
+- **`per_trial`**: a fresh stack materialises for each trial via
+  [Testcontainers](https://testcontainers.com/). Strict isolation —
+  DB rows, filesystem edits, service state never leak across trials.
+  Use it whenever a task mutates its environment.
+
+Pick per-run via the CLI flag or the config key:
+
+```bash
+uv run tolokaforge run --config my_run.yaml --runtime per_trial
+```
+
+```yaml
+# my_run.yaml
+orchestrator:
+  runtime: per_trial            # or "shared" (default)
+```
+
+A task can also declare its requirement via `environment_manifest.isolation`
+in `task.yaml` — the orchestrator refuses to run a `per_trial` task on the
+shared backend so cross-trial contamination is a startup-time error, not a
+silent grading bug.
+
+See [docs/architecture/RUNTIME_BACKENDS.md](docs/architecture/RUNTIME_BACKENDS.md)
+for the full lifecycle deep-dive and
+[ADR-0016](docs/architecture/adr/0016-runtime-backend-comparison.md) for the
+tradeoff analysis.
+
+## Multi-container tasks
+
+Tasks aren't limited to the engine's built-in stack (runner + db-service ±
+RAG ± mock-web). A task can declare its own `docker-compose.yaml` — the
+task pack ships the compose file next to `task.yaml`, and the engine
+materialises that stack instead. Real databases, real APIs, custom
+services, whatever the compose file names.
+
+```yaml
+# task.yaml
+environment_manifest:
+  compose_file: "./environment.compose.yaml"
+  runner_service: "runner"
+  isolation: "shared_ok"        # or "per_trial"
+```
+
+The [`multi_service`](examples/native/multi_service/) example is the
+smallest working demonstration (runner + db-service + an nginx serving a
+product catalog); its two siblings scale up to a multi-endpoint join and a
+full PostgREST + postgres three-tier stack.
+
+Read [docs/guides/multi_container_tasks.md](docs/guides/multi_container_tasks.md)
+for a walkthrough, or [ADR-0018](docs/architecture/adr/0018-multi-container-under-shared-runtime.md)
+for the case-matrix that decides which mode fits your task.
+
 ## Project Structure
 
 ```
@@ -94,6 +153,9 @@ examples/             # Reference task layouts with runnable run_config.yaml
 ├── native/           # default `native` adapter
 │   ├── browser_task/
 │   ├── coding/
+│   ├── multi_service/          # task-declared compose (nginx catalog)
+│   ├── multi_service_advanced/ # multi-endpoint join
+│   ├── multi_service_postgres/ # PostgREST + postgres three-tier
 │   ├── native_shared_domain/
 │   └── tool_use/
 └── terminal_bench/   # `terminal_bench` adapter (Docker compose)
@@ -109,6 +171,8 @@ examples/             # Reference task layouts with runnable run_config.yaml
 | Tool reference | [docs/TOOLS.md](docs/TOOLS.md) |
 | Browser/mobile tools | [docs/BROWSER_TOOLS.md](docs/BROWSER_TOOLS.md) |
 | Runner & distributed execution | [docs/RUNNER.md](docs/RUNNER.md) |
+| Runtime backends (shared vs per-trial) | [docs/architecture/RUNTIME_BACKENDS.md](docs/architecture/RUNTIME_BACKENDS.md) |
+| Multi-container task guide | [docs/guides/multi_container_tasks.md](docs/guides/multi_container_tasks.md) |
 | Adapter architecture | [docs/ADAPTER_ARCHITECTURE.md](docs/ADAPTER_ARCHITECTURE.md) |
 | Analytics & failure attribution | [docs/ANALYTICS.md](docs/ANALYTICS.md) |
 | Python package API | [docs/PYTHON_PACKAGE.md](docs/PYTHON_PACKAGE.md) |
@@ -121,6 +185,9 @@ examples/             # Reference task layouts with runnable run_config.yaml
 
 ## Examples
 
+Single-container tasks — one runner container plus the engine's built-in
+services (db-service, mock-web, RAG on demand):
+
 | Example | Description |
 | --- | --- |
 | [`examples/native/coding/`](examples/native/coding/) | Simplest native pattern — file-write grading |
@@ -128,6 +195,15 @@ examples/             # Reference task layouts with runnable run_config.yaml
 | [`examples/native/browser_task/`](examples/native/browser_task/) | Browser tool against mock-web fixtures |
 | [`examples/native/native_shared_domain/`](examples/native/native_shared_domain/) | `_shared/domain.yaml` + FastMCP pattern |
 | [`examples/terminal_bench/`](examples/terminal_bench/) | Docker-compose stacks with `terminal_bench` adapter |
+
+Multi-container tasks — the task ships its own compose file declaring
+additional services (see [multi_container_tasks.md](docs/guides/multi_container_tasks.md)):
+
+| Example | Description |
+| --- | --- |
+| [`examples/native/multi_service/`](examples/native/multi_service/) | Smallest multi-service task — runner + db-service + nginx product catalog |
+| [`examples/native/multi_service_advanced/`](examples/native/multi_service_advanced/) | Multi-endpoint aggregation across two task-specific HTTP APIs |
+| [`examples/native/multi_service_postgres/`](examples/native/multi_service_postgres/) | Realistic three-tier stack — PostgREST + postgres, no application code in the task pack |
 
 ## Testing
 
