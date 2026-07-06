@@ -837,15 +837,15 @@ class DBService:
 
 ## Migration Path
 
-### Phase 1: Add New Endpoints
+### Step 1: Add New Endpoints
 - Add trial-scoped endpoints alongside existing global endpoints
 - Existing `/reset`, `/dump`, `/query` continue to work (default trial)
 
-### Phase 2: Update Runner
+### Step 2: Update Runner
 - Runner uses new `/trials/{trial_id}/init` endpoint
 - Tools use `/trials/{trial_id}/state/{table}` for mutations
 
-### Phase 3: Deprecate Global Endpoints
+### Step 3: Deprecate Global Endpoints
 - Remove global `/reset`, `/dump`, `/update`
 - All access via trial-scoped endpoints
 

@@ -706,17 +706,17 @@ See [`DB_SERVICE_API.md`](DB_SERVICE_API.md) for full endpoint specifications.
 
 ## Migration Path
 
-### Phase 1: Extend Current Protocol
+### Step 1: Extend Current Protocol
 - Add `RegisterTrial` RPC alongside existing `RegisterTools`
 - Add `GradeTrial` RPC
 - Keep `ExecuteTool` compatible
 
-### Phase 2: Update Host
+### Step 2: Update Host
 - Modify orchestrator to use `RegisterTrial`
 - Add grading via `GradeTrial`
 - Update error handling
 
-### Phase 3: Deprecate Old RPCs
+### Step 3: Deprecate Old RPCs
 - Remove `RegisterTools` (replaced by `RegisterTrial`)
 - Update documentation
 

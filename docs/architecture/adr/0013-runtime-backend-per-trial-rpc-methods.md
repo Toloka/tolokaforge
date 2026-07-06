@@ -16,7 +16,7 @@ That layer was pragmatic when it landed, but with ADR-0007 (`RuntimeBackend` Pro
 - `Conductor` owns the per-trial execution *body* (agent loop, grading, artifact write).
 - Everything else — `register_trial`, `execute_tool`, `grade_trial`, `get_state`, `reset_trial` — is per-trial RPC work with no state of its own, currently hidden behind a wrapper class that exists purely to bind `trial_id`.
 
-The seam question is: **which of the two established seams should own these five methods?** The ticket that surfaced this (TECHDEL-428) lists three options:
+The seam question is: **which of the two established seams should own these five methods?** Three options were on the table:
 
 - **Option A** — `Conductor` owns them. Natural in the sense that `Conductor` is per-trial by construction.
 - **Option B** — `RuntimeBackend` takes `trial_id` explicitly. The Runner-RPC surface becomes visible on the Protocol; no intermediate wrapper.
@@ -85,6 +85,6 @@ The `ToolExecutor` surface is already established (`tolokaforge.tools.registry`,
 
 ## Links
 
-- Ticket: internal (TECHDEL-428) — GitHub #106.
+- Public issue: GitHub #106.
 - Related ADRs: 0007 (`RuntimeBackend` Protocol), 0008 (`Conductor` Protocol), 0010 (provisioning contract), 0011 (seam-definition + data-declaration conventions).
 - Predecessor PR: #135 (`RunnerClient` promoted to Protocol) — made this ADR expressible without a per-backend `RunnerClient` type.

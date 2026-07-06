@@ -23,7 +23,7 @@
 
 | Stage | Achievement |
 |-------|------------|
-| 0–6 (Phase 1) | Task data separation, Docker Python layer, adapter plugins, rename to `tlk_mcp_core`, native conversion layer, canonical test infrastructure |
+| 0–6 | Task data separation, Docker Python layer, adapter plugins, rename to `tlk_mcp_core`, native conversion layer, canonical test infrastructure |
 | 7 | Test failures fixed: 31→0 failures, 708→1 warnings. Dead-skip tests deleted, skips reduced 103→23. Final: 427 passed, 23 skipped, 0 failures |
 | 8 | `contrib/` directories migrated to git submodules (PR #33). `fuzzy_compare.py` path fixed |
 | 10 | Test consolidation: 5→3 categories (unit/canonical/integration). `functional/` and `e2e/` deleted. 688→449 tests |

@@ -9,7 +9,7 @@
 ## TL;DR
 
 **Multi-container capability** and **per-trial isolation** are independent
-concerns. Before Phase 4, they were entangled: the only way to run a task with
+concerns. Before this ADR, they were entangled: the only way to run a task with
 a rich task-declared compose file was to opt into per-trial isolation. Tasks
 that needed a realistic multi-service environment but were fine sharing state
 across trials had no path. This ADR decouples them by extending
@@ -46,7 +46,7 @@ Every real run occupies exactly one cell of that 2×2:
 
 | Lifecycle ↓ / Composition → | **Built-in stack** (no `env_manifest`) | **Task-declared stack** (`env_manifest` set) |
 |---|---|---|
-| **`shared`** (once per run) | **Case A** — Default. Historical baseline. | **Case B** — New in Phase 4. **This ADR.** |
+| **`shared`** (once per run) | **Case A** — Default. Historical baseline. | **Case B** — Added by this ADR. |
 | **`per_trial`** (once per trial) | **Case D** — Legal but pointless. Trials get identical fresh built-in substrates. Not exercised in practice. | **Case C** — Shipped in [ADR-0009](0009-environment-manifest.md) + [ADR-0010](0010-runtime-backend-provisioning-contract.md). |
 
 Cases A, B, and C are the three the engine actively supports. Case D is a
@@ -102,8 +102,8 @@ distribution**. Those are independent axes:
   `DB_SERVICE_URL` — but they share a package and a build. The **D16**
   decision in `CLOUD_RUNTIME_ARCHITECTURE.md` commits to designing internal
   module boundaries as if a future split into multiple published
-  artifacts is inevitable; **Phase 7** in the public roadmap ("Runner as
-  consumable artifact") makes the split concrete.
+  artifacts is inevitable; the eventual "Runner as consumable artifact"
+  work makes the split concrete.
 
 Every cell of the 2×2 is compatible with either package shape. A Case A run
 uses the engine's built-in services regardless of whether they ship as one
@@ -111,14 +111,14 @@ package or ten. A Case B/C run declares services in its own compose file
 regardless of which engine images those services reference. The
 composition axis and the packaging axis do not interact.
 
-One subtlety worth flagging for Phase 7 planning: the runner currently
-**assumes** a reachable db-service (some tool-execution paths error out
-if the db HTTP endpoint returns errors). The **seam is decoupled**, but
-the runner's current dependency shape **assumes the seam is filled**.
-Standalone-runner distribution will need to pick one of: null-tolerant
-runner (unfilled seams become no-ops), ship db-service alongside the
-runner in the same distribution, or make db-service opt-in via runner
-config. That's Phase 7 design territory — out of scope for this ADR.
+One subtlety worth flagging for future runner-artifact planning: the
+runner currently **assumes** a reachable db-service (some tool-execution
+paths error out if the db HTTP endpoint returns errors). The **seam is
+decoupled**, but the runner's current dependency shape **assumes the
+seam is filled**. Standalone-runner distribution will need to pick one
+of: null-tolerant runner (unfilled seams become no-ops), ship db-service
+alongside the runner in the same distribution, or make db-service opt-in
+via runner config. Out of scope for this ADR.
 
 ## What each case looks like — end to end
 
@@ -152,7 +152,7 @@ sequenceDiagram
   O->>S: destroy_all()
 ```
 
-Everything about this path is documented in [ADR-0016](0016-runtime-backend-comparison.md) and `RUNTIME_BACKENDS.md`. Untouched by Phase 4.
+Everything about this path is documented in [ADR-0016](0016-runtime-backend-comparison.md) and `RUNTIME_BACKENDS.md`. Untouched by this ADR.
 
 ### Case B — `shared` + task-declared stack (new)
 
@@ -244,7 +244,7 @@ Key differences from Case B:
 - **Isolation.** Trial N never sees trial N-1's state (containers +
   volumes are physically distinct).
 
-Shipped as Phase 3.
+Shipped in v0.7.0 (`PerTrialRuntimeBackend` + `--runtime` CLI).
 
 ## Choosing a case — decision flow
 
@@ -290,9 +290,9 @@ flowchart TB
 
 - **Multi-container tasks no longer force per-trial isolation.** Task
   authors who need realism without isolation now have Case B.
-- **Both backends share the same materialisation primitives.** The Phase 4
-  PR 1 (`compose_materialisation` module) refactor made this possible
-  without code duplication. `PerTrialRuntimeBackend` and
+- **Both backends share the same materialisation primitives.** The
+  `compose_materialisation` module extracted alongside this ADR made
+  this possible without code duplication. `PerTrialRuntimeBackend` and
   `SharedStackRuntimeBackend` now differ only in *when* they materialise,
   not *how*.
 - **The 2×2 matrix generalises to future substrates.** When a Kubernetes
