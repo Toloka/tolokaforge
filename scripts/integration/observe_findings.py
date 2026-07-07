@@ -37,7 +37,12 @@ import yaml
 SCHEMA_VERSION = 3
 
 # The line the engine writes into a tool-result message when the model's tool-call
-# arguments fail the tool's schema validation.
+# arguments fail the tool's schema validation. DEPENDENCY PIN: this matches because
+# FastMCP raises ToolError("Error executing tool <name>: ...") and the MCP wrapper
+# surfaces that text as the tool OUTPUT (not behind an "Error:" prefix), so it lands
+# raw in the trajectory. If a rejection ever arrives as a JSON-RPC error instead
+# (reformatted to "MCP error <code>: <msg>"), this regex would miss it and the signal
+# would go silently blind - revisit this pattern if that engine path changes.
 _TOOL_ERROR_RE = re.compile(r"Error executing tool ([A-Za-z0-9_.-]+):\s*(.*)", re.DOTALL)
 
 
@@ -70,14 +75,23 @@ def _capability_findings(capability_dir: Path, single_report: Path) -> dict[str,
             "probes": 0,
             "runs_per_probe": 0,
             "probes_with_failures": 0,
+            "unparseable_reports": 0,
             "per_probe": [],
         }
 
     passed: Counter = Counter()
     runs: Counter = Counter()
     failures: dict[str, Counter] = {}
+    unparseable = 0
     for report in files:
-        root = ET.parse(report).getroot()
+        # A junit written by a worker that was OOM-killed mid-flush can be
+        # truncated; skip it (and count it) rather than aborting the whole
+        # aggregation, mirroring the trajectory loop below.
+        try:
+            root = ET.parse(report).getroot()
+        except (ET.ParseError, OSError):
+            unparseable += 1
+            continue
         for case in root.iter("testcase"):
             name = case.get("name", "")
             if case.find("skipped") is not None:
@@ -116,6 +130,7 @@ def _capability_findings(capability_dir: Path, single_report: Path) -> dict[str,
         "probes": len(per_probe),
         "runs_per_probe": max((p["runs"] for p in per_probe), default=0),
         "probes_with_failures": probes_with_failures,
+        "unparseable_reports": unparseable,
         "per_probe": per_probe,
     }
 
@@ -219,6 +234,10 @@ def _wire_findings(trials_root: Path) -> dict[str, Any]:
             "status_error": status_error,
             "max_turns": term.get("max_turns", 0),
             "stuck": term.get("stuck_detected", 0),
+            # Without these, a wire run that died on provider 5xx/timeouts on every
+            # trial reads as "clean" (no rejections, all-zero infra).
+            "api_error": term.get("api_error", 0),
+            "api_timeout": term.get("api_timeout", 0),
         },
     }
 
@@ -235,11 +254,34 @@ def build_findings(obs_dir: Path) -> dict[str, Any]:
     variants = _capability_findings(obs_dir / "variants", obs_dir / "__no_single_variant_report__")
     wire = _wire_findings(trials_root)
 
+    # A present-but-empty capability report (every probe SKIPPED - e.g. a missing or
+    # empty API key makes live_client skip everything) must NOT read as "all passed":
+    # zero probes ran, so nothing was verified. Require the suite to have executed at
+    # least one probe before the aggregate can be green. This does not false-negative
+    # on legitimate known_unsupported skips, because the all-required candidate cert
+    # always yields probes > 0 when the key works.
+    capability_ran = bool(capability["report_present"]) and capability["probes"] > 0
     all_passed = (
-        (capability["all_passed"] is None or capability["all_passed"])
+        capability_ran
+        and capability["all_passed"]
         and (variants["all_passed"] is None or variants["all_passed"])
         and not wire["any_rejection"]
     )
+    notes = [
+        "RAW STATS ONLY: this file bands nothing and judges nothing. `all_passed`"
+        " is the only verdict; per-probe pass counts, failure_messages and"
+        " rejected_examples are raw facts for the agent to analyze.",
+        "wire probes are non-scoring: grade.binary_pass, aggregate.success_rate,"
+        " failure_attribution.json and metrics.tool_success_rate do NOT reflect"
+        " tool-argument rejections; wire.tool_arg_rejections is the faithful signal.",
+    ]
+    if not capability_ran:
+        notes.insert(
+            0,
+            "capability suite did NOT execute (0 probes ran - report absent or every"
+            " probe skipped, e.g. a missing/empty API key). all_passed is forced False;"
+            " this is an infra failure, not a clean pass.",
+        )
     return {
         "schema_version": SCHEMA_VERSION,
         "stage": "observe",
@@ -248,17 +290,11 @@ def build_findings(obs_dir: Path) -> dict[str, Any]:
         # The single yes/no the deterministic layer commits to. Everything else is
         # raw stats + raw error text for the agent to analyze.
         "all_passed": all_passed,
+        "capability_ran": capability_ran,
         "capability": capability,
         "variants": variants,
         "wire": wire,
-        "notes": [
-            "RAW STATS ONLY: this file bands nothing and judges nothing. `all_passed`"
-            " is the only verdict; per-probe pass counts, failure_messages and"
-            " rejected_examples are raw facts for the agent to analyze.",
-            "wire probes are non-scoring: grade.binary_pass, aggregate.success_rate,"
-            " failure_attribution.json and metrics.tool_success_rate do NOT reflect"
-            " tool-argument rejections; wire.tool_arg_rejections is the faithful signal.",
-        ],
+        "notes": notes,
     }
 
 
@@ -271,7 +307,12 @@ def render_summary(findings: dict[str, Any], run_url: str | None = None) -> str:
     candidate = (findings.get("candidate") or {}).get("name", "?")
     preset = findings.get("preset", "default")
 
-    verdict = "all probes passed" if findings.get("all_passed") else "failures present"
+    if not findings.get("capability_ran", True):
+        verdict = "capability suite did NOT run (0 probes) - infra failure, not a pass"
+    elif findings.get("all_passed"):
+        verdict = "all probes passed"
+    else:
+        verdict = "failures present"
     lines = [
         f"### Auto-integration observe: `{candidate}` on the `{preset}` preset",
         "",
