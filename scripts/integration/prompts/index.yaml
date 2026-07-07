@@ -1,0 +1,114 @@
+# Trajectory-analysis agent prompts
+#
+# Briefs for the interpretation ("verification") agent that reads a model's eval
+# trajectories and turns raw stats into a GO / No-Go plus policy-fix targets. Pairs
+# with the deterministic observe stage (observe_findings.py, raw stats) and the
+# resolve stage (reprobe.py, proves a proposed policy fix): observe emits findings,
+# these prompts interpret them, reprobe verifies the fix.
+#
+# HOW TO USE (reader agent):
+#   1. Fill the placeholders (see `placeholders`) into `_shared_context.md`.
+#   2. For each dimension you need, dispatch ONE background general-purpose sub-agent
+#      with:  _shared_context.md  +  the dimension's `file`. (Each sub-agent sees ONLY
+#      the shared block + its one dimension, never this index or its siblings, so any
+#      cross-dimension rule must live in _shared_context.md.)
+#   3. Obey the efficiency rules in _shared_context.md (shell-first, no bulk Read, no
+#      env.yaml) - they exist because a 12-agent parallel run stalled on I/O.
+#   4. Synthesize the per-dimension verdicts into one aggregate GO / No-Go using the
+#      "Aggregate synthesis" precedence in _shared_context.md (infra is a precondition;
+#      recoverable pp is owned once by four-bucket and never summed across dimensions).
+
+version: 1
+
+shared_context: _shared_context.md   # prepend to every dimension prompt
+
+# Two verification contexts (pick one; full definition in _shared_context.md "Mode"):
+modes:
+  eval: "full domain eval (scored grade.yaml) - result-FIDELITY audit: is the number a true
+    measure of model capability, or is it depressed by infra / policy / code / oracle artifacts?"
+  observe: "integration artifact (raw findings.json, wire non-scoring) - FIXABLE-ERROR audit:
+    which failures are preset-fixable (the policy-fix target) vs genuine ceilings?"
+
+placeholders:
+  MODEL: "config/display name under analysis, e.g. sonnet_5"
+  ENGINE_VERSION: "engine build the eval ran on, e.g. v0.5.0"
+  BASE_DIR: "collected full-eval root (.../collected-<model>-full) or the observe obs_dir"
+  DOMAINS_WITH_COUNTS: "list of '<domain> <trial-count>'"
+  TOTAL_TRIALS: "sum of the trial counts"
+  ANCHORS: "optional known-good numbers to cross-check (pass@1 / pass^5 / ...)"
+  # Human-owned policy inputs for the aggregate GO/No-Go (do NOT let the agent invent them):
+  GO_BOUNDARY: "adjusted-pass@1 (and pass^5) threshold for GO; owner: human / leaderboard policy"
+  INFRA_THRESHOLD: "max infra-attributable failure share that still counts as infra-CLEAN"
+  # Resolve-agent placeholders (the fix-loop agent, resolve_agent.md):
+  OBS_DIR: "the observe artifact dir the resolve agent reads (findings.json + probes)"
+  PROVIDER: "candidate provider, e.g. openrouter"
+  NAME: "candidate model slug, e.g. deepseek/deepseek-v3.2-exp"
+  MODEL_ID: "candidate model_id slug, e.g. openrouter__deepseek_deepseek-v3.2-exp"
+  PR: "the candidate integration PR number"
+  MAX_ITER: "max resolve fix-loop iterations (default 3)"
+
+prompts:
+  - name: harness-infra
+    file: harness_infra.md
+    purpose: "Is any failure infra-caused (429/timeout/max_turns/stuck/crash) rather than the model?"
+    reads: [logs.yaml, grade.yaml, findings.json]
+    gates: "trust - a dirty infra result invalidates the pass numbers"
+    verdict: "infra CLEAN or NOT"
+
+  - name: preset-codec-leak
+    file: preset_codec_leak.md
+    purpose: "Did the preset apply 100%? Any reasoning-leak or schema-loss? clean-native or a named policy fix?"
+    reads: [task.yaml, prompts.yaml, tools_schemas.yaml, trajectory.yaml, metrics.yaml]
+    gates: "policy-fix target - reprobe.py then proves the fix"
+    verdict: "clean-native OR exact policy axis + fix combination"
+
+  - name: four-bucket
+    file: four_bucket.md
+    purpose: "Classify every failure (infra / harness+task-design+oracle / formatting / genuine-model); how much is preset-fixable?"
+    reads: [grade.yaml, logs.yaml, trajectory.yaml, tools_schemas.yaml, task.yaml]
+    gates: "how much of the gap is recoverable at all; SOLE owner of the recoverable-pp split"
+    verdict: "recoverable pp (oracle + formatting) vs genuine-model pp"
+
+  - name: consistency-passk
+    file: consistency_passk.md
+    purpose: "pass@1 / pass@5 / pass^5 + consistency tax; consistency-limited or capability-limited?"
+    reads: [per_task_metrics.json, grade.yaml]
+    gates: "the board number + the capability-vs-consistency story"
+    verdict: "consistency-limited or capability-limited, with the numeric split"
+
+  - name: task-design-oracle
+    file: task_design_oracle.md
+    purpose: "Find FALSE failures (correct action graded fail) + unwinnable/ambiguous tasks."
+    reads: [grade.yaml (reasons/state_diff), task.yaml, prompts.yaml, trajectory.yaml]
+    gates: "publishability - footnote vs regrade"
+    verdict: "footnote-only or oracle fix + regrade"
+
+# Dimensions intentionally NOT in this core library yet:
+not_included:
+  - name: weak-domains
+    reason: "per-request; deep root-cause of the 1-2 weakest domains. Add when needed."
+  - name: "grading-soundness / over-creation / peer-board / cost-cache / trajectory-failures"
+    reason: "other dimensions from the full analysis set; fold in here if they become routine."
+
+# The RESOLVE fix-loop agent (runs after a clean observe, ON the candidate PR branch):
+resolve:
+  file: resolve_agent.md
+  purpose: "Turn observe findings into a working policy (or prove a genuine ceiling); iterate
+    <= MAX_ITER with reprobe.py, then commit the integration to the branch + report on the PR."
+  reads: [findings.json, capability/*.xml, variants/*.xml, wire_probes_*/trajectory.yaml]
+  writes: [model_presets.yaml, registry.py, "new adapter class + registration if needed"]
+  trigger: "auto-chain after a clean observe run"
+  verdict: "integrated (with known_unsupported ceilings) OR needs-human"
+
+notes:
+  # Canonical statements live in _shared_context.md; these are pointers, not restatements.
+  - "FORMATTING is the only preset-fixable bucket. A 'policy' is a new COMBINATION of shipped
+     adapter axes (the six _POLICY_REGISTRIES slots + a params block); an overlay needs no
+     engine code, but a genuinely novel quirk with no covering class needs a NEW class (engine
+     code, behind human review) - flag it as fixable anyway. See _shared_context.md."
+  - "pass^5 = mean over tasks of (c/n)^5, computed in the arena FRONTEND, NOT in this engine.
+     The engine's pass_hat@k / pass@k are the any-of-k ceiling (== pass@5), a false friend.
+     See the Metrics section of _shared_context.md."
+  - "Quirk frequency is bimodal (a preset-covered quirk reads ~0%, an uncovered one is
+     domain-fatal), so a ~0% reading is ambiguous - see the Interpretive-traps note in
+     _shared_context.md. Attribution needs full-eval volume, not a small probe."
