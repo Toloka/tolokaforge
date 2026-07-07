@@ -139,11 +139,11 @@ jobs:
             sh -c 'uv run pytest tests/integration/llm/ -k "$MODEL_ID and not test_variant" --junitxml="observation/capability/rep_$1.xml" -q --tb=line -p no:cacheprovider || true' _ {}
 
       - name: Shape-variant probes (report-only, CAPABILITY_K repeats)
-        # Observe-only structural variants of the shape-sensitive capabilities
-        # (tests/integration/llm/variants/). Gated by TF_RUN_VARIANTS so a normal
-        # CI run skips them; here they run against the candidate into a separate
-        # junit dir so the extractor can band each variant apart from the canonical
-        # cert probes.
+        # Observe-only structural variants of the LEGACY shape-sensitive capabilities
+        # (the test_variant_*.py files; our own tests carry their variance inline in
+        # the canonical step above). Gated by TF_RUN_VARIANTS so a normal CI run skips
+        # them; here they run against the candidate into a separate junit dir so the
+        # extractor can aggregate each variant apart from the canonical cert probes.
         env:
           TF_CANDIDATE_PROVIDER: ${{ steps.parse.outputs.provider }}
           TF_CANDIDATE_NAME: ${{ steps.parse.outputs.name }}
