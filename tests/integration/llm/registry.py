@@ -381,50 +381,6 @@ _ALL: list[MC] = [
             }
         ),
     ),
-    # -----------------------------------------------------------------
-    # Qwen — preset routes it through the same strict trio as GPT-5.
-    # Reasoning surface is OpenAI-style summary only, no signed blocks,
-    # so thinking capabilities are ``known_unsupported``.
-    # -----------------------------------------------------------------
-    MC(
-        model_id="openrouter__qwen_qwen3.6-plus",
-        provider="openrouter",
-        name="qwen/qwen3.6-plus",
-        env_key="OPENROUTER_API_KEY",
-        required=frozenset(
-            {
-                C.BASIC_COMPLETION,
-                C.SIMPLE_TOOL_CALL,
-                C.RECURSIVE_REF_TOOL_CALL,
-                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
-                C.ALLOF_MERGE_TOOL_CALL,
-                C.MULTI_TURN_TOOL_USE,
-                C.MULTI_TURN_ERROR_RECOVERY,
-                C.ENUM_SLASH_TOLERANCE,
-                C.RE2_PATTERN_TOLERANCE,
-                C.DICT_MAP_TOOL_CALL,  # strict-schema dict-map array conversion
-                C.DISCRIMINATED_UNION_TOOL_CALL,
-                C.DECIMAL_FIELD_TOOL_CALL,  # same strict sanitizer as GPT-5
-                C.USAGE_METRICS_POPULATED,
-                C.COST_USD_POPULATED,
-                C.TOOL_NAME_DISCIPLINE,
-                C.LEXICAL_TOOL_INVENTION,
-                C.REQUIRED_FIELDS_COMPLETE,
-                C.PROGRESS_AFTER_SUCCESS,
-            }
-        ),
-        known_unsupported=frozenset(
-            {
-                C.THINKING_EMITS_BLOCKS,
-                C.THINKING_REPLAY_ROUNDTRIP,
-                C.UNSIGNED_THINKING_REPLAY,
-                C.PROMPT_CACHING,
-                # No implicit upstream cache surfaced on the OpenRouter
-                # qwen/* routes.
-                C.IMPLICIT_PROMPT_CACHING,
-            }
-        ),
-    ),
     # Qwen 3.7 Max — Alibaba's flagship Qwen 3.7 generation. Routes
     # through the same ``qwen`` preset as 3.6-plus (passthrough schema +
     # ``DictMapHints`` prompt policy + ``JsonCoerceResponse`` recovery +
