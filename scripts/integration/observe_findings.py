@@ -263,6 +263,11 @@ def build_findings(obs_dir: Path) -> dict[str, Any]:
         "capability": _capability_findings(
             obs_dir / "capability", obs_dir / "capability_report.xml"
         ),
+        # Observe-only structural-variant suite, aggregated per variant node the
+        # same way (per-variant passed/runs + band). Absent on runs without it.
+        "variants": _capability_findings(
+            obs_dir / "variants", obs_dir / "__no_single_variant_report__"
+        ),
         "wire": _wire_findings(trials_root),
         "notes": [
             "wire probes are non-scoring: grade.binary_pass, aggregate.success_rate,"
@@ -297,6 +302,20 @@ def render_summary(findings: dict[str, Any], run_url: str | None = None) -> str:
             lines.append(
                 f"  - `{probe['probe']}`: {probe['passed']}/{probe['runs']} ({probe['band']})"
             )
+    var = findings.get("variants", {})
+    if var.get("report_present"):
+        vbands = var.get("bands", {})
+        lines.append(
+            f"- Shape variants ({var.get('probes', 0)} x {var.get('runs_per_probe', 0)} reps): "
+            f"{vbands.get('required_candidate', 0)} required-candidate, "
+            f"{vbands.get('known_unsupported_candidate', 0)} known-unsupported-candidate, "
+            f"**{vbands.get('flaky_needs_human', 0)} flaky (needs human)**."
+        )
+        for probe in var.get("per_probe", []):
+            if probe["band"] != "required_candidate":
+                lines.append(
+                    f"  - `{probe['probe']}`: {probe['passed']}/{probe['runs']} ({probe['band']})"
+                )
     lines.append(
         f"- Wire ({wire.get('trials', 0)} trials, {wire.get('tool_call_count', 0)} tool calls): "
         f"**{rej.get('rejecting_trials', 0)}/{wire.get('trials', 0)} trials with a tool-arg rejection** "

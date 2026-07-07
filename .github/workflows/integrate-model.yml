@@ -133,8 +133,26 @@ jobs:
           # pytest-xdist is not installed, so parallelism is at the repeat level
           # via xargs -P, not pytest -n. Kept modest: a 429 would fail a probe
           # (report-only) and the extractor's flaky band + human review catch it.
+          # Excludes variants/ (the observe-only structural-variant suite runs in
+          # its own step below, into observation/variants/).
           seq 1 "$CAPABILITY_K" | xargs -P "$CAP_PARALLEL" -I {} \
-            sh -c 'uv run pytest tests/integration/llm/ -k "$MODEL_ID" --junitxml="observation/capability/rep_$1.xml" -q --tb=line -p no:cacheprovider || true' _ {}
+            sh -c 'uv run pytest tests/integration/llm/ --ignore=tests/integration/llm/variants -k "$MODEL_ID" --junitxml="observation/capability/rep_$1.xml" -q --tb=line -p no:cacheprovider || true' _ {}
+
+      - name: Shape-variant probes (report-only, CAPABILITY_K repeats)
+        # Observe-only structural variants of the shape-sensitive capabilities
+        # (tests/integration/llm/variants/). Gated by TF_RUN_VARIANTS so a normal
+        # CI run skips them; here they run against the candidate into a separate
+        # junit dir so the extractor can band each variant apart from the canonical
+        # cert probes.
+        env:
+          TF_CANDIDATE_PROVIDER: ${{ steps.parse.outputs.provider }}
+          TF_CANDIDATE_NAME: ${{ steps.parse.outputs.name }}
+          MODEL_ID: ${{ steps.slug.outputs.model_id }}
+          TF_RUN_VARIANTS: "1"
+        run: |
+          mkdir -p observation/variants
+          seq 1 "$CAPABILITY_K" | xargs -P "$CAP_PARALLEL" -I {} \
+            sh -c 'uv run pytest tests/integration/llm/variants/ -k "$MODEL_ID" --junitxml="observation/variants/rep_$1.xml" -q --tb=line -p no:cacheprovider || true' _ {}
 
       - name: Build core runner image (for the wire probes)
         run: uv run tolokaforge docker build --core
