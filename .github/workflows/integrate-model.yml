@@ -22,7 +22,10 @@ permissions:
   issues: write
 
 concurrency:
-  # One in-flight observe run per PR; a re-label never double-fans-out.
+  # One observe run per PR at a time. A re-label while a run is in flight does
+  # not cancel it (cancel-in-progress: false) - it queues a second run that
+  # starts after the first finishes, so re-labelling serializes rather than
+  # supersedes. Flip to true if a re-label should cancel and replace the run.
   group: integrate-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 
@@ -104,7 +107,13 @@ jobs:
       - run: uv sync --dev --locked
 
       - name: Create .env (candidate model + user-sim run on the pipeline key)
-        run: echo "OPENROUTER_API_KEY=${{ secrets.ARENA_AUTOMATION_OPENROUTER_API_KEY }}" > .env
+        # The wire-probe step reads the key from .env (engine load_dotenv); the
+        # pytest steps below ALSO set it explicitly in their env for robustness.
+        # printf from an env var, not echo-interpolation, so a value containing
+        # shell metacharacters can never be command-substituted.
+        env:
+          ARENA_KEY: ${{ secrets.ARENA_AUTOMATION_OPENROUTER_API_KEY }}
+        run: printf '%s\n' "OPENROUTER_API_KEY=$ARENA_KEY" > .env
 
       - name: Resolve candidate model_id slug
         id: slug
@@ -121,22 +130,28 @@ jobs:
         # All capabilities run against the candidate (ephemeral all-required
         # cert injected via TF_CANDIDATE_*); a miss is data for the next step,
         # not a gate, so failures do not fail the job. Repeated CAPABILITY_K
-        # times (one junit per repeat) so the extractor can band each probe by
-        # pass-rate: required / known-unsupported / flaky-needs-human.
+        # times (one junit per repeat) so the extractor can record each probe's
+        # raw pass count across repeats for the agent to analyze.
         env:
           TF_CANDIDATE_PROVIDER: ${{ steps.parse.outputs.provider }}
           TF_CANDIDATE_NAME: ${{ steps.parse.outputs.name }}
           MODEL_ID: ${{ steps.slug.outputs.model_id }}
+          # Set the key explicitly (do not rely on litellm's import-time load_dotenv
+          # reading .env from cwd); an empty/unset key would make every probe skip.
+          OPENROUTER_API_KEY: ${{ secrets.ARENA_AUTOMATION_OPENROUTER_API_KEY }}
         run: |
           mkdir -p observation/capability
           # Parallelize the repeats (candidate-only calls) with a bounded pool.
           # pytest-xdist is not installed, so parallelism is at the repeat level
           # via xargs -P, not pytest -n. Kept modest: a 429 would fail a probe
-          # (report-only) and the extractor's flaky band + human review catch it.
-          # Excludes the test_variant_* files (the observe-only structural-variant
-          # suite runs in its own step below, into observation/variants/).
+          # (report-only) and the extractor + human review catch it.
+          # Selects only the candidate and excludes the test_variant_* files (the
+          # observe-only variant suite runs in its own step below). The -k match is
+          # anchored on the parametrize-id boundary ("<id>]" or "<id>-") so a
+          # candidate slug that is a prefix of another registered model (e.g.
+          # grok-4 vs grok-4.3) does not also select the sibling's probes.
           seq 1 "$CAPABILITY_K" | xargs -P "$CAP_PARALLEL" -I {} \
-            sh -c 'uv run pytest tests/integration/llm/ -k "$MODEL_ID and not test_variant" --junitxml="observation/capability/rep_$1.xml" -q --tb=line -p no:cacheprovider || true' _ {}
+            sh -c 'uv run pytest tests/integration/llm/ -k "(${MODEL_ID}] or ${MODEL_ID}-) and not test_variant" --junitxml="observation/capability/rep_$1.xml" -q --tb=line -p no:cacheprovider || true' _ {}
 
       - name: Shape-variant probes (report-only, CAPABILITY_K repeats)
         # Observe-only structural variants of the LEGACY shape-sensitive capabilities
@@ -149,10 +164,12 @@ jobs:
           TF_CANDIDATE_NAME: ${{ steps.parse.outputs.name }}
           MODEL_ID: ${{ steps.slug.outputs.model_id }}
           TF_RUN_VARIANTS: "1"
+          OPENROUTER_API_KEY: ${{ secrets.ARENA_AUTOMATION_OPENROUTER_API_KEY }}
         run: |
           mkdir -p observation/variants
+          # Same anchored candidate selection as the capability step above.
           seq 1 "$CAPABILITY_K" | xargs -P "$CAP_PARALLEL" -I {} \
-            sh -c 'uv run pytest tests/integration/llm/ -k "$MODEL_ID and test_variant" --junitxml="observation/variants/rep_$1.xml" -q --tb=line -p no:cacheprovider || true' _ {}
+            sh -c 'uv run pytest tests/integration/llm/ -k "(${MODEL_ID}] or ${MODEL_ID}-) and test_variant" --junitxml="observation/variants/rep_$1.xml" -q --tb=line -p no:cacheprovider || true' _ {}
 
       - name: Build core runner image (for the wire probes)
         run: uv run tolokaforge docker build --core
@@ -238,11 +255,16 @@ jobs:
 
       - name: Post observation summary on the PR
         if: always()
+        # CANDIDATE_NAME is PR-title-derived (attacker-controllable). Reference it
+        # only as "$CANDIDATE_NAME" via env, never interpolated into the script
+        # body, so a title like `integrate: $(...)` cannot inject a shell command.
+        env:
+          CANDIDATE_NAME: ${{ steps.parse.outputs.name }}
         run: |
           if [ -f observation/summary.md ]; then
             gh pr comment "$PR" -R "$REPO" --body-file observation/summary.md
           else
             RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
             gh pr comment "$PR" -R "$REPO" --body \
-              "Observation stage ran for \`${{ steps.parse.outputs.name }}\` but no findings summary was produced (a step failed before aggregation). Run: ${RUN_URL}"
+              "Observation stage ran for \`$CANDIDATE_NAME\` but no findings summary was produced (a step failed before aggregation). Run: ${RUN_URL}"
           fi
