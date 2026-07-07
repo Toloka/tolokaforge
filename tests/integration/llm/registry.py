@@ -1126,51 +1126,6 @@ _ALL: list[MC] = [
         ),
     ),
     MC(
-        model_id="openrouter__xiaomi_mimo-v2.5-pro",
-        provider="openrouter",
-        name="xiaomi/mimo-v2.5-pro",
-        env_key="OPENROUTER_API_KEY",
-        required=frozenset(
-            {
-                C.BASIC_COMPLETION,
-                C.SIMPLE_TOOL_CALL,
-                C.RECURSIVE_REF_TOOL_CALL,
-                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
-                C.ALLOF_MERGE_TOOL_CALL,
-                C.MULTI_TURN_TOOL_USE,
-                C.MULTI_TURN_ERROR_RECOVERY,
-                C.ENUM_SLASH_TOLERANCE,
-                C.RE2_PATTERN_TOLERANCE,
-                C.DICT_MAP_TOOL_CALL,
-                C.DISCRIMINATED_UNION_TOOL_CALL,
-                # OpenRouter / xiaomi enabled implicit prompt caching for
-                # this route between 2026-05-14 14:29 and 16:20 UTC —
-                # earlier evals saw cached_tokens=0 across every
-                # mimo call, but a live
-                # 2-call 8 k-prompt probe at 16:20 reports
-                # ``cache_read_input_tokens=8192/8254`` (99% cached) on
-                # call 2 with a clear cost reduction. The ratchet test
-                # forced this promotion.
-                C.IMPLICIT_PROMPT_CACHING,
-                C.USAGE_METRICS_POPULATED,
-                C.COST_USD_POPULATED,
-                C.TOOL_NAME_DISCIPLINE,
-                C.LEXICAL_TOOL_INVENTION,
-                C.REQUIRED_FIELDS_COMPLETE,
-                C.PROGRESS_AFTER_SUCCESS,
-            }
-        ),
-        known_unsupported=frozenset(
-            {
-                C.DECIMAL_FIELD_TOOL_CALL,
-                C.THINKING_EMITS_BLOCKS,
-                C.THINKING_REPLAY_ROUNDTRIP,
-                C.UNSIGNED_THINKING_REPLAY,
-                C.PROMPT_CACHING,
-            }
-        ),
-    ),
-    MC(
         model_id="openrouter__google_gemini-3.1-pro-preview",
         provider="openrouter",
         name="google/gemini-3.1-pro-preview",
