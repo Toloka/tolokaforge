@@ -46,6 +46,7 @@ placeholders:
   MODEL_ID: "candidate model_id slug, e.g. openrouter__deepseek_deepseek-v3.2-exp"
   PR: "the candidate integration PR number"
   MAX_ITER: "max resolve fix-loop iterations (default 3)"
+  ITER: "current resolve fix-loop iteration (1-based)"
 
 prompts:
   - name: harness-infra
@@ -90,14 +91,22 @@ not_included:
   - name: "grading-soundness / over-creation / peer-board / cost-cache / trajectory-failures"
     reason: "other dimensions from the full analysis set; fold in here if they become routine."
 
-# The RESOLVE fix-loop agent (runs after a clean observe, ON the candidate PR branch):
+# The RESOLVE stage (runs after a clean observe, ON the candidate PR branch). A
+# DETERMINISTIC workflow loop (resolve-model.yml) drives it; the agent only reasons +
+# writes files, the workflow runs reprobe + commits. Two short Opus agent steps:
 resolve:
-  file: resolve_agent.md
-  purpose: "Turn observe findings into a working policy (or prove a genuine ceiling); iterate
-    <= MAX_ITER with reprobe.py, then commit the integration to the branch + report on the PR."
-  reads: [findings.json, capability/*.xml, variants/*.xml, wire_probes_*/trajectory.yaml]
-  writes: [model_presets.yaml, registry.py, "new adapter class + registration if needed"]
-  trigger: "auto-chain after a clean observe run"
+  loop_agent:
+    file: resolve_agent.md
+    role: "per iteration (<= MAX_ITER): classify failures, compose/refine the model's preset
+      overlay (or write a new small adapter class), write decision.json. Does NOT run reprobe."
+    writes: [resolve/overlay.yaml, resolve/decision.json, "new adapter class + registration if needed"]
+  finalize_agent:
+    file: resolve_finalize.md
+    role: "on convergence: fold the proven overlay into model_presets.yaml + add the cert to
+      registry.py, write pr_comment.md + pr_body.md. Does NOT commit."
+    writes: [model_presets.yaml, registry.py, resolve/pr_comment.md, resolve/pr_body.md]
+  workflow_owns: [reprobe, fix-target green-check, the loop, git commit + push, PR comment + description]
+  trigger: "auto-chain after a clean observe run (the observe stage adds the automation:resolve label)"
   verdict: "integrated (with known_unsupported ceilings) OR needs-human"
 
 notes:
