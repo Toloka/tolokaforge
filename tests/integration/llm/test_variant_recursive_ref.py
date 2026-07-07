@@ -1,28 +1,35 @@
-"""Structural variants of the shape-sensitive capability probes (observe stage).
+"""Structural VARIANTS of the recursive_ref capability probe (observe stage).
 
-The canonical capability tests under ``tests/integration/llm/`` test each construct
-at ONE (usually top-level) shape and are the per-model certificate gate; we do NOT
-touch them. This module adds VARIANTS: the same capability stressed at a different
-nesting / breadth / container, so intermittent shape-dependent mis-shapes surface
-that a single top-level probe misses. Empirical motivation: the MiniMax-M3
-``{"item": [...]}`` artifact was materially worse when the construct was NESTED
-inside another object (``order.items`` failed 100% of trials) than at top level
-(the dict-map probe failed only ~20%), so a nested variant is the highest-value
-addition.
+The canonical ``test_recursive_ref_tool_call`` tests the construct at ONE shape;
+this file stresses the SAME capability at different nesting / breadth / container
+so intermittent shape-dependent mis-shapes surface that a single top-level probe
+misses. Empirical motivation: the MiniMax-M3 ``{"item": [...]}`` artifact was worse
+when the construct was NESTED inside another object (100% of trials) than at top
+level, so ``nested_in_object`` is the highest-value variant.
 
-Each :class:`ShapeVariant` is self-contained (its own schema + prompt + structural
-check). The runner is :mod:`tests.integration.llm.variants.test_shape_variants`.
+Self-contained (its own schema + prompt + structural check per variant), living in
+the canonical package with a ``test_variant_`` filename prefix. Gated by the cert
+AND ``TF_RUN_VARIANTS`` so a normal CI run skips it; the auto-integration observe
+workflow runs it (sets the flag + injects the all-required candidate cert). The
+``ShapeVariant`` helper is kept local here; if a second variant file needs it, lift
+it into a shared module then, not before.
 """
 
 from __future__ import annotations
 
+import json
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+import pytest
 from pydantic import BaseModel, Field, TypeAdapter
 
-from .._capability import Capability
+from tolokaforge.core.models import Message, MessageRole
+
+from ._capability import Capability, ModelCertificate
+from .registry import ALL_MODELS
 
 
 def _tool(name: str, description: str, model: type[BaseModel]) -> dict[str, Any]:
@@ -36,9 +43,6 @@ def _tool(name: str, description: str, model: type[BaseModel]) -> dict[str, Any]
     }
 
 
-# --------------------------------------------------------------------------
-# recursive_ref shapes
-# --------------------------------------------------------------------------
 class _TreeNode(BaseModel):
     label: str = Field(description="Node label.")
     children: list[_TreeNode] = Field(default_factory=list, description="Child nodes (recursive).")
@@ -129,7 +133,7 @@ _SYS_BUILDER = (
 )
 
 
-SHAPE_VARIANTS: list[ShapeVariant] = [
+_VARIANTS: list[ShapeVariant] = [
     ShapeVariant(
         capability=Capability.RECURSIVE_REF_TOOL_CALL,
         variant_id="deep_chain",
@@ -165,3 +169,43 @@ SHAPE_VARIANTS: list[ShapeVariant] = [
         check=_check_nested_in_object,
     ),
 ]
+
+
+@pytest.mark.parametrize("cert", ALL_MODELS, ids=lambda c: c.model_id)
+@pytest.mark.parametrize(
+    "variant", _VARIANTS, ids=lambda v: f"{v.capability.value}__{v.variant_id}"
+)
+def test_variant_recursive_ref(
+    cert: ModelCertificate,
+    variant: ShapeVariant,
+    live_client,
+    skip_unless_capability_declared,
+) -> None:
+    """Stress recursive_ref with one structural variation.
+
+    Same contract as the canonical probe: a non-empty tool call whose arguments
+    are a native dict, then a variant-specific structural check.
+    """
+    if not os.getenv("TF_RUN_VARIANTS"):
+        pytest.skip("shape-variant suite runs only in the observe stage (set TF_RUN_VARIANTS)")
+    skip_unless_capability_declared(cert, variant.capability)
+
+    client = live_client(cert)
+    result = client.generate(
+        system=variant.system,
+        messages=[Message(role=MessageRole.USER, content=variant.user)],
+        tools=list(variant.tools),
+        tool_choice="auto",
+    )
+
+    assert (
+        result.tool_calls
+    ), f"{cert.model_id}/{variant.variant_id}: expected at least one tool call ({result!r})"
+    args = result.tool_calls[0].arguments
+    if isinstance(args, str):
+        args = json.loads(args)
+    assert isinstance(args, dict), (
+        f"{cert.model_id}/{variant.variant_id}: arguments must parse as dict, "
+        f"got {type(args).__name__}: {args!r}"
+    )
+    variant.check(args)

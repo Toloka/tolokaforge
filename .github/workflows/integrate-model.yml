@@ -133,10 +133,10 @@ jobs:
           # pytest-xdist is not installed, so parallelism is at the repeat level
           # via xargs -P, not pytest -n. Kept modest: a 429 would fail a probe
           # (report-only) and the extractor's flaky band + human review catch it.
-          # Excludes variants/ (the observe-only structural-variant suite runs in
-          # its own step below, into observation/variants/).
+          # Excludes the test_variant_* files (the observe-only structural-variant
+          # suite runs in its own step below, into observation/variants/).
           seq 1 "$CAPABILITY_K" | xargs -P "$CAP_PARALLEL" -I {} \
-            sh -c 'uv run pytest tests/integration/llm/ --ignore=tests/integration/llm/variants -k "$MODEL_ID" --junitxml="observation/capability/rep_$1.xml" -q --tb=line -p no:cacheprovider || true' _ {}
+            sh -c 'uv run pytest tests/integration/llm/ -k "$MODEL_ID and not test_variant" --junitxml="observation/capability/rep_$1.xml" -q --tb=line -p no:cacheprovider || true' _ {}
 
       - name: Shape-variant probes (report-only, CAPABILITY_K repeats)
         # Observe-only structural variants of the shape-sensitive capabilities
@@ -152,7 +152,7 @@ jobs:
         run: |
           mkdir -p observation/variants
           seq 1 "$CAPABILITY_K" | xargs -P "$CAP_PARALLEL" -I {} \
-            sh -c 'uv run pytest tests/integration/llm/variants/ -k "$MODEL_ID" --junitxml="observation/variants/rep_$1.xml" -q --tb=line -p no:cacheprovider || true' _ {}
+            sh -c 'uv run pytest tests/integration/llm/ -k "$MODEL_ID and test_variant" --junitxml="observation/variants/rep_$1.xml" -q --tb=line -p no:cacheprovider || true' _ {}
 
       - name: Build core runner image (for the wire probes)
         run: uv run tolokaforge docker build --core
