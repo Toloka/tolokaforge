@@ -108,51 +108,6 @@ presets:
     prompt_policy: dict_map_hints
     reasoning_codec: openai
 
-  # Open-weights / OpenAI-API-compatible routes whose tool-call adapters
-  # stringify nested object / Dict[str, T] arguments — same failure mode
-  # ``JsonCoerceResponse`` was built for on Qwen.
-  #
-  # Empirical evidence: mimo-v2.5-pro hit 20–25 retries on every
-  # ``zendesk_create_item`` call on a logistics domain evaluation
-  # when ``item`` is a discriminated union (TicketCreate | UserCreate |
-  # OrganizationCreate | CommentCreate). The wire-shape was
-  # ``{"item": "{\"subject\":...}"}`` — a JSON-encoded string instead of a
-  # nested dict. ``JsonCoerceResponse._coerce_json_strings`` decodes that
-  # back to native shape before pydantic validation.
-  # ``DictMapHints`` is also routed because the same models share Qwen's
-  # ``Dict[str, T]`` blind spot (test_dict_map_tool_call).
-  # Reasoning surface format on the OpenRouter wire is not yet codified in
-  # a bespoke codec for these routes; ``openai`` codec is the safe baseline
-  # — it surfaces ``reasoning_content`` summaries via OpenAI-canonical fields
-  # without making structural assumptions.
-  # z-ai/glm-5.1, tencent/hy3-preview and nvidia/nemotron-3-super join
-  # this preset (arena lineup refresh 2026-06): each emits the
-  # discriminated-union ``item`` as a JSON-encoded string that
-  # JsonCoerceResponse decodes — glm/hy3 every call, nemotron
-  # intermittently (native dict on some calls, stringified on others;
-  # without json_coerce the stringified calls fail, so it needs this
-  # preset to make the capability reliable). All three also surface a
-  # reasoning_content summary the ``openai`` codec lands in the logs.
-  # Live 2026-06-05.
-  openrouter_dict_stringify_recovery:
-    match:
-      - "xiaomi/mimo*"
-      - "*mimo-v2*"
-      - "moonshotai/kimi-k2*"
-      - "*kimi-k2*"
-      - "deepseek/deepseek-v4*"
-      - "*deepseek-v4*"
-      - "z-ai/glm-5*"
-      - "*glm-5*"
-      - "tencent/hy3*"
-      - "*hy3-preview*"
-      - "nvidia/nemotron*"
-      - "*nemotron-*"
-    schema_sanitizer: passthrough
-    response_policy: json_coerce
-    prompt_policy: dict_map_hints
-    reasoning_codec: openai
-
   # DeepSeek V3.2-Exp experimental V3.2 reasoning route.
   # Unlike the V4 line (openrouter_dict_stringify_recovery, above) it
   # round-trips dict-map and discriminated-union tool calls cleanly on
