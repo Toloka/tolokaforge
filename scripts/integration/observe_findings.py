@@ -1,26 +1,24 @@
 #!/usr/bin/env python
-"""Deterministic aggregated findings for the model auto-integration observe stage.
+"""Deterministic stat collector for the model auto-integration observe stage.
 
 Reads the observe artifact (the capability junit reports plus the non-scoring
-wire-probe trajectories) and emits one structured ``findings.json`` that surfaces
-the error signals the graded metrics are blind to, as RATES over K repeats so the
-next step can turn them into a capability certificate and a policy-fix target.
+wire-probe trajectories) and emits one structured ``findings.json`` of RAW STATS
+only: for every probe, how many of the K repeats passed; for the wire probes, how
+many trials had a tool-argument rejection and the raw rejection text. It does NOT
+band, classify, or judge anything - it only answers "did every test pass, or is
+there a failure" and hands the raw error signal to the next step. The verification
+agent is what turns these facts into a capability certificate and a policy-fix
+target; keeping the analysis out of here means the deterministic layer never has to
+be right about *why* something failed.
 
-Why this exists: the wire-probe pack is NON-SCORING, so ``grade.binary_pass``,
+Why this exists at all: the wire-probe pack is NON-SCORING, so ``grade.binary_pass``,
 ``aggregate.success_rate``, ``failure_attribution.json`` and even
 ``metrics.tool_success_rate`` all report "success" even when a tool REJECTED the
 model's arguments with a schema-validation error (the tool still "responded", it
 just responded with an error message). The only faithful signal is the raw
-tool-result content in each trajectory. This module extracts that
-deterministically (no LLM) so the next-step verification agent consumes a small,
-curated structure instead of grepping every raw trajectory.
-
-Deterministic facts only: ``mis_shapes[].hint`` is a descriptive shape fact, and
-the capability ``band`` is a rate threshold, never a formatting-vs-genuine verdict
-(that judgment is the verification agent's job).
-
-Seed of the shared failure-analysis facts emitter; kept as CI glue so the observe
-workflow can call it before that lands.
+tool-result content in each trajectory. This module surfaces that raw content
+deterministically (no LLM) so the agent consumes a small curated structure instead
+of grepping every trajectory - but the interpretation stays the agent's job.
 """
 
 from __future__ import annotations
@@ -36,35 +34,31 @@ from typing import Any
 
 import yaml
 
-SCHEMA_VERSION = 2
-
-# Capability band thresholds over the K repeats. A probe that passes >= 90% of the
-# time is a required candidate; below 10% is a known-unsupported candidate; anything
-# in between (10% through 90%) is flaky and goes to a human rather than being
-# auto-certified. The unsupported bound is strict (< 10%): even one pass out of K
-# means we are not certain the model cannot do it, so that goes to a human.
-BAND_REQUIRED = 0.9
-BAND_UNSUPPORTED = 0.1
+SCHEMA_VERSION = 3
 
 # The line the engine writes into a tool-result message when the model's tool-call
 # arguments fail the tool's schema validation.
 _TOOL_ERROR_RE = re.compile(r"Error executing tool ([A-Za-z0-9_.-]+):\s*(.*)", re.DOTALL)
 
 
-def _band(pass_rate: float) -> str:
-    if pass_rate >= BAND_REQUIRED:
-        return "required_candidate"
-    if pass_rate < BAND_UNSUPPORTED:
-        return "known_unsupported_candidate"
-    return "flaky_needs_human"
+def _failure_text(case: ET.Element) -> str | None:
+    """First line of a junit failure/error message, as a raw fact for the agent."""
+    node = case.find("failure")
+    if node is None:
+        node = case.find("error")
+    if node is None:
+        return None
+    msg = (node.get("message") or node.text or "").strip()
+    return msg.splitlines()[0][:400] if msg else ""
 
 
 def _capability_findings(capability_dir: Path, single_report: Path) -> dict[str, Any]:
-    """Aggregate the capability junit reports across K repeats into per-probe rates.
+    """Aggregate the capability junit reports across K repeats into per-probe counts.
 
     Reads every ``*.xml`` under ``capability_dir`` (one per repeat), falling back to
     a single ``single_report`` file for a K=1 run. Skipped cases are not counted as
-    runs. Each probe gets ``passed/runs`` and a reliability ``band``.
+    runs. Each probe gets ``passed/runs`` plus the raw failure messages seen - no
+    band, no verdict; the agent decides what the pass-rate means.
     """
     files = sorted(glob.glob(str(capability_dir / "*.xml")))
     if not files and single_report.exists():
@@ -72,14 +66,16 @@ def _capability_findings(capability_dir: Path, single_report: Path) -> dict[str,
     if not files:
         return {
             "report_present": False,
+            "all_passed": None,
             "probes": 0,
             "runs_per_probe": 0,
-            "bands": {},
+            "probes_with_failures": 0,
             "per_probe": [],
         }
 
     passed: Counter = Counter()
     runs: Counter = Counter()
+    failures: dict[str, Counter] = {}
     for report in files:
         root = ET.parse(report).getroot()
         for case in root.iter("testcase"):
@@ -89,63 +85,39 @@ def _capability_findings(capability_dir: Path, single_report: Path) -> dict[str,
             runs[name] += 1
             if case.find("failure") is None and case.find("error") is None:
                 passed[name] += 1
+            else:
+                text = _failure_text(case)
+                if text is not None:
+                    failures.setdefault(name, Counter())[text] += 1
 
     per_probe: list[dict[str, Any]] = []
-    bands: Counter = Counter()
     for name in sorted(runs):
         n_runs = runs[name]
         n_pass = passed[name]
-        rate = n_pass / n_runs if n_runs else 0.0
-        band = _band(rate)
-        bands[band] += 1
         per_probe.append(
             {
                 "probe": name,
                 "passed": n_pass,
                 "runs": n_runs,
-                "pass_rate": round(rate, 3),
-                "band": band,
+                "pass_rate": round(n_pass / n_runs, 3) if n_runs else 0.0,
+                # Raw distinct failure messages (with how often each was seen) so
+                # the agent can read the actual assertion text, not our reading of it.
+                "failure_messages": [
+                    {"message": msg, "count": cnt}
+                    for msg, cnt in failures.get(name, Counter()).most_common()
+                ],
             }
         )
 
+    probes_with_failures = sum(1 for p in per_probe if p["passed"] < p["runs"])
     return {
         "report_present": True,
+        "all_passed": probes_with_failures == 0,
         "probes": len(per_probe),
         "runs_per_probe": max((p["runs"] for p in per_probe), default=0),
-        "bands": dict(bands),
+        "probes_with_failures": probes_with_failures,
         "per_probe": per_probe,
     }
-
-
-def _classify_shape(arguments: Any) -> str:
-    """Descriptive (NOT verdict) shape hint for a rejected tool-call's arguments.
-
-    Deterministic facts only. Whether a shape is preset-fixable formatting or a
-    genuine model error is the verification agent's judgment, not this module's.
-    """
-    if arguments in ({}, None, ""):
-        return "empty_args"
-
-    def _walk(value: Any) -> str | None:
-        if isinstance(value, dict):
-            # A sole-key ``{item: X}`` wrapper is the XML-repeated-element artifact.
-            if set(value.keys()) == {"item"}:
-                return "item_wrap"
-            for sub in value.values():
-                hit = _walk(sub)
-                if hit:
-                    return hit
-        elif isinstance(value, list):
-            for sub in value:
-                hit = _walk(sub)
-                if hit:
-                    return hit
-        elif isinstance(value, str):
-            if value.strip()[:1] in ("{", "["):
-                return "stringified_json"
-        return None
-
-    return _walk(arguments) or "other"
 
 
 def _excerpt(obj: Any, limit: int = 300) -> str:
@@ -165,7 +137,9 @@ def _wire_findings(trials_root: Path) -> dict[str, Any]:
     rej_by_task: Counter = Counter()
     rej_by_tool: Counter = Counter()
     messages: set[str] = set()
-    mis_shapes: dict[tuple[str, str], dict[str, Any]] = {}
+    # Raw (task, tool) -> a rejected arguments excerpt. Facts only; whether a shape
+    # is a preset-fixable formatting quirk or a genuine model error is the agent's call.
+    rejected_examples: dict[tuple[str, str], dict[str, Any]] = {}
     term: Counter = Counter()
     status_error = 0
 
@@ -208,11 +182,10 @@ def _wire_findings(trials_root: Path) -> dict[str, Any]:
             messages.add(content.strip().splitlines()[0][:200])
             _name, args = call_args.get(message.get("tool_call_id"), (tool, None))
             key = (task, tool)
-            if key not in mis_shapes:
-                mis_shapes[key] = {
+            if key not in rejected_examples:
+                rejected_examples[key] = {
                     "task": task,
                     "tool": tool,
-                    "hint": _classify_shape(args),
                     "arguments_excerpt": _excerpt(args),
                 }
         if trial_rejected:
@@ -230,6 +203,7 @@ def _wire_findings(trials_root: Path) -> dict[str, Any]:
         "tasks": len(tasks),
         "reps_max": max(task_trials.values()) if task_trials else 0,
         "tool_call_count": tool_call_count,
+        "any_rejection": rejecting_trials > 0,
         "tool_arg_rejections": {
             "total": sum(rej_by_task.values()),
             "rejecting_trials": rejecting_trials,
@@ -239,7 +213,7 @@ def _wire_findings(trials_root: Path) -> dict[str, Any]:
             "by_tool": dict(rej_by_tool.most_common()),
             "messages": sorted(messages),
         },
-        "mis_shapes": list(mis_shapes.values()),
+        "rejected_examples": list(rejected_examples.values()),
         "infra": {
             "rate_limit": term.get("rate_limit", 0),
             "status_error": status_error,
@@ -250,82 +224,85 @@ def _wire_findings(trials_root: Path) -> dict[str, Any]:
 
 
 def build_findings(obs_dir: Path) -> dict[str, Any]:
-    """Assemble the aggregated findings structure from an observe artifact directory."""
+    """Assemble the raw-stat findings structure from an observe artifact directory."""
     manifest_path = obs_dir / "manifest.json"
     manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
     wire_dirs = sorted(glob.glob(str(obs_dir / "wire_probes_*")))
     trials_root = Path(wire_dirs[-1]) / "trials" if wire_dirs else obs_dir / "trials"
+    capability = _capability_findings(obs_dir / "capability", obs_dir / "capability_report.xml")
+    # Observe-only structural-variant suite (the legacy-test `test_variant_*` files),
+    # aggregated the same way. Absent on runs without it.
+    variants = _capability_findings(obs_dir / "variants", obs_dir / "__no_single_variant_report__")
+    wire = _wire_findings(trials_root)
+
+    all_passed = (
+        (capability["all_passed"] is None or capability["all_passed"])
+        and (variants["all_passed"] is None or variants["all_passed"])
+        and not wire["any_rejection"]
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "stage": "observe",
         "candidate": manifest.get("candidate", {}),
         "preset": manifest.get("preset", "default"),
-        "capability": _capability_findings(
-            obs_dir / "capability", obs_dir / "capability_report.xml"
-        ),
-        # Observe-only structural-variant suite, aggregated per variant node the
-        # same way (per-variant passed/runs + band). Absent on runs without it.
-        "variants": _capability_findings(
-            obs_dir / "variants", obs_dir / "__no_single_variant_report__"
-        ),
-        "wire": _wire_findings(trials_root),
+        # The single yes/no the deterministic layer commits to. Everything else is
+        # raw stats + raw error text for the agent to analyze.
+        "all_passed": all_passed,
+        "capability": capability,
+        "variants": variants,
+        "wire": wire,
         "notes": [
+            "RAW STATS ONLY: this file bands nothing and judges nothing. `all_passed`"
+            " is the only verdict; per-probe pass counts, failure_messages and"
+            " rejected_examples are raw facts for the agent to analyze.",
             "wire probes are non-scoring: grade.binary_pass, aggregate.success_rate,"
             " failure_attribution.json and metrics.tool_success_rate do NOT reflect"
             " tool-argument rejections; wire.tool_arg_rejections is the faithful signal.",
-            "capability.per_probe[].band and wire rates are over K repeats;"
-            " flaky_needs_human means neither required nor known_unsupported was confident.",
-            "mis_shapes[].hint is a descriptive shape fact, not a"
-            " formatting-vs-genuine verdict (that is the verification agent's job).",
         ],
     }
 
 
 def render_summary(findings: dict[str, Any], run_url: str | None = None) -> str:
-    """Render a short human-readable markdown summary of the findings."""
+    """Render a short human-readable markdown summary of the raw stats."""
     cap = findings.get("capability", {})
+    var = findings.get("variants", {})
     wire = findings.get("wire", {})
     rej = wire.get("tool_arg_rejections", {})
     candidate = (findings.get("candidate") or {}).get("name", "?")
     preset = findings.get("preset", "default")
-    bands = cap.get("bands", {})
 
-    lines = [f"### Auto-integration observe: `{candidate}` on the `{preset}` preset", ""]
-    lines.append(
-        f"- Capability ({cap.get('probes', 0)} probes x {cap.get('runs_per_probe', 0)} reps): "
-        f"{bands.get('required_candidate', 0)} required-candidate, "
-        f"{bands.get('known_unsupported_candidate', 0)} known-unsupported-candidate, "
-        f"**{bands.get('flaky_needs_human', 0)} flaky (needs human)**."
-    )
-    for probe in cap.get("per_probe", []):
-        if probe["band"] != "required_candidate":
-            lines.append(
-                f"  - `{probe['probe']}`: {probe['passed']}/{probe['runs']} ({probe['band']})"
-            )
-    var = findings.get("variants", {})
-    if var.get("report_present"):
-        vbands = var.get("bands", {})
+    verdict = "all probes passed" if findings.get("all_passed") else "failures present"
+    lines = [
+        f"### Auto-integration observe: `{candidate}` on the `{preset}` preset",
+        "",
+        f"**{verdict}** (raw stats only; the agent analyzes the errors).",
+        "",
+    ]
+
+    def _section(title: str, sec: dict[str, Any]) -> None:
+        if not sec.get("report_present"):
+            return
         lines.append(
-            f"- Shape variants ({var.get('probes', 0)} x {var.get('runs_per_probe', 0)} reps): "
-            f"{vbands.get('required_candidate', 0)} required-candidate, "
-            f"{vbands.get('known_unsupported_candidate', 0)} known-unsupported-candidate, "
-            f"**{vbands.get('flaky_needs_human', 0)} flaky (needs human)**."
+            f"- {title} ({sec.get('probes', 0)} probes x {sec.get('runs_per_probe', 0)} reps): "
+            f"{sec.get('probes_with_failures', 0)} probe(s) with at least one failure."
         )
-        for probe in var.get("per_probe", []):
-            if probe["band"] != "required_candidate":
-                lines.append(
-                    f"  - `{probe['probe']}`: {probe['passed']}/{probe['runs']} ({probe['band']})"
-                )
+        for probe in sec.get("per_probe", []):
+            if probe["passed"] < probe["runs"]:
+                lines.append(f"  - `{probe['probe']}`: {probe['passed']}/{probe['runs']} passed")
+
+    _section("Capability", cap)
+    _section("Shape variants", var)
+
     lines.append(
         f"- Wire ({wire.get('trials', 0)} trials, {wire.get('tool_call_count', 0)} tool calls): "
         f"**{rej.get('rejecting_trials', 0)}/{wire.get('trials', 0)} trials with a tool-arg rejection** "
         f"(rate {rej.get('trial_rate', 0)})."
     )
-    for shape in wire.get("mis_shapes", []):
+    for shape in wire.get("rejected_examples", []):
         task = shape["task"]
         rate = rej.get("by_task_trial_rate", {}).get(task)
         rate_str = f", {rate} of trials" if rate is not None else ""
-        lines.append(f"  - `{task}` / `{shape['tool']}`: {shape['hint']}{rate_str}")
+        lines.append(f"  - `{task}` / `{shape['tool']}` rejected{rate_str}")
     infra = wire.get("infra", {})
     lines.append(
         f"- Infra: rate_limit={infra.get('rate_limit', 0)}, "
@@ -341,7 +318,7 @@ def render_summary(findings: dict[str, Any], run_url: str | None = None) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Emit deterministic observe-stage findings.json from an observation dir."
+        description="Emit deterministic observe-stage findings.json (raw stats) from an obs dir."
     )
     parser.add_argument("obs_dir", help="the observation artifact directory")
     parser.add_argument(
@@ -360,11 +337,12 @@ def main() -> None:
 
     cap = findings["capability"]
     rej = findings["wire"]["tool_arg_rejections"]
-    bands = cap.get("bands", {})
     print(
-        f"findings: capability {cap.get('probes', 0)} probes x {cap.get('runs_per_probe', 0)} reps "
-        f"({bands.get('flaky_needs_human', 0)} flaky); wire {rej.get('rejecting_trials', 0)}"
-        f"/{findings['wire'].get('trials', 0)} trials rejected; wrote {out_path}"
+        f"findings: all_passed={findings['all_passed']}; capability "
+        f"{cap.get('probes', 0)} probes x {cap.get('runs_per_probe', 0)} reps "
+        f"({cap.get('probes_with_failures', 0)} with failures); wire "
+        f"{rej.get('rejecting_trials', 0)}/{findings['wire'].get('trials', 0)} trials rejected; "
+        f"wrote {out_path}"
     )
 
 
