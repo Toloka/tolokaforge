@@ -268,3 +268,25 @@ jobs:
             gh pr comment "$PR" -R "$REPO" --body \
               "Observation stage ran for \`$CANDIDATE_NAME\` but no findings summary was produced (a step failed before aggregation). Run: ${RUN_URL}"
           fi
+
+      - name: Chain to resolve (clean observe) or flag needs-human
+        if: always()
+        # Auto-chain: a clean observe (capability suite actually ran AND no infra
+        # contamination) hands off to the resolve stage by adding its trigger label.
+        # An infra-dirty or did-not-run observe goes to a human (re-run), never resolve.
+        run: |
+          if [ ! -f observation/findings.json ]; then
+            gh pr edit "$PR" -R "$REPO" --remove-label 'automation:integrate-running' \
+              --add-label 'automation:integrate-needs-human' || true
+            echo "no findings.json -> needs human"; exit 0
+          fi
+          CLEAN="$(uv run python -c 'import json; f=json.load(open("observation/findings.json")); i=f.get("wire",{}).get("infra",{}); print("dirty" if (not f.get("capability_ran")) or any(i.get(k,0) for k in ("rate_limit","api_error","status_error")) else "clean")')"
+          if [ "$CLEAN" = "clean" ]; then
+            gh pr edit "$PR" -R "$REPO" --remove-label 'automation:integrate-running' \
+              --add-label 'automation:resolve'
+            echo "observe clean -> chained to resolve"
+          else
+            gh pr edit "$PR" -R "$REPO" --remove-label 'automation:integrate-running' \
+              --add-label 'automation:integrate-needs-human'
+            echo "observe infra-dirty or did-not-run -> needs human"
+          fi

@@ -1,0 +1,184 @@
+name: Model auto-integration (resolve)
+
+# Second stage of the model auto-integration pipeline. After a CLEAN observe run
+# (the observe workflow adds the `automation:resolve` label), an autonomous Claude
+# agent reads the observe findings and iterates a policy fix: it composes a
+# reusable-axis preset (or writes a new small adapter class) and proves each attempt
+# with scripts/integration/reprobe.py, re-running ONLY the failing cases. On success
+# it commits the integration (preset + cert, and any new class) to THIS PR branch and
+# reports on the PR; it NEVER merges (the PR is the human review gate; test branches
+# are never merged out).
+#
+# Auth split: the AGENT (Claude) runs on ANTHROPIC_API_KEY (the same secret the
+# hygiene review uses); the CANDIDATE model that reprobe drives runs on
+# ARENA_AUTOMATION_OPENROUTER_API_KEY (written to .env). One is the reasoner, the
+# other is the model under test.
+
+on:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: write # the agent commits the integration to the PR branch
+  pull-requests: write
+  issues: write
+
+concurrency:
+  # One resolve run per PR; a re-label never double-fans-out.
+  group: resolve-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    # Only the resolve label starts this stage; any other label is a no-op.
+    if: github.event.label.name == 'automation:resolve'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number }}
+      # Untrusted input: only ever referenced as "$PR_TITLE" inside a shell.
+      PR_TITLE: ${{ github.event.pull_request.title }}
+      IS_FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
+      MAX_ITER: ${{ vars.RESOLVE_MAX_ITER || '3' }}
+      INFRA_THRESHOLD: ${{ vars.RESOLVE_INFRA_THRESHOLD || '0.05' }}
+    steps:
+      - name: Reject fork PRs (no secrets on the pull_request event)
+        if: env.IS_FORK == 'true'
+        run: |
+          gh pr edit "$PR" -R "$REPO" \
+            --remove-label 'automation:resolve' \
+            --add-label 'automation:integrate-needs-human'
+          gh pr comment "$PR" -R "$REPO" --body \
+            "Resolve does not run on fork PRs (secrets are unavailable). Marked \`automation:integrate-needs-human\`."
+          echo "::error::Fork PR - refusing to run with secrets."
+          exit 1
+
+      - name: Label-once guard (drop trigger, mark running)
+        run: |
+          gh pr edit "$PR" -R "$REPO" \
+            --remove-label 'automation:resolve' \
+            --add-label 'automation:resolve-running'
+
+      - name: Parse candidate model from PR title
+        id: parse
+        run: |
+          set -euo pipefail
+          if [[ "$PR_TITLE" =~ ^integrate:[[:space:]]+([^[:space:]]+)[[:space:]]*$ ]]; then
+            NAME="${BASH_REMATCH[1]}"
+          else
+            gh pr edit "$PR" -R "$REPO" \
+              --remove-label 'automation:resolve-running' \
+              --add-label 'automation:integrate-needs-human'
+            echo "::error::PR title does not match 'integrate: <slug>'."
+            exit 1
+          fi
+          {
+            echo "provider=openrouter"
+            echo "name=$NAME"
+          } >> "$GITHUB_OUTPUT"
+          echo "Parsed candidate: openrouter / $NAME"
+
+      - uses: actions/checkout@v4
+        with:
+          # Check out the PR branch itself so the agent's commits land on it.
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+          lfs: true
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.9.5"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - run: uv python install 3.12
+      - run: uv sync --dev --locked
+
+      - name: Create .env (candidate model runs on the pipeline key)
+        env:
+          ARENA_KEY: ${{ secrets.ARENA_AUTOMATION_OPENROUTER_API_KEY }}
+        run: printf '%s\n' "OPENROUTER_API_KEY=$ARENA_KEY" > .env
+
+      - name: Resolve candidate model_id slug
+        id: slug
+        env:
+          TF_PROVIDER: ${{ steps.parse.outputs.provider }}
+          TF_NAME: ${{ steps.parse.outputs.name }}
+        run: |
+          set -euo pipefail
+          MODEL_ID="$(uv run python -c 'import os; from tolokaforge.core.output.artifacts import model_id_slug; print(model_id_slug(os.environ["TF_PROVIDER"], os.environ["TF_NAME"]))')"
+          echo "model_id=$MODEL_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Build core runner image (for wire reprobe / code-CREATE)
+        run: uv run tolokaforge docker build --core
+
+      - name: Download the observe artifact
+        run: |
+          # The observe stage uploaded integration-observation-pr<N>; pull the
+          # latest one for this PR into observation/.
+          gh run download -R "$REPO" -n "integration-observation-pr${PR}" -D observation
+          test -f observation/findings.json || { echo "::error::no findings.json in the observe artifact"; exit 1; }
+
+      - name: Configure git identity (agent commits as the automation bot)
+        run: |
+          git config user.name "tolokaforge-automation[bot]"
+          git config user.email "automation@users.noreply.github.com"
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Run the resolve agent (claude -p, headless)
+        id: agent
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.ARENA_AUTOMATION_OPENROUTER_API_KEY }}
+          TF_PROVIDER: ${{ steps.parse.outputs.provider }}
+          TF_NAME: ${{ steps.parse.outputs.name }}
+          MODEL_ID: ${{ steps.slug.outputs.model_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          P=scripts/integration/prompts
+          # Fill placeholders in the shared block + the resolve-agent brief, then run
+          # the agent headless with the shared block prepended (observe mode).
+          fill () {
+            sed \
+              -e "s|{{OBS_DIR}}|observation|g" \
+              -e "s|{{PROVIDER}}|${TF_PROVIDER}|g" \
+              -e "s|{{NAME}}|${TF_NAME}|g" \
+              -e "s|{{MODEL_ID}}|${MODEL_ID}|g" \
+              -e "s|{{PR}}|${PR}|g" \
+              -e "s|{{MAX_ITER}}|${MAX_ITER}|g" \
+              -e "s|{{INFRA_THRESHOLD}}|${INFRA_THRESHOLD}|g" \
+              -e "s|{{MODEL}}|${TF_NAME}|g" \
+              -e "s|{{ENGINE_VERSION}}|${GITHUB_SHA}|g" \
+              -e "s|{{BASE_DIR}}|observation|g" \
+              -e "s|{{DOMAINS_WITH_COUNTS}}|see findings.json|g" \
+              -e "s|{{TOTAL_TRIALS}}|see findings.json|g" \
+              -e "s|{{ANCHORS}}|none|g" \
+              -e "s|{{GO_BOUNDARY}}|observe mode: integrate when fixable errors close|g" \
+              "$1"
+          }
+          { fill "$P/_shared_context.md"; echo; echo '---'; echo; fill "$P/resolve_agent.md"; } > /tmp/resolve_prompt.md
+          echo "Prompt assembled ($(wc -l < /tmp/resolve_prompt.md) lines). Launching agent."
+          # Headless, non-interactive: the agent runs the fix loop (reprobe), edits
+          # policy/engine files, commits to this branch, and comments on the PR.
+          # --dangerously-skip-permissions is required for an unattended CI agent;
+          # the blast radius is bounded to this draft PR branch (never merged).
+          claude -p "$(cat /tmp/resolve_prompt.md)" \
+            --model claude-opus-4-8 \
+            --allowedTools "Bash,Read,Edit,Write" \
+            --dangerously-skip-permissions \
+            --max-turns 120 \
+            --verbose
+
+      - name: Fallback (agent failed before finishing)
+        if: failure()
+        run: |
+          gh pr edit "$PR" -R "$REPO" \
+            --remove-label 'automation:resolve-running' \
+            --add-label 'automation:integrate-needs-human' || true
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          gh pr comment "$PR" -R "$REPO" --body \
+            "Resolve stage did not finish cleanly (the agent errored before completing). Marked \`automation:integrate-needs-human\`. Run: ${RUN_URL}"
