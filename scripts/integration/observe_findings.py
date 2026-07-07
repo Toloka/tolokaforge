@@ -143,8 +143,15 @@ def _excerpt(obj: Any, limit: int = 300) -> str:
     return text if len(text) <= limit else text[: limit - 3] + "..."
 
 
-def _wire_findings(trials_root: Path) -> dict[str, Any]:
-    traj_paths = sorted(glob.glob(str(trials_root / "*" / "*" / "trajectory.yaml")))
+def _wire_findings(obs_dir: Path) -> dict[str, Any]:
+    # Union every wire_probes_* run under the observation dir: the observe stage
+    # writes one, the reprobe stage writes one per failed task. Fall back to a bare
+    # trials/ dir if the runs were not timestamp-nested.
+    traj_paths = sorted(
+        glob.glob(str(obs_dir / "wire_probes_*" / "trials" / "*" / "*" / "trajectory.yaml"))
+    )
+    if not traj_paths:
+        traj_paths = sorted(glob.glob(str(obs_dir / "trials" / "*" / "*" / "trajectory.yaml")))
     tasks: set[str] = set()
     task_trials: Counter = Counter()
     task_rej_trials: Counter = Counter()
@@ -246,13 +253,11 @@ def build_findings(obs_dir: Path) -> dict[str, Any]:
     """Assemble the raw-stat findings structure from an observe artifact directory."""
     manifest_path = obs_dir / "manifest.json"
     manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
-    wire_dirs = sorted(glob.glob(str(obs_dir / "wire_probes_*")))
-    trials_root = Path(wire_dirs[-1]) / "trials" if wire_dirs else obs_dir / "trials"
     capability = _capability_findings(obs_dir / "capability", obs_dir / "capability_report.xml")
     # Observe-only structural-variant suite (the legacy-test `test_variant_*` files),
     # aggregated the same way. Absent on runs without it.
     variants = _capability_findings(obs_dir / "variants", obs_dir / "__no_single_variant_report__")
-    wire = _wire_findings(trials_root)
+    wire = _wire_findings(obs_dir)
 
     # A present-but-empty capability report (every probe SKIPPED - e.g. a missing or
     # empty API key makes live_client skip everything) must NOT read as "all passed":

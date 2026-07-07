@@ -44,6 +44,28 @@ from ._capability import Capability, ModelCertificate
 _AUTO_MARKERS = ("integration", "requires_api", "llm")
 
 
+def pytest_configure(config):  # type: ignore[no-untyped-def]
+    """Install a preset overlay for the whole session when ``TF_PRESETS_FILE`` is set.
+
+    The model auto-integration re-probe step points this at the policy overlay the
+    resolve agent set or created, so the capability probes run under that policy's
+    adapters (schema sanitizer / response / prompt) instead of the bundled default.
+    The candidate certificate stays all-required (nothing skips); only the adapters
+    change, which is exactly what a policy re-probe verifies. The overlay is
+    validated up front so a malformed policy fails loudly at startup, not silently as
+    skipped probes. A normal CI run leaves ``TF_PRESETS_FILE`` unset and this is a
+    no-op (the bundled presets apply as usual).
+    """
+    del config  # unused - the hook signature is fixed by pytest.
+    overlay = os.getenv("TF_PRESETS_FILE")
+    if not overlay:
+        return
+    from tolokaforge.core.llm import presets
+
+    presets.validate_overlay_file(overlay)  # raises ValueError on a malformed overlay
+    presets.set_overlay_path(overlay)
+
+
 def pytest_collection_modifyitems(config, items):  # type: ignore[no-untyped-def]
     """Tag every test in this directory with the marker-gated markers."""
     del config  # unused — the hook signature is fixed by pytest.
