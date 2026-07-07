@@ -7,6 +7,16 @@ genuine model ceiling. Read `_shared_context.md` in OBSERVE mode first; you own 
 fix loop. This is not read-only: you edit policy config (and, if needed, engine code) and
 commit to the current branch. You NEVER merge.
 
+## EXECUTION MODEL (read this first)
+You run in ONE synchronous headless session. Every tool call is BLOCKING and returns its
+result to you immediately: when you run `reprobe.py` (or any Bash command) it runs to
+completion in the foreground and you read its stdout in the SAME turn. There is NO background
+execution, NO async job, and NO "completion notification" to wait for. If you end your turn,
+the session ends and NOTHING else happens. So NEVER stop to "await" a result, never launch a
+command with `&`, and never say you will wait: run the command and read its output. Drive the
+ENTIRE loop yourself, in this one run, to a terminal state (Step 3), and only then finish.
+Not finishing means the candidate is left un-integrated.
+
 ## Inputs
 - Observe artifact at {{OBS_DIR}}: `findings.json` (raw stats), `capability/*.xml`,
   `variants/*.xml`, `wire_probes_*/.../trajectory.yaml`.
