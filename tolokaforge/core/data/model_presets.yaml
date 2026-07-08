@@ -8,7 +8,7 @@
 #   prompt_policy:    none | dict_map_hints
 #   content_policy:   openai | anthropic | nova
 #   response_policy:  standard | unwrap_input | array_dict_map
-#   reasoning_codec:  none | anthropic | openai
+#   reasoning_codec:  none | anthropic | openai | gemini | qwen
 #   cache_policy:     none | anthropic_ephemeral
 #   params:           dict of GenerationParams kwargs
 #
@@ -92,6 +92,28 @@ presets:
     schema_sanitizer: strict
     response_policy: array_dict_map
     reasoning_codec: openai
+
+  # Qwen 3.6-plus — same tool-call axes as the generic ``qwen`` preset
+  # below (passthrough schema + json_coerce response + dict_map_hints
+  # prompt) but swaps the reasoning codec from ``openai`` (extract-only,
+  # no-op replay) to the bespoke ``qwen`` codec whose ``encode_for_replay``
+  # emits the ``reasoning_details`` envelope. That single change flips
+  # ``test_unsigned_thinking_replay`` green — turn-1 reasoning text now
+  # round-trips into the turn-2 request body. Declared BEFORE the generic
+  # ``qwen`` preset so first-match-wins routing picks it up for this model
+  # only; every other qwen route keeps the ``openai`` codec until re-tested.
+  # Genuine ceilings kept ``known_unsupported`` in registry.py: prompt_caching
+  # / implicit_prompt_caching (the qwen3.6 route reports no upstream cache
+  # accounting) and thinking_replay_roundtrip (Qwen emits no per-block
+  # signature, so the signed-replay contract has nothing to assert).
+  # Live-observed via auto-resolve 2026-07-08 (candidate PR #182).
+  qwen3_6_plus:
+    match:
+      - "qwen/qwen3.6-plus"
+    schema_sanitizer: passthrough
+    response_policy: json_coerce
+    prompt_policy: dict_map_hints
+    reasoning_codec: qwen
 
   qwen:
     # Qwen 3.x emits dict-map arguments as either native dicts (matching the

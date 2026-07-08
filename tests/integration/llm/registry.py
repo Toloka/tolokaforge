@@ -464,6 +464,78 @@ _ALL: list[MC] = [
             }
         ),
     ),
+    # Qwen 3.6-plus — Alibaba's Qwen 3.6 generation. Routes through the
+    # dedicated ``qwen3_6_plus`` preset (passthrough schema + ``DictMapHints``
+    # prompt policy + ``JsonCoerceResponse`` recovery), which is identical to
+    # the generic ``qwen`` preset EXCEPT it swaps in the bespoke
+    # ``QwenReasoningCodec`` (reasoning_codec: qwen). That codec's
+    # ``encode_for_replay`` emits the ``reasoning_details`` envelope so turn-1
+    # reasoning text round-trips into the turn-2 request body — the single fix
+    # that makes ``UNSIGNED_THINKING_REPLAY`` a real ``required`` contract for
+    # this model (5/5 on the final auto-resolve reprobe 2026-07-08). Sibling
+    # qwen3.7-max declares that capability ``known_unsupported`` because it
+    # still rides the no-op ``openai`` codec.
+    #
+    # The three ``known_unsupported`` entries are genuine qwen3.6 ceilings, not
+    # missing policy: PROMPT_CACHING / IMPLICIT_PROMPT_CACHING (no upstream
+    # cache accounting on the route — call 1 reports 0 cache_creation and call
+    # 2 reports 0 cache_read across the full reprobe) and
+    # THINKING_REPLAY_ROUNDTRIP (Qwen emits no per-block signature, so the
+    # signed-replay contract has "no signed blocks on turn 1" to assert on).
+    MC(
+        model_id="openrouter__qwen_qwen3.6-plus",
+        provider="openrouter",
+        name="qwen/qwen3.6-plus",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DICT_MAP_TOOL_CALL,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.THINKING_EMITS_BLOCKS,
+                # Flipped green by the ``qwen`` reasoning codec's replay path
+                # (reasoning_details envelope on the turn-2 request); 5/5 on
+                # the final auto-resolve reprobe 2026-07-08.
+                C.UNSIGNED_THINKING_REPLAY,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # Anthropic-style ephemeral cache is not wired on the qwen
+                # preset (cache_policy: none) and the qwen3.6 route surfaces no
+                # cache accounting: ``test_prompt_caching`` requires
+                # ``cache_creation_input_tokens > 0`` on call 1 (0/5 on the
+                # reprobe) and there is no explicit cache_control to trigger it.
+                C.PROMPT_CACHING,
+                # No implicit upstream auto-cache surface: the second identical
+                # call reports ``cache_read_input_tokens == 0`` (0/5 on the
+                # reprobe). Paired with the ratchet test that flips this back to
+                # required the day a clean 2-call probe observes caching.
+                C.IMPLICIT_PROMPT_CACHING,
+                # Qwen emits no signed reasoning blocks on turn 1 ("no signed
+                # blocks on turn 1 — cannot test replay", 0/5 on the reprobe),
+                # so the SIGNED-replay continuity contract has nothing to
+                # assert. The unsigned text round-trip (UNSIGNED_THINKING_REPLAY,
+                # required above) is the shape this route actually satisfies.
+                C.THINKING_REPLAY_ROUNDTRIP,
+            }
+        ),
+    ),
     # -----------------------------------------------------------------
     # xAI Grok — strict schema sanitiser + array-dict-map response
     # policy + OpenAI-style reasoning summary (no signed blocks).
