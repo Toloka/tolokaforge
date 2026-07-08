@@ -11,6 +11,26 @@ Open a PR titled `integrate: <openrouter-model-slug>` (e.g. `integrate: qwen/qwe
 and add the label `automation:integrate-model`. That starts OBSERVE; a clean observe
 auto-chains to RESOLVE.
 
+## Flow
+
+```mermaid
+flowchart TD
+    A["PR titled 'integrate: slug' + label automation:integrate-model"] --> B["OBSERVE: capability + shape variants + wire, on the default preset"]
+    B --> C["findings.json (raw pass counts + tool-arg rejections)"]
+    C --> D{"infra clean AND capability suite ran?"}
+    D -- "no" --> H["automation:integrate-needs-human (re-run)"]
+    D -- "yes" --> E["label automation:resolve (auto-chain)"]
+    E --> F["RESOLVE fix-loop, up to MAX_ITER"]
+    F --> G["compose agent (Opus): write preset overlay / new adapter class + decision.json"]
+    G --> I["workflow: reprobe ONLY the failed probes under the overlay"]
+    I --> J{"all fix-targets green?"}
+    J -- "no, iter < MAX_ITER (refine)" --> G
+    J -- "no, iter = MAX_ITER" --> H
+    J -- "yes (converged)" --> K["finalize agent (Opus): fold preset + write cert + PR report"]
+    K --> L["workflow: commit to PR branch + comment + automation:integrate-done"]
+    L --> M["human review gate: draft PR, NEVER auto-merge"]
+```
+
 ## Stage 1 - Observe (`.github/workflows/integrate-model.yml`)
 
 Deterministic detection on the DEFAULT (raw) preset. Runs the capability integration probes +
@@ -60,6 +80,22 @@ Empirical rule: a fix-target still red under the policy is reclassified as a cei
 `automation:resolve` (clean observe) -> `automation:resolve-running` ->
 `automation:integrate-done` (success) OR `automation:integrate-needs-human` (infra-dirty, or
 no convergence).
+
+## Prompts (`scripts/integration/prompts/`)
+
+The analysis-dimension briefs interpret an eval or observe artifact (one dimension per
+sub-agent); the resolve prompts drive the fix loop. `index.yaml` is the machine-readable map.
+
+| Prompt | Used by | What it does (brief) |
+|---|---|---|
+| `_shared_context.md` | every analysis dimension | Prepended context: data layout, pass@k/pass^k metric definitions, the four-bucket vocabulary, observe-vs-eval mode, the aggregate-synthesis precedence, efficiency rules. |
+| `harness_infra.md` | analysis | Is any failure infra-caused (429 / timeout / max_turns / stuck / crash)? Gates trust in the pass numbers. |
+| `preset_codec_leak.md` | analysis | Did the intended preset apply on every trial, with no reasoning-leak or schema-loss? Verdict: clean-native OR the exact policy-fix target. |
+| `four_bucket.md` | analysis | Bucket every failing trial into infra / oracle / formatting / genuine-model; how many pp are recoverable at all. |
+| `consistency_passk.md` | analysis | pass@1 / pass@5 / pass^5 + consistency tax; is the model consistency-limited or capability-limited. |
+| `task_design_oracle.md` | analysis (eval only) | Find FALSE failures (correct action graded fail) + unwinnable/ambiguous tasks; footnote vs regrade. |
+| `resolve_agent.md` | resolve (per iteration) | Compose or refine the model's preset overlay from reusable adapter axes (or write a new small adapter class), and write `decision.json` (fix_targets / ceilings / required). Does NOT run reprobe or commit. |
+| `resolve_finalize.md` | resolve (on convergence) | Fold the proven overlay into `model_presets.yaml` + write the cert into `registry.py`, and write the PR comment/description. Does NOT commit. |
 
 ## Key files
 
