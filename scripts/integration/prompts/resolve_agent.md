@@ -61,5 +61,15 @@ and pushes the whole integration to needs-human.
    reprobes these under your overlay; ALL must go green for the candidate to integrate. Do NOT
    list ceilings or flaky-noise as fix_targets.
 
+   `required` must be EVIDENCE-BACKED, never optimistic. List a capability as `required` ONLY if
+   it passed NATIVELY in `findings.json` OR the reprobe shows it green under your overlay. Do NOT
+   promote a capability to `required` on a mechanism that cannot support it: e.g. a summary-only
+   (OpenAI-style) `reasoning_codec` carries no signed thinking blocks, so `THINKING_EMITS_BLOCKS`
+   and the `*_THINKING_REPLAY` caps stay `known_unsupported` under it; a `passthrough` schema that
+   only cleared a weak-assertion probe (no 500, args parse) is NOT evidence the emitted VALUE is
+   correct. When the mechanism does not clearly support it or the evidence is a weak probe, prefer
+   `known_unsupported` (an honest floor) over a `required` that inflates the leaderboard score -
+   the draft-PR human gate can always promote it later.
+
 Write ONLY: `overlay.yaml`, `decision.json`, and any new engine class + its registration/export.
 Do NOT run reprobe, commit, push, or comment. Then stop.
