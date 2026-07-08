@@ -25,7 +25,12 @@ def overlay_isolation():
     function call that sets a module global to ``None``.
     """
     yield
-    set_overlay_path(None)
+    # Restore the SESSION overlay (TF_PRESETS_FILE), not unconditionally None: a
+    # session-wide overlay installed for the whole run - the resolve reprobe sets
+    # TF_PRESETS_FILE so every probe runs under the candidate policy - must survive
+    # across tests. A test that installs its OWN overlay mid-run still gets reset to
+    # the session default here, so per-test isolation is preserved either way.
+    set_overlay_path(os.getenv("TF_PRESETS_FILE"))
 
 
 @pytest.fixture
