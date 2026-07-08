@@ -381,6 +381,82 @@ _ALL: list[MC] = [
             }
         ),
     ),
+    # -----------------------------------------------------------------
+    # Qwen 3.6-plus — routed through the model-specific ``qwen_qwen3_6_plus``
+    # preset (a shadow of the family ``qwen`` preset: passthrough schema +
+    # ``DictMapHints`` prompt policy + ``JsonCoerceResponse`` recovery) that
+    # swaps the family ``openai`` reasoning codec for the bespoke
+    # ``QwenReasoningCodec``. Integrated via auto-resolve (PR #188) after the
+    # observe baseline flagged ``test_unsigned_thinking_replay`` failing 0/15.
+    #
+    # The codec keeps OpenAI-identical extraction of Qwen's
+    # ``reasoning_content`` summary (THINKING_EMITS_BLOCKS passes, so it is
+    # ``required``) and adds an ``encode_for_replay`` that re-emits the turn-1
+    # reasoning as OpenRouter ``reasoning.text`` — the unsigned envelope
+    # ``test_unsigned_thinking_replay`` round-trips, so UNSIGNED_THINKING_REPLAY
+    # is ``required`` (5/5 on the final reprobe).
+    #
+    # Genuine ceilings (``known_unsupported``): THINKING_REPLAY_ROUNDTRIP —
+    # Qwen emits no signed blocks on turn 1, so the signed-replay contract has
+    # no source; PROMPT_CACHING / IMPLICIT_PROMPT_CACHING — the OpenRouter Qwen
+    # route neither creates an explicit cache entry (no cache_control markers
+    # wired) nor reports any upstream auto-cache read on a 2-call probe.
+    # -----------------------------------------------------------------
+    MC(
+        model_id="openrouter__qwen_qwen3.6-plus",
+        provider="openrouter",
+        name="qwen/qwen3.6-plus",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DICT_MAP_TOOL_CALL,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+                # Qwen surfaces an OpenAI-style ``reasoning_content`` summary
+                # the codec yields as a structured block — verified 15/15 on
+                # the observe baseline.
+                C.THINKING_EMITS_BLOCKS,
+                # ``QwenReasoningCodec.encode_for_replay`` re-emits the turn-1
+                # reasoning as OpenRouter ``reasoning.text`` so the outgoing
+                # assistant message carries ``reasoning_details`` — the fix
+                # target that went 0/15 (baseline) -> 5/5 (final reprobe).
+                C.UNSIGNED_THINKING_REPLAY,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # No signed reasoning blocks on turn 1 — the signed-replay
+                # continuity contract has no source. Genuine ceiling; the
+                # unsigned variant (UNSIGNED_THINKING_REPLAY, required above)
+                # is the shape Qwen actually round-trips.
+                C.THINKING_REPLAY_ROUNDTRIP,
+                # Anthropic-style ephemeral cache is not wired on this preset
+                # (cache_policy: none) — call 1 reports 0
+                # cache_creation_input_tokens (baseline 0/15).
+                C.PROMPT_CACHING,
+                # No implicit upstream auto-cache surfaced on the OpenRouter
+                # qwen/qwen3.6-plus route — call 2 reports 0
+                # cache_read_input_tokens on a 2-call ~8 k-token probe
+                # (baseline 0/15).
+                C.IMPLICIT_PROMPT_CACHING,
+            }
+        ),
+    ),
     # Qwen 3.7 Max — Alibaba's flagship Qwen 3.7 generation. Routes
     # through the same ``qwen`` preset as 3.6-plus (passthrough schema +
     # ``DictMapHints`` prompt policy + ``JsonCoerceResponse`` recovery +

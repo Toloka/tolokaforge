@@ -8,7 +8,7 @@
 #   prompt_policy:    none | dict_map_hints
 #   content_policy:   openai | anthropic | nova
 #   response_policy:  standard | unwrap_input | array_dict_map
-#   reasoning_codec:  none | anthropic | openai
+#   reasoning_codec:  none | anthropic | openai | gemini | qwen
 #   cache_policy:     none | anthropic_ephemeral
 #   params:           dict of GenerationParams kwargs
 #
@@ -92,6 +92,31 @@ presets:
     schema_sanitizer: strict
     response_policy: array_dict_map
     reasoning_codec: openai
+
+  # Qwen 3.6-plus — model-specific shadow of the family ``qwen`` preset
+  # (below). Reproduces the family axes verbatim (passthrough schema +
+  # json_coerce response + dict_map_hints prompt) and swaps the reasoning
+  # codec ``openai`` -> ``qwen``. Listed BEFORE the ``qwen`` family glob so
+  # first-match-wins routing picks it up for this model only; every other
+  # ``qwen/*`` route keeps the family preset untouched.
+  #
+  # Why the bespoke codec: the family ``openai`` codec extracts Qwen's
+  # ``reasoning_content`` string fine (THINKING_EMITS_BLOCKS passes) but its
+  # ``encode_for_replay`` is a no-op, so the turn-2 assistant message carries
+  # no ``reasoning_details`` and UNSIGNED_THINKING_REPLAY fails (0/15 baseline).
+  # ``QwenReasoningCodec`` keeps OpenAI-identical extraction and adds an
+  # ``encode_for_replay`` that re-emits the turn-1 reasoning text as OpenRouter
+  # ``reasoning.text`` entries — the exact shape the probe round-trips (5/5
+  # after fix). Signed-replay (Qwen emits no signatures) and prompt caching
+  # (route never creates/reports cache tokens) stay genuine ceilings — see
+  # registry.py ``known_unsupported``. Integrated via auto-resolve (PR #188).
+  qwen_qwen3_6_plus:
+    match:
+      - "qwen/qwen3.6-plus"
+    schema_sanitizer: passthrough
+    response_policy: json_coerce
+    prompt_policy: dict_map_hints
+    reasoning_codec: qwen
 
   qwen:
     # Qwen 3.x emits dict-map arguments as either native dicts (matching the

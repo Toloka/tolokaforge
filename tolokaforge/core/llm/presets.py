@@ -41,6 +41,7 @@ from tolokaforge.core.llm.reasoning_codec import (
     GeminiReasoningCodec,
     NoReasoningCodec,
     OpenAIReasoningCodec,
+    QwenReasoningCodec,
     ReasoningCodec,
 )
 from tolokaforge.core.llm.response_policy import (
@@ -106,6 +107,7 @@ _REASONING_CODECS: dict[str, type[ReasoningCodec]] = {
     "anthropic": AnthropicReasoningCodec,
     "openai": OpenAIReasoningCodec,
     "gemini": GeminiReasoningCodec,
+    "qwen": QwenReasoningCodec,
 }
 
 _CACHE_POLICIES: dict[str, type[CachePolicy]] = {
