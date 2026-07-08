@@ -209,12 +209,29 @@ jobs:
           claude -p "$(cat /tmp/finalize.md)" --model "$AGENT_MODEL" \
             --allowedTools "Bash,Read,Edit,Write" --dangerously-skip-permissions \
             --max-turns "${RESOLVE_MAX_TURNS}" --verbose || true
-          # Deterministic commit + report (the agent only wrote files).
-          git add tolokaforge/core/data/model_presets.yaml tests/integration/llm/registry.py \
-            tolokaforge/core/llm/response_policy.py tolokaforge/core/llm/presets.py \
-            tolokaforge/core/llm/__init__.py 2>/dev/null || true
+          # Deterministic commit + report (the agent only wrote files). Stage the WHOLE engine
+          # LLM package, not a fixed file list: a code-CREATE can write a new adapter class in ANY
+          # module (reasoning_codec / schema_sanitizer / prompt_policy / content_policy /
+          # cache_policy), and a narrow list silently drops the new file while committing its
+          # wiring -> a build-breaking dangling import (qwen round-2: QwenReasoningCodec imported
+          # in presets.py/__init__.py but its class never committed). Plus the cert + preset.
+          git add tolokaforge/core/llm tolokaforge/core/data/model_presets.yaml \
+            tests/integration/llm/registry.py 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "::error::finalize produced no file changes"; exit 1
+          fi
+          # Verify EXACTLY the staged tree (what we are about to commit), not the workspace: the
+          # reprobe validated the workspace, but only a subset is committed. `stash --keep-index`
+          # drops everything not staged so the worktree == the future commit; a missing class or
+          # dangling import is then caught HERE (exit 1 -> needs-human via the finalize guard),
+          # never labeled integrate-done.
+          git stash push --keep-index --include-untracked -m resolve-verify >/dev/null 2>&1 || true
+          IMPORT_OK=yes
+          uv run python -c "import tolokaforge.core.llm" || IMPORT_OK=no
+          git stash pop >/dev/null 2>&1 || true
+          if [ "$IMPORT_OK" != "yes" ]; then
+            echo "::error::staged integration fails to import tolokaforge.core.llm (missing class / dangling import) - refusing to commit a broken build"
+            exit 1
           fi
           git commit -m "integrate: ${TF_NAME} via auto-resolve (preset + cert)" \
             -m "Auto-resolve landed the proven policy. See the PR comment for the reprobe evidence and known_unsupported ceilings. Do not merge if this is a disposable test branch."
