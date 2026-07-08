@@ -63,7 +63,8 @@ them as `known_unsupported`.
   `model_presets.yaml` and writes the cert into `registry.py`. Before committing, the workflow
   VERIFIES the staged tree (what it is about to commit, via `git stash --keep-index`): it must
   import, must not turn any already-valid tool-call arg invalid (`test_policy_no_regression`, the
-  anti-over-reach gate), and must satisfy any per-model recovery fixtures (`test_policy_recovery`).
+  anti-over-reach gate), and must recover the array-corruption shapes so the result validates +
+  round-trips against the tool's Pydantic schema (`test_policy_array_recovery`).
   Only then does it commit to the PR branch, comment the record, and label
   `automation:integrate-done`. A broken / over-reaching / divergent fix fails verification here
   and goes to `automation:integrate-needs-human`. NEVER merges.
@@ -123,9 +124,11 @@ sub-agent); the resolve prompts drive the fix loop. `index.yaml` is the machine-
 - `scripts/integration/resolve_greencheck.py` - fix-target convergence check.
 - `tests/integration/llm/test_policy_no_regression.py` - GENERIC (model-agnostic) anti-over-reach
   gate: every model's resolved response policy must keep an already-valid tool-call arg valid.
-- `tests/integration/llm/test_policy_recovery.py` + `policy_fixtures/<model_id>.yaml` - per-model
-  recovery oracle: the resolved policy maps known corruption shapes to the exact expected value
-  (and leaves a legitimate look-alike field untouched). Both run in the finalize staged-tree gate.
+- `tests/integration/llm/test_policy_array_recovery.py` - schema-driven recovery oracle: inject
+  each XML->JSON array-corruption shape (`{item:[...]}` / stringified / empty) into a VALID
+  Pydantic tool call, run the resolved policy, and require the result to validate + round-trip
+  back (no hand-authored answer-key; an uncorrupted call must survive unchanged = over-reach
+  guard). Both run in the finalize staged-tree gate.
 - `scripts/integration/prompts/` - `_shared_context.md` + the analysis dimension briefs
   (`harness_infra` / `preset_codec_leak` / `four_bucket` / `consistency_passk` /
   `task_design_oracle`) and the resolve agent prompts (`resolve_agent.md`, `resolve_finalize.md`).

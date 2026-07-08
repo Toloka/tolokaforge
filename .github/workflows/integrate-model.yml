@@ -400,7 +400,7 @@ jobs:
           if [ "$VERIFY_OK" = "yes" ]; then
             uv run python -m pytest -q -p no:cacheprovider \
               tests/integration/llm/test_policy_no_regression.py \
-              tests/integration/llm/test_policy_recovery.py || VERIFY_OK=no
+              tests/integration/llm/test_policy_array_recovery.py || VERIFY_OK=no
           fi
           git stash pop >/dev/null 2>&1 || true
           if [ "$VERIFY_OK" != "yes" ]; then
