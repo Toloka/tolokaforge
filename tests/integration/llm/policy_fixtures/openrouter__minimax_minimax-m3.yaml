@@ -1,0 +1,35 @@
+# Deterministic recovery-policy oracle for minimax/minimax-m3.
+#
+# Feeds the known provider-corruption shapes AT THE REAL SITES (updates.tags / item.tags,
+# which live one level deep under a schemaless additionalProperties:true parent), plus a
+# legitimate `item` object field that MUST survive untouched, and asserts the model's
+# RESOLVED response_policy recovers each correctly.
+#
+# Name-agnostic: it tests whatever policy the preset resolves to (the shipped composite
+# today; an auto-resolve candidate's policy inside the pipeline), so a divergent fix that
+# misses a shape OR over-reaches FAILS here even if the synthetic capability probes pass.
+# Census weights are from the MiniMax-M3 airlines tags corruption (2505 occurrences).
+provider: openrouter
+name: minimax/minimax-m3
+cases:
+  # 76% shape: XML repeated-element {"item": [...]} wrapper at a tags site.
+  - name: item_wrap_list_at_tags_site
+    args: {updates: {tags: {item: ["vip", "urgent"]}}}
+    expect: {updates: {tags: ["vip", "urgent"]}}
+  # {"item": scalar} at a tags site normalises to a one-element list.
+  - name: item_wrap_scalar_at_tags_site
+    args: {item: {tags: {item: "receipt-issued"}}}
+    expect: {item: {tags: ["receipt-issued"]}}
+  # 22% shape: the tags array serialised as a JSON string, nested under updates.
+  - name: stringified_list_at_tags_site
+    args: {updates: {tags: '["vip", "urgent"]'}}
+    expect: {updates: {tags: ["vip", "urgent"]}}
+  # 1% shape: empty string for the declared-array tags field.
+  - name: empty_string_at_tags_site
+    args: {item: {tags: ""}}
+    expect: {item: {tags: []}}
+  # OVER-REACH NEGATIVE: a legitimate single-key object literally named `item` at a
+  # non-tags path must NOT be unwrapped. A whole-tree {"item": X} rewrite corrupts this.
+  - name: legit_item_object_preserved
+    args: {order: {item: {sku: "A1", qty: 2}}}
+    expect: {order: {item: {sku: "A1", qty: 2}}}
