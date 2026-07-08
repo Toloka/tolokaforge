@@ -226,11 +226,21 @@ jobs:
           # dangling import is then caught HERE (exit 1 -> needs-human via the finalize guard),
           # never labeled integrate-done.
           git stash push --keep-index --include-untracked -m resolve-verify >/dev/null 2>&1 || true
-          IMPORT_OK=yes
-          uv run python -c "import tolokaforge.core.llm" || IMPORT_OK=no
+          VERIFY_OK=yes
+          uv run python -c "import tolokaforge.core.llm" || VERIFY_OK=no
+          if [ "$VERIFY_OK" = "yes" ]; then
+            # Policy gates on the STAGED policy: (1) no-regression - the resolved policy must not
+            # turn any already-valid tool-call arg INVALID (catches an over-broad fix that breaks
+            # good cases, e.g. listifying a legitimate {"item": X} object); (2) recovery oracle -
+            # any per-model fixtures must map the known corruption shapes to the exact expected
+            # value. A divergent / over-reaching fix fails HERE (-> needs-human), never ships.
+            uv run python -m pytest -q -p no:cacheprovider \
+              tests/integration/llm/test_policy_no_regression.py \
+              tests/integration/llm/test_policy_recovery.py || VERIFY_OK=no
+          fi
           git stash pop >/dev/null 2>&1 || true
-          if [ "$IMPORT_OK" != "yes" ]; then
-            echo "::error::staged integration fails to import tolokaforge.core.llm (missing class / dangling import) - refusing to commit a broken build"
+          if [ "$VERIFY_OK" != "yes" ]; then
+            echo "::error::staged integration failed verification (import / over-reach no-regression / recovery-oracle gate) - refusing to commit"
             exit 1
           fi
           git commit -m "integrate: ${TF_NAME} via auto-resolve (preset + cert)" \
