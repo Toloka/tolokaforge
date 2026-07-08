@@ -108,6 +108,40 @@ presets:
     prompt_policy: dict_map_hints
     reasoning_codec: openai
 
+  # Xiaomi MiMo V2.5 Pro (OpenRouter). Observe baseline (default preset =
+  # response_policy: standard) shows one FIXABLE failure cluster: nested-object
+  # tool-call arguments emitted as JSON-encoded STRINGS instead of native dicts.
+  # Seven capability probes fail 0/15 with the identical wire shape, e.g.
+  # ``root``/``doc``/``item``/``message`` == '{"label": "A", "children": [...]}'
+  # (a str) — the probes confirm "Recovery policy did not decode it" because the
+  # default ``standard`` (no-op) response policy leaves the string untouched.
+  #
+  # This is the classic dict-stringify quirk (precedent: qwen preset). The wire
+  # schema is passthrough (dict-shape, matches training), so the fix is pure
+  # recovery: ``response_policy: json_coerce`` (JsonCoerceResponse) decodes a
+  # top-level str value whose content is a JSON list/dict back to the native
+  # container. schema_sanitizer stays passthrough so hints/schema/docs stay
+  # aligned — no strict array pivot is involved. DICT_MAP_TOOL_CALL already
+  # passes on the native shape, so unlike the qwen preset this needs NO
+  # dict_map_hints prompt policy.
+  #
+  # ``reasoning_codec: openai`` surfaces MiMo's OpenRouter reasoning_content
+  # summary in the trajectory logs (observability only, like every OpenRouter
+  # reasoning route here). It is summary-only and carries NO signed thinking
+  # blocks, so it does NOT lift the THINKING_* caps — those stay
+  # known_unsupported (see registry.py). Explicit prompt caching is a
+  # non-Anthropic OpenRouter route ceiling, also known_unsupported.
+  # Live-certified via the observe/resolve auto-integration chain (see
+  # registry.py). Declared with model-specific match globs (NOT a broadened
+  # shared glob) so no sibling route's posture changes.
+  xiaomi_mimo_v2_5_pro:
+    match:
+      - "xiaomi/mimo-v2.5-pro*"
+      - "*mimo-v2.5-pro*"
+    schema_sanitizer: passthrough
+    response_policy: json_coerce
+    reasoning_codec: openai
+
   # DeepSeek V3.2-Exp experimental V3.2 reasoning route.
   # Unlike the V4 line (openrouter_dict_stringify_recovery, above) it
   # round-trips dict-map and discriminated-union tool calls cleanly on

@@ -1125,6 +1125,72 @@ _ALL: list[MC] = [
             }
         ),
     ),
+    # -----------------------------------------------------------------
+    # Xiaomi MiMo V2.5 Pro (OpenRouter) — routed via the dedicated
+    # ``xiaomi_mimo_v2_5_pro`` preset (passthrough schema +
+    # JsonCoerceResponse + OpenAI reasoning codec). Integrated via the
+    # observe/resolve auto-integration chain: the observe stage saw the
+    # dict-stringify quirk raw (7 probes across discriminated_union /
+    # heterogeneous_array / recursive_ref fail 0/15, nested-object args
+    # emitted as JSON-encoded strings), and resolve created the recovery
+    # policy — ``json_coerce`` decodes the stringified nested args back to
+    # native dicts before pydantic validation. The final reprobe went
+    # 5/5 green on every one of those seven fix-targets, so
+    # DISCRIMINATED_UNION_TOOL_CALL / HETEROGENEOUS_ARRAY_TOOL_CALL /
+    # RECURSIVE_REF_TOOL_CALL are ``required``.
+    #
+    # THINKING_* stay ``known_unsupported`` — the OpenAI reasoning codec
+    # surfaces a flat ``reasoning_content`` summary, not signed/replayable
+    # thinking blocks. ``PROMPT_CACHING`` (the explicit Anthropic-ephemeral
+    # contract) stays ``known_unsupported`` because we attach no
+    # ``cache_control`` markers on this OpenRouter route.
+    #
+    # IMPLICIT_PROMPT_CACHING and MULTI_TURN_ERROR_RECOVERY are omitted
+    # (declared by neither branch): the observe baseline shows both flaky
+    # at 14/15 — too noisy to gate as ``required`` yet not a clean ceiling
+    # to declare ``known_unsupported``. Both surfaces are covered by other
+    # certificates. Add them back once the route stabilises.
+    # -----------------------------------------------------------------
+    MC(
+        model_id="openrouter__xiaomi_mimo-v2.5-pro",
+        provider="openrouter",
+        name="xiaomi/mimo-v2.5-pro",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.DICT_MAP_TOOL_CALL,
+                C.ENUM_SLASH_TOLERANCE,
+                # json_coerce decodes the stringified nested args back to
+                # native dicts; final reprobe 5/5 on all seven fix-targets.
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
+                C.RE2_PATTERN_TOLERANCE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.TOOL_NAME_DISCIPLINE,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # OpenAI reasoning codec surfaces a flat reasoning_content
+                # summary only — never signed/replayable thinking blocks.
+                C.THINKING_EMITS_BLOCKS,
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.UNSIGNED_THINKING_REPLAY,
+                # No explicit cache_control markers on this OpenRouter route.
+                C.PROMPT_CACHING,
+            }
+        ),
+    ),
     MC(
         model_id="openrouter__google_gemini-3.1-pro-preview",
         provider="openrouter",
