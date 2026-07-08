@@ -40,6 +40,7 @@ __all__ = [
     "UnwrapInputResponse",
     "JsonCoerceResponse",
     "ArrayDictMapResponse",
+    "ItemTagUnwrapResponse",
 ]
 
 
@@ -295,3 +296,94 @@ class ArrayDictMapResponse:
                 key = str(value_copy.pop(self.KEY_FIELD))
                 result[param_name] = {key: value_copy}
         return result
+
+
+class ItemTagUnwrapResponse:
+    """Strip MiniMax-M3's ``<item>``-tag array wrapper, then dict-map pivot.
+
+    MiniMax-M3 serialises repeated array elements as XML ``<item>`` tags
+    inside its tool-call payload. When the transport parses that back to
+    JSON, a list ``[a, b]`` collapses to ``{"item": [a, b]}`` and a
+    single-element list ``[a]`` collapses to ``{"item": a}``. The receiving
+    tool declared a ``list`` (or, under
+    :class:`~tolokaforge.core.llm.schema_sanitizer.StrictSchema`, a dict-map
+    lowered to an ``array`` of ``{key, …}`` objects), so the singleton
+    ``item`` wrapper makes every affected argument fail validation
+    (``recursive_ref``/``heterogeneous_array`` see a dict where a list is
+    required; ``dict_map`` sees the map flattened to one ``item`` entry).
+
+    Three-stage pipeline:
+
+    1. Recursively replace every singleton ``{"item": X}`` dict with a list
+       (``X`` if it is already a list, else ``[X]``) — reversing the tag
+       collapse at any nesting depth. Dicts that carry other keys, or more
+       than the lone ``item`` key, pass through untouched so a legitimate
+       parameter literally named ``item`` (e.g. a discriminated-union payload)
+       is preserved.
+    2. Recursively pivot every ``key``-field array back to a ``Dict[str, T]``
+       *at any depth* — a non-empty list whose every element is a dict carrying
+       the synthetic ``key`` field is a ``StrictSchema``-lowered dict-map
+       (``additionalProperties`` → ``array of {key, …}``). Stage 3 only pivots
+       *top-level* params, so this stage is what recovers a dict-map NESTED
+       inside an object param (e.g. ``order.lines``). Lists whose elements lack
+       ``key`` (``recursive_ref`` ``children``, ``heterogeneous_array``
+       ``blocks``) are left as lists.
+    3. Delegate to :class:`ArrayDictMapResponse` for the top-level pivot plus
+       its empty-container / stringified-JSON recovery, so dict-map parameters
+       land in the ``Dict[str, T]`` shape their Pydantic validators expect.
+
+    Example::
+
+        # LLM produces (item-tag collapse of a strict dict-map array):
+        {"lines": {"item": [{"key": "SKU-A", "qty": 10}]}}
+        # Stage 1 → {"lines": [{"key": "SKU-A", "qty": 10}]}
+        # Stage 2 → {"lines": {"SKU-A": {"qty": 10}}}
+
+        # Nested-in-object dict-map (Stage 3 alone would miss ``order.lines``):
+        {"order": {"order_id": "PO-42", "lines": {"item": [{"key": "L1", "qty": 10}]}}}
+        # Stage 1 → {"order": {"order_id": "PO-42", "lines": [{"key": "L1", "qty": 10}]}}
+        # Stage 2 → {"order": {"order_id": "PO-42", "lines": {"L1": {"qty": 10}}}}
+    """
+
+    WRAPPER_KEY = "item"
+
+    def parse_arguments(
+        self,
+        arguments: dict[str, Any],
+        *,
+        param_types: Mapping[str, str] | None = None,
+    ) -> dict[str, Any]:
+        if not isinstance(arguments, dict):
+            return arguments
+        # Unwrap the item-tag wrapper on each top-level argument value
+        # (never the top-level argument map itself, so a param named
+        # ``item`` survives), pivot nested key-field dict-maps, then hand off
+        # to the top-level dict-map pivot.
+        unwrapped = {name: self._unwrap(value) for name, value in arguments.items()}
+        pivoted = {name: self._pivot_key_arrays(value) for name, value in unwrapped.items()}
+        return ArrayDictMapResponse().parse_arguments(pivoted, param_types=param_types)
+
+    def _unwrap(self, value: Any) -> Any:
+        if isinstance(value, dict):
+            if len(value) == 1 and self.WRAPPER_KEY in value:
+                inner = self._unwrap(value[self.WRAPPER_KEY])
+                return inner if isinstance(inner, list) else [inner]
+            return {key: self._unwrap(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [self._unwrap(item) for item in value]
+        return value
+
+    def _pivot_key_arrays(self, value: Any) -> Any:
+        key_field = ArrayDictMapResponse.KEY_FIELD
+        if isinstance(value, list):
+            items = [self._pivot_key_arrays(item) for item in value]
+            if items and all(isinstance(item, dict) and key_field in item for item in items):
+                pivoted: dict[str, Any] = {}
+                for item in items:
+                    item_copy = dict(item)
+                    pivoted[str(item_copy.pop(key_field))] = item_copy
+                return pivoted
+            return items
+        if isinstance(value, dict):
+            return {key: self._pivot_key_arrays(item) for key, item in value.items()}
+        return value

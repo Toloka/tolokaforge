@@ -42,6 +42,7 @@ from tolokaforge.core.llm.reasoning_codec import (
 )
 from tolokaforge.core.llm.response_policy import (
     ArrayDictMapResponse,
+    ItemTagUnwrapResponse,
     JsonCoerceResponse,
     ResponsePolicy,
     StandardResponse,
@@ -49,6 +50,7 @@ from tolokaforge.core.llm.response_policy import (
 )
 from tolokaforge.core.llm.schema_sanitizer import (
     PassthroughSchema,
+    RecursiveRefStrictSchema,
     SchemaCapability,
     StrictSchema,
     ToolSchemaSanitizer,
@@ -104,6 +106,7 @@ __all__ = [
     "ToolSchemaSanitizer",
     "PassthroughSchema",
     "StrictSchema",
+    "RecursiveRefStrictSchema",
     # Cache
     "CachePolicy",
     "NoCache",
@@ -119,6 +122,7 @@ __all__ = [
     "UnwrapInputResponse",
     "JsonCoerceResponse",
     "ArrayDictMapResponse",
+    "ItemTagUnwrapResponse",
     "ParamPolicy",
     "GenerationParams",
     # Capabilities + presets (lazy)

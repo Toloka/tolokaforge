@@ -254,6 +254,36 @@ presets:
     schema_sanitizer: gemini
     response_policy: array_dict_map
 
+  # MiniMax-M3 (MiniMax via OpenRouter). A strong function-caller with three
+  # wire quirks the DEFAULT passthrough preset leaves unfixed:
+  #
+  #   1. <item>-tag array collapse: repeated array elements serialise as XML
+  #      <item> tags, so a list ``[a, b]`` parses back as ``{"item": [a, b]}``
+  #      (and ``[a]`` as ``{"item": a}``). Breaks recursive_ref /
+  #      heterogeneous_array (dict where a list is required) and dict-map
+  #      (map flattened to one ``item`` entry). ``item_tag_unwrap`` unwraps the
+  #      tag and pivots key-field arrays back to Dict[str, T] at ANY depth, so a
+  #      dict-map nested inside an object param is recovered too.
+  #   2. dict-map lowering needs ``strict`` (additionalProperties -> array of
+  #      {key, ...}), but plain ``strict`` inlines every $ref and RAISES on a
+  #      self-referential schema ("$ref resolution exceeded depth 16").
+  #      ``strict_recursive_ref`` keeps the acyclic inlining the dict-map
+  #      lowering depends on but leaves a cyclic $ref in place (retaining
+  #      $defs) so the recursive schema ships the way passthrough did.
+  #   3. Structured reasoning is not surfaced under the default codec. The
+  #      ``openai`` codec surfaces the OpenRouter reasoning summary.
+  #
+  # Landed via auto-resolve (candidate PR #177, iteration 2/3). See
+  # registry.py for the ceilings (thinking_replay_roundtrip / prompt_caching /
+  # discriminated_union_tool_call) that no policy can close on this route.
+  minimax_m3:
+    match:
+      - "minimax/minimax-m3"
+      - "*minimax-m3*"
+    schema_sanitizer: strict_recursive_ref
+    response_policy: item_tag_unwrap
+    reasoning_codec: openai
+
 providers:
   openrouter:
     params:

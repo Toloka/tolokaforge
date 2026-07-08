@@ -45,6 +45,7 @@ from tolokaforge.core.llm.reasoning_codec import (
 )
 from tolokaforge.core.llm.response_policy import (
     ArrayDictMapResponse,
+    ItemTagUnwrapResponse,
     JsonCoerceResponse,
     ResponsePolicy,
     StandardResponse,
@@ -53,6 +54,7 @@ from tolokaforge.core.llm.response_policy import (
 from tolokaforge.core.llm.schema_sanitizer import (
     GeminiSchema,
     PassthroughSchema,
+    RecursiveRefStrictSchema,
     StrictSchema,
     ToolSchemaSanitizer,
 )
@@ -78,6 +80,7 @@ logger = logging.getLogger(__name__)
 _SCHEMA_SANITIZERS: dict[str, type[ToolSchemaSanitizer]] = {
     "passthrough": PassthroughSchema,
     "strict": StrictSchema,
+    "strict_recursive_ref": RecursiveRefStrictSchema,
     "gemini": GeminiSchema,
 }
 
@@ -97,6 +100,7 @@ _RESPONSE_POLICIES: dict[str, type[ResponsePolicy]] = {
     "unwrap_input": UnwrapInputResponse,
     "json_coerce": JsonCoerceResponse,
     "array_dict_map": ArrayDictMapResponse,
+    "item_tag_unwrap": ItemTagUnwrapResponse,
 }
 
 _REASONING_CODECS: dict[str, type[ReasoningCodec]] = {

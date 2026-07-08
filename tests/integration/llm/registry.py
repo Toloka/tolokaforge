@@ -1677,6 +1677,75 @@ _ALL: list[MC] = [
             }
         ),
     ),
+    # MiniMax-M3 (MiniMax via OpenRouter). Routes through the dedicated
+    # ``minimax_m3`` preset (strict_recursive_ref schema + item_tag_unwrap
+    # response policy + openai reasoning codec) landed via auto-resolve
+    # (candidate PR #177, iteration 2/3). The three quirks the preset closes:
+    #
+    #   * <item>-tag array collapse — M3 serialises repeated array elements as
+    #     XML ``<item>`` tags, so lists parse back as ``{"item": [...]}``.
+    #     item_tag_unwrap unwraps the tag and pivots key-field arrays back to
+    #     Dict[str, T] at any depth, making DICT_MAP_TOOL_CALL,
+    #     HETEROGENEOUS_ARRAY_TOOL_CALL and the nested-in-object dict-map
+    #     variant reliable.
+    #   * self-referential-schema crash under plain ``strict`` — the
+    #     strict_recursive_ref sanitizer keeps acyclic $ref inlining (the
+    #     dict-map lowering depends on it) but leaves cyclic $ref in place,
+    #     unblocking all four RECURSIVE_REF_TOOL_CALL probes strict crashed on.
+    #   * unsurfaced reasoning — the openai codec surfaces M3's reasoning
+    #     summary, so THINKING_EMITS_BLOCKS + UNSIGNED_THINKING_REPLAY pass.
+    #
+    # Ceilings no policy can close on this route are known_unsupported below.
+    # 20 required / 3 known_unsupported.
+    MC(
+        model_id="openrouter__minimax_minimax-m3",
+        provider="openrouter",
+        name="minimax/minimax-m3",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.PROGRESS_AFTER_SUCCESS,
+                C.ALLOF_MERGE_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.DICT_MAP_TOOL_CALL,
+                C.THINKING_EMITS_BLOCKS,
+                C.UNSIGNED_THINKING_REPLAY,
+                C.IMPLICIT_PROMPT_CACHING,
+                C.LEXICAL_TOOL_INVENTION,
+                C.TOOL_NAME_DISCIPLINE,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.REQUIRED_FIELDS_COMPLETE,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # Signed-block replay: the OpenRouter surface emits
+                # summary-only reasoning with no per-block signature, so no
+                # codec can synthesize the signed bytes this contract needs.
+                # The unsigned variant (UNSIGNED_THINKING_REPLAY, required)
+                # passes.
+                C.THINKING_REPLAY_ROUNDTRIP,
+                # No cache_control wiring on this route: the first call
+                # created 0 cache_creation_input_tokens. The OpenRouter
+                # implicit auto-cache (IMPLICIT_PROMPT_CACHING, required) is
+                # the caching surface that does fire here.
+                C.PROMPT_CACHING,
+                # Single-turn discriminated-union passes 15/15, but the
+                # two-turn contract drops the tool call for prose ~2/3 of
+                # reps — a genuine model consistency gap, not policy-fixable.
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+            }
+        ),
+    ),
 ]
 
 
