@@ -350,6 +350,7 @@ required-version = ">=0.9.5,<0.10"
 [tool.uv.workspace]
 members = [
     "tools/dev-mcp",
+    "tools/langfuse-uploader",
     "tools/pricing-updater",
     "tools/rubric-calibrator",
     "external_adapters/tolokaforge-adapter-terminal-bench",

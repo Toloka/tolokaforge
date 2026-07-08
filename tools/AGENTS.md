@@ -9,6 +9,7 @@ Each subdirectory is a **uv workspace member** — an independent Python package
 | Tool | Entry Point | Purpose |
 |------|-------------|---------|
 | `dev-mcp` | `dev-mcp` | Dev MCP server for AI agent interaction (tests, lint, format, etc.) |
+| `langfuse-uploader` | `langfuse-uploader` | Upload trial bundles into Langfuse as traces |
 | `pricing-updater` | `pricing-updater` | Fetch and update LLM pricing data |
 
 ## Adding a New Tool
