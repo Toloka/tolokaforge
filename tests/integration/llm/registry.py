@@ -1048,6 +1048,98 @@ _ALL: list[MC] = [
             }
         ),
     ),
+    # -----------------------------------------------------------------
+    # DeepSeek V3.2-Exp (OpenRouter) — experimental line, distinct from
+    # the deepseek-v4 family. Routed via its OWN model-specific preset
+    # ``openrouter_deepseek_v3_2_exp`` (default axes + ``reasoning_codec:
+    # gemini``), NOT the ``*deepseek-v4*`` recovery preset. Integrated via
+    # the observe->resolve auto-loop: the observe baseline ran the
+    # ``default`` preset (thinking probes all red, reasoning surfaced only
+    # as an unstructured summary); the resolve loop switched
+    # ``reasoning_codec`` openai->gemini and re-probed green.
+    #
+    # THINKING posture is the key divergence from the v4 siblings: the
+    # gemini codec extracts DeepSeek's ``reasoning_details`` envelope so
+    # THINKING_EMITS_BLOCKS + UNSIGNED_THINKING_REPLAY both pass reliably
+    # (5/5 final reprobe). THINKING_REPLAY_ROUNDTRIP stays a ceiling —
+    # DeepSeek emits no per-block signature, so signed replay has no source
+    # ("no signed blocks on turn 1", 0/5).
+    #
+    # The remaining ceilings are genuine model gaps, not policy gaps:
+    #   * DECIMAL_FIELD_TOOL_CALL — intermittently emits no tool call when a
+    #     Pydantic Decimal field is present (3/5 reprobe). The passthrough
+    #     schema lets the native shape through; a DecimalNumberSchema
+    #     collapse exists in the engine but did not make the contract
+    #     reliable, so it is left a ceiling.
+    #   * DISCRIMINATED_UNION_TOOL_CALL — turn 2 reuses the turn-1
+    #     ticket-shaped call instead of switching to the requested comment
+    #     variant ("wrong table 'tickets'; expected 'comments'", 3/5).
+    #   * MULTI_TURN_ERROR_RECOVERY — occasionally ignores the tool-error
+    #     feedback and drops the contact field on the retry (4/5, too flaky
+    #     for a merge gate).
+    #   * RECURSIVE_REF_TOOL_CALL — intermittently flattens the recursive
+    #     node to a non-recursive ``{'label': ...}`` blob (3/5).
+    #   * PROMPT_CACHING / IMPLICIT_PROMPT_CACHING — the OpenRouter DeepSeek
+    #     route exposes no explicit cache-control markers (0 creation) and a
+    #     clean 2-call probe reads cache_read=0 (0/5), same posture as the
+    #     v4 siblings.
+    #
+    # Disposable test branch (PR #180) — integrated to observe the model's
+    # posture; MUST NOT be merged to main.
+    # -----------------------------------------------------------------
+    MC(
+        model_id="openrouter__deepseek_deepseek-v3.2-exp",
+        provider="openrouter",
+        name="deepseek/deepseek-v3.2-exp",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.DICT_MAP_TOOL_CALL,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
+                C.LEXICAL_TOOL_INVENTION,
+                C.TOOL_NAME_DISCIPLINE,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                # gemini reasoning_codec: extracts the reasoning_details
+                # envelope (summary fallback keeps emits_blocks green) and
+                # re-emits reasoning.text on replay. Both 5/5 final reprobe.
+                C.THINKING_EMITS_BLOCKS,
+                C.UNSIGNED_THINKING_REPLAY,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # No per-block signature on the wire — signed replay has no
+                # source ("no signed blocks on turn 1", 0/5).
+                C.THINKING_REPLAY_ROUNDTRIP,
+                # No explicit cache_control markers on the OpenRouter DeepSeek
+                # route (0 cache_creation on call 1); clean 2-call probe reads
+                # cache_read=0 (0/5). Same posture as the v4 siblings.
+                C.PROMPT_CACHING,
+                C.IMPLICIT_PROMPT_CACHING,
+                # Turn 2 reuses the turn-1 ticket-shaped union call instead of
+                # switching to the requested comment variant (3/5).
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                # Occasionally ignores tool-error feedback and drops the
+                # contact field on the retry (4/5 — too flaky to gate).
+                C.MULTI_TURN_ERROR_RECOVERY,
+                # Intermittently flattens the recursive node to a
+                # non-recursive ``{'label': ...}`` blob (3/5).
+                C.RECURSIVE_REF_TOOL_CALL,
+                # Intermittently emits no tool call when a Pydantic Decimal
+                # field is present (3/5); passthrough schema, native shape.
+                C.DECIMAL_FIELD_TOOL_CALL,
+            }
+        ),
+    ),
     MC(
         model_id="openrouter__xiaomi_mimo-v2.5-pro",
         provider="openrouter",

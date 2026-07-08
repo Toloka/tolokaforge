@@ -51,6 +51,7 @@ from tolokaforge.core.llm.response_policy import (
     UnwrapInputResponse,
 )
 from tolokaforge.core.llm.schema_sanitizer import (
+    DecimalNumberSchema,
     PassthroughSchema,
     SchemaCapability,
     StrictSchema,
@@ -107,6 +108,7 @@ __all__ = [
     "ToolSchemaSanitizer",
     "PassthroughSchema",
     "StrictSchema",
+    "DecimalNumberSchema",
     # Cache
     "CachePolicy",
     "NoCache",

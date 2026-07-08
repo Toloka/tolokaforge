@@ -52,6 +52,7 @@ from tolokaforge.core.llm.response_policy import (
     UnwrapInputResponse,
 )
 from tolokaforge.core.llm.schema_sanitizer import (
+    DecimalNumberSchema,
     GeminiSchema,
     PassthroughSchema,
     StrictSchema,
@@ -79,6 +80,7 @@ logger = logging.getLogger(__name__)
 _SCHEMA_SANITIZERS: dict[str, type[ToolSchemaSanitizer]] = {
     "passthrough": PassthroughSchema,
     "strict": StrictSchema,
+    "decimal_number": DecimalNumberSchema,
     "gemini": GeminiSchema,
 }
 
