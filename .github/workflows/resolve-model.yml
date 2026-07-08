@@ -44,6 +44,10 @@ jobs:
       # fixable wire tasks (not yet wired; the inner loop is --skip-wire).
       RESOLVE_CAPABILITY_K: ${{ vars.RESOLVE_CAPABILITY_K || '5' }}
       RESOLVE_WIRE_K: ${{ vars.RESOLVE_WIRE_K || '10' }}
+      # Flat (probe x rep) reprobe width. The candidate key does not rotate, so this is
+      # bounded by the OpenRouter rate limit (~10-16 safe); higher risks 429s that erase
+      # the gain. Must be >= RESOLVE_CAPABILITY_K to fully overlap one probe's reps.
+      RESOLVE_CAP_PARALLEL: ${{ vars.RESOLVE_CAP_PARALLEL || '10' }}
     steps:
       - name: Reject fork PRs
         if: env.IS_FORK == 'true'
@@ -145,18 +149,31 @@ jobs:
             if [ ! -f observation/resolve/overlay.yaml ] || [ ! -f observation/resolve/decision.json ]; then
               echo "::warning::iteration $i produced no overlay/decision"; echo "::endgroup::"; continue
             fi
-            # Workflow runs the reprobe (agent never does). Capability-only, fast.
-            uv run python scripts/integration/reprobe.py \
-              --baseline observation/findings.json --overlay observation/resolve/overlay.yaml \
-              --provider "$TF_PROVIDER" --name "$TF_NAME" \
-              --out "observation/resolve/reprobe_$i" --skip-wire --capability-k "${RESOLVE_CAPABILITY_K}" || true
-            cp "observation/resolve/reprobe_$i/findings.json" observation/resolve/last_reprobe.json 2>/dev/null || true
-            # Are all fix-targets green under the overlay? (helper script, not inline
-            # python, so YAML indentation cannot break it.)
-            VERDICT="$(uv run python scripts/integration/resolve_greencheck.py observation/resolve/decision.json observation/resolve/last_reprobe.json 2>/dev/null || echo PARSE_FAIL)"
+            # Reprobe ONLY the agent's fix-targets (single-line python-c, no indentation
+            # to break). All-ceiling decisions name none -> nothing to prove, skip reprobe.
+            TARGETS="$(uv run python -c "import json,sys; print(','.join(json.load(open(sys.argv[1])).get('fix_targets',[])))" observation/resolve/decision.json 2>/dev/null || echo '')"
+            if [ -z "$TARGETS" ]; then
+              echo "iteration $i: decision named no fix-targets (all-ceiling) -> NO_TARGETS"
+              VERDICT=NO_TARGETS
+            else
+              # Workflow runs the reprobe (agent never does). Only the fix-targets, K reps
+              # each, as a flat (probe x rep) pool at RESOLVE_CAP_PARALLEL width. Fast.
+              uv run python scripts/integration/reprobe.py \
+                --baseline observation/findings.json --overlay observation/resolve/overlay.yaml \
+                --provider "$TF_PROVIDER" --name "$TF_NAME" \
+                --out "observation/resolve/reprobe_$i" --skip-wire \
+                --targets "$TARGETS" \
+                --capability-k "${RESOLVE_CAPABILITY_K}" --cap-parallel "${RESOLVE_CAP_PARALLEL}" || true
+              cp "observation/resolve/reprobe_$i/findings.json" observation/resolve/last_reprobe.json 2>/dev/null || true
+              # Are all fix-targets green under the overlay? (helper script, not inline
+              # python, so YAML indentation cannot break it.)
+              VERDICT="$(uv run python scripts/integration/resolve_greencheck.py observation/resolve/decision.json observation/resolve/last_reprobe.json 2>/dev/null || echo PARSE_FAIL)"
+            fi
             echo "iteration $i verdict: $VERDICT"
             echo "::endgroup::"
-            if [ "$VERDICT" = "CONVERGED" ]; then CONVERGED=yes; break; fi
+            # Converge when every fix-target is green, OR the agent proved there is nothing
+            # to fix (all failures are genuine ceilings -> finalize writes them as unsupported).
+            if [ "$VERDICT" = "CONVERGED" ] || [ "$VERDICT" = "NO_TARGETS" ]; then CONVERGED=yes; break; fi
           done
           echo "converged=$CONVERGED" >> "$GITHUB_OUTPUT"
 

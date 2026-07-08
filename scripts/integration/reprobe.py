@@ -73,19 +73,14 @@ def k_group(probe_name: str) -> str:
     return f"({probe_name})"
 
 
-def k_expression(probe_names: list[str]) -> str:
-    """OR the per-probe groups into a single ``-k`` expression (empty if no probes)."""
-    return " or ".join(k_group(name) for name in probe_names)
-
-
 def _parallel(fns: list[Any], workers: int) -> None:
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         list(pool.map(lambda f: f(), fns))
 
 
-def run_capability(
+def run_capability_flat(
     *,
-    kexpr: str,
+    probes: list[str],
     overlay: str,
     provider: str,
     name: str,
@@ -93,40 +88,53 @@ def run_capability(
     out_dir: Path,
     k: int,
     workers: int,
-    run_variants: bool,
 ) -> None:
-    """Re-run the selected capability (or variant) probes under the overlay, K times."""
-    if not kexpr:
+    """Re-run each probe K times under the overlay, as a FLAT (probe x rep) pool.
+
+    Each unit is a single-probe pytest (``-k (func and param)``), so the pool parallelizes
+    across BOTH probes and repeats at ``workers`` width, instead of the old per-rep pool that
+    ran every probe serially inside each rep. For a latency-bound model (slow reasoning route)
+    this hides the per-call latency: n_probes x K concurrent calls up to the width cap, rather
+    than n_probes serial per rep. Variant probes (``test_variant_*``) get TF_RUN_VARIANTS=1 and
+    their junit lands in ``variants/``; every other probe in ``capability/`` (so the collector
+    aggregates each side correctly). Width is bounded by the OpenRouter rate limit, not raised
+    without care: too high and 429s erase the gain.
+    """
+    if not probes:
         return
-    subdir = "variants" if run_variants else "capability"
-    (out_dir / subdir).mkdir(parents=True, exist_ok=True)
-    env_common = {
+    (out_dir / "capability").mkdir(parents=True, exist_ok=True)
+    (out_dir / "variants").mkdir(parents=True, exist_ok=True)
+    base_env = {
         "TF_PRESETS_FILE": overlay,
         "TF_CANDIDATE_PROVIDER": provider,
         "TF_CANDIDATE_NAME": name,
         "MODEL_ID": model_id,
     }
-    if run_variants:
-        env_common["TF_RUN_VARIANTS"] = "1"
 
-    def _one(rep: int) -> Any:
+    def _unit(probe: str, idx: int, rep: int) -> Any:
         import os
 
-        junit = out_dir / subdir / f"rep_{rep}.xml"
+        is_variant = probe.startswith("test_variant")
+        subdir = "variants" if is_variant else "capability"
+        junit = out_dir / subdir / f"u{idx}_rep{rep}.xml"
+        env = {**os.environ, **base_env}
+        if is_variant:
+            env["TF_RUN_VARIANTS"] = "1"
         cmd = [
             *PYTEST_CMD,
             "tests/integration/llm/",
             "-k",
-            kexpr,
+            k_group(probe),
             f"--junitxml={junit}",
             "-q",
             "--tb=line",
             "-p",
             "no:cacheprovider",
         ]
-        return lambda: subprocess.run(cmd, env={**os.environ, **env_common}, check=False)
+        return lambda: subprocess.run(cmd, env=env, check=False)
 
-    _parallel([_one(rep) for rep in range(1, k + 1)], workers)
+    units = [_unit(probe, idx, rep) for idx, probe in enumerate(probes) for rep in range(1, k + 1)]
+    _parallel(units, workers)
 
 
 def run_wire_task(
@@ -188,7 +196,16 @@ def main() -> None:
     parser.add_argument("--capability-k", type=int, default=15)
     parser.add_argument("--wire-k", type=int, default=10)
     parser.add_argument("--workers", type=int, default=10)
-    parser.add_argument("--cap-parallel", type=int, default=4)
+    # Flat (probe x rep) pool width. Bounded by the OpenRouter rate limit (~10-16 safe;
+    # higher risks 429s that erase the gain, since the key does not rotate).
+    parser.add_argument("--cap-parallel", type=int, default=10)
+    parser.add_argument(
+        "--targets",
+        default=None,
+        help="comma-separated probe names to reprobe (the agent's fix_targets); default = "
+        "ALL failed probes from the baseline. Restricting to fix_targets skips the slow, "
+        "un-fixable ceiling probes (thinking/caching) each iteration.",
+    )
     parser.add_argument(
         "--skip-wire", action="store_true", help="capability-only (the agent's inner loop)"
     )
@@ -202,16 +219,22 @@ def main() -> None:
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    cap_probes = failed_probes(baseline.get("capability"))
-    var_probes = failed_probes(baseline.get("variants"))
+    # Which probes to reprobe: the agent's fix_targets if given (skips the slow, un-fixable
+    # ceiling probes), else ALL failed probes from the baseline (capability + variants).
+    if args.targets:
+        probes = [t.strip() for t in args.targets.split(",") if t.strip()]
+    else:
+        probes = failed_probes(baseline.get("capability")) + failed_probes(baseline.get("variants"))
+    n_var = sum(1 for p in probes if p.startswith("test_variant"))
     wire_tasks = [] if args.skip_wire else failed_wire_tasks(baseline)
     print(
-        f"re-probe targets: {len(cap_probes)} capability, {len(var_probes)} variant, "
-        f"{len(wire_tasks)} wire task(s) under overlay {args.overlay}"
+        f"re-probe targets: {len(probes) - n_var} capability, {n_var} variant, "
+        f"{len(wire_tasks)} wire task(s) under overlay {args.overlay} "
+        f"(flat pool, K={args.capability_k}, width={args.cap_parallel})"
     )
 
-    run_capability(
-        kexpr=k_expression(cap_probes),
+    run_capability_flat(
+        probes=probes,
         overlay=args.overlay,
         provider=args.provider,
         name=args.name,
@@ -219,18 +242,6 @@ def main() -> None:
         out_dir=out_dir,
         k=args.capability_k,
         workers=args.cap_parallel,
-        run_variants=False,
-    )
-    run_capability(
-        kexpr=k_expression(var_probes),
-        overlay=args.overlay,
-        provider=args.provider,
-        name=args.name,
-        model_id=model_id,
-        out_dir=out_dir,
-        k=args.capability_k,
-        workers=args.cap_parallel,
-        run_variants=True,
     )
     for task_id in wire_tasks:
         run_wire_task(
