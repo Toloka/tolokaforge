@@ -1,0 +1,41 @@
+# Task: configure a Grafana alert for high-latency backend requests.
+#
+# RECIPE PATTERN: **Profile selection.** This task only needs the
+# observability stack — it doesn't touch the frontend or the queue.
+# The recipe (see recipe.yaml) activates the `metrics` profile
+# (prometheus + grafana) and drops `frontend` + `queue` from the
+# base project.
+
+task_id: "observability_alert_config"
+name: "Configure high-latency alert"
+category: "microservices"
+description: >
+  In Grafana (http://grafana:3000), create an alert that fires when
+  backend-api p95 latency exceeds 500ms over 5 minutes. Point it at
+  the prometheus datasource. No code changes to the backend.
+max_turns: 12
+
+initial_user_message: |
+  Grafana is at http://grafana:3000 (anonymous admin). Prometheus is
+  http://prometheus:9090. Create a "backend-api p95 latency > 500ms
+  for 5m" alert. No app code changes.
+
+adapter_type: "native"
+
+initial_state:
+  filesystem: {}
+
+tools:
+  agent:
+    enabled: ["bash", "write_file", "read_file"]
+  user:
+    enabled: []
+
+user_simulator:
+  mode: llm
+  persona: cooperative
+  backstory: >
+    You are the SRE. End with ###STOP### once the alert is defined
+    in Grafana and firing on a manufactured latency spike.
+
+grading: "grading.yaml"

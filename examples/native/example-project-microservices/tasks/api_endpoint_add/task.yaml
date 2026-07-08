@@ -1,0 +1,50 @@
+# Task: add a new REST endpoint to the shared backend-api service.
+#
+# RECIPE PATTERN: **No recipe.** This task inherits the full project
+# default (all 6 services active, `default_service_isolation: shared`,
+# postgres v16). No recipe.yaml sibling — the loader binds the
+# project's defaults verbatim.
+#
+# The task-yaml itself stays tiny: instruction + tools + grading
+# pointer. Everything environmental comes from ../../project.yaml.
+
+task_id: "api_endpoint_add"
+name: "Add /api/customers/{id}/orders endpoint"
+category: "microservices"
+description: >
+  Add a new REST endpoint /api/customers/{id}/orders to backend-api
+  that returns all orders for a customer, joining tickets and
+  customers tables read-only. No schema changes.
+max_turns: 12
+
+initial_user_message: |
+  The backend-api at http://backend-api:8080 needs a new endpoint:
+  `GET /api/customers/{customer_id}/orders`. It should return every
+  order (from the tickets table) for the given customer, joined with
+  the customer's name from customers. Read-only — no mutations.
+  Test with `curl http://backend-api:8080/api/customers/1/orders`;
+  a hand-check against the DB via `psql` is fine to verify.
+
+adapter_type: "native"
+
+# NOTE — no environment_manifest block. Project inheritance is
+# implicit for tasks under a `project.yaml` pack.
+
+initial_state:
+  filesystem: {}
+
+tools:
+  agent:
+    enabled: ["bash", "write_file", "read_file"]
+  user:
+    enabled: []
+
+user_simulator:
+  mode: llm
+  persona: cooperative
+  backstory: >
+    You are the backend engineer who wants this endpoint added. Ask
+    brief clarifying questions if the agent needs input. End with
+    ###STOP### once the endpoint responds correctly.
+
+grading: "grading.yaml"

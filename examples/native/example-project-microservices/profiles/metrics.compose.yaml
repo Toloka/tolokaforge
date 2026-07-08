@@ -1,0 +1,37 @@
+# Profile fragment — `metrics`. Activated by a task recipe via
+# `profiles.active: [metrics]`. Adds prometheus + grafana so a task
+# can grade against metrics collected from the base services.
+
+services:
+  prometheus:
+    image: "prom/prometheus:v2.55.0"
+    ports:
+      - "9090"
+    volumes:
+      - "./profiles/prometheus.yml:/etc/prometheus/prometheus.yml:ro"
+    depends_on:
+      backend-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:9090/-/healthy"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  grafana:
+    image: "grafana/grafana:11.3.0"
+    ports:
+      - "3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:3000/api/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s

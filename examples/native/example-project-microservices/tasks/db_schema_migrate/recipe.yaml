@@ -1,0 +1,15 @@
+# Task recipe — overrides applied on top of the project defaults
+# from ../../project.yaml.
+#
+# This is the "isolation modifier" pattern:
+# - Task mutates the DB schema — needs fresh state per trial.
+# - Everything else in the project stays shared.
+# - Loader will materialise `app-db` in `reset` mode, backed by
+#   the postgres_template_db primitive. Postgres process stays
+#   warm across trials; only its data is reset between them (~200ms
+#   vs 30-45s for a full container recreate).
+
+services:
+  app-db:
+    isolation: reset
+    reset_primitive: postgres_template_db

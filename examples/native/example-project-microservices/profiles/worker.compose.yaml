@@ -1,0 +1,21 @@
+# Profile fragment — `worker`. Activated by a task recipe via
+# `profiles.active: [worker]`. Adds a background queue worker that
+# consumes from the redis queue in the base project compose.
+
+services:
+  worker:
+    image: "myrepo/queue-worker:v0.9.2"       # pinned; not `latest`
+    environment:
+      REDIS_URL: "redis://queue:6379/0"
+      DATABASE_URL: "postgresql://postgres:example@app-db/app"
+    depends_on:
+      queue:
+        condition: service_healthy
+      app-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/worker-ready"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 5s

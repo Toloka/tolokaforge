@@ -1,0 +1,18 @@
+# Task recipe — profile selection.
+#
+# This task cares about metrics; it doesn't need the frontend SPA
+# or the queue worker. Recipe:
+#  - Activates the project's `metrics` profile (adds prometheus +
+#    grafana from profiles/metrics.compose.yaml).
+#  - Drops the `frontend` and `queue` services from the base compose
+#    to keep the trial's docker footprint small.
+#
+# `worker` profile is not mentioned → stays inactive per project
+# default (profiles are opt-in by name).
+
+profiles:
+  active:
+    - metrics
+  dropped:
+    - frontend
+    - queue

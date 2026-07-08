@@ -1,0 +1,10 @@
+# Simplest grader — checks that the new endpoint responds with a
+# valid JSON payload for a known customer id.
+
+state:
+  assertions:
+    - path: "$.api.responses.customer_1_orders.status"
+      op: eq
+      value: 200
+    - path: "$.api.responses.customer_1_orders.body[0].order_id"
+      op: exists

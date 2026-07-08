@@ -1,0 +1,72 @@
+# Task-local environment — used ONLY by this task, which escaped the
+# project.yaml inheritance via task-level environment_manifest.
+#
+# Unrelated to the microservices project's postgres/backend/frontend
+# stack. Legacy MySQL + PHP shape.
+
+services:
+  runner:
+    image: "tolokaforge-runner:local"
+    environment:
+      DB_SERVICE_URL: "http://db-service:8000"
+    ports:
+      - "50051"
+    depends_on:
+      db-service:
+        condition: service_healthy
+      legacy-dashboard:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import grpc; grpc.channel_ready_future(grpc.insecure_channel('localhost:50051')).result(timeout=2)"
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+  db-service:
+    image: "tolokaforge-db-service:local"
+    ports:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 3s
+
+  legacy-db:
+    image: "mysql:5.7"
+    environment:
+      MYSQL_ROOT_PASSWORD: "example"
+      MYSQL_DATABASE: "dashboard"
+    volumes:
+      - "./legacy-db-init/:/docker-entrypoint-initdb.d:ro"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-pexample"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  legacy-dashboard:
+    image: "myrepo/legacy-dashboard:v0.3.1"     # PHP 7.4; pinned
+    environment:
+      DB_HOST: "legacy-db"
+      DB_USER: "root"
+      DB_PASS: "example"
+      DB_NAME: "dashboard"
+    ports:
+      - "8000"
+    depends_on:
+      legacy-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:8000/health.php"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s

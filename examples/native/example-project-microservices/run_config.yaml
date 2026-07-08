@@ -1,0 +1,28 @@
+# Run config — unchanged shape from today's task packs. Points at
+# the pack's tasks/ directory; the loader would use the sibling
+# project.yaml (when the extension is implemented) to resolve the
+# environment for each task.
+
+models:
+  agent:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.0
+    max_tokens: 4096
+  user:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.2
+
+orchestrator:
+  workers: 1
+  repeats: 1
+  max_turns: 20
+  queue_backend: sqlite
+  runtime: per_trial
+
+evaluation:
+  task_packs:
+    - "examples/native/example-project-microservices"
+  tasks_glob: "tasks/**/task.yaml"
+  output_dir: "results/example_project_microservices"

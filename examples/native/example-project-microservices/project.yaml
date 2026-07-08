@@ -1,0 +1,80 @@
+# Project-level configuration — the SHARED environment for every
+# task under this pack. See ../../docs/architecture/proposals/
+# PROJECT_MANIFEST_EXTENSION_PROPOSAL.md for the full semantics.
+#
+# NOTE: This file is a spec-only illustration. The current
+# TolokaForge loader does not yet understand project.yaml. This pack
+# is for design review; comments inline explain what the loader
+# would do at each merge point.
+
+project:
+  name: "example-project-microservices"
+  description: >
+    Realistic microservices stack — backend API, postgres, frontend
+    (nginx SPA), and a redis queue — shared across five tasks that
+    demonstrate the recipe patterns: no recipe, isolation modifier,
+    service replacement, profile selection, escape hatch.
+
+# ── Typed project inputs ────────────────────────────────────────
+# Every input has a type + default. A task recipe may override any
+# input by name. Type mismatches fail at load time (no coercion).
+inputs:
+  postgres_version:
+    type: string
+    default: "16"
+    description: "Image tag for app-db."
+
+  redis_included:
+    type: bool
+    default: true
+    description: "Whether the queue service is materialised for a task."
+
+  default_service_isolation:
+    type: enum
+    values: [ephemeral, shared, reset]
+    default: shared
+    description: >
+      Fall-back isolation stance applied to services in the base
+      environment when neither project nor recipe overrides it.
+      Safe default is `shared` here because the base services are
+      designed for read-only access; tasks that mutate state should
+      override via recipe (see tasks/db_schema_migrate/recipe.yaml).
+
+# ── Base environment manifest ───────────────────────────────────
+# A regular EnvironmentManifest today, unchanged shape. The compose
+# file uses ${...} substitutions bound to `inputs` above.
+environment_manifest:
+  compose_file: "./environment/project.compose.yaml"
+  runner_service: "runner"
+  isolation: "per_trial"
+
+# ── Named service profiles ──────────────────────────────────────
+# A profile is a compose fragment. Tasks activate zero or more
+# profiles via recipe.yaml. Profiles are flat — no nesting in v1.
+profiles:
+  metrics:
+    compose_file: "./profiles/metrics.compose.yaml"
+    description: "Prometheus + Grafana; opt-in for observability tasks."
+
+  worker:
+    compose_file: "./profiles/worker.compose.yaml"
+    description: "Background queue worker; opt-in for job-execution tasks."
+
+# ── Overridable fields — the schema's own declaration ───────────
+# This lists which parts of the merged manifest a task recipe may
+# touch. Everything else is silently locked; a recipe attempting to
+# override a locked field triggers a load-time warning.
+#
+# The `*` in a path means "any service"; the last segment is the
+# specific field. This is a static declaration — no dynamic
+# resolution needed at load time.
+overridable:
+  - "services.app-db.isolation"           # per-service isolation stance
+  - "services.app-db.reset_primitive"     # opt into a named reset primitive
+  - "services.app-db"                     # full service replacement
+  - "services.*.isolation"                # any service's isolation
+  - "services.*.reset_primitive"          # any service's reset primitive
+  - "profiles.active"                     # which profiles are materialised
+  - "profiles.dropped"                    # which project services are dropped
+  - "inputs.postgres_version"             # bound in the compose file
+  - "inputs.default_service_isolation"    # for tasks that flip the default

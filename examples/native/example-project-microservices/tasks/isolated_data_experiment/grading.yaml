@@ -1,0 +1,13 @@
+# Grader — checks segments response matches expected cohort.
+
+state:
+  assertions:
+    - path: "$.api.responses.segments.status"
+      op: eq
+      value: 200
+    - path: "$.api.responses.segments.body.total_customers"
+      op: eq
+      value: 100
+    - path: "$.api.responses.segments.body.buckets"
+      op: matches_json
+      value: "./expected-segments.json"
