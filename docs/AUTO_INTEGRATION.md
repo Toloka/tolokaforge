@@ -2,14 +2,16 @@
 
 Automates onboarding a new candidate model into the arena eval: DETECT its tool-calling
 quirks, propose and PROVE a policy fix (or classify a genuine ceiling), and land a preset +
-capability cert on the PR for human review. Two label-triggered GitHub Actions stages,
-chained. It NEVER merges: the draft PR is the human review gate.
+capability cert on the PR for human review. A SINGLE label-triggered GitHub Actions workflow
+(`.github/workflows/integrate-model.yml`) runs OBSERVE and, on a clean observe, RESOLVE in the
+SAME run - one job, not two workflows, because a `GITHUB_TOKEN` label add cannot trigger a
+second workflow. It NEVER merges: the draft PR is the human review gate.
 
 ## Trigger
 
 Open a PR titled `integrate: <openrouter-model-slug>` (e.g. `integrate: qwen/qwen3.6-plus`)
-and add the label `automation:integrate-model`. That starts OBSERVE; a clean observe
-auto-chains to RESOLVE.
+and add the label `automation:integrate-model`. That starts OBSERVE; a clean observe chains
+straight into RESOLVE in the same run (an in-job gate, no second workflow).
 
 ## Flow
 
@@ -19,7 +21,7 @@ flowchart TD
     B --> C["findings.json (raw pass counts + tool-arg rejections)"]
     C --> D{"infra clean AND capability suite ran?"}
     D -- "no" --> H["automation:integrate-needs-human (re-run)"]
-    D -- "yes" --> E["label automation:resolve (auto-chain)"]
+    D -- "yes" --> E["in-job gate: clean -> resolve steps run in the SAME run"]
     E --> F["RESOLVE fix-loop, up to MAX_ITER"]
     F --> G["compose agent (Opus): write preset overlay / new adapter class + decision.json"]
     G --> I["workflow: reprobe ONLY the fix-targets under the overlay (flat probe x rep pool)"]
@@ -31,17 +33,19 @@ flowchart TD
     L --> M["human review gate: draft PR, NEVER auto-merge"]
 ```
 
-## Stage 1 - Observe (`.github/workflows/integrate-model.yml`)
+## Stage 1 - Observe
 
 Deterministic detection on the DEFAULT (raw) preset. Runs the capability integration probes +
 shape variants (report-only, K repeats) and the NON-SCORING wire-probe task-pack, then
 `scripts/integration/observe_findings.py` emits `findings.json` (raw pass counts + the
-tool-arg rejections that graded metrics are blind to). Posts a summary comment.
+tool-arg rejections that graded metrics are blind to). Posts a summary comment. A `gate` step
+then decides:
 
-- Clean (capability suite ran AND no infra contamination) -> adds `automation:resolve` (chain).
-- Infra-dirty / did-not-run -> `automation:integrate-needs-human` (re-run needed).
+- Clean (capability suite ran AND no infra contamination) -> the resolve steps below run in the
+  SAME job (label flips to `automation:resolve-running`).
+- Infra-dirty / did-not-run -> `automation:integrate-needs-human` (re-run needed); resolve skipped.
 
-## Stage 2 - Resolve (`.github/workflows/resolve-model.yml`)
+## Stage 2 - Resolve (same workflow, `if: gate.clean == 'yes'`)
 
 A DETERMINISTIC loop drives the fix; short Opus Claude Code agents do the reasoning. Per
 iteration (up to `MAX_ITER`): a `claude -p` agent (`prompts/resolve_agent.md`) reads the
@@ -56,9 +60,14 @@ genuine ceilings), the verdict is `NO_TARGETS` -> converge straight to finalize,
 them as `known_unsupported`.
 
 - Converged -> a finalize agent (`prompts/resolve_finalize.md`) folds the preset into
-  `model_presets.yaml` and writes the cert into `registry.py`; the workflow commits to the PR
-  branch, comments the integration record, and labels `automation:integrate-done`. NEVER merges.
-- Not converged within `MAX_ITER` -> `automation:integrate-needs-human`.
+  `model_presets.yaml` and writes the cert into `registry.py`. Before committing, the workflow
+  VERIFIES the staged tree (what it is about to commit, via `git stash --keep-index`): it must
+  import, must not turn any already-valid tool-call arg invalid (`test_policy_no_regression`, the
+  anti-over-reach gate), and must satisfy any per-model recovery fixtures (`test_policy_recovery`).
+  Only then does it commit to the PR branch, comment the record, and label
+  `automation:integrate-done`. A broken / over-reaching / divergent fix fails verification here
+  and goes to `automation:integrate-needs-human`. NEVER merges.
+- Not converged within `MAX_ITER` (or staged verification failed) -> `automation:integrate-needs-human`.
 
 ## Auth split
 
@@ -81,10 +90,11 @@ them as `known_unsupported`.
 
 ## Labels (the state machine)
 
-`automation:integrate-model` (trigger observe) -> `automation:integrate-running` ->
-`automation:resolve` (clean observe) -> `automation:resolve-running` ->
-`automation:integrate-done` (success) OR `automation:integrate-needs-human` (infra-dirty, or
-no convergence).
+`automation:integrate-model` (trigger) -> `automation:integrate-running` (observe) ->
+`automation:resolve-running` (clean observe, in-job resolve) ->
+`automation:integrate-done` (success) OR `automation:integrate-needs-human` (infra-dirty, no
+convergence, or a broken/over-reaching fix failing staged verification). There is no
+`automation:resolve` handoff label anymore - observe and resolve are one run.
 
 ## Prompts (`scripts/integration/prompts/`)
 
@@ -111,6 +121,11 @@ sub-agent); the resolve prompts drive the fix loop. `index.yaml` is the machine-
   (probe x rep) pool parallelized at `--cap-parallel`; capability-only inner loop, plus a final
   wire pass on failed wire tasks.
 - `scripts/integration/resolve_greencheck.py` - fix-target convergence check.
+- `tests/integration/llm/test_policy_no_regression.py` - GENERIC (model-agnostic) anti-over-reach
+  gate: every model's resolved response policy must keep an already-valid tool-call arg valid.
+- `tests/integration/llm/test_policy_recovery.py` + `policy_fixtures/<model_id>.yaml` - per-model
+  recovery oracle: the resolved policy maps known corruption shapes to the exact expected value
+  (and leaves a legitimate look-alike field untouched). Both run in the finalize staged-tree gate.
 - `scripts/integration/prompts/` - `_shared_context.md` + the analysis dimension briefs
   (`harness_infra` / `preset_codec_leak` / `four_bucket` / `consistency_passk` /
   `task_design_oracle`) and the resolve agent prompts (`resolve_agent.md`, `resolve_finalize.md`).
@@ -121,7 +136,10 @@ sub-agent); the resolve prompts drive the fix loop. `index.yaml` is the machine-
   response_policy / reasoning_codec / content_policy / cache_policy / params). A genuinely novel
   recovery needs a NEW adapter class (engine code) which the agent writes + registers.
 - The auto-cert is verified at `RESOLVE_CAPABILITY_K` (a small sample by default) and can be MORE
-  optimistic than a human baseline. The draft-PR human gate and the hygiene review are the
-  backstop: never merge an auto-integration without review.
-- Disposable de-integration test branches (`test/observe-<model>`) simulate a fresh candidate by
-  deleting the model's cert/preset; they carry deletions and are NEVER merged out.
+  optimistic than a human baseline. Guardrails: `resolve_agent.md` requires evidence + mechanism
+  consistency before marking a capability `required` (no promoting a cap a summary-only codec
+  cannot support); the finalize staged-tree gate blocks over-reaching / broken fixes. The
+  draft-PR human gate and the hygiene review remain the backstop: never merge without review.
+- Disposable de-integration test branches (`test/observe-<model>[-rN]`) simulate a fresh candidate
+  by deleting the model's cert/preset (and any bespoke policy class); they carry deletions and are
+  NEVER merged out.
