@@ -930,6 +930,76 @@ _ALL: list[MC] = [
             }
         ),
     ),
+    # -----------------------------------------------------------------
+    # DeepSeek V3.2-exp (OpenRouter) — reasoning model routed through the
+    # dedicated ``deepseek_v3_2_exp_reasoning`` preset (reasoning_codec:
+    # gemini + reasoning_via_extra_body). Integrated via auto-resolve
+    # 2026-07-08 (observe baseline 13 probes red under ``default``; the
+    # preset flips the reasoning surface green). The gemini codec is the
+    # load-bearing choice: DeepSeek's OpenRouter reasoning arrives as
+    # UNSIGNED ``reasoning.text`` in the ``reasoning_details`` envelope,
+    # which GeminiReasoningCodec both decodes (THINKING_EMITS_BLOCKS) and
+    # re-emits on replay (UNSIGNED_THINKING_REPLAY) — the OpenAI codec's
+    # no-op encode_for_replay left turn-2 continuity broken.
+    # -----------------------------------------------------------------
+    MC(
+        model_id="openrouter__deepseek_deepseek-v3.2-exp",
+        provider="openrouter",
+        name="deepseek/deepseek-v3.2-exp",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
+                C.DICT_MAP_TOOL_CALL,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+                # GeminiReasoningCodec decodes DeepSeek's unsigned
+                # ``reasoning.text`` blocks (THINKING_EMITS_BLOCKS) and
+                # re-emits the ``reasoning_details`` envelope on turn 2
+                # (UNSIGNED_THINKING_REPLAY). Both flipped green under the
+                # ``deepseek_v3_2_exp_reasoning`` preset (5/5 reprobe).
+                C.THINKING_EMITS_BLOCKS,
+                C.UNSIGNED_THINKING_REPLAY,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # Signed replay requires a per-block signature DeepSeek
+                # never emits — a genuine transport ceiling (the unsigned
+                # ``reasoning.text`` surface is covered by
+                # UNSIGNED_THINKING_REPLAY, required above).
+                C.THINKING_REPLAY_ROUNDTRIP,
+                # No Anthropic-style ephemeral cache wired on this preset
+                # (no explicit cache_control markers), and the OpenRouter
+                # DeepSeek route surfaces 0 cache_read tokens on a clean
+                # 2-call probe — same posture as the v4 siblings.
+                C.PROMPT_CACHING,
+                C.IMPLICIT_PROMPT_CACHING,
+                # Genuine model gaps under the passthrough schema (no
+                # JsonCoerce recovery wired for this reasoning preset):
+                # discriminated-union turn-2 writes the wrong variant,
+                # recursive-ref trees flatten to a single node, and the
+                # Decimal-field probe intermittently returns no tool call.
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                # Multi-turn error recovery is unreliable: ~2/3 of runs
+                # surface the missing contact_email from the original
+                # message on retry, the rest re-emit the incomplete call.
+                C.MULTI_TURN_ERROR_RECOVERY,
+            }
+        ),
+    ),
     MC(
         model_id="openrouter__deepseek_deepseek-v4-pro",
         provider="openrouter",

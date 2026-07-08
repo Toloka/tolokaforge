@@ -108,6 +108,32 @@ presets:
     prompt_policy: dict_map_hints
     reasoning_codec: openai
 
+  # DeepSeek V3.2-exp (OpenRouter) — reasoning model whose OpenRouter
+  # reasoning surface is UNSIGNED ``reasoning.text`` inside the
+  # ``provider_specific_fields.reasoning_details`` envelope — the exact
+  # shape ``GeminiReasoningCodec`` both DECODES (surfacing structured
+  # thinking blocks; it also falls back to ``reasoning_content`` as a
+  # summary) and RE-EMITS on replay via ``encode_for_replay``
+  # (``{reasoning_details: [{type: reasoning.text, text}]}``). Routing the
+  # gemini codec here makes THINKING_EMITS_BLOCKS *and*
+  # UNSIGNED_THINKING_REPLAY pass: the OpenAI codec's encode_for_replay is
+  # a no-op, so turn-2 lost reasoning continuity — the gemini codec fixes
+  # exactly that. ``reasoning_via_extra_body: true`` (the openrouter
+  # provider default, restated here for clarity) routes
+  # ``extra_body.reasoning={effort, enabled:true}`` so DeepSeek actually
+  # returns reasoning to decode. Listed BEFORE the ``*deepseek-v4*``
+  # recovery preset so first-match-wins picks this v3.2-specific entry.
+  # THINKING_REPLAY_ROUNDTRIP stays a ceiling (signed replay needs a
+  # per-block signature DeepSeek never emits). Live-verified via
+  # auto-resolve reprobe 2026-07-08.
+  deepseek_v3_2_exp_reasoning:
+    match:
+      - "deepseek/deepseek-v3.2-exp"
+      - "*deepseek-v3.2-exp*"
+    reasoning_codec: gemini
+    params:
+      reasoning_via_extra_body: true
+
   # Open-weights / OpenAI-API-compatible routes whose tool-call adapters
   # stringify nested object / Dict[str, T] arguments — same failure mode
   # ``JsonCoerceResponse`` was built for on Qwen.
