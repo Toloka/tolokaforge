@@ -1,36 +1,35 @@
-name: Model auto-integration (observe)
+name: Model auto-integration
 
-# First stage of the model auto-integration pipeline: when a maintainer adds
-# the trigger label to an onboarding PR, run the capability integration suite
-# and the wire-probe task-pack against the candidate model on the DEFAULT
-# preset (raw, pre-fix observation), then upload the results as a single
-# artifact for the next step (agent classification + fix-loop) to consume.
+# Single-stage auto-integration. A maintainer adds the trigger label to an onboarding PR and
+# ONE run does OBSERVE (capability + shape-variant + wire probes on the DEFAULT preset) and,
+# if the observe is clean, chains STRAIGHT INTO RESOLVE (deterministic fix-loop + finalize) in
+# the SAME job - no cross-workflow label handoff, because a GITHUB_TOKEN label add cannot
+# trigger a second workflow. It NEVER merges: the draft PR is the human review gate.
 #
 # PR title convention (the workflow reads the model from it):
-#   integrate: <openrouter-model-slug>
-# e.g.  "integrate: anthropic/claude-opus-4.8"
-# The provider is always openrouter (the arena routing); the slug is the exact
-# OpenRouter model id.
+#   integrate: <openrouter-model-slug>    e.g. "integrate: anthropic/claude-opus-4.8"
+# The provider is always openrouter (the arena routing); the slug is the exact OpenRouter id.
+#
+# Auth split: the AGENT (Claude) runs on ANTHROPIC_API_KEY; the CANDIDATE model that the
+# probes / reprobe drive runs on ARENA_AUTOMATION_OPENROUTER_API_KEY (.env).
 
 on:
   pull_request:
     types: [labeled]
 
 permissions:
-  contents: read
+  contents: write
   pull-requests: write
   issues: write
 
 concurrency:
-  # One observe run per PR at a time. A re-label while a run is in flight does
-  # not cancel it (cancel-in-progress: false) - it queues a second run that
-  # starts after the first finishes, so re-labelling serializes rather than
-  # supersedes. Flip to true if a re-label should cancel and replace the run.
+  # One run per PR at a time. A re-label while a run is in flight queues a second run that
+  # starts after the first finishes (cancel-in-progress: false), so re-labelling serializes.
   group: integrate-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 
 jobs:
-  observe:
+  integrate:
     # Only the trigger label starts the pipeline; any other label is a no-op.
     if: github.event.label.name == 'automation:integrate-model'
     runs-on: ubuntu-latest
@@ -38,21 +37,22 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
       PR: ${{ github.event.pull_request.number }}
-      # Untrusted input: only ever referenced as "$PR_TITLE" inside a shell,
-      # never interpolated into the script body.
+      # Untrusted input: only ever referenced as "$PR_TITLE" inside a shell, never
+      # interpolated into a script body.
       PR_TITLE: ${{ github.event.pull_request.title }}
       IS_FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
-      # Repeat counts, configurable via repo Actions variables (defaults 15/10).
-      # Capability probes are candidate-only (cheap) so run more; wire probes
-      # drive the sonnet user-sim (expensive) so run fewer.
+      # Observe repeat counts + parallelism (repo Actions variables; defaults 15/10/10/4).
       CAPABILITY_K: ${{ vars.OBSERVE_CAPABILITY_K || '15' }}
       WIRE_K: ${{ vars.OBSERVE_WIRE_K || '10' }}
-      # Parallelism (configurable). Wire trials run under the orchestrator's
-      # worker pool; capability repeats run as a bounded xargs pool (pytest-xdist
-      # is not a dependency). Higher = faster wall-clock but more OpenRouter load
-      # (a 429 surfaces in findings.infra.rate_limit).
       WORKERS: ${{ vars.OBSERVE_WORKERS || '10' }}
       CAP_PARALLEL: ${{ vars.OBSERVE_CAP_PARALLEL || '4' }}
+      # Resolve fix-loop config.
+      MAX_ITER: ${{ vars.RESOLVE_MAX_ITER || '3' }}
+      AGENT_MODEL: ${{ vars.RESOLVE_AGENT_MODEL || 'claude-opus-4-8' }}
+      RESOLVE_MAX_TURNS: ${{ vars.RESOLVE_MAX_TURNS || '80' }}
+      RESOLVE_CAPABILITY_K: ${{ vars.RESOLVE_CAPABILITY_K || '5' }}
+      RESOLVE_WIRE_K: ${{ vars.RESOLVE_WIRE_K || '10' }}
+      RESOLVE_CAP_PARALLEL: ${{ vars.RESOLVE_CAP_PARALLEL || '10' }}
     steps:
       - name: Reject fork PRs (no secrets on the pull_request event)
         if: env.IS_FORK == 'true'
@@ -61,7 +61,7 @@ jobs:
             --remove-label 'automation:integrate-model' \
             --add-label 'automation:integrate-needs-human'
           gh pr comment "$PR" -R "$REPO" --body \
-            "Auto-integration does not run on fork PRs (secrets are unavailable on the \`pull_request\` event). A maintainer must re-open this from a branch in this repo, or run the observe stage manually. Marked \`automation:integrate-needs-human\`."
+            "Auto-integration does not run on fork PRs (secrets are unavailable on the \`pull_request\` event). A maintainer must re-open this from a branch in this repo. Marked \`automation:integrate-needs-human\`."
           echo "::error::Fork PR - refusing to run with secrets. Marked needs-human."
           exit 1
 
@@ -94,6 +94,9 @@ jobs:
 
       - uses: actions/checkout@v4
         with:
+          # head ref + full history so the finalize step can commit the integration back.
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
           lfs: true
 
       - uses: astral-sh/setup-uv@v7
@@ -101,16 +104,12 @@ jobs:
           version: "0.9.5"
           enable-cache: true
           cache-dependency-glob: "uv.lock"
-
       - run: uv python install 3.12
-
       - run: uv sync --dev --locked
 
       - name: Create .env (candidate model + user-sim run on the pipeline key)
-        # The wire-probe step reads the key from .env (engine load_dotenv); the
-        # pytest steps below ALSO set it explicitly in their env for robustness.
-        # printf from an env var, not echo-interpolation, so a value containing
-        # shell metacharacters can never be command-substituted.
+        # printf from an env var, not echo-interpolation, so a value containing shell
+        # metacharacters can never be command-substituted.
         env:
           ARENA_KEY: ${{ secrets.ARENA_AUTOMATION_OPENROUTER_API_KEY }}
         run: printf '%s\n' "OPENROUTER_API_KEY=$ARENA_KEY" > .env
@@ -126,39 +125,25 @@ jobs:
           echo "model_id=$MODEL_ID" >> "$GITHUB_OUTPUT"
           echo "Candidate model_id: $MODEL_ID"
 
+      # ---------------------------------------------------------------- OBSERVE
       - name: Capability integration probes (report-only, CAPABILITY_K repeats)
-        # All capabilities run against the candidate (ephemeral all-required
-        # cert injected via TF_CANDIDATE_*); a miss is data for the next step,
-        # not a gate, so failures do not fail the job. Repeated CAPABILITY_K
-        # times (one junit per repeat) so the extractor can record each probe's
-        # raw pass count across repeats for the agent to analyze.
+        # All capabilities run against the candidate (ephemeral all-required cert injected via
+        # TF_CANDIDATE_*); a miss is data for resolve, not a gate, so failures do not fail the
+        # job. The -k match is anchored on the parametrize-id boundary ("<id>]" or "<id>-") so a
+        # slug that prefixes another model (grok-4 vs grok-4.3) does not select the sibling.
         env:
           TF_CANDIDATE_PROVIDER: ${{ steps.parse.outputs.provider }}
           TF_CANDIDATE_NAME: ${{ steps.parse.outputs.name }}
           MODEL_ID: ${{ steps.slug.outputs.model_id }}
-          # Set the key explicitly (do not rely on litellm's import-time load_dotenv
-          # reading .env from cwd); an empty/unset key would make every probe skip.
           OPENROUTER_API_KEY: ${{ secrets.ARENA_AUTOMATION_OPENROUTER_API_KEY }}
         run: |
           mkdir -p observation/capability
-          # Parallelize the repeats (candidate-only calls) with a bounded pool.
-          # pytest-xdist is not installed, so parallelism is at the repeat level
-          # via xargs -P, not pytest -n. Kept modest: a 429 would fail a probe
-          # (report-only) and the extractor + human review catch it.
-          # Selects only the candidate and excludes the test_variant_* files (the
-          # observe-only variant suite runs in its own step below). The -k match is
-          # anchored on the parametrize-id boundary ("<id>]" or "<id>-") so a
-          # candidate slug that is a prefix of another registered model (e.g.
-          # grok-4 vs grok-4.3) does not also select the sibling's probes.
           seq 1 "$CAPABILITY_K" | xargs -P "$CAP_PARALLEL" -I {} \
             sh -c 'uv run pytest tests/integration/llm/ -k "(${MODEL_ID}] or ${MODEL_ID}-) and not test_variant" --junitxml="observation/capability/rep_$1.xml" -q --tb=line -p no:cacheprovider || true' _ {}
 
       - name: Shape-variant probes (report-only, CAPABILITY_K repeats)
         # Observe-only structural variants of the LEGACY shape-sensitive capabilities
-        # (the test_variant_*.py files; our own tests carry their variance inline in
-        # the canonical step above). Gated by TF_RUN_VARIANTS so a normal CI run skips
-        # them; here they run against the candidate into a separate junit dir so the
-        # extractor can aggregate each variant apart from the canonical cert probes.
+        # (test_variant_*.py). Gated by TF_RUN_VARIANTS so normal CI skips them.
         env:
           TF_CANDIDATE_PROVIDER: ${{ steps.parse.outputs.provider }}
           TF_CANDIDATE_NAME: ${{ steps.parse.outputs.name }}
@@ -167,7 +152,6 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.ARENA_AUTOMATION_OPENROUTER_API_KEY }}
         run: |
           mkdir -p observation/variants
-          # Same anchored candidate selection as the capability step above.
           seq 1 "$CAPABILITY_K" | xargs -P "$CAP_PARALLEL" -I {} \
             sh -c 'uv run pytest tests/integration/llm/ -k "(${MODEL_ID}] or ${MODEL_ID}-) and test_variant" --junitxml="observation/variants/rep_$1.xml" -q --tb=line -p no:cacheprovider || true' _ {}
 
@@ -245,7 +229,7 @@ jobs:
             --summary-out observation/summary.md \
             --run-url "$RUN_URL"
 
-      - name: Upload observation bundle (handoff to the next step)
+      - name: Upload observation bundle (artifact for debugging / re-runs)
         uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -255,9 +239,7 @@ jobs:
 
       - name: Post observation summary on the PR
         if: always()
-        # CANDIDATE_NAME is PR-title-derived (attacker-controllable). Reference it
-        # only as "$CANDIDATE_NAME" via env, never interpolated into the script
-        # body, so a title like `integrate: $(...)` cannot inject a shell command.
+        # CANDIDATE_NAME is PR-title-derived (attacker-controllable); reference only via env.
         env:
           CANDIDATE_NAME: ${{ steps.parse.outputs.name }}
         run: |
@@ -269,24 +251,178 @@ jobs:
               "Observation stage ran for \`$CANDIDATE_NAME\` but no findings summary was produced (a step failed before aggregation). Run: ${RUN_URL}"
           fi
 
-      - name: Chain to resolve (clean observe) or flag needs-human
+      # -------------------------------------------------------------- GATE
+      - name: Cleanliness gate (clean observe chains to resolve)
+        id: gate
         if: always()
-        # Auto-chain: a clean observe (capability suite actually ran AND no infra
-        # contamination) hands off to the resolve stage by adding its trigger label.
-        # An infra-dirty or did-not-run observe goes to a human (re-run), never resolve.
+        # A clean observe (capability suite actually ran AND no infra contamination) proceeds to
+        # the in-job resolve steps below. Infra-dirty / did-not-run goes to a human (re-run),
+        # never resolve. Sets a step output the resolve steps gate on (no cross-workflow label).
         run: |
           if [ ! -f observation/findings.json ]; then
             gh pr edit "$PR" -R "$REPO" --remove-label 'automation:integrate-running' \
               --add-label 'automation:integrate-needs-human' || true
+            echo "clean=no" >> "$GITHUB_OUTPUT"
             echo "no findings.json -> needs human"; exit 0
           fi
           CLEAN="$(uv run python -c 'import json; f=json.load(open("observation/findings.json")); i=f.get("wire",{}).get("infra",{}); print("dirty" if (not f.get("capability_ran")) or any(i.get(k,0) for k in ("rate_limit","api_error","status_error")) else "clean")')"
           if [ "$CLEAN" = "clean" ]; then
             gh pr edit "$PR" -R "$REPO" --remove-label 'automation:integrate-running' \
-              --add-label 'automation:resolve'
-            echo "observe clean -> chained to resolve"
+              --add-label 'automation:resolve-running' || true
+            echo "clean=yes" >> "$GITHUB_OUTPUT"
+            echo "observe clean -> resolve"
           else
             gh pr edit "$PR" -R "$REPO" --remove-label 'automation:integrate-running' \
-              --add-label 'automation:integrate-needs-human'
+              --add-label 'automation:integrate-needs-human' || true
+            echo "clean=no" >> "$GITHUB_OUTPUT"
             echo "observe infra-dirty or did-not-run -> needs human"
           fi
+
+      # -------------------------------------------------------------- RESOLVE (clean only)
+      - name: Configure git identity
+        if: steps.gate.outputs.clean == 'yes'
+        run: |
+          git config user.name "tolokaforge-automation[bot]"
+          git config user.email "automation@users.noreply.github.com"
+
+      - name: Install Claude Code CLI
+        if: steps.gate.outputs.clean == 'yes'
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Resolve fix-loop (deterministic; short Opus agent per iteration)
+        id: loop
+        if: steps.gate.outputs.clean == 'yes'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.ARENA_AUTOMATION_OPENROUTER_API_KEY }}
+          TF_PROVIDER: ${{ steps.parse.outputs.provider }}
+          TF_NAME: ${{ steps.parse.outputs.name }}
+          MODEL_ID: ${{ steps.slug.outputs.model_id }}
+        run: |
+          set -uo pipefail
+          mkdir -p observation/resolve
+          P=scripts/integration/prompts
+          fill () {  # $1 = prompt file, $2 = iteration (or empty)
+            sed \
+              -e "s|{{OBS_DIR}}|observation|g" -e "s|{{PROVIDER}}|${TF_PROVIDER}|g" \
+              -e "s|{{NAME}}|${TF_NAME}|g" -e "s|{{MODEL_ID}}|${MODEL_ID}|g" \
+              -e "s|{{PR}}|${PR}|g" -e "s|{{MAX_ITER}}|${MAX_ITER}|g" -e "s|{{ITER}}|${2:-1}|g" \
+              -e "s|{{MODEL}}|${TF_NAME}|g" -e "s|{{ENGINE_VERSION}}|${GITHUB_SHA}|g" \
+              -e "s|{{BASE_DIR}}|observation|g" -e "s|{{DOMAINS_WITH_COUNTS}}|see findings.json|g" \
+              -e "s|{{TOTAL_TRIALS}}|see findings.json|g" -e "s|{{ANCHORS}}|none|g" \
+              -e "s|{{INFRA_THRESHOLD}}|0.05|g" -e "s|{{GO_BOUNDARY}}|observe mode|g" "$1"
+          }
+          CONVERGED=no
+          for i in $(seq 1 "$MAX_ITER"); do
+            echo "::group::Resolve iteration $i"
+            rm -f observation/resolve/overlay.yaml observation/resolve/decision.json
+            { fill "$P/_shared_context.md"; echo; echo '---'; echo; fill "$P/resolve_agent.md" "$i"; } > /tmp/compose_$i.md
+            # `|| true`: an agent that exhausts --max-turns (or errors) exits non-zero, and
+            # this step runs under `bash -e`; without the guard that non-zero would abort the
+            # WHOLE resolve instead of degrading to the no-overlay path below. A stuck iteration
+            # must fall through to the next one (and ultimately to needs-human), not hard-fail.
+            claude -p "$(cat /tmp/compose_$i.md)" --model "$AGENT_MODEL" \
+              --allowedTools "Bash,Read,Edit,Write" --dangerously-skip-permissions \
+              --max-turns "${RESOLVE_MAX_TURNS}" --verbose || true
+            if [ ! -f observation/resolve/overlay.yaml ] || [ ! -f observation/resolve/decision.json ]; then
+              echo "::warning::iteration $i produced no overlay/decision (agent stalled or hit max-turns)"
+              echo "::endgroup::"; continue
+            fi
+            # Reprobe ONLY the agent's fix-targets (single-line python-c, no indentation
+            # to break). All-ceiling decisions name none -> nothing to prove, skip reprobe.
+            TARGETS="$(uv run python -c "import json,sys; print(','.join(json.load(open(sys.argv[1])).get('fix_targets',[])))" observation/resolve/decision.json 2>/dev/null || echo '')"
+            if [ -z "$TARGETS" ]; then
+              echo "iteration $i: decision named no fix-targets (all-ceiling) -> NO_TARGETS"
+              VERDICT=NO_TARGETS
+            else
+              # Workflow runs the reprobe (agent never does). Only the fix-targets, K reps
+              # each, as a flat (probe x rep) pool at RESOLVE_CAP_PARALLEL width. Fast.
+              uv run python scripts/integration/reprobe.py \
+                --baseline observation/findings.json --overlay observation/resolve/overlay.yaml \
+                --provider "$TF_PROVIDER" --name "$TF_NAME" \
+                --out "observation/resolve/reprobe_$i" --skip-wire \
+                --targets "$TARGETS" \
+                --capability-k "${RESOLVE_CAPABILITY_K}" --cap-parallel "${RESOLVE_CAP_PARALLEL}" || true
+              cp "observation/resolve/reprobe_$i/findings.json" observation/resolve/last_reprobe.json 2>/dev/null || true
+              # Are all fix-targets green under the overlay? (helper script, not inline
+              # python, so YAML indentation cannot break it.)
+              VERDICT="$(uv run python scripts/integration/resolve_greencheck.py observation/resolve/decision.json observation/resolve/last_reprobe.json 2>/dev/null || echo PARSE_FAIL)"
+            fi
+            echo "iteration $i verdict: $VERDICT"
+            echo "::endgroup::"
+            # Converge when every fix-target is green, OR the agent proved there is nothing
+            # to fix (all failures are genuine ceilings -> finalize writes them as unsupported).
+            if [ "$VERDICT" = "CONVERGED" ] || [ "$VERDICT" = "NO_TARGETS" ]; then CONVERGED=yes; break; fi
+          done
+          echo "converged=$CONVERGED" >> "$GITHUB_OUTPUT"
+
+      - name: Finalize integration (fold preset + cert, verify, commit, report)
+        id: finalize
+        if: steps.gate.outputs.clean == 'yes' && steps.loop.outputs.converged == 'yes'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TF_PROVIDER: ${{ steps.parse.outputs.provider }}
+          TF_NAME: ${{ steps.parse.outputs.name }}
+          MODEL_ID: ${{ steps.slug.outputs.model_id }}
+        run: |
+          set -euo pipefail
+          P=scripts/integration/prompts
+          fill () {
+            sed -e "s|{{OBS_DIR}}|observation|g" -e "s|{{PROVIDER}}|${TF_PROVIDER}|g" \
+              -e "s|{{NAME}}|${TF_NAME}|g" -e "s|{{MODEL_ID}}|${MODEL_ID}|g" -e "s|{{PR}}|${PR}|g" "$1"
+          }
+          fill "$P/resolve_finalize.md" > /tmp/finalize.md
+          # `|| true`: if the agent hits --max-turns it exits non-zero; do not abort before the
+          # deterministic commit check below, which decides success by whether files changed.
+          claude -p "$(cat /tmp/finalize.md)" --model "$AGENT_MODEL" \
+            --allowedTools "Bash,Read,Edit,Write" --dangerously-skip-permissions \
+            --max-turns "${RESOLVE_MAX_TURNS}" --verbose || true
+          # Deterministic commit + report (the agent only wrote files). Stage the WHOLE engine
+          # LLM package, not a fixed file list: a code-CREATE can write a new adapter class in ANY
+          # module (reasoning_codec / schema_sanitizer / prompt_policy / content_policy /
+          # cache_policy), and a narrow list silently drops the new file while committing its
+          # wiring -> a build-breaking dangling import. Plus the cert + preset.
+          git add tolokaforge/core/llm tolokaforge/core/data/model_presets.yaml \
+            tests/integration/llm/registry.py 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "::error::finalize produced no file changes"; exit 1
+          fi
+          # Verify EXACTLY the staged tree (what we are about to commit), not the workspace.
+          # `stash --keep-index` drops everything not staged so the worktree == the future
+          # commit; then gate on: (1) it imports; (2) no-regression - the resolved policy must
+          # not turn any already-valid tool-call arg INVALID (anti-over-reach); (3) recovery
+          # oracle - per-model fixtures map the known corruption shapes to the exact expected
+          # value. Any failure exits 1 -> needs-human, so a broken / divergent / over-reaching
+          # fix never ships as integrate-done.
+          git stash push --keep-index --include-untracked -m resolve-verify >/dev/null 2>&1 || true
+          VERIFY_OK=yes
+          uv run python -c "import tolokaforge.core.llm" || VERIFY_OK=no
+          if [ "$VERIFY_OK" = "yes" ]; then
+            uv run python -m pytest -q -p no:cacheprovider \
+              tests/integration/llm/test_policy_no_regression.py \
+              tests/integration/llm/test_policy_recovery.py || VERIFY_OK=no
+          fi
+          git stash pop >/dev/null 2>&1 || true
+          if [ "$VERIFY_OK" != "yes" ]; then
+            echo "::error::staged integration failed verification (import / over-reach no-regression / recovery-oracle gate) - refusing to commit"
+            exit 1
+          fi
+          git commit -m "integrate: ${TF_NAME} via auto-resolve (preset + cert)" \
+            -m "Auto-resolve landed the proven policy. See the PR comment for the reprobe evidence and known_unsupported ceilings. Do not merge if this is a disposable test branch."
+          git push origin "HEAD:${{ github.event.pull_request.head.ref }}"
+          [ -f observation/resolve/pr_comment.md ] && gh pr comment "$PR" -R "$REPO" --body-file observation/resolve/pr_comment.md || true
+          [ -f observation/resolve/pr_body.md ] && gh pr edit "$PR" -R "$REPO" --body-file observation/resolve/pr_body.md || true
+          gh pr edit "$PR" -R "$REPO" --remove-label 'automation:resolve-running' \
+            --add-label 'automation:integrate-done' || true
+
+      - name: Flag needs-human (resolve did not converge / finalize failed)
+        # Fires only on the clean-observe path when the loop never converged OR finalize failed
+        # (agent hit max-turns / wrote nothing / broken-or-divergent policy / push failed). The
+        # infra-dirty path already labelled needs-human in the gate step.
+        if: always() && steps.gate.outputs.clean == 'yes' && (steps.loop.outputs.converged != 'yes' || steps.finalize.outcome == 'failure')
+        run: |
+          gh pr edit "$PR" -R "$REPO" --remove-label 'automation:resolve-running' \
+            --add-label 'automation:integrate-needs-human' || true
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          gh pr comment "$PR" -R "$REPO" --body \
+            "Resolve did not converge within ${MAX_ITER} iterations, or converged but finalize failed (agent hit max-turns, wrote no changes, a broken/divergent policy failed the staged verification, or the push failed). Marked \`automation:integrate-needs-human\`. Latest overlay + reprobe are in the run artifacts. Run: ${RUN_URL}"
