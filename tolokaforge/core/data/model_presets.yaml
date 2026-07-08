@@ -238,6 +238,40 @@ presets:
     reasoning_codec: openai
     response_policy: minimax_m3_tags
 
+  # Xiaomi MiMo V2.5 Pro (via OpenRouter) — model-specific recovery preset
+  # created by auto-resolve (candidate PR #186). Two shipped-class fixes
+  # composed in one entry:
+  #   * response_policy: json_coerce (Family A, dict-stringify recovery) —
+  #     mimo emits object-valued tool args as JSON-encoded strings (``root``,
+  #     ``doc``, ``order``, ``envelope``, ``message``, ``item`` all arrive as
+  #     ``str``). Schema is the default ``passthrough``, so no array pivot is
+  #     needed; ``json_coerce`` decodes the top-level ``{`` / ``[`` strings
+  #     back to native dicts before pydantic validation. Recovers, does not
+  #     reshape. Fixes the recursive_ref / discriminated_union /
+  #     heterogeneous_array / dict_map nested-in-object tool calls.
+  #   * reasoning_codec: gemini (Family B, reasoning not surfaced) — mimo is
+  #     reasoning-native (reasoning_tokens>0) and the ``providers.openrouter``
+  #     override already sends ``extra_body.reasoning``, so the request is
+  #     correct; only the codec was missing (default ``none`` discards the
+  #     reasoning). The gemini codec is the unsigned OpenRouter
+  #     ``reasoning_details`` parser: it surfaces reasoning.text/summary and
+  #     replays reasoning_details without a per-block signature, so
+  #     THINKING_EMITS_BLOCKS + UNSIGNED_THINKING_REPLAY pass.
+  # ``reasoning_via_extra_body`` is already true via ``providers.openrouter``;
+  # pinned here so the entry is self-contained. This is a NARROW,
+  # model-specific match (mimo-v2.5-pro only) — it deliberately does not
+  # restore the broad shared glob. Ceilings live in registry.py:
+  # THINKING_REPLAY_ROUNDTRIP (needs a real per-block signature mimo cannot
+  # emit) and PROMPT_CACHING (provider returns 0 cache_creation_input_tokens).
+  xiaomi_mimo_v2_5_pro:
+    match:
+      - "xiaomi/mimo-v2.5-pro*"
+      - "*mimo-v2.5-pro*"
+    response_policy: json_coerce
+    reasoning_codec: gemini
+    params:
+      reasoning_via_extra_body: true
+
 providers:
   openrouter:
     params:

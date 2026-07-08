@@ -1125,6 +1125,73 @@ _ALL: list[MC] = [
             }
         ),
     ),
+    # -----------------------------------------------------------------
+    # Xiaomi MiMo V2.5 Pro (via OpenRouter) — integrated via auto-resolve
+    # (candidate PR #186). Routes through the model-specific
+    # ``xiaomi_mimo_v2_5_pro`` preset (passthrough schema + JsonCoerceResponse
+    # + GeminiReasoningCodec + reasoning_via_extra_body). Two composed fixes:
+    #
+    #   * json_coerce recovers mimo's stringified object tool-args (``item`` /
+    #     ``root`` / ``doc`` / ``order`` / ``envelope`` / ``message`` arrive as
+    #     JSON-encoded strings). This makes RECURSIVE_REF_TOOL_CALL,
+    #     HETEROGENEOUS_ARRAY_TOOL_CALL, DICT_MAP_TOOL_CALL and
+    #     DISCRIMINATED_UNION_TOOL_CALL all ``required`` (each failed 0/15 on
+    #     the default preset, then passed 5/5 on the final reprobe).
+    #   * the gemini reasoning codec surfaces mimo's unsigned OpenRouter
+    #     reasoning, promoting THINKING_EMITS_BLOCKS + UNSIGNED_THINKING_REPLAY
+    #     to ``required`` (both 0/15 -> 5/5).
+    #
+    # Ceilings (from the resolve decision, genuine gaps, NOT papered over):
+    #   * THINKING_REPLAY_ROUNDTRIP — needs a real per-block signature mimo
+    #     cannot emit; the unsigned replay contract is covered by
+    #     UNSIGNED_THINKING_REPLAY above.
+    #   * PROMPT_CACHING — the provider returns 0 cache_creation_input_tokens
+    #     (no explicit cache_control surface); IMPLICIT_PROMPT_CACHING covers
+    #     the auto-cache surface and is ``required``.
+    # -----------------------------------------------------------------
+    MC(
+        model_id="openrouter__xiaomi_mimo-v2.5-pro",
+        provider="openrouter",
+        name="xiaomi/mimo-v2.5-pro",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DICT_MAP_TOOL_CALL,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.THINKING_EMITS_BLOCKS,
+                C.UNSIGNED_THINKING_REPLAY,
+                C.IMPLICIT_PROMPT_CACHING,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # Needs a real per-block signature mimo cannot emit; the
+                # unsigned replay contract is covered by
+                # UNSIGNED_THINKING_REPLAY (required above).
+                C.THINKING_REPLAY_ROUNDTRIP,
+                # Provider returns 0 cache_creation_input_tokens (no explicit
+                # cache_control surface); IMPLICIT_PROMPT_CACHING covers the
+                # auto-cache surface and is required above.
+                C.PROMPT_CACHING,
+            }
+        ),
+    ),
     MC(
         model_id="openrouter__google_gemini-3.1-pro-preview",
         provider="openrouter",
