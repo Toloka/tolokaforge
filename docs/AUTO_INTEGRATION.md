@@ -73,6 +73,7 @@ them as `known_unsupported`.
 | `OBSERVE_WIRE_K` | 10 | observe wire-probe repeats |
 | `OBSERVE_WORKERS` / `OBSERVE_CAP_PARALLEL` | 10 / 4 | observe parallelism |
 | `RESOLVE_MAX_ITER` | 3 | resolve fix-loop iterations |
+| `RESOLVE_MAX_TURNS` | 80 | per-iteration agent turn budget (headroom for code-CREATE; exhausting it degrades to needs-human, never hard-fails) |
 | `RESOLVE_AGENT_MODEL` | claude-opus-4-8 | resolve agent model |
 | `RESOLVE_CAPABILITY_K` | 5 | resolve per-iteration capability reprobe (cheap inner loop) |
 | `RESOLVE_CAP_PARALLEL` | 10 | resolve reprobe width (flat probe x rep pool; keep >= `RESOLVE_CAPABILITY_K`, <= ~16 for the rate limit) |

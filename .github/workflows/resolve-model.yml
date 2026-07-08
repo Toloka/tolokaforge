@@ -38,6 +38,10 @@ jobs:
       IS_FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
       MAX_ITER: ${{ vars.RESOLVE_MAX_ITER || '3' }}
       AGENT_MODEL: ${{ vars.RESOLVE_AGENT_MODEL || 'claude-opus-4-8' }}
+      # Per-iteration agent turn budget. A code-CREATE fix (writing a new adapter class) is
+      # turn-hungry, so this has headroom; an agent that still exhausts it degrades to the
+      # no-overlay path (needs-human), it does not hard-fail the run.
+      RESOLVE_MAX_TURNS: ${{ vars.RESOLVE_MAX_TURNS || '80' }}
       # Reprobe repeat counts (repo Actions variables; workflow-level config).
       # CAPABILITY_K drives the cheap per-iteration capability reprobe (kept low for a
       # fast inner loop). WIRE_K is reserved for the final wire-verification pass on the
@@ -144,10 +148,16 @@ jobs:
             echo "::group::Resolve iteration $i"
             rm -f observation/resolve/overlay.yaml observation/resolve/decision.json
             { fill "$P/_shared_context.md"; echo; echo '---'; echo; fill "$P/resolve_agent.md" "$i"; } > /tmp/compose_$i.md
+            # `|| true`: an agent that exhausts --max-turns (or errors) exits non-zero, and
+            # this step runs under `bash -e`; without the guard that non-zero would abort the
+            # WHOLE resolve instead of degrading to the no-overlay path below. A stuck iteration
+            # must fall through to the next one (and ultimately to needs-human), not hard-fail.
             claude -p "$(cat /tmp/compose_$i.md)" --model "$AGENT_MODEL" \
-              --allowedTools "Bash,Read,Edit,Write" --dangerously-skip-permissions --max-turns 60 --verbose
+              --allowedTools "Bash,Read,Edit,Write" --dangerously-skip-permissions \
+              --max-turns "${RESOLVE_MAX_TURNS}" --verbose || true
             if [ ! -f observation/resolve/overlay.yaml ] || [ ! -f observation/resolve/decision.json ]; then
-              echo "::warning::iteration $i produced no overlay/decision"; echo "::endgroup::"; continue
+              echo "::warning::iteration $i produced no overlay/decision (agent stalled or hit max-turns)"
+              echo "::endgroup::"; continue
             fi
             # Reprobe ONLY the agent's fix-targets (single-line python-c, no indentation
             # to break). All-ceiling decisions name none -> nothing to prove, skip reprobe.
@@ -178,6 +188,7 @@ jobs:
           echo "converged=$CONVERGED" >> "$GITHUB_OUTPUT"
 
       - name: Finalize integration (fold preset + cert, commit, report)
+        id: finalize
         if: steps.loop.outputs.converged == 'yes'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -192,8 +203,12 @@ jobs:
               -e "s|{{NAME}}|${TF_NAME}|g" -e "s|{{MODEL_ID}}|${MODEL_ID}|g" -e "s|{{PR}}|${PR}|g" "$1"
           }
           fill "$P/resolve_finalize.md" > /tmp/finalize.md
+          # `|| true`: if the agent hits --max-turns it exits non-zero; do not abort before the
+          # deterministic commit check below, which decides success by whether files changed
+          # (the agent may have written them before running out of turns).
           claude -p "$(cat /tmp/finalize.md)" --model "$AGENT_MODEL" \
-            --allowedTools "Bash,Read,Edit,Write" --dangerously-skip-permissions --max-turns 60 --verbose
+            --allowedTools "Bash,Read,Edit,Write" --dangerously-skip-permissions \
+            --max-turns "${RESOLVE_MAX_TURNS}" --verbose || true
           # Deterministic commit + report (the agent only wrote files).
           git add tolokaforge/core/data/model_presets.yaml tests/integration/llm/registry.py \
             tolokaforge/core/llm/response_policy.py tolokaforge/core/llm/presets.py \
@@ -210,10 +225,13 @@ jobs:
             --add-label 'automation:integrate-done' || true
 
       - name: Flag needs-human (did not converge / no integration)
-        if: always() && steps.loop.outputs.converged != 'yes'
+        # Fires when the loop never converged, OR it converged but finalize failed (agent hit
+        # max-turns / wrote nothing / push failed). The latter would otherwise leave the PR
+        # stuck in resolve-running with no terminal label.
+        if: always() && (steps.loop.outputs.converged != 'yes' || steps.finalize.outcome == 'failure')
         run: |
           gh pr edit "$PR" -R "$REPO" --remove-label 'automation:resolve-running' \
             --add-label 'automation:integrate-needs-human' || true
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           gh pr comment "$PR" -R "$REPO" --body \
-            "Resolve did not converge within ${MAX_ITER} iterations (or produced no integration). Marked \`automation:integrate-needs-human\`. Latest overlay + reprobe are in the run artifacts. Run: ${RUN_URL}"
+            "Resolve did not converge within ${MAX_ITER} iterations, or converged but finalize failed (agent hit max-turns, wrote no changes, or the push failed). Marked \`automation:integrate-needs-human\`. Latest overlay + reprobe are in the run artifacts. Run: ${RUN_URL}"
