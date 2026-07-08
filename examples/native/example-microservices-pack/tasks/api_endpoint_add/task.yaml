@@ -1,16 +1,8 @@
 # Task: add a new REST endpoint to backend-api.
-# Points at the shared 4-service compose file. No input overrides.
-# Byte-identical env manifest to db_query_tuning — the two dedup at
-# runtime.
+# Full inheritance from the project — no environment_manifest block
+# means "use the project's default_environment as-is". Byte-identical
+# resolved manifest to db_query_tuning; the two tasks share stack A.
 task_id: "api_endpoint_add"
 description: >
   Add a GET /health/ready endpoint to the backend service that
   returns 200 when postgres is reachable and 503 otherwise.
-
-adapter: "native"
-
-environment_manifest:
-  compose_file: "../../shared/environment.compose.yaml"
-  runner_service: "runner"
-  # No inputs block — the shared compose's ${postgres_version:-16}
-  # default applies.

@@ -1,0 +1,95 @@
+# Project spec — the top-level abstraction for this pack.
+# See docs/architecture/PROJECTS.md for the full model.
+#
+# NOTE: spec-only illustration. The v0.11.0 loader will parse this
+# file and inherit its default_environment / task_defaults onto tasks
+# discovered under tasks/. Sections marked "reserved" below are
+# parsed onto the Project object but the runtime does not consume
+# them yet — they exist so packs can start declaring intent.
+
+name: "microservices-eval"
+version: 1
+description: >
+  Evaluation suite for microservices refactoring tasks. Six tasks
+  share a base 4-service stack (runner + db-service + postgres +
+  backend-api). One task overrides a single input for a postgres
+  version bump; one ships its own compose file for isolation.
+
+# ── Shared default environment ──────────────────────────────────
+# Every task inherits this unless it declares its own
+# `environment_manifest`. Task-level override is a deep-typed merge:
+# task-declared sub-fields win; unspecified sub-fields inherit.
+default_environment:
+  compose_file: "./shared/environment.compose.yaml"
+  runner_service: "runner"
+  inputs:
+    postgres_version: "16"
+
+# ── Shared task-level defaults ──────────────────────────────────
+# Fields a task doesn't declare are inherited from here. Task's own
+# fields deep-merge (adapter can be overridden; grading_defaults
+# sub-fields merge).
+task_defaults:
+  adapter: "native"
+  grading_defaults:
+    max_score: 1.0
+
+# ── Task inventory ──────────────────────────────────────────────
+# v0.11.0: glob discovery (VCS-managed). Future: inline list of
+# task records (UI-managed).
+tasks:
+  discovery:
+    glob: "tasks/**/task.yaml"
+
+# ────────────────────────────────────────────────────────────────
+# Sections reserved for future revisions — the v0.11.0 loader
+# parses them onto the Project object; the runtime does not yet
+# consume them. Declared here to show the schema shape and give
+# packs a place to start expressing intent.
+# ────────────────────────────────────────────────────────────────
+
+compute:
+  provider: "local-docker"        # v0.11.0: local-docker only.
+                                  # Future providers: kubernetes,
+                                  # aws-batch, modal, gcp-batch, ...
+  workers: 1
+  resource_limits:
+    memory: "8Gi"
+    cpu: "2"
+  # Provider-specific sub-sections live under `compute.<provider>`.
+  # Only the block matching `provider:` is meaningful.
+  # kubernetes:
+  #   cluster: "prod-cluster"
+  #   namespace: "toloka"
+  #   resource_class: "gpu-large"
+  #   service_account: "toloka-runner"
+
+storage:
+  artifacts:
+    type: "local"                 # or "s3", "gcs", "azure-blob"
+    path: "./results"
+  logs:
+    type: "local"
+    path: "./logs"
+  # fixtures:
+  #   type: "read-only-volume"
+  #   path: "./fixtures"
+
+observability:
+  tracing:
+    exporter: "none"              # or "otlp"
+    # endpoint: "http://collector:4317"
+  metrics:
+    exporter: "none"              # or "prometheus"
+    # endpoint: "http://prom:9090"
+  logging:
+    level: "INFO"
+    exporter: "stdout"            # or "otlp"
+
+orchestration:
+  retry_policy:
+    max_attempts: 1
+    backoff: "constant"           # or "exponential"
+  priority: "normal"
+  # schedule:
+  #   cron: "0 6 * * *"           # scheduled runs (future)

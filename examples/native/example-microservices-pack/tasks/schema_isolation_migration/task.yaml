@@ -1,9 +1,8 @@
 # Task: apply a breaking schema migration to the postgres database.
-# Because the migration mutates schema (ALTER TABLE) and would leave
-# the database in a state incompatible with the shared compose's
-# postgres_template_db reset semantics for many-task usage, this
-# task ships its OWN compose file with an isolated postgres. The
-# hash differs from every other task in the pack — its own stack.
+# Full override — the task declares its own compose_file, which
+# fully replaces the project's default_environment.compose_file.
+# The task's resolved manifest is completely different; it gets its
+# own stack (stack C) and doesn't share with any other task.
 task_id: "schema_isolation_migration"
 description: >
   The backend team wants to add a `deleted_at` column to the `orders`
@@ -11,11 +10,9 @@ description: >
   migration in the project's migration format and verify it applies
   cleanly + reverts cleanly.
 
-adapter: "native"
-
 environment_manifest:
-  # Task-local compose file — deliberately NOT the shared one.
-  # This is what the design doc calls the "escape hatch" for tasks
-  # that need bespoke environments.
+  # Task-local compose file — deliberately not the project's shared
+  # one. Full replacement escape hatch for tasks that need bespoke
+  # environments.
   compose_file: "./environment.compose.yaml"
   runner_service: "runner"

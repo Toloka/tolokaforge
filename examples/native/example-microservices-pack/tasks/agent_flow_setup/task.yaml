@@ -1,25 +1,11 @@
 # Semantic-sharing sequence — part 1 of 2.
-# Populates postgres with fixture data that agent_flow_verify will
-# then be graded on reading. Points at the shared compose with
-# default inputs; hashes identical to api_endpoint_add and
-# db_query_tuning. All four tasks share the SAME running stack;
-# postgres is `isolation: reset` between trials of a single task,
-# but persists across tasks.
-#
-# NOTE (open question, called out in the design doc): the
-# interaction between `reset` isolation and inter-task state
-# expectations is a real edge case. For the purpose of this pack,
-# treat the postgres data written by this task as visible to
-# agent_flow_verify — the current example accepts this assumption
-# in the service labels of the shared compose.
+# Full inheritance from the project. Same resolved manifest as
+# api_endpoint_add and db_query_tuning; all four tasks share stack A.
+# Postgres is `isolation: reset` between trials of a single task, but
+# persists across tasks that share the stack — task A writes data
+# task B (agent_flow_verify) will then read.
 task_id: "agent_flow_setup"
 description: >
   Populate the orders and customers tables with a realistic
   multi-tenant fixture: 3 tenants, ~50 orders each, distributed
   across the last 30 days. Submit a summary of what was seeded.
-
-adapter: "native"
-
-environment_manifest:
-  compose_file: "../../shared/environment.compose.yaml"
-  runner_service: "runner"
