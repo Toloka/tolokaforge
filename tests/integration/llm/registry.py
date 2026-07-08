@@ -805,6 +805,74 @@ _ALL: list[MC] = [
         ),
     ),
     # -----------------------------------------------------------------
+    # Gemini 3.1 Pro (preview) — Pro-lineage sibling of the Flash certs
+    # above, but routed through the model-specific ``gemini_3_1_pro_resolve``
+    # preset (see ``model_presets.yaml``) rather than the generic ``gemini``
+    # one. That preset keeps the gemini reasoning codec but swaps in
+    # ``GeminiRecursiveSchema`` (cycle-aware $ref inlining + scalar dict-map
+    # {value: …} wrapping) and ``GeminiDictMapResponse`` (recursive
+    # array→dict pivot + {value: …} unwrap). Integrated via the auto-resolve
+    # loop 2026-07-08: the generic ``gemini`` preset hard-raised on recursive
+    # tool schemas ("$ref resolution exceeded depth 16") and mis-shaped the
+    # nested / scalar dict-maps; the final reprobe under the new preset went
+    # 5/5 on all five fix-targets (recursive_ref[simple|nested_in_object|
+    # wide_tree], variant_dict_map[nested_in_object|scalar_values]).
+    #
+    # ``RECURSIVE_REF_TOOL_CALL`` + ``ALLOF_MERGE_TOOL_CALL`` are required:
+    # the residual failures on recursive_ref[deep_chain] (1/5) and
+    # allof_merge (14/15, 13/15) at baseline were upstream synthetic-error
+    # envelopes (native_finish_reason='error') — infra faults, not schema
+    # artefacts (the three sibling recursive_ref shapes and allof_merge
+    # nested all pass cleanly). Pro lineage surfaces readable
+    # ``reasoning.text`` so the THINKING_* trio is required (unlike the
+    # encrypted-only Flash siblings). Caching is the genuine ceiling,
+    # matching the Flash siblings: no ``cache_control`` wired and OpenRouter
+    # does not surface Gemini's implicit context cache on the 8 k probe.
+    # -----------------------------------------------------------------
+    MC(
+        model_id="openrouter__google_gemini-3.1-pro-preview",
+        provider="openrouter",
+        name="google/gemini-3.1-pro-preview",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.DICT_MAP_TOOL_CALL,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.THINKING_EMITS_BLOCKS,
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.UNSIGNED_THINKING_REPLAY,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # No explicit ``cache_control`` markers wired in the gemini
+                # presets — call 1 creates 0 cache_creation_input_tokens.
+                C.PROMPT_CACHING,
+                # OpenRouter does not surface Gemini's implicit context cache
+                # on the 8 k-token probe (cache_read_input_tokens=0 across all
+                # 15 runs), same synthetic-vs-production asymmetry as the Flash
+                # siblings.
+                C.IMPLICIT_PROMPT_CACHING,
+            }
+        ),
+    ),
+    # -----------------------------------------------------------------
     # Moonshot Kimi K2.6 / DeepSeek V4 Pro / Xiaomi MiMo V2.5 Pro —
     # routed via the ``openrouter_dict_stringify_recovery`` preset
     # (passthrough schema + DictMapHints + JsonCoerceResponse + OpenAI

@@ -196,6 +196,42 @@ presets:
     content_policy: nova
     response_policy: standard
 
+  # Gemini 3.1 Pro (preview) — model-specific route that shadows the
+  # generic ``gemini`` preset below for THIS model only. Declared FIRST so
+  # first-match-wins routing picks it up; the ``*gemini-3.1-pro*`` globs do
+  # not match the Flash routes, which keep the generic ``gemini`` preset.
+  # It reproduces the full gemini routing (``reasoning_codec: gemini`` for
+  # the OpenRouter reasoning_details envelope) and swaps the two axes the
+  # auto-resolve loop proved out live (2026-07-08) against
+  # ``google/gemini-3.1-pro-preview``:
+  #
+  #   * schema_sanitizer: gemini_recursive — ``GeminiRecursiveSchema``
+  #     adds cycle-aware $ref inlining (recursive/self-referential tool
+  #     schemas that the base ``gemini`` sanitizer hard-raised on with
+  #     "$ref resolution exceeded depth 16") plus scalar dict-map value
+  #     wrapping ({value: <scalar>}). Closes the four
+  #     ``test_recursive_ref_tool_call`` shapes and, paired with the
+  #     response policy, ``test_variant_dict_map[scalar_values]``.
+  #   * response_policy: gemini_dict_map — ``GeminiDictMapResponse``
+  #     recursively pivots array→dict at every depth (fixes the dict-map
+  #     nested inside an object param) and unwraps the {value: …} scalar
+  #     wrapper on the way back.
+  #
+  # Baseline (generic ``gemini`` preset) failed recursive_ref (0/15, hard
+  # raise) and variant_dict_map[nested_in_object|scalar_values] (0/15);
+  # under this preset the final reprobe went 5/5 on every fix-target. The
+  # deep_chain recursive_ref shape and the allof_merge synthetic-error
+  # drops are upstream INFRA (native_finish_reason='error'), not a schema
+  # artefact, so RECURSIVE_REF / ALLOF_MERGE stay required. See registry.py.
+  gemini_3_1_pro_resolve:
+    match:
+      - "google/gemini-3.1-pro-preview"
+      - "openrouter/google/gemini-3.1-pro-preview"
+      - "*gemini-3.1-pro*"
+    reasoning_codec: gemini
+    schema_sanitizer: gemini_recursive
+    response_policy: gemini_dict_map
+
   # Google Gemini family (3.x preview + 3.x GA + 2.5 backstop).
   # ``GeminiReasoningCodec`` decodes Gemini's OpenRouter
   # ``provider_specific_fields.reasoning_details`` envelope: handles

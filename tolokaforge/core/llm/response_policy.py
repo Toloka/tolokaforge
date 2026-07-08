@@ -503,3 +503,72 @@ class MinimaxM3TagRecoveryResponse:
     ) -> dict[str, Any]:
         coerced = self._coerce.parse_arguments(arguments, param_types=param_types)
         return self._unwrap.parse_arguments(coerced, param_types=param_types)
+
+
+class GeminiDictMapResponse(ArrayDictMapResponse):
+    """``ArrayDictMapResponse`` extended for two dict-map shapes it misses.
+
+    The base policy pivots ``array of {key, …}`` → ``Dict[str, T]`` only at
+    the *top level* of the argument object and leaves the map value objects
+    intact. Two live-observed Gemini 3.1 Pro shapes (2026-07-07 observe
+    artifact) fall through:
+
+    1. **Dict-map nested inside an object param**
+       (``test_variant_dict_map[nested_in_object]``): the pivot never reaches
+       the inner array, so the tool receives ``got list`` instead of a dict.
+       This subclass pivots recursively at every depth.
+    2. **Scalar-valued dict-map**
+       (``test_variant_dict_map[scalar_values]``): paired with
+       :class:`~tolokaforge.core.llm.schema_sanitizer.GeminiRecursiveSchema`,
+       which wraps the scalar value in a synthetic ``{value: <scalar>}``
+       object so it survives the schema-side array pivot. This policy unwraps
+       that ``{value: …}`` wrapper back to the native scalar. The unwrap is
+       narrow — it fires only on a single-key ``{value: <scalar>}`` dict, so
+       object-valued maps (``{qty, price, …}``) pass through unchanged.
+    """
+
+    #: Synthetic scalar-value wrapper key — paired with
+    #: ``GeminiRecursiveSchema.VALUE_FIELD``.
+    VALUE_FIELD = "value"
+
+    def parse_arguments(
+        self,
+        arguments: dict[str, Any],
+        *,
+        param_types: Mapping[str, str] | None = None,
+    ) -> dict[str, Any]:
+        # Base recovery first: JSON-string decode, empty-container coercion,
+        # and the top-level array → dict pivot.
+        result = super().parse_arguments(arguments, param_types=param_types)
+        out: dict[str, Any] = {}
+        for name, value in result.items():
+            top_is_map = bool(param_types) and param_types.get(name) == "dict_map"
+            out[name] = self._transform(value, in_map=top_is_map)
+        return out
+
+    def _transform(self, value: Any, in_map: bool = False) -> Any:
+        """Recurse the array → dict pivot and unwrap scalar value wrappers."""
+        if isinstance(value, list):
+            if value and all(isinstance(item, dict) and self.KEY_FIELD in item for item in value):
+                pivoted: dict[str, Any] = {}
+                for item in value:
+                    inner = {k: self._transform(v) for k, v in item.items() if k != self.KEY_FIELD}
+                    pivoted[str(item[self.KEY_FIELD])] = self._unwrap_value(inner)
+                return pivoted
+            return [self._transform(v) for v in value]
+        if isinstance(value, dict):
+            if in_map:
+                # This dict is itself a map (top-level param typed dict_map):
+                # unwrap each value's scalar wrapper.
+                return {k: self._unwrap_value(self._transform(v)) for k, v in value.items()}
+            return {k: self._transform(v) for k, v in value.items()}
+        return value
+
+    @classmethod
+    def _unwrap_value(cls, value: Any) -> Any:
+        """``{value: <scalar>}`` → ``<scalar>``; everything else unchanged."""
+        if isinstance(value, dict) and set(value.keys()) == {cls.VALUE_FIELD}:
+            inner = value[cls.VALUE_FIELD]
+            if not isinstance(inner, (dict, list)):
+                return inner
+        return value
