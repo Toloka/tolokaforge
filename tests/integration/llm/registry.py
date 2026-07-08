@@ -381,6 +381,76 @@ _ALL: list[MC] = [
             }
         ),
     ),
+    # -----------------------------------------------------------------
+    # Qwen 3.6-plus — auto-resolve integration (2026-07-08). Routed through
+    # the model-specific ``qwen_qwen3_6_plus_candidate`` preset (passthrough
+    # schema + ``DictMapHints`` prompt policy + ``JsonCoerceResponse``
+    # recovery + the new ``QwenReasoningCodec``). The candidate observed clean
+    # on every tool-call / metrics probe under the qwen axes; the ONE fix
+    # target was UNSIGNED_THINKING_REPLAY — the stock ``openai`` codec extracts
+    # Qwen's ``reasoning_content`` summary but its ``encode_for_replay`` is a
+    # no-op, so turn-2 dropped the reasoning text. ``QwenReasoningCodec`` adds
+    # the OpenRouter ``reasoning_details`` / ``reasoning.text`` unsigned replay
+    # path, flipping the capability green (5/5 final reprobe).
+    #
+    # Caching (no upstream cache_read/creation tokens on this route) and the
+    # signed thinking surfaces (no signatures on the wire, summary-only
+    # reasoning) are genuine ceilings for the OpenRouter Qwen route, declared
+    # ``known_unsupported`` below. This is NOT the pre-de-integration posture:
+    # the old cert routed via the strict trio and declared the thinking family
+    # + both caches unsupported; the new codec promotes UNSIGNED_THINKING_REPLAY.
+    # -----------------------------------------------------------------
+    MC(
+        model_id="openrouter__qwen_qwen3.6-plus",
+        provider="openrouter",
+        name="qwen/qwen3.6-plus",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.DICT_MAP_TOOL_CALL,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
+                C.LEXICAL_TOOL_INVENTION,
+                C.TOOL_NAME_DISCIPLINE,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                # Fix target: the new QwenReasoningCodec emits the OpenRouter
+                # reasoning_details / reasoning.text envelope on replay, so the
+                # turn-2 assistant dict carries the turn-1 reasoning text.
+                # 5/5 on the final reprobe (2026-07-08).
+                C.UNSIGNED_THINKING_REPLAY,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # No explicit ``cache_control`` markers wired on the qwen
+                # preset — call 1 creates 0 cache_creation_input_tokens.
+                C.PROMPT_CACHING,
+                # No implicit upstream auto-cache surfaced on this OpenRouter
+                # Qwen route — call 2 reads 0 cache_read_input_tokens across
+                # all 15 baseline runs.
+                C.IMPLICIT_PROMPT_CACHING,
+                # Summary-only reasoning: turn 1 emits zero signed blocks, so
+                # the signed-block contract has nothing to assert on.
+                C.THINKING_EMITS_BLOCKS,
+                # Companion of the above — signed-replay continuity has no
+                # source signature to round-trip. The UNSIGNED text contract
+                # (required above) is the shape this route actually honours.
+                C.THINKING_REPLAY_ROUNDTRIP,
+            }
+        ),
+    ),
     # Qwen 3.7 Max — Alibaba's flagship Qwen 3.7 generation. Routes
     # through the same ``qwen`` preset as 3.6-plus (passthrough schema +
     # ``DictMapHints`` prompt policy + ``JsonCoerceResponse`` recovery +

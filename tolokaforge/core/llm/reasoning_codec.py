@@ -34,6 +34,7 @@ __all__ = [
     "AnthropicReasoningCodec",
     "OpenAIReasoningCodec",
     "GeminiReasoningCodec",
+    "QwenReasoningCodec",
 ]
 
 
@@ -465,3 +466,114 @@ class GeminiReasoningCodec:
             f"only ``thinking`` and ``redacted_thinking`` blocks round-trip "
             "through the Gemini reasoning_details envelope."
         )
+
+
+class QwenReasoningCodec:
+    """Extract / replay reasoning for the Qwen family over OpenRouter.
+
+    Qwen (like OpenAI / Grok) surfaces reasoning as an unstructured
+    ``reasoning_content`` summary string — no per-block ``signature`` and,
+    on the common OpenRouter route, no
+    ``provider_specific_fields.reasoning_details`` envelope. The stock
+    ``openai`` codec therefore *extracts* that summary fine, but its
+    ``encode_for_replay`` is a no-op, so the reasoning *text* is dropped on
+    the next turn and multi-turn reasoning continuity
+    (:attr:`Capability.UNSIGNED_THINKING_REPLAY`) is lost — the outgoing
+    assistant message carries no ``reasoning_details``.
+
+    This codec keeps the OpenAI-style *extract* (summary → one ``thinking``
+    block) but adds the unsigned-text *replay* path: on the way out it emits
+    the OpenRouter ``reasoning_details`` envelope (``type="reasoning.text"``)
+    carrying the turn-1 text verbatim, which OpenRouter forwards to the
+    upstream Qwen route so reasoning context survives the turn boundary.
+
+    Signed replay stays out of scope: Qwen emits no signatures, so
+    :attr:`Capability.THINKING_REPLAY_ROUNDTRIP` remains unsupported — only
+    the unsigned text contract is honoured here.
+
+    When a route DOES surface structured ``reasoning_details``
+    (``reasoning.text`` entries), those win over the summary, so the codec
+    never fabricates a block on top of real structured data.
+
+    Loud-fail discipline: an unknown structured block type raises
+    :class:`ValueError` rather than silently dropping data.
+    """
+
+    _OPENROUTER_TEXT_TYPE = "reasoning.text"
+
+    def extract(self, response_message: Any) -> StructuredReasoning | None:
+        details = self._reasoning_details(response_message)
+        summary = getattr(response_message, "reasoning_content", None) or None
+
+        if not details and not summary:
+            return None
+
+        if details:
+            blocks = tuple(self._detail_to_block(raw) for raw in details)
+            return StructuredReasoning(
+                blocks=blocks,
+                summary=_dedup_summary(blocks, summary),
+                transport="openrouter",
+            )
+
+        # Summary-only route (the common Qwen shape): normalise the
+        # ``reasoning_content`` string into a single text block so the replay
+        # path has verbatim text to round-trip. ``summary`` would 1:1 mirror
+        # the block text, so ``_dedup_summary`` drops it.
+        block = ReasoningBlock(type="thinking", text=summary or "")
+        return StructuredReasoning(
+            blocks=(block,),
+            summary=_dedup_summary((block,), summary),
+            transport="openrouter",
+        )
+
+    @staticmethod
+    def _reasoning_details(response_message: Any) -> list[Any]:
+        """Pull ``provider_specific_fields.reasoning_details`` defensively.
+
+        PSF may be ``None``, a dict, or an attribute-bearing object; any
+        non-list ``reasoning_details`` yields ``[]`` so callers' ``not``
+        checks behave.
+        """
+        psf = getattr(response_message, "provider_specific_fields", None)
+        if psf is None:
+            return []
+        if isinstance(psf, dict):
+            details = psf.get("reasoning_details")
+        else:
+            details = getattr(psf, "reasoning_details", None)
+        if isinstance(details, list):
+            return details
+        return []
+
+    def _detail_to_block(self, raw: Any) -> ReasoningBlock:
+        if not isinstance(raw, dict):
+            raise ValueError(f"Qwen reasoning_details entry must be dict, got {type(raw).__name__}")
+        block_type = raw.get("type")
+        if block_type != self._OPENROUTER_TEXT_TYPE:
+            raise ValueError(
+                f"Unknown Qwen reasoning_details type: {block_type!r}; "
+                f"expected {self._OPENROUTER_TEXT_TYPE!r}"
+            )
+        return ReasoningBlock(
+            type="thinking",
+            text=raw.get("text", "") or "",
+            # Qwen does not emit signatures — preserve None explicitly.
+            signature=raw.get("signature"),
+        )
+
+    def encode_for_replay(self, reasoning: StructuredReasoning) -> dict[str, Any]:
+        """Emit the OpenRouter ``reasoning_details`` text envelope for replay.
+
+        Only text-bearing blocks round-trip; a Qwen turn without reasoning
+        text yields no envelope (``{}``), matching the no-op contract of the
+        other codecs when there is nothing to replay.
+        """
+        entries = [
+            {"type": self._OPENROUTER_TEXT_TYPE, "text": block.text}
+            for block in reasoning.blocks
+            if block.text
+        ]
+        if not entries:
+            return {}
+        return {"reasoning_details": entries}
