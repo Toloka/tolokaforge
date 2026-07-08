@@ -22,11 +22,11 @@ flowchart TD
     D -- "yes" --> E["label automation:resolve (auto-chain)"]
     E --> F["RESOLVE fix-loop, up to MAX_ITER"]
     F --> G["compose agent (Opus): write preset overlay / new adapter class + decision.json"]
-    G --> I["workflow: reprobe ONLY the failed probes under the overlay"]
-    I --> J{"all fix-targets green?"}
+    G --> I["workflow: reprobe ONLY the fix-targets under the overlay (flat probe x rep pool)"]
+    I --> J{"all fix-targets green? (or none -> NO_TARGETS)"}
     J -- "no, iter < MAX_ITER (refine)" --> G
     J -- "no, iter = MAX_ITER" --> H
-    J -- "yes (converged)" --> K["finalize agent (Opus): fold preset + write cert + PR report"]
+    J -- "yes / all-ceiling (converged)" --> K["finalize agent (Opus): fold preset + write cert + PR report"]
     K --> L["workflow: commit to PR branch + comment + automation:integrate-done"]
     L --> M["human review gate: draft PR, NEVER auto-merge"]
 ```
@@ -46,11 +46,14 @@ tool-arg rejections that graded metrics are blind to). Posts a summary comment.
 A DETERMINISTIC loop drives the fix; short Opus Claude Code agents do the reasoning. Per
 iteration (up to `MAX_ITER`): a `claude -p` agent (`prompts/resolve_agent.md`) reads the
 findings and composes/refines a preset OVERLAY (a model-scoped entry combining reusable
-adapter axes, or a new small adapter class it writes into the engine), then the WORKFLOW runs
-`reprobe.py` on ONLY the failing probes and green-checks the agent's fix-targets
+adapter axes, or a new small adapter class it writes into the engine) plus a `decision.json`
+naming its `fix_targets`, then the WORKFLOW runs `reprobe.py` on ONLY those fix-targets (as a
+flat probe x rep pool, so both probes and repeats run concurrently) and green-checks them
 (`resolve_greencheck.py`). The agent never runs reprobe/git, so it cannot stall on it.
 Empirical rule: a fix-target still red under the policy is reclassified as a ceiling
-(known_unsupported), not chased forever.
+(known_unsupported), not chased forever. If the agent names NO fix-targets (all failures are
+genuine ceilings), the verdict is `NO_TARGETS` -> converge straight to finalize, which records
+them as `known_unsupported`.
 
 - Converged -> a finalize agent (`prompts/resolve_finalize.md`) folds the preset into
   `model_presets.yaml` and writes the cert into `registry.py`; the workflow commits to the PR
@@ -70,8 +73,10 @@ Empirical rule: a fix-target still red under the policy is reclassified as a cei
 | `OBSERVE_WIRE_K` | 10 | observe wire-probe repeats |
 | `OBSERVE_WORKERS` / `OBSERVE_CAP_PARALLEL` | 10 / 4 | observe parallelism |
 | `RESOLVE_MAX_ITER` | 3 | resolve fix-loop iterations |
+| `RESOLVE_MAX_TURNS` | 80 | per-iteration agent turn budget (headroom for code-CREATE; exhausting it degrades to needs-human, never hard-fails) |
 | `RESOLVE_AGENT_MODEL` | claude-opus-4-8 | resolve agent model |
 | `RESOLVE_CAPABILITY_K` | 5 | resolve per-iteration capability reprobe (cheap inner loop) |
+| `RESOLVE_CAP_PARALLEL` | 10 | resolve reprobe width (flat probe x rep pool; keep >= `RESOLVE_CAPABILITY_K`, <= ~16 for the rate limit) |
 | `RESOLVE_WIRE_K` | 10 | reserved for the final wire-verification pass (not yet wired) |
 
 ## Labels (the state machine)
@@ -101,8 +106,10 @@ sub-agent); the resolve prompts drive the fix loop. `index.yaml` is the machine-
 
 - `scripts/integration/observe_findings.py` - deterministic raw-stat facts emitter (no banding,
   no verdict; interpretation is the agent's job).
-- `scripts/integration/reprobe.py` - targeted re-probe of ONLY the failed probes under a policy
-  overlay; capability-only inner loop, plus a final wire pass on failed wire tasks.
+- `scripts/integration/reprobe.py` - targeted re-probe under a policy overlay; re-runs ONLY the
+  named `--targets` (the agent's fix-targets), or all failed probes if none given, as a flat
+  (probe x rep) pool parallelized at `--cap-parallel`; capability-only inner loop, plus a final
+  wire pass on failed wire tasks.
 - `scripts/integration/resolve_greencheck.py` - fix-target convergence check.
 - `scripts/integration/prompts/` - `_shared_context.md` + the analysis dimension briefs
   (`harness_infra` / `preset_codec_leak` / `four_bucket` / `consistency_passk` /
