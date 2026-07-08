@@ -38,6 +38,12 @@ jobs:
       IS_FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
       MAX_ITER: ${{ vars.RESOLVE_MAX_ITER || '3' }}
       AGENT_MODEL: ${{ vars.RESOLVE_AGENT_MODEL || 'claude-opus-4-8' }}
+      # Reprobe repeat counts (repo Actions variables; workflow-level config).
+      # CAPABILITY_K drives the cheap per-iteration capability reprobe (kept low for a
+      # fast inner loop). WIRE_K is reserved for the final wire-verification pass on the
+      # fixable wire tasks (not yet wired; the inner loop is --skip-wire).
+      RESOLVE_CAPABILITY_K: ${{ vars.RESOLVE_CAPABILITY_K || '5' }}
+      RESOLVE_WIRE_K: ${{ vars.RESOLVE_WIRE_K || '10' }}
     steps:
       - name: Reject fork PRs
         if: env.IS_FORK == 'true'
@@ -143,7 +149,7 @@ jobs:
             uv run python scripts/integration/reprobe.py \
               --baseline observation/findings.json --overlay observation/resolve/overlay.yaml \
               --provider "$TF_PROVIDER" --name "$TF_NAME" \
-              --out "observation/resolve/reprobe_$i" --skip-wire --capability-k 5 || true
+              --out "observation/resolve/reprobe_$i" --skip-wire --capability-k "${RESOLVE_CAPABILITY_K}" || true
             cp "observation/resolve/reprobe_$i/findings.json" observation/resolve/last_reprobe.json 2>/dev/null || true
             # Are all fix-targets green under the overlay? (helper script, not inline
             # python, so YAML indentation cannot break it.)
