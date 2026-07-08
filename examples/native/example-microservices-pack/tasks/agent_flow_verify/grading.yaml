@@ -1,0 +1,5 @@
+grader: "rubric"
+rubric: >
+  Full credit if all three invariants are checked correctly, all
+  violations (if any) are reported, and no false positives are
+  raised. Partial credit for partial invariant coverage.

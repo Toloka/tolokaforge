@@ -1,0 +1,6 @@
+grader: "rubric"
+rubric: >
+  Full credit if the smoke suite passes with no unexplained
+  regressions and the report enumerates any behavioural
+  differences seen. Partial credit for a passing suite without a
+  clear diff report.

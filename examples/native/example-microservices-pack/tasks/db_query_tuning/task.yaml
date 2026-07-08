@@ -1,0 +1,14 @@
+# Task: identify and fix a slow query in the backend service.
+# Same shared compose file, no overrides — hashes identical to
+# api_endpoint_add. Runtime materialises ONE stack for both tasks.
+task_id: "db_query_tuning"
+description: >
+  The backend service's GET /orders endpoint takes 4+ seconds on a
+  cold cache. Diagnose the cause, propose the SQL/index change, and
+  submit a fix that reduces p95 latency below 300ms.
+
+adapter: "native"
+
+environment_manifest:
+  compose_file: "../../shared/environment.compose.yaml"
+  runner_service: "runner"

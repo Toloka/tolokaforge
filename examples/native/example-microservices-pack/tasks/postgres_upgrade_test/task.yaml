@@ -1,0 +1,21 @@
+# Task: verify the backend still works under postgres 17.
+# Points at the SAME shared compose file, but overrides
+# postgres_version. Substitution produces a different resolved
+# compose; the hash differs; this task gets its own stack.
+task_id: "postgres_upgrade_test"
+description: >
+  A stakeholder wants to know whether the backend still works after
+  a postgres major-version bump. Run the standard smoke suite
+  against the backend and report any behaviour differences.
+
+adapter: "native"
+
+environment_manifest:
+  compose_file: "../../shared/environment.compose.yaml"
+  runner_service: "runner"
+  inputs:
+    # Overrides the ${postgres_version:-16} default in the shared
+    # compose. This is the ENTIRE authoring cost of using a
+    # different postgres version — no service redefinition, no
+    # recipe file, no project overlay.
+    postgres_version: "17"

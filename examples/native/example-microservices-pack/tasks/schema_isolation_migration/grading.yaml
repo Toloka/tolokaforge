@@ -1,0 +1,5 @@
+grader: "rubric"
+rubric: >
+  Full credit if the migration applies cleanly on a fresh database,
+  the backfill produces correct data, AND the revert brings the
+  schema back to the pre-migration state with no lost rows.

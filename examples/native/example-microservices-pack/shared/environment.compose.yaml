@@ -1,0 +1,96 @@
+# Shared 4-service environment: runner + db-service + postgres +
+# backend-api. Referenced by five of the six tasks in this pack.
+#
+# NOTE: spec-only illustration. The current loader does not yet
+# perform ${...} substitution against typed inputs; treat those
+# markers as pseudocode describing the intended semantics.
+#
+# The `labels.tolokaforge.*` labels demonstrate per-service isolation
+# declarations from the multi-container isolation design (Alternative
+# A). They are informational until the runtime learns to interpret
+# them.
+
+services:
+  # Engine services — same shape as today's multi_service_postgres example.
+  runner:
+    image: "tolokaforge-runner:local"
+    environment:
+      DB_SERVICE_URL: "http://db-service:8000"
+    ports:
+      - "50051"
+    depends_on:
+      db-service:
+        condition: service_healthy
+      backend-api:
+        condition: service_healthy
+    labels:
+      tolokaforge.isolation: "ephemeral"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import grpc; grpc.channel_ready_future(grpc.insecure_channel('localhost:50051')).result(timeout=2)"
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+  db-service:
+    image: "tolokaforge-db-service:local"
+    ports:
+      - "8000"
+    labels:
+      tolokaforge.isolation: "shared"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 3s
+
+  # Task-adjacent application services.
+  postgres:
+    # ${postgres_version:-16} — typed input with default. A task that
+    # doesn't override sees "16"; the postgres_upgrade_test task sets
+    # "17" via environment_manifest.inputs and gets a distinct stack.
+    image: "postgres:${postgres_version:-16}"
+    environment:
+      POSTGRES_USER: "postgres"
+      POSTGRES_PASSWORD: "example"
+      POSTGRES_DB: "app"
+    labels:
+      # `reset` between trials of a single task; state persists across
+      # tasks that share the stack (see agent_flow_setup/verify pair).
+      # `postgres_template_db` primitive — CREATE DATABASE new TEMPLATE
+      # base semantics, ~200ms without recreating the container.
+      tolokaforge.isolation: "reset"
+      tolokaforge.reset_primitive: "postgres_template_db"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d app"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+  backend-api:
+    image: "myrepo/example-backend:v1.4.0"     # pinned; never `latest`
+    environment:
+      DATABASE_URL: "postgresql://postgres:example@postgres/app"
+    ports:
+      - "8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    labels:
+      tolokaforge.isolation: "shared"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:8080/health"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s

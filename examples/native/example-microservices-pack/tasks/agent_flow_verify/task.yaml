@@ -1,0 +1,16 @@
+# Semantic-sharing sequence — part 2 of 2.
+# Reads the data agent_flow_setup wrote. Uses the SAME shared compose
+# with the SAME default inputs — hash matches agent_flow_setup's
+# hash. Runtime keeps the stack alive across both tasks' trials.
+task_id: "agent_flow_verify"
+description: >
+  Verify the seeded multi-tenant data satisfies these invariants:
+  every tenant has an active customer, no orders are orphaned, and
+  order timestamps are monotonically consistent per customer.
+  Report any violations.
+
+adapter: "native"
+
+environment_manifest:
+  compose_file: "../../shared/environment.compose.yaml"
+  runner_service: "runner"

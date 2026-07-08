@@ -1,0 +1,5 @@
+grader: "rubric"
+rubric: >
+  Full credit if all three tenants exist, each has ~50 orders (±5),
+  orders span the last 30 days, and the summary reflects the seed
+  correctly. Partial credit for correct data with a missing summary.

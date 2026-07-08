@@ -1,0 +1,5 @@
+grader: "rubric"
+rubric: >
+  Full credit if GET /health/ready returns 200 with postgres up and
+  503 with postgres down. Partial credit if only the up-case is
+  handled.

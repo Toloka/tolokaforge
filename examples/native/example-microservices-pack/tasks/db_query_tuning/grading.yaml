@@ -1,0 +1,5 @@
+grader: "rubric"
+rubric: >
+  Full credit if GET /orders p95 latency drops below 300ms on the
+  seeded workload and the fix is a query/index change (not caching
+  or removing behaviour). Partial credit for latency < 1s.

@@ -1,7 +1,5 @@
-# Run config — unchanged shape from today's task packs. Points at
-# the pack's tasks/ directory; the loader would use the sibling
-# project.yaml (when the extension is implemented) to resolve the
-# environment for each task.
+# Standard shape — no changes needed for the extension.
+# The loader would discover tasks under tasks/**/task.yaml as today.
 
 models:
   agent:
@@ -23,6 +21,6 @@ orchestrator:
 
 evaluation:
   task_packs:
-    - "examples/native/example-project-microservices"
+    - "examples/native/example-microservices-pack"
   tasks_glob: "tasks/**/task.yaml"
-  output_dir: "results/example_project_microservices"
+  output_dir: "results/example_microservices_pack"
