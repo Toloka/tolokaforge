@@ -1677,6 +1677,114 @@ _ALL: list[MC] = [
             }
         ),
     ),
+    # ------------------------------------------------------------------
+    # MiniMax-M3 (MiniMax via OpenRouter): reasoning model on the M-series
+    # 1M-context line. Re-integrated via the model auto-resolve workflow
+    # (#187) — supersedes the PR #55 tags-site-scoped ``minimax_m3_tags``
+    # integration that was de-integrated to re-onboard the model as a fresh
+    # candidate. Routes through the ``minimax_m3`` preset (reasoning_codec:
+    # openai + response_policy: item_unwrap).
+    #
+    # M3 routes tool calls through a provider-side XML -> JSON conversion
+    # that renders every *repeated XML element* as a single-key
+    # ``{"item": X}`` dict instead of a JSON array, at arbitrary depth
+    # (``root.children`` recursive trees, ``blocks`` heterogeneous arrays
+    # nested in objects, ``items`` / ``lines`` order maps). The observe
+    # baseline (default preset) failed the whole array-shape family:
+    # heterogeneous nested_in_object 0/15, recursive simple/deep_chain/
+    # nested_in_object 0/15, and thinking_emits_blocks 0/15 (no codec on
+    # default). ``RecursiveItemUnwrapResponse`` walks the whole argument
+    # tree and rewrites each single-key ``{"item": ...}`` back to the native
+    # list; the openai codec surfaces the reasoning_content summary. Final
+    # resolve reprobe (5 reps): every fix-target 5/5. Full flip-and-retest
+    # per docs/ADD_NEW_MODEL.md, not a copy of the deleted PR #55 cert:
+    #
+    #   * HETEROGENEOUS_ARRAY_TOOL_CALL: baseline flat + long_alternating
+    #     already 15/15; nested_in_object 0/15 -> 5/5 under item_unwrap.
+    #     PROMOTED to required (was known_unsupported in the #55 cert).
+    #   * ALLOF_MERGE_TOOL_CALL: all three variants already 15/15 on the
+    #     default route (item_unwrap is a no-op on native shapes). PROMOTED
+    #     to required.
+    #   * THINKING_EMITS_BLOCKS: 0/15 on default (no codec) -> 5/5 with the
+    #     openai codec. Required (matches the #55 codec-preset posture).
+    #
+    # RECURSIVE_REF_TOOL_CALL stays known_unsupported: item_unwrap fixes the
+    # recursion FORMAT (simple / deep_chain / nested_in_object all 5/5), but
+    # the ``wide_tree`` breadth variant still under-produces children (4/5
+    # in observe) — a genuine model-behaviour residual item_unwrap cannot
+    # lift. A human may promote it after a fuller wide_tree run.
+    #
+    # DICT_MAP_TOOL_CALL stays known_unsupported: item_unwrap yields a list,
+    # but the test needs a dict-map keyed by field — a native mis-shape with
+    # no format lift. DISCRIMINATED_UNION_TOOL_CALL stays known_unsupported:
+    # a turn-2 tool-invocation gap (the model answers in prose instead of
+    # emitting the union call), not a schema-dialect one. PROMPT_CACHING
+    # stays known_unsupported (no ephemeral cache_control markers on the
+    # non-Anthropic OpenRouter route); IMPLICIT_PROMPT_CACHING IS required.
+    # The thinking-replay pair stays known_unsupported: the openai codec's
+    # replay is a no-op on the unsigned M3 summary. 17 required /
+    # 6 known_unsupported. Re-integrated 2026-07-08 via auto-resolve.
+    # ------------------------------------------------------------------
+    MC(
+        model_id="openrouter__minimax_minimax-m3",
+        provider="openrouter",
+        name="minimax/minimax-m3",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.THINKING_EMITS_BLOCKS,
+                C.IMPLICIT_PROMPT_CACHING,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+                # Recovered by RecursiveItemUnwrapResponse (item_unwrap):
+                # the nested_in_object variant's ``{"item": [...]}`` XML-wrap
+                # is rewritten to the native list. flat / long_alternating
+                # already round-trip clean. 5/5 final reprobe.
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                # Round-trips natively on every variant (top_level / nested /
+                # three_way all 15/15 in observe); item_unwrap is a no-op on
+                # the already-correct shapes.
+                C.ALLOF_MERGE_TOOL_CALL,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # item_unwrap fixes the recursion FORMAT (simple / deep_chain
+                # / nested_in_object all 5/5), but the ``wide_tree`` breadth
+                # variant still under-produces children (4/5 observe) — a
+                # genuine model-behaviour residual, not a format one. Ratchet
+                # target: promote after a fuller wide_tree run.
+                C.RECURSIVE_REF_TOOL_CALL,
+                # item_unwrap yields a list; the test needs a dict-map keyed
+                # by field. Native mis-shape, no format lift.
+                C.DICT_MAP_TOOL_CALL,
+                # Turn-2 tool-invocation gap: the model answers in prose
+                # ("Comment added.") instead of emitting the union call on
+                # turn 2. Not a schema-dialect issue — no preset fixes it.
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                # No Anthropic-style ephemeral cache_control markers on this
+                # non-Anthropic OpenRouter route. The auto-cache surface
+                # (IMPLICIT_PROMPT_CACHING) IS required (see header).
+                C.PROMPT_CACHING,
+                # Reasoning surfaces only as an unsigned reasoning_content
+                # summary via the openai codec: no signed blocks to replay
+                # and the codec's encode_for_replay path is a no-op.
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.UNSIGNED_THINKING_REPLAY,
+            }
+        ),
+    ),
 ]
 
 

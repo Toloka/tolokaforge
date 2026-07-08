@@ -254,6 +254,29 @@ presets:
     schema_sanitizer: gemini
     response_policy: array_dict_map
 
+  # MiniMax-M3 (MiniMax via OpenRouter). M3 routes tool calls through a
+  # provider-side XML -> JSON conversion that renders every *repeated XML
+  # element* as a single-key ``{"item": X}`` dict instead of a JSON array.
+  # The observe run shows this at arbitrary depth: ``root.children``
+  # (recursive trees), ``blocks`` (heterogeneous arrays nested in an
+  # object), ``items`` / ``lines`` (order maps). The earlier tags-site-
+  # scoped ``minimax_m3_tags`` policy (PR #55) no longer bounds it, so
+  # ``item_unwrap`` (RecursiveItemUnwrapResponse) walks the whole argument
+  # tree and rewrites each single-key ``{"item": ...}`` to the native list.
+  # Native lists / multi-key dicts pass through unchanged (recovery, not
+  # transformation), so the probes that already round-trip clean are
+  # unaffected. ``reasoning_codec: openai`` surfaces M3's reasoning_content
+  # summary as StructuredReasoning in the trajectory (fixes
+  # THINKING_EMITS_BLOCKS); its replay is a no-op on the OpenAI route
+  # (unsigned summary). Re-integrated via auto-resolve; see registry.py for
+  # the certificate. Match globs are scoped to this model only.
+  minimax_m3:
+    match:
+      - "minimax/minimax-m3*"
+      - "*minimax-m3*"
+    reasoning_codec: openai
+    response_policy: item_unwrap
+
 providers:
   openrouter:
     params:

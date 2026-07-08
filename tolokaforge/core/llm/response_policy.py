@@ -40,6 +40,7 @@ __all__ = [
     "UnwrapInputResponse",
     "JsonCoerceResponse",
     "ArrayDictMapResponse",
+    "RecursiveItemUnwrapResponse",
 ]
 
 
@@ -295,3 +296,108 @@ class ArrayDictMapResponse:
                 key = str(value_copy.pop(self.KEY_FIELD))
                 result[param_name] = {key: value_copy}
         return result
+
+
+# ---------------------------------------------------------------------------
+# XML repeated-element ``{"item": X}`` recovery (recursive, schema-agnostic)
+# ---------------------------------------------------------------------------
+#
+# Some providers route tool calls through a provider-side XML → JSON conversion
+# that renders a *repeated XML element* as a single-key dict keyed on ``item``
+# instead of a JSON array::
+#
+#   <children><item>…</item><item>…</item></children>  (the model's XML)
+#     → {"item": [ … , … ]}                            (what litellm parses)
+#
+# MiniMax-M3 exhibits this on *every* array-valued site (not just the
+# ``tags`` sites the earlier ``minimax_m3_tags`` policy was scoped to): the
+# observe run shows it on ``root.children`` (recursive trees), ``blocks``
+# (heterogeneous arrays nested in objects), ``lines`` / ``items`` (order
+# maps) — the wrapper appears at arbitrary depth. A fixed site allowlist can
+# no longer bound it, so the recovery walks the whole argument tree.
+
+# Bound the ``{"item": {"item": …}}`` unwrap recursion. Real payloads top out
+# at a couple of nesting levels; deeper only comes from pathological input, so
+# past the cap the value is returned unchanged rather than raising
+# RecursionError at the tool-call assembly site.
+_MAX_ITEM_UNWRAP_DEPTH = 64
+
+
+def _unwrap_item_wrappers(value: Any, _depth: int = 0) -> Any:
+    """Recursively rewrite the XML repeated-element ``{"item": X}`` artefact.
+
+    Rule: a dict whose *only* key is ``item`` normalises to a list — recurse
+    into ``X`` first (so ``{"item": {"item": "a"}}`` flattens to ``["a"]``),
+    then return ``X`` as-is when it is already a list, else ``[X]``. Any other
+    dict is recursed into key-by-key but never rewritten (a multi-key dict
+    gives no safe way to guess which key is the value — AGENTS.md rule #1:
+    refuse rather than corrupt). Lists are recursed element-wise; scalars pass
+    through untouched.
+
+    Schema-agnostic on purpose: unlike a declared-array coercion, the trigger
+    is the *shape* ``{"item": …}`` alone, which is the exact fingerprint of the
+    provider's XML conversion. The single-key requirement is the guard — a
+    legitimate object rarely carries a lone field literally named ``item`` — so
+    correctly-emitted native lists/dicts pass through unchanged (no false
+    positives on the probes that already round-trip clean). A future schema
+    that declares a real single-field object named ``item`` would be
+    mis-unwrapped; none of the current tool domains do.
+    """
+    if _depth >= _MAX_ITEM_UNWRAP_DEPTH:
+        return value
+    if isinstance(value, dict):
+        if set(value.keys()) == {"item"}:
+            inner = _unwrap_item_wrappers(value["item"], _depth + 1)
+            return inner if isinstance(inner, list) else [inner]
+        return {k: _unwrap_item_wrappers(v, _depth + 1) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_unwrap_item_wrappers(v, _depth + 1) for v in value]
+    return value
+
+
+class RecursiveItemUnwrapResponse:
+    """Recover the provider-side XML repeated-element ``{"item": X}`` artefact.
+
+    **Recovery, not transformation.** Native lists/dicts the model emitted
+    correctly pass through unchanged; only the single-key ``{"item": …}``
+    wrapper — the fingerprint of a provider-side XML → JSON tool-call
+    conversion — is rewritten to the native ``list`` the schema declares.
+
+    Pipeline:
+
+    1. :func:`_coerce_json_strings` — first recover any top-level container
+       argument the model serialised as a JSON string (the M3 dual shape:
+       XML-wrap *or* stringified JSON).
+    2. :func:`_unwrap_item_wrappers` — walk the whole argument tree and
+       rewrite every ``{"item": X}`` single-key dict to a list, recursing so
+       nested and deeply-recursive sites (``root.children`` chains, ``blocks``
+       inside a message object) are all recovered.
+
+    Example (recursive tree)::
+
+        # LLM produces (every array wrapped):
+        {"root": {"label": "A",
+                  "children": {"item": [{"label": "B",
+                                         "children": {"item": {"label": "D"}}},
+                                        {"label": "C"}]}}}
+        # Recovered:
+        {"root": {"label": "A",
+                  "children": [{"label": "B", "children": [{"label": "D"}]},
+                               {"label": "C"}]}}
+
+    ``param_types`` is accepted for Protocol compliance but unused: the
+    trigger is the ``{"item": …}`` shape, not a declared type, so recovery
+    reaches array sites nested arbitrarily deep where root-level
+    ``param_types`` says nothing.
+    """
+
+    def parse_arguments(
+        self,
+        arguments: dict[str, Any],
+        *,
+        param_types: Mapping[str, str] | None = None,
+    ) -> dict[str, Any]:
+        del param_types  # trigger is the {"item": …} shape, not a declared type
+        if not isinstance(arguments, dict):
+            return arguments
+        return _unwrap_item_wrappers(_coerce_json_strings(arguments))
