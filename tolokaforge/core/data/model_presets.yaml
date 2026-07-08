@@ -238,6 +238,41 @@ presets:
     reasoning_codec: openai
     response_policy: minimax_m3_tags
 
+  # Xiaomi MiMo V2.5 Pro (Xiaomi via OpenRouter) — hybrid of the Qwen
+  # stringified-JSON recovery and the Gemini reasoning codec, matched to
+  # THIS model only (NOT folded into a shared open-weights glob).
+  #
+  #   * Nested dict/array tool-call arguments are emitted as JSON-ENCODED
+  #     STRINGS (discriminated-union, recursive-ref, heterogeneous-array,
+  #     dict-map nested_in_object). The wire schema is dict-shaped and the
+  #     model handles the full JSON-Schema ($defs/$ref/oneOf) fine — it just
+  #     stringifies container values. So ``passthrough`` schema (no reshape,
+  #     unlike the Gemini schema sanitizer) + ``json_coerce`` recovery, same
+  #     recipe the qwen preset uses.
+  #   * Reasoning surfaces as OpenRouter
+  #     ``provider_specific_fields.reasoning_details`` of type
+  #     ``reasoning.text`` WITHOUT a per-block signature. The ``gemini`` codec
+  #     surfaces these unsigned blocks AND re-emits reasoning_details on replay
+  #     (encode_for_replay) — turning THINKING_EMITS_BLOCKS +
+  #     UNSIGNED_THINKING_REPLAY green. The ``openai`` codec cannot: its
+  #     encode_for_replay is a no-op.
+  #
+  # ``reasoning_via_extra_body: true`` is inherited from the ``openrouter``
+  # provider override. Genuine ceilings (PROMPT_CACHING,
+  # THINKING_REPLAY_ROUNDTRIP) are declared ``known_unsupported`` in
+  # registry.py, not papered over here — ``cache_policy: none`` (NoCache) is
+  # the honest posture for an OpenAI-style provider reporting 0
+  # cache_creation_input_tokens. Auto-resolve iteration 2; see registry.py.
+  xiaomi_mimo_v2_5_pro:
+    match:
+      - "xiaomi/mimo-v2.5-pro"
+      - "xiaomi/mimo-v2.5*"
+    schema_sanitizer: passthrough
+    response_policy: json_coerce
+    prompt_policy: dict_map_hints
+    reasoning_codec: gemini
+    cache_policy: none
+
 providers:
   openrouter:
     params:

@@ -805,7 +805,7 @@ _ALL: list[MC] = [
         ),
     ),
     # -----------------------------------------------------------------
-    # Moonshot Kimi K2.6 / DeepSeek V4 Pro / Xiaomi MiMo V2.5 Pro —
+    # Moonshot Kimi K2.6 / DeepSeek V4 Pro —
     # routed via the ``openrouter_dict_stringify_recovery`` preset
     # (passthrough schema + DictMapHints + JsonCoerceResponse + OpenAI
     # reasoning codec). These OpenRouter routes are OpenAI-API-compatible
@@ -813,8 +813,14 @@ _ALL: list[MC] = [
     # nested container arguments — same failure mode the qwen preset
     # already handles. Adding the preset turned the eval-time
     # ``zendesk_create_item`` retry loop from 20–25 failed attempts per trial
-    # into 0; ``DICT_MAP_TOOL_CALL`` is now ``required`` for all three
+    # into 0; ``DICT_MAP_TOOL_CALL`` is now ``required`` for both
     # routes since the recovery policy makes the contract real.
+    #
+    # (Xiaomi MiMo V2.5 Pro shared this shared preset originally, but the
+    # auto-resolve run for PR #181 gave it its own dedicated
+    # ``xiaomi_mimo_v2_5_pro`` preset — gemini reasoning codec, not the
+    # openai codec — so its certificate lives in its own block at the end
+    # of this list, NOT here.)
     #
     # ``DECIMAL_FIELD_TOOL_CALL`` stays ``known_unsupported`` — that
     # contract pins ``StrictSchema``-specific Decimal coercion, which
@@ -830,7 +836,7 @@ _ALL: list[MC] = [
     # stays ``known_unsupported`` because we don't attach
     # ``cache_control`` markers; ``IMPLICIT_PROMPT_CACHING`` covers the
     # OpenRouter-side auto-caching surface separately (only DeepSeek's
-    # route auto-caches; Kimi / MiMo do not).
+    # route auto-caches; Kimi does not).
     # -----------------------------------------------------------------
     MC(
         model_id="openrouter__moonshotai_kimi-k2.6",
@@ -1733,6 +1739,103 @@ _ALL: list[MC] = [
                 # Verified live 2026-06-08.
                 C.THINKING_REPLAY_ROUNDTRIP,
                 C.UNSIGNED_THINKING_REPLAY,
+            }
+        ),
+    ),
+    # ------------------------------------------------------------------
+    # Xiaomi MiMo V2.5 Pro (Xiaomi via OpenRouter, PR #181). Onboarded by
+    # the model auto-resolve workflow (iteration 2). Routes through its own
+    # dedicated ``xiaomi_mimo_v2_5_pro`` preset — a HYBRID of the qwen
+    # stringified-JSON recovery and the gemini reasoning codec, matched to
+    # this model only (NOT the shared ``openrouter_dict_stringify_recovery``
+    # glob the Kimi / DeepSeek-V4 block above uses):
+    #
+    #   * ``passthrough`` schema + ``json_coerce`` response policy +
+    #     ``dict_map_hints`` prompt policy (the qwen recipe): MiMo emits
+    #     nested dict/array tool-call arguments as JSON-ENCODED STRINGS
+    #     (discriminated-union, recursive-ref, heterogeneous-array
+    #     nested_in_object, dict-map nested_in_object). The wire schema is
+    #     dict-shaped and the model handles the full JSON-Schema
+    #     ($defs/$ref/oneOf) fine — json_coerce decodes the stringified
+    #     containers. This turns RECURSIVE_REF_TOOL_CALL,
+    #     HETEROGENEOUS_ARRAY_TOOL_CALL, DISCRIMINATED_UNION_TOOL_CALL and
+    #     DICT_MAP_TOOL_CALL green (baseline: all failed 0/15 on the
+    #     nested-container variants; final reprobe: 5/5 each).
+    #   * ``reasoning_codec: gemini``: MiMo surfaces reasoning as OpenRouter
+    #     ``provider_specific_fields.reasoning_details`` of type
+    #     ``reasoning.text`` WITHOUT a per-block signature. The gemini codec
+    #     surfaces these unsigned blocks AND re-emits reasoning_details on
+    #     replay (encode_for_replay), turning THINKING_EMITS_BLOCKS +
+    #     UNSIGNED_THINKING_REPLAY green (baseline 0/15; reprobe 5/5). The
+    #     openai codec used by the shared preset CANNOT: its
+    #     encode_for_replay is a no-op.
+    #
+    # The always-green discipline / tolerance capabilities (ENUM_SLASH,
+    # RE2_PATTERN, TOOL_NAME_DISCIPLINE, LEXICAL_TOOL_INVENTION,
+    # REQUIRED_FIELDS_COMPLETE, PROGRESS_AFTER_SUCCESS) passed 15/15 on the
+    # observe baseline and are required like every sibling openrouter cert.
+    # MULTI_TURN_ERROR_RECOVERY is genuine-model consistency (baseline 14/15,
+    # reprobe 5/5) — required, no preset fix. IMPLICIT_PROMPT_CACHING passes
+    # the 2-call probe on this route (baseline 14/15, reprobe 5/5).
+    #
+    # Genuine ceilings (known_unsupported, NOT preset-fixable):
+    #   * PROMPT_CACHING — OpenAI-style provider reports 0
+    #     cache_creation_input_tokens on call 1 (no Anthropic-ephemeral
+    #     cache_control markers wired; cache_policy: none / NoCache is the
+    #     honest posture). Baseline + reprobe: 0/5.
+    #   * THINKING_REPLAY_ROUNDTRIP — reasoning.text blocks carry no
+    #     per-block signature to round-trip; the signed-replay test finds
+    #     "no signed blocks on turn 1". UNSIGNED_THINKING_REPLAY (required
+    #     above) covers the unsigned-replay contract instead. Baseline +
+    #     reprobe: 0/5.
+    #
+    # Integrated via auto-resolve on a disposable test branch — see
+    # observation/resolve/. 21 required / 2 known_unsupported.
+    # ------------------------------------------------------------------
+    MC(
+        model_id="openrouter__xiaomi_mimo-v2.5-pro",
+        provider="openrouter",
+        name="xiaomi/mimo-v2.5-pro",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DICT_MAP_TOOL_CALL,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                # gemini reasoning codec surfaces the unsigned
+                # reasoning.text blocks and replays them on turn 2.
+                C.THINKING_EMITS_BLOCKS,
+                C.UNSIGNED_THINKING_REPLAY,
+                C.IMPLICIT_PROMPT_CACHING,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # OpenAI-style provider: call 1 creates 0
+                # cache_creation_input_tokens (no Anthropic-ephemeral
+                # cache_control markers; cache_policy: none). The implicit
+                # auto-cache surface is required above.
+                C.PROMPT_CACHING,
+                # reasoning.text blocks carry no per-block signature — the
+                # signed-replay test finds "no signed blocks on turn 1".
+                # UNSIGNED_THINKING_REPLAY (required) covers the unsigned
+                # replay contract for this route.
+                C.THINKING_REPLAY_ROUNDTRIP,
             }
         ),
     ),
