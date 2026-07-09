@@ -107,7 +107,6 @@ run_defaults:
     provider: "local-docker"
     workers: 2
     max_budget_usd: 20.0
-    runtime_mode: "per_trial"
   storage:
     artifacts: { type: "local", path: "./results" }
     logs:     { type: "local", path: "./logs" }
@@ -505,7 +504,6 @@ run_defaults:
     max_budget_usd: 20.0
     max_requests_per_second: 10.0
     max_attempt_retries: 3
-    runtime_mode: "per_trial"
   storage:
     artifacts: { type: "local", path: "./results" }
     logs:     { type: "local", path: "./logs" }
@@ -693,7 +691,7 @@ field and vice versa.
 | `tasks.discovery` | project.yaml | — |
 | `default_environment` | project.yaml | task.yaml's `environment_manifest` |
 | `task_defaults.*` (adapter, prompt, tools, user_simulator, policies, grading_defaults, timeouts, stuck_heuristics, continue_prompt) | `project.task_defaults` | `task.yaml` |
-| `compute` (provider, workers, budget, rate limits, retries, runtime_mode) | `project.run_defaults.compute` | `run_configs/<name>.yaml` |
+| `compute` (provider, workers, budget, rate limits, retries) | `project.run_defaults.compute` | `run_configs/<name>.yaml` |
 | `storage` (artifacts, logs, queue) | `project.run_defaults.storage` | `run_configs/<name>.yaml` |
 | `observability` (tracing, metrics, logging) | `project.run_defaults.observability` | `run_configs/<name>.yaml` |
 | `orchestrator` (repeats, max_turns, queue_backend, auto_start_services, shuffle_trials, schedule) | `project.run_defaults.orchestrator` | `run_configs/<name>.yaml` |
@@ -797,7 +795,6 @@ run_defaults:
     provider: "local-docker"
     workers: 2
     max_budget_usd: 20.0
-    runtime_mode: "per_trial"
   storage:
     artifacts: { type: "local", path: "./results" }
     logs:     { type: "local", path: "./logs" }
@@ -1000,91 +997,57 @@ A run consists of many trials against a project's tasks. The
 question this section answers is: **how much state carries from
 one trial to the next?** The Project schema supports three
 distinct stances — total isolation, completely shared, and
-declared mixed — each expressed through the same three schema
-knobs combined differently.
+declared mixed.
 
 At a glance:
 
 | Stance | Cost per trial | Safety guarantee | Setup complexity |
 |---|---|---|---|
-| Total isolation | Highest — full stack cold-start (~30–45 s) | Strongest — nothing carries over | Simplest (defaults) |
-| Completely shared | Lowest — one stack for the whole run (~0 s inter-trial) | Weakest — all state persists across trials | Simple (uniform `shared` labels) |
+| Completely shared | Lowest — one stack for the whole run (~0 s inter-trial) | Weakest — all state persists across trials | Simple (defaults; uniform `shared` labels) |
 | Declared mixed | Middle — reset primitives typically ~200 ms | Per-service explicit; strong where declared | More setup (per-service labels + primitives) |
+| Total isolation | Highest — full stack cold-start (~30–45 s) | Strongest — nothing carries over | Task authors declare `isolation: per_trial` |
 
-The three isolation knobs the schema exposes:
+Two knobs express task-side intent — that's it. Ops has no
+runtime-mode knob; the backend picks its mode based on what the
+tasks declare.
 
-- **`default_environment.isolation`** (on the Project's default
-  environment, or overridable per task) — the task's
-  requirement: `per_trial` or `shared_ok`. The orchestrator
-  refuses to start a run whose backend can't satisfy the task's
-  declared requirement (see ADR-0009).
-- **`compute.runtime_mode`** (on the run config's `compute`
-  section) — the runtime backend selection: `per_trial`
-  materialises a fresh stack per trial; `shared` materialises
-  one stack for the whole run.
+- **`default_environment.isolation`** (on the Project, or
+  overridable per task) — the task's requirement: `shared_ok`
+  (default; task accepts a shared stack) or `per_trial` (task
+  requires a fresh stack per trial). Omitting it means
+  `shared_ok`.
 - **Per-service `tolokaforge.isolation` label** (on services
   inside the compose file) — the per-service mode:
   `ephemeral`, `shared`, or `reset` (with a named reset
-  primitive). Only meaningful under `runtime_mode: shared`; under
-  `per_trial` the stack is thrown away between trials regardless.
+  primitive). Only meaningful under shared-stack mode; when the
+  backend materialises fresh stacks per trial (because a task
+  requires it), the stack is torn down and rebuilt regardless of
+  what any label says.
 
-The three stances below combine these knobs differently.
+The backend selects its mode from what the tasks in the run
+declare:
 
-### Stance 1 — Total isolation
+- All tasks declare (or default to) `shared_ok` → the backend
+  runs one shared stack for the whole run.
+- Any task in the run declares `per_trial` → the backend runs
+  in per-trial mode for the whole run.
 
-Every trial materialises a fresh copy of the stack. Nothing
-persists between trials. This is what `PerTrialRuntimeBackend`
-does.
+There is no separate `runtime_mode` knob on the run config. The
+mode is a consequence of what the pack's tasks say they need,
+not an independent operator choice.
 
-```yaml
-# project.yaml
-default_environment:
-  compose_file: "./shared/environment.compose.yaml"
-  isolation: "per_trial"          # task requires per-trial isolation
-```
-
-```yaml
-# run_configs/<name>.yaml
-compute:
-  provider: "local-docker"
-  runtime_mode: "per_trial"       # runtime materialises fresh stacks
-```
-
-Per-service labels in the compose file are informational under
-this stance — the stack is torn down and rebuilt for each trial
-regardless of what any label says.
-
-**Cost.** Highest. Every trial pays a full compose cold-start
-(measured at ~30–45 s for a four-service stack). A 100-trial run
-pays ~50 minutes of overhead on top of the actual agent work.
-
-**Safety.** Strongest. Nothing can leak from one trial into the
-next — services, databases, filesystem state, network topology
-all rebuild from the manifest.
-
-**Pick this when:** trials mutate state destructively; safety is
-paramount; the pack's compose stack is small enough that
-cold-start cost is acceptable; you don't yet trust the pack's
-services to be safe to share.
-
-### Stance 2 — Completely shared
+### Stance 1 — Completely shared (default)
 
 The stack materialises once at run start and is shared by every
 trial in the run. State persists between trials by default. This
-is what `SharedStackRuntimeBackend` does.
+is what happens when a project doesn't declare an isolation
+requirement — or explicitly says `shared_ok` — and no task
+overrides it.
 
 ```yaml
-# project.yaml
+# project.yaml — no isolation declared → defaults to shared_ok
 default_environment:
   compose_file: "./shared/environment.compose.yaml"
-  isolation: "shared_ok"          # task accepts a shared stack
-```
-
-```yaml
-# run_configs/<name>.yaml
-compute:
-  provider: "local-docker"
-  runtime_mode: "shared"          # one stack for the whole run
 ```
 
 ```yaml
@@ -1116,28 +1079,21 @@ wall-clock cost.
 
 **Never pick this when:** any service is mutated by any trial and
 you can't afford the mutation to affect later trials. Prefer
-Stance 3 instead.
+Stance 2 instead.
 
-### Stance 3 — Declared mixed (per-service)
+### Stance 2 — Declared mixed (per-service)
 
 The stack materialises once, and per-service labels decide what
 happens between trials. Some services stay as-is, some get reset
-via a named primitive, some are torn down and recreated. This is
-still `SharedStackRuntimeBackend`, but with fine-grained
-per-service control.
+via a named primitive, some are torn down and recreated. Same
+backend mode as Stance 1 — the task still says `shared_ok` —
+but the compose file's per-service labels drive fine-grained
+between-trial behaviour.
 
 ```yaml
-# project.yaml
+# project.yaml — no isolation declared → shared_ok default
 default_environment:
   compose_file: "./shared/environment.compose.yaml"
-  isolation: "shared_ok"
-```
-
-```yaml
-# run_configs/<name>.yaml
-compute:
-  provider: "local-docker"
-  runtime_mode: "shared"
 ```
 
 ```yaml
@@ -1179,23 +1135,49 @@ state per trial via cheap resets (postgres template-DB clone,
 sqlite truncate), and a few must be rebuilt each time. Most
 realistic multi-container workloads land here.
 
-### How the three knobs interact
+### Stance 3 — Total isolation
 
-Two interaction rules matter:
+Every trial materialises a fresh copy of the stack. Nothing
+persists between trials. A task author picks this by declaring
+`isolation: per_trial` — the backend then runs the whole run in
+per-trial mode.
 
-**Rule 1 — the task's requirement must match the backend.**
-`default_environment.isolation: per_trial` on a task means the
-runtime backend MUST provide per-trial stacks. If the run picks
-`compute.runtime_mode: shared`, the orchestrator refuses to start
-the run and names the offending task. This is the fail-loud
-enforcement from ADR-0009 — silent cross-trial contamination
-never gets to happen by config mistake.
+```yaml
+# project.yaml
+default_environment:
+  compose_file: "./shared/environment.compose.yaml"
+  isolation: "per_trial"          # task requires per-trial isolation
+```
 
-**Rule 2 — per-service labels only matter under `shared`.**
-Under `runtime_mode: per_trial`, the entire stack rebuilds
-between trials; per-service `tolokaforge.isolation` labels have
-no effect (the labels are still validated by the loader, they
-just don't drive any behaviour).
+Per-service labels in the compose file are informational under
+this stance — the stack is torn down and rebuilt for each trial
+regardless of what any label says.
+
+**Cost.** Highest. Every trial pays a full compose cold-start
+(measured at ~30–45 s for a four-service stack). A 100-trial run
+pays ~50 minutes of overhead on top of the actual agent work.
+
+**Safety.** Strongest. Nothing can leak from one trial into the
+next — services, databases, filesystem state, network topology
+all rebuild from the manifest.
+
+**Pick this when:** trials mutate state destructively; safety is
+paramount; the pack's compose stack is small enough that
+cold-start cost is acceptable; you don't yet trust the pack's
+services to be safe to share.
+
+### Two rules that fall out of the model
+
+**Rule 1 — one `per_trial` task poisons the well.** If any task
+in the run requires `per_trial`, the whole run executes in
+per-trial mode; shared-stack tasks in the same run also run in
+per-trial mode. This is a safety property — you can never
+accidentally share when one task says it can't share.
+
+**Rule 2 — per-service labels only drive between-trial behaviour
+under shared-stack mode.** When the backend materialises a fresh
+stack per trial (Stance 3), labels are validated but have no
+runtime effect.
 
 Task overrides layer on top: a task's own
 `environment_manifest.isolation` wins over the project's

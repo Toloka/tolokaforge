@@ -27,7 +27,9 @@ default_environment:
   runner_service: "runner"
   inputs:
     postgres_version: "16"
-  isolation: "per_trial"
+  # isolation omitted → defaults to shared_ok. Per-service
+  # tolokaforge.isolation labels in the compose file drive
+  # between-trial behaviour.
   network_policy: "LOCALHOST_ONLY"
   security_context_defaults:
     user: "toloka"
@@ -80,7 +82,6 @@ run_defaults:
     max_budget_usd: 20.0
     max_requests_per_second: 10.0
     max_attempt_retries: 3
-    runtime_mode: "per_trial"
   storage:
     artifacts:
       type: "local"
