@@ -30,14 +30,14 @@ from pydantic import BaseModel, ConfigDict, TypeAdapter
 from tolokaforge.core.llm.presets import build_capabilities
 
 
-# --- schemas mirroring the zendesk-style tools where the M3 tags corruption lands -----------
+# --- schemas at the two sites the shipped MiniMax-M3 tags recovery is scoped to (updates.tags / item.tags) ---
 class _Updates(BaseModel):
     model_config = ConfigDict(extra="forbid")
     tags: list[str]
 
 
-class _ZendeskUpdate(BaseModel):
-    """update_item: the array (`tags`) lives one level deep under `updates`."""
+class _ScopedUpdate(BaseModel):
+    """A `tags` array nested one level under an open `updates` object (a scoped recovery site)."""
 
     model_config = ConfigDict(extra="forbid")
     updates: _Updates
@@ -48,8 +48,8 @@ class _Item(BaseModel):
     tags: list[str]
 
 
-class _ZendeskCreate(BaseModel):
-    """create_item: a single-key object literally named `item`, with a nested `tags` array."""
+class _ScopedCreate(BaseModel):
+    """A `tags` array nested under an open `item` object (a scoped recovery site)."""
 
     model_config = ConfigDict(extra="forbid")
     item: _Item
@@ -82,13 +82,13 @@ _CASES: list[tuple[str, type[BaseModel], dict[str, Any], tuple[str, ...] | None,
 for _slug, _schema, _valid, _path in [
     (
         "minimax/minimax-m3",
-        _ZendeskUpdate,
+        _ScopedUpdate,
         {"updates": {"tags": ["vip", "urgent"]}},
         ("updates", "tags"),
     ),
     (
         "minimax/minimax-m3",
-        _ZendeskCreate,
+        _ScopedCreate,
         {"item": {"tags": ["receipt-issued"]}},
         ("item", "tags"),
     ),
@@ -98,7 +98,7 @@ for _slug, _schema, _valid, _path in [
         _CASES.append((_slug, _schema, _valid, _path, _shape))
 # empty string recovers to [], so use an already-empty array as the valid ground truth.
 _CASES.append(
-    ("minimax/minimax-m3", _ZendeskUpdate, {"updates": {"tags": []}}, ("updates", "tags"), "empty")
+    ("minimax/minimax-m3", _ScopedUpdate, {"updates": {"tags": []}}, ("updates", "tags"), "empty")
 )
 
 
