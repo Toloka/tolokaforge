@@ -28,10 +28,13 @@ Two places in the current codebase still carry the legacy name
   by this document; a deprecation banner at the top of that file
   points readers here.
 - **`evaluation.task_packs`** — a schema field on the run config
-  that lists which projects a run includes. To be renamed to
-  `evaluation.projects` in a future schema migration, with
-  `task_packs` accepted as a deprecated alias for backward
-  compatibility. See "Adopting the Project layer" below.
+  that lists project directories a run pulls tasks from. Being
+  redesigned: the new field is `evaluation.projects` and it's
+  optional — a run config that omits it defaults to the enclosing
+  project (i.e. the project directory the run config lives in).
+  `task_packs` is preserved as a deprecated alias with a
+  `DeprecationWarning` at config load. See "Deprecations and
+  migrations" below.
 
 Outside those two, "task pack" is no longer used. Wherever the
 word "pack" still appears in the codebase, it refers to a Project.
@@ -149,8 +152,8 @@ domain bundle into each — that trade-off is preferred over
 cross-project coupling.
 
 Cross-scenario runs are a **run-config** concern — list multiple
-projects in `evaluation.task_packs` (the field's legacy name is
-kept for backward compatibility) and each project's own
+projects in `evaluation.projects` (which is optional and defaults
+to the enclosing project when omitted). Each project's own
 Project spec provides its scenario-specific defaults. The harness
 composes the run from the projects, not by mixing scenarios inside
 one Project.
@@ -253,14 +256,18 @@ needs.
 A minimal example:
 
 ```yaml
-# run_config/dev.yaml
+# run_config/dev.yaml (inside a project directory)
 orchestrator:
   repeats: 3                          # each task runs 3 times
   max_turns: 30                       # run-wide ceiling
 
 evaluation:
-  task_packs:                         # legacy field name — value is a list of project directories
-    - "projects/customer-support"
+  # `projects:` omitted — the run operates on the enclosing
+  # project by default. Uncomment to run against a different
+  # project or to combine several.
+  # projects:
+  #   - "."                             # this project
+  #   - "../other-project"              # additional project
   # tasks_glob: "tasks/support_*/task.yaml"   # optional filter
   # output_dir: "results/nightly-2026-07-09"  # overrides project default
 
@@ -353,10 +360,9 @@ fields when the task points at a different file (e.g. a task-local
 
 Higher entries override lower. Fields that only appear in
 `project.yaml` (like `default_environment`) apply automatically;
-fields that only appear in run configs (like
-`evaluation.task_packs`) are per-invocation only; fields that
-appear in both let the run config decide for that specific
-invocation.
+fields that only appear in run configs (like `orchestrator.repeats`
+or `models`) are per-invocation only; fields that appear in both
+let the run config decide for that specific invocation.
 
 **The two layers don't interact directly.** Each task's resolved
 `TaskDescription` runs against the resolved run configuration at
@@ -377,14 +383,14 @@ task files that mostly say only their own identity.
 ```
 project root/
 ├── project.yaml                    ← the Project (project-wide defaults)
-│                                     invariant across runs — models,
-│                                     compute, environment, storage,
+│                                     invariant across runs — compute,
+│                                     environment, storage,
 │                                     observability, orchestration, ...
 │
 ├── run_config/                     ← named run configs (per-invocation)
-│   ├── dev.yaml                    each declares which models THIS
+│   ├── dev.yaml                    each declares the models THIS
 │   └── ...                         run uses, workers, output dir,
-│                                     task_packs, filter
+│                                     task filter, ...
 │
 ├── shared/                         (optional; assets the Project points at)
 │   ├── environment.compose.yaml    (base compose file)
@@ -792,8 +798,12 @@ and you're testing a different thing.
 Settings that describe **how this specific run happens**. Every
 invocation has its own.
 
-- **`evaluation.task_packs`** — which projects THIS run includes
-  (field name preserved for backward compatibility).
+- **`evaluation.projects`** (optional) — which projects THIS run
+  includes. When omitted, defaults to the enclosing project (the
+  project directory the run config file lives in). Explicit only
+  for the rare multi-project run. The legacy field
+  `evaluation.task_packs` is accepted as a deprecated alias; see
+  "Deprecations and migrations" below.
 - **`evaluation.tasks_glob`** — filter narrowing which of a
   project's tasks THIS run actually executes.
 - **`evaluation.output_dir`** — per-run output location.
@@ -855,7 +865,7 @@ the run config winning on conflict.
 | `observability.*` | ✓ | — | Project-only |
 | `orchestration.*` | ✓ default | `orchestrator.*` (matching sub-fields) | run_config overrides |
 | `orchestrator.repeats` / `max_turns` (run-wide cap) | — | ✓ | run_config-only |
-| `evaluation.task_packs` | — | ✓ | run_config-only |
+| `evaluation.projects` (optional; defaults to enclosing project) | — | ✓ | run_config-only |
 | `evaluation.harness_adapter` | — | ✓ | run_config-only |
 | `engine.presets_file` | — | ✓ | run_config-only |
 
@@ -957,9 +967,8 @@ storage:
 `run_config/dev.yaml`:
 
 ```yaml
+# evaluation.projects omitted — defaults to the enclosing project.
 evaluation:
-  task_packs:
-    - "support-triage-pack"
   output_dir: "results/dev-2026-07-09"
 
 orchestrator:
@@ -986,8 +995,11 @@ Invocation: `tolokaforge run --config run_config/dev.yaml`.
 project lives in `project.yaml`: the environment, the task
 defaults, the compute provider, the storage backends. The run
 config names the models being evaluated plus this run's
-per-invocation choices (`repeats`, `output_dir`, `task_packs`).
-The Project has no default model; every run declares its own.
+per-invocation choices (`repeats`, `output_dir`). The Project has
+no default model; every run declares its own. `evaluation.projects`
+is omitted because the run config lives inside the project's
+`run_config/` directory — the enclosing project is the implicit
+default.
 
 ### Scenario B — Same project under CI and nightly sweeps
 
@@ -1013,9 +1025,8 @@ support-triage-pack/
 `run_config/ci.yaml`:
 
 ```yaml
+# evaluation.projects omitted — defaults to the enclosing project.
 evaluation:
-  task_packs:
-    - "support-triage-pack"
   output_dir: "results/ci/${CI_RUN_ID}"
 
 orchestrator:
@@ -1040,9 +1051,8 @@ models:
 `run_config/nightly.yaml`:
 
 ```yaml
+# evaluation.projects omitted — defaults to the enclosing project.
 evaluation:
-  task_packs:
-    - "support-triage-pack"
   output_dir: "s3://team-toloka/nightly/${DATE}"
 
 orchestrator:
@@ -1107,9 +1117,8 @@ that's the whole point.
 `run_config/agent-opus.yaml`:
 
 ```yaml
+# evaluation.projects omitted — defaults to the enclosing project.
 evaluation:
-  task_packs:
-    - "support-triage-pack"
   output_dir: "results/bake-off/opus"
 
 orchestrator:
@@ -1499,17 +1508,75 @@ refactoring include:
   `compute` / `storage` / `observability` / `orchestration` move
   from hard-coded to Project-overridable, with run config values
   and CLI flags able to override on top.
-- **Legacy field rename** — `evaluation.task_packs` on the run
-  config becomes `evaluation.projects`. `task_packs` stays
-  accepted as a deprecated alias for backward compatibility, with
-  a `DeprecationWarning` at config load. The older
-  `docs/TASK_PACKS.md` guide is superseded by this document and
-  should be removed once no in-tree link still points at it.
+- **Legacy field redesign** — `evaluation.task_packs` on the run
+  config becomes `evaluation.projects`, and the field turns
+  **optional**: when omitted, the loader defaults to the
+  enclosing project (the project directory the run config lives
+  in). Explicit use of `evaluation.projects` is only needed for
+  the rare multi-project run. `task_packs` stays accepted as a
+  deprecated alias with a `DeprecationWarning` at config load.
+  The older `docs/TASK_PACKS.md` guide is superseded by this
+  document and should be removed once no in-tree link still
+  points at it. See the "Deprecations and migrations" section
+  below for the user-facing migration notes.
 
 Backward-compat is total by design: a project without `project.yaml`
 continues to work through a synthesized default Project. Existing
 `adapter_settings.*` fields — including any Domain-bundle
 references — flow through unchanged.
+
+## Deprecations and migrations
+
+Two changes carry a deprecation window. Both remain accepted for
+now; both should be migrated away from.
+
+### 1. `evaluation.task_packs` on the run config
+
+**Old:** `evaluation.task_packs: [<path>, ...]` on
+`run_config.yaml`. A required list naming which packs a run
+pulls tasks from.
+
+**New:** `evaluation.projects: [<path>, ...]` — same shape, and
+now **optional**. When omitted, the loader uses the enclosing
+project (the project directory the run config file lives in).
+Explicit only for the rare multi-project run.
+
+**Migration path:**
+
+1. If your run config lives under `<project>/run_config/`, delete
+   the `evaluation.task_packs` line entirely — the enclosing
+   project is now the default.
+2. If your run config lives outside a project directory, or
+   combines multiple projects, rename `task_packs:` to
+   `projects:` and keep the list.
+3. `task_packs:` will continue to be accepted as an alias with a
+   `DeprecationWarning` at config load, so scripts and CI keep
+   working during the migration.
+
+**Timeline:** the alias survives at least one full minor-version
+release cycle after the rename lands. Then it goes away.
+
+### 2. `docs/TASK_PACKS.md`
+
+**Old:** the pre-Project authoring guide at `docs/TASK_PACKS.md`.
+
+**New:** this document (`docs/architecture/PROJECTS.md`) covers
+the full model — project + run config + task, with the concrete
+schema and worked scenarios.
+
+**Migration path:** update any links you own to point at
+`docs/architecture/PROJECTS.md`. The old file carries a
+deprecation banner and will be removed once no in-tree link
+still targets it.
+
+### Where users see the deprecations
+
+- **At config load:** `DeprecationWarning` when a run config
+  uses the legacy `task_packs` field. Names the offending file,
+  the legacy field, and the recommended replacement.
+- **In `docs/TASK_PACKS.md`:** a banner at the top of the file
+  points readers here.
+- **In this section:** the canonical migration guide.
 
 ## Backward compatibility
 

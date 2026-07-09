@@ -5,7 +5,9 @@
 # run_config/ci.yaml, run_config/nightly.yaml, etc.
 #
 # See docs/architecture/PROJECTS.md § "Relationship to the run
-# config" for the full field-ownership + precedence rules.
+# config" for the full field-ownership + precedence rules, and
+# § "Deprecations and migrations" for the evaluation.projects
+# field notes.
 
 # ── Models — always declared on the run config, never on the
 # project. The model being evaluated is the invocation's variable.
@@ -38,13 +40,16 @@ orchestrator:
   # runtime: per_trial
 
 # ── Evaluation ──────────────────────────────────────────────────
-# `task_packs` names which projects this run pulls in — always
-# per-invocation. `tasks_glob` and `output_dir` inherit from the
-# project unless overridden here.
+# `evaluation.projects` is optional — when omitted, the loader uses
+# the enclosing project (this project). `tasks_glob` and
+# `output_dir` inherit from the project unless overridden here.
 evaluation:
-  task_packs:
-    - "examples/native/example-microservices-pack"
-  # tasks_glob defaults to project.tasks.discovery.glob:
+  # projects:                       # optional; defaults to enclosing project
+  #   - "."                         # this project
+  #   - "../other-project"          # additional project (multi-project run)
   # tasks_glob: "tasks/**/task.yaml"
-  # output_dir defaults to project.storage.artifacts.path:
   # output_dir: "results/example_microservices_pack"
+
+# Legacy: `evaluation.task_packs` is still accepted as an alias
+# for `evaluation.projects` but emits a DeprecationWarning at
+# config load. See PROJECTS.md § "Deprecations and migrations".
