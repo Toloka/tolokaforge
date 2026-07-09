@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Samples MCP server for the manufacturing-derived wire-probe sandbox.
+"""MCP server for the wire-probe merged domain.
 
-Complex dict-map / discriminated-union tool shapes, policy-stripped, neutral
-entities, stubbed.
+Complex dict-map / discriminated-union tool shapes derived from public
+benchmarks (tau2-bench telecom, API-Bank tool-registry) plus hand-authored
+neutral records; policy-stripped, neutral entities, stubbed.
 """
 
 from tolokaforge.core.tools_interface import create_server

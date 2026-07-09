@@ -1,21 +1,14 @@
-# Shared domain for the Samples sandbox: the higher-complexity, multi-step
-# derived cases (manufacturing allocation/CAPA + tau2-bench telecom resolution +
-# API-Bank tool-registry meta-flow). Complex dict-map / discriminated-union /
-# id-threading / meta-tool shapes, policy stripped, neutral entities. Each
-# testcase enables only the subset of tools it needs.
+# Shared domain for the wire-probe merged pack: the higher-complexity,
+# multi-step derived cases (tau2-bench telecom resolution + API-Bank
+# tool-registry meta-flow + hand-authored neutral records). Complex dict-map /
+# discriminated-union / id-threading / meta-tool shapes, policy stripped,
+# neutral entities. Each testcase enables only the subset of tools it needs.
 category: "tool_use"
 
 tools:
   agent:
     mcp_server: "mcp_server.py"
     enabled:
-      # manufacturing-derived
-      - get_entity_info
-      - create_allocation
-      - modify_order
-      - create_capa
-      - modify_lot
-      - modify_inventory
       # telecom (tau2-bench-derived)
       - lookup_subscriber
       - get_subscriber_details
@@ -61,6 +54,9 @@ tools:
       - finalize_record
       - submit_tree
       - submit_blocks
+      # free-form nested-array probe (hidden-type array inside an open object)
+      - apply_record_update
+      - submit_record
   user:
     enabled: []
 

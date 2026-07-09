@@ -1,15 +1,15 @@
-"""Models for the Samples sandbox (complex multi-step shapes, policy-stripped).
+"""Models for the wire-probe merged domain (complex multi-step shapes).
 
 This shared domain hosts the higher-complexity, multi-step derived cases:
-- manufacturing allocation / CAPA shapes (the ``lots`` / ``upsert_lines``
-  dict-maps and the CAPA discriminated union);
 - a tau2-bench-derived telecom account-resolution flow (nested subscriber,
   discriminated payment-method union, Decimal amounts);
-- an API-Bank-derived tool-registry meta-flow (a device dict-map).
+- an API-Bank-derived tool-registry meta-flow (a device dict-map);
+- hand-authored neutral ``records`` shapes (typed dict-map with a key-packing
+  bait, discriminated union, deep nesting, recursion, heterogeneous array).
 
-All shapes are derived/rewritten from public benchmarks or a policy-stripped
-internal domain; entities are renamed and no policy is carried. The shapes drive
-the codec behaviour; the policy (the sensitive asset) is dropped. Non-scoring.
+All shapes are derived/rewritten from public benchmarks (tau2-bench, API-Bank)
+or hand-authored; entities are renamed and no policy is carried. The shapes
+drive the codec behaviour; no policy or answer key is present. Non-scoring.
 """
 
 from __future__ import annotations
@@ -18,44 +18,6 @@ from decimal import Decimal
 from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, Field
-
-# --- manufacturing-derived shapes -------------------------------------------
-
-
-class LotAlloc(BaseModel):
-    """Per-lot allocation payload: the value half of the ``lots`` dict-map."""
-
-    allocated_quantity: Annotated[
-        int, Field(ge=0, description="Quantity allocated from this lot.", examples=[10])
-    ]
-
-
-class OrderLine(BaseModel):
-    """Order line: the value half of the ``upsert_lines`` dict-map."""
-
-    requested_quantity: Annotated[int, Field(ge=0, description="Requested quantity.")]
-    allocated_quantity: Annotated[int, Field(ge=0, description="Allocated quantity.")]
-
-
-class LotCapa(BaseModel):
-    """``lot`` branch of the CAPA discriminated union."""
-
-    target: Literal["lot"]
-    lot_id: Annotated[str, Field(description="Lot id.", examples=["LOT-001"])]
-    reason: Annotated[str, Field(description="Reason for the CAPA.")]
-
-
-class OrderCapa(BaseModel):
-    """``order`` branch of the CAPA discriminated union."""
-
-    target: Literal["order"]
-    order_id: Annotated[str, Field(description="Order id.", examples=["ORD-001"])]
-    reason: Annotated[str, Field(description="Reason for the CAPA.")]
-
-
-# Discriminated union on ``target`` -> oneOf + discriminator + $defs/$ref.
-Capa = Annotated[Union[LotCapa, OrderCapa], Field(discriminator="target")]
-
 
 # --- telecom (tau2-bench-derived) shapes ------------------------------------
 
