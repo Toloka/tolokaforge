@@ -16,6 +16,34 @@ extends),
 [`adr/0018-multi-container-under-shared-runtime.md`](adr/0018-multi-container-under-shared-runtime.md)
 (the isolation case matrix this model preserves).
 
+## The three pieces of a task pack
+
+A TolokaForge task pack ships three kinds of configuration, each
+with a distinct job:
+
+- **`project.yaml`** at the pack root — declares the pack's
+  identity and everything that stays the same across every run of
+  it: the default environment, default models, compute policy,
+  storage backends, observability sinks, orchestration policy, and
+  the task-level defaults every task inherits.
+- **`run_config.yaml`** at the pack root — declares per-invocation
+  choices. Which models drive *this* run, how many workers to
+  spawn, where to write output, which packs to include. The same
+  Project can run under many different run configs (CI, nightly,
+  demo) without editing the Project itself.
+- **`task.yaml`** files under `tasks/<name>/` — one per task. Each
+  task's identity and any settings that override the Project's
+  defaults for that specific task.
+
+The Project defines what the pack **is**. The run config picks
+**how this run is configured**. Each task defines what makes it
+**unique**. The rest of the pack (grading rules, fixtures,
+environment compose files, shared assets) lives at whichever level
+owns it.
+
+Everything below drills into each of these three pieces and how
+they compose.
+
 ## What a Project is
 
 A **Project** is a container for a set of related AI-agent
@@ -106,50 +134,128 @@ inherit. Small tasks stay small.
 
 There can be many tasks in a Project. There is always at least one.
 
-## How Project and Task compose
+## What a run config is
 
-For any given task, the loader combines two sources of settings to
-produce the effective configuration:
+A **run config** (`run_config.yaml` at the pack root) declares how
+a specific run of the pack is configured — the settings that vary
+between one invocation and the next while the Project itself stays
+the same.
 
-1. **The Project** provides pack-wide defaults (from
-   `task_defaults` and section-level defaults).
-2. **The Task** provides its own identity and any per-task
-   overrides on top.
+Concretely, a run config owns:
 
-Task wins on conflict. If a task declares no overrides, it uses
-the Project's defaults verbatim. If it declares a partial
-override (e.g. one input value on the environment), the merge is
-deep-typed — task-declared sub-fields win; everything else
-inherits.
+- **Which models** drive this particular run — the agent, the
+  simulated user, the judge.
+- **Which packs** to include in this invocation (a single run can
+  pull tasks from more than one pack).
+- **Run-wide caps** — number of workers, per-trial repeat count,
+  per-trial max-turns ceiling, budget cap, output directory for
+  this run's results.
+- **A task filter** — an optional glob that narrows down which
+  tasks under the pack this invocation actually runs.
+
+The same Project can run under many different `run_config.yaml`
+files:
+
+- A CI pipeline runs a fast, cheap sweep with a small model and
+  low repeat count.
+- A nightly regression sweep uses a stronger model, higher
+  repeats, and writes to a durable output location.
+- A stakeholder demo pins one specific model version to keep
+  results reproducible.
+
+All three read the same Project. The run config picks the
+per-invocation choices; the Project provides everything else.
+
+**Fields that appear in both files.** Some settings — `models`,
+`workers`, `output_dir`, runtime mode — have sensible defaults in
+`project.yaml` and can be overridden per invocation in
+`run_config.yaml`. When both files declare the same field,
+`run_config.yaml` wins for that invocation.
+
+`run_config.yaml` is **required for execution** — you need one to
+actually invoke `tolokaforge run` — but a minimal run config can
+be a few lines if the Project already declares the defaults it
+needs.
+
+## How Project, Task, and run config compose
+
+Three sources of settings combine at two separate layers when a
+run executes.
+
+**Task-level layer** — produces the effective `TaskDescription`
+the runner sees for each task:
+
+1. `task.yaml` fields (per-task overrides — highest priority)
+2. `project.task_defaults` (pack-wide defaults inherited by every
+   task)
+3. Adapter default (per adapter type)
+4. Engine default
+
+Task wins on conflict; unspecified sub-fields inherit. Deep-typed
+merge on typed sections (e.g. `environment_manifest.inputs` merges
+input by input, not whole-object). Full replacement on certain
+fields when the task points at a different file (e.g. a task-local
+`compose_file` replaces the project's).
+
+**Run-level layer** — produces the effective run configuration:
+
+1. CLI flags — one-off overrides for this invocation
+2. Environment variables — infrastructure fields only (API keys,
+   service URLs, executor address)
+3. `run_config.yaml` — per-invocation choices
+4. `project.yaml` — pack-wide defaults
+5. Engine default
+
+Higher entries override lower. Fields that only appear in
+`project.yaml` (like `default_environment`) apply automatically;
+fields that only appear in `run_config.yaml` (like
+`evaluation.task_packs`) are per-invocation only; fields that
+appear in both let the run config decide for that specific
+invocation.
+
+**The two layers don't interact directly.** Each task's resolved
+`TaskDescription` runs against the resolved run configuration at
+execution time, but they merge on separate chains. A task's
+`max_turns` override doesn't change the run's worker count; a run
+config's `models.judge` doesn't change any task's tools.
 
 Nothing in this model is required to be complex. A pack with ten
-similar tasks might have a `project.yaml` and ten one-line
-`task.yaml` files. A pack with three hundred tasks all sharing
-one scenario has one `project.yaml` declaring the shared setup and
-three hundred small task files that mostly say only their own
-identity.
+similar tasks might have a small `project.yaml`, a slim
+`run_config.yaml`, and ten one-line `task.yaml` files. A pack with
+three hundred tasks all sharing one scenario has one `project.yaml`
+declaring the shared setup, one `run_config.yaml` per invocation
+scenario, and three hundred small task files that mostly say only
+their own identity.
 
 ### The picture, in one diagram
 
 ```
 task pack root/
-├── project.yaml                    ← ONE Project (pack-wide defaults)
-│                                     (models, compute, environment,
-│                                      storage, observability, ...)
+├── project.yaml                    ← the Project (pack-wide defaults)
+│                                     invariant across runs — models,
+│                                     compute, environment, storage,
+│                                     observability, orchestration, ...
+│
+├── run_config.yaml                 ← the run config (per-invocation)
+│                                     required for execution — which
+│                                     models THIS run uses, workers,
+│                                     output dir, task_packs, filter
 │
 ├── shared/                         (optional; assets the Project points at)
 │   ├── environment.compose.yaml    (base compose file)
 │   └── system_prompt.md            (default system prompt)
 │
-└── tasks/                          ← ONE OR MORE Tasks
+└── tasks/                          ← the Tasks (one or more)
     ├── task_a/
-    │   └── task.yaml               (inherits or overrides)
+    │   └── task.yaml               (inherits Project, may override)
     └── task_b/
         └── task.yaml
 ```
 
-For a given task, effective config = merge(Project → Task), Task
-winning on conflict.
+Task-level chain: `merge(project.task_defaults, task.yaml)` →
+`TaskDescription`, task-wins. Run-level chain:
+`merge(project, run_config, env, CLI)`, later-wins. Both feed the
+runner at execution time.
 
 ### Familiar shapes from other tools
 
@@ -161,11 +267,10 @@ flows), with per-item overrides layered on top. TolokaForge's
 Project is that top-level entity for AI-agent evaluations; a Task
 is the per-item.
 
-## Scopes surrounding the Project
+## The five config scopes — reference table
 
-The Project is the *authoring* top layer — it's what task authors
-maintain in version control. When a project actually runs, two
-more scopes come into play above it:
+Pulling all of the above together, TolokaForge has five layers of
+configuration that combine to determine what actually runs:
 
 | Scope | Owned by | Lifetime | What lives here |
 |---|---|---|---|
@@ -175,16 +280,15 @@ more scopes come into play above it:
 | **Task** | `task.yaml` + task-adjacent files | One task | Task identity, per-task overrides |
 | **Trial** | Runtime-only | One trial | Auto-generated ids, per-trial state — never user-configurable |
 
-`run_config.yaml` picks per-invocation settings (which model, how
-many workers, where to write results *this time*). The same Project
-can run with many different `run_config.yaml` files — one for CI,
-one for a nightly sweep, one for a stakeholder demo — without
-editing the Project itself. CLI flags and environment variables sit
-above that for one-off overrides.
+Project and Task are the *authoring* layers — what task authors
+maintain in version control. Run and CLI+env are the *execution*
+layers — what operators pick per invocation. Trial is
+runtime-produced and not user-configurable.
 
-Trial-level state (the specific docker containers, the specific
-trial id) is produced at runtime and is not something a user
-configures.
+The precedence rules for how these layers interact are detailed
+in "How Project, Task, and run config compose" above and in the
+per-field field-ownership table under "Relationship to
+`run_config.yaml`" below.
 
 ## Config file inventory
 
