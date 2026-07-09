@@ -18,28 +18,29 @@ extends),
 
 ## Vocabulary
 
-Throughout this document the primary term is **Project**. Existing
-TolokaForge material (`TASK_PACKS.md`, the `evaluation.task_packs`
-field on the run config) sometimes calls the same thing a
-**task pack** — that's the same entity by another name. From here
-on the doc uses **Project** for the abstraction, **project
-directory** for its filesystem layout, and the words *scenario* and
-*domain* only when the point is specifically to name the semantic
-equivalences settled by team review (see "Project = scenario =
-domain, one-to-one" below).
+**The abstraction is called a Project.** New code, new docs, and
+this document use that name consistently.
 
-**Pack** survives in the doc only in three places, and nowhere
-else:
+Two places in the current codebase still carry the legacy name
+"task pack." Both are being migrated away from:
 
-- **`task_packs`** — a field on the run config
-  (`evaluation.task_packs`). Technical name, unchanged.
-- **Directory names on disk** — e.g. the sample directory
-  `example-microservices-pack/`, or the placeholder
-  `support-triage-pack/` used in the scenario examples below.
-- **In the vocabulary paragraph above.**
+- **`docs/TASK_PACKS.md`** — the older authoring guide. Superseded
+  by this document; a deprecation banner at the top of that file
+  points readers here.
+- **`evaluation.task_packs`** — a schema field on the run config
+  that lists which projects a run includes. To be renamed to
+  `evaluation.projects` in a future schema migration, with
+  `task_packs` accepted as a deprecated alias for backward
+  compatibility. See "Adopting the Project layer" below.
 
-If you see "pack" outside those three contexts, treat it as a
-Project.
+Outside those two, "task pack" is no longer used. Wherever the
+word "pack" still appears in the codebase, it refers to a Project.
+
+For clarity: this doc uses **Project** for the abstraction,
+**project directory** for its filesystem layout, and the words
+*scenario* and *domain* only when the point is specifically to
+name the semantic equivalences settled by team review (see
+"Project = scenario = domain, one-to-one" below).
 
 ## The three pieces of a project
 
@@ -1500,6 +1501,12 @@ refactoring include:
   `compute` / `storage` / `observability` / `orchestration` move
   from hard-coded to Project-overridable, with run config values
   and CLI flags able to override on top.
+- **Legacy field rename** — `evaluation.task_packs` on the run
+  config becomes `evaluation.projects`. `task_packs` stays
+  accepted as a deprecated alias for backward compatibility, with
+  a `DeprecationWarning` at config load. The older
+  `docs/TASK_PACKS.md` guide is superseded by this document and
+  should be removed once no in-tree link still points at it.
 
 Backward-compat is total by design: a project without `project.yaml`
 continues to work through a synthesized default Project. Existing

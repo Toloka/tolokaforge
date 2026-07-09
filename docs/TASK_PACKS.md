@@ -1,5 +1,14 @@
 # Task Packs Guide
 
+> **Deprecated.** The "task pack" name is legacy vocabulary; the
+> abstraction is now called a **Project**. Read
+> [`architecture/PROJECTS.md`](architecture/PROJECTS.md) for the
+> current authoring model, schema, and worked scenarios. This
+> guide is kept only to preserve links from older material; new
+> readers should skip straight to `PROJECTS.md`. The
+> `evaluation.task_packs` field name below is scheduled for
+> rename to `evaluation.projects` in a future schema migration.
+
 Task packs let you keep benchmark content outside the harness repository.
 
 ## Run Config
