@@ -123,26 +123,19 @@ run_defaults:
 
 ### Project = scenario = domain, one-to-one
 
-In practice, a project maps to one business or evaluation scenario
-(customer-support triage, backend refactoring, deep-research
-question-answering, ...). All the tasks in a project share the
-same tools, the same system-prompt frame, the same simulated-user
-persona, the same services. The Project layer formalises what has
-always been implicit: **one project = one scenario = one domain**.
+A project maps to exactly one evaluation scenario (customer-
+support triage, backend refactoring, deep-research question-
+answering, ...). The Project layer formalises what has always
+been implicit: **one project = one scenario = one domain**.
+Multi-domain projects and multi-project domains are not
+supported: ship two projects for two scenarios; duplicate a
+shared domain bundle across projects rather than coupling them.
 
-This mapping is settled team guidance, not an accidental
-convention. Multi-domain projects and multi-project domains are
-not supported: if you need two scenarios, ship two projects. If
-the same domain has to be used in two projects, duplicate the
-domain bundle into each — that trade-off is preferred over
-cross-project coupling.
-
-Cross-scenario runs are a **run-config** concern — list multiple
-projects in `evaluation.projects` (which is optional and defaults
-to the enclosing project when omitted). Each project's own
-Project spec provides its scenario-specific defaults. The harness
-composes the run from the projects, not by mixing scenarios inside
-one Project.
+Cross-scenario runs are a run-config concern — list multiple
+projects in `evaluation.projects` (optional; defaults to the
+enclosing project). Each project supplies its own defaults; the
+harness composes the run from the projects, not by mixing
+scenarios inside one Project.
 
 ## What a Task is
 
@@ -375,16 +368,6 @@ Task chain: `merge(project.task_defaults, task.yaml)` →
 `merge(project.run_defaults, run_configs/<name>.yaml, env, CLI)`.
 Both feed the runner at execution time.
 
-### Familiar shapes from other tools
-
-If you've used Databricks Workflows, MLflow Projects, dbt projects,
-or Prefect Deployments, this pattern will feel familiar. Each of
-those tools has a "project-like" top-level entity that owns the
-shared setup for a collection of items (jobs, entrypoints, models,
-flows), with per-item overrides layered on top. TolokaForge's
-Project is that top-level entity for AI-agent evaluations; a Task
-is the per-item.
-
 ## The five config scopes — reference table
 
 Pulling all of the above together, TolokaForge has five layers of
@@ -613,72 +596,6 @@ schema treats every one of them as adapter-private data — same as
 any other adapter-specific config. This keeps Domain semantics
 where they belong (in the adapter that understands them) and keeps
 the harness core small.
-
-## Resolution — task effective config
-
-For every task discovered by `tasks.discovery`, the loader produces
-a `TaskDescription` (the wire type from ADR-0003) by layered merge:
-
-```
-        project.task_defaults
-        (applied to every task)
-                │
-                ▼
-        task.yaml fields
-        (per-task overrides)
-                │
-                ▼
-    environment_manifest merge with project.default_environment
-                │
-                ▼
-      grading.yaml
-      (merged with project.task_defaults.grading_defaults)
-                │
-                ▼
-        Adapter validates the final shape
-                │
-                ▼
-            TaskDescription
-        (the wire format for the runner)
-```
-
-Each step preserves the invariants of the layer above: if the
-project declares `isolation: per_trial` in `default_environment`,
-that stays enforced (ADR-0009); if a task's `grading.yaml` uses
-`llm_judge`, a run-level `models.judge` must be present.
-
-If an adapter ships its own Domain-shaped bundle merge, that merge
-happens between `project.task_defaults` and the task's own fields,
-driven by the adapter, and documented with the adapter. From the
-Project's perspective it's a black-box adapter-side operation.
-
-## Resolution — run effective config
-
-For the invocation itself, the loader deep-merges the run-scoped
-chain and then applies CLI + env overrides:
-
-```
-    Engine defaults
-        │
-        ▼
-    project.run_defaults
-    (base — compute, storage, observability, orchestrator)
-        │
-        ▼
-    run_configs/<name>.yaml
-    (delta — models, evaluation, per-invocation overrides, engine)
-        │
-        ▼
-    Environment variables
-    (API keys, DB_SERVICE_URL, RAG_SERVICE_URL, TASK_PACKS_DIRS, ...)
-        │
-        ▼
-    CLI flags
-    (--runtime, --user-model, --judge-model, --presets-file, --workers)
-        │
-        ▼
-    Effective RunConfig
-```
 
 ## Field ownership
 
@@ -1369,30 +1286,15 @@ The Project schema is strict at both files.
 
 ## What the model deliberately isn't
 
-- **A harness-level Domain abstraction.** Domain is an adapter-side
-  concept and stays there. The harness core (loader, discovery,
-  `RuntimeBackend`, `TrialGrader`, `TaskDescription` schema) is
-  Domain-agnostic — it has no `project.domain` field, no Domain
-  section in the schema, no unified Domain vocabulary at the
-  harness level. Some adapters implement Domain-shaped bundling as
-  their own convention, carried through the opaque
-  `adapter_settings` field on the task; the Project schema and the
-  harness core treat those bundles as adapter-private data.
-- **A unifier of adapter-specific sharing conventions.** Each
-  adapter documents its own patterns for sharing tools, prompts,
-  or code across tasks; the Project schema doesn't try to abstract
-  over them.
+- **A harness-level Domain abstraction.** Domain is adapter-side;
+  the harness core is Domain-agnostic and passes `adapter_settings`
+  through as opaque data.
 - **A free-form deep-merge system.** Every override is typed and
   bounded.
-- **A three-or-more-level authoring hierarchy.** Two tiers only:
-  Project → Task.
 - **A plugin registry for reset primitives.** New primitives
   extend the engine's schema enum.
-- **A cross-run stack persistence surface.** All sharing is
-  within a single `tolokaforge run` invocation.
-- **In-place editing of compose files.** Compose files are read
-  at load time, input-substituted in memory, hashed, and
-  materialised.
+- **A cross-run persistence surface.** All sharing is scoped to a
+  single `tolokaforge run` invocation.
 - **A parallel wire format.** The Project layer merges INTO the
   existing `TaskDescription` from ADR-0003; no new wire type.
 
