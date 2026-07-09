@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.8.1 (2026-07-09)
+
+### Feat
+
+- **models**: add x-ai/grok-4.5 (pricing + capability certificate) (#196)
+
 ## v0.8.0 (2026-07-06)
 
 ### Feat
