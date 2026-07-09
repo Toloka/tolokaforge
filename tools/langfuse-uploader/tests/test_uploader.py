@@ -95,6 +95,25 @@ class TestBuildTrialEvents:
         assert body["metadata"]["task_id"] == "task-alpha"
         assert body["timestamp"] == "2026-01-01T00:00:00Z"  # naive ts treated as UTC
 
+    def test_trace_token_totals_from_top_level(self) -> None:
+        events, _ = build()
+        meta = events[0]["body"]["metadata"]
+        assert meta["tokens_input"] == 100
+        assert meta["tokens_output"] == 20
+
+    def test_trace_token_totals_fall_back_to_usage(self) -> None:
+        # partner runs carry no top-level tokens_{input,output}; totals live under metrics.usage
+        metrics = {
+            "turns": 1,
+            "usage": {"prompt_tokens": 512, "completion_tokens": 64, "calls": []},
+        }
+        events, _ = build_trial_events(
+            make_trajectory(), metrics, GRADE, label="demo", session="run-1"
+        )
+        meta = events[0]["body"]["metadata"]
+        assert meta["tokens_input"] == 512
+        assert meta["tokens_output"] == 64
+
     def test_generations_and_spans(self) -> None:
         events, _ = build()
         generations = [e for e in events if e["type"] == "generation-create"]

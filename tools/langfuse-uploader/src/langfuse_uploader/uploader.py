@@ -253,11 +253,18 @@ def build_trial_events(
         "api_calls",
         "tool_calls",
         "tool_success_rate",
-        "tokens_input",
-        "tokens_output",
         "cost_usd",
         "latency_total_s",
     )
+    # Token totals live at metrics.tokens_{input,output} in some runs and under metrics.usage
+    # (prompt_tokens/completion_tokens) in others; fall back so the trace-level totals are populated.
+    usage = metrics.get("usage") or {}
+    tokens_input = metrics.get("tokens_input")
+    if tokens_input is None:
+        tokens_input = usage.get("prompt_tokens")
+    tokens_output = metrics.get("tokens_output")
+    if tokens_output is None:
+        tokens_output = usage.get("completion_tokens")
     add_event(
         "trace-create",
         {
@@ -282,6 +289,8 @@ def build_trial_events(
             ],
             "metadata": {key: metrics.get(key) for key in metric_keys}
             | {
+                "tokens_input": tokens_input,
+                "tokens_output": tokens_output,
                 "task_id": task_id,
                 "trial_index": trial_index,
                 "status": trajectory.get("status"),
