@@ -3,7 +3,7 @@
 This document describes the **Project** as the top-level abstraction
 in TolokaForge: what a project owns, how tasks inherit from it, how
 per-invocation settings compose on top, and how every config file
-that a task pack ships fits into the layered model.
+that a project ships fits into the layered model.
 
 Companion reading:
 [`RUNTIME_BACKENDS.md`](RUNTIME_BACKENDS.md) (the `RuntimeBackend`
@@ -16,29 +16,54 @@ extends),
 [`adr/0018-multi-container-under-shared-runtime.md`](adr/0018-multi-container-under-shared-runtime.md)
 (the isolation case matrix this model preserves).
 
-## The three pieces of a task pack
+## Vocabulary
 
-A TolokaForge task pack ships three kinds of configuration, each
+Throughout this document the primary term is **Project**. Existing
+TolokaForge material (`TASK_PACKS.md`, the `evaluation.task_packs`
+field on `run_config.yaml`) sometimes calls the same thing a
+**task pack** — that's the same entity by another name. From here
+on the doc uses **Project** for the abstraction, **project
+directory** for its filesystem layout, and the words *scenario* and
+*domain* only when the point is specifically to name the semantic
+equivalences settled by team review (see "Project = scenario =
+domain, one-to-one" below).
+
+**Pack** survives in the doc only in three places, and nowhere
+else:
+
+- **`task_packs`** — a field on `run_config.yaml`
+  (`evaluation.task_packs`). Technical name, unchanged.
+- **Directory names on disk** — e.g. the sample directory
+  `example-microservices-pack/`, or the placeholder
+  `support-triage-pack/` used in the scenario examples below.
+- **In the vocabulary paragraph above.**
+
+If you see "pack" outside those three contexts, treat it as a
+Project.
+
+## The three pieces of a project
+
+A TolokaForge project ships three kinds of configuration, each
 with a distinct job:
 
-- **`project.yaml`** at the pack root — declares the pack's
+- **`project.yaml`** at the project root — declares the project's
   identity and everything that stays the same across every run of
   it: the default environment, default models, compute policy,
   storage backends, observability sinks, orchestration policy, and
   the task-level defaults every task inherits.
-- **`run_config.yaml`** at the pack root (a pack may ship several,
-  see below) — declares per-invocation choices. Which models drive
-  *this* run, how many workers to spawn, where to write output,
-  which packs to include. The same Project can run under many
-  different run configs (CI, nightly, demo) — you pick which one
-  by passing `--config <path>` at invocation time.
+- **`run_config.yaml`** at the project root (a project may ship
+  several, see below) — declares per-invocation choices. Which
+  models drive *this* run, how many workers to spawn, where to
+  write output, which projects to include. The same Project can
+  run under many different run configs (CI, nightly, demo) — you
+  pick which one by passing `--config <path>` at invocation time.
 - **`task.yaml`** files under `tasks/<name>/` — one per task. Each
   task's identity and any settings that override the Project's
   defaults for that specific task.
 
-The Project defines what the pack **is**. The run config picks
+The Project defines what the project **is**. The run config picks
 **how this run is configured**. Each task defines what makes it
-**unique**. The rest of the pack (grading rules, fixtures,
+**unique**. The rest of the project (grading rules, fixtures,
 environment compose files, shared assets) lives at whichever level
 owns it.
 
@@ -76,14 +101,14 @@ Concretely, a Project owns:
   budget, system prompt, user-simulator persona, tools, grading
   combine method.
 
-One file, `project.yaml` at the pack root, holds all of this. There
-is exactly one Project per pack.
+One file, `project.yaml` at the project root, holds all of this. There
+is exactly one Project per project.
 
 A minimal example — the full field list lives further down in
 [The Project schema](#the-project-schema):
 
 ```yaml
-# project.yaml at the pack root
+# project.yaml at the project root
 name: "customer-support-eval"
 version: 1
 description: "Customer-support scenario evaluation suite."
@@ -109,26 +134,30 @@ compute:
 # see the full schema below.
 ```
 
-### Pack = scenario = Project = Domain, one-to-one
+### Project = scenario = domain, one-to-one
 
-In practice, a task pack maps to one business or evaluation scenario
+In practice, a project maps to one business or evaluation scenario
 (customer-support triage, backend refactoring, deep-research
-question-answering, ...). All the tasks in a pack share the same
-tools, the same system-prompt frame, the same simulated-user
+question-answering, ...). All the tasks in a project share the
+same tools, the same system-prompt frame, the same simulated-user
 persona, the same services. The Project layer formalises what has
-always been implicit: **one pack = one scenario = one Project = one
-Domain**.
+always been implicit: **one project = one scenario = one domain**.
+(The historical vocabulary "task pack" refers to the same entity
+— see the Vocabulary section above.)
 
 This mapping is settled team guidance, not an accidental
-convention. Multi-domain packs and multi-pack Domains are not
-supported: if you need two scenarios, ship two packs. If the same
-Domain has to be used in two packs, duplicate the Domain bundle
-into each — that trade-off is preferred over cross-pack coupling.
+convention. Multi-domain projects and multi-project domains are
+not supported: if you need two scenarios, ship two projects. If
+the same domain has to be used in two projects, duplicate the
+domain bundle into each — that trade-off is preferred over
+cross-project coupling.
 
 Cross-scenario runs are a **run-config** concern — list multiple
-packs in `evaluation.task_packs` and each pack's Project provides
-its own scenario-specific defaults. The harness composes the run
-from the packs, not by mixing scenarios inside one Project.
+projects in `evaluation.task_packs` (the field's legacy name is
+kept for backward compatibility) and each project's own
+Project spec provides its scenario-specific defaults. The harness
+composes the run from the projects, not by mixing scenarios inside
+one Project.
 
 ## What a Task is
 
@@ -185,8 +214,8 @@ There can be many tasks in a Project. There is always at least one.
 
 ## What a run config is
 
-A **run config** (`run_config.yaml` at the pack root) declares how
-a specific run of the pack is configured — the settings that vary
+A **run config** (`run_config.yaml` at the project root) declares how
+a specific run of the project is configured — the settings that vary
 between one invocation and the next while the Project itself stays
 the same.
 
@@ -194,13 +223,13 @@ Concretely, a run config owns:
 
 - **Which models** drive this particular run — the agent, the
   simulated user, the judge.
-- **Which packs** to include in this invocation (a single run can
-  pull tasks from more than one pack).
+- **Which projects** to include in this invocation (a single run
+  can pull tasks from more than one project).
 - **Run-wide caps** — number of workers, per-trial repeat count,
   per-trial max-turns ceiling, budget cap, output directory for
   this run's results.
 - **A task filter** — an optional glob that narrows down which
-  tasks under the pack this invocation actually runs.
+  tasks under the project this invocation actually runs.
 
 The same Project can run under many different `run_config.yaml`
 files:
@@ -229,14 +258,14 @@ needs.
 A minimal example:
 
 ```yaml
-# run_config.yaml at the pack root
+# run_config.yaml at the project root
 orchestrator:
   repeats: 3                          # each task runs 3 times
   max_turns: 30                       # run-wide ceiling
 
 evaluation:
-  task_packs:
-    - "packs/customer-support"
+  task_packs:                         # legacy field name — value is a list of project directories
+    - "projects/customer-support"
   # tasks_glob: "tasks/support_*/task.yaml"   # optional filter
   # output_dir: "results/nightly-2026-07-09"  # overrides project default
 
@@ -259,16 +288,16 @@ tolokaforge run --config run_configs/nightly.yaml
 tolokaforge run --config run_configs/demo.yaml
 ```
 
-A pack can ship a default `run_config.yaml` at its root plus any
+A project can ship a default `run_config.yaml` at its root plus any
 number of alternative run configs under a `run_configs/` directory
 (or any convention that suits the team). Each file is a complete,
 self-contained run config; run configs do not inherit from each
 other.
 
-A typical pack layout with multiple run configs:
+A typical project layout with multiple run configs:
 
 ```
-task pack root/
+project root/
 ├── project.yaml
 ├── run_config.yaml                  ← default (dev / local)
 ├── run_configs/
@@ -295,7 +324,7 @@ run executes.
 the runner sees for each task:
 
 1. `task.yaml` fields (per-task overrides — highest priority)
-2. `project.task_defaults` (pack-wide defaults inherited by every
+2. `project.task_defaults` (project-wide defaults inherited by every
    task)
 3. Adapter default (per adapter type)
 4. Engine default
@@ -312,7 +341,7 @@ fields when the task points at a different file (e.g. a task-local
 2. Environment variables — infrastructure fields only (API keys,
    service URLs, executor address)
 3. `run_config.yaml` — per-invocation choices
-4. `project.yaml` — pack-wide defaults
+4. `project.yaml` — project-wide defaults
 5. Engine default
 
 Higher entries override lower. Fields that only appear in
@@ -328,19 +357,19 @@ execution time, but they merge on separate chains. A task's
 `max_turns` override doesn't change the run's worker count; a run
 config's `models.judge` doesn't change any task's tools.
 
-Nothing in this model is required to be complex. A pack with ten
-similar tasks might have a small `project.yaml`, a slim
-`run_config.yaml`, and ten one-line `task.yaml` files. A pack with
-three hundred tasks all sharing one scenario has one `project.yaml`
-declaring the shared setup, one `run_config.yaml` per invocation
-scenario, and three hundred small task files that mostly say only
-their own identity.
+Nothing in this model is required to be complex. A project with
+ten similar tasks might have a small `project.yaml`, a slim
+`run_config.yaml`, and ten one-line `task.yaml` files. A project
+with three hundred tasks all sharing one scenario has one
+`project.yaml` declaring the shared setup, one `run_config.yaml`
+per invocation scenario, and three hundred small task files that
+mostly say only their own identity.
 
 ### The picture, in one diagram
 
 ```
-task pack root/
-├── project.yaml                    ← the Project (pack-wide defaults)
+project root/
+├── project.yaml                    ← the Project (project-wide defaults)
 │                                     invariant across runs — models,
 │                                     compute, environment, storage,
 │                                     observability, orchestration, ...
@@ -384,8 +413,8 @@ configuration that combine to determine what actually runs:
 | Scope | Owned by | Lifetime | What lives here |
 |---|---|---|---|
 | **CLI + env** | Operator | This invocation | `--runtime`, `--user-model`, `--judge-model`, `--presets-file`; env vars for API keys and service URLs |
-| **Run** | `run_config.yaml` | This invocation | Which models drive this run, how many workers, output dir for this run, which packs to include |
-| **Project** | `project.yaml` | Pack lifetime | Default environment, default models, compute/storage/observability/orchestration policies, task-level defaults inherited by every task |
+| **Run** | `run_config.yaml` | This invocation | Which models drive this run, how many workers, output dir for this run, which projects to include |
+| **Project** | `project.yaml` | Project lifetime | Default environment, default models, compute/storage/observability/orchestration policies, task-level defaults inherited by every task |
 | **Task** | `task.yaml` + task-adjacent files | One task | Task identity, per-task overrides |
 | **Trial** | Runtime-only | One trial | Auto-generated ids, per-trial state — never user-configurable |
 
@@ -401,14 +430,14 @@ per-field field-ownership table under "Relationship to
 
 ## Config file inventory
 
-The complete set of files a task pack can ship:
+The complete set of files a project can ship:
 
 | File | Location | Purpose | Required |
 |---|---|---|---|
-| `project.yaml` | pack root | Pack-level defaults + typed sections | Optional |
-| `run_config.yaml` | pack root | Per-invocation config (models, orchestrator run knobs, evaluation choice) | Required for execution |
-| `shared/environment.compose.yaml` | pack root or task dir | Base compose file referenced by `default_environment` | Optional |
-| `shared/system_prompt.md` | pack root | Default system prompt referenced by `task_defaults.system_prompt` | Optional |
+| `project.yaml` | project root | Project-level defaults + typed sections | Optional |
+| `run_config.yaml` | project root | Per-invocation config (models, orchestrator run knobs, evaluation choice) | Required for execution |
+| `shared/environment.compose.yaml` | project root or task dir | Base compose file referenced by `default_environment` | Optional |
+| `shared/system_prompt.md` | project root | Default system prompt referenced by `task_defaults.system_prompt` | Optional |
 | `task.yaml` | task dir | Task spec (identity, adapter, max_turns, initial_user_message, initial_state, tools, user_simulator, metadata, policies, grading path, system_prompt, adapter_settings, environment_manifest) | Required |
 | `grading.yaml` | task dir | Grading rules (combine, state_checks, transcript_rules, llm_judge, custom_checks) | Required |
 | `environment.compose.yaml` | task dir | Task-local compose (used when the task overrides the project default) | Optional |
@@ -428,7 +457,7 @@ existing schemas. Every other file keeps the shape it has today.
 
 ## The Project schema
 
-`project.yaml` at pack root:
+`project.yaml` at project root:
 
 ```yaml
 # ── Identity ────────────────────────────────────────────────────
@@ -458,7 +487,7 @@ default_environment:
 # ── Task-level defaults ─────────────────────────────────────────
 # Applied to every task; task fields override on deep-typed merge.
 # This is the primary mechanism for sharing task-level config
-# across a pack — system_prompt, tools, user_simulator, max_turns,
+# across a project — system_prompt, tools, user_simulator, max_turns,
 # adapter_type all live here and inherit unless a task overrides.
 task_defaults:
   adapter_type: "native"
@@ -572,7 +601,7 @@ orchestration:
 
 Adding a new top-level section is a schema addition on the Project
 model. Unknown sections warn but don't fail — older loaders keep
-working when new packs declare newer sections.
+working when new projects declare newer sections.
 
 ## Task override semantics
 
@@ -628,9 +657,9 @@ environment_manifest:
 ## Sharing task-level config across many tasks
 
 The Project's `task_defaults` section is the primary mechanism for
-sharing task-level fields across every task in a pack:
+sharing task-level fields across every task in a project:
 
-- `adapter_type` — same for every task in the pack (typical
+- `adapter_type` — same for every task in the project (typical
   pattern: every task uses the same adapter).
 - `system_prompt` — the shared system-prompt frame; each task can
   add specifics.
@@ -640,7 +669,7 @@ sharing task-level fields across every task in a pack:
 - `max_turns`, `policies`, `grading_defaults`, `adapter_settings`
   — shared knobs.
 
-This covers the great majority of cross-task sharing needs. A pack
+This covers the great majority of cross-task sharing needs. A project
 with three hundred customer-support tasks declares the shared
 prompt, tools, and persona once in `task_defaults`; individual
 tasks contribute only their identity, their specific initial state,
@@ -731,10 +760,10 @@ run_config, then applies CLI + env overrides:
 
 The rule of thumb is short:
 
-> **Everything about the pack lives in `project.yaml`. Everything
+> **Everything about the project lives in `project.yaml`. Everything
 > about the invocation lives in `run_config.yaml`.**
 
-A useful test: if you copied the pack to a colleague and they ran
+A useful test: if you copied the project to a colleague and they ran
 it with their own `run_config.yaml`, the content of your
 `project.yaml` should still be exactly what you meant.
 
@@ -742,8 +771,8 @@ Every concrete setting falls into one of three categories.
 
 ### Category 1 — Invariant, `project.yaml` only
 
-Settings that describe what the pack **is**. Change any of them and
-you're testing a different thing.
+Settings that describe what the project **is**. Change any of them
+and you're testing a different thing.
 
 - **Identity** — `name`, `version`, `description`.
 - **Task inventory** — `tasks.discovery`.
@@ -756,13 +785,13 @@ you're testing a different thing.
 - **Compute topology** — `compute.provider`, provider-specific
   sub-sections (e.g. `compute.kubernetes.*`), `compute.timeouts`,
   `compute.stuck_heuristics`, `compute.typesense`. These reflect
-  task-shape properties (how long tasks take, whether the pack uses
-  TypeSense) and deployment topology — not per-run knobs.
+  task-shape properties (how long tasks take, whether the project
+  uses TypeSense) and deployment topology — not per-run knobs.
 - **Observability endpoints** — `observability.tracing`,
   `metrics`, `logging`. Properties of the deployed infrastructure
-  the pack targets.
+  the project targets.
 - **Orchestration policy** — `orchestration.auto_start_services`,
-  `continue_prompt`, `shuffle_trials`, `schedule`. Pack-level
+  `continue_prompt`, `shuffle_trials`, `schedule`. Project-level
   behavioural policy.
 
 ### Category 2 — Per-invocation, `run_config.yaml` only
@@ -770,9 +799,10 @@ you're testing a different thing.
 Settings that describe **how this specific run happens**. Every
 invocation has its own.
 
-- **`evaluation.task_packs`** — which packs THIS run includes.
-- **`evaluation.tasks_glob`** — filter narrowing which of a pack's
-  tasks THIS run actually executes.
+- **`evaluation.task_packs`** — which projects THIS run includes
+  (field name preserved for backward compatibility).
+- **`evaluation.tasks_glob`** — filter narrowing which of a
+  project's tasks THIS run actually executes.
 - **`evaluation.output_dir`** — per-run output location.
 - **`evaluation.harness_adapter`** — invocation-level adapter
   selection.
@@ -791,11 +821,11 @@ run may want to override. The Project sets a default so runs don't
 have to declare everything; runs override when they need to.
 
 - **`models`** — Project may name a default model family (the
-  pack was designed with a class of models in mind); runs override
-  for A/B testing or model bake-offs. In practice most substantial
-  runs override at least the agent model.
+  project was designed with a class of models in mind); runs
+  override for A/B testing or model bake-offs. In practice most
+  substantial runs override at least the agent model.
 - **`compute.workers`** — Project's default matches typical
-  parallelism for the pack's stack; runs scale up for
+  parallelism for the project's stack; runs scale up for
   nightly sweeps or down for local dev.
 - **`compute.max_budget_usd`** — Project has a reasonable
   ceiling; runs may tighten (CI) or loosen (nightly).
@@ -873,9 +903,9 @@ files to the fields that matter for the point being made
 
 ### Scenario A — Single-machine dev workflow
 
-A team is iterating on a support-triage evaluation pack on their
-laptops. The Project holds everything the pack IS; the run config
-is thin because the Project already has good defaults.
+A team is iterating on a support-triage evaluation project on
+their laptops. The Project holds everything the project IS; the
+run config is thin because the Project already has good defaults.
 
 Layout:
 
@@ -949,16 +979,17 @@ orchestrator:
   repeats: 1
 ```
 
-**What the boundary looks like here.** Everything about the pack
-lives in `project.yaml`: the environment, the task defaults, the
-model choice, the compute provider, the storage backends. The run
-config only names which pack to run and where to write results.
-Every field a developer needs to change day-to-day already has a
-sensible pack default; `run_config.yaml` is genuinely thin.
+**What the boundary looks like here.** Everything about the
+project lives in `project.yaml`: the environment, the task
+defaults, the model choice, the compute provider, the storage
+backends. The run config only names which project to run and where
+to write results. Every field a developer needs to change
+day-to-day already has a sensible project default;
+`run_config.yaml` is genuinely thin.
 
-### Scenario B — Same pack under CI and nightly sweeps
+### Scenario B — Same project under CI and nightly sweeps
 
-The pack from Scenario A now ships with two additional run configs
+The project from Scenario A now ships with two additional run configs
 for automated pipelines. Same Project — same identity, same task
 defaults, same environment — but two different execution profiles.
 
@@ -1032,13 +1063,14 @@ execution: `repeats` (statistical sampling), `workers`
 (parallelism), `max_budget_usd` (cost cap), `models` (which agent
 and judge are on the hot seat), and `output_dir` (where results
 land). All of those are Category 2 (per-invocation) or Category 3
-(pack default + run override).
+(project default + run override).
 
 ### Scenario C — Cross-model bake-off
 
 A researcher wants to compare three agent models against the same
-evaluation pack. The Project holds everything constant so results
-are comparable; each run config swaps only the agent model.
+evaluation project. The Project holds everything constant so
+results are comparable; each run config swaps only the agent
+model.
 
 Layout:
 
@@ -1217,7 +1249,7 @@ implementation via a registry:
 **Third-party providers** register via the entry-point group
 `tolokaforge.compute_providers`. A third-party provider ships its
 own package, implements `RuntimeBackend`, and declares an
-entry-point; packs reference it by string tag in `compute.provider`.
+entry-point; projects reference it by string tag in `compute.provider`.
 
 **Provider-specific configuration.** Each provider declares its own
 typed sub-section under `compute.<provider>`. The loader validates
@@ -1272,7 +1304,7 @@ The schema is designed for UI editing.
 ## Extensibility mechanisms
 
 The Project schema is designed to grow without breaking existing
-packs.
+projects.
 
 - **New top-level sections.** Add a Pydantic model, register it in
   the project schema. Older loaders warn on the unknown key but
@@ -1299,8 +1331,8 @@ refactoring include:
 
 - **Task discovery and the loader** — currently walks
   `evaluation.tasks_glob` from `run_config.yaml`; needs to read
-  `project.yaml` at pack root, apply `task_defaults` on task load,
-  and synthesize a default Project for packs that don't ship one.
+  `project.yaml` at project root, apply `task_defaults` on task load,
+  and synthesize a default Project for projects that don't ship one.
 - **Adapter interfaces** — adapters receive a fully-resolved
   `TaskDescription`; the loader needs to merge Project defaults
   into task fields before adapter validation, without changing
@@ -1313,23 +1345,23 @@ refactoring include:
   from hard-coded to Project-overridable, with `run_config.yaml`
   and CLI flags able to override on top.
 
-Backward-compat is total by design: a pack without `project.yaml`
+Backward-compat is total by design: a project without `project.yaml`
 continues to work through a synthesized default Project. Existing
 `adapter_settings.*` fields — including any Domain-bundle
 references — flow through unchanged.
 
 ## Backward compatibility
 
-- **Packs without `project.yaml` work unchanged.** The loader
+- **Projects without `project.yaml` work unchanged.** The loader
   synthesises a default Project from `run_config.yaml` +
   discovered tasks. Existing task-level `environment_manifest`
   declarations are honoured as full overrides.
-- **Packs with `project.yaml` get inheritance** for tasks that
+- **Projects with `project.yaml` get inheritance** for tasks that
   don't declare overrides. Tasks that do continue to work exactly
   as before.
 - **Adding sections to `project.yaml` doesn't break older
-  packs.** Older packs simply don't declare those sections; the
-  runtime uses hard-coded defaults.
+  projects.** Older projects simply don't declare those sections;
+  the runtime uses hard-coded defaults.
 - **Existing adapter-specific shared-config patterns** — any
   adapter's Domain-bundle conventions carried through
   `adapter_settings` — continue to work unchanged. The Project
@@ -1398,9 +1430,9 @@ references — flow through unchanged.
 
 See
 [`examples/native/example-microservices-pack/`](../../examples/native/example-microservices-pack/).
-The pack ships:
+The project ships:
 
-- `project.yaml` at pack root — every section declared.
+- `project.yaml` at project root — every section declared.
 - `shared/environment.compose.yaml` + `shared/system_prompt.md` —
   the base compose + project-level default prompt.
 - A minimal `run_config.yaml` — invocation-only fields.
@@ -1408,7 +1440,7 @@ The pack ships:
   (input value), full env override (task-local compose), and
   non-env override (`max_turns`).
 
-Read the pack's
+Read the project's
 [`README.md`](../../examples/native/example-microservices-pack/README.md)
 for the task-by-task walkthrough and the per-scope resolved-config
 table.
