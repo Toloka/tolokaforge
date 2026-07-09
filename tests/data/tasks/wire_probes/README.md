@@ -11,8 +11,7 @@ tools it needs.
   parallel calls, deep nesting, free-form objects).
 - `dataset/testcases/cascade_*` - complex multi-turn cascades derived (shape +
   flow only, policy stripped, entities renamed) from public benchmarks
-  (tau2-bench telecom, API-Bank tool-registry) and a policy-stripped
-  manufacturing operations domain. See `NOTICE`.
+  (tau2-bench telecom, API-Bank tool-registry). See `NOTICE`.
 
 How to run:
 - Run via the engine: `tolokaforge run --config <run.yaml whose task_packs point at dataset/>`,

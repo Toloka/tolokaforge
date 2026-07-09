@@ -1,0 +1,42 @@
+task_id: "record_freeform_array"
+name: "Wire-probe: array nested inside a free-form open object"
+description: >
+  Non-scoring wire-shape probe. Elicits the HIDDEN-TYPE nested-array class: a
+  `tags` array that lives inside an additionalProperties:true open object
+  (apply_record_update.patch / submit_record.record), so the wire schema never
+  declares it as an array. A provider that mangles arrays emits {"item": [...]},
+  a stringified JSON array, or "" and the tool rejects naming the site
+  (patch.tags / record.tags) - the signal a schema-visible array cannot give.
+domain: ../../_shared/domain.yaml
+max_turns: 4
+
+initial_user_message: >
+  On record REC-1005, apply an update: set its status to active and set its tags
+  to alpha, beta, and gamma. Then submit a new record whose name is widget-9 and
+  whose tags are red and blue. Then you're done.
+
+initial_state: {}
+
+tools:
+  agent:
+    enabled:
+      - apply_record_update
+      - submit_record
+
+user_simulator:
+  scripted_flow:
+    - role: user
+      content: "###STOP###"
+
+metadata:
+  expected_failure_modes:
+    - item_wrap
+    - stringified_array
+    - empty_container
+    - hidden_type_array
+  tags:
+    - smoke
+    - wire-probe
+    - non-scoring
+
+grading: "grading.yaml"
