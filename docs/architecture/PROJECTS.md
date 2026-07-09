@@ -19,18 +19,18 @@ extends),
 ## What a Project is
 
 A **Project** is a container for a set of related AI-agent
-evaluations that share a common setup. If a team is running fifty
-tasks that all exercise the same customer-support workflow against
-the same backend services, a Project is where they declare "these
-fifty tasks belong together, they run against this environment,
-they use these models, they grade on this rubric." Once the
-Project declares that shared setup, individual tasks only need to
-describe what makes them unique — the specific customer complaint,
-the expected outcome, the grading criteria.
+evaluations that share a common setup. If a team is running two
+hundred tasks that all exercise the same customer-support workflow
+against the same backend services, a Project is where they declare
+"these tasks belong together, they run against this environment,
+they use these models, they grade on this rubric." Once the Project
+declares that shared setup, individual tasks only need to describe
+what makes them unique — the specific customer complaint, the
+expected outcome, the grading criteria.
 
-Without a Project, every task carries its own copy of every
-setting. The Project pulls the common bits up to one place, so the
-tasks themselves stay small.
+Without a Project, every task carries its own copy of every setting.
+The Project pulls the common bits up to one place, so the tasks
+themselves stay small.
 
 Concretely, a Project owns:
 
@@ -50,12 +50,28 @@ Concretely, a Project owns:
 One file, `project.yaml` at the pack root, holds all of this. There
 is exactly one Project per pack.
 
+### Pack = scenario, one-to-one
+
+In practice, a task pack maps to one business or evaluation scenario
+(customer-support triage, backend refactoring, deep-research
+question-answering, ...). All the tasks in a pack share the same
+tools, the same system-prompt frame, the same simulated-user
+persona, the same services. The Project layer formalises what has
+always been implicit: one pack = one scenario = one Project.
+
+If you want to run tasks from multiple scenarios in a single
+invocation, that's a **run-config** concern — list multiple packs
+in `evaluation.task_packs` and each pack's Project provides its own
+scenario-specific defaults.
+
 ## What a Task is
 
 A **Task** is one specific evaluation scenario — one thing the
-agent has to accomplish. A task might be "add a
-`/health/ready` endpoint to the backend service." Another might be
-"diagnose why the `/orders` endpoint is slow and land a fix."
+agent has to accomplish. A task might be "add a `/health/ready`
+endpoint to the backend service." Another might be "diagnose why
+the `/orders` endpoint is slow and land a fix." A support task
+might be "handle a customer's login-reset request under a specific
+account state."
 
 Every task lives in its own directory under `tasks/`:
 
@@ -83,68 +99,28 @@ inherit. Small tasks stay small.
 
 There can be many tasks in a Project. There is always at least one.
 
-## What a Domain is
+## How Project and Task compose
 
-A **Domain** is a bundle of shared settings for a *subset* of tasks
-that share a scenario type. Imagine a pack has fifty tasks total,
-and twenty of them are customer-support scenarios (with a specific
-support-agent system prompt, a specific set of ticket-manipulation
-tools, and a specific simulated-customer persona). The other thirty
-are backend-engineering tasks with different tools and a different
-prompt.
+For any given task, the loader combines two sources of settings to
+produce the effective configuration:
 
-The support-tasks' shared setup doesn't belong in the twenty
-`task.yaml` files (duplicated twenty times, drift-prone). It also
-doesn't belong in `project.yaml` at the pack level — those fields
-wouldn't fit the backend-engineering tasks.
+1. **The Project** provides pack-wide defaults (from
+   `task_defaults` and section-level defaults).
+2. **The Task** provides its own identity and any per-task
+   overrides on top.
 
-A Domain fills that gap. It's a YAML file (conventionally
-`_shared/domain.yaml`) that holds the shared bundle for one
-scenario type. Tasks opt in by pointing at the Domain file:
-
-```yaml
-# tasks/support_triage_01/task.yaml
-task_id: "support_triage_01"
-domain: "../../_shared/domain.yaml"
-description: "..."
-```
-
-That's the entire cost of opting in. The twenty support tasks each
-add one line; they all inherit the Domain's tools, prompt, and
-persona; the backend tasks don't reference it and stay unaffected.
-
-A Domain can also ship bundled files — a Markdown system prompt,
-a Python MCP-server implementation — so a whole "domain package"
-lives together in one directory. That's why the pattern uses an
-external file rather than an inline block in `project.yaml`:
-co-location.
-
-A pack can have zero, one, or several Domains. A task references at
-most one Domain today. Many tasks can reference the same Domain.
-
-## How Project, Task, and Domain compose
-
-For any given task, the loader combines three sources of settings
-to produce the effective configuration:
-
-1. **The Project** provides pack-wide defaults.
-2. **The Domain** the task opts into (if any) layers
-   subset-specific defaults on top.
-3. **The Task** provides its own identity and any per-task
-   overrides on top of that.
-
-Task wins over Domain, Domain wins over Project. If a task declares
-no overrides and points at no Domain, it uses the Project's
-defaults verbatim. If it points at a Domain, it inherits the
-Domain's fields where the Project's defaults would otherwise apply.
-If it declares its own fields, those beat both.
+Task wins on conflict. If a task declares no overrides, it uses
+the Project's defaults verbatim. If it declares a partial
+override (e.g. one input value on the environment), the merge is
+deep-typed — task-declared sub-fields win; everything else
+inherits.
 
 Nothing in this model is required to be complex. A pack with ten
-similar tasks might have a `project.yaml`, no Domains at all, and
-ten one-line `task.yaml` files. A pack with fifty tasks spread
-across three scenario types might have a `project.yaml`, three
-Domain files under `_shared/`, and fifty task files each with one
-line saying which Domain they belong to.
+similar tasks might have a `project.yaml` and ten one-line
+`task.yaml` files. A pack with three hundred tasks all sharing
+one scenario has one `project.yaml` declaring the shared setup and
+three hundred small task files that mostly say only their own
+identity.
 
 ### The picture, in one diagram
 
@@ -154,20 +130,19 @@ task pack root/
 │                                     (models, compute, environment,
 │                                      storage, observability, ...)
 │
-├── _shared/                        ← ZERO OR MORE Domains
-│   ├── domain.yaml                 (subset-specific defaults)
-│   ├── system_prompt.md            (bundled with the Domain)
-│   └── mcp_server.py               (bundled with the Domain)
+├── shared/                         (optional; assets the Project points at)
+│   ├── environment.compose.yaml    (base compose file)
+│   └── system_prompt.md            (default system prompt)
 │
 └── tasks/                          ← ONE OR MORE Tasks
     ├── task_a/
-    │   └── task.yaml               (opts into a Domain, or not)
+    │   └── task.yaml               (inherits or overrides)
     └── task_b/
         └── task.yaml
 ```
 
-For a given task, effective config = merge(Project → Domain →
-Task), later sources winning on conflict.
+For a given task, effective config = merge(Project → Task), Task
+winning on conflict.
 
 ### Familiar shapes from other tools
 
@@ -177,8 +152,7 @@ those tools has a "project-like" top-level entity that owns the
 shared setup for a collection of items (jobs, entrypoints, models,
 flows), with per-item overrides layered on top. TolokaForge's
 Project is that top-level entity for AI-agent evaluations; a Task
-is the per-item; a Domain is a middle layer for subset-specific
-shared setup when a single pack contains multiple scenario types.
+is the per-item.
 
 ## Scopes surrounding the Project
 
@@ -213,15 +187,20 @@ The complete set of files a task pack can ship:
 |---|---|---|---|
 | `project.yaml` | pack root | Pack-level defaults + typed sections | Optional |
 | `run_config.yaml` | pack root | Per-invocation config (models, orchestrator run knobs, evaluation choice) | Required for execution |
-| `_shared/domain.yaml` | domain dir | A Domain's shared defaults (category, tools, user_simulator, system_prompt), referenced by task-level `domain:` | Optional |
-| `_shared/system_prompt.md` | domain dir | System prompt bundled with a Domain | Optional |
-| `_shared/mcp_server.py` | domain dir | MCP server bundled with a Domain | Optional |
 | `shared/environment.compose.yaml` | pack root or task dir | Base compose file referenced by `default_environment` | Optional |
-| `task.yaml` | task dir | Task spec (identity, adapter, max_turns, initial_user_message, initial_state, tools, user_simulator, metadata, policies, grading path, system_prompt, adapter_settings, environment_manifest, domain ref) | Required |
+| `shared/system_prompt.md` | pack root | Default system prompt referenced by `task_defaults.system_prompt` | Optional |
+| `task.yaml` | task dir | Task spec (identity, adapter, max_turns, initial_user_message, initial_state, tools, user_simulator, metadata, policies, grading path, system_prompt, adapter_settings, environment_manifest) | Required |
 | `grading.yaml` | task dir | Grading rules (combine, state_checks, transcript_rules, llm_judge, custom_checks) | Required |
 | `environment.compose.yaml` | task dir | Task-local compose (used when the task overrides the project default) | Optional |
 | `initial_state.json` | task dir | DB tables + records + fs state seeded at trial start | Optional |
 | `fixtures/` | task dir | Test data referenced by tools/services/initial_state | Optional |
+
+**Adapter-specific files.** Some adapters ship their own
+conventions for further sharing beyond `task_defaults` — for
+example, the `native` adapter's `_shared/domain.yaml` merge, used
+by the [`native_shared_domain`](../../examples/native/native_shared_domain/)
+example. Those files are adapter-specific and documented with the
+adapter they belong to; they are not part of the Project schema.
 
 The Project layer adds one file (`project.yaml`) and touches no
 existing schemas. Every other file keeps the shape it has today.
@@ -240,7 +219,6 @@ description: "..."
 tasks:
   discovery:
     glob: "tasks/**/task.yaml"
-  # inline: [...]  # UI-managed alternative
 
 # ── Default environment ─────────────────────────────────────────
 # Every task inherits unless it declares its own environment_manifest.
@@ -256,9 +234,11 @@ default_environment:
     user: "toloka"
     group: "toloka"
 
-# ── Task-level defaults (pack-wide) ─────────────────────────────
-# Applied to every task; task fields override; Domain defaults (if the
-# task opts into a Domain) layer between these and the task.
+# ── Task-level defaults ─────────────────────────────────────────
+# Applied to every task; task fields override on deep-typed merge.
+# This is the primary mechanism for sharing task-level config
+# across a pack — system_prompt, tools, user_simulator, max_turns,
+# adapter_type all live here and inherit unless a task overrides.
 task_defaults:
   adapter_type: "native"
   max_turns: 20
@@ -278,30 +258,6 @@ task_defaults:
       weights:
         state_checks: 0.5
         llm_judge: 0.5
-
-# ── Domains (optional) ──────────────────────────────────────────
-# A Domain is a bundle of shared defaults applied only to tasks that
-# opt in. Two equivalent forms:
-#
-# 1. Inline in this project.yaml under `task_groups.<name>`,
-#    referenced from a task via `group: <name>` in task.yaml.
-# 2. External file (any path under the pack), referenced from a task
-#    via `domain: <path>` in task.yaml. Toloka-internal packs use
-#    `_shared/domain.yaml` for this — the external form co-locates
-#    the Domain's shared prompt and MCP server with its config.
-#
-# Both forms merge the same way: Domain defaults layer between
-# task_defaults and the task's own fields.
-#
-# task_groups:
-#   customer_support:
-#     category: "customer_support"
-#     tools:
-#       agent:
-#         enabled: ["read_ticket", "update_ticket", "search_kb"]
-#     system_prompt: "./prompts/support.md"
-#     user_simulator:
-#       persona: "frustrated support customer"
 
 # ── Models ──────────────────────────────────────────────────────
 models:
@@ -381,17 +337,21 @@ orchestration:
 | `default_environment` | `RuntimeBackend` per-trial provision | Yes — task's `environment_manifest` deep-merges |
 | `task_defaults.adapter_type` | Adapter selection per task | Yes — task's `adapter_type` overrides |
 | `task_defaults.max_turns` | `ToolCallingLoop` per-trial budget | Yes — task's `max_turns` overrides |
-| `task_defaults.system_prompt` | Runner system message | Yes — task's `system_prompt` overrides (a Domain's `system_prompt`, if the task opts in, layers between) |
+| `task_defaults.system_prompt` | Runner system message | Yes — task's `system_prompt` overrides |
 | `task_defaults.user_simulator` | `UserSimulator` config | Yes — task's `user_simulator` deep-merges |
 | `task_defaults.policies` | Loop policies | Yes — task's `policies` deep-merges |
-| `task_defaults.tools` | Adapter tool wiring | Yes — task or opted-in Domain adds/replaces |
+| `task_defaults.tools` | Adapter tool wiring | Yes — task overrides |
+| `task_defaults.adapter_settings` | Adapter-specific settings (bundle paths, tool registry, etc.) | Yes — task's `adapter_settings` deep-merges |
 | `task_defaults.grading_defaults` | `TrialGrader` combine method / weights / pass threshold | Yes — task's `grading.yaml.combine` deep-merges |
-| `task_groups.<name>` / external Domain file | Domain defaults for tasks that opt in via `group:` or `domain:` | Yes — task fields override Domain defaults |
 | `models.agent` / `models.user` / `models.judge` | LLM clients (run-level) | No at task level — `run_config.models` overrides at run level |
 | `compute.*` | Orchestrator run-init, `RuntimeBackend` selection | No at task level — `run_config.orchestrator.*` overrides at run level |
 | `storage.*` | Artifact writer, log writer, queue backend | No at task level |
 | `observability.*` | Tracing/metrics/logging sinks | No at task level |
 | `orchestration.*` | Orchestrator run behaviour | No at task level |
+
+Adding a new top-level section is a schema addition on the Project
+model. Unknown sections warn but don't fail — older loaders keep
+working when new packs declare newer sections.
 
 ## Task override semantics
 
@@ -423,7 +383,7 @@ Some fields replace instead of merge:
   file replaces the compose reference entirely. The task no longer
   shares the project's runtime stack.
 - **`system_prompt`**: pointing at a different file (or inline
-  text) replaces the project/Domain prompt entirely; no merge.
+  text) replaces the project prompt entirely; no merge.
 
 ```yaml
 # tasks/schema_isolation_migration/task.yaml
@@ -444,98 +404,36 @@ environment_manifest:
   for audit.
 - Fixture file contents — per-task data.
 
-## Domains — the detailed spec
+## Sharing task-level config across many tasks
 
-"What a Domain is" (above) covers the concept. This section goes
-into the mechanics: the two forms a Domain can take, how paths
-resolve, and which fields a Domain is allowed to declare.
+The Project's `task_defaults` section is the primary mechanism for
+sharing task-level fields across every task in a pack:
 
-### External form (`_shared/*.yaml`)
+- `adapter_type` — same for every task in the pack (typical
+  pattern: every task uses the same adapter).
+- `system_prompt` — the shared system-prompt frame; each task can
+  add specifics.
+- `tools` — the tool set exposed to the agent.
+- `user_simulator` — mode, persona, backstory (each task can
+  override the persona or scripted flow).
+- `max_turns`, `policies`, `grading_defaults`, `adapter_settings`
+  — shared knobs.
 
-The pattern Toloka-internal packs already use, and the one that
-scales best when a Domain has bundled Markdown or Python
-assets. A Domain's config lives in a file under any convenient
-directory — conventionally `_shared/domain.yaml`. Tasks opt in via
-a `domain:` field in `task.yaml`:
+This covers the great majority of cross-task sharing needs. A pack
+with three hundred customer-support tasks declares the shared
+prompt, tools, and persona once in `task_defaults`; individual
+tasks contribute only their identity, their specific initial state,
+and their specific grading rubric.
 
-```yaml
-# tasks/support_triage_01/task.yaml
-task_id: "support_triage_01"
-domain: "../../_shared/domain.yaml"
-description: "..."
-```
-
-```yaml
-# _shared/domain.yaml
-category: "customer_support"
-tools:
-  agent:
-    enabled: ["read_ticket", "update_ticket", "search_kb"]
-    mcp_server: "./mcp_server.py"
-system_prompt: "./system_prompt.md"
-user_simulator:
-  persona: "frustrated support customer"
-```
-
-The loader (`tolokaforge/adapters/_task_loader.py:141`) deep-merges
-the Domain's fields onto the task; task fields win on conflict.
-
-**Path resolution inside a Domain file.** Relative paths inside
-`domain.yaml` (e.g. `./system_prompt.md`, `./mcp_server.py`) are
-resolved from the Domain file's directory, *not* from each
-referring task's directory. That means a Domain can ship its own
-system prompt and MCP server alongside `domain.yaml`, and every
-task that opts in picks them up correctly regardless of where the
-task lives in the pack. The whole Domain package moves as a unit.
-
-### Inline form (`task_groups` in `project.yaml`)
-
-For Domains that are pure YAML — no bundled `.md` or `.py` — the
-same defaults can live directly in `project.yaml` under
-`task_groups.<name>`. Tasks opt in via a `group:` field in
-`task.yaml`:
-
-```yaml
-# project.yaml (excerpt)
-task_groups:
-  polite_customer:
-    user_simulator:
-      persona: "polite enterprise customer"
-      backstory: "..."
-```
-
-```yaml
-# tasks/enterprise_triage/task.yaml
-task_id: "enterprise_triage"
-group: "polite_customer"
-description: "..."
-```
-
-The schema field is called `task_groups` because it's a *group* of
-tasks (the ones that reference it by name) — but conceptually
-it's the same thing as a Domain. Merge semantics are identical to
-the external form: the Domain's fields layer between
-`task_defaults` and the task's own fields, with the task winning.
-
-The inline form is the right pick when a Domain has no bundled
-assets and the pack's project.yaml is small enough that the extra
-sections don't crowd it. External form is the right pick when the
-Domain ships with Markdown/Python assets, or when the pack has
-many Domains and each deserves its own directory.
-
-### Fields a Domain may declare
-
-A Domain currently declares:
-
-- `category` — a label used for grouping in reporting and UI.
-- `tools` — the tool set exposed to the agent (`tools.agent.enabled`,
-  `tools.agent.mcp_server`, `tools.user.*`).
-- `user_simulator` — mode, persona, backstory, scripted_flow.
-- `system_prompt` — path to a Markdown file, or inline text.
-
-Fields not in this list stay task-scoped even when a Domain file
-declares them. Extending the set is a schema addition on the
-Domain model — additive, backward-compatible.
+**Adapter-specific shared-config conventions.** Some adapters ship
+further conventions for sharing patterns that don't fit
+`task_defaults` — for example, the `native` adapter's optional
+`_shared/domain.yaml` merge (see the
+[`native_shared_domain`](../../examples/native/native_shared_domain/)
+example). Those conventions are adapter-specific and documented
+with the adapter that implements them. The Project schema itself
+does not attempt to unify them or model them as first-class
+concepts — each adapter documents its own patterns.
 
 ## Resolution — task effective config
 
@@ -543,29 +441,26 @@ For every task discovered by `tasks.discovery`, the loader produces
 a `TaskDescription` (the wire type from ADR-0003) by layered merge:
 
 ```
-                project.task_defaults
-                (applied to every task)
-                        │
-                        ▼
-                Domain defaults
-                (if task opts in via `group:` or `domain:`)
-                        │
-                        ▼
-                task.yaml
-                        │
-                        ▼
+        project.task_defaults
+        (applied to every task)
+                │
+                ▼
+        task.yaml fields
+        (per-task overrides)
+                │
+                ▼
     environment_manifest merge with project.default_environment
-                        │
-                        ▼
-              grading.yaml
-              (merged with project.task_defaults.grading_defaults)
-                        │
-                        ▼
-                Adapter validates the final shape
-                        │
-                        ▼
-                    TaskDescription
-                (the wire format for the runner)
+                │
+                ▼
+      grading.yaml
+      (merged with project.task_defaults.grading_defaults)
+                │
+                ▼
+        Adapter validates the final shape
+                │
+                ▼
+            TaskDescription
+        (the wire format for the runner)
 ```
 
 Each step preserves the invariants of the layer above: if the
@@ -573,7 +468,13 @@ project declares `isolation: per_trial` in `default_environment`,
 that stays enforced (ADR-0009); if a task's `grading.yaml` uses
 `llm_judge`, a run-level `models.judge` must be present.
 
-## Resolution — the run effective config
+If an adapter ships its own shared-config merge (e.g. native's
+`_shared/domain.yaml`), that merge happens between
+`project.task_defaults` and the task's own fields, driven by the
+adapter, and documented with the adapter. From the Project's
+perspective it's a black-box adapter-side operation.
+
+## Resolution — run effective config
 
 For the invocation itself, the loader combines Project and
 run_config, then applies CLI + env overrides:
@@ -619,7 +520,7 @@ Some fields live only in one file; others may appear in both, with
 | Setting | project.yaml | run_config.yaml | Resolution |
 |---|---|---|---|
 | `default_environment` | ✓ | — | Project-only |
-| `task_defaults` / `task_groups` | ✓ | — | Project-only |
+| `task_defaults` | ✓ | — | Project-only |
 | `tasks.discovery` | ✓ | — | Project-only |
 | `models.agent` / `models.user` / `models.judge` | ✓ default | ✓ override | run_config overrides |
 | `compute.provider` | ✓ | — | Project-only |
@@ -639,27 +540,26 @@ Some fields live only in one file; others may appear in both, with
 
 ### Precedence chain — every field
 
-Highest priority to lowest:
+Highest priority to lowest.
+
+For task-scoped fields:
+
+1. **task.yaml** value.
+2. **`project.task_defaults`** value.
+3. **Adapter default** (per adapter type; includes any
+   adapter-specific shared-config merges like native's
+   `_shared/domain.yaml`).
+4. **Engine default**.
+
+For run-scoped fields:
 
 1. **CLI flag** (e.g. `--runtime`, `--workers`, `--user-model`).
-2. **Environment variable** — for infrastructure fields only
+2. **Environment variable** — infrastructure fields only
    (`DB_SERVICE_URL`, `RAG_SERVICE_URL`, `EXECUTOR_ADDRESS`,
    `TASK_PACKS_DIRS`, provider API keys).
 3. **`run_config.yaml`** value.
 4. **`project.yaml`** value.
-5. **Engine default** (from the Pydantic model).
-
-For task-scoped fields the chain resolves inside the Project scope:
-
-1. **task.yaml** value.
-2. **Domain defaults** (if the task opts in via `group:` or
-   `domain:`).
-3. **`project.task_defaults`** value.
-4. **Adapter default** (per adapter type).
 5. **Engine default**.
-
-That resolved `TaskDescription` then interacts with the run-scoped
-chain above at execution time.
 
 ### Why the split
 
@@ -816,10 +716,6 @@ The schema is designed for UI editing.
 - **Section-per-form.** Every section under the Project is its own
   Pydantic model. A UI renders one form section per model, driven
   by the model's JSON Schema.
-- **Domains as reusable bundles.** A UI can present Domains as a
-  library of shared-config templates that tasks pick from,
-  independent of whether they live inline in `project.yaml` (under
-  `task_groups`) or in external files.
 - **Typed primitives everywhere.** Sub-fields are strings, ints,
   enums, references (by name) to other resources, or further typed
   sub-objects. No untyped free-form fields.
@@ -832,7 +728,7 @@ The schema is designed for UI editing.
   current provider.
 - **Version field.** `project.version` gives the UI a lever for
   schema migration when the shape breaks. Unknown top-level
-  sections warn but preserve.
+  sections warn but preserve — forward-compat by design.
 
 ## Extensibility mechanisms
 
@@ -842,11 +738,9 @@ packs.
 - **New top-level sections.** Add a Pydantic model, register it in
   the project schema. Older loaders warn on the unknown key but
   preserve the field.
-- **New Domain-mergeable fields.** Extend the Domain schema
-  alongside the underlying `TaskDescription` fields.
 - **New providers for `compute`.** Ship a `RuntimeBackend`
   implementation, declare an entry-point in
-  `tolokaforge.compute_providers`.
+  `tolokaforge.compute_providers`. No fork required.
 - **New adapter types.** Register in the `tolokaforge.adapters`
   entry-point group.
 - **New reset primitives.** Schema enum extension in tolokaforge
@@ -862,16 +756,19 @@ packs.
 
 - **Packs without `project.yaml` work unchanged.** The loader
   synthesises a default Project from `run_config.yaml` +
-  discovered tasks.
+  discovered tasks. Existing task-level `environment_manifest`
+  declarations are honoured as full overrides.
 - **Packs with `project.yaml` get inheritance** for tasks that
   don't declare overrides. Tasks that do continue to work exactly
   as before.
 - **Adding sections to `project.yaml` doesn't break older
   packs.** Older packs simply don't declare those sections; the
   runtime uses hard-coded defaults.
-- **Existing `_shared/domain.yaml` semantics preserved verbatim.**
-  The external Domain form is exactly the pattern that already
-  ships. Task-level `domain:` references continue to work.
+- **Existing adapter-specific shared-config patterns** — the
+  native adapter's `_shared/domain.yaml` merge, and any other
+  adapter's own conventions — continue to work unchanged. The
+  Project layer sits above them; nothing about the merge machinery
+  changes.
 - **`run_config.yaml`** continues to work exactly as today.
   Fields declared in `run_config` override same-named fields in
   `project`.
@@ -881,35 +778,42 @@ packs.
 
 ## Failure modes
 
-- **`llm_judge` without a run-level judge model.** Orchestrator
-  refuses to start; error names the offending task(s) and the
-  missing field.
+- **`llm_judge` without a run-level judge model.** A task's
+  `grading.yaml` uses `llm_judge`, but neither
+  `project.models.judge` nor `run_config.models.judge` is
+  declared. Prevention: orchestrator refuses to start; error
+  names the offending task(s) and the missing field.
 - **Silent cross-trial contamination.** Default isolation for
-  undeclared services is `ephemeral`; `shared` is opt-in.
+  undeclared services is `ephemeral` (fail-loud); `shared` is
+  opt-in per service.
 - **Silent cross-task contamination.** Same as above.
 - **Non-canonical YAML causing hash misses.** Runtime canonicalises
-  before hashing.
+  key order, quoting, and whitespace before hashing.
 - **Cross-run assumption.** Model is documented as within-run only.
 - **Reset-primitive failure.** Terminates the affected task's
   remaining trials with an explicit reason.
 - **Input-override typos.** Input names validated against the
   compose file's declared `${...}` references at load time.
 - **Unknown section in `project.yaml`.** Warn but preserve.
-- **Unknown Domain reference.** A task's `group:` or `domain:`
-  refers to a Domain that doesn't exist. Loader fails at load time
-  with a clear error.
 - **Adapter validation failure on merged TaskDescription.** Loader
-  surfaces the specific merge step (project defaults, Domain
-  defaults, task.yaml) that contributed the offending field.
+  surfaces the specific merge step (project defaults, task.yaml)
+  that contributed the offending field.
 
 ## What the model deliberately isn't
 
-- **A separate "category" or "sub-project" tier.** Domains are a
-  mechanism inside the Project scope, not a peer tier. Authoring
-  stays two-tier (Project → Task); Domains scope which tasks pick
-  up which defaults, layered between Project and Task at merge time.
+- **A first-class Domain tier.** The Project schema does not model
+  Domain as a peer or sub-tier. In current TolokaForge usage a pack
+  is one scenario, and pack-wide `task_defaults` covers the
+  sharing. Any further sharing convention is adapter-specific and
+  lives with the adapter, not in the Project.
+- **A unifier of adapter-specific sharing conventions.** Each
+  adapter documents its own patterns for sharing tools, prompts,
+  or code across tasks; the Project schema doesn't try to abstract
+  over them.
 - **A free-form deep-merge system.** Every override is typed and
   bounded.
+- **A three-or-more-level authoring hierarchy.** Two tiers only:
+  Project → Task.
 - **A plugin registry for reset primitives.** New primitives
   extend the engine's schema enum.
 - **A cross-run stack persistence surface.** All sharing is
@@ -927,14 +831,12 @@ See
 The pack ships:
 
 - `project.yaml` at pack root — every section declared.
-- `_shared/domain.yaml` + `_shared/system_prompt.md` — a Domain
-  demonstrating the external co-located form.
 - `shared/environment.compose.yaml` + `shared/system_prompt.md` —
   the base compose + project-level default prompt.
 - A minimal `run_config.yaml` — invocation-only fields.
-- Nine tasks demonstrating: full inheritance, partial env override,
-  full env override, non-env override (`max_turns`), Domain opt-in
-  via `domain:`, Domain + task-level nested override.
+- Seven tasks demonstrating: full inheritance, partial env override
+  (input value), full env override (task-local compose), and
+  non-env override (`max_turns`).
 
 Read the pack's
 [`README.md`](../../examples/native/example-microservices-pack/README.md)
