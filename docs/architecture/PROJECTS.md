@@ -50,16 +50,17 @@ name the semantic equivalences settled by team review (see
 A TolokaForge project ships three kinds of configuration, each
 with a distinct job:
 
-- **`project.yaml`** at the project root — declares the project's
-  identity and everything that stays the same across every run of
-  it: the default environment, compute policy,
-  storage backends, observability sinks, orchestration policy, and
-  the task-level defaults every task inherits.
+- **`project.yaml`** at the project root — the **eval spec**.
+  Declares what the pack tests: identity, default environment,
+  task inventory, and the task-level defaults every task
+  inherits (adapter type, prompt frame, user-simulator persona,
+  tools, timeouts, stuck-heuristics, grading combine method).
 - **`run_config/*.yaml`** — one or more named run configs under a
-  `run_config/` directory at the project root. Each file declares
-  per-invocation choices: which models drive *this* run, how many
-  workers to spawn, where to write output, which projects to
-  include. The same Project can run under many different run
+  `run_config/` directory at the project root. Each file
+  declares **how this invocation runs the eval**: which models,
+  how many workers, what compute provider, what budget cap,
+  where to write output, what tracing/metrics/logging sinks, what
+  retry policy. The same Project runs under many different run
   configs (CI, nightly, demo) — you pick which one by passing
   `--config <path>` at invocation time.
 - **`task.yaml`** files under `tasks/<name>/` — one per task. Each
@@ -82,30 +83,37 @@ evaluations that share a common setup. If a team is running two
 hundred tasks that all exercise the same customer-support workflow
 against the same backend services, a Project is where they declare
 "these tasks belong together, they run against this environment,
-they use these models, they grade on this rubric." Once the Project
-declares that shared setup, individual tasks only need to describe
-what makes them unique — the specific customer complaint, the
-expected outcome, the grading criteria.
+they share this system prompt frame and this simulated-user
+persona, they grade on this rubric." Once the Project declares
+that shared setup, individual tasks only need to describe what
+makes them unique — the specific customer complaint, the expected
+outcome, the grading criteria.
 
 Without a Project, every task carries its own copy of every setting.
 The Project pulls the common bits up to one place, so the tasks
 themselves stay small.
 
-Concretely, a Project owns:
+Concretely, a Project owns the **eval spec** — everything about
+what the pack tests:
 
 - **The default environment** every task runs in — a Docker Compose
-  stack of services (databases, backends, tools).
-- **The compute policy** — where trials run, how much parallelism,
-  budget caps, timeouts, stuck-heuristics.
-- **The storage backends** for artifacts, logs, and the trial queue.
-- **The observability sinks** — where traces, metrics, and logs go.
-- **The orchestration policy** — retries, priority, scheduling.
-- **Task-level defaults** every task inherits — adapter type, turn
-  budget, system prompt, user-simulator persona, tools, grading
-  combine method.
+  stack of services (databases, backends, tools) plus its
+  isolation stance.
+- **Task-level defaults** every task inherits — adapter type,
+  turn budget, system prompt, user-simulator persona, tools,
+  grading combine method, plus task-shape properties like
+  timeouts and stuck-heuristics.
+- **The task inventory** — how tasks are discovered.
 
-One file, `project.yaml` at the project root, holds all of this. There
-is exactly one Project per project.
+The Project does **not** own execution-side settings — how many
+workers this run uses, which models drive it, how much budget it
+gets, where it writes results, which observability sinks it hits.
+Those live on the **run config** (see below). This is the standard
+eval-framework split: the spec is portable eval logic, the
+invocation picks how it actually executes.
+
+One file, `project.yaml` at the project root, holds all of this.
+There is exactly one Project per project.
 
 A minimal example — the full field list lives further down in
 [The Project schema](#the-project-schema):
@@ -118,19 +126,23 @@ description: "Customer-support scenario evaluation suite."
 
 default_environment:
   compose_file: "./shared/environment.compose.yaml"
+  isolation: "per_trial"
 
 task_defaults:
   adapter_type: "native"
   max_turns: 20
   system_prompt: "./shared/system_prompt.md"
+  timeouts:
+    trial_seconds: 600
+    tool_call_seconds: 60
 
-compute:
-  provider: "local-docker"
-  workers: 2
+tasks:
+  discovery:
+    glob: "tasks/**/task.yaml"
 
-# Also declared here: storage, observability, orchestration —
-# see the full schema below. Note: `models` lives on the run
-# config, not the project — see "What a run config is" below.
+# No compute, no storage, no observability, no models — those all
+# live on the run config. The Project is the eval spec; the run
+# config is how it executes.
 ```
 
 ### Project = scenario = domain, one-to-one
@@ -218,66 +230,59 @@ root) declares how a specific run of the project is configured —
 the settings that vary between one invocation and the next while
 the Project itself stays the same.
 
-Concretely, a run config owns:
+Concretely, a run config owns everything execution-side:
 
-- **Which models** drive this particular run — the agent, the
-  simulated user, the judge.
-- **Which projects** to include in this invocation (a single run
-  can pull tasks from more than one project).
-- **Run-wide caps** — number of workers, per-trial repeat count,
-  per-trial max-turns ceiling, budget cap, output directory for
-  this run's results.
-- **A task filter** — an optional glob that narrows down which
-  tasks under the project this invocation actually runs.
+- **Which models** drive this run — the agent, the simulated
+  user, the judge.
+- **Compute** — provider (local-docker, kubernetes, ...), number
+  of workers, budget caps, rate limits, retry policy, runtime
+  mode (`shared` vs `per_trial`).
+- **Storage** — artifact/log/queue backends for this run's data.
+- **Observability** — where traces, metrics, logs go for this
+  run.
+- **Orchestrator run knobs** — repeat count, run-wide max-turns
+  ceiling, auto-start-services, shuffle-trials, schedule.
+- **Which projects** to include in this invocation (optional;
+  defaults to the enclosing project).
+- **Task filter** — an optional glob narrowing which tasks under
+  the project(s) this invocation actually runs.
+- **Output directory** — where this run's results go.
 
 The same Project can run under many different run configs:
 
-- A CI pipeline runs a fast, cheap sweep with a small model and
-  low repeat count.
-- A nightly regression sweep uses a stronger model, higher
-  repeats, and writes to a durable output location.
-- A stakeholder demo pins one specific model version to keep
-  results reproducible.
+- A CI pipeline runs a fast, cheap sweep with a small model,
+  minimal workers, tight budget, local storage.
+- A nightly regression sweep uses a stronger model, more workers,
+  higher budget, S3 output, OTLP tracing.
+- A stakeholder demo pins one specific model version and forces
+  `per_trial` isolation for reproducibility.
 
-All three read the same Project. The run config picks the
-per-invocation choices; the Project provides everything else.
+All three read the same Project. Every execution-side knob is
+declared in the run config; no field lives on both files.
 
-**Fields that appear in both files.** Some settings — `models`,
-`workers`, `output_dir`, runtime mode — have sensible defaults in
-`project.yaml` and can be overridden per invocation in a run
-config. When both files declare the same field, the run config
-wins for that invocation.
+**Every top-level section lives in exactly one file.** The
+`compute`, `storage`, `observability`, `orchestrator`, `models`,
+`evaluation`, and `engine` sections live only on the run config.
+The `default_environment`, `task_defaults`, and `tasks` sections
+live only on the Project. Reading the doc, you never have to
+check both files to find where a section lives.
 
 **A run config is required for execution** — you need one to
-actually invoke `tolokaforge run` — but a minimal run config can
-be a few lines if the Project already declares the defaults it
-needs.
+invoke `tolokaforge run` — but individual fields inside a section
+that aren't declared fall back to engine defaults. A minimal run
+config still declares each section it uses; it just doesn't need
+to fill every field inside.
 
-A minimal example:
+A minimal example — declares every execution-side section:
 
 ```yaml
 # run_config/dev.yaml (inside a project directory)
-orchestrator:
-  repeats: 3                          # each task runs 3 times
-  max_turns: 30                       # run-wide ceiling
 
-evaluation:
-  # `projects:` omitted — the run operates on the enclosing
-  # project by default. Uncomment to run against a different
-  # project or to combine several.
-  # projects:
-  #   - "."                             # this project
-  #   - "../other-project"              # additional project
-  # tasks_glob: "tasks/support_*/task.yaml"   # optional filter
-  # output_dir: "results/nightly-2026-07-09"  # overrides project default
-
-# Models — always declared on the run config, never on the
-# project. The model being evaluated is the invocation's variable;
-# everything else is Project setup.
 models:
   agent:
     provider: "openrouter"
-    name: "anthropic/claude-opus-4-8"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.0
   user:
     provider: "openrouter"
     name: "anthropic/claude-sonnet-4-6"
@@ -285,6 +290,31 @@ models:
   judge:
     provider: "openrouter"
     name: "anthropic/claude-sonnet-4-6"
+
+compute:
+  provider: "local-docker"
+  workers: 2
+  max_budget_usd: 20.0
+  runtime_mode: "per_trial"
+
+storage:
+  artifacts: { type: "local", path: "./results" }
+  logs:     { type: "local", path: "./logs" }
+  queue:    { backend: "sqlite" }
+
+observability:
+  tracing: { exporter: "none" }
+  metrics: { exporter: "none" }
+  logging: { level: "INFO", exporter: "stdout" }
+
+orchestrator:
+  repeats: 1
+  max_turns: 30                       # run-wide ceiling
+
+evaluation:
+  # `projects:` omitted — defaults to the enclosing project.
+  # tasks_glob: "tasks/support_*/task.yaml"   # optional filter
+  output_dir: "results/dev-2026-07-09"
 ```
 
 ### Running a Project under a specific run config
@@ -499,9 +529,10 @@ default_environment:
 
 # ── Task-level defaults ─────────────────────────────────────────
 # Applied to every task; task fields override on deep-typed merge.
-# This is the primary mechanism for sharing task-level config
-# across a project — system_prompt, tools, user_simulator, max_turns,
-# adapter_type all live here and inherit unless a task overrides.
+# The primary mechanism for sharing task-level config across a
+# project. Includes task-shape properties (timeouts,
+# stuck_heuristics, continue_prompt) that describe how the pack's
+# tasks are shaped, not how a particular invocation executes.
 task_defaults:
   adapter_type: "native"
   max_turns: 20
@@ -522,19 +553,9 @@ task_defaults:
         state_checks: 0.5
         llm_judge: 0.5
 
-# Note: `models` (agent, user, judge) do NOT live on the Project.
-# The model being evaluated is the invocation's variable and lives
-# on the run config; see "What a run config is" above and the
-# field-ownership table below.
-
-# ── Compute ─────────────────────────────────────────────────────
-compute:
-  provider: "local-docker"
-  workers: 4
-  max_budget_usd: 100.0
-  max_requests_per_second: 10.0
-  max_attempt_retries: 3
-  runtime_mode: "per_trial"
+  # Task-shape properties — how the pack's tasks behave
+  # (independent of any particular invocation's compute or model
+  # choices).
   timeouts:
     trial_seconds: 600
     tool_call_seconds: 60
@@ -542,40 +563,11 @@ compute:
     enabled: true
     max_repeated_tool_calls: 5
     max_idle_turns: 3
-  # Provider-specific sub-sections:
-  # kubernetes:
-  #   cluster: "prod-cluster"
-  #   namespace: "toloka"
-
-# ── Storage ─────────────────────────────────────────────────────
-storage:
-  artifacts:
-    type: "local"
-    path: "./results"
-  logs:
-    type: "local"
-    path: "./logs"
-  queue:
-    backend: "sqlite"
-    # postgres_dsn: "postgresql://..."
-
-# ── Observability ───────────────────────────────────────────────
-observability:
-  tracing:
-    exporter: "none"
-  metrics:
-    exporter: "none"
-  logging:
-    level: "INFO"
-    exporter: "stdout"
-
-# ── Orchestration ───────────────────────────────────────────────
-orchestration:
-  auto_start_services: true
   continue_prompt: "Continue."
-  shuffle_trials: false
-  # schedule:
-  #   cron: "0 6 * * *"
+
+# That's it. No `models`, no `compute`, no `storage`, no
+# `observability`, no `orchestration` sections. All of those live
+# on the run config — see "What a run config is" above.
 ```
 
 ### Section responsibilities
@@ -593,10 +585,9 @@ orchestration:
 | `task_defaults.tools` | Adapter tool wiring | Yes — task overrides |
 | `task_defaults.adapter_settings` | Adapter-specific settings (bundle paths, tool registry, etc.) | Yes — task's `adapter_settings` deep-merges |
 | `task_defaults.grading_defaults` | `TrialGrader` combine method / weights / pass threshold | Yes — task's `grading.yaml.combine` deep-merges |
-| `compute.*` | Orchestrator run-init, `RuntimeBackend` selection | No at task level — `run_config.orchestrator.*` overrides at run level |
-| `storage.*` | Artifact writer, log writer, queue backend | No at task level |
-| `observability.*` | Tracing/metrics/logging sinks | No at task level |
-| `orchestration.*` | Orchestrator run behaviour | No at task level |
+| `task_defaults.timeouts` | `ToolCallingLoop` per-trial timeout budgets | Yes — task's `timeouts` deep-merges |
+| `task_defaults.stuck_heuristics` | Loop stuck-detection config | Yes — task's `stuck_heuristics` deep-merges |
+| `task_defaults.continue_prompt` | Loop nudge string | Yes — task's `continue_prompt` overrides |
 
 Adding a new top-level section is a schema addition on the Project
 model. Unknown sections warn but don't fail — older loaders keep
@@ -766,114 +757,76 @@ A useful test: if you copied the project to a colleague and they ran
 it with their own run config, the content of your `project.yaml`
 should still be exactly what you meant.
 
-Every concrete setting falls into one of three categories.
+Every concrete setting falls into one of two categories.
+**Sections do not span both files** — every top-level section
+lives in exactly one file. Reading the doc, you never have to
+check both files to find a section.
 
 ### Category 1 — Invariant, `project.yaml` only
 
-Settings that describe what the project **is**. Change any of them
-and you're testing a different thing.
+Settings that describe what the project **is** — the eval spec.
+Change any of them and you're testing a different thing.
 
 - **Identity** — `name`, `version`, `description`.
 - **Task inventory** — `tasks.discovery`.
-- **Default environment** — `default_environment` in full, including
-  isolation, network policy, security context defaults.
-- **Task-level defaults** — `task_defaults` in full: `adapter_type`,
-  `max_turns` (task-level default), `system_prompt`,
-  `user_simulator`, `tools`, `adapter_settings`, `policies`,
-  `grading_defaults`.
-- **Compute topology** — `compute.provider`, provider-specific
-  sub-sections (e.g. `compute.kubernetes.*`), `compute.timeouts`,
-  `compute.stuck_heuristics`. These reflect task-shape properties
-  (how long tasks reasonably take, what heuristics detect
-  agent-stuck states) and deployment topology — not per-run knobs.
-- **Observability endpoints** — `observability.tracing`,
-  `metrics`, `logging`. Properties of the deployed infrastructure
-  the project targets.
-- **Orchestration policy** — `orchestration.auto_start_services`,
-  `continue_prompt`, `shuffle_trials`, `schedule`. Project-level
-  behavioural policy.
+- **Default environment** — `default_environment` in full,
+  including isolation, network policy, security context defaults.
+- **Task-level defaults** — `task_defaults` in full:
+  `adapter_type`, `max_turns` (task-level default),
+  `system_prompt`, `user_simulator`, `tools`, `adapter_settings`,
+  `policies`, `grading_defaults`, plus task-shape properties
+  (`timeouts`, `stuck_heuristics`, `continue_prompt`).
 
 ### Category 2 — Per-invocation, run config only
 
-Settings that describe **how this specific run happens**. Every
-invocation has its own.
+Settings that describe **how this specific run happens**.
+Everything execution-side lives here.
 
-- **`evaluation.projects`** (optional) — which projects THIS run
-  includes. When omitted, defaults to the enclosing project (the
-  project directory the run config file lives in). Explicit only
-  for the rare multi-project run. The legacy field
-  `evaluation.task_packs` is accepted as a deprecated alias; see
-  "Deprecations and migrations" below.
-- **`evaluation.tasks_glob`** — filter narrowing which of a
-  project's tasks THIS run actually executes.
-- **`evaluation.output_dir`** — per-run output location.
-- **`evaluation.harness_adapter`** — invocation-level adapter
-  selection.
-- **`orchestrator.repeats`** — statistical sampling choice for THIS
-  run (how many trials per task).
-- **`orchestrator.max_turns`** (run-wide ceiling) — distinct from
-  the task-level `max_turns` default; this is a run-wide safety
-  cap.
-- **`engine.presets_file`** — the model-preset overlay for THIS
-  invocation.
 - **`models`** (`agent`, `user`, `judge`) — the models being
-  evaluated. Never on the Project: the model is the invocation's
-  variable, the whole point of running the eval. Putting a
-  "default" model on the Project would silently affect results
-  when a run forgot to declare its own. The orchestrator refuses
-  to start a run whose grading uses `llm_judge` without a
-  `models.judge` on the run config.
-
-### Category 3 — Configurable, either file (run_config wins)
-
-Settings the Project has a sensible default for, but a specific
-run may want to override. The Project sets a default so runs don't
-have to declare everything; runs override when they need to.
-
-- **`compute.workers`** — Project's default matches typical
-  parallelism for the project's stack; runs scale up for
-  nightly sweeps or down for local dev.
-- **`compute.max_budget_usd`** — Project has a reasonable
-  ceiling; runs may tighten (CI) or loosen (nightly).
-- **`compute.runtime_mode`** — Project's default reflects trial
-  isolation needs; dev runs may relax to `shared`.
-- **`storage.artifacts.path`**, **`storage.logs.path`** — Project
-  has a default like `./results`; runs almost always name a
-  per-run path (e.g. `results/nightly-2026-07-09`).
-- **`storage.queue.backend`** — Project targets `postgres` at
-  scale; dev overrides to `sqlite`.
+  evaluated. The invocation's variable; different run configs
+  test different models against the same Project.
+- **`compute`** — provider (local-docker, kubernetes, ...),
+  provider-specific sub-sections, `workers`, `max_budget_usd`,
+  `max_requests_per_second`, `max_attempt_retries`,
+  `runtime_mode` (`shared` vs `per_trial`).
+- **`storage`** — artifact / log / queue backends. Each run picks
+  its own paths.
+- **`observability`** — tracing, metrics, logging exporters and
+  endpoints. Property of the deployment the operator picks per
+  run.
+- **`orchestrator`** — `repeats`, `max_turns` (run-wide ceiling
+  distinct from the task-level default), `queue_backend`,
+  `auto_start_services`, `shuffle_trials`, `schedule`.
+- **`evaluation`** — `projects` (optional; defaults to enclosing
+  project), `tasks_glob` (optional filter), `output_dir`
+  (optional), `harness_adapter`.
+- **`engine`** — `presets_file`, other invocation-time engine
+  config.
 
 ### Field ownership and precedence
 
-Some fields live only in one file; others may appear in both, with
-the run config winning on conflict.
+Every field lives in exactly one file. No overlap.
 
-| Setting | project.yaml | run config | Resolution |
-|---|---|---|---|
-| `default_environment` | ✓ | — | Project-only |
-| `task_defaults` | ✓ | — | Project-only |
-| `tasks.discovery` | ✓ | — | Project-only |
-| `models.agent` / `models.user` / `models.judge` | — | ✓ | run_config-only |
-| `compute.provider` | ✓ | — | Project-only |
-| `compute.<provider>` sub-sections | ✓ | — | Project-only |
-| `compute.workers` | ✓ default | `orchestrator.workers` | run_config overrides |
-| `compute.runtime_mode` | ✓ default | `orchestrator.runtime` | CLI > run_config > project |
-| `compute.max_budget_usd` | ✓ default | `orchestrator.max_budget_usd` | run_config overrides |
-| `compute.timeouts` / `stuck_heuristics` | ✓ default | `orchestrator.*` | run_config overrides sub-fields |
-| `storage.artifacts.path` | ✓ default | `evaluation.output_dir` | run_config overrides |
-| `storage.queue.backend` | ✓ default | `orchestrator.queue_backend` | run_config overrides |
-| `observability.*` | ✓ | — | Project-only |
-| `orchestration.*` | ✓ default | `orchestrator.*` (matching sub-fields) | run_config overrides |
-| `orchestrator.repeats` / `max_turns` (run-wide cap) | — | ✓ | run_config-only |
-| `evaluation.projects` (optional; defaults to enclosing project) | — | ✓ | run_config-only |
-| `evaluation.harness_adapter` | — | ✓ | run_config-only |
-| `engine.presets_file` | — | ✓ | run_config-only |
+| Section | project.yaml | run config |
+|---|---|---|
+| Identity (`name`, `version`, `description`) | ✓ | — |
+| `tasks.discovery` | ✓ | — |
+| `default_environment` | ✓ | — |
+| `task_defaults` (adapter, prompt, tools, user_simulator, policies, grading_defaults, timeouts, stuck_heuristics, continue_prompt) | ✓ | — |
+| `models` (`agent`, `user`, `judge`) | — | ✓ |
+| `compute` (provider, workers, budget, rate limits, retries, runtime_mode, provider-specific) | — | ✓ |
+| `storage` (artifacts, logs, queue) | — | ✓ |
+| `observability` (tracing, metrics, logging) | — | ✓ |
+| `orchestrator` (repeats, max_turns, queue_backend, auto_start_services, shuffle_trials, schedule) | — | ✓ |
+| `evaluation` (projects, tasks_glob, output_dir, harness_adapter) | — | ✓ |
+| `engine` (presets_file) | — | ✓ |
 
 ### Precedence chain — every field
 
 Highest priority to lowest.
 
-For task-scoped fields:
+For task-scoped fields (fields inside `task_defaults` or a task's
+own `task.yaml`):
 
 1. **task.yaml** value.
 2. **`project.task_defaults`** value.
@@ -881,15 +834,18 @@ For task-scoped fields:
    adapter-specific Domain-bundle merges).
 4. **Engine default**.
 
-For run-scoped fields:
+For run-scoped fields (everything in a run config section):
 
 1. **CLI flag** (e.g. `--runtime`, `--workers`, `--user-model`).
 2. **Environment variable** — infrastructure fields only
    (`DB_SERVICE_URL`, `RAG_SERVICE_URL`, `EXECUTOR_ADDRESS`,
    `TASK_PACKS_DIRS`, provider API keys).
 3. **Run config file** value.
-4. **`project.yaml`** value.
-5. **Engine default**.
+4. **Engine default**.
+
+The two chains never overlap — `project.yaml` doesn't participate
+in the run-scoped chain, and the run config doesn't participate
+in the task-scoped chain.
 
 ### Why the split
 
@@ -910,8 +866,7 @@ files to the fields that matter for the point being made
 ### Scenario A — Single-machine dev workflow
 
 A team is iterating on a support-triage evaluation project on
-their laptops. The Project holds everything the project IS; the
-run config is thin because the Project already has good defaults.
+their laptops.
 
 Layout:
 
@@ -929,7 +884,7 @@ support-triage-pack/
     └── ...
 ```
 
-`project.yaml`:
+`project.yaml` — the eval spec:
 
 ```yaml
 name: "support-triage-eval"
@@ -948,32 +903,18 @@ task_defaults:
   user_simulator:
     mode: "llm"
     persona: "frustrated support customer"
+  timeouts:
+    trial_seconds: 600
+    tool_call_seconds: 60
 
-compute:
-  provider: "local-docker"
-  workers: 2
-  max_budget_usd: 20.0
-  runtime_mode: "per_trial"
-
-storage:
-  artifacts: { type: "local", path: "./results" }
-  logs:     { type: "local", path: "./logs" }
-  queue:    { backend: "sqlite" }
-
-# No `models` here — the model being evaluated lives on the run
-# config, not the project.
+tasks:
+  discovery:
+    glob: "tasks/**/task.yaml"
 ```
 
-`run_config/dev.yaml`:
+`run_config/dev.yaml` — how this run executes:
 
 ```yaml
-# evaluation.projects omitted — defaults to the enclosing project.
-evaluation:
-  output_dir: "results/dev-2026-07-09"
-
-orchestrator:
-  repeats: 1
-
 models:
   agent:
     provider: "openrouter"
@@ -987,19 +928,39 @@ models:
     provider: "openrouter"
     name: "anthropic/claude-sonnet-4-6"
     temperature: 0.0
+
+compute:
+  provider: "local-docker"
+  workers: 2
+  max_budget_usd: 20.0
+  runtime_mode: "per_trial"
+
+storage:
+  artifacts: { type: "local", path: "./results" }
+  logs:     { type: "local", path: "./logs" }
+  queue:    { backend: "sqlite" }
+
+observability:
+  tracing: { exporter: "none" }
+  metrics: { exporter: "none" }
+  logging: { level: "INFO", exporter: "stdout" }
+
+orchestrator:
+  repeats: 1
+
+evaluation:
+  # projects: omitted — defaults to the enclosing project.
+  output_dir: "results/dev-2026-07-09"
 ```
 
 Invocation: `tolokaforge run --config run_config/dev.yaml`.
 
-**What the boundary looks like here.** Everything about the
-project lives in `project.yaml`: the environment, the task
-defaults, the compute provider, the storage backends. The run
-config names the models being evaluated plus this run's
-per-invocation choices (`repeats`, `output_dir`). The Project has
-no default model; every run declares its own. `evaluation.projects`
-is omitted because the run config lives inside the project's
-`run_config/` directory — the enclosing project is the implicit
-default.
+**What the boundary looks like here.** The Project holds the eval
+spec: the environment, the task defaults (including
+task-shape properties like `timeouts`), the task inventory. The
+run config holds everything execution-side: models, compute,
+storage, observability, orchestrator, output path. Every top-level
+section lives in exactly one file.
 
 ### Scenario B — Same project under CI and nightly sweeps
 
@@ -1025,15 +986,6 @@ support-triage-pack/
 `run_config/ci.yaml`:
 
 ```yaml
-# evaluation.projects omitted — defaults to the enclosing project.
-evaluation:
-  output_dir: "results/ci/${CI_RUN_ID}"
-
-orchestrator:
-  repeats: 1
-  workers: 2
-  max_budget_usd: 5.0               # tighten CI budget
-
 models:
   agent:
     provider: "openrouter"
@@ -1046,20 +998,28 @@ models:
     provider: "openrouter"
     name: "anthropic/claude-sonnet-4-6"
     temperature: 0.0
+
+compute:
+  provider: "local-docker"
+  workers: 2
+  max_budget_usd: 5.0                # tighten CI budget
+  runtime_mode: "per_trial"
+
+storage:
+  artifacts: { type: "local", path: "./results" }
+  logs:     { type: "local", path: "./logs" }
+  queue:    { backend: "sqlite" }
+
+orchestrator:
+  repeats: 1
+
+evaluation:
+  output_dir: "results/ci/${CI_RUN_ID}"
 ```
 
 `run_config/nightly.yaml`:
 
 ```yaml
-# evaluation.projects omitted — defaults to the enclosing project.
-evaluation:
-  output_dir: "s3://team-toloka/nightly/${DATE}"
-
-orchestrator:
-  repeats: 5                        # higher sampling for nightly
-  workers: 16                       # scale up
-  max_budget_usd: 200.0             # relaxed budget
-
 models:
   agent:
     provider: "openrouter"
@@ -1072,6 +1032,28 @@ models:
     provider: "openrouter"
     name: "anthropic/claude-opus-4-8"     # stronger judge for reliability
     temperature: 0.0
+
+compute:
+  provider: "local-docker"
+  workers: 16                       # scale up
+  max_budget_usd: 200.0             # relaxed budget
+  runtime_mode: "per_trial"
+
+storage:
+  artifacts: { type: "s3", bucket: "team-toloka", prefix: "nightly" }
+  logs:     { type: "s3", bucket: "team-toloka", prefix: "nightly-logs" }
+  queue:    { backend: "postgres" }
+
+observability:
+  tracing: { exporter: "otlp", endpoint: "http://collector:4317" }
+  metrics: { exporter: "prometheus", endpoint: "http://prom:9090" }
+  logging: { level: "INFO", exporter: "otlp" }
+
+orchestrator:
+  repeats: 5                        # higher sampling for nightly
+
+evaluation:
+  output_dir: "s3://team-toloka/nightly/${DATE}"
 ```
 
 Invocation:
@@ -1117,13 +1099,6 @@ that's the whole point.
 `run_config/agent-opus.yaml`:
 
 ```yaml
-# evaluation.projects omitted — defaults to the enclosing project.
-evaluation:
-  output_dir: "results/bake-off/opus"
-
-orchestrator:
-  repeats: 5
-
 models:
   agent:
     provider: "openrouter"
@@ -1137,6 +1112,23 @@ models:
     provider: "openrouter"
     name: "anthropic/claude-opus-4-8"
     temperature: 0.0
+
+compute:
+  provider: "local-docker"
+  workers: 8
+  max_budget_usd: 50.0
+  runtime_mode: "per_trial"
+
+storage:
+  artifacts: { type: "local", path: "./results" }
+  logs:     { type: "local", path: "./logs" }
+  queue:    { backend: "sqlite" }
+
+orchestrator:
+  repeats: 5
+
+evaluation:
+  output_dir: "results/bake-off/opus"
 ```
 
 `run_config/agent-sonnet.yaml` and `run_config/agent-gpt5.yaml`
@@ -1177,7 +1169,7 @@ The three isolation knobs the schema exposes:
   requirement: `per_trial` or `shared_ok`. The orchestrator
   refuses to start a run whose backend can't satisfy the task's
   declared requirement (see ADR-0009).
-- **`compute.runtime_mode`** (on the Project's `compute`
+- **`compute.runtime_mode`** (on the run config's `compute`
   section) — the runtime backend selection: `per_trial`
   materialises a fresh stack per trial; `shared` materialises
   one stack for the whole run.
@@ -1200,7 +1192,10 @@ does.
 default_environment:
   compose_file: "./shared/environment.compose.yaml"
   isolation: "per_trial"          # task requires per-trial isolation
+```
 
+```yaml
+# run_config/<name>.yaml
 compute:
   provider: "local-docker"
   runtime_mode: "per_trial"       # runtime materialises fresh stacks
@@ -1234,7 +1229,10 @@ is what `SharedStackRuntimeBackend` does.
 default_environment:
   compose_file: "./shared/environment.compose.yaml"
   isolation: "shared_ok"          # task accepts a shared stack
+```
 
+```yaml
+# run_config/<name>.yaml
 compute:
   provider: "local-docker"
   runtime_mode: "shared"          # one stack for the whole run
@@ -1284,7 +1282,10 @@ per-service control.
 default_environment:
   compose_file: "./shared/environment.compose.yaml"
   isolation: "shared_ok"
+```
 
+```yaml
+# run_config/<name>.yaml
 compute:
   provider: "local-docker"
   runtime_mode: "shared"
@@ -1527,8 +1528,8 @@ references — flow through unchanged.
 
 ## Deprecations and migrations
 
-Two changes carry a deprecation window. Both remain accepted for
-now; both should be migrated away from.
+Three changes carry a deprecation window. All remain accepted for
+now; all should be migrated away from.
 
 ### 1. `evaluation.task_packs` on the run config
 
@@ -1569,11 +1570,45 @@ schema and worked scenarios.
 deprecation banner and will be removed once no in-tree link
 still targets it.
 
+### 3. Section ownership split (compute / storage / observability / orchestration on the run config)
+
+**Old:** earlier iterations of this doc placed `compute`,
+`storage`, `observability`, and `orchestration` sections on the
+Project with per-field overrides on the run config. That created
+a section-split-across-files that readers had to cross-check.
+
+**New:** every top-level section lives in exactly one file.
+`compute`, `storage`, `observability`, `orchestrator`, `models`,
+`evaluation`, and `engine` all live on the run config.
+`default_environment`, `task_defaults`, and `tasks` live on the
+Project. Task-shape properties that were previously on `compute`
+or `orchestration` (`timeouts`, `stuck_heuristics`,
+`continue_prompt`) move under `task_defaults` on the Project.
+
+**Migration path:**
+
+1. In an existing `project.yaml`, remove the `compute`,
+   `storage`, `observability`, and `orchestration` sections.
+   Move `timeouts`, `stuck_heuristics`, and `continue_prompt`
+   (if declared) into `task_defaults`.
+2. In each run config file, add sections for `compute`,
+   `storage`, `observability`, `orchestrator` as needed. Fields
+   inside a section fall back to engine defaults if not declared.
+3. This is a doc-alignment change, not a behaviour change — the
+   engine already reads compute / storage / observability /
+   orchestrator settings from the run config today. The
+   migration is about aligning any hand-written `project.yaml`
+   files with where the code actually looks.
+
 ### Where users see the deprecations
 
 - **At config load:** `DeprecationWarning` when a run config
   uses the legacy `task_packs` field. Names the offending file,
-  the legacy field, and the recommended replacement.
+  the legacy field, and the recommended replacement. When a
+  `project.yaml` declares a run-scoped section (`compute`,
+  `storage`, `observability`, `orchestration`, `models`, or
+  `evaluation`), the loader emits a warning naming the section
+  and the file it should move to.
 - **In `docs/TASK_PACKS.md`:** a banner at the top of the file
   points readers here.
 - **In this section:** the canonical migration guide.

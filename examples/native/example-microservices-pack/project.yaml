@@ -1,15 +1,18 @@
 # Project spec — the top-level abstraction for this pack.
 # See docs/architecture/PROJECTS.md for the full model.
+#
+# The Project holds the eval spec — what the pack tests. It does
+# NOT own compute, storage, observability, orchestrator, or models
+# settings; those all live on the run config (run_config/*.yaml).
+# Every top-level section lives in exactly one file.
 
-# ── Identity ────────────────────────────────────────────────────
 name: "microservices-eval"
 version: 1
 description: >
   Evaluation suite for microservices refactoring tasks. Nine tasks
   share a base 4-service stack (runner + db-service + postgres +
-  backend-api). Tasks demonstrate full inheritance, partial input
-  override, full compose override, non-env task overrides, and
-  category-tier sharing via _shared/domain.yaml.
+  backend-api). One task overrides a single input for a postgres
+  version bump; one ships its own compose file for isolation.
 
 # ── Task inventory ──────────────────────────────────────────────
 tasks:
@@ -18,8 +21,8 @@ tasks:
 
 # ── Default environment ─────────────────────────────────────────
 # Every task inherits this unless it declares its own
-# environment_manifest. Task-level environment_manifest deep-merges
-# on top per-task.
+# `environment_manifest`. Task-level environment_manifest deep-
+# merges on top per-task.
 default_environment:
   compose_file: "./shared/environment.compose.yaml"
   runner_service: "runner"
@@ -32,9 +35,11 @@ default_environment:
     group: "toloka"
 
 # ── Task-level defaults ─────────────────────────────────────────
-# Every task inherits these unless it (or its category domain.yaml)
-# overrides. Deep-typed merge: task fields win over category fields,
-# category fields win over project defaults.
+# Applied to every task; task fields override on deep-typed merge.
+# The primary mechanism for sharing task-level config across the
+# project. Includes task-shape properties (timeouts,
+# stuck_heuristics, continue_prompt) that describe how the pack's
+# tasks are shaped, not how a particular invocation executes.
 task_defaults:
   adapter_type: "native"
   max_turns: 20
@@ -55,21 +60,10 @@ task_defaults:
         state_checks: 0.5
         llm_judge: 0.5
 
-# Note: `models` (agent, user, judge) do NOT live on the Project.
-# The model being evaluated is the invocation's variable and lives
-# on the run config. See run_config/dev.yaml, and PROJECTS.md
-# "Relationship to the run config" for the boundary rules.
-
-# ── Compute ─────────────────────────────────────────────────────
-# Provider selection, resource limits, backend mode, timeouts,
-# stuck-heuristics, budget, TypeSense.
-compute:
-  provider: "local-docker"
-  workers: 4
-  max_budget_usd: 100.0
-  max_requests_per_second: 10.0
-  max_attempt_retries: 3
-  runtime_mode: "per_trial"
+  # Task-shape properties — describe the pack's tasks, not a
+  # particular invocation. Timeouts reflect how long tasks
+  # reasonably take; stuck heuristics describe how the agent
+  # typically gets stuck; continue_prompt is the nudge string.
   timeouts:
     trial_seconds: 600
     tool_call_seconds: 60
@@ -77,44 +71,8 @@ compute:
     enabled: true
     max_repeated_tool_calls: 5
     max_idle_turns: 3
-  typesense:
-    enabled: false
-    mode: "disabled"
-  # Provider-specific sub-sections live under `compute.<provider>`.
-  # kubernetes:
-  #   cluster: "prod-cluster"
-  #   namespace: "toloka"
-  #   resource_class: "gpu-large"
-  #   service_account: "toloka-runner"
-
-# ── Storage ─────────────────────────────────────────────────────
-storage:
-  artifacts:
-    type: "local"
-    path: "./results"
-  logs:
-    type: "local"
-    path: "./logs"
-  queue:
-    backend: "sqlite"
-    # postgres_dsn: "postgresql://..."
-
-# ── Observability ───────────────────────────────────────────────
-observability:
-  tracing:
-    exporter: "none"
-    # endpoint: "http://collector:4317"
-  metrics:
-    exporter: "none"
-    # endpoint: "http://prom:9090"
-  logging:
-    level: "INFO"
-    exporter: "stdout"
-
-# ── Orchestration ───────────────────────────────────────────────
-orchestration:
-  auto_start_services: true
   continue_prompt: "Continue."
-  shuffle_trials: false
-  # schedule:
-  #   cron: "0 6 * * *"
+
+# That's the entire Project schema. No compute, storage,
+# observability, orchestrator, or models sections here — all of
+# those live on run configs under run_config/*.yaml.

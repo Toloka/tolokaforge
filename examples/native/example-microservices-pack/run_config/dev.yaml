@@ -5,12 +5,10 @@
 # run_config/ci.yaml, run_config/nightly.yaml, etc.
 #
 # See docs/architecture/PROJECTS.md § "Relationship to the run
-# config" for the full field-ownership + precedence rules, and
-# § "Deprecations and migrations" for the evaluation.projects
-# field notes.
+# config" for the full field-ownership rules, and § "Deprecations
+# and migrations" for the evaluation.projects field notes.
 
-# ── Models — always declared on the run config, never on the
-# project. The model being evaluated is the invocation's variable.
+# ── Models — the models being evaluated. ────────────────────────
 models:
   agent:
     provider: "openrouter"
@@ -26,29 +24,64 @@ models:
     name: "anthropic/claude-sonnet-4-6"
     temperature: 0.0
 
+# ── Compute — provider, parallelism, budget, retries, runtime. ──
+compute:
+  provider: "local-docker"
+  workers: 1
+  max_budget_usd: 20.0
+  max_requests_per_second: 10.0
+  max_attempt_retries: 3
+  runtime_mode: "per_trial"
+  # Provider-specific sub-sections live under compute.<provider>.
+  # Only the block matching provider: is meaningful.
+  # kubernetes:
+  #   cluster: "prod-cluster"
+  #   namespace: "toloka"
+  #   resource_class: "gpu-large"
+
+# ── Storage — where this run's artifacts, logs, and queue go. ───
+storage:
+  artifacts:
+    type: "local"
+    path: "./results"
+  logs:
+    type: "local"
+    path: "./logs"
+  queue:
+    backend: "sqlite"
+    # postgres_dsn: "postgresql://..."
+
+# ── Observability — tracing / metrics / logging exporters. ──────
+observability:
+  tracing:
+    exporter: "none"                # or "otlp"
+    # endpoint: "http://collector:4317"
+  metrics:
+    exporter: "none"                # or "prometheus"
+    # endpoint: "http://prom:9090"
+  logging:
+    level: "INFO"
+    exporter: "stdout"              # or "otlp"
+
 # ── Orchestrator run knobs ──────────────────────────────────────
-# `repeats` and `max_turns` are run-wide caps applied on top of
-# any task-level max_turns override.
 orchestrator:
   repeats: 1
-  max_turns: 20
-  # workers, runtime, queue_backend, timeouts, stuck_heuristics,
-  # max_budget_usd, max_requests_per_second, max_attempt_retries
-  # inherit from project.compute. Uncomment below to override for
-  # this invocation:
-  # workers: 8
-  # runtime: per_trial
+  max_turns: 20                     # run-wide ceiling
+  auto_start_services: true
+  shuffle_trials: false
+  # schedule:
+  #   cron: "0 6 * * *"
 
 # ── Evaluation ──────────────────────────────────────────────────
 # `evaluation.projects` is optional — when omitted, the loader uses
-# the enclosing project (this project). `tasks_glob` and
-# `output_dir` inherit from the project unless overridden here.
+# the enclosing project (this project). Uncomment below only for
+# the rare multi-project run.
 evaluation:
-  # projects:                       # optional; defaults to enclosing project
+  # projects:
   #   - "."                         # this project
-  #   - "../other-project"          # additional project (multi-project run)
+  #   - "../other-project"          # additional project
   # tasks_glob: "tasks/**/task.yaml"
-  # output_dir: "results/example_microservices_pack"
+  output_dir: "results/example_microservices_pack"
 
 # Legacy: `evaluation.task_packs` is still accepted as an alias
 # for `evaluation.projects` but emits a DeprecationWarning at
