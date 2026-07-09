@@ -81,7 +81,8 @@ them as `known_unsupported`.
 |---|---|---|
 | `OBSERVE_CAPABILITY_K` | 15 | observe capability + variant repeats |
 | `OBSERVE_WIRE_K` | 10 | observe wire-probe repeats |
-| `OBSERVE_WORKERS` / `OBSERVE_CAP_PARALLEL` | 10 / 4 | observe parallelism |
+| `OBSERVE_WORKERS` | 10 | wire-probe orchestrator workers (trial-level) |
+| `OBSERVE_CAP_PARALLEL` | 10 | capability + variant flat (node x rep) pool width (raised from 4; the old per-rep pool was serial-within-rep and cost a slow reasoning model hours) |
 | `RESOLVE_MAX_ITER` | 3 | resolve fix-loop iterations |
 | `RESOLVE_MAX_TURNS` | 80 | per-iteration agent turn budget (headroom for code-CREATE; exhausting it degrades to needs-human, never hard-fails) |
 | `RESOLVE_AGENT_MODEL` | claude-opus-4-8 | resolve agent model |
@@ -117,6 +118,10 @@ sub-agent); the resolve prompts drive the fix loop. `index.yaml` is the machine-
 
 - `scripts/integration/observe_findings.py` - deterministic raw-stat facts emitter (no banding,
   no verdict; interpretation is the agent's job).
+- `scripts/integration/run_probes.py` - flat (node x rep) parallel runner for the observe
+  capability + variant steps: collects the candidate's nodes once, then runs each node x rep as
+  its own single-node pytest at `OBSERVE_CAP_PARALLEL` width (so nodes AND repeats parallelize,
+  not `W` long serial reps - the fix for a slow reasoning model spending hours on the variants).
 - `scripts/integration/reprobe.py` - targeted re-probe under a policy overlay; re-runs ONLY the
   named `--targets` (the agent's fix-targets), or all failed probes if none given, as a flat
   (probe x rep) pool parallelized at `--cap-parallel`; capability-only inner loop, plus a final
