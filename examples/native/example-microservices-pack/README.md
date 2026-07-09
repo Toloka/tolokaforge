@@ -1,18 +1,20 @@
 # example-microservices-pack
 
 Task pack demonstrating the **Project** as the top-level abstraction.
-A `project.yaml` at the pack root declares shared defaults for every
-task; individual tasks inherit and override. Seven tasks show the
-full range of inheritance and override patterns. Read alongside
+`project.yaml` at the pack root holds shared bases for both tasks
+(`task_defaults`) and runs (`run_defaults`); per-item deltas live
+in `tasks/<name>/task.yaml` and `run_configs/<name>.yaml`. Seven
+tasks show the full range of inheritance and override patterns.
+Read alongside
 [`docs/architecture/PROJECTS.md`](../../../docs/architecture/PROJECTS.md).
 
 ## Layout
 
 ```
 example-microservices-pack/
-├── project.yaml                       # top-level Project spec
-├── run_config/
-│   └── dev.yaml                       # per-invocation config (slim)
+├── project.yaml                       # identity + task_defaults + run_defaults
+├── run_configs/
+│   └── dev.yaml                       # per-invocation delta on run_defaults
 ├── shared/
 │   ├── environment.compose.yaml       # base 4-service stack referenced by default_environment
 │   └── system_prompt.md               # project-level default system prompt
@@ -27,17 +29,24 @@ example-microservices-pack/
     └── long_debugging_session/        # non-env override — max_turns: 60
 ```
 
-## The two authoring tiers
+## The base + delta model
 
-- **Project** (`project.yaml`) — pack-level defaults for every
-  section: identity, environment, task defaults, models, compute,
-  storage, observability, orchestration.
-- **Task** (`task.yaml`) — per-task identity + any overrides. A
-  task with only `task_id` and `description` inherits everything
-  else.
+`project.yaml` holds two labelled bases:
 
-Task fields override Project defaults; nothing else layers between
-them.
+- **`task_defaults`** — the base for every task. Applies to every
+  file under `tasks/**`; each `task.yaml` deep-merges its deltas
+  on top.
+- **`run_defaults`** — the base for every run config. Applies to
+  every file under `run_configs/`; each `run_configs/<name>.yaml`
+  deep-merges its deltas on top.
+
+Plus one supporting section:
+
+- **`default_environment`** — the environment every task inherits;
+  a task's own `environment_manifest` deep-merges on top.
+
+Per-item files (`task.yaml`, `run_configs/*.yaml`) declare only
+what's different. Loader deep-merges base + delta on both layers.
 
 ## The tasks, by pattern
 
@@ -129,19 +138,19 @@ touch the environment (`max_turns`) don't affect the stack — the
 runtime materialises fewer stacks than tasks because the hash is
 over the environment, not the full task.
 
-## Run-time override
+## Run-time deltas
 
-The pack's `run_config/dev.yaml` is slim by design: it declares only
-per-invocation fields (`orchestrator.repeats`,
-`evaluation.task_packs`) and lets everything else inherit from the
-project. Invoke with `tolokaforge run --config run_config/dev.yaml`.
+The pack's `run_configs/dev.yaml` is slim by design: it declares
+only `models` and `evaluation.output_dir`. Everything else
+(`compute`, `storage`, `observability`, `orchestrator`) comes from
+`project.run_defaults`. Invoke with
+`tolokaforge run --config run_configs/dev.yaml`.
 
-To run the same pack under a different configuration — say more
-workers, a stronger judge model, a different output directory — add
-a new file under `run_config/` (e.g. `run_config/ci.yaml` or
-`run_config/nightly.yaml`), fill in the fields you want to override,
-and pass it via `--config`. Run configs are self-contained; they
-don't inherit from each other.
+To run the same pack under a different configuration — more
+workers, a stronger judge model, a different output directory —
+add a new file under `run_configs/` (e.g. `run_configs/ci.yaml` or
+`run_configs/nightly.yaml`) with just the fields that differ. The
+loader deep-merges `project.run_defaults` under it.
 
 ## Cross-references
 

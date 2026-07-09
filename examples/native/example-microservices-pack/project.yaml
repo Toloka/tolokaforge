@@ -1,15 +1,14 @@
 # Project spec — the top-level abstraction for this pack.
 # See docs/architecture/PROJECTS.md for the full model.
 #
-# The Project holds the eval spec — what the pack tests. It does
-# NOT own compute, storage, observability, orchestrator, or models
-# settings; those all live on the run config (run_config/*.yaml).
-# Every top-level section lives in exactly one file.
+# The Project holds identity, task discovery, and the shared bases
+# for tasks (task_defaults) and runs (run_defaults). Per-item
+# deltas live in tasks/<name>/task.yaml and run_configs/<name>.yaml.
 
 name: "microservices-eval"
 version: 1
 description: >
-  Evaluation suite for microservices refactoring tasks. Nine tasks
+  Evaluation suite for microservices refactoring tasks. Seven tasks
   share a base 4-service stack (runner + db-service + postgres +
   backend-api). One task overrides a single input for a postgres
   version bump; one ships its own compose file for isolation.
@@ -34,12 +33,11 @@ default_environment:
     user: "toloka"
     group: "toloka"
 
-# ── Task-level defaults ─────────────────────────────────────────
-# Applied to every task; task fields override on deep-typed merge.
-# The primary mechanism for sharing task-level config across the
-# project. Includes task-shape properties (timeouts,
-# stuck_heuristics, continue_prompt) that describe how the pack's
-# tasks are shaped, not how a particular invocation executes.
+# ── Task defaults — base for every task ─────────────────────────
+# Applied to every task; task.yaml fields deep-merge on top.
+# Holds task-shape properties (timeouts, stuck_heuristics,
+# continue_prompt) that describe how the pack's tasks are shaped,
+# not how a particular invocation executes.
 task_defaults:
   adapter_type: "native"
   max_turns: 20
@@ -59,11 +57,6 @@ task_defaults:
       weights:
         state_checks: 0.5
         llm_judge: 0.5
-
-  # Task-shape properties — describe the pack's tasks, not a
-  # particular invocation. Timeouts reflect how long tasks
-  # reasonably take; stuck heuristics describe how the agent
-  # typically gets stuck; continue_prompt is the nudge string.
   timeouts:
     trial_seconds: 600
     tool_call_seconds: 60
@@ -73,6 +66,40 @@ task_defaults:
     max_idle_turns: 3
   continue_prompt: "Continue."
 
-# That's the entire Project schema. No compute, storage,
-# observability, orchestrator, or models sections here — all of
-# those live on run configs under run_config/*.yaml.
+# ── Run defaults — base for every run config ────────────────────
+# Applied to every run under run_configs/; a run_configs/<name>.yaml
+# file's fields deep-merge on top. This is where compute, storage,
+# observability, and orchestrator run knobs shared across most
+# invocations live. `models` typically varies per invocation and
+# lives in run_configs/*.yaml, but shared model settings (e.g. a
+# uniform temperature) can be placed here.
+run_defaults:
+  compute:
+    provider: "local-docker"
+    workers: 1
+    max_budget_usd: 20.0
+    max_requests_per_second: 10.0
+    max_attempt_retries: 3
+    runtime_mode: "per_trial"
+  storage:
+    artifacts:
+      type: "local"
+      path: "./results"
+    logs:
+      type: "local"
+      path: "./logs"
+    queue:
+      backend: "sqlite"
+  observability:
+    tracing:
+      exporter: "none"
+    metrics:
+      exporter: "none"
+    logging:
+      level: "INFO"
+      exporter: "stdout"
+  orchestrator:
+    repeats: 1
+    max_turns: 20
+    auto_start_services: true
+    shuffle_trials: false
