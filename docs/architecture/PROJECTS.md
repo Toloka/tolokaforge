@@ -16,28 +16,37 @@ extends),
 [`adr/0018-multi-container-under-shared-runtime.md`](adr/0018-multi-container-under-shared-runtime.md)
 (the isolation case matrix this model preserves).
 
-## The mental model — four scopes, layered
+## The mental model — Project and Task, with group scoping
 
-Every config concern lives at exactly one primary scope. Higher
-scopes may declare defaults that lower scopes inherit; the effective
-value of a field depends on which scopes express it.
+The authoring model has **two tiers**: Project and Task. A project
+declares shared defaults; a task declares its identity and any
+overrides. The task's effective config is `merge(project, task,
+task-wins)`.
+
+Sometimes a subset of tasks needs *different* shared defaults from
+the rest — a specific tool set, a different persona, a different
+system prompt. That's expressed as a **group** on top of the
+Project's `task_defaults`, and tasks opt in by name or by file
+reference. Groups are not a separate tier; they're a selector-based
+scoping of shared defaults, sitting between the pack-wide
+`task_defaults` and the task's own overrides.
+
+Around the authoring model, two more scopes complete the picture:
 
 | Scope | Owned by | Lifetime | What lives here |
 |---|---|---|---|
 | **CLI + env** | Operator | This invocation | `--runtime`, `--user-model`, `--judge-model`, `--presets-file`; env vars for API keys and service URLs |
 | **Run** | `run_config.yaml` | This invocation | Which models drive this run, how many workers, output dir for this run, which packs to include |
 | **Project** | `project.yaml` | Pack lifetime | Default environment, default models, compute/storage/observability/orchestration policies, task-level defaults inherited by every task |
-| **Category** | `_shared/domain.yaml` | Subset of tasks in one category | Shared category name, shared tools, shared user_simulator, shared system_prompt (deep-merged into referring task.yamls) |
-| **Task** | `task.yaml` + task-adjacent files | One task | Task identity, per-task overrides of everything above |
+| **Task** | `task.yaml` + task-adjacent files | One task | Task identity, per-task overrides |
 | **Trial** | Runtime-only | One trial | Auto-generated ids, per-trial state — never user-configurable |
 
-The Project sits at the top of the authoring stack. Category
-(`_shared/domain.yaml`) is a real, load-bearing tier between Project
-and Task — many task packs today already use it to share tools and
-system prompts across a subset of tasks. The Project layer sits
-above Category; Category sits above Task. Three levels total in the
-authoring hierarchy, plus Run above (for invocation-specific
-concerns) and CLI/env above that.
+Inside the Project scope, `task_defaults` applies pack-wide;
+optional `task_groups` (inline in `project.yaml`) or external
+`_shared/*.yaml` files apply to a subset of tasks that opt in.
+Group defaults layer between the pack-wide `task_defaults` and the
+task's own overrides, but they're not their own scope — they're a
+mechanism inside Project.
 
 ## Config file inventory
 
@@ -47,9 +56,9 @@ The complete set of files a task pack can ship:
 |---|---|---|---|
 | `project.yaml` | pack root | Pack-level defaults + typed sections | Optional |
 | `run_config.yaml` | pack root | Per-invocation config (models, orchestrator run knobs, evaluation choice) | Required for execution |
-| `_shared/domain.yaml` | category dir | Category-level shared config (category, tools, user_simulator, system_prompt) | Optional |
-| `_shared/system_prompt.md` | category dir | Shared LLM system instruction | Optional |
-| `_shared/mcp_server.py` | category dir | MCP server implementation for shared tools | Optional |
+| `_shared/domain.yaml` | category dir | External form of a group's shared defaults (category, tools, user_simulator, system_prompt) referenced by task-level `domain:` | Optional |
+| `_shared/system_prompt.md` | category dir | System prompt bundled with a group's external file | Optional |
+| `_shared/mcp_server.py` | category dir | MCP server bundled with a group's external file | Optional |
 | `shared/environment.compose.yaml` | pack root or task dir | Base compose file referenced by `default_environment` | Optional |
 | `task.yaml` | task dir | Task spec (identity, adapter, max_turns, initial_user_message, initial_state, tools, user_simulator, metadata, policies, grading path, system_prompt, adapter_settings, environment_manifest, domain ref) | Required |
 | `grading.yaml` | task dir | Grading rules (combine, state_checks, transcript_rules, llm_judge, custom_checks) | Required |
@@ -71,32 +80,28 @@ version: 1
 description: "..."
 
 # ── Task inventory ──────────────────────────────────────────────
-# Glob discovery is VCS-managed; an inline list of task records is
-# UI-managed. Both modes coexist.
 tasks:
   discovery:
     glob: "tasks/**/task.yaml"
   # inline: [...]  # UI-managed alternative
 
 # ── Default environment ─────────────────────────────────────────
-# Full EnvironmentManifest shape. Every task inherits unless it
-# declares its own environment_manifest. Task-level environment_manifest
-# deep-merges on top per-task.
+# Every task inherits unless it declares its own environment_manifest.
+# Task-level environment_manifest deep-merges on top per-task.
 default_environment:
   compose_file: "./shared/environment.compose.yaml"
   runner_service: "runner"
   inputs:
     postgres_version: "16"
-  isolation: "per_trial"                # per ADR-0009 enforcement
+  isolation: "per_trial"
   network_policy: "LOCALHOST_ONLY"
   security_context_defaults:
     user: "toloka"
     group: "toloka"
 
-# ── Task-level defaults ─────────────────────────────────────────
-# Inherited by every task under tasks.discovery. Category
-# (_shared/domain.yaml) layers on top of these; task.yaml layers
-# on top of category.
+# ── Task-level defaults (pack-wide) ─────────────────────────────
+# Applied to every task; task fields override; group defaults (if the
+# task opts into a group) layer between these and the task.
 task_defaults:
   adapter_type: "native"
   max_turns: 20
@@ -108,8 +113,8 @@ task_defaults:
     max_tool_calls_per_turn: 10
   metadata: {}
   adapter_settings: {}
-  tools: {}                        # tool defaults; category or task adds/replaces
-  grading_defaults:                # merges into each task's GradingConfig
+  tools: {}
+  grading_defaults:
     combine:
       method: "weighted_average"
       pass_threshold: 0.7
@@ -117,11 +122,31 @@ task_defaults:
         state_checks: 0.5
         llm_judge: 0.5
 
+# ── Group-scoped defaults (optional) ────────────────────────────
+# Defaults applied only to tasks that opt in. Two equivalent forms:
+#
+# 1. Inline groups declared here, referenced from a task via
+#    `group: <name>` in task.yaml.
+# 2. External files (any path under the pack), referenced from a
+#    task via `domain: <path>` in task.yaml. Toloka-internal packs
+#    typically use `_shared/domain.yaml` for this — the external
+#    form colocates the group's shared prompt and MCP server with
+#    its config.
+#
+# Both forms merge the same way: group defaults layer between
+# task_defaults and the task's own fields.
+#
+# task_groups:
+#   customer_support:
+#     category: "customer_support"
+#     tools:
+#       agent:
+#         enabled: ["read_ticket", "update_ticket", "search_kb"]
+#     system_prompt: "./prompts/support.md"
+#     user_simulator:
+#       persona: "frustrated support customer"
+
 # ── Models ──────────────────────────────────────────────────────
-# Default agent / user / judge models. run_config.yaml MAY declare
-# its own; run_config wins on conflict. When any task uses llm_judge,
-# either project.models.judge or run_config.models.judge MUST be
-# present — the orchestrator refuses to start otherwise.
 models:
   agent:
     provider: "openrouter"
@@ -137,16 +162,13 @@ models:
     temperature: 0.0
 
 # ── Compute ─────────────────────────────────────────────────────
-# Provider selection, resource limits, backend mode, TypeSense,
-# stuck-heuristics, timeouts, budget.
 compute:
-  provider: "local-docker"         # local-docker, kubernetes,
-                                   # aws-batch, modal, ...
-  workers: 4                       # default; run_config.orchestrator.workers overrides
+  provider: "local-docker"
+  workers: 4
   max_budget_usd: 100.0
   max_requests_per_second: 10.0
   max_attempt_retries: 3
-  runtime_mode: "per_trial"        # shared | per_trial within the provider
+  runtime_mode: "per_trial"
   timeouts:
     trial_seconds: 600
     tool_call_seconds: 60
@@ -156,41 +178,35 @@ compute:
     max_idle_turns: 3
   typesense:
     enabled: false
-    mode: "disabled"               # local | remote | disabled
-  # Provider-specific sub-sections live under `compute.<provider>`.
+    mode: "disabled"
+  # Provider-specific sub-sections:
   # kubernetes:
   #   cluster: "prod-cluster"
   #   namespace: "toloka"
-  #   resource_class: "gpu-large"
 
 # ── Storage ─────────────────────────────────────────────────────
-# Artifacts, logs, queue backend, fixtures.
 storage:
   artifacts:
-    type: "local"                  # local | s3 | gcs | azure-blob
+    type: "local"
     path: "./results"
   logs:
     type: "local"
     path: "./logs"
   queue:
-    backend: "sqlite"              # sqlite | postgres
+    backend: "sqlite"
     # postgres_dsn: "postgresql://..."
 
 # ── Observability ───────────────────────────────────────────────
-# Tracing, metrics, logging exporters.
 observability:
   tracing:
-    exporter: "none"               # none | otlp
-    # endpoint: "http://collector:4317"
+    exporter: "none"
   metrics:
-    exporter: "none"               # none | prometheus
-    # endpoint: "http://prom:9090"
+    exporter: "none"
   logging:
     level: "INFO"
-    exporter: "stdout"             # stdout | otlp
+    exporter: "stdout"
 
 # ── Orchestration ───────────────────────────────────────────────
-# Auto-start policies, continue prompts, shuffle, schedule.
 orchestration:
   auto_start_services: true
   continue_prompt: "Continue."
@@ -198,10 +214,6 @@ orchestration:
   # schedule:
   #   cron: "0 6 * * *"
 ```
-
-Every section maps 1:1 to an existing config concern in the codebase
-today. Nothing invented; every field has a home in an existing
-component's consumption graph.
 
 ### Section responsibilities
 
@@ -212,11 +224,12 @@ component's consumption graph.
 | `default_environment` | `RuntimeBackend` per-trial provision | Yes — task's `environment_manifest` deep-merges |
 | `task_defaults.adapter_type` | Adapter selection per task | Yes — task's `adapter_type` overrides |
 | `task_defaults.max_turns` | `ToolCallingLoop` per-trial budget | Yes — task's `max_turns` overrides |
-| `task_defaults.system_prompt` | Runner system message | Yes — task's `system_prompt` overrides (category layer may also override) |
+| `task_defaults.system_prompt` | Runner system message | Yes — task's `system_prompt` overrides (a group's `system_prompt`, if the task opts in, layers between) |
 | `task_defaults.user_simulator` | `UserSimulator` config | Yes — task's `user_simulator` deep-merges |
 | `task_defaults.policies` | Loop policies | Yes — task's `policies` deep-merges |
-| `task_defaults.tools` | Adapter tool wiring | Yes — task or category adds/replaces |
+| `task_defaults.tools` | Adapter tool wiring | Yes — task or opted-in group adds/replaces |
 | `task_defaults.grading_defaults` | `TrialGrader` combine method / weights / pass threshold | Yes — task's `grading.yaml.combine` deep-merges |
+| `task_groups.<name>` / external group file | Task-level defaults for tasks that opt in via `group:` or `domain:` | Yes — task fields override group defaults |
 | `models.agent` / `models.user` / `models.judge` | LLM clients (run-level) | No at task level — `run_config.models` overrides at run level |
 | `compute.*` | Orchestrator run-init, `RuntimeBackend` selection | No at task level — `run_config.orchestrator.*` overrides at run level |
 | `storage.*` | Artifact writer, log writer, queue backend | No at task level |
@@ -240,16 +253,10 @@ description: "..."
 environment_manifest:
   inputs:
     postgres_version: "17"          # overrides project default of "16"
-                                    # (compose_file, runner_service, etc.
-                                    # inherit from project.default_environment)
 ```
 
 The task's resolved manifest = merge(`project.default_environment`,
 `task.environment_manifest`, task-wins).
-
-The same rule applies to any other section a task overrides:
-`user_simulator`, `policies`, `grading.combine`, `metadata`,
-`adapter_settings`.
 
 ### Full override — replace entirely
 
@@ -259,7 +266,7 @@ Some fields replace instead of merge:
   file replaces the compose reference entirely. The task no longer
   shares the project's runtime stack.
 - **`system_prompt`**: pointing at a different file (or inline
-  text) replaces the project/category prompt entirely; no merge.
+  text) replaces the project/group prompt entirely; no merge.
 
 ```yaml
 # tasks/schema_isolation_migration/task.yaml
@@ -267,91 +274,131 @@ task_id: "schema_isolation_migration"
 description: "..."
 
 environment_manifest:
-  compose_file: "./environment.compose.yaml"    # replaces project default
+  compose_file: "./environment.compose.yaml"
   runner_service: "runner"
 ```
 
 ### Fields that cannot be project-scoped
 
-Some fields are inherent to the task and can only live at task
-level:
-
-- `task_id`, `name`, `description` — identity.
+- `task_id`, `name`, `description` — inherent identity.
 - `initial_state.json` payload — per-task seed data.
 - `grading.yaml`'s `llm_judge.rubric`, `state_checks`,
   `transcript_rules`, `custom_checks` — must be explicit per task
   for audit.
 - Fixture file contents — per-task data.
 
-## The category tier — `_shared/domain.yaml`
+## Group-scoped defaults
 
-`_shared/domain.yaml` under a category directory declares
-category-level shared config. A task references it via a `domain:`
-field in `task.yaml`:
+A group is a named bundle of shared defaults (typically `tools`,
+`user_simulator`, `system_prompt`, `category`) applied only to tasks
+that opt in. Groups sit inside the Project scope; they're not their
+own tier.
+
+Groups can be expressed two ways, and both mean the same thing:
+
+### External form (`_shared/*.yaml`)
+
+The pattern Toloka-internal packs use today. A group's config lives
+in a file under any convenient directory — conventionally
+`_shared/domain.yaml`. Tasks opt in via a `domain:` field in
+`task.yaml`:
 
 ```yaml
-# tasks/support_triage/some_task/task.yaml
+# tasks/support_triage_01/task.yaml
 task_id: "support_triage_01"
-domain: "../../_shared/domain.yaml"   # relative to task dir
+domain: "../../_shared/domain.yaml"
 description: "..."
 ```
 
-The loader deep-merges the domain fields onto the task, with task
-fields winning on conflict. Currently, category-mergeable fields
-are:
+```yaml
+# _shared/domain.yaml
+category: "customer_support"
+tools:
+  agent:
+    enabled: ["read_ticket", "update_ticket", "search_kb"]
+    mcp_server: "./mcp_server.py"
+system_prompt: "./system_prompt.md"
+user_simulator:
+  persona: "frustrated support customer"
+```
 
-- `category` — the task's category label.
-- `tools` — the tool set exposed to the agent.
-- `user_simulator` — the simulated-user config (mode, persona,
-  scripted_flow).
-- `system_prompt` — the LLM system instruction (path or inline).
+The loader (`tolokaforge/adapters/_task_loader.py:141`) deep-merges
+the group's fields onto the task; task fields win on conflict.
+Relative paths inside the group file (e.g. `./system_prompt.md`,
+`./mcp_server.py`) are resolved from the group file's directory, so
+a group can bundle its shared prompt and MCP server alongside
+`domain.yaml` and every referring task picks them up correctly.
 
-Relative paths in the domain file (e.g. references to
-`system_prompt.md` or `mcp_server.py` living next to `domain.yaml`)
-are rewritten by the loader to resolve from the domain-file
-directory, not the task directory — so a category can bundle its
-shared prompt and MCP server alongside `domain.yaml` and every
-referring task picks them up correctly.
+**Why external form is popular.** A group is often more than just
+YAML fields — it includes a system prompt written in Markdown and,
+for tool-heavy scenarios, an MCP server implementation in Python.
+The external form colocates all three in one directory, so a whole
+"group package" ships as a unit.
 
-### Where category sits in the layered merge
+### Inline form (`task_groups` in `project.yaml`)
 
-The full task-config resolution order — highest priority to lowest:
+For groups that are pure YAML — no bundled `.md` or `.py` — a
+group's defaults can live directly in `project.yaml` under
+`task_groups.<name>`. Tasks opt in via a `group:` field in
+`task.yaml`:
 
-1. `task.yaml` fields.
-2. `_shared/domain.yaml` fields (if the task references a domain).
-3. `project.yaml.task_defaults` fields.
-4. Adapter-level defaults (per adapter type).
-5. Engine defaults (Pydantic model defaults).
+```yaml
+# project.yaml (excerpt)
+task_groups:
+  polite_customer:
+    user_simulator:
+      persona: "polite enterprise customer"
+      backstory: "..."
+```
 
-Every level layers via deep-typed merge. No free-form merge on
-untyped fields.
+```yaml
+# tasks/enterprise_triage/task.yaml
+task_id: "enterprise_triage"
+group: "polite_customer"
+description: "..."
+```
 
-## Resolution — the task effective config
+Merge semantics are identical to the external form: group defaults
+layer between `task_defaults` and the task's own fields.
+
+### Currently group-mergeable fields
+
+- `category` (label)
+- `tools`
+- `user_simulator`
+- `system_prompt`
+
+Fields not in this list stay task-scoped even when a group file
+declares them. Extending the set is a schema addition on the group
+model.
+
+## Resolution — task effective config
 
 For every task discovered by `tasks.discovery`, the loader produces
 a `TaskDescription` (the wire type from ADR-0003) by layered merge:
 
 ```
-                    project.yaml.task_defaults
-                             │
-                             ▼
-                    _shared/domain.yaml
-                    (if task.yaml has `domain:`)
-                             │
-                             ▼
-                    task.yaml
-                             │
-                             ▼
-        environment_manifest merge with project.default_environment
-                             │
-                             ▼
+                project.task_defaults
+                (applied to every task)
+                        │
+                        ▼
+                Group defaults
+                (if task opts in via `group:` or `domain:`)
+                        │
+                        ▼
+                task.yaml
+                        │
+                        ▼
+    environment_manifest merge with project.default_environment
+                        │
+                        ▼
               grading.yaml
-              (combined with project.task_defaults.grading_defaults)
-                             │
-                             ▼
+              (merged with project.task_defaults.grading_defaults)
+                        │
+                        ▼
                 Adapter validates the final shape
-                             │
-                             ▼
+                        │
+                        ▼
                     TaskDescription
                 (the wire format for the runner)
 ```
@@ -407,7 +454,7 @@ Some fields live only in one file; others may appear in both, with
 | Setting | project.yaml | run_config.yaml | Resolution |
 |---|---|---|---|
 | `default_environment` | ✓ | — | Project-only |
-| `task_defaults` | ✓ | — | Project-only |
+| `task_defaults` / `task_groups` | ✓ | — | Project-only |
 | `tasks.discovery` | ✓ | — | Project-only |
 | `models.agent` / `models.user` / `models.judge` | ✓ default | ✓ override | run_config overrides |
 | `compute.provider` | ✓ | — | Project-only |
@@ -437,10 +484,17 @@ Highest priority to lowest:
 4. **`project.yaml`** value.
 5. **Engine default** (from the Pydantic model).
 
-For task-scoped fields the chain forks separately after Project:
-project.task_defaults → category domain.yaml → task.yaml → adapter
-default → engine default. That resolved TaskDescription then interacts
-with the run-scoped fields above at execution time.
+For task-scoped fields the chain resolves inside the Project scope:
+
+1. **task.yaml** value.
+2. **Group defaults** (if the task opts in via `group:` or
+   `domain:`).
+3. **`project.task_defaults`** value.
+4. **Adapter default** (per adapter type).
+5. **Engine default**.
+
+That resolved `TaskDescription` then interacts with the run-scoped
+chain above at execution time.
 
 ### Why the split
 
@@ -449,9 +503,7 @@ many different configurations without editing it. A CI pipeline runs
 with one `run_config.yaml` (parallel workers, fast model), a nightly
 regression sweep runs with another (more repeats, stronger model,
 larger output volume), and a stakeholder demo runs with a third —
-all against the same `project.yaml`. That's the same separation of
-*invariant spec* from *variant execution* that a
-`deployments/<name>.yaml` layer will formalise at broader scope.
+all against the same `project.yaml`.
 
 ## Runtime mechanism — content-addressed stack dedup
 
@@ -598,21 +650,21 @@ The schema is designed for UI editing.
 
 - **Section-per-form.** Every section under the Project is its own
   Pydantic model. A UI renders one form section per model, driven
-  by the model's JSON Schema. New sections shipped by tolokaforge
-  extend the schema; the UI adapts without bespoke code.
-- **Category tier in the tree.** A UI shows Project → Category →
-  Task as a browsable tree; each level is editable independently.
+  by the model's JSON Schema.
+- **Groups as reusable bundles.** A UI can present `task_groups` as
+  a library of shared-config templates that tasks pick from,
+  independent of whether they live inline in `project.yaml` or in
+  external files.
 - **Typed primitives everywhere.** Sub-fields are strings, ints,
   enums, references (by name) to other resources, or further typed
   sub-objects. No untyped free-form fields.
 - **Task inventory modes.** `tasks.discovery.glob` is VCS-managed;
   `tasks.inline: [...]` is a UI-managed list of task records
-  embedded in the Project. Both modes coexist; the loader
-  normalises to an internal list.
+  embedded in the Project. Both modes coexist.
 - **Provider selection triggers sub-section reveal.**
   `compute.provider: kubernetes` makes the `compute.kubernetes`
   block meaningful; UI shows only the sub-section matching the
-  current provider (discriminated union).
+  current provider.
 - **Version field.** `project.version` gives the UI a lever for
   schema migration when the shape breaks. Unknown top-level
   sections warn but preserve.
@@ -625,38 +677,36 @@ packs.
 - **New top-level sections.** Add a Pydantic model, register it in
   the project schema. Older loaders warn on the unknown key but
   preserve the field.
+- **New group-mergeable fields.** Extend the group schema alongside
+  the underlying `TaskDescription` fields.
 - **New providers for `compute`.** Ship a `RuntimeBackend`
   implementation, declare an entry-point in
-  `tolokaforge.compute_providers`. No fork required.
+  `tolokaforge.compute_providers`.
 - **New adapter types.** Register in the `tolokaforge.adapters`
-  entry-point group. Projects reference by string tag in
-  `task_defaults.adapter_type` (or per-task `adapter_type`).
+  entry-point group.
 - **New reset primitives.** Schema enum extension in tolokaforge
-  itself. The safety contract stays engine-side.
+  itself.
 - **New task-defaults fields.** Extend the `task_defaults` model
   alongside the underlying `TaskDescription` schema.
 - **Deployment/profile layer above the project.** Slots in without
   changing the Project schema.
 - **Workspace/organisation layer above projects.** For
-  cross-project quotas, permissions, and cost accounting. Adds an
-  entity above Project without changing the Project schema.
+  cross-project quotas, permissions, and cost accounting.
 
 ## Backward compatibility
 
 - **Packs without `project.yaml` work unchanged.** The loader
   synthesises a default Project from `run_config.yaml` +
-  discovered tasks. Existing task-level `environment_manifest`
-  declarations are honoured as full overrides.
+  discovered tasks.
 - **Packs with `project.yaml` get inheritance** for tasks that
   don't declare overrides. Tasks that do continue to work exactly
   as before.
 - **Adding sections to `project.yaml` doesn't break older
   packs.** Older packs simply don't declare those sections; the
   runtime uses hard-coded defaults.
-- **`_shared/domain.yaml`** continues to work exactly as today.
-  The Project layer merges BEFORE domain.yaml is applied, so the
-  merge order is: engine defaults → project.task_defaults →
-  category domain.yaml → task.yaml.
+- **Existing `_shared/domain.yaml` semantics preserved verbatim.**
+  The external group form is exactly the pattern that already
+  ships. Task-level `domain:` references continue to work.
 - **`run_config.yaml`** continues to work exactly as today.
   Fields declared in `run_config` override same-named fields in
   `project`.
@@ -666,55 +716,42 @@ packs.
 
 ## Failure modes
 
-- **`llm_judge` without a run-level judge model.** A task's
-  `grading.yaml` uses `llm_judge`, but neither
-  `project.models.judge` nor `run_config.models.judge` is
-  declared. Prevention: orchestrator refuses to start; error
-  names the offending task(s) and the missing field.
-- **Silent cross-trial contamination.** A `shared` service
-  persists across trials of a task; a trial mutates state; the
-  next trial sees dirty state. Prevention: default isolation for
+- **`llm_judge` without a run-level judge model.** Orchestrator
+  refuses to start; error names the offending task(s) and the
+  missing field.
+- **Silent cross-trial contamination.** Default isolation for
   undeclared services is `ephemeral`; `shared` is opt-in.
-- **Silent cross-task contamination.** Tasks A and B share a
-  stack via inheritance; A's trials mutate a `shared` service;
-  B's trials see the mutation. Prevention: same as above.
-- **Non-canonical YAML causing hash misses.** Prevention: runtime
-  canonicalises key order, quoting, and whitespace before hashing.
-- **Cross-run assumption.** A user runs task A, then task B in a
-  separate invocation, and expects B to see A's state.
-  Prevention: the model is documented as within-run only.
-- **Reset-primitive failure.** A `reset` service's primitive
-  fails mid-run. Prevention: primitive failures terminate the
-  affected task's remaining trials with an explicit reason
-  (analogous to `TerminationReason.PROVISION_ERROR`).
-- **Input-override typos.** A task overrides `postgress_version`
-  (misspelt); the compose file's `${postgres_version}` binds to
-  its default. Prevention: input names validated against the
+- **Silent cross-task contamination.** Same as above.
+- **Non-canonical YAML causing hash misses.** Runtime canonicalises
+  before hashing.
+- **Cross-run assumption.** Model is documented as within-run only.
+- **Reset-primitive failure.** Terminates the affected task's
+  remaining trials with an explicit reason.
+- **Input-override typos.** Input names validated against the
   compose file's declared `${...}` references at load time.
-- **Unknown section in `project.yaml`.** A pack declares a
-  section an older loader doesn't recognise. Prevention: unknown
-  sections warn but preserve; older loaders don't fail.
-- **Adapter validation failure on merged TaskDescription.** The
-  merged Task shape fails adapter validation. Prevention: the
-  loader surfaces the specific merge step (project defaults,
-  category domain, task.yaml) that contributed the offending
-  field.
+- **Unknown section in `project.yaml`.** Warn but preserve.
+- **Unknown group reference.** A task's `group:` or `domain:`
+  refers to a group that doesn't exist. Loader fails at load time
+  with a clear error.
+- **Adapter validation failure on merged TaskDescription.** Loader
+  surfaces the specific merge step (project defaults, group
+  defaults, task.yaml) that contributed the offending field.
 
 ## What the model deliberately isn't
 
+- **A separate "category" or "sub-project" tier.** Group-scoped
+  defaults are a mechanism inside Project, not a peer tier.
+  Authoring stays two-tier (Project → Task); groups scope which
+  tasks pick up which defaults.
 - **A free-form deep-merge system.** Every override is typed and
   bounded.
-- **A four-level authoring hierarchy.** Project → Category → Task
-  = three levels. Deeper breaks override semantics; the loader
-  does not recurse.
 - **A plugin registry for reset primitives.** New primitives
-  extend the engine's schema enum. Third-party extensibility for
-  primitives is deliberately deferred.
+  extend the engine's schema enum.
 - **A cross-run stack persistence surface.** All sharing is
   within a single `tolokaforge run` invocation.
 - **In-place editing of compose files.** Compose files are read
   at load time, input-substituted in memory, hashed, and
-  materialised. On-disk files are never mutated.
+  materialised.
 - **A parallel wire format.** The Project layer merges INTO the
   existing `TaskDescription` from ADR-0003; no new wire type.
 
@@ -725,16 +762,14 @@ See
 The pack ships:
 
 - `project.yaml` at pack root — every section declared.
-- `_shared/domain.yaml` — category-level tier demo (shared tools +
-  system_prompt across a subset of tasks).
-- `shared/environment.compose.yaml` — the base compose the project
-  references.
+- `_shared/domain.yaml` + `_shared/system_prompt.md` — an external
+  group demonstrating the co-located form.
+- `shared/environment.compose.yaml` + `shared/system_prompt.md` —
+  the base compose + project-level default prompt.
 - A minimal `run_config.yaml` — invocation-only fields.
-- Nine tasks demonstrating: full inheritance, partial env override
-  (input value), full env override (task-local compose), non-env
-  override (max_turns), nested typed field override
-  (user_simulator.persona), and category-tier inheritance via
-  `_shared/domain.yaml`.
+- Nine tasks demonstrating: full inheritance, partial env override,
+  full env override, non-env override (`max_turns`), group opt-in
+  via `domain:`, group + task-level nested override.
 
 Read the pack's
 [`README.md`](../../examples/native/example-microservices-pack/README.md)
