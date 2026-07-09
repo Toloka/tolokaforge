@@ -35,7 +35,18 @@ def collect_nodes(k_expr: str, path: str = DEFAULT_PATH) -> list[str]:
     proc = subprocess.run(
         # `-o addopts=` clears the repo's addopts (which force a verbose TREE collect layout);
         # with them cleared, `-q --collect-only` prints one flat `path::node[param]` per line.
-        [*PYTEST, path, "-k", k_expr, "--collect-only", "-q", "-o", "addopts=", "-p", "no:cacheprovider"],
+        [
+            *PYTEST,
+            path,
+            "-k",
+            k_expr,
+            "--collect-only",
+            "-q",
+            "-o",
+            "addopts=",
+            "-p",
+            "no:cacheprovider",
+        ],
         capture_output=True,
         text=True,
         check=False,
@@ -46,11 +57,7 @@ def collect_nodes(k_expr: str, path: str = DEFAULT_PATH) -> list[str]:
 
 def build_units(nodes: list[str], reps: int) -> list[tuple[int, str, int]]:
     """Flat pool of ``(unit_index, node_id, rep)`` across every node x rep."""
-    return [
-        (idx, node, rep)
-        for idx, node in enumerate(nodes)
-        for rep in range(1, reps + 1)
-    ]
+    return [(idx, node, rep) for idx, node in enumerate(nodes) for rep in range(1, reps + 1)]
 
 
 def _run_unit(out: Path, idx: int, node: str, rep: int) -> None:
