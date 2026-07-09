@@ -1,65 +1,71 @@
 # example-microservices-pack
 
-Task pack demonstrating the **Project** as the top-level abstraction.
-A `project.yaml` at the pack root declares the shared
-`default_environment`, `task_defaults`, and `tasks.discovery`, plus
-typed sections for `compute`, `storage`, `observability`, and
-`orchestration`. Six tasks show the full inheritance + override
-patterns. Read alongside
+Task pack demonstrating the **Project** as the top-level abstraction
+with the **Project → Category → Task** authoring hierarchy on top
+of a slim per-invocation `run_config.yaml`. A `project.yaml` at
+pack root declares the shared `default_environment`, `task_defaults`,
+`models`, `compute`, `storage`, `observability`, and `orchestration`.
+A `_shared/domain.yaml` demonstrates the category tier that layers
+between Project and Task. Nine tasks show the full range of
+inheritance and override patterns. Read alongside
 [`docs/architecture/PROJECTS.md`](../../../docs/architecture/PROJECTS.md).
 
 ## Layout
 
 ```
 example-microservices-pack/
-├── project.yaml                       # top-level Project spec
+├── project.yaml                       # top-level Project spec (every section)
+├── run_config.yaml                    # per-invocation config (slim)
 ├── shared/
-│   └── environment.compose.yaml       # base 4-service stack referenced by project.default_environment
-├── run_config.yaml
+│   ├── environment.compose.yaml       # base 4-service stack referenced by default_environment
+│   └── system_prompt.md               # project-level default system prompt
+├── _shared/                           # category tier — customer_support domain
+│   ├── domain.yaml                    # shared category / tools / user_simulator / system_prompt
+│   └── system_prompt.md               # category-level system prompt
 ├── README.md                          # this file
 └── tasks/
-    ├── api_endpoint_add/              # full inheritance — no environment_manifest in task.yaml
-    ├── db_query_tuning/               # full inheritance — same resolved manifest as above
-    ├── postgres_upgrade_test/         # partial override — inputs.postgres_version only
-    ├── schema_isolation_migration/    # full override — task-local compose_file
+    ├── api_endpoint_add/              # full inheritance from project
+    ├── db_query_tuning/               # full inheritance from project (dedups with above)
+    ├── postgres_upgrade_test/         # partial env override — inputs.postgres_version
+    ├── schema_isolation_migration/    # full env override — task-local compose_file
     ├── agent_flow_setup/              # full inheritance — sequence part 1
-    └── agent_flow_verify/             # full inheritance — sequence part 2
+    ├── agent_flow_verify/             # full inheritance — sequence part 2
+    ├── long_debugging_session/        # non-env override — max_turns: 60
+    ├── support_triage_01/             # category tier — inherits _shared/domain.yaml
+    └── support_triage_02/             # category tier + task-level nested override
 ```
 
-## The Project
+## The three authoring tiers
 
-Open [`project.yaml`](project.yaml) first. It declares:
+Reading top-down:
 
-- `name`, `version`, `description` — project identity.
-- `default_environment` — the shared env manifest every task inherits
-  by default (compose file, runner service, typed inputs).
-- `task_defaults` — shared task-scoped fields (adapter, grading
-  defaults) inherited by every task.
-- `tasks.discovery.glob` — how the loader finds the tasks.
-- `compute`, `storage`, `observability`, `orchestration` — typed
-  sections for compute provider selection, storage backends,
-  observability exporters, and retry/priority/schedule policies.
+- **Project** (`project.yaml`) — pack-level defaults for every
+  section: identity, environment, task defaults, models, compute,
+  storage, observability, orchestration.
+- **Category** (`_shared/domain.yaml`) — a task under a category
+  references the domain file via `domain: ../../_shared/domain.yaml`.
+  The loader deep-merges the domain's `category`, `tools`,
+  `user_simulator`, and `system_prompt` fields onto the project
+  defaults. Task wins over category; category wins over project.
+- **Task** (`task.yaml`) — per-task identity + any overrides. A
+  task with only `task_id` and `description` inherits everything
+  else.
 
 ## The tasks, by pattern
 
-### Full inheritance (no `environment_manifest` block)
+### Full inheritance from the project
 
-`api_endpoint_add`, `db_query_tuning`, `agent_flow_setup`, and
-`agent_flow_verify` each ship a `task.yaml` with only `task_id` and
-`description`. Their resolved environment is exactly the project's
-`default_environment`. All four resolve to byte-identical manifests
-and share **stack A** — one running postgres + backend + runner + db-
-service, referenced by four tasks.
+`api_endpoint_add`, `db_query_tuning`, `agent_flow_setup`,
+`agent_flow_verify` — `task.yaml` declares only `task_id` and
+`description`. Every other field (adapter_type, max_turns,
+system_prompt, user_simulator, environment, models, compute)
+inherits from the project. All four resolve to byte-identical
+manifests and share **stack A**.
 
-Reading each `task.yaml` side-by-side makes the inheritance
-concrete: there is no environment declaration at all, and yet the
-task runs against the shared stack because that's the project
-default.
-
-### Partial override — vary one input
+### Partial environment override
 
 [`postgres_upgrade_test/task.yaml`](tasks/postgres_upgrade_test/task.yaml)
-declares:
+overrides one input:
 
 ```yaml
 environment_manifest:
@@ -67,17 +73,14 @@ environment_manifest:
     postgres_version: "17"
 ```
 
-Everything else — `compose_file`, `runner_service`, other inputs —
-inherits from the project. Deep-typed merge: only the one input
-value differs. The compose file's `${postgres_version:-16}` binds
-to `"17"`; the resolved manifest is distinct from the project
-default; the task gets its own stack (**stack B**). Adding a fourth
-task with the same override would automatically share stack B.
+Everything else in the environment (compose_file, runner_service,
+other inputs, isolation, network_policy) inherits from the project.
+Resolved manifest has a distinct hash → own stack (**stack B**).
 
-### Full override — task-local compose file
+### Full environment override
 
 [`schema_isolation_migration/task.yaml`](tasks/schema_isolation_migration/task.yaml)
-declares:
+overrides `compose_file`:
 
 ```yaml
 environment_manifest:
@@ -85,50 +88,109 @@ environment_manifest:
   runner_service: "runner"
 ```
 
-The task ships its own compose file
-([`schema_isolation_migration/environment.compose.yaml`](tasks/schema_isolation_migration/environment.compose.yaml))
-with an isolated postgres. The project's
-`default_environment.compose_file` is fully replaced. This task
-runs on **stack C** and doesn't share with any other task.
+The task's own compose file replaces the project default entirely.
+Runs on **stack C**.
 
-Use this pattern when a task genuinely needs a bespoke environment
-that doesn't compose cleanly with the project default. Bumping one
-input is a partial override; needing a different compose topology
-is a full override.
+### Non-environment task-level override
 
-## Semantic sharing — no separate mechanism required
+[`long_debugging_session/task.yaml`](tasks/long_debugging_session/task.yaml)
+overrides `max_turns`:
 
-`agent_flow_setup` writes rows to postgres; `agent_flow_verify` is
-graded on reading those rows. Both tasks fully inherit the project
-default (no `environment_manifest` block on either), so both
-resolve to the same manifest, both share stack A, and postgres
-persists across their trials (as declared by
-`services.postgres.isolation: "shared"` in
-`shared/environment.compose.yaml`).
+```yaml
+task_id: "long_debugging_session"
+description: "..."
+max_turns: 60
+```
 
-**Caveat.** This works when both tasks run in the same
-`tolokaforge run` invocation and the shared service is declared
-`shared`. If postgres were `reset`, the reset primitive would fire
-between every trial, wiping A's writes before B reads them. The
-compose file's per-service isolation labels encode the sharing
-semantics.
+The environment inherits from the project (shared stack A); only
+`max_turns` differs. The `ToolCallingLoop` reads the resolved
+task-effective `max_turns` — 60 instead of 20 — for this task.
+Everything else inherits.
 
-## The resolved hash table
+### Category-tier inheritance
+
+[`support_triage_01/task.yaml`](tasks/support_triage_01/task.yaml)
+references the customer_support domain:
+
+```yaml
+task_id: "support_triage_01"
+description: "..."
+domain: "../../_shared/domain.yaml"
+```
+
+The loader deep-merges `_shared/domain.yaml`'s fields onto the
+project defaults for this task. So `category`, `tools`,
+`user_simulator`, and `system_prompt` come from the domain (which
+declares them for the customer_support scenario); the environment,
+compute, models, etc. still come from the project.
+
+### Category + task-level nested override
+
+[`support_triage_02/task.yaml`](tasks/support_triage_02/task.yaml)
+also references the domain, but additionally overrides one nested
+field:
+
+```yaml
+domain: "../../_shared/domain.yaml"
+
+user_simulator:
+  persona: "polite enterprise customer, VP of engineering"
+  # mode and backstory inherit from the domain
+```
+
+Three-tier merge: project.task_defaults.user_simulator → domain.yaml
+user_simulator → task.yaml user_simulator. Task fields win over
+domain; domain fields win over project. `persona` from task,
+`mode` + `backstory` from domain, `temperature` from project.
+
+## Resolved-config table
+
+Highlights which scope contributes each field for each task.
+
+| Task | `compose_file` | `postgres_version` | `max_turns` | `system_prompt` | `tools` | `user_simulator.persona` |
+|---|---|---|---|---|---|---|
+| `api_endpoint_add` | Project | Project (16) | Project (20) | Project | Project ({}) | Project ("curious engineer") |
+| `db_query_tuning` | Project | Project (16) | Project (20) | Project | Project ({}) | Project ("curious engineer") |
+| `postgres_upgrade_test` | Project | **Task (17)** | Project (20) | Project | Project ({}) | Project ("curious engineer") |
+| `schema_isolation_migration` | **Task** | Task (task-local default) | Project (20) | Project | Project ({}) | Project ("curious engineer") |
+| `agent_flow_setup` | Project | Project (16) | Project (20) | Project | Project ({}) | Project ("curious engineer") |
+| `agent_flow_verify` | Project | Project (16) | Project (20) | Project | Project ({}) | Project ("curious engineer") |
+| `long_debugging_session` | Project | Project (16) | **Task (60)** | Project | Project ({}) | Project ("curious engineer") |
+| `support_triage_01` | Project | Project (16) | Project (20) | **Category** | **Category** | **Category** ("frustrated support customer") |
+| `support_triage_02` | Project | Project (16) | Project (20) | **Category** | **Category** | **Task** ("polite enterprise customer, VP of engineering") |
+
+## Runtime stacks by hash
 
 Approximate — the actual hash function canonicalises YAML before
 hashing.
 
 | Task | Inheritance | `postgres_version` | Resulting stack |
 |---|---|---|---|
-| `api_endpoint_add` | full inheritance | `16` (project default) | **A** |
-| `db_query_tuning` | full inheritance | `16` (project default) | **A** (shared) |
-| `postgres_upgrade_test` | partial override — `inputs` | `17` | **B** |
-| `schema_isolation_migration` | full override — `compose_file` | `16` (task-local default) | **C** |
-| `agent_flow_setup` | full inheritance | `16` (project default) | **A** (shared) |
-| `agent_flow_verify` | full inheritance | `16` (project default) | **A** (shared) |
+| `api_endpoint_add` | full inheritance | 16 | **A** |
+| `db_query_tuning` | full inheritance | 16 | **A** (shared) |
+| `postgres_upgrade_test` | partial env override | 17 | **B** |
+| `schema_isolation_migration` | full env override | 16 (task-local) | **C** |
+| `agent_flow_setup` | full inheritance | 16 | **A** (shared) |
+| `agent_flow_verify` | full inheritance | 16 | **A** (shared) |
+| `long_debugging_session` | non-env override (max_turns) | 16 | **A** (shared) |
+| `support_triage_01` | category-tier inheritance | 16 | **A** (shared) |
+| `support_triage_02` | category tier + task override | 16 | **A** (shared) |
 
-Six tasks → three stacks. Four tasks share stack **A**, one task
-each has stack **B** and stack **C**.
+Nine tasks → three stacks. Seven tasks share stack **A**; one each
+has stack **B** and stack **C**. Task-level overrides that don't
+touch the environment (e.g. `max_turns`, `user_simulator.persona`)
+don't affect the stack — the runtime materialises fewer stacks than
+tasks because the hash is over the environment, not the full task.
+
+## Run-time override
+
+The pack's `run_config.yaml` is slim by design: it declares only
+per-invocation fields (`orchestrator.repeats`, `evaluation.task_packs`)
+and lets everything else inherit from the project. To run the same
+pack under a different configuration — say more workers, a stronger
+judge model, a different output directory — copy `run_config.yaml`
+to a new file, uncomment the fields you want to override, and pass
+it via `--config`.
 
 ## Cross-references
 
@@ -138,4 +200,4 @@ each has stack **B** and stack **C**.
 - Related multi-service examples:
   - [`../multi_service/`](../multi_service/) — smallest task-declared compose
   - [`../multi_service_postgres/`](../multi_service_postgres/) — the postgres pattern this pack extends
-  - [`../native_shared_domain/`](../native_shared_domain/) — the existing per-category shared-config pattern
+  - [`../native_shared_domain/`](../native_shared_domain/) — the existing per-category shared-config precedent this pack builds on

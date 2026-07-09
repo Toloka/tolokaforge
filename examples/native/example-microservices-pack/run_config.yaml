@@ -1,49 +1,45 @@
-# Per-invocation configuration for this pack. Everything here is
+# Per-invocation configuration for this run. Every field here is
 # scoped to a single `tolokaforge run` — a different invocation can
 # use a different run_config.yaml against the same project.yaml
 # without editing the project.
 #
+# Fields declared here override same-named fields in project.yaml.
+# Fields NOT declared here inherit from project.yaml (models,
+# workers, budget, timeouts, artifact path, queue backend, etc.).
 # See docs/architecture/PROJECTS.md § "Relationship to
 # run_config.yaml" for the full field-ownership + precedence rules.
-# Short version: fields in run_config.yaml override same-named
-# fields in project.yaml; fields only in project.yaml apply by
-# default.
 
-# ── Per-invocation only ─────────────────────────────────────────
-# These fields live only in run_config.yaml. The project does not
-# express them.
-models:
-  agent:
-    provider: "openrouter"
-    name: "anthropic/claude-sonnet-4-6"
-    temperature: 0.0
-    max_tokens: 4096
-  user:
-    provider: "openrouter"
-    name: "anthropic/claude-sonnet-4-6"
-    temperature: 0.2
-
-# ── Orchestrator ────────────────────────────────────────────────
-# `repeats`, `max_turns`, `queue_backend` are per-invocation.
-# `workers` and `runtime` override the project's `compute` section
-# for this run if set here.
+# ── Orchestrator run knobs (per-invocation only) ────────────────
+# `repeats` and `max_turns` here are run-wide caps applied on top
+# of any task-level max_turns override.
 orchestrator:
   repeats: 1
   max_turns: 20
-  queue_backend: sqlite
-  # Overrides project.compute.workers = 1 if set:
-  # workers: 4
-  # Overrides project.compute.provider substrate mode if set:
+  # workers, runtime, queue_backend, timeouts, stuck_heuristics,
+  # max_budget_usd, max_requests_per_second, max_attempt_retries,
+  # typesense — all inherit from project.compute. Uncomment below
+  # to override for this invocation:
+  # workers: 8
   # runtime: per_trial
 
 # ── Evaluation ──────────────────────────────────────────────────
-# `task_packs` names which packs this run pulls in (per-invocation).
-# `tasks_glob` optionally filters within a pack (defaults to the
-# project's tasks.discovery.glob). `output_dir` overrides
-# project.storage.artifacts.path for this run.
+# `task_packs` names which packs this run pulls in — always per-
+# invocation. `tasks_glob` and `output_dir` inherit from project
+# unless overridden here.
 evaluation:
   task_packs:
     - "examples/native/example-microservices-pack"
-  # tasks_glob defaults to project.tasks.discovery.glob.
+  # tasks_glob defaults to project.tasks.discovery.glob:
   # tasks_glob: "tasks/**/task.yaml"
-  output_dir: "results/example_microservices_pack"
+  # output_dir defaults to project.storage.artifacts.path:
+  # output_dir: "results/example_microservices_pack"
+
+# ── Models overrides (optional) ─────────────────────────────────
+# project.yaml declares the default agent/user/judge models. This
+# run inherits those defaults; uncomment below to override any of
+# them for this invocation.
+# models:
+#   agent:
+#     provider: "openrouter"
+#     name: "anthropic/claude-opus-4-8"
+#     temperature: 0.0

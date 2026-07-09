@@ -1,0 +1,21 @@
+combine:
+  method: "weighted_average"
+  pass_threshold: 0.7
+  weights:
+    state_checks: 0.4
+    llm_judge: 0.6
+
+state_checks: []
+
+llm_judge:
+  rubric:
+    criteria:
+      - name: "root_cause_identified"
+        description: "The agent identifies the actual root cause, not a symptom."
+        weight: 0.4
+      - name: "fix_applies_cleanly"
+        description: "The proposed fix applies without breaking other endpoints."
+        weight: 0.4
+      - name: "verification_step"
+        description: "The agent verifies the fix by reproducing the original failure and showing it no longer occurs."
+        weight: 0.2

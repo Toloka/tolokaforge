@@ -1,51 +1,100 @@
 # Project spec — the top-level abstraction for this pack.
 # See docs/architecture/PROJECTS.md for the full model.
 
+# ── Identity ────────────────────────────────────────────────────
 name: "microservices-eval"
 version: 1
 description: >
-  Evaluation suite for microservices refactoring tasks. Six tasks
+  Evaluation suite for microservices refactoring tasks. Nine tasks
   share a base 4-service stack (runner + db-service + postgres +
-  backend-api). One task overrides a single input for a postgres
-  version bump; one ships its own compose file for isolation.
+  backend-api). Tasks demonstrate full inheritance, partial input
+  override, full compose override, non-env task overrides, and
+  category-tier sharing via _shared/domain.yaml.
 
-# ── Shared default environment ──────────────────────────────────
+# ── Task inventory ──────────────────────────────────────────────
+tasks:
+  discovery:
+    glob: "tasks/**/task.yaml"
+
+# ── Default environment ─────────────────────────────────────────
 # Every task inherits this unless it declares its own
-# `environment_manifest`. Task-level override is a deep-typed merge:
-# task-declared sub-fields win; unspecified sub-fields inherit.
+# environment_manifest. Task-level environment_manifest deep-merges
+# on top per-task.
 default_environment:
   compose_file: "./shared/environment.compose.yaml"
   runner_service: "runner"
   inputs:
     postgres_version: "16"
+  isolation: "per_trial"
+  network_policy: "LOCALHOST_ONLY"
+  security_context_defaults:
+    user: "toloka"
+    group: "toloka"
 
-# ── Shared task-level defaults ──────────────────────────────────
-# Fields a task doesn't declare are inherited from here. Task's own
-# fields deep-merge (adapter can be overridden; grading_defaults
-# sub-fields merge).
+# ── Task-level defaults ─────────────────────────────────────────
+# Every task inherits these unless it (or its category domain.yaml)
+# overrides. Deep-typed merge: task fields win over category fields,
+# category fields win over project defaults.
 task_defaults:
-  adapter: "native"
+  adapter_type: "native"
+  max_turns: 20
+  system_prompt: "./shared/system_prompt.md"
+  user_simulator:
+    mode: "llm"
+    persona: "curious engineer"
+  policies:
+    max_tool_calls_per_turn: 10
+  metadata: {}
+  adapter_settings: {}
+  tools: {}
   grading_defaults:
-    max_score: 1.0
+    combine:
+      method: "weighted_average"
+      pass_threshold: 0.7
+      weights:
+        state_checks: 0.5
+        llm_judge: 0.5
 
-# ── Task inventory ──────────────────────────────────────────────
-# Glob discovery is VCS-managed; an inline list of task records is
-# UI-managed. Both modes coexist.
-tasks:
-  discovery:
-    glob: "tasks/**/task.yaml"
+# ── Models ──────────────────────────────────────────────────────
+# Default agent / user / judge. run_config.yaml overrides on
+# conflict. Any task using llm_judge requires models.judge to be
+# present here or in run_config.
+models:
+  agent:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.0
+    max_tokens: 4096
+  user:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.2
+  judge:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.0
 
 # ── Compute ─────────────────────────────────────────────────────
-# Provider selection, resource limits, provider-specific configuration.
+# Provider selection, resource limits, backend mode, timeouts,
+# stuck-heuristics, budget, TypeSense.
 compute:
-  provider: "local-docker"        # local-docker, kubernetes,
-                                  # aws-batch, modal, gcp-batch, ...
-  workers: 1
-  resource_limits:
-    memory: "8Gi"
-    cpu: "2"
+  provider: "local-docker"
+  workers: 4
+  max_budget_usd: 100.0
+  max_requests_per_second: 10.0
+  max_attempt_retries: 3
+  runtime_mode: "per_trial"
+  timeouts:
+    trial_seconds: 600
+    tool_call_seconds: 60
+  stuck_heuristics:
+    enabled: true
+    max_repeated_tool_calls: 5
+    max_idle_turns: 3
+  typesense:
+    enabled: false
+    mode: "disabled"
   # Provider-specific sub-sections live under `compute.<provider>`.
-  # Only the block matching `provider:` is meaningful.
   # kubernetes:
   #   cluster: "prod-cluster"
   #   namespace: "toloka"
@@ -53,37 +102,33 @@ compute:
   #   service_account: "toloka-runner"
 
 # ── Storage ─────────────────────────────────────────────────────
-# Artifacts, logs, and fixtures backends.
 storage:
   artifacts:
-    type: "local"                 # local, s3, gcs, azure-blob
+    type: "local"
     path: "./results"
   logs:
     type: "local"
     path: "./logs"
-  # fixtures:
-  #   type: "read-only-volume"
-  #   path: "./fixtures"
+  queue:
+    backend: "sqlite"
+    # postgres_dsn: "postgresql://..."
 
 # ── Observability ───────────────────────────────────────────────
-# Tracing, metrics, and logging exporters.
 observability:
   tracing:
-    exporter: "none"              # none, otlp
+    exporter: "none"
     # endpoint: "http://collector:4317"
   metrics:
-    exporter: "none"              # none, prometheus
+    exporter: "none"
     # endpoint: "http://prom:9090"
   logging:
     level: "INFO"
-    exporter: "stdout"            # stdout, otlp
+    exporter: "stdout"
 
 # ── Orchestration ───────────────────────────────────────────────
-# Retry, priority, and schedule policies.
 orchestration:
-  retry_policy:
-    max_attempts: 1
-    backoff: "constant"           # constant, exponential
-  priority: "normal"
+  auto_start_services: true
+  continue_prompt: "Continue."
+  shuffle_trials: false
   # schedule:
   #   cron: "0 6 * * *"

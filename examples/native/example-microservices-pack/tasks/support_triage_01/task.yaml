@@ -1,0 +1,20 @@
+# Task: customer-support triage.
+# Category-tier inheritance — this task references the customer_support
+# domain at _shared/domain.yaml, so the loader deep-merges the
+# domain's `category`, `tools`, `user_simulator`, and `system_prompt`
+# fields onto the project defaults before this task's own fields
+# apply.
+#
+# This task itself declares no environment overrides; it inherits
+# the project's default_environment. The interesting inheritance is
+# in the task-level fields (system_prompt, user_simulator, tools):
+# project defaults → category domain.yaml → this task's task.yaml,
+# with task fields winning on conflict.
+task_id: "support_triage_01"
+description: >
+  A customer is unable to log in. Their ticket says "keeps saying
+  wrong password even though I know it's right." Diagnose the issue,
+  either reset their password after confirming identity or escalate
+  if the account has been flagged for security review.
+
+domain: "../../_shared/domain.yaml"

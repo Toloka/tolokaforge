@@ -1,0 +1,23 @@
+combine:
+  method: "weighted_average"
+  pass_threshold: 0.7
+  weights:
+    state_checks: 0.4
+    llm_judge: 0.6
+
+state_checks:
+  - name: "ticket_categorised"
+    description: "The ticket's `category` field is set to either 'customer_config' or 'our_incident' — not left blank."
+
+llm_judge:
+  rubric:
+    criteria:
+      - name: "root_cause_diagnosis"
+        description: "The agent correctly determines whether the failure was customer-side or our-side."
+        weight: 0.5
+      - name: "professional_tone"
+        description: "The agent maintains a professional tone appropriate for an enterprise customer, without matching the domain's default frustrated-customer register."
+        weight: 0.3
+      - name: "next_step_clear"
+        description: "The response ends with a clear next step for the customer (either a fix on their side or a follow-up commitment from ours)."
+        weight: 0.2
