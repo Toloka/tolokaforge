@@ -45,7 +45,10 @@ jobs:
       CAPABILITY_K: ${{ vars.OBSERVE_CAPABILITY_K || '15' }}
       WIRE_K: ${{ vars.OBSERVE_WIRE_K || '10' }}
       WORKERS: ${{ vars.OBSERVE_WORKERS || '10' }}
-      CAP_PARALLEL: ${{ vars.OBSERVE_CAP_PARALLEL || '4' }}
+      # Flat (node x rep) pool width for the capability + variant steps. The candidate key does
+      # not rotate, so it is bounded by the OpenRouter rate limit (~10-16 safe). Raised from the
+      # old per-rep width of 4 now that nodes AND repeats share the pool.
+      CAP_PARALLEL: ${{ vars.OBSERVE_CAP_PARALLEL || '10' }}
       # Resolve fix-loop config.
       MAX_ITER: ${{ vars.RESOLVE_MAX_ITER || '3' }}
       AGENT_MODEL: ${{ vars.RESOLVE_AGENT_MODEL || 'claude-opus-4-8' }}
@@ -137,9 +140,13 @@ jobs:
           MODEL_ID: ${{ steps.slug.outputs.model_id }}
           OPENROUTER_API_KEY: ${{ secrets.ARENA_AUTOMATION_OPENROUTER_API_KEY }}
         run: |
-          mkdir -p observation/capability
-          seq 1 "$CAPABILITY_K" | xargs -P "$CAP_PARALLEL" -I {} \
-            sh -c 'uv run pytest tests/integration/llm/ -k "(${MODEL_ID}] or ${MODEL_ID}-) and not test_variant" --junitxml="observation/capability/rep_$1.xml" -q --tb=line -p no:cacheprovider || true' _ {}
+          # Flat (node x rep) pool: collect the candidate's capability nodes once, then run
+          # each node x rep as its own single-node pytest at CAP_PARALLEL width - so nodes AND
+          # repeats parallelize, instead of CAP_PARALLEL long serial reps (the old per-rep pool
+          # cost a slow reasoning model hours).
+          uv run python scripts/integration/run_probes.py \
+            --k-expr "(${MODEL_ID}] or ${MODEL_ID}-) and not test_variant" \
+            --out observation/capability --reps "$CAPABILITY_K" --workers "$CAP_PARALLEL"
 
       - name: Shape-variant probes (report-only, CAPABILITY_K repeats)
         # Observe-only structural variants of the LEGACY shape-sensitive capabilities
@@ -151,9 +158,12 @@ jobs:
           TF_RUN_VARIANTS: "1"
           OPENROUTER_API_KEY: ${{ secrets.ARENA_AUTOMATION_OPENROUTER_API_KEY }}
         run: |
-          mkdir -p observation/variants
-          seq 1 "$CAPABILITY_K" | xargs -P "$CAP_PARALLEL" -I {} \
-            sh -c 'uv run pytest tests/integration/llm/ -k "(${MODEL_ID}] or ${MODEL_ID}-) and test_variant" --junitxml="observation/variants/rep_$1.xml" -q --tb=line -p no:cacheprovider || true' _ {}
+          # Same flat (node x rep) pool as the capability step. The variant cases are the
+          # slowest for a reasoning model (heavy thinking on the shape-sensitive shapes), so
+          # this is where the flat pool matters most (deepseek: ~5h -> a fraction at width 10).
+          uv run python scripts/integration/run_probes.py \
+            --k-expr "(${MODEL_ID}] or ${MODEL_ID}-) and test_variant" \
+            --out observation/variants --reps "$CAPABILITY_K" --workers "$CAP_PARALLEL"
 
       - name: Build core runner image (for the wire probes)
         run: uv run tolokaforge docker build --core
