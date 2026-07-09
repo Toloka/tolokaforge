@@ -539,9 +539,6 @@ compute:
     enabled: true
     max_repeated_tool_calls: 5
     max_idle_turns: 3
-  typesense:
-    enabled: false
-    mode: "disabled"
   # Provider-specific sub-sections:
   # kubernetes:
   #   cluster: "prod-cluster"
@@ -784,9 +781,9 @@ and you're testing a different thing.
   `grading_defaults`.
 - **Compute topology** — `compute.provider`, provider-specific
   sub-sections (e.g. `compute.kubernetes.*`), `compute.timeouts`,
-  `compute.stuck_heuristics`, `compute.typesense`. These reflect
-  task-shape properties (how long tasks take, whether the project
-  uses TypeSense) and deployment topology — not per-run knobs.
+  `compute.stuck_heuristics`. These reflect task-shape properties
+  (how long tasks reasonably take, what heuristics detect
+  agent-stuck states) and deployment topology — not per-run knobs.
 - **Observability endpoints** — `observability.tracing`,
   `metrics`, `logging`. Properties of the deployed infrastructure
   the project targets.
@@ -853,7 +850,7 @@ Some fields live only in one file; others may appear in both, with
 | `compute.workers` | ✓ default | `orchestrator.workers` | run_config overrides |
 | `compute.runtime_mode` | ✓ default | `orchestrator.runtime` | CLI > run_config > project |
 | `compute.max_budget_usd` | ✓ default | `orchestrator.max_budget_usd` | run_config overrides |
-| `compute.timeouts` / `stuck_heuristics` / `typesense` | ✓ default | `orchestrator.*` | run_config overrides sub-fields |
+| `compute.timeouts` / `stuck_heuristics` | ✓ default | `orchestrator.*` | run_config overrides sub-fields |
 | `storage.artifacts.path` | ✓ default | `evaluation.output_dir` | run_config overrides |
 | `storage.queue.backend` | ✓ default | `orchestrator.queue_backend` | run_config overrides |
 | `observability.*` | ✓ | — | Project-only |
@@ -1141,6 +1138,216 @@ comparable. Any accidental drift into `project.yaml` — e.g.
 changing the judge between runs — would silently invalidate the
 comparison. The Project's job is to make that impossible.
 
+## Isolation — how much a run shares across trials
+
+A run consists of many trials against a project's tasks. The
+question this section answers is: **how much state carries from
+one trial to the next?** The Project schema supports three
+distinct stances — total isolation, completely shared, and
+declared mixed — each expressed through the same three schema
+knobs combined differently.
+
+At a glance:
+
+| Stance | Cost per trial | Safety guarantee | Setup complexity |
+|---|---|---|---|
+| Total isolation | Highest — full stack cold-start (~30–45 s) | Strongest — nothing carries over | Simplest (defaults) |
+| Completely shared | Lowest — one stack for the whole run (~0 s inter-trial) | Weakest — all state persists across trials | Simple (uniform `shared` labels) |
+| Declared mixed | Middle — reset primitives typically ~200 ms | Per-service explicit; strong where declared | More setup (per-service labels + primitives) |
+
+The three isolation knobs the schema exposes:
+
+- **`default_environment.isolation`** (on the Project's default
+  environment, or overridable per task) — the task's
+  requirement: `per_trial` or `shared_ok`. The orchestrator
+  refuses to start a run whose backend can't satisfy the task's
+  declared requirement (see ADR-0009).
+- **`compute.runtime_mode`** (on the Project's `compute`
+  section) — the runtime backend selection: `per_trial`
+  materialises a fresh stack per trial; `shared` materialises
+  one stack for the whole run.
+- **Per-service `tolokaforge.isolation` label** (on services
+  inside the compose file) — the per-service mode:
+  `ephemeral`, `shared`, or `reset` (with a named reset
+  primitive). Only meaningful under `runtime_mode: shared`; under
+  `per_trial` the stack is thrown away between trials regardless.
+
+The three stances below combine these knobs differently.
+
+### Stance 1 — Total isolation
+
+Every trial materialises a fresh copy of the stack. Nothing
+persists between trials. This is what `PerTrialRuntimeBackend`
+does.
+
+```yaml
+# project.yaml
+default_environment:
+  compose_file: "./shared/environment.compose.yaml"
+  isolation: "per_trial"          # task requires per-trial isolation
+
+compute:
+  provider: "local-docker"
+  runtime_mode: "per_trial"       # runtime materialises fresh stacks
+```
+
+Per-service labels in the compose file are informational under
+this stance — the stack is torn down and rebuilt for each trial
+regardless of what any label says.
+
+**Cost.** Highest. Every trial pays a full compose cold-start
+(measured at ~30–45 s for a four-service stack). A 100-trial run
+pays ~50 minutes of overhead on top of the actual agent work.
+
+**Safety.** Strongest. Nothing can leak from one trial into the
+next — services, databases, filesystem state, network topology
+all rebuild from the manifest.
+
+**Pick this when:** trials mutate state destructively; safety is
+paramount; the pack's compose stack is small enough that
+cold-start cost is acceptable; you don't yet trust the pack's
+services to be safe to share.
+
+### Stance 2 — Completely shared
+
+The stack materialises once at run start and is shared by every
+trial in the run. State persists between trials by default. This
+is what `SharedStackRuntimeBackend` does.
+
+```yaml
+# project.yaml
+default_environment:
+  compose_file: "./shared/environment.compose.yaml"
+  isolation: "shared_ok"          # task accepts a shared stack
+
+compute:
+  provider: "local-docker"
+  runtime_mode: "shared"          # one stack for the whole run
+```
+
+```yaml
+# shared/environment.compose.yaml — every service opts into shared
+services:
+  postgres:
+    image: "postgres:${postgres_version:-16}"
+    labels:
+      tolokaforge.isolation: "shared"
+  backend-api:
+    image: "myrepo/example-backend:v1.4.0"
+    labels:
+      tolokaforge.isolation: "shared"
+  # ...
+```
+
+**Cost.** Lowest. One stack for the whole run; no inter-trial
+overhead. A 100-trial run pays cold-start once, not 100 times.
+
+**Safety.** Weakest. If any trial mutates a service's state, all
+subsequent trials see the dirty state. Silent cross-trial
+contamination is the failure mode.
+
+**Pick this when:** services are stateless or genuinely read-only
+(static-content HTTP servers, immutable reference DBs, catalog
+services); the tasks under evaluation only *read* from the
+services; large batch runs where cold-start dominates the
+wall-clock cost.
+
+**Never pick this when:** any service is mutated by any trial and
+you can't afford the mutation to affect later trials. Prefer
+Stance 3 instead.
+
+### Stance 3 — Declared mixed (per-service)
+
+The stack materialises once, and per-service labels decide what
+happens between trials. Some services stay as-is, some get reset
+via a named primitive, some are torn down and recreated. This is
+still `SharedStackRuntimeBackend`, but with fine-grained
+per-service control.
+
+```yaml
+# project.yaml
+default_environment:
+  compose_file: "./shared/environment.compose.yaml"
+  isolation: "shared_ok"
+
+compute:
+  provider: "local-docker"
+  runtime_mode: "shared"
+```
+
+```yaml
+# shared/environment.compose.yaml — per-service isolation mix
+services:
+  postgres:
+    image: "postgres:${postgres_version:-16}"
+    labels:
+      tolokaforge.isolation: "reset"
+      tolokaforge.reset_primitive: "postgres_template_db"
+      # ~200 ms per trial: CREATE DATABASE new TEMPLATE base
+
+  backend-api:
+    image: "myrepo/example-backend:v1.4.0"
+    labels:
+      tolokaforge.isolation: "shared"
+      # stateless, no reset needed
+
+  worker:
+    image: "myrepo/example-worker:v1.4.0"
+    labels:
+      tolokaforge.isolation: "ephemeral"
+      # torn down and recreated between trials
+```
+
+**Cost.** Middle. Reset primitives are typically ~100× cheaper
+than full-stack cold-start (200 ms vs 30–45 s), and `shared`
+services pay nothing. Between-trial cost is roughly the sum of
+per-service reset costs, dominated by the slowest primitive.
+
+**Safety.** Per-service explicit. `reset` services return to a
+known-clean state via the named primitive; `shared` services keep
+their state (author asserts this is safe); `ephemeral` services
+are fully rebuilt.
+
+**Pick this when:** the pack has a mix — some services are safe
+to share (stateless HTTP, immutable catalogs), some need clean
+state per trial via cheap resets (postgres template-DB clone,
+sqlite truncate), and a few must be rebuilt each time. Most
+realistic multi-container workloads land here.
+
+### How the three knobs interact
+
+Two interaction rules matter:
+
+**Rule 1 — the task's requirement must match the backend.**
+`default_environment.isolation: per_trial` on a task means the
+runtime backend MUST provide per-trial stacks. If the run picks
+`compute.runtime_mode: shared`, the orchestrator refuses to start
+the run and names the offending task. This is the fail-loud
+enforcement from ADR-0009 — silent cross-trial contamination
+never gets to happen by config mistake.
+
+**Rule 2 — per-service labels only matter under `shared`.**
+Under `runtime_mode: per_trial`, the entire stack rebuilds
+between trials; per-service `tolokaforge.isolation` labels have
+no effect (the labels are still validated by the loader, they
+just don't drive any behaviour).
+
+Task overrides layer on top: a task's own
+`environment_manifest.isolation` wins over the project's
+`default_environment.isolation`; a task can ship its own compose
+file with different per-service labels. Both changes make the
+task's resolved environment hash differently (see below), so it
+gets its own stack.
+
+### Interaction with content-addressed dedup
+
+The per-service isolation map is part of the hash the
+`RuntimeBackend` computes for each task's resolved environment.
+Two tasks that agree on the compose file but disagree on
+`services.postgres.isolation` do not share a stack — they hash
+differently and get separate stacks within the run. The declared
+stance is baked into the identity of the stack.
+
 ## Runtime mechanism — content-addressed stack dedup
 
 The `RuntimeBackend` computes a stable hash over each task's resolved
@@ -1191,6 +1398,10 @@ hash identically.
 persistence is a separate concern.
 
 ## Per-service isolation vocabulary
+
+Reference table for the per-service labels used in Stance 3 above
+(see [Isolation — how much a run shares across trials](#isolation--how-much-a-run-shares-across-trials)
+for how to pick a stance).
 
 Services in the compose file are annotated with an isolation mode
 via TolokaForge extension labels:
@@ -1260,68 +1471,6 @@ for unselected providers are ignored.
 above the Project provides values for placeholders in the project
 spec — the same project runs on `dev-cluster` under one deployment
 and `prod-cluster` under another without changing `project.yaml`.
-
-## Component-to-scope map
-
-Every component that consumes config reads from a specific set of
-scopes.
-
-| Component | Lifecycle | Scopes read |
-|---|---|---|
-| CLI | Invocation | CLI flags |
-| Orchestrator | Run init | Run + Project + Env |
-| Conductor | Per-trial body | Task (resolved) + Run |
-| TrialExecutor | Per-trial bracket | Task (resolved env) |
-| TrialGrader | Per-trial grading | Task (grading.yaml) + Run (`models.judge`) |
-| RuntimeBackend | Provision / teardown | Project (`compute`) + Task (`environment_manifest`) + Env (service URLs) |
-| ToolCallingLoop | Per-trial body | Task (`max_turns`) + Project (`compute.timeouts`, `compute.stuck_heuristics`) |
-| Adapter | Run init | Run (`evaluation.harness_adapter`) + Task (`adapter_type`, `adapter_settings`) |
-| UserSimulator | Per-trial body | Task (`user_simulator`) + Run (`models.user` when `mode: llm`) |
-| TypeSense | Per-trial provision | Project (`compute.typesense`) + Task (`SearchConfig`) |
-| LLM clients | Run init | Run + Project (`models.*`) + Env (API keys) |
-
-## UI-friendliness
-
-The schema is designed for UI editing.
-
-- **Section-per-form.** Every section under the Project is its own
-  Pydantic model. A UI renders one form section per model, driven
-  by the model's JSON Schema.
-- **Typed primitives everywhere.** Sub-fields are strings, ints,
-  enums, references (by name) to other resources, or further typed
-  sub-objects. No untyped free-form fields.
-- **Task inventory modes.** `tasks.discovery.glob` is VCS-managed;
-  `tasks.inline: [...]` is a UI-managed list of task records
-  embedded in the Project. Both modes coexist.
-- **Provider selection triggers sub-section reveal.**
-  `compute.provider: kubernetes` makes the `compute.kubernetes`
-  block meaningful; UI shows only the sub-section matching the
-  current provider.
-- **Version field.** `project.version` gives the UI a lever for
-  schema migration when the shape breaks. Unknown top-level
-  sections warn but preserve — forward-compat by design.
-
-## Extensibility mechanisms
-
-The Project schema is designed to grow without breaking existing
-projects.
-
-- **New top-level sections.** Add a Pydantic model, register it in
-  the project schema. Older loaders warn on the unknown key but
-  preserve the field.
-- **New providers for `compute`.** Ship a `RuntimeBackend`
-  implementation, declare an entry-point in
-  `tolokaforge.compute_providers`. No fork required.
-- **New adapter types.** Register in the `tolokaforge.adapters`
-  entry-point group.
-- **New reset primitives.** Schema enum extension in tolokaforge
-  itself.
-- **New task-defaults fields.** Extend the `task_defaults` model
-  alongside the underlying `TaskDescription` schema.
-- **Deployment/profile layer above the project.** Slots in without
-  changing the Project schema.
-- **Workspace/organisation layer above projects.** For
-  cross-project quotas, permissions, and cost accounting.
 
 ## Adopting the Project layer
 
