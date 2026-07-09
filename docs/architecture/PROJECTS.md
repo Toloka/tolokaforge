@@ -6,8 +6,9 @@ per-invocation settings compose on top, and how every config file
 that a project ships fits into the layered model.
 
 Companion reading:
-[`RUNTIME_BACKENDS.md`](RUNTIME_BACKENDS.md) (the `RuntimeBackend`
-seam that consumes a project's compute selection),
+[`RUNTIME_BACKENDS.md`](RUNTIME_BACKENDS.md) (compute substrates,
+provider registry, and how a project's environment identity gets
+materialised — out of scope here),
 [`adr/0003-trial-spec-and-trial-result.md`](adr/0003-trial-spec-and-trial-result.md)
 (the wire format the loader synthesises into),
 [`adr/0009-environment-manifest.md`](adr/0009-environment-manifest.md)
@@ -451,7 +452,7 @@ default_environment:
   runner_service: "runner"
   inputs:
     postgres_version: "16"
-  isolation: "per_trial"
+  isolation: "shared_ok"          # or "per_trial"; shared_ok is the default
   network_policy: "LOCALHOST_ONLY"
   security_context_defaults:
     user: "toloka"
@@ -995,54 +996,41 @@ uniformly without editing three files.
 
 A run consists of many trials against a project's tasks. The
 question this section answers is: **how much state carries from
-one trial to the next?** The Project schema supports three
-distinct stances — total isolation, completely shared, and
-declared mixed.
+one trial to the next?**
+
+Isolation is expressed through two knobs:
+
+- **`default_environment.isolation`** (on the Project, or
+  overridable per task) — the between-trial default for services
+  that don't declare their own label. `shared_ok` (default)
+  means unlabelled services persist across trials; `per_trial`
+  means unlabelled services are torn down and recreated between
+  trials.
+- **Per-service `tolokaforge.isolation` label** (on services in
+  the compose file) — the authoritative declaration for that
+  service: `shared`, `reset` (with a named primitive), or
+  `ephemeral`. Wins over the task-level default for that
+  service.
+
+The per-service label is always authoritative.
+`default_environment.isolation` only supplies the default for
+services that omit a label. The more granular declaration wins —
+consistent with every other override in the schema.
 
 At a glance:
 
-| Stance | Cost per trial | Safety guarantee | Setup complexity |
+| Stance | Cost between trials | Safety guarantee | Setup complexity |
 |---|---|---|---|
-| Completely shared | Lowest — one stack for the whole run (~0 s inter-trial) | Weakest — all state persists across trials | Simple (defaults; uniform `shared` labels) |
-| Declared mixed | Middle — reset primitives typically ~200 ms | Per-service explicit; strong where declared | More setup (per-service labels + primitives) |
-| Total isolation | Highest — full stack cold-start (~30–45 s) | Strongest — nothing carries over | Task authors declare `isolation: per_trial` |
-
-Two knobs express task-side intent — that's it. Ops has no
-runtime-mode knob; the backend picks its mode based on what the
-tasks declare.
-
-- **`default_environment.isolation`** (on the Project, or
-  overridable per task) — the task's requirement: `shared_ok`
-  (default; task accepts a shared stack) or `per_trial` (task
-  requires a fresh stack per trial). Omitting it means
-  `shared_ok`.
-- **Per-service `tolokaforge.isolation` label** (on services
-  inside the compose file) — the per-service mode:
-  `ephemeral`, `shared`, or `reset` (with a named reset
-  primitive). Only meaningful under shared-stack mode; when the
-  backend materialises fresh stacks per trial (because a task
-  requires it), the stack is torn down and rebuilt regardless of
-  what any label says.
-
-The backend selects its mode from what the tasks in the run
-declare:
-
-- All tasks declare (or default to) `shared_ok` → the backend
-  runs one shared stack for the whole run.
-- Any task in the run declares `per_trial` → the backend runs
-  in per-trial mode for the whole run.
-
-There is no separate `runtime_mode` knob on the run config. The
-mode is a consequence of what the pack's tasks say they need,
-not an independent operator choice.
+| Completely shared | Lowest — services persist | Weakest — all state carries over | Simple (defaults) |
+| Declared mixed | Middle — reset primitives typically ~200 ms | Per-service explicit; strong where declared | Per-service labels + primitives |
+| Total isolation | Highest — unlabelled services rebuilt per trial | Strong by default; relaxations require an explicit label | Task declares `isolation: per_trial` |
 
 ### Stance 1 — Completely shared (default)
 
-The stack materialises once at run start and is shared by every
-trial in the run. State persists between trials by default. This
-is what happens when a project doesn't declare an isolation
-requirement — or explicitly says `shared_ok` — and no task
-overrides it.
+Every service persists across trials. State carries over between
+trials by default. This is what happens when a project doesn't
+declare an isolation requirement (or declares `shared_ok`) and
+no service has a label narrower than `shared`.
 
 ```yaml
 # project.yaml — no isolation declared → defaults to shared_ok
@@ -1051,47 +1039,39 @@ default_environment:
 ```
 
 ```yaml
-# shared/environment.compose.yaml — every service opts into shared
+# shared/environment.compose.yaml — unlabelled services inherit
+# the shared_ok default
 services:
   postgres:
     image: "postgres:${postgres_version:-16}"
-    labels:
-      tolokaforge.isolation: "shared"
   backend-api:
     image: "myrepo/example-backend:v1.4.0"
-    labels:
-      tolokaforge.isolation: "shared"
   # ...
 ```
 
-**Cost.** Lowest. One stack for the whole run; no inter-trial
-overhead. A 100-trial run pays cold-start once, not 100 times.
+**Cost.** Lowest — no per-trial teardown work.
 
 **Safety.** Weakest. If any trial mutates a service's state, all
 subsequent trials see the dirty state. Silent cross-trial
 contamination is the failure mode.
 
-**Pick this when:** services are stateless or genuinely read-only
-(static-content HTTP servers, immutable reference DBs, catalog
-services); the tasks under evaluation only *read* from the
-services; large batch runs where cold-start dominates the
-wall-clock cost.
+**Pick this when:** services are stateless or genuinely
+read-only (static-content HTTP servers, immutable reference DBs,
+catalog services); tasks only *read* from the services.
 
-**Never pick this when:** any service is mutated by any trial and
-you can't afford the mutation to affect later trials. Prefer
+**Never pick this when:** any service is mutated by any trial
+and you can't afford the mutation to affect later trials. Prefer
 Stance 2 instead.
 
 ### Stance 2 — Declared mixed (per-service)
 
-The stack materialises once, and per-service labels decide what
-happens between trials. Some services stay as-is, some get reset
-via a named primitive, some are torn down and recreated. Same
-backend mode as Stance 1 — the task still says `shared_ok` —
-but the compose file's per-service labels drive fine-grained
-between-trial behaviour.
+Per-service labels decide what happens between trials. Some
+services stay as-is, some get reset via a named primitive, some
+are torn down and recreated. Any service that omits a label
+inherits the task's `default_environment.isolation`.
 
 ```yaml
-# project.yaml — no isolation declared → shared_ok default
+# project.yaml — shared_ok default; unlabelled services persist
 default_environment:
   compose_file: "./shared/environment.compose.yaml"
 ```
@@ -1104,103 +1084,90 @@ services:
     labels:
       tolokaforge.isolation: "reset"
       tolokaforge.reset_primitive: "postgres_template_db"
-      # ~200 ms per trial: CREATE DATABASE new TEMPLATE base
 
   backend-api:
     image: "myrepo/example-backend:v1.4.0"
     labels:
       tolokaforge.isolation: "shared"
-      # stateless, no reset needed
 
   worker:
     image: "myrepo/example-worker:v1.4.0"
     labels:
       tolokaforge.isolation: "ephemeral"
-      # torn down and recreated between trials
 ```
 
-**Cost.** Middle. Reset primitives are typically ~100× cheaper
-than full-stack cold-start (200 ms vs 30–45 s), and `shared`
-services pay nothing. Between-trial cost is roughly the sum of
-per-service reset costs, dominated by the slowest primitive.
+**Cost.** Middle. Reset primitives are cheap compared to full
+teardown (~200 ms per trial for a `postgres_template_db`); `shared`
+services pay nothing between trials.
 
 **Safety.** Per-service explicit. `reset` services return to a
-known-clean state via the named primitive; `shared` services keep
-their state (author asserts this is safe); `ephemeral` services
-are fully rebuilt.
+known-clean state via the primitive; `shared` services keep
+their state (pack author asserts this is safe); `ephemeral`
+services are fully rebuilt.
 
 **Pick this when:** the pack has a mix — some services are safe
-to share (stateless HTTP, immutable catalogs), some need clean
-state per trial via cheap resets (postgres template-DB clone,
-sqlite truncate), and a few must be rebuilt each time. Most
-realistic multi-container workloads land here.
+to share, some need clean state per trial via cheap resets, some
+must be rebuilt each time. Most realistic multi-container
+workloads land here.
 
 ### Stance 3 — Total isolation
 
-Every trial materialises a fresh copy of the stack. Nothing
-persists between trials. A task author picks this by declaring
-`isolation: per_trial` — the backend then runs the whole run in
-per-trial mode.
+Task declares `isolation: per_trial`. Every unlabelled service
+resolves to `ephemeral` — torn down and recreated between
+trials. A specific service can still opt out with an explicit
+`shared` or `reset` label if the pack author has a reason.
 
 ```yaml
 # project.yaml
 default_environment:
   compose_file: "./shared/environment.compose.yaml"
-  isolation: "per_trial"          # task requires per-trial isolation
+  isolation: "per_trial"          # unlabelled services default to ephemeral
 ```
 
-Per-service labels in the compose file are informational under
-this stance — the stack is torn down and rebuilt for each trial
-regardless of what any label says.
+```yaml
+# shared/environment.compose.yaml — under isolation: per_trial,
+# unlabelled services default to ephemeral; a labelled service
+# can still opt out.
+services:
+  postgres:
+    image: "postgres:${postgres_version:-16}"
+    # unlabelled → ephemeral (from per_trial default)
 
-**Cost.** Highest. Every trial pays a full compose cold-start
-(measured at ~30–45 s for a four-service stack). A 100-trial run
-pays ~50 minutes of overhead on top of the actual agent work.
+  immutable-catalog:
+    image: "myrepo/catalog:v1.4.0"
+    labels:
+      tolokaforge.isolation: "shared"
+      # explicit exception: this catalog is safe across trials
+```
 
-**Safety.** Strongest. Nothing can leak from one trial into the
-next — services, databases, filesystem state, network topology
-all rebuild from the manifest.
+**Cost.** Highest. Every unlabelled service is torn down and
+recreated per trial.
+
+**Safety.** Strong by default. Unlabelled services can't
+accidentally carry state. Any relaxation is an explicit,
+reviewable label on the specific service that needs it.
 
 **Pick this when:** trials mutate state destructively; safety is
-paramount; the pack's compose stack is small enough that
-cold-start cost is acceptable; you don't yet trust the pack's
-services to be safe to share.
+paramount; you don't trust unlabelled services to be safe to
+share.
 
-### Two rules that fall out of the model
+### Task overrides
 
-**Rule 1 — one `per_trial` task poisons the well.** If any task
-in the run requires `per_trial`, the whole run executes in
-per-trial mode; shared-stack tasks in the same run also run in
-per-trial mode. This is a safety property — you can never
-accidentally share when one task says it can't share.
+A task's own `environment_manifest.isolation` wins over the
+project's `default_environment.isolation`; a task can also ship
+its own compose file with different per-service labels. Both
+changes make the task's resolved environment hash differently
+(see below), so the task resolves to its own environment
+identity.
 
-**Rule 2 — per-service labels only drive between-trial behaviour
-under shared-stack mode.** When the backend materialises a fresh
-stack per trial (Stance 3), labels are validated but have no
-runtime effect.
+## Environment identity
 
-Task overrides layer on top: a task's own
-`environment_manifest.isolation` wins over the project's
-`default_environment.isolation`; a task can ship its own compose
-file with different per-service labels. Both changes make the
-task's resolved environment hash differently (see below), so it
-gets its own stack.
-
-### Interaction with content-addressed dedup
-
-The per-service isolation map is part of the hash the
-`RuntimeBackend` computes for each task's resolved environment.
-Two tasks that agree on the compose file but disagree on
-`services.postgres.isolation` do not share a stack — they hash
-differently and get separate stacks within the run. The declared
-stance is baked into the identity of the stack.
-
-## Runtime mechanism — content-addressed stack dedup
-
-The `RuntimeBackend` computes a stable hash over each task's resolved
-`EnvironmentManifest` (compose file + bound inputs + per-service
-isolation modes). Tasks whose hashes match share one running stack
-within a single run.
+Every task's resolved environment — its compose file, bound
+input values, and per-service isolation map — collapses to a
+single canonical identity. Two tasks whose resolved environments
+are identical share one environment identity; anything that
+differs (a different input, an overridden compose file, a
+different per-service label) gives the task its own identity.
 
 ```
                     project.yaml declares default_environment
@@ -1209,45 +1176,23 @@ within a single run.
               │                     │                     │
        task_a (inherits)     task_b (inherits)     task_c (partial override)
               │                     │                     │
-       resolved=X            resolved=X            resolved=Y
+        identity=X            identity=X            identity=Y
               │                     │                     │
-              └────── same ─────────┘                     │
-                       │                                  │
-              ┌────────▼────────┐               ┌─────────▼────────┐
-              │   stack #1      │               │    stack #2      │
-              │   hash=X        │               │    hash=Y        │
-              └─────────────────┘               └──────────────────┘
+              └── same env ─────────┘                     │
+                                                          │
+                                              (different env)
 ```
 
-Content-addressing is what makes the model correct: when tasks
-inherit the project default, their resolved manifests are byte-
-identical, hash identical, and share a stack. When a task overrides
-a single input (partial), its resolved manifest hashes differently
-and it gets its own stack. When a task overrides `compose_file`
-(full), it hashes differently and gets its own stack. The schema
-declares intent; the hash makes the intent operative.
-
-**Registry and lifecycle.** The backend maintains an in-run registry
-keyed by hash. The first task with a given hash provisions a fresh
-stack and takes the initial reference. Every subsequent task with
-the same hash increments the reference count. When a task finishes
-its last trial the count decrements; when it drops to zero the
-stack tears down.
-
-**Hash inputs.** The canonicalised YAML representation of the
-resolved compose file, the ordered service-name → isolation-mode
-map, and the bound input values. Hash function: SHA-256.
-Canonicalisation normalises key ordering, quoting, and whitespace
-so syntactically-different-but-semantically-identical compose files
-hash identically.
-
-**Scope.** A single `tolokaforge run` invocation. Cross-run
-persistence is a separate concern.
+The schema declares intent (what the environment looks like);
+identity resolution makes that intent operative. How the runtime
+uses these identities to materialise, share, or tear down actual
+stacks is deliberately out of scope for this document.
 
 ## Per-service isolation vocabulary
 
-Reference table for the per-service labels used in Stance 3 above
-(see [Isolation — how much a run shares across trials](#isolation--how-much-a-run-shares-across-trials)
+Reference table for the per-service labels used in the isolation
+stances above (see
+[Isolation — how much a run shares across trials](#isolation--how-much-a-run-shares-across-trials)
 for how to pick a stance).
 
 Services in the compose file are annotated with an isolation mode
@@ -1268,8 +1213,11 @@ services:
 | `shared` | Service persists across trials on the same stack | Cheapest; safe only when trials don't mutate service state |
 | `reset` | Service persists across trials; state resets between trials via a named primitive | Middle-ground; state-mutating tasks with cheap reset semantics |
 
-The default when a service does not declare an isolation mode is
-`ephemeral` (fail-loud).
+When a service does not declare a label, its mode inherits the
+task's `default_environment.isolation`: `shared_ok` (the project
+default) resolves unlabelled services to `shared`; `per_trial`
+resolves them to `ephemeral`. Per-service labels always win over
+this default.
 
 Reset primitives are a closed enum:
 
@@ -1286,38 +1234,11 @@ ResetPrimitive = Literal[
 New primitives extend the enum via a schema change in tolokaforge
 itself. There is no plugin mechanism.
 
-**Interaction with dedup.** The isolation-mode map is part of the
-hash input. Two tasks that agree on the compose file but disagree
-on `services.postgres.isolation` do not share a stack.
-
-## Compute providers
-
-The `compute.provider` field selects the `RuntimeBackend`
-implementation via a registry:
-
-- `local-docker` — provisions stacks via Docker Compose on the
-  orchestrator host.
-- `kubernetes` — provisions stacks as Pods on a target cluster.
-  Provider-specific sub-section (`compute.kubernetes.cluster`,
-  `namespace`, `resource_class`, `service_account`).
-- `aws-batch` — job-queue backend for batch workloads.
-- `modal`, `gcp-batch`, `azure-container-instances` — additional
-  substrates.
-
-**Third-party providers** register via the entry-point group
-`tolokaforge.compute_providers`. A third-party provider ships its
-own package, implements `RuntimeBackend`, and declares an
-entry-point; projects reference it by string tag in `compute.provider`.
-
-**Provider-specific configuration.** Each provider declares its own
-typed sub-section under `compute.<provider>`. The loader validates
-the sub-section against the selected provider's schema; sub-sections
-for unselected providers are ignored.
-
-**Deployment/profile layer.** A `deployments/<name>.yaml` layer
-above the Project provides values for placeholders in the project
-spec — the same project runs on `dev-cluster` under one deployment
-and `prod-cluster` under another without changing `project.yaml`.
+**Interaction with environment identity.** The resolved
+per-service isolation map is part of each task's environment
+identity. Two tasks that agree on the compose file but resolve to
+different labels for a service resolve to different environment
+identities.
 
 ## Adopting the Project layer
 
