@@ -11,7 +11,8 @@ full range of inheritance and override patterns. Read alongside
 ```
 example-microservices-pack/
 ├── project.yaml                       # top-level Project spec
-├── run_config.yaml                    # per-invocation config (slim)
+├── run_config/
+│   └── dev.yaml                       # per-invocation config (slim)
 ├── shared/
 │   ├── environment.compose.yaml       # base 4-service stack referenced by default_environment
 │   └── system_prompt.md               # project-level default system prompt
@@ -130,13 +131,17 @@ over the environment, not the full task.
 
 ## Run-time override
 
-The pack's `run_config.yaml` is slim by design: it declares only
+The pack's `run_config/dev.yaml` is slim by design: it declares only
 per-invocation fields (`orchestrator.repeats`,
 `evaluation.task_packs`) and lets everything else inherit from the
-project. To run the same pack under a different configuration — say
-more workers, a stronger judge model, a different output directory —
-copy `run_config.yaml` to a new file, uncomment the fields you want
-to override, and pass it via `--config`.
+project. Invoke with `tolokaforge run --config run_config/dev.yaml`.
+
+To run the same pack under a different configuration — say more
+workers, a stronger judge model, a different output directory — add
+a new file under `run_config/` (e.g. `run_config/ci.yaml` or
+`run_config/nightly.yaml`), fill in the fields you want to override,
+and pass it via `--config`. Run configs are self-contained; they
+don't inherit from each other.
 
 ## Cross-references
 

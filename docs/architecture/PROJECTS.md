@@ -20,7 +20,7 @@ extends),
 
 Throughout this document the primary term is **Project**. Existing
 TolokaForge material (`TASK_PACKS.md`, the `evaluation.task_packs`
-field on `run_config.yaml`) sometimes calls the same thing a
+field on the run config) sometimes calls the same thing a
 **task pack** — that's the same entity by another name. From here
 on the doc uses **Project** for the abstraction, **project
 directory** for its filesystem layout, and the words *scenario* and
@@ -31,7 +31,7 @@ domain, one-to-one" below).
 **Pack** survives in the doc only in three places, and nowhere
 else:
 
-- **`task_packs`** — a field on `run_config.yaml`
+- **`task_packs`** — a field on the run config
   (`evaluation.task_packs`). Technical name, unchanged.
 - **Directory names on disk** — e.g. the sample directory
   `example-microservices-pack/`, or the placeholder
@@ -51,12 +51,13 @@ with a distinct job:
   it: the default environment, default models, compute policy,
   storage backends, observability sinks, orchestration policy, and
   the task-level defaults every task inherits.
-- **`run_config.yaml`** at the project root (a project may ship
-  several, see below) — declares per-invocation choices. Which
-  models drive *this* run, how many workers to spawn, where to
-  write output, which projects to include. The same Project can
-  run under many different run configs (CI, nightly, demo) — you
-  pick which one by passing `--config <path>` at invocation time.
+- **`run_config/*.yaml`** — one or more named run configs under a
+  `run_config/` directory at the project root. Each file declares
+  per-invocation choices: which models drive *this* run, how many
+  workers to spawn, where to write output, which projects to
+  include. The same Project can run under many different run
+  configs (CI, nightly, demo) — you pick which one by passing
+  `--config <path>` at invocation time.
 - **`task.yaml`** files under `tasks/<name>/` — one per task. Each
   task's identity and any settings that override the Project's
   defaults for that specific task.
@@ -214,10 +215,10 @@ There can be many tasks in a Project. There is always at least one.
 
 ## What a run config is
 
-A **run config** (`run_config.yaml` at the project root) declares how
-a specific run of the project is configured — the settings that vary
-between one invocation and the next while the Project itself stays
-the same.
+A **run config** (a YAML file under `run_config/` at the project
+root) declares how a specific run of the project is configured —
+the settings that vary between one invocation and the next while
+the Project itself stays the same.
 
 Concretely, a run config owns:
 
@@ -231,8 +232,7 @@ Concretely, a run config owns:
 - **A task filter** — an optional glob that narrows down which
   tasks under the project this invocation actually runs.
 
-The same Project can run under many different `run_config.yaml`
-files:
+The same Project can run under many different run configs:
 
 - A CI pipeline runs a fast, cheap sweep with a small model and
   low repeat count.
@@ -246,11 +246,11 @@ per-invocation choices; the Project provides everything else.
 
 **Fields that appear in both files.** Some settings — `models`,
 `workers`, `output_dir`, runtime mode — have sensible defaults in
-`project.yaml` and can be overridden per invocation in
-`run_config.yaml`. When both files declare the same field,
-`run_config.yaml` wins for that invocation.
+`project.yaml` and can be overridden per invocation in a run
+config. When both files declare the same field, the run config
+wins for that invocation.
 
-`run_config.yaml` is **required for execution** — you need one to
+**A run config is required for execution** — you need one to
 actually invoke `tolokaforge run` — but a minimal run config can
 be a few lines if the Project already declares the defaults it
 needs.
@@ -258,7 +258,7 @@ needs.
 A minimal example:
 
 ```yaml
-# run_config.yaml at the project root
+# run_config/dev.yaml
 orchestrator:
   repeats: 3                          # each task runs 3 times
   max_turns: 30                       # run-wide ceiling
@@ -279,28 +279,27 @@ models:
 
 ### Running a Project under a specific run config
 
-You pick which run config to use per invocation via the CLI's
-`--config` flag:
+Run configs live as named files under `run_config/` at the project
+root. Every invocation names one via the CLI's `--config` flag:
 
 ```bash
-tolokaforge run --config run_config.yaml
-tolokaforge run --config run_configs/nightly.yaml
-tolokaforge run --config run_configs/demo.yaml
+tolokaforge run --config run_config/dev.yaml
+tolokaforge run --config run_config/ci.yaml
+tolokaforge run --config run_config/nightly.yaml
+tolokaforge run --config run_config/demo.yaml
 ```
 
-A project can ship a default `run_config.yaml` at its root plus any
-number of alternative run configs under a `run_configs/` directory
-(or any convention that suits the team). Each file is a complete,
-self-contained run config; run configs do not inherit from each
-other.
+Each file is a complete, self-contained run config. Run configs do
+not inherit from each other; if two run configs need shared
+boilerplate, duplicate it.
 
-A typical project layout with multiple run configs:
+A typical project layout:
 
 ```
 project root/
 ├── project.yaml
-├── run_config.yaml                  ← default (dev / local)
-├── run_configs/
+├── run_config/
+│   ├── dev.yaml
 │   ├── ci.yaml
 │   ├── nightly.yaml
 │   └── demo.yaml
@@ -308,12 +307,17 @@ project root/
 └── tasks/
 ```
 
-Because run configs live as files, they live in version control
+A project with only one execution profile still uses the
+`run_config/` directory — put the single file inside (e.g.
+`run_config/dev.yaml`). There is no root-level "default" run
+config file; every invocation names its config explicitly.
+
+Because run configs live as files, they sit in version control
 next to the Project — a team can `git blame` who set the nightly
 sweep to use a specific judge model, and rolling back a run-config
 change is trivial. A future UI managing projects and their runs
-can present the run configs as named execution profiles the user
-picks from.
+can present each file in `run_config/` as a named execution profile
+the user picks from.
 
 ## How Project, Task, and run config compose
 
@@ -340,13 +344,13 @@ fields when the task points at a different file (e.g. a task-local
 1. CLI flags — one-off overrides for this invocation
 2. Environment variables — infrastructure fields only (API keys,
    service URLs, executor address)
-3. `run_config.yaml` — per-invocation choices
+3. run config file — per-invocation choices
 4. `project.yaml` — project-wide defaults
 5. Engine default
 
 Higher entries override lower. Fields that only appear in
 `project.yaml` (like `default_environment`) apply automatically;
-fields that only appear in `run_config.yaml` (like
+fields that only appear in run configs (like
 `evaluation.task_packs`) are per-invocation only; fields that
 appear in both let the run config decide for that specific
 invocation.
@@ -359,11 +363,11 @@ config's `models.judge` doesn't change any task's tools.
 
 Nothing in this model is required to be complex. A project with
 ten similar tasks might have a small `project.yaml`, a slim
-`run_config.yaml`, and ten one-line `task.yaml` files. A project
-with three hundred tasks all sharing one scenario has one
-`project.yaml` declaring the shared setup, one `run_config.yaml`
-per invocation scenario, and three hundred small task files that
-mostly say only their own identity.
+`run_config/dev.yaml`, and ten one-line `task.yaml` files. A
+project with three hundred tasks all sharing one scenario has one
+`project.yaml` declaring the shared setup, one run config file per
+invocation scenario under `run_config/`, and three hundred small
+task files that mostly say only their own identity.
 
 ### The picture, in one diagram
 
@@ -374,10 +378,10 @@ project root/
 │                                     compute, environment, storage,
 │                                     observability, orchestration, ...
 │
-├── run_config.yaml                 ← the run config (per-invocation)
-│                                     required for execution — which
-│                                     models THIS run uses, workers,
-│                                     output dir, task_packs, filter
+├── run_config/                     ← named run configs (per-invocation)
+│   ├── dev.yaml                    each declares which models THIS
+│   └── ...                         run uses, workers, output dir,
+│                                     task_packs, filter
 │
 ├── shared/                         (optional; assets the Project points at)
 │   ├── environment.compose.yaml    (base compose file)
@@ -413,7 +417,7 @@ configuration that combine to determine what actually runs:
 | Scope | Owned by | Lifetime | What lives here |
 |---|---|---|---|
 | **CLI + env** | Operator | This invocation | `--runtime`, `--user-model`, `--judge-model`, `--presets-file`; env vars for API keys and service URLs |
-| **Run** | `run_config.yaml` | This invocation | Which models drive this run, how many workers, output dir for this run, which projects to include |
+| **Run** | `run_config/*.yaml` | This invocation | Which models drive this run, how many workers, output dir for this run, which projects to include |
 | **Project** | `project.yaml` | Project lifetime | Default environment, default models, compute/storage/observability/orchestration policies, task-level defaults inherited by every task |
 | **Task** | `task.yaml` + task-adjacent files | One task | Task identity, per-task overrides |
 | **Trial** | Runtime-only | One trial | Auto-generated ids, per-trial state — never user-configurable |
@@ -426,7 +430,7 @@ runtime-produced and not user-configurable.
 The precedence rules for how these layers interact are detailed
 in "How Project, Task, and run config compose" above and in the
 per-field field-ownership table under "Relationship to
-`run_config.yaml`" below.
+the run config" below.
 
 ## Config file inventory
 
@@ -435,7 +439,7 @@ The complete set of files a project can ship:
 | File | Location | Purpose | Required |
 |---|---|---|---|
 | `project.yaml` | project root | Project-level defaults + typed sections | Optional |
-| `run_config.yaml` | project root | Per-invocation config (models, orchestrator run knobs, evaluation choice) | Required for execution |
+| `run_config/*.yaml` | project root's `run_config/` directory | Per-invocation config (models, orchestrator run knobs, evaluation choice) | At least one file required for execution |
 | `shared/environment.compose.yaml` | project root or task dir | Base compose file referenced by `default_environment` | Optional |
 | `shared/system_prompt.md` | project root | Default system prompt referenced by `task_defaults.system_prompt` | Optional |
 | `task.yaml` | task dir | Task spec (identity, adapter, max_turns, initial_user_message, initial_state, tools, user_simulator, metadata, policies, grading path, system_prompt, adapter_settings, environment_manifest) | Required |
@@ -738,7 +742,7 @@ run_config, then applies CLI + env overrides:
     (models, compute, storage, observability, orchestration)
         │
         ▼
-    run_config.yaml
+    run_config/<name>.yaml
     (models overrides, orchestrator run knobs, evaluation, engine)
         │
         ▼
@@ -753,16 +757,16 @@ run_config, then applies CLI + env overrides:
     Effective RunConfig
 ```
 
-## Relationship to `run_config.yaml`
+## Relationship to the run config
 
 The rule of thumb is short:
 
 > **Everything about the project lives in `project.yaml`. Everything
-> about the invocation lives in `run_config.yaml`.**
+> about the invocation lives in the run config.**
 
 A useful test: if you copied the project to a colleague and they ran
-it with their own `run_config.yaml`, the content of your
-`project.yaml` should still be exactly what you meant.
+it with their own run config, the content of your `project.yaml`
+should still be exactly what you meant.
 
 Every concrete setting falls into one of three categories.
 
@@ -791,7 +795,7 @@ and you're testing a different thing.
   `continue_prompt`, `shuffle_trials`, `schedule`. Project-level
   behavioural policy.
 
-### Category 2 — Per-invocation, `run_config.yaml` only
+### Category 2 — Per-invocation, run config only
 
 Settings that describe **how this specific run happens**. Every
 invocation has its own.
@@ -837,9 +841,9 @@ have to declare everything; runs override when they need to.
 ### Field ownership and precedence
 
 Some fields live only in one file; others may appear in both, with
-`run_config.yaml` winning on conflict.
+the run config winning on conflict.
 
-| Setting | project.yaml | run_config.yaml | Resolution |
+| Setting | project.yaml | run config | Resolution |
 |---|---|---|---|
 | `default_environment` | ✓ | — | Project-only |
 | `task_defaults` | ✓ | — | Project-only |
@@ -878,7 +882,7 @@ For run-scoped fields:
 2. **Environment variable** — infrastructure fields only
    (`DB_SERVICE_URL`, `RAG_SERVICE_URL`, `EXECUTOR_ADDRESS`,
    `TASK_PACKS_DIRS`, provider API keys).
-3. **`run_config.yaml`** value.
+3. **Run config file** value.
 4. **`project.yaml`** value.
 5. **Engine default**.
 
@@ -886,7 +890,7 @@ For run-scoped fields:
 
 Keeping the two files separate lets a single Project spec run under
 many different configurations without editing it. A CI pipeline runs
-with one `run_config.yaml` (parallel workers, fast model), a nightly
+with one run config (parallel workers, fast model), a nightly
 regression sweep runs with another (more repeats, stronger model,
 larger output volume), and a stakeholder demo runs with a third —
 all against the same `project.yaml`.
@@ -894,7 +898,7 @@ all against the same `project.yaml`.
 ## Worked scenarios
 
 Three concrete scenarios that show how the same Project spec pairs
-with different `run_config.yaml` files. Each scenario trims the
+with different run config files. Each scenario trims the
 files to the fields that matter for the point being made
 (`# ...` markers where irrelevant sections are elided).
 
@@ -909,7 +913,8 @@ Layout:
 ```
 support-triage-pack/
 ├── project.yaml
-├── run_config.yaml
+├── run_config/
+│   └── dev.yaml
 ├── shared/
 │   ├── environment.compose.yaml
 │   └── system_prompt.md
@@ -964,7 +969,7 @@ storage:
   queue:    { backend: "sqlite" }
 ```
 
-`run_config.yaml`:
+`run_config/dev.yaml`:
 
 ```yaml
 evaluation:
@@ -976,13 +981,15 @@ orchestrator:
   repeats: 1
 ```
 
+Invocation: `tolokaforge run --config run_config/dev.yaml`.
+
 **What the boundary looks like here.** Everything about the
 project lives in `project.yaml`: the environment, the task
 defaults, the model choice, the compute provider, the storage
 backends. The run config only names which project to run and where
 to write results. Every field a developer needs to change
-day-to-day already has a sensible project default;
-`run_config.yaml` is genuinely thin.
+day-to-day already has a sensible project default; the run config
+is genuinely thin.
 
 ### Scenario B — Same project under CI and nightly sweeps
 
@@ -995,8 +1002,8 @@ Layout:
 ```
 support-triage-pack/
 ├── project.yaml                    ← unchanged from Scenario A
-├── run_config.yaml                 ← default (dev/local)
-├── run_configs/
+├── run_config/
+│   ├── dev.yaml                    (unchanged from Scenario A)
 │   ├── ci.yaml
 │   └── nightly.yaml
 ├── shared/
@@ -1005,7 +1012,7 @@ support-triage-pack/
 
 `project.yaml` is the same as Scenario A.
 
-`run_configs/ci.yaml`:
+`run_config/ci.yaml`:
 
 ```yaml
 evaluation:
@@ -1024,7 +1031,7 @@ models:
     name: "anthropic/claude-haiku-4-5"    # cheaper model for CI
 ```
 
-`run_configs/nightly.yaml`:
+`run_config/nightly.yaml`:
 
 ```yaml
 evaluation:
@@ -1049,8 +1056,8 @@ models:
 Invocation:
 
 ```bash
-tolokaforge run --config run_configs/ci.yaml
-tolokaforge run --config run_configs/nightly.yaml
+tolokaforge run --config run_config/ci.yaml
+tolokaforge run --config run_config/nightly.yaml
 ```
 
 **What the boundary looks like here.** The Project stays the same
@@ -1074,7 +1081,7 @@ Layout:
 ```
 support-triage-pack/
 ├── project.yaml                    ← everything constant
-├── run_configs/
+├── run_config/
 │   ├── agent-opus.yaml
 │   ├── agent-sonnet.yaml
 │   └── agent-gpt5.yaml
@@ -1108,7 +1115,7 @@ compute:
 # ... storage, observability, orchestration unchanged ...
 ```
 
-`run_configs/agent-opus.yaml`:
+`run_config/agent-opus.yaml`:
 
 ```yaml
 evaluation:
@@ -1126,7 +1133,7 @@ models:
     temperature: 0.0
 ```
 
-`run_configs/agent-sonnet.yaml` and `run_configs/agent-gpt5.yaml`
+`run_config/agent-sonnet.yaml` and `run_config/agent-gpt5.yaml`
 are identical except for `models.agent.name` and `output_dir`.
 
 **What the boundary looks like here.** This is the split's whole
@@ -1479,19 +1486,19 @@ in follow-up ADRs and PRs. The harness surfaces that need
 refactoring include:
 
 - **Task discovery and the loader** — currently walks
-  `evaluation.tasks_glob` from `run_config.yaml`; needs to read
+  `evaluation.tasks_glob` from the run config; needs to read
   `project.yaml` at project root, apply `task_defaults` on task load,
   and synthesize a default Project for projects that don't ship one.
 - **Adapter interfaces** — adapters receive a fully-resolved
   `TaskDescription`; the loader needs to merge Project defaults
   into task fields before adapter validation, without changing
   `TaskDescription` shape.
-- **`RunConfig` composition** — `run_config.yaml` fields override
+- **`RunConfig` composition** — run config fields override
   same-named `project.yaml` fields at load time; the config loader
   grows a small deep-merge pass.
 - **CLI and engine defaults** — engine-level defaults for
   `compute` / `storage` / `observability` / `orchestration` move
-  from hard-coded to Project-overridable, with `run_config.yaml`
+  from hard-coded to Project-overridable, with run config values
   and CLI flags able to override on top.
 
 Backward-compat is total by design: a project without `project.yaml`
@@ -1502,7 +1509,7 @@ references — flow through unchanged.
 ## Backward compatibility
 
 - **Projects without `project.yaml` work unchanged.** The loader
-  synthesises a default Project from `run_config.yaml` +
+  synthesises a default Project from the run config +
   discovered tasks. Existing task-level `environment_manifest`
   declarations are honoured as full overrides.
 - **Projects with `project.yaml` get inheritance** for tasks that
@@ -1516,7 +1523,7 @@ references — flow through unchanged.
   `adapter_settings` — continue to work unchanged. The Project
   layer sits above them; nothing about the adapter-side merge
   machinery changes.
-- **`run_config.yaml`** continues to work exactly as today.
+- **Run configs** continue to work exactly as today.
   Fields declared in `run_config` override same-named fields in
   `project`.
 - **Adapters** receive a fully-resolved `TaskDescription` and
@@ -1584,7 +1591,7 @@ The project ships:
 - `project.yaml` at project root — every section declared.
 - `shared/environment.compose.yaml` + `shared/system_prompt.md` —
   the base compose + project-level default prompt.
-- A minimal `run_config.yaml` — invocation-only fields.
+- A minimal `run_config/dev.yaml` — invocation-only fields.
 - Seven tasks demonstrating: full inheritance, partial env override
   (input value), full env override (task-local compose), and
   non-env override (`max_turns`).
