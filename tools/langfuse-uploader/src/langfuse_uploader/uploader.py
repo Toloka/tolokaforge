@@ -22,11 +22,12 @@ import base64
 import hashlib
 import http.client
 import json
+import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -72,6 +73,8 @@ class LangfuseClient:
     # object store hostname inside the URL is not directly reachable from this machine.
     media_put_via: str | None = None
     timeout: float = 60.0
+    # non-fatal issues accumulated during upload; drained and printed by the CLI
+    warnings: list[str] = field(default_factory=list, init=False)
 
     def __post_init__(self) -> None:
         self.host = self.host.rstrip("/")
@@ -121,8 +124,9 @@ class LangfuseClient:
                         "uploadHttpError": None,
                     },
                 )
-            except Exception:
-                pass  # confirmation is best-effort; the bytes are already stored
+            except urllib.error.URLError as exc:
+                # confirmation is best-effort — the bytes are already stored
+                self.warnings.append(f"media {media_id}: confirmation PATCH failed: {exc}")
         if not media_id:
             return None
         return f"@@@langfuseMedia:type={content_type}|id={media_id}|source=bytes@@@"

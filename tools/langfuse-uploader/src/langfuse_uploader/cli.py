@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import time
 from datetime import datetime
 from pathlib import Path
@@ -49,10 +48,14 @@ def _default_run_name(run_dir: Path) -> str:
 
 
 def _client(host: str | None, media_put_via: str | None) -> LangfuseClient:
-    host = host or os.environ.get("LANGFUSE_HOST")
-    public_key = os.environ.get("LANGFUSE_PUBLIC_KEY")
-    secret_key = os.environ.get("LANGFUSE_SECRET_KEY")
-    media_put_via = media_put_via or os.environ.get("LANGFUSE_MEDIA_PUT_VIA")
+    # all secret reads go through SecretManager (repo hard rule); .env then env fallback
+    from tolokaforge.secrets import init_default
+
+    secrets = init_default()
+    host = host or secrets.get_secret("LANGFUSE_HOST")
+    public_key = secrets.get_secret("LANGFUSE_PUBLIC_KEY")
+    secret_key = secrets.get_secret("LANGFUSE_SECRET_KEY")
+    media_put_via = media_put_via or secrets.get_secret("LANGFUSE_MEDIA_PUT_VIA")
     missing = [
         name
         for name, value in [
@@ -99,6 +102,9 @@ def _upload_trials(
         if result.error:
             console.print(f"      [red]{result.error[:300]}[/red]")
     console.print(f"[bold]{ok}/{len(trials)} ok[/bold]")
+    for warning in client.warnings:
+        console.print(f"  [yellow]WARN[/yellow] {warning}")
+    client.warnings.clear()
     return done
 
 

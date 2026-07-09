@@ -53,8 +53,9 @@ instead of duplicating them. Bump `--run-tag` to force fresh traces.
 
 Notes:
 
-- Credentials are read from the environment only (never CLI arguments), so they don't
-  leak into shell history or process lists.
+- Credentials are resolved through the repo's `SecretManager` (`tolokaforge.secrets`:
+  `.env` first, then the process environment) and never accepted as CLI arguments, so
+  they don't leak into shell history or process lists.
 - Ingestion batches are chunked to stay under the Langfuse request body limit (~4.5 MB).
 - Base64 images are uploaded through the Langfuse media API and replaced with reference
   tokens; if a media upload fails, the block is replaced with a small placeholder and the
