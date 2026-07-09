@@ -1,16 +1,12 @@
 # example-microservices-pack
 
-Task pack demonstrating the **Project** as the top-level abstraction:
-a `project.yaml` at the pack root declares the shared
-`default_environment` + `task_defaults` + `tasks.discovery` (plus
-future-reserved sections for compute/storage/observability/orchestration).
-Six tasks show the full inheritance + override patterns. Read
-alongside [`docs/architecture/PROJECTS.md`](../../../docs/architecture/PROJECTS.md).
-
-The Project model lands in v0.11.0 (see
-[`ROADMAP.md`](../../../docs/architecture/ROADMAP.md)); this pack is
-the canonical worked example authors reference when they lay out
-their own multi-task packs.
+Task pack demonstrating the **Project** as the top-level abstraction.
+A `project.yaml` at the pack root declares the shared
+`default_environment`, `task_defaults`, and `tasks.discovery`, plus
+typed sections for `compute`, `storage`, `observability`, and
+`orchestration`. Six tasks show the full inheritance + override
+patterns. Read alongside
+[`docs/architecture/PROJECTS.md`](../../../docs/architecture/PROJECTS.md).
 
 ## Layout
 
@@ -40,16 +36,15 @@ Open [`project.yaml`](project.yaml) first. It declares:
 - `task_defaults` — shared task-scoped fields (adapter, grading
   defaults) inherited by every task.
 - `tasks.discovery.glob` — how the loader finds the tasks.
-- `compute`, `storage`, `observability`, `orchestration` —
-  future-reserved sections declared in v0.11.0 but not yet consumed
-  by the runtime. Packs can start expressing intent today; the
-  transition to full support is a runtime-side change.
+- `compute`, `storage`, `observability`, `orchestration` — typed
+  sections for compute provider selection, storage backends,
+  observability exporters, and retry/priority/schedule policies.
 
 ## The tasks, by pattern
 
 ### Full inheritance (no `environment_manifest` block)
 
-`api_endpoint_add`, `db_query_tuning`, `agent_flow_setup`,
+`api_endpoint_add`, `db_query_tuning`, `agent_flow_setup`, and
 `agent_flow_verify` each ship a `task.yaml` with only `task_id` and
 `description`. Their resolved environment is exactly the project's
 `default_environment`. All four resolve to byte-identical manifests
@@ -111,7 +106,7 @@ persists across their trials (as declared by
 `services.postgres.isolation: "shared"` in
 `shared/environment.compose.yaml`).
 
-**Caveat.** This only works when both tasks run in the same
+**Caveat.** This works when both tasks run in the same
 `tolokaforge run` invocation and the shared service is declared
 `shared`. If postgres were `reset`, the reset primitive would fire
 between every trial, wiping A's writes before B reads them. The
@@ -135,41 +130,12 @@ hashing.
 Six tasks → three stacks. Four tasks share stack **A**, one task
 each has stack **B** and stack **C**.
 
-## What to review
-
-- **Is the Project schema shape right?** `default_environment`,
-  `task_defaults`, `tasks`, plus future-reserved sections
-  (`compute`, `storage`, `observability`, `orchestration`) — is
-  this the right partitioning, or does it miss a concern?
-- **Is the override grammar acceptable?** Task-level
-  `environment_manifest` deep-merges into `default_environment`;
-  a task changes `compose_file` for full override, a subset of
-  `inputs` for partial. Is that clear enough?
-- **Are the future-reserved sections carved correctly?** In
-  particular, is `compute` the right home for both provider
-  selection and resource limits, or should those be separate
-  sections?
-- **Missing patterns?** Anything the six tasks don't demonstrate
-  that a reviewer thinks a real customer scenario would need?
-
-## What's missing (deliberately)
-
-- **No engine implementation.** The v0.11.0 loader will read this
-  pack; today's loader does not yet understand `project.yaml`. This
-  pack is the specification target, not a runnable pack.
-- **No fixtures.** Every task has only a `task.yaml` +
-  `grading.yaml` (+ optional task-local compose). Real fixtures
-  are added when the tasks become runnable.
-- **No populated observability/storage sub-sections.** The
-  `project.yaml` shows the shape of these sections but keeps them
-  minimal — the sections are declared, not exercised.
-
 ## Cross-references
 
 - Architecture doc: [`../../../docs/architecture/PROJECTS.md`](../../../docs/architecture/PROJECTS.md)
 - Runtime backends: [`../../../docs/architecture/RUNTIME_BACKENDS.md`](../../../docs/architecture/RUNTIME_BACKENDS.md)
 - Roadmap: [`../../../docs/architecture/ROADMAP.md`](../../../docs/architecture/ROADMAP.md)
-- Existing multi-service examples for comparison:
+- Related multi-service examples:
   - [`../multi_service/`](../multi_service/) — smallest task-declared compose
   - [`../multi_service_postgres/`](../multi_service_postgres/) — the postgres pattern this pack extends
-  - [`../native_shared_domain/`](../native_shared_domain/) — the existing per-category shared-config precedent
+  - [`../native_shared_domain/`](../native_shared_domain/) — the existing per-category shared-config pattern

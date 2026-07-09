@@ -2,8 +2,8 @@
 
 This document describes the **Project** as the top-level abstraction
 in TolokaForge: what a project is, what settings it owns, how tasks
-inherit from it, and how the schema extends to cover future
-concerns (compute providers, storage, observability, orchestration).
+inherit from it, and how the schema extends across compute providers,
+storage backends, observability sinks, and orchestration policies.
 
 Companion reading:
 [`RUNTIME_BACKENDS.md`](RUNTIME_BACKENDS.md) (the `RuntimeBackend`
@@ -11,11 +11,6 @@ seam that consumes a project's compute selection),
 [`adr/0009-environment-manifest.md`](adr/0009-environment-manifest.md)
 (the `EnvironmentManifest` schema that becomes the shape of
 `default_environment` and per-task overrides).
-
-Implementation lands v0.11.0. Sections in this doc marked
-"reserved for future revisions" are declared in the schema so packs
-can start expressing intent early, but the runtime does not consume
-them yet. See [`ROADMAP.md`](ROADMAP.md) for release-by-release status.
 
 ## The mental model
 
@@ -27,8 +22,7 @@ they share. Every task belongs to a project. The project declares:
   tasks inherit unless they override.
 - **Compute**, **storage**, **observability**, and **orchestration**
   policies that scope to the project as a whole and inherit down to
-  its tasks (schema declared in v0.11.0; runtime consumption lands
-  in future releases).
+  its tasks.
 
 A task **inherits** from its project by default. A task may
 **override** any settings section (partial merge on typed sub-fields,
@@ -81,76 +75,76 @@ task_defaults:
   grading_defaults:
     max_score: 1.0
 
-# Task inventory. Glob discovery is the v0.11.0 mode (VCS-managed);
-# an inline list (`tasks.inline: [...]`, UI-managed) is a future
-# additive mode.
+# Task inventory. Glob discovery is VCS-managed; an inline list of
+# task records is UI-managed. Both modes coexist; the loader
+# normalises to an internal list.
 tasks:
   discovery:
     glob: "tasks/**/task.yaml"
 
-# === Sections reserved for future revisions ===
-# The sections below are declared in the v0.11.0 schema; the loader
-# parses them onto the Project object but the runtime does not yet
-# consume them. Packs may declare them today to express intent; each
-# section becomes load-bearing when its runtime substrate ships.
-
+# Compute — provider selection, resource limits, provider-specific
+# configuration.
 compute:
-  provider: "local-docker"        # v0.11.0: local-docker only.
-                                  # Future: kubernetes, aws-batch, modal, ...
+  provider: "local-docker"        # local-docker, kubernetes,
+                                  # aws-batch, modal, gcp-batch,
+                                  # azure-container-instances
   workers: 4
   resource_limits:
     memory: "8Gi"
     cpu: "2"
-  # Provider-specific sub-section — only the block matching
-  # `provider:` is meaningful; others are ignored.
+  # Provider-specific sub-sections live under `compute.<provider>`.
+  # Only the block matching `provider:` is meaningful.
   # kubernetes:
   #   cluster: "prod-cluster"
   #   namespace: "toloka"
   #   resource_class: "gpu-large"
+  #   service_account: "toloka-runner"
 
+# Storage — artifacts, logs, and fixtures backends.
 storage:
   artifacts:
-    type: "local"                 # or "s3", "gcs", "azure-blob"
+    type: "local"                 # local, s3, gcs, azure-blob
     path: "./results"
   logs:
     type: "local"
     path: "./logs"
-  # fixtures: read-only mounts made available to every task
   # fixtures:
   #   type: "read-only-volume"
   #   path: "./fixtures"
 
+# Observability — tracing, metrics, and logging exporters.
 observability:
   tracing:
-    exporter: "none"              # or "otlp"
+    exporter: "none"              # none, otlp
     # endpoint: "http://collector:4317"
   metrics:
-    exporter: "none"              # or "prometheus"
+    exporter: "none"              # none, prometheus
     # endpoint: "http://prom:9090"
   logging:
     level: "INFO"
-    exporter: "stdout"            # or "otlp"
+    exporter: "stdout"            # stdout, otlp
 
+# Orchestration — retry, priority, and schedule policies.
 orchestration:
   retry_policy:
     max_attempts: 1
-    backoff: "constant"           # or "exponential"
+    backoff: "constant"           # constant, exponential
   priority: "normal"
-  # schedule: cron string for scheduled runs (future)
-  # schedule: {cron: "0 6 * * *"}
+  # schedule:
+  #   cron: "0 6 * * *"
 ```
 
 ### Section responsibilities
 
-| Section | Owns | v0.11.0 | Extensibility |
-|---|---|---|---|
-| `default_environment` | Shared env manifest (compose_file, runner_service, inputs, isolation defaults) | Full | Adding fields = additive schema change |
-| `task_defaults` | Shared task-scoped fields (adapter, grading defaults, tools defaults) | Full | New task-level fields extend `task_defaults` |
-| `tasks` | Task discovery (glob today; inline list future) | Discovery-glob only | New discovery modes extend `tasks.<mode>` |
-| `compute` | Provider selection, resource limits, provider-specific config | Spec-only (schema parses, runtime doesn't consume) | New providers register via entry-point group |
-| `storage` | Artifacts, logs, fixtures backends | Spec-only | New storage types extend `storage.<key>.type` enum |
-| `observability` | Tracing, metrics, logging exporters | Spec-only | New exporters extend `<sub>.exporter` enum |
-| `orchestration` | Retry, priority, schedule policies | Spec-only | New policies additive |
+| Section | Owns |
+|---|---|
+| `default_environment` | Shared env manifest — compose_file, runner_service, inputs, isolation defaults |
+| `task_defaults` | Shared task-scoped fields — adapter, grading defaults, tools defaults |
+| `tasks` | Task discovery — glob (VCS-managed) or inline list (UI-managed) |
+| `compute` | Provider selection, resource limits, provider-specific configuration |
+| `storage` | Artifacts, logs, fixtures backends |
+| `observability` | Tracing, metrics, logging exporters |
+| `orchestration` | Retry, priority, schedule policies |
 
 Adding a new top-level section is a schema addition on the Project
 model. Unknown sections warn but don't fail — older loaders keep
@@ -205,8 +199,8 @@ compose cleanly with the project default.
 - **`inputs` is a shallow map**; task-declared keys override; other
   keys inherit.
 - **Sections other than `environment_manifest` at task level**
-  (`task_compute`, `task_orchestration`, etc. — future) follow the
-  same deep-typed merge rule.
+  (`task_compute`, `task_orchestration`, etc.) follow the same
+  deep-typed merge rule.
 - **Two levels only.** Project → Task. No trial-level overrides.
 
 ### Task file — everything else stays task-local
@@ -287,7 +281,7 @@ services:
 | `shared` | Service persists across trials on the same stack | Cheapest; safe only when trials don't mutate service state |
 | `reset` | Service persists across trials; state resets between trials via a named primitive | Middle-ground; state-mutating tasks with cheap reset semantics |
 
-Default when a service does not declare an isolation mode:
+The default when a service does not declare an isolation mode is
 `ephemeral` (fail-loud).
 
 Reset primitives are a closed enum:
@@ -311,32 +305,25 @@ bearing to delegate to third parties.
 hash input. Two tasks that agree on the compose file but disagree
 on `services.postgres.isolation` do not share a stack.
 
-## Multi-provider deployment
+## Compute providers
 
 The `compute.provider` field selects the `RuntimeBackend`
-implementation via a registry.
+implementation via a registry:
 
-**v0.11.0 built-in:**
-
-- `local-docker` — today's `SharedStackRuntimeBackend` +
-  `PerTrialRuntimeBackend`. Both remain selectable via
-  `orchestrator.runtime` in the run config.
-
-**Future built-ins (post-v0.11.0):**
-
-- `kubernetes` — provisions stacks as Pods on a target cluster;
-  provider-specific sub-section (`compute.kubernetes.cluster`,
+- `local-docker` — provisions stacks via Docker Compose on the
+  orchestrator host.
+- `kubernetes` — provisions stacks as Pods on a target cluster.
+  Provider-specific sub-section (`compute.kubernetes.cluster`,
   `namespace`, `resource_class`, `service_account`).
 - `aws-batch` — job-queue backend for batch workloads.
 - `modal`, `gcp-batch`, `azure-container-instances` — additional
-  substrates as evidence justifies.
+  substrates.
 
 **Third-party providers** register via the entry-point group
 `tolokaforge.compute_providers` (sits alongside the existing
-`tolokaforge.adapters` and the `tolokaforge.runtimes` group the
-runner-independence umbrella designs). A third-party provider ships
-its own package, implements `RuntimeBackend`, and declares an
-entry-point; packs reference it by string tag in `compute.provider`.
+`tolokaforge.adapters` group). A third-party provider ships its own
+package, implements `RuntimeBackend`, and declares an entry-point;
+packs reference it by string tag in `compute.provider`.
 
 **Provider-specific configuration.** Each provider declares its own
 typed sub-section under `compute.<provider>`. The loader validates
@@ -344,30 +331,28 @@ the sub-section against the selected provider's schema; sub-sections
 for unselected providers are ignored. Discriminated-union pattern
 lets a UI drive sub-section rendering based on `provider:`.
 
-**Deployment/profile layer (future).** A `deployments/<name>.yaml`
-layer above the Project provides values for placeholders in the
-project spec (`${DEV_CLUSTER}` in project.yaml resolves to
-`prod-cluster` under `deployments/production.yaml`,
-`dev-cluster` under `deployments/dev.yaml`). The Project spec stays
-invariant; the deployment provides the environment-specific values.
-Not implemented v0.11.0.
+**Deployment/profile layer.** A `deployments/<name>.yaml` layer
+above the Project provides values for placeholders in the project
+spec — the same project runs on `dev-cluster` under one deployment
+and `prod-cluster` under another without changing `project.yaml`.
+The Project spec stays invariant; the deployment provides the
+environment-specific values.
 
 ## UI-friendliness
 
-The schema is designed for UI editing from day one, even though no
-UI ships in v0.11.0.
+The schema is designed for UI editing.
 
-- **Section-per-form.** Every section under `Project.spec` is its
-  own Pydantic model. A UI renders one form section per model,
-  driven by the model's JSON Schema. New sections shipped by
-  tolokaforge extend the schema; the UI adapts without bespoke code.
+- **Section-per-form.** Every section under the Project is its own
+  Pydantic model. A UI renders one form section per model, driven
+  by the model's JSON Schema. New sections shipped by tolokaforge
+  extend the schema; the UI adapts without bespoke code.
 - **Typed primitives everywhere.** Sub-fields are strings, ints,
   enums, references (by name) to other resources, or further typed
   sub-objects. No untyped free-form fields.
-- **Task inventory modes.** `tasks.discovery.glob` (v0.11.0) is
-  VCS-managed. `tasks.inline: [...]` (future) is a UI-managed list
-  of task records embedded in the Project. Both modes coexist; the
-  loader normalises to an internal list of task references.
+- **Task inventory modes.** `tasks.discovery.glob` is VCS-managed;
+  `tasks.inline: [...]` is a UI-managed list of task records
+  embedded in the Project. Both modes coexist; the loader
+  normalises to an internal list of task references.
 - **Provider selection triggers sub-section reveal.**
   `compute.provider: kubernetes` makes the `compute.kubernetes`
   block meaningful; UI shows only the sub-section matching the
@@ -388,13 +373,13 @@ packs.
   implementation, declare an entry-point in
   `tolokaforge.compute_providers`. No fork required.
 - **New reset primitives.** Schema enum extension in tolokaforge
-  itself — same as today. The safety contract stays engine-side.
+  itself. The safety contract stays engine-side.
 - **Deployment/profile layer above the project.** Slots in without
   changing the Project schema; a deployment consumes the Project
-  spec and provides placeholder values. Design lands separately.
-- **Workspace/organisation layer above projects (future).** For
-  cross-project quotas, permissions, cost accounting. Explicitly
-  out of scope for v0.11.0.
+  spec and provides placeholder values.
+- **Workspace/organisation layer above projects.** For
+  cross-project quotas, permissions, and cost accounting. Adds an
+  entity above Project without changing the Project schema.
 
 ## Backward compatibility
 
@@ -407,9 +392,9 @@ packs.
 - **Packs with a `project.yaml` get inheritance** for tasks that
   don't declare their own `environment_manifest`. Tasks that do
   continue to work exactly as before.
-- **Adding sections to `project.yaml` in future revisions doesn't
-  break older packs.** Older packs simply don't declare those
-  sections; runtime uses hard-coded defaults.
+- **Adding sections to `project.yaml`** doesn't break older packs.
+  Older packs simply don't declare those sections; the runtime uses
+  hard-coded defaults.
 - **Existing `native_shared_domain` semantics** (per-category
   `_shared/domain.yaml` merge for `tools:` and `system_prompt:`)
   continue to work in parallel. The project layer merges at the
@@ -442,9 +427,9 @@ packs.
   default. Prevention: input names are validated against the
   compose file's declared `${...}` references at load time;
   unknown input names warn.
-- **Unknown section in `project.yaml`.** A future-revision pack
-  declares a section an older loader doesn't recognise. Prevention:
-  unknown sections warn but preserve; older loaders don't fail.
+- **Unknown section in `project.yaml`.** A pack declares a section
+  an older loader doesn't recognise. Prevention: unknown sections
+  warn but preserve; older loaders don't fail.
 
 ## What the model deliberately isn't
 
@@ -452,10 +437,11 @@ packs.
   bounded. Unknown sub-fields warn but don't merge into arbitrary
   containers.
 - **A three-or-more-level precedence hierarchy.** Two levels only.
-  Deployment/profile is a future layer that provides placeholder
+  Deployment/profile is a separate layer that provides placeholder
   values, not a third precedence level.
 - **A plugin registry for reset primitives.** New primitives extend
-  the engine's schema enum. Third-party extensibility is deferred.
+  the engine's schema enum. Third-party extensibility for
+  primitives is deliberately deferred.
 - **A cross-run stack persistence surface.** All sharing is within
   a single `tolokaforge run` invocation.
 - **In-place editing of compose files.** Compose files are read at
@@ -465,9 +451,9 @@ packs.
 ## Worked example
 
 See
-[`examples/native/example-microservices-pack/`](../../examples/native/example-microservices-pack/)
-for a spec-only walkthrough. The pack ships a `project.yaml` at its
-root and six tasks demonstrating:
+[`examples/native/example-microservices-pack/`](../../examples/native/example-microservices-pack/).
+The pack ships a `project.yaml` at its root and six tasks
+demonstrating:
 
 | Task | Pattern | Resulting stack |
 |---|---|---|

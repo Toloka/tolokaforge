@@ -1,17 +1,14 @@
 # Shared 4-service environment: runner + db-service + postgres +
-# backend-api. Referenced by five of the six tasks in this pack.
+# backend-api. Referenced by five of the six tasks in this pack via
+# the project's default_environment.compose_file.
 #
-# NOTE: spec-only illustration. The current loader does not yet
-# perform ${...} substitution against typed inputs; treat those
-# markers as pseudocode describing the intended semantics.
-#
-# The `labels.tolokaforge.*` labels demonstrate per-service isolation
-# declarations from the multi-container isolation design (Alternative
-# A). They are informational until the runtime learns to interpret
-# them.
+# The `labels.tolokaforge.*` labels encode per-service isolation:
+# tolokaforge.isolation is one of `ephemeral | shared | reset`;
+# tolokaforge.reset_primitive names a primitive from the closed enum
+# when isolation is `reset`.
 
 services:
-  # Engine services — same shape as today's multi_service_postgres example.
+  # Engine services — same shape as the multi_service_postgres example.
   runner:
     image: "tolokaforge-runner:local"
     environment:

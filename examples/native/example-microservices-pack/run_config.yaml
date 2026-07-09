@@ -1,5 +1,5 @@
-# Standard shape — no changes needed for the extension.
-# The loader would discover tasks under tasks/**/task.yaml as today.
+# Standard run config. The loader discovers tasks under
+# tasks/**/task.yaml (matching tasks.discovery.glob in project.yaml).
 
 models:
   agent:

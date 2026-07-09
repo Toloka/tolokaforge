@@ -1,11 +1,5 @@
 # Project spec — the top-level abstraction for this pack.
 # See docs/architecture/PROJECTS.md for the full model.
-#
-# NOTE: spec-only illustration. The v0.11.0 loader will parse this
-# file and inherit its default_environment / task_defaults onto tasks
-# discovered under tasks/. Sections marked "reserved" below are
-# parsed onto the Project object but the runtime does not consume
-# them yet — they exist so packs can start declaring intent.
 
 name: "microservices-eval"
 version: 1
@@ -35,22 +29,16 @@ task_defaults:
     max_score: 1.0
 
 # ── Task inventory ──────────────────────────────────────────────
-# v0.11.0: glob discovery (VCS-managed). Future: inline list of
-# task records (UI-managed).
+# Glob discovery is VCS-managed; an inline list of task records is
+# UI-managed. Both modes coexist.
 tasks:
   discovery:
     glob: "tasks/**/task.yaml"
 
-# ────────────────────────────────────────────────────────────────
-# Sections reserved for future revisions — the v0.11.0 loader
-# parses them onto the Project object; the runtime does not yet
-# consume them. Declared here to show the schema shape and give
-# packs a place to start expressing intent.
-# ────────────────────────────────────────────────────────────────
-
+# ── Compute ─────────────────────────────────────────────────────
+# Provider selection, resource limits, provider-specific configuration.
 compute:
-  provider: "local-docker"        # v0.11.0: local-docker only.
-                                  # Future providers: kubernetes,
+  provider: "local-docker"        # local-docker, kubernetes,
                                   # aws-batch, modal, gcp-batch, ...
   workers: 1
   resource_limits:
@@ -64,9 +52,11 @@ compute:
   #   resource_class: "gpu-large"
   #   service_account: "toloka-runner"
 
+# ── Storage ─────────────────────────────────────────────────────
+# Artifacts, logs, and fixtures backends.
 storage:
   artifacts:
-    type: "local"                 # or "s3", "gcs", "azure-blob"
+    type: "local"                 # local, s3, gcs, azure-blob
     path: "./results"
   logs:
     type: "local"
@@ -75,21 +65,25 @@ storage:
   #   type: "read-only-volume"
   #   path: "./fixtures"
 
+# ── Observability ───────────────────────────────────────────────
+# Tracing, metrics, and logging exporters.
 observability:
   tracing:
-    exporter: "none"              # or "otlp"
+    exporter: "none"              # none, otlp
     # endpoint: "http://collector:4317"
   metrics:
-    exporter: "none"              # or "prometheus"
+    exporter: "none"              # none, prometheus
     # endpoint: "http://prom:9090"
   logging:
     level: "INFO"
-    exporter: "stdout"            # or "otlp"
+    exporter: "stdout"            # stdout, otlp
 
+# ── Orchestration ───────────────────────────────────────────────
+# Retry, priority, and schedule policies.
 orchestration:
   retry_policy:
     max_attempts: 1
-    backoff: "constant"           # or "exponential"
+    backoff: "constant"           # constant, exponential
   priority: "normal"
   # schedule:
-  #   cron: "0 6 * * *"           # scheduled runs (future)
+  #   cron: "0 6 * * *"

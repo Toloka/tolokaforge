@@ -1,10 +1,8 @@
 # Task-local compose — isolated postgres so a botched migration
 # doesn't leak state to other tasks that share the base stack.
-# Note: this compose is byte-different from the shared one (no
-# backend-api, isolation modes vary). Its hash is distinct; this
-# task gets its own stack.
-#
-# NOTE: spec-only.
+# This compose is byte-different from the project's shared one
+# (no backend-api, isolation modes vary). Its hash is distinct;
+# this task gets its own stack.
 
 services:
   runner:
