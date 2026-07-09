@@ -522,8 +522,11 @@ run_defaults:
 ```
 
 Adding a new top-level section is a schema addition on the Project
-model. Unknown sections warn but don't fail — older loaders keep
-working when new projects declare newer sections.
+model. Every top-level key must match the declared schema; unknown
+sections, unknown fields inside a section, and typos fail loud at
+config load. There is no silent-preserve fallback — if the loader
+doesn't recognise a key, it names the file, the offending key, and
+the closest schema match and refuses to start.
 
 ## Task override semantics
 
@@ -1342,9 +1345,9 @@ refactoring include:
 
 - **Task discovery and the loader** — currently walks
   `evaluation.tasks_glob` from the run config; needs to read
-  `project.yaml` at project root, apply `task_defaults` on task
-  load, and synthesise a default Project for projects that don't
-  ship one.
+  `project.yaml` at project root and apply `task_defaults` on
+  task load. Every pack must ship a `project.yaml`; there is no
+  synthesised default.
 - **Adapter interfaces** — adapters receive a fully-resolved
   `TaskDescription`; the loader merges `task_defaults` into task
   fields before adapter validation, without changing
@@ -1368,10 +1371,11 @@ refactoring include:
   "Deprecations and migrations" section below for the migration
   notes.
 
-Backward-compat is total by design: a project without
-`project.yaml` continues to work through a synthesised default
-Project. Existing `adapter_settings.*` fields — including any
-Domain-bundle references — flow through unchanged.
+Existing `adapter_settings.*` fields — including any Domain-bundle
+references — flow through unchanged. The schema fails loud on
+unknown keys, so a `project.yaml` migrating from an older shape
+will surface every renamed or removed field at load time rather
+than silently taking a default.
 
 ## Deprecations and migrations
 
@@ -1410,28 +1414,31 @@ the concrete schema and worked scenarios. `TASK_PACKS.md` carries
 a deprecation banner and will be removed once no in-tree link
 still targets it. Update any external links you own.
 
-## Backward compatibility
+## Schema enforcement
 
-- **Projects without `project.yaml` work unchanged.** The loader
-  synthesises a default Project from the run config + discovered
-  tasks. Existing task-level `environment_manifest` declarations
-  are honoured as full overrides.
-- **Projects with `project.yaml` get inheritance** for tasks that
-  don't declare overrides. Tasks that do continue to work exactly
-  as before.
-- **`run_defaults` is optional.** A project that omits it works
-  as if every run config were a standalone declaration — the same
-  behaviour as before the block existed.
-- **Adding sections to `project.yaml` doesn't break older
-  projects.** Older projects simply don't declare those sections;
-  the runtime uses hard-coded defaults.
-- **Existing adapter-specific shared-config patterns** — any
-  adapter's Domain-bundle conventions carried through
-  `adapter_settings` — continue to work unchanged. The Project
-  layer sits above them.
-- **Adapters** receive a fully-resolved `TaskDescription` and
-  validate it as always. The Project layer does not modify
-  `TaskDescription` shape.
+The Project schema is strict at both files.
+
+- **`project.yaml` is required.** Packs without one fail at load
+  with the missing-file path named.
+- **Unknown top-level keys fail** in `project.yaml`, `task.yaml`,
+  and every `run_configs/<name>.yaml`. Error names the file, the
+  offending key, and the closest schema match.
+- **Unknown sub-fields inside a declared section fail** the same
+  way. Typos never silently take a default.
+- **Required fields fail loud if missing.** No implicit defaults
+  for structure.
+- **`run_defaults` is optional as a whole block** — a project
+  that omits it declares no shared run base and every run config
+  stands alone. But if `run_defaults` is declared, every key
+  inside it is validated.
+- **Deprecation aliases are the sole exception** and are enumerated
+  in the section above (`evaluation.task_packs`, `run_config/`
+  directory). Aliases resolve to their canonical form at load and
+  emit a `DeprecationWarning`; every other legacy name fails.
+- **Adapter-specific `adapter_settings.*`** are validated by the
+  adapter, not by the Project loader — the Project loader passes
+  them through as opaque data. Every adapter must strict-validate
+  its own settings; consult the adapter's own docs.
 
 ## Failure modes
 
@@ -1450,7 +1457,9 @@ still targets it. Update any external links you own.
   remaining trials with an explicit reason.
 - **Input-override typos.** Input names validated against the
   compose file's declared `${...}` references at load time.
-- **Unknown section in `project.yaml`.** Warn but preserve.
+- **Unknown section, unknown field, or typo in `project.yaml`,
+  `task.yaml`, or a run config.** Fails at load; error names the
+  file and the offending key.
 - **Adapter validation failure on merged TaskDescription.** Loader
   surfaces the specific merge step (project defaults, task.yaml)
   that contributed the offending field.
