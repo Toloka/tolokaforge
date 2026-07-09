@@ -1,6 +1,17 @@
-# Standard run config. The loader discovers tasks under
-# tasks/**/task.yaml (matching tasks.discovery.glob in project.yaml).
+# Per-invocation configuration for this pack. Everything here is
+# scoped to a single `tolokaforge run` — a different invocation can
+# use a different run_config.yaml against the same project.yaml
+# without editing the project.
+#
+# See docs/architecture/PROJECTS.md § "Relationship to
+# run_config.yaml" for the full field-ownership + precedence rules.
+# Short version: fields in run_config.yaml override same-named
+# fields in project.yaml; fields only in project.yaml apply by
+# default.
 
+# ── Per-invocation only ─────────────────────────────────────────
+# These fields live only in run_config.yaml. The project does not
+# express them.
 models:
   agent:
     provider: "openrouter"
@@ -12,15 +23,27 @@ models:
     name: "anthropic/claude-sonnet-4-6"
     temperature: 0.2
 
+# ── Orchestrator ────────────────────────────────────────────────
+# `repeats`, `max_turns`, `queue_backend` are per-invocation.
+# `workers` and `runtime` override the project's `compute` section
+# for this run if set here.
 orchestrator:
-  workers: 1
   repeats: 1
   max_turns: 20
   queue_backend: sqlite
-  runtime: per_trial
+  # Overrides project.compute.workers = 1 if set:
+  # workers: 4
+  # Overrides project.compute.provider substrate mode if set:
+  # runtime: per_trial
 
+# ── Evaluation ──────────────────────────────────────────────────
+# `task_packs` names which packs this run pulls in (per-invocation).
+# `tasks_glob` optionally filters within a pack (defaults to the
+# project's tasks.discovery.glob). `output_dir` overrides
+# project.storage.artifacts.path for this run.
 evaluation:
   task_packs:
     - "examples/native/example-microservices-pack"
-  tasks_glob: "tasks/**/task.yaml"
+  # tasks_glob defaults to project.tasks.discovery.glob.
+  # tasks_glob: "tasks/**/task.yaml"
   output_dir: "results/example_microservices_pack"

@@ -338,6 +338,74 @@ and `prod-cluster` under another without changing `project.yaml`.
 The Project spec stays invariant; the deployment provides the
 environment-specific values.
 
+## Relationship to `run_config.yaml`
+
+`project.yaml` and `run_config.yaml` live side-by-side in a pack
+root and cover different concerns.
+
+- **`project.yaml`** owns settings that are **invariant across
+  runs** — what the project *is*. The default environment, task
+  defaults, task inventory, compute provider, storage backends,
+  observability exporters, orchestration policy defaults. Every
+  invocation of the project reads these.
+- **`run_config.yaml`** owns settings **specific to a single
+  invocation** — how *this run* is configured. Which models to
+  drive the agent with, how many times to repeat each trial, which
+  output directory to write to for this run, which task packs to
+  pull in. A pack can be run many times with different
+  `run_config.yaml` files.
+
+### Field ownership and precedence
+
+Some fields live only in one file; others may appear in both, with
+`run_config.yaml` winning on conflict.
+
+| Setting | project.yaml | run_config.yaml | Resolution |
+|---|---|---|---|
+| `default_environment` | ✓ | — | Project-only |
+| `task_defaults` | ✓ | — | Project-only |
+| `tasks.discovery.glob` | ✓ | — | Project-only (a run may further filter via `evaluation.tasks_glob`) |
+| `compute.provider` | ✓ | — | Project-only |
+| `compute.<provider>` sub-sections | ✓ | — | Project-only |
+| `compute.workers` (default) | ✓ | `orchestrator.workers` | run_config overrides |
+| `storage.artifacts.path` (default) | ✓ | `evaluation.output_dir` | run_config overrides |
+| `observability.*` | ✓ | — | Project-only |
+| `orchestration.retry_policy` | ✓ | `orchestrator.retry` (if set) | run_config overrides |
+| Runtime backend mode (`shared` / `per_trial` within a provider) | via `compute.provider` details | `orchestrator.runtime`, `--runtime` CLI | CLI > run_config > project |
+| `models` | — | ✓ | run_config-only |
+| `orchestrator.repeats` | — | ✓ | run_config-only |
+| `orchestrator.max_turns` | — | ✓ | run_config-only |
+| `orchestrator.queue_backend` | — | ✓ | run_config-only |
+| `evaluation.task_packs` | — | ✓ | run_config-only |
+
+**Full precedence order** (highest to lowest):
+
+1. CLI overrides (`tolokaforge run --runtime per_trial`,
+   `--workers 8`, etc.).
+2. `run_config.yaml` fields for this invocation.
+3. `project.yaml` fields (project defaults).
+4. `task.yaml` overrides for a specific task, layered on top of
+   whichever of the above sourced the value.
+
+Task-level overrides interact with project defaults by the deep-typed
+merge rule described in "Task override semantics"; they do not
+interact with `run_config.yaml` directly (a run either includes a
+task or it doesn't).
+
+### Why the split
+
+Keeping the two files separate lets a single project spec run
+under many different configurations without editing it. A CI
+pipeline runs with one `run_config.yaml` (parallel workers, fast
+model), a nightly regression sweep runs with another (more
+repeats, stronger model, larger output volume), and a stakeholder
+demo runs with a third — all against the same `project.yaml`.
+That's the same separation of *invariant spec* from
+*variant execution* that `deployments/<name>.yaml` will formalise
+at a broader scope: the deployment layer picks the substrate; the
+run config picks the invocation parameters; the project picks
+what's being run.
+
 ## UI-friendliness
 
 The schema is designed for UI editing.
