@@ -679,6 +679,75 @@ _ALL: list[MC] = [
             }
         ),
     ),
+    # Grok-4.5 — xAI's successor to the 4.x line, routed through the same
+    # ``xai_grok`` preset as grok-4 / grok-4.3 (strict schema sanitiser +
+    # array_dict_map response policy + OpenAI-style reasoning summary). The
+    # resolved policy fingerprint is byte-identical to the grok-4.3 sibling
+    # (schema_sanitizer=strict, response_policy=array_dict_map,
+    # reasoning_codec=openai, cache_policy=none), confirmed via
+    # ``resolve_policy_names``, so no new preset is required.
+    #
+    # Live-certified 2026-07-09 via
+    # ``scripts/with_env.sh uv run pytest tests/integration/llm/ -k grok-4.5``
+    # (17 passed, 5 skipped; final posture 15 required / 5 known_unsupported).
+    # Posture set by the ADD_NEW_MODEL.md § 3 disciplined flow — NOT copied
+    # from a sibling: the grok-4.3 sibling's three non-structural
+    # ``known_unsupported`` entries were flipped to ``required`` as the
+    # hypothesis and re-run live. All three PASS on grok-4.5, so they stay
+    # ``required`` (matching grok-4, not grok-4.3):
+    #
+    #   * MULTI_TURN_ERROR_RECOVERY — grok-4.3 was demoted for a ~17 %
+    #     field-name-as-value hallucination on the retry; grok-4.5 recovers
+    #     reliably (test passed 2026-07-09).
+    #   * ENUM_SLASH_TOLERANCE + RE2_PATTERN_TOLERANCE — grok-4.3's tightened
+    #     tool-schema validator rejected ``/`` enum values and RE2-incompatible
+    #     ``pattern`` regexes; grok-4.5 accepts both, so the xAI validator
+    #     tightening that landed with 4.3 has been relaxed again.
+    #
+    # The five structural entries stay ``known_unsupported`` (all skipped
+    # live): the ``xai_grok`` preset wires the OpenAI reasoning codec (summary
+    # only — no signed blocks, no-op replay) and ``cache_policy=none`` (no
+    # cache_control markers), so THINKING_* and PROMPT_CACHING cannot fire on
+    # this route regardless of model version; IMPLICIT_PROMPT_CACHING keeps the
+    # grok-family observation that no upstream cache is surfaced on the
+    # OpenRouter x-ai/grok-* routes (paired ratchet
+    # ``test_implicit_prompt_caching_unsupported_ratchet`` passed live).
+    MC(
+        model_id="openrouter__x-ai_grok-4.5",
+        provider="openrouter",
+        name="x-ai/grok-4.5",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DICT_MAP_TOOL_CALL,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                C.THINKING_EMITS_BLOCKS,
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.UNSIGNED_THINKING_REPLAY,
+                C.PROMPT_CACHING,
+                # No implicit upstream cache surfaced on the OpenRouter
+                # x-ai/grok-* routes.
+                C.IMPLICIT_PROMPT_CACHING,
+            }
+        ),
+    ),
     # -----------------------------------------------------------------
     # Google Gemini family — routed through the named ``gemini`` preset
     # (see ``model_presets.yaml``) which adds ``GeminiReasoningCodec``
