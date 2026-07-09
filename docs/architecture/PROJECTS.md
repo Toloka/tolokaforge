@@ -49,7 +49,7 @@ with a distinct job:
 
 - **`project.yaml`** at the project root — declares the project's
   identity and everything that stays the same across every run of
-  it: the default environment, default models, compute policy,
+  it: the default environment, compute policy,
   storage backends, observability sinks, orchestration policy, and
   the task-level defaults every task inherits.
 - **`run_config/*.yaml`** — one or more named run configs under a
@@ -92,8 +92,6 @@ Concretely, a Project owns:
 
 - **The default environment** every task runs in — a Docker Compose
   stack of services (databases, backends, tools).
-- **The default models** driving the agent, the simulated user, and
-  the judge.
 - **The compute policy** — where trials run, how much parallelism,
   budget caps, timeouts, stuck-heuristics.
 - **The storage backends** for artifacts, logs, and the trial queue.
@@ -123,17 +121,13 @@ task_defaults:
   max_turns: 20
   system_prompt: "./shared/system_prompt.md"
 
-models:
-  agent:
-    provider: "openrouter"
-    name: "anthropic/claude-sonnet-4-6"
-
 compute:
   provider: "local-docker"
   workers: 2
 
 # Also declared here: storage, observability, orchestration —
-# see the full schema below.
+# see the full schema below. Note: `models` lives on the run
+# config, not the project — see "What a run config is" below.
 ```
 
 ### Project = scenario = domain, one-to-one
@@ -270,12 +264,20 @@ evaluation:
   # tasks_glob: "tasks/support_*/task.yaml"   # optional filter
   # output_dir: "results/nightly-2026-07-09"  # overrides project default
 
-# Optional: override the Project's default models for this run.
-# If omitted, the Project's models are used.
+# Models — always declared on the run config, never on the
+# project. The model being evaluated is the invocation's variable;
+# everything else is Project setup.
 models:
   agent:
     provider: "openrouter"
     name: "anthropic/claude-opus-4-8"
+  user:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.2
+  judge:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
 ```
 
 ### Running a Project under a specific run config
@@ -419,7 +421,7 @@ configuration that combine to determine what actually runs:
 |---|---|---|---|
 | **CLI + env** | Operator | This invocation | `--runtime`, `--user-model`, `--judge-model`, `--presets-file`; env vars for API keys and service URLs |
 | **Run** | `run_config/*.yaml` | This invocation | Which models drive this run, how many workers, output dir for this run, which projects to include |
-| **Project** | `project.yaml` | Project lifetime | Default environment, default models, compute/storage/observability/orchestration policies, task-level defaults inherited by every task |
+| **Project** | `project.yaml` | Project lifetime | Default environment, compute/storage/observability/orchestration policies, task-level defaults inherited by every task |
 | **Task** | `task.yaml` + task-adjacent files | One task | Task identity, per-task overrides |
 | **Trial** | Runtime-only | One trial | Auto-generated ids, per-trial state — never user-configurable |
 
@@ -514,20 +516,10 @@ task_defaults:
         state_checks: 0.5
         llm_judge: 0.5
 
-# ── Models ──────────────────────────────────────────────────────
-models:
-  agent:
-    provider: "openrouter"
-    name: "anthropic/claude-sonnet-4-6"
-    temperature: 0.0
-  user:
-    provider: "openrouter"
-    name: "anthropic/claude-sonnet-4-6"
-    temperature: 0.2
-  judge:
-    provider: "openrouter"
-    name: "anthropic/claude-sonnet-4-6"
-    temperature: 0.0
+# Note: `models` (agent, user, judge) do NOT live on the Project.
+# The model being evaluated is the invocation's variable and lives
+# on the run config; see "What a run config is" above and the
+# field-ownership table below.
 
 # ── Compute ─────────────────────────────────────────────────────
 compute:
@@ -595,7 +587,6 @@ orchestration:
 | `task_defaults.tools` | Adapter tool wiring | Yes — task overrides |
 | `task_defaults.adapter_settings` | Adapter-specific settings (bundle paths, tool registry, etc.) | Yes — task's `adapter_settings` deep-merges |
 | `task_defaults.grading_defaults` | `TrialGrader` combine method / weights / pass threshold | Yes — task's `grading.yaml.combine` deep-merges |
-| `models.agent` / `models.user` / `models.judge` | LLM clients (run-level) | No at task level — `run_config.models` overrides at run level |
 | `compute.*` | Orchestrator run-init, `RuntimeBackend` selection | No at task level — `run_config.orchestrator.*` overrides at run level |
 | `storage.*` | Artifact writer, log writer, queue backend | No at task level |
 | `observability.*` | Tracing/metrics/logging sinks | No at task level |
@@ -815,6 +806,13 @@ invocation has its own.
   cap.
 - **`engine.presets_file`** — the model-preset overlay for THIS
   invocation.
+- **`models`** (`agent`, `user`, `judge`) — the models being
+  evaluated. Never on the Project: the model is the invocation's
+  variable, the whole point of running the eval. Putting a
+  "default" model on the Project would silently affect results
+  when a run forgot to declare its own. The orchestrator refuses
+  to start a run whose grading uses `llm_judge` without a
+  `models.judge` on the run config.
 
 ### Category 3 — Configurable, either file (run_config wins)
 
@@ -822,10 +820,6 @@ Settings the Project has a sensible default for, but a specific
 run may want to override. The Project sets a default so runs don't
 have to declare everything; runs override when they need to.
 
-- **`models`** — Project may name a default model family (the
-  project was designed with a class of models in mind); runs
-  override for A/B testing or model bake-offs. In practice most
-  substantial runs override at least the agent model.
 - **`compute.workers`** — Project's default matches typical
   parallelism for the project's stack; runs scale up for
   nightly sweeps or down for local dev.
@@ -849,7 +843,7 @@ the run config winning on conflict.
 | `default_environment` | ✓ | — | Project-only |
 | `task_defaults` | ✓ | — | Project-only |
 | `tasks.discovery` | ✓ | — | Project-only |
-| `models.agent` / `models.user` / `models.judge` | ✓ default | ✓ override | run_config overrides |
+| `models.agent` / `models.user` / `models.judge` | — | ✓ | run_config-only |
 | `compute.provider` | ✓ | — | Project-only |
 | `compute.<provider>` sub-sections | ✓ | — | Project-only |
 | `compute.workers` | ✓ default | `orchestrator.workers` | run_config overrides |
@@ -945,19 +939,6 @@ task_defaults:
     mode: "llm"
     persona: "frustrated support customer"
 
-models:
-  agent:
-    provider: "openrouter"
-    name: "anthropic/claude-sonnet-4-6"
-    temperature: 0.0
-  user:
-    provider: "openrouter"
-    name: "anthropic/claude-sonnet-4-6"
-    temperature: 0.2
-  judge:
-    provider: "openrouter"
-    name: "anthropic/claude-sonnet-4-6"
-
 compute:
   provider: "local-docker"
   workers: 2
@@ -968,6 +949,9 @@ storage:
   artifacts: { type: "local", path: "./results" }
   logs:     { type: "local", path: "./logs" }
   queue:    { backend: "sqlite" }
+
+# No `models` here — the model being evaluated lives on the run
+# config, not the project.
 ```
 
 `run_config/dev.yaml`:
@@ -980,17 +964,30 @@ evaluation:
 
 orchestrator:
   repeats: 1
+
+models:
+  agent:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.0
+  user:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.2
+  judge:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.0
 ```
 
 Invocation: `tolokaforge run --config run_config/dev.yaml`.
 
 **What the boundary looks like here.** Everything about the
 project lives in `project.yaml`: the environment, the task
-defaults, the model choice, the compute provider, the storage
-backends. The run config only names which project to run and where
-to write results. Every field a developer needs to change
-day-to-day already has a sensible project default; the run config
-is genuinely thin.
+defaults, the compute provider, the storage backends. The run
+config names the models being evaluated plus this run's
+per-invocation choices (`repeats`, `output_dir`, `task_packs`).
+The Project has no default model; every run declares its own.
 
 ### Scenario B — Same project under CI and nightly sweeps
 
@@ -1023,13 +1020,21 @@ evaluation:
 
 orchestrator:
   repeats: 1
-  workers: 2                        # override project's default of 2 → explicit
+  workers: 2
   max_budget_usd: 5.0               # tighten CI budget
 
 models:
   agent:
     provider: "openrouter"
     name: "anthropic/claude-haiku-4-5"    # cheaper model for CI
+  user:
+    provider: "openrouter"
+    name: "anthropic/claude-haiku-4-5"
+    temperature: 0.2
+  judge:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.0
 ```
 
 `run_config/nightly.yaml`:
@@ -1048,10 +1053,15 @@ orchestrator:
 models:
   agent:
     provider: "openrouter"
-    name: "anthropic/claude-sonnet-4-6"   # default agent model
+    name: "anthropic/claude-sonnet-4-6"
+  user:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.2
   judge:
     provider: "openrouter"
     name: "anthropic/claude-opus-4-8"     # stronger judge for reliability
+    temperature: 0.0
 ```
 
 Invocation:
@@ -1063,25 +1073,26 @@ tolokaforge run --config run_config/nightly.yaml
 
 **What the boundary looks like here.** The Project stays the same
 across CI, nightly, and dev — the identity of what's being tested
-doesn't change. What varies between the two profiles is purely
+doesn't change. What varies between the run configs is purely
 execution: `repeats` (statistical sampling), `workers`
 (parallelism), `max_budget_usd` (cost cap), `models` (which agent
 and judge are on the hot seat), and `output_dir` (where results
-land). All of those are Category 2 (per-invocation) or Category 3
-(project default + run override).
+land). Every run config declares its own `models` in full;
+there's no default on the Project.
 
 ### Scenario C — Cross-model bake-off
 
 A researcher wants to compare three agent models against the same
 evaluation project. The Project holds everything constant so
-results are comparable; each run config swaps only the agent
-model.
+results are comparable; each run config declares its own models,
+holding `user` and `judge` identical across the three so only the
+`agent` varies.
 
 Layout:
 
 ```
 support-triage-pack/
-├── project.yaml                    ← everything constant
+├── project.yaml                    ← unchanged
 ├── run_config/
 │   ├── agent-opus.yaml
 │   ├── agent-sonnet.yaml
@@ -1090,31 +1101,8 @@ support-triage-pack/
 └── tasks/
 ```
 
-`project.yaml` (excerpt — everything but the agent model is fixed):
-
-```yaml
-name: "support-triage-eval"
-# ... identity, default_environment, task_defaults unchanged ...
-
-models:
-  user:
-    provider: "openrouter"
-    name: "anthropic/claude-sonnet-4-6"
-    temperature: 0.2
-  judge:
-    provider: "openrouter"
-    name: "anthropic/claude-opus-4-8"
-    temperature: 0.0
-  # No `agent` — every run must declare its own agent model.
-
-compute:
-  provider: "local-docker"
-  workers: 8
-  max_budget_usd: 50.0
-  runtime_mode: "per_trial"
-
-# ... storage, observability, orchestration unchanged ...
-```
+`project.yaml` — same as Scenario A. Nothing about models on it;
+that's the whole point.
 
 `run_config/agent-opus.yaml`:
 
@@ -1132,19 +1120,29 @@ models:
     provider: "openrouter"
     name: "anthropic/claude-opus-4-8"
     temperature: 0.0
+  user:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.2
+  judge:
+    provider: "openrouter"
+    name: "anthropic/claude-opus-4-8"
+    temperature: 0.0
 ```
 
 `run_config/agent-sonnet.yaml` and `run_config/agent-gpt5.yaml`
 are identical except for `models.agent.name` and `output_dir`.
 
-**What the boundary looks like here.** This is the split's whole
-purpose. The subject of the evaluation — the model being tested
-— is the invocation's variable; everything else (environment,
-task defaults, user simulator, judge, compute, isolation) is
-held constant by the Project so the three runs' scores are
-comparable. Any accidental drift into `project.yaml` — e.g.
-changing the judge between runs — would silently invalidate the
-comparison. The Project's job is to make that impossible.
+**What the boundary looks like here.** This is the whole point of
+keeping models out of `project.yaml`. The subject of the
+evaluation — the model being tested — is the invocation's variable;
+everything else (environment, task defaults, compute, isolation)
+is held constant by the Project so the three runs' scores are
+comparable. Because `models` lives only on the run config, there
+is no path for a "default model" on the Project to silently
+affect results. Each run config declares its `agent`, `user`, and
+`judge` explicitly; comparing three run configs is a diff on
+those three files alone.
 
 ## Isolation — how much a run shares across trials
 
@@ -1539,11 +1537,10 @@ references — flow through unchanged.
 
 ## Failure modes
 
-- **`llm_judge` without a run-level judge model.** A task's
-  `grading.yaml` uses `llm_judge`, but neither
-  `project.models.judge` nor `run_config.models.judge` is
-  declared. Prevention: orchestrator refuses to start; error
-  names the offending task(s) and the missing field.
+- **`llm_judge` without a judge model.** A task's `grading.yaml`
+  uses `llm_judge`, but the run config doesn't declare
+  `models.judge`. Prevention: orchestrator refuses to start;
+  error names the offending task(s) and the missing field.
 - **Silent cross-trial contamination.** Default isolation for
   undeclared services is `ephemeral` (fail-loud); `shared` is
   opt-in per service.

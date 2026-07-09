@@ -1,31 +1,46 @@
 # Per-invocation configuration for this run. Every field here is
 # scoped to a single `tolokaforge run` — a different invocation can
-# use a different run_config.yaml against the same project.yaml
-# without editing the project.
+# use a different run config against the same project.yaml without
+# editing the project. Ship additional profiles as
+# run_config/ci.yaml, run_config/nightly.yaml, etc.
 #
-# Fields declared here override same-named fields in project.yaml.
-# Fields NOT declared here inherit from project.yaml (models,
-# workers, budget, timeouts, artifact path, queue backend, etc.).
-# See docs/architecture/PROJECTS.md § "Relationship to
-# run_config.yaml" for the full field-ownership + precedence rules.
+# See docs/architecture/PROJECTS.md § "Relationship to the run
+# config" for the full field-ownership + precedence rules.
 
-# ── Orchestrator run knobs (per-invocation only) ────────────────
-# `repeats` and `max_turns` here are run-wide caps applied on top
-# of any task-level max_turns override.
+# ── Models — always declared on the run config, never on the
+# project. The model being evaluated is the invocation's variable.
+models:
+  agent:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.0
+    max_tokens: 4096
+  user:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.2
+  judge:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.0
+
+# ── Orchestrator run knobs ──────────────────────────────────────
+# `repeats` and `max_turns` are run-wide caps applied on top of
+# any task-level max_turns override.
 orchestrator:
   repeats: 1
   max_turns: 20
   # workers, runtime, queue_backend, timeouts, stuck_heuristics,
-  # max_budget_usd, max_requests_per_second, max_attempt_retries,
-  # typesense — all inherit from project.compute. Uncomment below
-  # to override for this invocation:
+  # max_budget_usd, max_requests_per_second, max_attempt_retries
+  # inherit from project.compute. Uncomment below to override for
+  # this invocation:
   # workers: 8
   # runtime: per_trial
 
 # ── Evaluation ──────────────────────────────────────────────────
-# `task_packs` names which packs this run pulls in — always per-
-# invocation. `tasks_glob` and `output_dir` inherit from project
-# unless overridden here.
+# `task_packs` names which projects this run pulls in — always
+# per-invocation. `tasks_glob` and `output_dir` inherit from the
+# project unless overridden here.
 evaluation:
   task_packs:
     - "examples/native/example-microservices-pack"
@@ -33,13 +48,3 @@ evaluation:
   # tasks_glob: "tasks/**/task.yaml"
   # output_dir defaults to project.storage.artifacts.path:
   # output_dir: "results/example_microservices_pack"
-
-# ── Models overrides (optional) ─────────────────────────────────
-# project.yaml declares the default agent/user/judge models. This
-# run inherits those defaults; uncomment below to override any of
-# them for this invocation.
-# models:
-#   agent:
-#     provider: "openrouter"
-#     name: "anthropic/claude-opus-4-8"
-#     temperature: 0.0

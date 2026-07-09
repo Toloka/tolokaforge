@@ -55,24 +55,10 @@ task_defaults:
         state_checks: 0.5
         llm_judge: 0.5
 
-# ── Models ──────────────────────────────────────────────────────
-# Default agent / user / judge. run_config.yaml overrides on
-# conflict. Any task using llm_judge requires models.judge to be
-# present here or in run_config.
-models:
-  agent:
-    provider: "openrouter"
-    name: "anthropic/claude-sonnet-4-6"
-    temperature: 0.0
-    max_tokens: 4096
-  user:
-    provider: "openrouter"
-    name: "anthropic/claude-sonnet-4-6"
-    temperature: 0.2
-  judge:
-    provider: "openrouter"
-    name: "anthropic/claude-sonnet-4-6"
-    temperature: 0.0
+# Note: `models` (agent, user, judge) do NOT live on the Project.
+# The model being evaluated is the invocation's variable and lives
+# on the run config. See run_config/dev.yaml, and PROJECTS.md
+# "Relationship to the run config" for the boundary rules.
 
 # ── Compute ─────────────────────────────────────────────────────
 # Provider selection, resource limits, backend mode, timeouts,
