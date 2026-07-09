@@ -50,19 +50,26 @@ Concretely, a Project owns:
 One file, `project.yaml` at the pack root, holds all of this. There
 is exactly one Project per pack.
 
-### Pack = scenario, one-to-one
+### Pack = scenario = Project = Domain, one-to-one
 
 In practice, a task pack maps to one business or evaluation scenario
 (customer-support triage, backend refactoring, deep-research
 question-answering, ...). All the tasks in a pack share the same
 tools, the same system-prompt frame, the same simulated-user
 persona, the same services. The Project layer formalises what has
-always been implicit: one pack = one scenario = one Project.
+always been implicit: **one pack = one scenario = one Project = one
+Domain**.
 
-If you want to run tasks from multiple scenarios in a single
-invocation, that's a **run-config** concern — list multiple packs
-in `evaluation.task_packs` and each pack's Project provides its own
-scenario-specific defaults.
+This mapping is settled team guidance, not an accidental
+convention. Multi-domain packs and multi-pack Domains are not
+supported: if you need two scenarios, ship two packs. If the same
+Domain has to be used in two packs, duplicate the Domain bundle
+into each — that trade-off is preferred over cross-pack coupling.
+
+Cross-scenario runs are a **run-config** concern — list multiple
+packs in `evaluation.task_packs` and each pack's Project provides
+its own scenario-specific defaults. The harness composes the run
+from the packs, not by mixing scenarios inside one Project.
 
 ## What a Task is
 
@@ -195,12 +202,13 @@ The complete set of files a task pack can ship:
 | `initial_state.json` | task dir | DB tables + records + fs state seeded at trial start | Optional |
 | `fixtures/` | task dir | Test data referenced by tools/services/initial_state | Optional |
 
-**Adapter-specific files.** Some adapters ship their own
-conventions for further sharing beyond `task_defaults` — for
-example, the `native` adapter's `_shared/domain.yaml` merge, used
-by the [`native_shared_domain`](../../examples/native/native_shared_domain/)
-example. Those files are adapter-specific and documented with the
-adapter they belong to; they are not part of the Project schema.
+**Adapter-specific files.** Adapters that group their tasks under a
+Domain typically ship their own conventions for further sharing —
+a Domain bundle directory next to the tasks, referenced from
+`adapter_settings`. Those files are adapter-specific and documented
+with the adapter they belong to; they are not part of the Project
+schema. The harness passes them through as opaque
+`adapter_settings` data.
 
 The Project layer adds one file (`project.yaml`) and touches no
 existing schemas. Every other file keeps the shape it has today.
@@ -425,15 +433,20 @@ prompt, tools, and persona once in `task_defaults`; individual
 tasks contribute only their identity, their specific initial state,
 and their specific grading rubric.
 
-**Adapter-specific shared-config conventions.** Some adapters ship
-further conventions for sharing patterns that don't fit
-`task_defaults` — for example, the `native` adapter's optional
-`_shared/domain.yaml` merge (see the
-[`native_shared_domain`](../../examples/native/native_shared_domain/)
-example). Those conventions are adapter-specific and documented
-with the adapter that implements them. The Project schema itself
-does not attempt to unify them or model them as first-class
-concepts — each adapter documents its own patterns.
+**The harness core is Domain-agnostic.** Domain is not a concept
+the Project schema or the harness runtime standardizes. Adapters
+that group their tasks under a Domain typically ship a Domain
+bundle (a directory next to the tasks with shared tools, prompt,
+KB documents, and any adapter-specific code), and each task points
+at that bundle through the opaque `adapter_settings` field on
+`task_defaults` or `task.yaml`. The harness passes those settings
+through to the adapter and doesn't interpret them.
+
+Different adapters use different Domain conventions. The Project
+schema treats every one of them as adapter-private data — same as
+any other adapter-specific config. This keeps Domain semantics
+where they belong (in the adapter that understands them) and keeps
+the harness core small.
 
 ## Resolution — task effective config
 
@@ -468,11 +481,10 @@ project declares `isolation: per_trial` in `default_environment`,
 that stays enforced (ADR-0009); if a task's `grading.yaml` uses
 `llm_judge`, a run-level `models.judge` must be present.
 
-If an adapter ships its own shared-config merge (e.g. native's
-`_shared/domain.yaml`), that merge happens between
-`project.task_defaults` and the task's own fields, driven by the
-adapter, and documented with the adapter. From the Project's
-perspective it's a black-box adapter-side operation.
+If an adapter ships its own Domain-shaped bundle merge, that merge
+happens between `project.task_defaults` and the task's own fields,
+driven by the adapter, and documented with the adapter. From the
+Project's perspective it's a black-box adapter-side operation.
 
 ## Resolution — run effective config
 
@@ -547,8 +559,7 @@ For task-scoped fields:
 1. **task.yaml** value.
 2. **`project.task_defaults`** value.
 3. **Adapter default** (per adapter type; includes any
-   adapter-specific shared-config merges like native's
-   `_shared/domain.yaml`).
+   adapter-specific Domain-bundle merges).
 4. **Engine default**.
 
 For run-scoped fields:
@@ -752,6 +763,33 @@ packs.
 - **Workspace/organisation layer above projects.** For
   cross-project quotas, permissions, and cost accounting.
 
+## Adopting the Project layer
+
+This document is the design; the engine work to implement it lands
+in follow-up ADRs and PRs. The harness surfaces that need
+refactoring include:
+
+- **Task discovery and the loader** — currently walks
+  `evaluation.tasks_glob` from `run_config.yaml`; needs to read
+  `project.yaml` at pack root, apply `task_defaults` on task load,
+  and synthesize a default Project for packs that don't ship one.
+- **Adapter interfaces** — adapters receive a fully-resolved
+  `TaskDescription`; the loader needs to merge Project defaults
+  into task fields before adapter validation, without changing
+  `TaskDescription` shape.
+- **`RunConfig` composition** — `run_config.yaml` fields override
+  same-named `project.yaml` fields at load time; the config loader
+  grows a small deep-merge pass.
+- **CLI and engine defaults** — engine-level defaults for
+  `compute` / `storage` / `observability` / `orchestration` move
+  from hard-coded to Project-overridable, with `run_config.yaml`
+  and CLI flags able to override on top.
+
+Backward-compat is total by design: a pack without `project.yaml`
+continues to work through a synthesized default Project. Existing
+`adapter_settings.*` fields — including any Domain-bundle
+references — flow through unchanged.
+
 ## Backward compatibility
 
 - **Packs without `project.yaml` work unchanged.** The loader
@@ -764,11 +802,11 @@ packs.
 - **Adding sections to `project.yaml` doesn't break older
   packs.** Older packs simply don't declare those sections; the
   runtime uses hard-coded defaults.
-- **Existing adapter-specific shared-config patterns** — the
-  native adapter's `_shared/domain.yaml` merge, and any other
-  adapter's own conventions — continue to work unchanged. The
-  Project layer sits above them; nothing about the merge machinery
-  changes.
+- **Existing adapter-specific shared-config patterns** — any
+  adapter's Domain-bundle conventions carried through
+  `adapter_settings` — continue to work unchanged. The Project
+  layer sits above them; nothing about the adapter-side merge
+  machinery changes.
 - **`run_config.yaml`** continues to work exactly as today.
   Fields declared in `run_config` override same-named fields in
   `project`.
@@ -801,11 +839,15 @@ packs.
 
 ## What the model deliberately isn't
 
-- **A first-class Domain tier.** The Project schema does not model
-  Domain as a peer or sub-tier. In current TolokaForge usage a pack
-  is one scenario, and pack-wide `task_defaults` covers the
-  sharing. Any further sharing convention is adapter-specific and
-  lives with the adapter, not in the Project.
+- **A harness-level Domain abstraction.** Domain is an adapter-side
+  concept and stays there. The harness core (loader, discovery,
+  `RuntimeBackend`, `TrialGrader`, `TaskDescription` schema) is
+  Domain-agnostic — it has no `project.domain` field, no Domain
+  section in the schema, no unified Domain vocabulary at the
+  harness level. Some adapters implement Domain-shaped bundling as
+  their own convention, carried through the opaque
+  `adapter_settings` field on the task; the Project schema and the
+  harness core treat those bundles as adapter-private data.
 - **A unifier of adapter-specific sharing conventions.** Each
   adapter documents its own patterns for sharing tools, prompts,
   or code across tasks; the Project schema doesn't try to abstract
