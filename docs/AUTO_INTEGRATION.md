@@ -148,6 +148,13 @@ sub-agent); the resolve prompts drive the fix loop. `index.yaml` is the machine-
   consistency before marking a capability `required` (no promoting a cap a summary-only codec
   cannot support); the finalize staged-tree gate blocks over-reaching / broken fixes. The
   draft-PR human gate and the hygiene review remain the backstop: never merge without review.
+- DATA-SCOPE review: a converged fix that recovers an array nested inside a FREE-FORM / open
+  object (an `additionalProperties: true` parent) is DATA-BOUND - which fields carry the array is
+  not in the schema, only in the domain data. Such a fix is committed but routed to
+  `automation:integrate-needs-human` with a warning (NOT a silent `integrate-done`): a
+  locally-green fix can still be too narrow (or over-broad) on domains the observe never surfaced,
+  so a human verifies the scope breadth before merge. Triggered by the agent's `data_scope_review`
+  flag in `decision.json` OR an observe "valid list/array" rejection signal.
 - Disposable de-integration test branches (`test/observe-<model>[-rN]`) simulate a fresh candidate
   by deleting the model's cert/preset (and any bespoke policy class); they carry deletions and are
   NEVER merged out.

@@ -422,8 +422,28 @@ jobs:
           git push origin "HEAD:${{ github.event.pull_request.head.ref }}"
           [ -f observation/resolve/pr_comment.md ] && gh pr comment "$PR" -R "$REPO" --body-file observation/resolve/pr_comment.md || true
           [ -f observation/resolve/pr_body.md ] && gh pr edit "$PR" -R "$REPO" --body-file observation/resolve/pr_body.md || true
-          gh pr edit "$PR" -R "$REPO" --remove-label 'automation:resolve-running' \
-            --add-label 'automation:integrate-done' || true
+          # Data-scope review gate: an array-under-free-form-object recovery is DATA-BOUND - its
+          # scope depends on domain data the observe may not fully surface, so even a converged,
+          # gate-passing fix needs a broader HUMAN check before merge. Route it to needs-human
+          # with a warning (the fix is already committed above), NOT a silent integrate-done.
+          # (set -e safe: grep as an `if` condition never aborts the step on no-match.)
+          DATA_SCOPE=no
+          if grep -q '"data_scope_review"[[:space:]]*:[[:space:]]*true' observation/resolve/decision.json 2>/dev/null; then
+            DATA_SCOPE=yes
+          fi
+          if [ "$DATA_SCOPE" = "no" ] && [ -f observation/findings.json ] \
+             && grep -qiE "valid (list|array)" observation/findings.json; then
+            DATA_SCOPE=yes
+          fi
+          if [ "$DATA_SCOPE" = "yes" ]; then
+            gh pr comment "$PR" -R "$REPO" --body \
+              "WARNING - human review required (data-scope): the fix converged and passed the local gates, but it addresses a DATA-RELATED array / free-form-object recovery class whose scope depends on domain data the pipeline did not fully see. A human must verify it covers ALL affected domains and fields (a broader check) before merge - a locally-green fix can still be too narrow (or over-broad) on unseen data." || true
+            gh pr edit "$PR" -R "$REPO" --remove-label 'automation:resolve-running' \
+              --add-label 'automation:integrate-needs-human' || true
+          else
+            gh pr edit "$PR" -R "$REPO" --remove-label 'automation:resolve-running' \
+              --add-label 'automation:integrate-done' || true
+          fi
 
       - name: Flag needs-human (resolve did not converge / finalize failed)
         # Fires only on the clean-observe path when the loop never converged OR finalize failed
