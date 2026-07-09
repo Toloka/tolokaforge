@@ -54,12 +54,22 @@ and pushes the whole integration to needs-human.
    {"fix_targets": ["<exact junit probe names from findings.json that the overlay should turn green>"],
     "ceilings": ["<Capability enum names that are genuine known_unsupported>"],
     "required": ["<Capability enum names the model passes or the policy makes pass = cert required>"],
+    "data_scope_review": <true|false - see below>,
     "notes": "<one line: what the policy does + why>"}
    ```
    `fix_targets` MUST be the exact `probe` strings from `findings.json` per_probe (e.g.
    `test_recursive_ref_tool_call[simple-openrouter__xiaomi_mimo-v2.5-pro]`). The workflow
    reprobes these under your overlay; ALL must go green for the candidate to integrate. Do NOT
    list ceilings or flaky-noise as fix_targets.
+
+   Set `data_scope_review: true` when your fix RECOVERS AN ARRAY NESTED INSIDE A FREE-FORM / open
+   object (an `additionalProperties: true` parent - e.g. a `tags`-like array one level deep). That
+   quirk's correct SCOPE is DATA-BOUND: which fields carry the array is NOT in the schema, only in
+   the domain data, so a fix that passes every gate here is still scoped only to what the observe
+   surfaced. The workflow will route such a fix to a human for a broader domain-scope check before
+   merge (even on full convergence) - a locally-green fix can be too narrow (or over-broad) on data
+   the pipeline never saw. A fix that touches ONLY SCHEMA-DECLARED array fields (visible type) is
+   `data_scope_review: false`.
 
    `required` must be EVIDENCE-BACKED, never optimistic. List a capability as `required` ONLY if
    it passed NATIVELY in `findings.json` OR the reprobe shows it green under your overlay. Do NOT
