@@ -56,6 +56,13 @@ jobs:
       RESOLVE_CAPABILITY_K: ${{ vars.RESOLVE_CAPABILITY_K || '5' }}
       RESOLVE_WIRE_K: ${{ vars.RESOLVE_WIRE_K || '10' }}
       RESOLVE_CAP_PARALLEL: ${{ vars.RESOLVE_CAP_PARALLEL || '10' }}
+      # Slack thread notifications (all optional; empty -> scripts/integration/slack_notify.py
+      # no-ops). One thread per PR: a root plus milestone replies (observe/resolve started,
+      # clean, integrated, needs-human). SLACK_MENTIONS is a comma-separated Slack user-id list
+      # pinged ONLY on terminal / needs-human / error notifications.
+      SLACK_BOT_TOKEN: ${{ secrets.ARENA_AUTOMATION_SLACK_BOT_TOKEN }}
+      SLACK_CHANNEL: ${{ vars.ARENA_AUTOMATION_SLACK_CHANNEL }}
+      SLACK_MENTIONS: ${{ vars.ARENA_AUTOMATION_SLACK_MENTIONS }}
     steps:
       - name: Reject fork PRs (no secrets on the pull_request event)
         if: env.IS_FORK == 'true'
@@ -74,6 +81,17 @@ jobs:
             --remove-label 'automation:integrate-model' \
             --add-label 'automation:integrate-running'
 
+      # Checkout BEFORE parse so the (stdlib-only) Slack notifier is on disk for the parse-fail
+      # branch and the final failure() catch-all. Safe: fork PRs are already rejected above, so
+      # this only ever checks out trusted same-repo branch code, and the ref comes from the event
+      # (not from parse), so there is no ordering dependency on the parse step.
+      - uses: actions/checkout@v4
+        with:
+          # head ref + full history so the finalize step can commit the integration back.
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+          lfs: true
+
       - name: Parse candidate model from PR title
         id: parse
         run: |
@@ -86,6 +104,11 @@ jobs:
               --add-label 'automation:integrate-needs-human'
             gh pr comment "$PR" -R "$REPO" --body \
               "Could not parse the candidate model from the PR title. Expected the convention \`integrate: <openrouter-model-slug>\` (e.g. \`integrate: anthropic/claude-opus-4.8\`). Marked \`automation:integrate-needs-human\`."
+            RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            MSG="$(printf '%s\nRun: %s' ':warning: Needs human: PR title did not match `integrate: <slug>` (could not parse model)' "$RUN_URL")"
+            python3 scripts/integration/slack_notify.py reply \
+              --channel "$SLACK_CHANNEL" --pr "$PR" --mention --text "$MSG" || true
+            touch "$RUNNER_TEMP/slack_terminal_sent" || true
             echo "::error::PR title does not match 'integrate: <slug>'."
             exit 1
           fi
@@ -95,12 +118,18 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "Parsed candidate: openrouter / $NAME"
 
-      - uses: actions/checkout@v4
-        with:
-          # head ref + full history so the finalize step can commit the integration back.
-          ref: ${{ github.event.pull_request.head.ref }}
-          fetch-depth: 0
-          lfs: true
+      - name: Slack notify - open thread + observe started
+        # Default success() gate: only announces "started" once we are past parse (model known);
+        # a parse-fail already posted its own needs-human notification above.
+        env:
+          CANDIDATE_NAME: ${{ steps.parse.outputs.name }}
+        run: |
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          python3 scripts/integration/slack_notify.py ensure-root \
+            --channel "$SLACK_CHANNEL" --model "$CANDIDATE_NAME" --pr "$PR" || true
+          MSG="$(printf '%s\nRun: %s' ':arrow_forward: Observe started' "$RUN_URL")"
+          python3 scripts/integration/slack_notify.py reply \
+            --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" --text "$MSG" || true
 
       - uses: astral-sh/setup-uv@v7
         with:
@@ -268,11 +297,18 @@ jobs:
         # A clean observe (capability suite actually ran AND no infra contamination) proceeds to
         # the in-job resolve steps below. Infra-dirty / did-not-run goes to a human (re-run),
         # never resolve. Sets a step output the resolve steps gate on (no cross-workflow label).
+        env:
+          CANDIDATE_NAME: ${{ steps.parse.outputs.name }}
         run: |
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           if [ ! -f observation/findings.json ]; then
             gh pr edit "$PR" -R "$REPO" --remove-label 'automation:integrate-running' \
               --add-label 'automation:integrate-needs-human' || true
             echo "clean=no" >> "$GITHUB_OUTPUT"
+            MSG="$(printf '%s\nRun: %s' ':warning: Needs human: observe did not run to completion (no findings.json - infra failure or crash before aggregation)' "$RUN_URL")"
+            python3 scripts/integration/slack_notify.py reply \
+              --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" --mention --text "$MSG" || true
+            touch "$RUNNER_TEMP/slack_terminal_sent" || true
             echo "no findings.json -> needs human"; exit 0
           fi
           CLEAN="$(uv run python -c 'import json; f=json.load(open("observation/findings.json")); i=f.get("wire",{}).get("infra",{}); print("dirty" if (not f.get("capability_ran")) or any(i.get(k,0) for k in ("rate_limit","api_error","status_error")) else "clean")')"
@@ -280,15 +316,32 @@ jobs:
             gh pr edit "$PR" -R "$REPO" --remove-label 'automation:integrate-running' \
               --add-label 'automation:resolve-running' || true
             echo "clean=yes" >> "$GITHUB_OUTPUT"
+            MSG="$(printf '%s\nRun: %s' ':white_check_mark: Observe clean, chaining to resolve' "$RUN_URL")"
+            python3 scripts/integration/slack_notify.py reply \
+              --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" --text "$MSG" || true
             echo "observe clean -> resolve"
           else
             gh pr edit "$PR" -R "$REPO" --remove-label 'automation:integrate-running' \
               --add-label 'automation:integrate-needs-human' || true
             echo "clean=no" >> "$GITHUB_OUTPUT"
+            MSG="$(printf '%s\nRun: %s' ':warning: Needs human: observe infra-dirty (rate-limit / API error / capability suite did not run)' "$RUN_URL")"
+            python3 scripts/integration/slack_notify.py reply \
+              --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" --mention --text "$MSG" || true
+            touch "$RUNNER_TEMP/slack_terminal_sent" || true
             echo "observe infra-dirty or did-not-run -> needs human"
           fi
 
       # -------------------------------------------------------------- RESOLVE (clean only)
+      - name: Slack notify - resolve started
+        if: steps.gate.outputs.clean == 'yes'
+        env:
+          CANDIDATE_NAME: ${{ steps.parse.outputs.name }}
+        run: |
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          MSG="$(printf '%s\nRun: %s' ':wrench: Resolve started' "$RUN_URL")"
+          python3 scripts/integration/slack_notify.py reply \
+            --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" --text "$MSG" || true
+
       - name: Configure git identity
         if: steps.gate.outputs.clean == 'yes'
         run: |
@@ -435,24 +488,55 @@ jobs:
              && grep -qiE "valid (list|array)" observation/findings.json; then
             DATA_SCOPE=yes
           fi
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           if [ "$DATA_SCOPE" = "yes" ]; then
             gh pr comment "$PR" -R "$REPO" --body \
               "WARNING - human review required (data-scope): the fix converged and passed the local gates, but it addresses a DATA-RELATED array / free-form-object recovery class whose scope depends on domain data the pipeline did not fully see. A human must verify it covers ALL affected domains and fields (a broader check) before merge - a locally-green fix can still be too narrow (or over-broad) on unseen data." || true
             gh pr edit "$PR" -R "$REPO" --remove-label 'automation:resolve-running' \
               --add-label 'automation:integrate-needs-human' || true
+            MSG="$(printf '%s\n%s\nRun: %s' ':warning: Needs human: integrated but a data-scope review is required (free-form array recovery)' 'Fix is committed; a human must verify the recovery scope across all domains before merge.' "$RUN_URL")"
+            python3 scripts/integration/slack_notify.py reply \
+              --channel "$SLACK_CHANNEL" --pr "$PR" --model "$TF_NAME" --mention --text "$MSG" || true
           else
             gh pr edit "$PR" -R "$REPO" --remove-label 'automation:resolve-running' \
               --add-label 'automation:integrate-done' || true
+            MSG="$(printf '%s\n%s\nRun: %s' ':white_check_mark: Integrated: preset + cert committed to the PR branch' 'Draft PR, human review gate, never auto-merged.' "$RUN_URL")"
+            python3 scripts/integration/slack_notify.py reply \
+              --channel "$SLACK_CHANNEL" --pr "$PR" --model "$TF_NAME" --mention --text "$MSG" || true
           fi
+          touch "$RUNNER_TEMP/slack_terminal_sent" || true
 
       - name: Flag needs-human (resolve did not converge / finalize failed)
         # Fires only on the clean-observe path when the loop never converged OR finalize failed
         # (agent hit max-turns / wrote nothing / broken-or-divergent policy / push failed). The
         # infra-dirty path already labelled needs-human in the gate step.
         if: always() && steps.gate.outputs.clean == 'yes' && (steps.loop.outputs.converged != 'yes' || steps.finalize.outcome == 'failure')
+        env:
+          CANDIDATE_NAME: ${{ steps.parse.outputs.name }}
         run: |
           gh pr edit "$PR" -R "$REPO" --remove-label 'automation:resolve-running' \
             --add-label 'automation:integrate-needs-human' || true
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           gh pr comment "$PR" -R "$REPO" --body \
             "Resolve did not converge within ${MAX_ITER} iterations, or converged but finalize failed (agent hit max-turns, wrote no changes, a broken/divergent policy failed the staged verification, or the push failed). Marked \`automation:integrate-needs-human\`. Latest overlay + reprobe are in the run artifacts. Run: ${RUN_URL}"
+          MSG="$(printf '%s\nRun: %s' ':warning: Needs human: resolve did not converge within '"${MAX_ITER}"' iterations (or finalize failed) - see PR for details' "$RUN_URL")"
+          python3 scripts/integration/slack_notify.py reply \
+            --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" --mention --text "$MSG" || true
+          touch "$RUNNER_TEMP/slack_terminal_sent" || true
+
+      - name: Slack notify - unexpected failure (catch-all)
+        # Last line of defence: an unexpected step failure (checkout done, but e.g. uv sync,
+        # docker build, or a gate/step crash) that left the PR mid-state with no explicit handler
+        # above. The dedup marker makes handled needs-human / infra / no-converge failures skip
+        # this, so it never double-pings. Fires only when something actually failed.
+        if: failure()
+        env:
+          CANDIDATE_NAME: ${{ steps.parse.outputs.name }}
+        run: |
+          if [ -f "$RUNNER_TEMP/slack_terminal_sent" ]; then
+            echo "terminal Slack already sent -> no catch-all ping"; exit 0
+          fi
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          MSG="$(printf '%s\nRun: %s' ':rotating_light: Pipeline error: unexpected failure, PR left mid-state' "$RUN_URL")"
+          python3 scripts/integration/slack_notify.py reply \
+            --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" --mention --text "$MSG" || true

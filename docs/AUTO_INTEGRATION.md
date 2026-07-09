@@ -98,6 +98,38 @@ them as `known_unsupported`.
 convergence, or a broken/over-reaching fix failing staged verification). There is no
 `automation:resolve` handoff label anymore - observe and resolve are one run.
 
+## Slack notifications (optional)
+
+One Slack thread per integration PR: a root the pipeline posts once
+(`Auto-integration: <model> (PR #<N>)`) plus a threaded reply per milestone. The root ts is NOT
+stored GitHub-side - it is rediscovered by scanning recent channel history for the PR-unique
+`(PR #<N>)` token, so a re-trigger (and repeated resolve rounds on the same PR) reuse the same
+thread. The PR number is the thread key; the same model in two PRs is two threads. Transport is
+bot-token + `chat.postMessage` (an incoming webhook returns no ts and can neither thread nor read
+history). All config is optional: with any value unset, `scripts/integration/slack_notify.py`
+logs and no-ops, so an unconfigured repo (and a fork PR, which receives no secrets) degrades
+cleanly, and a Slack failure never fails the job.
+
+| Config | Kind | Meaning |
+|---|---|---|
+| `ARENA_AUTOMATION_SLACK_BOT_TOKEN` | secret | bot `xoxb-` token; needs `chat:write` + `channels:history` (history read is what finds the root), and the bot must be a member of the channel |
+| `ARENA_AUTOMATION_SLACK_CHANNEL` | variable | target channel id |
+| `ARENA_AUTOMATION_SLACK_MENTIONS` | variable | comma-separated Slack user ids to @mention; empty -> no mention |
+
+Messages are emoji-prefixed and carry the run URL. `mention` = the `SLACK_MENTIONS` users are
+pinged (terminal / attention states only):
+
+| When | Mention |
+|---|---|
+| observe started / observe clean -> resolve / resolve started | no |
+| integrated (preset + cert committed) | yes |
+| needs-human: parse-fail / infra-dirty / no-converge / data-scope review | yes |
+| unexpected failure (catch-all, deduped against the handled cases above) | yes |
+
+The fork-reject path is PR-comment-only (a fork `pull_request` run gets no secrets, so the
+notifier cannot post). `SLACK_MENTIONS` pings fire on the terminal and error notifications so a
+human is alerted when the PR needs review or the run broke.
+
 ## Prompts (`scripts/integration/prompts/`)
 
 The analysis-dimension briefs interpret an eval or observe artifact (one dimension per
@@ -127,6 +159,9 @@ sub-agent); the resolve prompts drive the fix loop. `index.yaml` is the machine-
   (probe x rep) pool parallelized at `--cap-parallel`; capability-only inner loop, plus a final
   wire pass on failed wire tasks.
 - `scripts/integration/resolve_greencheck.py` - fix-target convergence check.
+- `scripts/integration/slack_notify.py` - Slack thread notifier (`ensure-root` / `reply`
+  subcommands); stdlib-only (runs under the system `python3` before `uv sync`), dry-run no-op
+  without a token. See "Slack notifications" above.
 - `tests/integration/llm/test_policy_no_regression.py` - GENERIC (model-agnostic) anti-over-reach
   gate: every model's resolved response policy must keep an already-valid tool-call arg valid.
 - `tests/integration/llm/test_policy_array_recovery.py` - schema-driven recovery oracle: inject
