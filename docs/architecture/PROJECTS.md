@@ -729,13 +729,83 @@ run_config, then applies CLI + env overrides:
 
 ## Relationship to `run_config.yaml`
 
-`project.yaml` and `run_config.yaml` cover different concerns.
+The rule of thumb is short:
 
-- **`project.yaml`** owns settings **invariant across runs** —
-  what the project *is*. Every invocation reads these.
-- **`run_config.yaml`** owns settings **specific to a single
-  invocation** — how *this run* is configured. A pack can be run
-  many times with different `run_config.yaml` files.
+> **Everything about the pack lives in `project.yaml`. Everything
+> about the invocation lives in `run_config.yaml`.**
+
+A useful test: if you copied the pack to a colleague and they ran
+it with their own `run_config.yaml`, the content of your
+`project.yaml` should still be exactly what you meant.
+
+Every concrete setting falls into one of three categories.
+
+### Category 1 — Invariant, `project.yaml` only
+
+Settings that describe what the pack **is**. Change any of them and
+you're testing a different thing.
+
+- **Identity** — `name`, `version`, `description`.
+- **Task inventory** — `tasks.discovery`.
+- **Default environment** — `default_environment` in full, including
+  isolation, network policy, security context defaults.
+- **Task-level defaults** — `task_defaults` in full: `adapter_type`,
+  `max_turns` (task-level default), `system_prompt`,
+  `user_simulator`, `tools`, `adapter_settings`, `policies`,
+  `grading_defaults`.
+- **Compute topology** — `compute.provider`, provider-specific
+  sub-sections (e.g. `compute.kubernetes.*`), `compute.timeouts`,
+  `compute.stuck_heuristics`, `compute.typesense`. These reflect
+  task-shape properties (how long tasks take, whether the pack uses
+  TypeSense) and deployment topology — not per-run knobs.
+- **Observability endpoints** — `observability.tracing`,
+  `metrics`, `logging`. Properties of the deployed infrastructure
+  the pack targets.
+- **Orchestration policy** — `orchestration.auto_start_services`,
+  `continue_prompt`, `shuffle_trials`, `schedule`. Pack-level
+  behavioural policy.
+
+### Category 2 — Per-invocation, `run_config.yaml` only
+
+Settings that describe **how this specific run happens**. Every
+invocation has its own.
+
+- **`evaluation.task_packs`** — which packs THIS run includes.
+- **`evaluation.tasks_glob`** — filter narrowing which of a pack's
+  tasks THIS run actually executes.
+- **`evaluation.output_dir`** — per-run output location.
+- **`evaluation.harness_adapter`** — invocation-level adapter
+  selection.
+- **`orchestrator.repeats`** — statistical sampling choice for THIS
+  run (how many trials per task).
+- **`orchestrator.max_turns`** (run-wide ceiling) — distinct from
+  the task-level `max_turns` default; this is a run-wide safety
+  cap.
+- **`engine.presets_file`** — the model-preset overlay for THIS
+  invocation.
+
+### Category 3 — Configurable, either file (run_config wins)
+
+Settings the Project has a sensible default for, but a specific
+run may want to override. The Project sets a default so runs don't
+have to declare everything; runs override when they need to.
+
+- **`models`** — Project may name a default model family (the
+  pack was designed with a class of models in mind); runs override
+  for A/B testing or model bake-offs. In practice most substantial
+  runs override at least the agent model.
+- **`compute.workers`** — Project's default matches typical
+  parallelism for the pack's stack; runs scale up for
+  nightly sweeps or down for local dev.
+- **`compute.max_budget_usd`** — Project has a reasonable
+  ceiling; runs may tighten (CI) or loosen (nightly).
+- **`compute.runtime_mode`** — Project's default reflects trial
+  isolation needs; dev runs may relax to `shared`.
+- **`storage.artifacts.path`**, **`storage.logs.path`** — Project
+  has a default like `./results`; runs almost always name a
+  per-run path (e.g. `results/nightly-2026-07-09`).
+- **`storage.queue.backend`** — Project targets `postgres` at
+  scale; dev overrides to `sqlite`.
 
 ### Field ownership and precedence
 
@@ -793,6 +863,251 @@ with one `run_config.yaml` (parallel workers, fast model), a nightly
 regression sweep runs with another (more repeats, stronger model,
 larger output volume), and a stakeholder demo runs with a third —
 all against the same `project.yaml`.
+
+## Worked scenarios
+
+Three concrete scenarios that show how the same Project spec pairs
+with different `run_config.yaml` files. Each scenario trims the
+files to the fields that matter for the point being made
+(`# ...` markers where irrelevant sections are elided).
+
+### Scenario A — Single-machine dev workflow
+
+A team is iterating on a support-triage evaluation pack on their
+laptops. The Project holds everything the pack IS; the run config
+is thin because the Project already has good defaults.
+
+Layout:
+
+```
+support-triage-pack/
+├── project.yaml
+├── run_config.yaml
+├── shared/
+│   ├── environment.compose.yaml
+│   └── system_prompt.md
+└── tasks/
+    ├── login_reset/
+    ├── password_recovery/
+    └── ...
+```
+
+`project.yaml`:
+
+```yaml
+name: "support-triage-eval"
+version: 1
+description: "Customer-support triage evaluation suite."
+
+default_environment:
+  compose_file: "./shared/environment.compose.yaml"
+  runner_service: "runner"
+  isolation: "per_trial"
+
+task_defaults:
+  adapter_type: "native"
+  max_turns: 20
+  system_prompt: "./shared/system_prompt.md"
+  user_simulator:
+    mode: "llm"
+    persona: "frustrated support customer"
+
+models:
+  agent:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.0
+  user:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.2
+  judge:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+
+compute:
+  provider: "local-docker"
+  workers: 2
+  max_budget_usd: 20.0
+  runtime_mode: "per_trial"
+
+storage:
+  artifacts: { type: "local", path: "./results" }
+  logs:     { type: "local", path: "./logs" }
+  queue:    { backend: "sqlite" }
+```
+
+`run_config.yaml`:
+
+```yaml
+evaluation:
+  task_packs:
+    - "support-triage-pack"
+  output_dir: "results/dev-2026-07-09"
+
+orchestrator:
+  repeats: 1
+```
+
+**What the boundary looks like here.** Everything about the pack
+lives in `project.yaml`: the environment, the task defaults, the
+model choice, the compute provider, the storage backends. The run
+config only names which pack to run and where to write results.
+Every field a developer needs to change day-to-day already has a
+sensible pack default; `run_config.yaml` is genuinely thin.
+
+### Scenario B — Same pack under CI and nightly sweeps
+
+The pack from Scenario A now ships with two additional run configs
+for automated pipelines. Same Project — same identity, same task
+defaults, same environment — but two different execution profiles.
+
+Layout:
+
+```
+support-triage-pack/
+├── project.yaml                    ← unchanged from Scenario A
+├── run_config.yaml                 ← default (dev/local)
+├── run_configs/
+│   ├── ci.yaml
+│   └── nightly.yaml
+├── shared/
+└── tasks/
+```
+
+`project.yaml` is the same as Scenario A.
+
+`run_configs/ci.yaml`:
+
+```yaml
+evaluation:
+  task_packs:
+    - "support-triage-pack"
+  output_dir: "results/ci/${CI_RUN_ID}"
+
+orchestrator:
+  repeats: 1
+  workers: 2                        # override project's default of 2 → explicit
+  max_budget_usd: 5.0               # tighten CI budget
+
+models:
+  agent:
+    provider: "openrouter"
+    name: "anthropic/claude-haiku-4-5"    # cheaper model for CI
+```
+
+`run_configs/nightly.yaml`:
+
+```yaml
+evaluation:
+  task_packs:
+    - "support-triage-pack"
+  output_dir: "s3://team-toloka/nightly/${DATE}"
+
+orchestrator:
+  repeats: 5                        # higher sampling for nightly
+  workers: 16                       # scale up
+  max_budget_usd: 200.0             # relaxed budget
+
+models:
+  agent:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"   # default agent model
+  judge:
+    provider: "openrouter"
+    name: "anthropic/claude-opus-4-8"     # stronger judge for reliability
+```
+
+Invocation:
+
+```bash
+tolokaforge run --config run_configs/ci.yaml
+tolokaforge run --config run_configs/nightly.yaml
+```
+
+**What the boundary looks like here.** The Project stays the same
+across CI, nightly, and dev — the identity of what's being tested
+doesn't change. What varies between the two profiles is purely
+execution: `repeats` (statistical sampling), `workers`
+(parallelism), `max_budget_usd` (cost cap), `models` (which agent
+and judge are on the hot seat), and `output_dir` (where results
+land). All of those are Category 2 (per-invocation) or Category 3
+(pack default + run override).
+
+### Scenario C — Cross-model bake-off
+
+A researcher wants to compare three agent models against the same
+evaluation pack. The Project holds everything constant so results
+are comparable; each run config swaps only the agent model.
+
+Layout:
+
+```
+support-triage-pack/
+├── project.yaml                    ← everything constant
+├── run_configs/
+│   ├── agent-opus.yaml
+│   ├── agent-sonnet.yaml
+│   └── agent-gpt5.yaml
+├── shared/
+└── tasks/
+```
+
+`project.yaml` (excerpt — everything but the agent model is fixed):
+
+```yaml
+name: "support-triage-eval"
+# ... identity, default_environment, task_defaults unchanged ...
+
+models:
+  user:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.2
+  judge:
+    provider: "openrouter"
+    name: "anthropic/claude-opus-4-8"
+    temperature: 0.0
+  # No `agent` — every run must declare its own agent model.
+
+compute:
+  provider: "local-docker"
+  workers: 8
+  max_budget_usd: 50.0
+  runtime_mode: "per_trial"
+
+# ... storage, observability, orchestration unchanged ...
+```
+
+`run_configs/agent-opus.yaml`:
+
+```yaml
+evaluation:
+  task_packs:
+    - "support-triage-pack"
+  output_dir: "results/bake-off/opus"
+
+orchestrator:
+  repeats: 5
+
+models:
+  agent:
+    provider: "openrouter"
+    name: "anthropic/claude-opus-4-8"
+    temperature: 0.0
+```
+
+`run_configs/agent-sonnet.yaml` and `run_configs/agent-gpt5.yaml`
+are identical except for `models.agent.name` and `output_dir`.
+
+**What the boundary looks like here.** This is the split's whole
+purpose. The subject of the evaluation — the model being tested
+— is the invocation's variable; everything else (environment,
+task defaults, user simulator, judge, compute, isolation) is
+held constant by the Project so the three runs' scores are
+comparable. Any accidental drift into `project.yaml` — e.g.
+changing the judge between runs — would silently invalidate the
+comparison. The Project's job is to make that impossible.
 
 ## Runtime mechanism — content-addressed stack dedup
 
