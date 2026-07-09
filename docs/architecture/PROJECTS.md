@@ -26,11 +26,12 @@ with a distinct job:
   it: the default environment, default models, compute policy,
   storage backends, observability sinks, orchestration policy, and
   the task-level defaults every task inherits.
-- **`run_config.yaml`** at the pack root — declares per-invocation
-  choices. Which models drive *this* run, how many workers to
-  spawn, where to write output, which packs to include. The same
-  Project can run under many different run configs (CI, nightly,
-  demo) without editing the Project itself.
+- **`run_config.yaml`** at the pack root (a pack may ship several,
+  see below) — declares per-invocation choices. Which models drive
+  *this* run, how many workers to spawn, where to write output,
+  which packs to include. The same Project can run under many
+  different run configs (CI, nightly, demo) — you pick which one
+  by passing `--config <path>` at invocation time.
 - **`task.yaml`** files under `tasks/<name>/` — one per task. Each
   task's identity and any settings that override the Project's
   defaults for that specific task.
@@ -77,6 +78,36 @@ Concretely, a Project owns:
 
 One file, `project.yaml` at the pack root, holds all of this. There
 is exactly one Project per pack.
+
+A minimal example — the full field list lives further down in
+[The Project schema](#the-project-schema):
+
+```yaml
+# project.yaml at the pack root
+name: "customer-support-eval"
+version: 1
+description: "Customer-support scenario evaluation suite."
+
+default_environment:
+  compose_file: "./shared/environment.compose.yaml"
+
+task_defaults:
+  adapter_type: "native"
+  max_turns: 20
+  system_prompt: "./shared/system_prompt.md"
+
+models:
+  agent:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+
+compute:
+  provider: "local-docker"
+  workers: 2
+
+# Also declared here: storage, observability, orchestration —
+# see the full schema below.
+```
 
 ### Pack = scenario = Project = Domain, one-to-one
 
@@ -132,6 +163,24 @@ its own compose file, a longer turn budget, an isolated database —
 it declares only that one field. Everything else continues to
 inherit. Small tasks stay small.
 
+Two example `task.yaml` shapes:
+
+```yaml
+# tasks/api_endpoint_add/task.yaml — inherits everything.
+task_id: "api_endpoint_add"
+description: >
+  Add a GET /health/ready endpoint to the backend service that
+  returns 200 when postgres is reachable and 503 otherwise.
+```
+
+```yaml
+# tasks/long_debugging_session/task.yaml — overrides max_turns
+# only; everything else still inherits from the Project.
+task_id: "long_debugging_session"
+description: "Diagnose intermittent 500s on GET /orders and fix."
+max_turns: 60
+```
+
 There can be many tasks in a Project. There is always at least one.
 
 ## What a run config is
@@ -176,6 +225,66 @@ per-invocation choices; the Project provides everything else.
 actually invoke `tolokaforge run` — but a minimal run config can
 be a few lines if the Project already declares the defaults it
 needs.
+
+A minimal example:
+
+```yaml
+# run_config.yaml at the pack root
+orchestrator:
+  repeats: 3                          # each task runs 3 times
+  max_turns: 30                       # run-wide ceiling
+
+evaluation:
+  task_packs:
+    - "packs/customer-support"
+  # tasks_glob: "tasks/support_*/task.yaml"   # optional filter
+  # output_dir: "results/nightly-2026-07-09"  # overrides project default
+
+# Optional: override the Project's default models for this run.
+# If omitted, the Project's models are used.
+models:
+  agent:
+    provider: "openrouter"
+    name: "anthropic/claude-opus-4-8"
+```
+
+### Running a Project under a specific run config
+
+You pick which run config to use per invocation via the CLI's
+`--config` flag:
+
+```bash
+tolokaforge run --config run_config.yaml
+tolokaforge run --config run_configs/nightly.yaml
+tolokaforge run --config run_configs/demo.yaml
+```
+
+A pack can ship a default `run_config.yaml` at its root plus any
+number of alternative run configs under a `run_configs/` directory
+(or any convention that suits the team). Each file is a complete,
+self-contained run config; run configs do not inherit from each
+other.
+
+A typical pack layout with multiple run configs:
+
+```
+task pack root/
+├── project.yaml
+├── run_config.yaml                  ← default (dev / local)
+├── run_configs/
+│   ├── ci.yaml
+│   ├── nightly.yaml
+│   └── demo.yaml
+├── shared/
+└── tasks/
+```
+
+Because run configs live as files, they live in version control
+next to the Project — a team can `git blame` who set the nightly
+sweep to use a specific judge model, and rolling back a run-config
+change is trivial. A future UI managing projects and their runs
+can present the run configs as named execution profiles the user
+picks from.
 
 ## How Project, Task, and run config compose
 
