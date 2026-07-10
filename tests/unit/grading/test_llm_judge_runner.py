@@ -172,6 +172,40 @@ def test_combine_components_includes_llm_judge_when_score_set():
     assert score == pytest.approx(0.6)
 
 
+def test_test_execution_reward_combines_with_small_judge_weight():
+    components = {
+        "custom_checks_score": 0.8,
+        "llm_judge_score": 0.6,
+    }
+    cfg = {
+        "grading_method": "test_execution",
+        "combine_method": "weighted",
+        "weights": {"custom_checks": 0.95, "llm_judge": 0.05},
+        "pass_threshold": 0.75,
+        "llm_judge": {"model_ref": "x"},
+    }
+
+    score, passed = combine_grade_components(components, cfg)
+
+    assert score == pytest.approx(0.79)
+    assert passed
+
+
+def test_test_execution_reward_without_judge_preserves_deterministic_score():
+    components = {"custom_checks_score": 0.83, "llm_judge_score": -1.0}
+    cfg = {
+        "grading_method": "test_execution",
+        "combine_method": "weighted",
+        "weights": {"custom_checks": 1.0},
+        "pass_threshold": 0.9,
+    }
+
+    score, passed = combine_grade_components(components, cfg)
+
+    assert score == pytest.approx(0.83)
+    assert not passed
+
+
 def test_build_grade_reasons_includes_judge_text():
     components = {
         "hash_score": -1.0,
@@ -239,3 +273,46 @@ def test_evaluate_judge_uses_secret_manager_for_keys(monkeypatch):
         evaluate_llm_judge(cfg, [{"role": "user", "content": "hi"}])
 
     assert fake_export_calls == [["OPENAI_API_KEY"]]
+
+
+@pytest.mark.asyncio
+async def test_runner_combines_test_execution_with_configured_judge():
+    from tolokaforge.runner.models import GradingConfig, LLMJudgeConfig
+    from tolokaforge.runner.service import RunnerServiceImpl
+    from tolokaforge.runner.tool_factory import DockerComposeExecToolWrapper
+
+    bash_tool = object.__new__(DockerComposeExecToolWrapper)
+    bash_tool._exec_sync = MagicMock(side_effect=["tests passed", "0.8"])
+    grading_config = GradingConfig(
+        grading_method="test_execution",
+        combine_method="weighted",
+        weights={"custom_checks": 0.95, "llm_judge": 0.05},
+        pass_threshold=0.75,
+        llm_judge=LLMJudgeConfig(
+            model_ref="openai/gpt-4o-mini",
+            rubric="Judge engineering communication only.",
+            output_schema={"type": "object"},
+        ),
+    )
+    trial_context = SimpleNamespace(
+        agent_tools={"bash": bash_tool},
+        grading_config=grading_config,
+    )
+    service = object.__new__(RunnerServiceImpl)
+
+    with patch(
+        "tolokaforge.runner.service.evaluate_llm_judge",
+        return_value=(0.6, "clear engineering memo"),
+    ) as judge:
+        response = await service._grade_via_test_execution(
+            "engineering:0",
+            trial_context,
+            llm_messages_json='[{"role":"assistant","content":"done"}]',
+        )
+
+    assert response.success
+    assert response.grade.score == pytest.approx(0.79)
+    assert response.grade.binary_pass
+    assert response.grade.components.custom_checks == pytest.approx(0.8)
+    assert response.grade.components.llm_judge == pytest.approx(0.6)
+    judge.assert_called_once()

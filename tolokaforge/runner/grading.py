@@ -752,6 +752,12 @@ def combine_grade_components(
     if llm_judge_score >= 0:
         active_components["llm_judge"] = llm_judge_score
 
+    # Test-execution verifiers expose their deterministic reward as a
+    # custom-checks component so it can be combined with an optional judge.
+    custom_checks_score = components.get("custom_checks_score", -1.0)
+    if custom_checks_score >= 0:
+        active_components["custom_checks"] = custom_checks_score
+
     # If no components are active but grading was configured, fail explicitly.
     # This prevents refusal tasks (empty golden_actions) or misconfigured
     # grading from silently passing with score=1.0.
@@ -767,6 +773,8 @@ def combine_grade_components(
             actually_configured.add("transcript_rules")
         if "llm_judge" in weights and grading_config.get("llm_judge") is not None:
             actually_configured.add("llm_judge")
+        if "custom_checks" in weights and grading_config.get("grading_method") == "test_execution":
+            actually_configured.add("custom_checks")
 
         if actually_configured:
             logger.warning(
@@ -882,6 +890,10 @@ def build_grade_reasons(
             reasons.append(f"Judge: score={llm_judge_score:.2f} ({judge_reasons})")
         else:
             reasons.append(f"Judge: score={llm_judge_score:.2f}")
+
+    custom_checks_score = components.get("custom_checks_score", -1.0)
+    if custom_checks_score >= 0:
+        reasons.append(f"Test execution: reward={custom_checks_score:.4f}")
 
     return " | ".join(reasons) if reasons else "No grading components evaluated"
 

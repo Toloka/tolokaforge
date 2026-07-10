@@ -928,7 +928,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # test-execution grading — run a reference suite in the env and score it —
         # instead of the default state/transcript/judge combination.
         if grading_config and grading_config.grading_method == "test_execution":
-            return await self._grade_via_test_execution(trial_id, trial_context)
+            return await self._grade_via_test_execution(
+                trial_id,
+                trial_context,
+                llm_messages_json=request.llm_messages_json,
+            )
 
         # Initialize grading components
         components = GradeComponents()
@@ -1441,6 +1445,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         self,
         trial_id: str,
         trial_context: "TrialContextRuntime",
+        *,
+        llm_messages_json: str = "",
     ) -> "pb2.GradeTrialResponse":
         """Grade by running a reference test suite inside the trial's env container.
 
@@ -1449,7 +1455,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         1. Execute ``test.sh`` (pytest + reward calculation) in the task container.
         2. Read the reward float from ``/logs/verifier/reward.txt``.
-        3. Return a ``GradeTrialResponse`` with the reward as score.
+        3. Optionally evaluate the configured LLM judge over the transcript.
+        4. Combine deterministic and judge scores using the declared weights.
         """
         # Find an exec-capable lifecycle tool to run the suite in the env.
         bash_tool: DockerComposeExecToolWrapper | None = None
@@ -1508,19 +1515,57 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         except (ValueError, IndexError):
             reward = 0.0
 
-        logger.info(f"GradeTrial(test-execution): {trial_id} - reward={reward:.4f}")
+        judge_score = -1.0
+        judge_reasons = ""
+        grading_config = trial_context.grading_config
+        llm_judge_config = grading_config.llm_judge if grading_config else None
+        if llm_judge_config:
+            try:
+                llm_messages = json.loads(llm_messages_json) if llm_messages_json else []
+            except json.JSONDecodeError as exc:
+                llm_messages = []
+                judge_reasons = f"invalid transcript JSON: {exc}"
+            if llm_messages:
+                judge_score, judge_reasons = evaluate_llm_judge(
+                    llm_judge_config.model_dump(), llm_messages
+                )
+            else:
+                judge_score = 0.0
+                if not judge_reasons:
+                    judge_reasons = "judge configured but no transcript messages were provided"
+
+        components_dict = {
+            "custom_checks_score": reward,
+            "llm_judge_score": judge_score,
+            "llm_judge_reasons": judge_reasons,
+        }
+        config_dict = grading_config.model_dump() if grading_config else {}
+        score, binary_pass = combine_grade_components(components_dict, config_dict)
+        reasons = build_grade_reasons(
+            components_dict,
+            judge_reasons=judge_reasons or None,
+        )
+        reasons += f"\n\ntest output (truncated):\n{test_output[:2000]}"
+
+        logger.info(
+            "GradeTrial(test-execution): %s - reward=%.4f judge=%.4f score=%.4f",
+            trial_id,
+            reward,
+            judge_score,
+            score,
+        )
 
         return pb2.GradeTrialResponse(
             success=True,
             error="",
             grade=pb2.Grade(
-                binary_pass=(reward >= 0.5),
-                score=reward,
-                components=pb2.GradeComponents(custom_checks=reward),
-                reasons=(
-                    f"test-execution reward: {reward:.4f}\n\n"
-                    f"test output (truncated):\n{test_output[:2000]}"
+                binary_pass=binary_pass,
+                score=score,
+                components=pb2.GradeComponents(
+                    custom_checks=reward,
+                    llm_judge=judge_score,
                 ),
+                reasons=reasons,
             ),
         )
 
