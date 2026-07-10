@@ -24,6 +24,8 @@ from tolokaforge.core.models import (
 )
 from tolokaforge.runner.models import EnvironmentManifest
 
+pytestmark = pytest.mark.unit
+
 ENV_FIXTURE = (
     Path(__file__).parent.parent
     / "canonical"

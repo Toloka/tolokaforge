@@ -28,6 +28,8 @@ from tolokaforge.core.models import (
     TracingConfig,
 )
 
+pytestmark = pytest.mark.unit
+
 
 class TestComputeConfig:
     def test_default_provider_is_local_docker(self) -> None:
