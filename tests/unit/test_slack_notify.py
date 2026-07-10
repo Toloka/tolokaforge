@@ -89,6 +89,27 @@ class TestFindRootTs:
         assert slack_notify.find_root_ts(msgs, 42) is None
 
 
+class TestFormatApiError:
+    def test_plain_error(self):
+        assert slack_notify._format_api_error({"error": "channel_not_found"}) == "channel_not_found"
+
+    def test_missing_scope_surfaces_needed_and_provided(self):
+        # The exact signal that would have short-circuited this debugging round.
+        detail = slack_notify._format_api_error(
+            {
+                "error": "missing_scope",
+                "needed": "channels:history",
+                "provided": "chat:write,incoming-webhook",
+            }
+        )
+        assert "missing_scope" in detail
+        assert "channels:history" in detail
+        assert "chat:write,incoming-webhook" in detail
+
+    def test_unknown_when_no_error_key(self):
+        assert slack_notify._format_api_error({}) == "unknown"
+
+
 class TestBuildMentionPrefix:
     def test_empty(self):
         assert slack_notify.build_mention_prefix("") == ""
