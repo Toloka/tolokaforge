@@ -38,6 +38,21 @@ and pushes the whole integration to needs-human.
      (known_unsupported) and DROP it from `fix_targets`. An honest ceiling converges the loop;
      chasing an unfixable target just exhausts it. Never reclassify a leak/format failure as a
      ceiling to force convergence - that ships a falsely-pessimistic cert.
+
+   PASS-RATE DISCIPLINE (the cert MUST follow the observe baseline, not a hunch - a deterministic
+   `cert_reconcile` gate enforces this at finalize and fails the integration otherwise):
+   - A capability whose observe baseline `pass_rate >= 0.9` (e.g. 14/15) is SUPPORTED: put it in
+     `required`. NEVER mark it `known_unsupported` against a passing baseline - that is
+     falsely-pessimistic, under-credits the model, and hard-fails the gate. (Real miss: mimo's
+     `implicit_prompt_caching` passed 14/15 but was wrongly demoted on one cherry-picked run.)
+   - `known_unsupported` is for a capability the baseline shows genuinely FAILING (low pass_rate)
+     that is ALSO not policy-fixable (not a formatting/serialization artifact). A `0.8-0.9`
+     baseline is BORDERLINE: prefer `required`, or leave a dated, specific failure-mode comment -
+     do not silently hard-demote it.
+   - TAKE A POSITION ON EVERY PROBED CAPABILITY. If `findings.json` has a per-probe result for a
+     capability (pass OR fail), it MUST appear in `required` or `known_unsupported` (via
+     `decision.json`). A probed-but-undeclared capability silently auto-skips and hard-fails the
+     gate. (Real miss: mimo's `re2_pattern_tolerance` passed 15/15 but was left out of the cert.)
 2. Compose the policy as a preset OVERLAY at `{{OBS_DIR}}/resolve/overlay.yaml`: ONE preset
    entry whose `match` globs match THIS model only, composing the needed reusable axes
    (schema_sanitizer / prompt_policy / response_policy / reasoning_codec / content_policy /
@@ -79,7 +94,10 @@ and pushes the whole integration to needs-human.
    only cleared a weak-assertion probe (no 500, args parse) is NOT evidence the emitted VALUE is
    correct. When the mechanism does not clearly support it or the evidence is a weak probe, prefer
    `known_unsupported` (an honest floor) over a `required` that inflates the leaderboard score -
-   the draft-PR human gate can always promote it later.
+   the draft-PR human gate can always promote it later. BUT the honest-floor bias applies ONLY to
+   genuinely-failing or unproven caps: NEVER demote a capability the observe baseline already
+   passes at `>= 0.9` to `known_unsupported` (see PASS-RATE DISCIPLINE above) - a passing synthetic
+   result outranks any pessimistic hunch, and the `cert_reconcile` gate rejects it.
 
 Write ONLY: `overlay.yaml`, `decision.json`, and any new engine class + its registration/export.
 Do NOT run reprobe, commit, push, or comment. Then stop.

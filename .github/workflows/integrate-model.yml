@@ -452,6 +452,17 @@ jobs:
           if git diff --cached --quiet; then
             echo "::error::finalize produced no file changes"; exit 1
           fi
+          # Cert-vs-baseline reconciliation - run BEFORE the stash so observation/findings.json is
+          # still present (the `stash --include-untracked` below would hide the untracked artifact).
+          # Every probed capability must be declared, and no capability the baseline shows passing
+          # (>=0.9) may be `known_unsupported`. Catches the mimo-class under-declaration (re2 15/15
+          # omitted from the cert) + false-pessimism (implicit-cache 14/15 -> unsupported). set -e
+          # safe (`if !` never aborts the step). Exit 1 -> needs-human.
+          if ! uv run python scripts/integration/cert_reconcile.py \
+               --model-id "$MODEL_ID" --findings observation/findings.json; then
+            echo "::error::cert does not reconcile with the observe baseline - refusing to commit"
+            exit 1
+          fi
           # Verify EXACTLY the staged tree (what we are about to commit), not the workspace.
           # `stash --keep-index` drops everything not staged so the worktree == the future
           # commit; then gate on: (1) it imports; (2) no-regression - the resolved policy must

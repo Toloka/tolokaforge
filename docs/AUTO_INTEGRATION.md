@@ -64,10 +64,14 @@ them as `known_unsupported`.
   VERIFIES the staged tree (what it is about to commit, via `git stash --keep-index`): it must
   import, must not turn any already-valid tool-call arg invalid (`test_policy_no_regression`, the
   anti-over-reach gate), and must recover the array-corruption shapes so the result validates +
-  round-trips against the tool's Pydantic schema (`test_policy_array_recovery`).
+  round-trips against the tool's Pydantic schema (`test_policy_array_recovery`). The cert itself is
+  reconciled against the observe baseline (`cert_reconcile.py`, run before the stash so
+  `findings.json` is still present): every probed capability must be declared (no silent auto-skip),
+  and no capability the baseline shows passing (>= 0.9) may be `known_unsupported` - catching the
+  free-form cert's under-declaration and false-pessimism.
   Only then does it commit to the PR branch, comment the record, and label
-  `automation:integrate-done`. A broken / over-reaching / divergent fix fails verification here
-  and goes to `automation:integrate-needs-human`. NEVER merges.
+  `automation:integrate-done`. A broken / over-reaching / divergent fix (or a cert that does not
+  reconcile) fails verification here and goes to `automation:integrate-needs-human`. NEVER merges.
 - Not converged within `MAX_ITER` (or staged verification failed) -> `automation:integrate-needs-human`.
 
 ## Auth split
@@ -159,6 +163,9 @@ sub-agent); the resolve prompts drive the fix loop. `index.yaml` is the machine-
   (probe x rep) pool parallelized at `--cap-parallel`; capability-only inner loop, plus a final
   wire pass on failed wire tasks.
 - `scripts/integration/resolve_greencheck.py` - fix-target convergence check.
+- `scripts/integration/cert_reconcile.py` - reconciles the finalized cert against the observe
+  `findings.json`: fails if any probed capability is undeclared, or if a capability the baseline
+  shows passing (>= 0.9) is marked `known_unsupported`. Runs in the finalize gate before the stash.
 - `scripts/integration/slack_notify.py` - Slack thread notifier (`ensure-root` / `reply`
   subcommands); stdlib-only (runs under the system `python3` before `uv sync`), dry-run no-op
   without a token. See "Slack notifications" above.
