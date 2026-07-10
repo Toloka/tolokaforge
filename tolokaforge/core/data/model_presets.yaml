@@ -108,6 +108,27 @@ presets:
     prompt_policy: dict_map_hints
     reasoning_codec: openai
 
+  # Xiaomi MiMo V2.5 Pro (open-weights via OpenRouter). On the default
+  # (no-op ``standard``) response policy its tool-call adapter emits nested
+  # object / discriminated-union / recursive arguments
+  # (``item``/``message``/``root``/``doc``/``order``/``envelope``) as
+  # JSON-encoded *strings* instead of native dicts — the same open-weights
+  # dict-stringify quirk the shipped ``qwen`` preset already handles.
+  # ``response_policy: json_coerce`` reuses :class:`JsonCoerceResponse`
+  # verbatim (no new engine code): ``json.loads`` on a ``{``/``[``-leading
+  # string argument recovers the native container before pydantic
+  # validation. Native-correct dicts pass through untouched (json_coerce
+  # only decodes strings that json.loads to a list/dict), so the recovery
+  # cannot regress the calls that already pass. Model-scoped match (NOT a
+  # broad open-weights glob) so it touches only this route. Created via
+  # auto-resolve for candidate PR #207 and live-proven on the resolve
+  # reprobe (every fix-target probe 5/5). See registry.py for the cert.
+  xiaomi_mimo_v25_pro:
+    match:
+      - "xiaomi/mimo-v2.5-pro"
+      - "*mimo-v2.5-pro*"
+    response_policy: json_coerce
+
   # DeepSeek V3.2-Exp experimental V3.2 reasoning route.
   # Unlike the V4 line (openrouter_dict_stringify_recovery, above) it
   # round-trips dict-map and discriminated-union tool calls cleanly on

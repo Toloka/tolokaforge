@@ -1125,6 +1125,72 @@ _ALL: list[MC] = [
             }
         ),
     ),
+    # -----------------------------------------------------------------
+    # Xiaomi MiMo V2.5 Pro (open-weights via OpenRouter) — routed via the
+    # model-scoped ``xiaomi_mimo_v25_pro`` preset (passthrough schema +
+    # ``JsonCoerceResponse``). Integrated via auto-resolve for candidate
+    # PR #207: the observe baseline ran on the default no-op ``standard``
+    # policy and MiMo stringified every nested-object / discriminated-union
+    # / recursive tool argument (``item``/``message``/``root``/``doc``/
+    # ``order``/``envelope`` emitted as a JSON-encoded string); the resolve
+    # step created ``response_policy: json_coerce`` and the reprobe went
+    # green on every fix-target (5/5). So DICT_MAP / DISCRIMINATED_UNION /
+    # HETEROGENEOUS_ARRAY / RECURSIVE_REF are all ``required`` — the
+    # recovery makes the contract real.
+    #
+    # DECIMAL_FIELD_TOOL_CALL is ``required`` here (baseline 15/15) — MiMo
+    # emits the Decimal charge call natively under the passthrough schema,
+    # unlike the Kimi / DeepSeek-v4 siblings that keep it known_unsupported.
+    #
+    # Ceilings (``known_unsupported``), each from the observe baseline:
+    #   * THINKING_* — the OpenAI reasoning codec surfaces a flat
+    #     ``reasoning_content`` summary, not signed / replayable blocks.
+    #   * PROMPT_CACHING — no ``cache_control`` markers wired (0 creation
+    #     tokens on call 1).
+    #   * IMPLICIT_PROMPT_CACHING — the clean 2-call 8 k probe read
+    #     ``cache_read=0`` (MiMo's route does not auto-cache reliably).
+    #   * MULTI_TURN_ERROR_RECOVERY — baseline 13/15: MiMo intermittently
+    #     ignored the tool-error feedback and re-emitted the call without
+    #     the missing contact_email. 87 % is too flaky for a merge gate.
+    # RE2_PATTERN_TOLERANCE is left undeclared (auto-skips) — not exercised
+    # by the resolve decision.
+    # -----------------------------------------------------------------
+    MC(
+        model_id="openrouter__xiaomi_mimo-v2.5-pro",
+        provider="openrouter",
+        name="xiaomi/mimo-v2.5-pro",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.ENUM_SLASH_TOLERANCE,
+                C.DICT_MAP_TOOL_CALL,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                C.THINKING_EMITS_BLOCKS,
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.UNSIGNED_THINKING_REPLAY,
+                C.PROMPT_CACHING,
+                C.IMPLICIT_PROMPT_CACHING,
+                C.MULTI_TURN_ERROR_RECOVERY,
+            }
+        ),
+    ),
     MC(
         model_id="openrouter__google_gemini-3.1-pro-preview",
         provider="openrouter",
