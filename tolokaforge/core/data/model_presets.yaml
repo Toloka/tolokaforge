@@ -93,6 +93,23 @@ presets:
     response_policy: array_dict_map
     reasoning_codec: openai
 
+  # qwen3.6-plus candidate (auto-resolve, PR #208). Pins this specific model
+  # to the proven, family-wide qwen policy (identical axes to the ``qwen``
+  # preset below that also serves qwen3.7-max) so its certificate and any
+  # reprobe run under the correct preset rather than the bare ``default``.
+  # Declared BEFORE the generic ``qwen`` glob so first-match-wins routing
+  # picks this candidate-specific entry. All four observe failures were
+  # genuine ceilings (no fix-targets), so this composes shipped classes only
+  # — no engine change. See observation/resolve/ for the integration record.
+  qwen3_6_plus_candidate:
+    match:
+      - "qwen/qwen3.6-plus"
+      - "qwen/qwen3.6-plus*"
+    schema_sanitizer: passthrough   # dict-map hints/schema/docs stay aligned
+    prompt_policy: dict_map_hints    # Qwen Dict[str, T] blind-spot hint
+    response_policy: json_coerce     # recover stringified-JSON nested args
+    reasoning_codec: openai          # surface reasoning_content summary
+
   qwen:
     # Qwen 3.x emits dict-map arguments as either native dicts (matching the
     # task docs + DictMapHints) or stringified JSON. The pre-bugfix ``strict``

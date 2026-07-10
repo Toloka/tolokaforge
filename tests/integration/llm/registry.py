@@ -381,6 +381,75 @@ _ALL: list[MC] = [
             }
         ),
     ),
+    # -----------------------------------------------------------------
+    # Qwen 3.6-plus — auto-resolve integration (PR #208). Pinned to its
+    # own ``qwen3_6_plus_candidate`` preset, whose axes are identical to
+    # the family-wide ``qwen`` preset (passthrough schema + ``DictMapHints``
+    # prompt policy + ``JsonCoerceResponse`` recovery + OpenAI-style
+    # reasoning summary). The observe run surfaced four failures, all
+    # GENUINE ceilings (zero preset-fixable fix-targets):
+    #   * PROMPT_CACHING / IMPLICIT_PROMPT_CACHING — the OpenRouter/Qwen
+    #     route returns 0 cache tokens (prompt_tokens ~8.3k, cache_read 0
+    #     across all 15 reps); no policy fabricates an upstream cache hit.
+    #   * THINKING_REPLAY_ROUNDTRIP — Qwen emits only a reasoning_content
+    #     summary, no signed blocks, so turn 1 yields zero signed entries.
+    #   * UNSIGNED_THINKING_REPLAY — OpenAIReasoningCodec.encode_for_replay
+    #     is a no-op by design; turn-2 payload carries no reasoning_details.
+    # THINKING_EMITS_BLOCKS passes the observe probe only via the weak
+    # summary path, so it is kept ``known_unsupported`` here (a human gate
+    # may promote it as the qwen3.7-max sibling did).
+    # -----------------------------------------------------------------
+    MC(
+        model_id="openrouter__qwen_qwen3.6-plus",
+        provider="openrouter",
+        name="qwen/qwen3.6-plus",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DICT_MAP_TOOL_CALL,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # No explicit Anthropic-ephemeral cache and no implicit
+                # upstream auto-cache on the OpenRouter qwen/* route — call 1
+                # created 0 cache_creation_input_tokens and call 2 read 0
+                # cache_read_input_tokens across all 15 reps.
+                C.PROMPT_CACHING,
+                C.IMPLICIT_PROMPT_CACHING,
+                # OpenAI-style reasoning summary only — no signed blocks on
+                # the wire, so the signed-replay continuity contract has
+                # nothing to assert on (turn 1 emits zero signed entries).
+                C.THINKING_REPLAY_ROUNDTRIP,
+                # OpenAIReasoningCodec.encode_for_replay is a no-op for this
+                # preset — turn-2 payload omits ``reasoning_details``. A
+                # future bespoke Qwen reasoning codec would flip this.
+                C.UNSIGNED_THINKING_REPLAY,
+                # Passes the observe probe only via the weak reasoning_content
+                # summary path, not signed structured blocks — kept
+                # known_unsupported pending a human gate (qwen3.7-max promoted
+                # its richer surface; 3.6-plus's is the summary only).
+                C.THINKING_EMITS_BLOCKS,
+            }
+        ),
+    ),
     # Qwen 3.7 Max — Alibaba's flagship Qwen 3.7 generation. Routes
     # through the same ``qwen`` preset as 3.6-plus (passthrough schema +
     # ``DictMapHints`` prompt policy + ``JsonCoerceResponse`` recovery +
