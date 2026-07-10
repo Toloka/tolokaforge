@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.parse
@@ -51,19 +52,20 @@ def _log(message: str) -> None:
 
 
 def build_root_text(model: str, pr: int, pr_url: str | None = None) -> str:
-    """The PR-unique thread root. Must contain the literal ``(PR #<N>)`` token and
-    the word ``Auto-integration`` - :func:`root_matches` keys on both."""
+    """The PR-unique thread root. Always carries the word ``Auto-integration`` and a
+    ``#<pr>`` token bounded by a non-digit - :func:`root_matches` keys on both. When the
+    PR URL is known the number renders as a Slack hyperlink ``<url|#<pr>>`` so the PR is
+    one click away and there is no bare URL line; otherwise a plain ``#<pr>``."""
     label = f"`{model}` " if model else ""
-    text = f"Auto-integration: {label}(PR #{pr})"
-    if pr_url:
-        text += f"\n{pr_url}"
-    return text
+    pr_ref = f"<{pr_url}|#{pr}>" if pr_url else f"#{pr}"
+    return f"Auto-integration: {label}(PR {pr_ref})"
 
 
 def root_matches(text: str, pr: int) -> bool:
-    """Does this message text identify the root for ``pr``? The closing paren in
-    ``(PR #<N>)`` makes it self-delimiting, so ``(PR #4)`` never matches ``(PR #42)``."""
-    return "Auto-integration" in text and f"(PR #{pr})" in text
+    """Does this message identify the root for ``pr``? Matches both the plain ``#<pr>``
+    and the hyperlinked ``<url|#<pr>>`` root forms; the negative lookahead keeps ``#20``
+    from matching ``#209`` (self-delimiting on a trailing non-digit)."""
+    return "Auto-integration" in text and re.search(rf"#{pr}(?!\d)", text) is not None
 
 
 def find_root_ts(messages: list[dict], pr: int) -> str | None:
@@ -84,6 +86,20 @@ def build_mention_prefix(raw: str | None) -> str:
         if cleaned:
             ids.append(f"<@{cleaned}>")
     return " ".join(ids) + " " if ids else ""
+
+
+def append_footer(text: str, pr_comment: str = "", pr_url: str = "", run_url: str = "") -> str:
+    """Append a ' · '-separated footer of Slack ``<url|label>`` links to ``text``.
+    Prefers a specific PR-comment deep-link over the generic PR link; skips any empty
+    url. Formatting lives here (not in the workflow) so a format tweak is one place."""
+    refs = []
+    if pr_comment:
+        refs.append(f"<{pr_comment}|PR comment>")
+    elif pr_url:
+        refs.append(f"<{pr_url}|PR>")
+    if run_url:
+        refs.append(f"<{run_url}|Run log>")
+    return f"{text}\n{' · '.join(refs)}" if refs else text
 
 
 # --- Slack transport (never raises out) ----------------------------------------
@@ -200,7 +216,16 @@ def cmd_ensure_root(channel: str, model: str, pr: int) -> None:
         _note_failure("could not create or find the thread root")
 
 
-def cmd_reply(channel: str, pr: int, text: str, model: str, mention: bool) -> None:
+def cmd_reply(
+    channel: str,
+    pr: int,
+    text: str,
+    model: str,
+    mention: bool,
+    pr_comment: str = "",
+    pr_url: str = "",
+    run_url: str = "",
+) -> None:
     token = _ready(channel)
     if not token:
         return
@@ -210,7 +235,8 @@ def cmd_reply(channel: str, pr: int, text: str, model: str, mention: bool) -> No
         _note_failure("could not post the thread reply (no root)")
         return
     prefix = build_mention_prefix(os.environ.get("SLACK_MENTIONS")) if mention else ""
-    if not _post_message(channel, prefix + text, token, thread_ts=thread_ts):
+    body = append_footer(text, pr_comment=pr_comment, pr_url=pr_url, run_url=run_url)
+    if not _post_message(channel, prefix + body, token, thread_ts=thread_ts):
         _note_failure("could not post the thread reply")
 
 
@@ -229,13 +255,25 @@ def main(argv: list[str] | None = None) -> int:
     reply.add_argument("--text", required=True)
     reply.add_argument("--model", default="")
     reply.add_argument("--mention", action="store_true")
+    reply.add_argument("--pr-comment", default="", help="deep-link to the PR comment with details")
+    reply.add_argument("--pr-url", default="", help="fallback PR link when no comment url is known")
+    reply.add_argument("--run-url", default="", help="Actions run URL, rendered as a Run log link")
 
     args = parser.parse_args(argv)
     try:
         if args.cmd == "ensure-root":
             cmd_ensure_root(args.channel, args.model, args.pr)
         else:
-            cmd_reply(args.channel, args.pr, args.text, args.model, args.mention)
+            cmd_reply(
+                args.channel,
+                args.pr,
+                args.text,
+                args.model,
+                args.mention,
+                pr_comment=args.pr_comment,
+                pr_url=args.pr_url,
+                run_url=args.run_url,
+            )
     except Exception as exc:  # a notification must never fail the job
         _log(f"unexpected error (ignored): {exc}")
     return 0

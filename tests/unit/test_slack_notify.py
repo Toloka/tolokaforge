@@ -30,12 +30,16 @@ class TestBuildRootText:
         assert "(PR #42)" in text
         assert "`qwen/qwen3.6-plus`" in text
 
-    def test_appends_pr_url(self):
+    def test_hyperlinks_pr_when_url_given(self):
         text = slack_notify.build_root_text("x/y", 42, "https://github.com/o/r/pull/42")
-        assert text.endswith("\nhttps://github.com/o/r/pull/42")
+        assert "<https://github.com/o/r/pull/42|#42>" in text  # clickable #42, not a bare URL
+        assert "\n" not in text
+        assert slack_notify.root_matches(text, 42)
 
-    def test_no_url_when_absent(self):
-        assert "\n" not in slack_notify.build_root_text("x/y", 42)
+    def test_no_url_is_single_line_plain_ref(self):
+        text = slack_notify.build_root_text("x/y", 42)
+        assert "\n" not in text
+        assert "(PR #42)" in text
 
     def test_empty_model_still_matches(self):
         text = slack_notify.build_root_text("", 42)
@@ -58,6 +62,13 @@ class TestRootMatches:
     def test_requires_auto_integration_marker(self):
         # A human message that merely mentions the PR number is not a root.
         assert not slack_notify.root_matches("see (PR #42) for details", 42)
+
+    def test_matches_hyperlinked_form(self):
+        # The root renders #<pr> as a Slack link <url|#42>; matching must survive that,
+        # and the #4-vs-#42 boundary must still hold inside the link label.
+        linked = slack_notify.build_root_text("m", 42, "https://github.com/o/r/pull/42")
+        assert slack_notify.root_matches(linked, 42)
+        assert not slack_notify.root_matches(linked, 4)
 
 
 class TestFindRootTs:
@@ -87,6 +98,30 @@ class TestFindRootTs:
     def test_ignores_join_events(self):
         msgs = [{"ts": "10.0", "text": "<@U1> has joined the channel"}]
         assert slack_notify.find_root_ts(msgs, 42) is None
+
+
+class TestAppendFooter:
+    def test_no_links_returns_text_unchanged(self):
+        assert slack_notify.append_footer("hi") == "hi"
+
+    def test_run_url_only(self):
+        assert slack_notify.append_footer("hi", run_url="R") == "hi\n<R|Run log>"
+
+    def test_pr_comment_and_run(self):
+        assert (
+            slack_notify.append_footer("hi", pr_comment="C", run_url="R")
+            == "hi\n<C|PR comment> · <R|Run log>"
+        )
+
+    def test_pr_comment_preferred_over_pr_url(self):
+        # Workflow passes both (comment url may be empty if gh failed); comment wins.
+        assert slack_notify.append_footer("hi", pr_comment="C", pr_url="P") == "hi\n<C|PR comment>"
+
+    def test_pr_url_fallback_when_no_comment(self):
+        assert slack_notify.append_footer("hi", pr_comment="", pr_url="P") == "hi\n<P|PR>"
+
+    def test_empty_urls_skipped(self):
+        assert slack_notify.append_footer("hi", pr_comment="", pr_url="", run_url="") == "hi"
 
 
 class TestFormatApiError:
