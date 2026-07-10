@@ -196,6 +196,26 @@ presets:
     content_policy: nova
     response_policy: standard
 
+  # Gemini 3.1 Pro (preview) — model-specific pin, listed BEFORE the generic
+  # ``gemini`` preset so first-match-wins routing selects it for this id. It
+  # applies the SAME policy triple the bundled ``gemini`` entry does
+  # (GeminiSchema + array_dict_map + gemini codec); it is scoped narrowly here
+  # rather than relying on the shared glob so the 3.1 Pro lineage carries its
+  # own auto-resolve provenance and can diverge later without touching the
+  # shared entry. GeminiSchema's $ref-inlining now terminates cyclic $ref
+  # chains with a permissive object (closing the recursive_ref ``depth 16``
+  # failure) and wraps scalar-valued dict-maps under the synthetic VALUE_FIELD;
+  # ArrayDictMapResponse reverses both pivots recursively. Auto-resolved
+  # 2026-07-10 (see tests/integration/llm/registry.py).
+  gemini_3_1_pro_preview:
+    match:
+      - "google/gemini-3.1-pro-preview"
+      - "openrouter/google/gemini-3.1-pro-preview"
+      - "*gemini-3.1-pro-preview*"
+    schema_sanitizer: gemini
+    response_policy: array_dict_map
+    reasoning_codec: gemini
+
   # Google Gemini family (3.x preview + 3.x GA + 2.5 backstop).
   # ``GeminiReasoningCodec`` decodes Gemini's OpenRouter
   # ``provider_specific_fields.reasoning_details`` envelope: handles

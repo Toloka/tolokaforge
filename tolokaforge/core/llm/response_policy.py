@@ -268,6 +268,7 @@ class ArrayDictMapResponse:
     """
 
     KEY_FIELD = StrictSchema.KEY_FIELD
+    VALUE_FIELD = StrictSchema.VALUE_FIELD
 
     def parse_arguments(
         self,
@@ -280,43 +281,77 @@ class ArrayDictMapResponse:
         coerced = _coerce_empty_containers(arguments, param_types)
         result = dict(_coerce_json_strings(coerced))
         for param_name, value in list(result.items()):
-            if isinstance(value, list):
-                if not value:
-                    # Empty array → empty dict ONLY when the param was
-                    # originally a dict-map (``StrictSchema`` converted
-                    # ``additionalProperties: {schema}`` to
-                    # ``type: array`` on the wire). The receiving tool's
-                    # Pydantic validator still expects ``Dict[str, T]``,
-                    # so without this pivot the tool rejects with the
-                    # confusing ``"Input should be a valid dictionary"``
-                    # error instead of any meaningful tool-level
-                    # constraint message (verified live 2026-05-20 on
-                    # ``output/new_collected/tau_manufacturing /
-                    # gemini_35_flash`` — empty ``lines`` on
-                    # ``create_order``). For genuine ``array`` params
-                    # (e.g. ``equipment: list[str]``) we leave the empty
-                    # list intact — the receiver wants ``[]``, not
-                    # ``{}``. The marker comes from
-                    # :func:`_resolve_declared_type`'s ``"dict_map"``
-                    # output: with no schema info we can't tell the two
-                    # apart, so we conservatively leave the array as-is.
-                    if param_types and param_types.get(param_name) == "dict_map":
-                        result[param_name] = {}
-                elif all(isinstance(item, dict) and self.KEY_FIELD in item for item in value):
-                    # Array of items with key field → convert to dict
-                    dict_map: dict[str, Any] = {}
-                    for item in value:
-                        item_copy = dict(item)
-                        key = str(item_copy.pop(self.KEY_FIELD))
-                        dict_map[key] = item_copy
-                    result[param_name] = dict_map
-            elif isinstance(value, dict) and self.KEY_FIELD in value:
-                # Single dict with key field → convert to single-entry dict.
-                # This handles models that produce a flat dict instead of a 1-item array.
-                value_copy = dict(value)
-                key = str(value_copy.pop(self.KEY_FIELD))
-                result[param_name] = {key: value_copy}
+            if isinstance(value, list) and not value:
+                # Empty array → empty dict ONLY when the param was
+                # originally a dict-map (``StrictSchema`` converted
+                # ``additionalProperties: {schema}`` to
+                # ``type: array`` on the wire). The receiving tool's
+                # Pydantic validator still expects ``Dict[str, T]``,
+                # so without this pivot the tool rejects with the
+                # confusing ``"Input should be a valid dictionary"``
+                # error instead of any meaningful tool-level
+                # constraint message (verified live 2026-05-20 on
+                # ``output/new_collected/tau_manufacturing /
+                # gemini_35_flash`` — empty ``lines`` on
+                # ``create_order``). For genuine ``array`` params
+                # (e.g. ``equipment: list[str]``) we leave the empty
+                # list intact — the receiver wants ``[]``, not
+                # ``{}``. The marker comes from
+                # :func:`_resolve_declared_type`'s ``"dict_map"``
+                # output: with no schema info we can't tell the two
+                # apart, so we conservatively leave the array as-is. This
+                # top-level-only marker guard cannot reach nested params, so
+                # nested empty dict-maps stay ``[]`` (harmless: an empty
+                # nested map is equally acceptable as ``[]`` or ``{}`` to the
+                # tool once its parent object validates).
+                if param_types and param_types.get(param_name) == "dict_map":
+                    result[param_name] = {}
+            else:
+                # Recursively reverse the ``StrictSchema`` dict-map → array
+                # pivot. Recursion is required because the pivot also fires on
+                # dict-maps NESTED inside object parameters (e.g. an
+                # ``order.lines`` map one level down); a top-level-only pass
+                # leaves those as arrays and the tool rejects them.
+                result[param_name] = self._reverse_dict_map_pivot(value)
         return result
+
+    @classmethod
+    def _reverse_dict_map_pivot(cls, value: Any) -> Any:
+        """Recursively undo the ``additionalProperties → array of {key, …}``
+        pivot, keyed on the synthetic :attr:`KEY_FIELD` marker.
+
+        A list whose items *all* carry :attr:`KEY_FIELD` is a pivoted dict-map
+        and is folded back to ``{key: rest}``; a bare dict carrying
+        :attr:`KEY_FIELD` is the single-entry variant some models emit instead
+        of a 1-item array. Every other node passes through with its children
+        recursed, so a dict-map nested arbitrarily deep is recovered. Because
+        the marker is synthetic (:class:`StrictSchema` inserts it), a genuine
+        array of user objects that happens not to carry it is left intact.
+        """
+        if isinstance(value, list):
+            if value and all(isinstance(item, dict) and cls.KEY_FIELD in item for item in value):
+                dict_map: dict[str, Any] = {}
+                for item in value:
+                    dict_map[str(item[cls.KEY_FIELD])] = cls._fold_pivoted_item(item)
+                return dict_map
+            return [cls._reverse_dict_map_pivot(item) for item in value]
+        if isinstance(value, dict):
+            if cls.KEY_FIELD in value:
+                # Single dict with key field → single-entry dict. Handles
+                # models that emit a flat dict instead of a 1-item array.
+                return {str(value[cls.KEY_FIELD]): cls._fold_pivoted_item(value)}
+            return {k: cls._reverse_dict_map_pivot(v) for k, v in value.items()}
+        return value
+
+    @classmethod
+    def _fold_pivoted_item(cls, item: dict[str, Any]) -> Any:
+        """Strip the synthetic key field from one pivoted item and return the
+        map value — recursing into the remainder, and unwrapping the synthetic
+        :attr:`VALUE_FIELD` for scalar-valued maps (``{value: X}`` → ``X``)."""
+        rest = {k: cls._reverse_dict_map_pivot(v) for k, v in item.items() if k != cls.KEY_FIELD}
+        if set(rest) == {cls.VALUE_FIELD}:
+            return rest[cls.VALUE_FIELD]
+        return rest
 
 
 # ---------------------------------------------------------------------------

@@ -805,6 +805,77 @@ _ALL: list[MC] = [
         ),
     ),
     # -----------------------------------------------------------------
+    # Gemini 3.1 Pro (preview) — Pro-lineage reasoning model on the
+    # OpenRouter route. Auto-resolved 2026-07-10: onboarded via the observe →
+    # resolve loop after being de-integrated to re-observe as a fresh
+    # candidate. Routed through the model-specific ``gemini_3_1_pro_preview``
+    # preset (GeminiSchema + array_dict_map + gemini codec), which applies the
+    # same policy triple as the bundled ``gemini`` preset. Unlike the Flash
+    # lineage (encrypted-only reasoning), 3.1 Pro emits readable
+    # ``reasoning.text`` blocks, so THINKING_EMITS_BLOCKS + UNSIGNED_THINKING_
+    # REPLAY are mechanism-supported and required.
+    #
+    # The recursive_ref + scalar/nested dict-map fix targets went 5/5 on the
+    # final reprobe once GeminiSchema learned to terminate cyclic $ref chains
+    # with a permissive object (was raising ``$ref depth 16``) and to wrap
+    # scalar-valued dict-maps under the synthetic value field, with
+    # ArrayDictMapResponse reversing both pivots recursively.
+    #
+    # ``known_unsupported`` ceilings:
+    #   * PROMPT_CACHING / IMPLICIT_PROMPT_CACHING — the OpenRouter gemini
+    #     route surfaces 0 cache tokens on a clean 2-call probe; no cache_policy
+    #     axis reports them.
+    #   * THINKING_REPLAY_ROUNDTRIP — Gemini emits no per-block signatures, so
+    #     the signed-replay continuity contract has no source (the unsigned
+    #     variant, UNSIGNED_THINKING_REPLAY, is required above).
+    #   * TOOL_NAME_DISCIPLINE / LEXICAL_TOOL_INVENTION — 15/15 on the
+    #     single-turn synthetic probe, but a prior live cert reproduced
+    #     multi-turn regressions (``workday_api:``-style ``_``→``:`` colon
+    #     substitution, ``knowledge_base_*`` fabrication) the single-turn probe
+    #     does not surface. Kept unsupported until a multi-turn probe pins the
+    #     contract; a ratchet flips them the day the synthetic probe alone can
+    #     no longer paper over the gap.
+    # -----------------------------------------------------------------
+    MC(
+        model_id="openrouter__google_gemini-3.1-pro-preview",
+        provider="openrouter",
+        name="google/gemini-3.1-pro-preview",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DICT_MAP_TOOL_CALL,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                # Pro lineage emits readable ``reasoning.text`` blocks that the
+                # gemini codec decodes and replays as unsigned text.
+                C.THINKING_EMITS_BLOCKS,
+                C.UNSIGNED_THINKING_REPLAY,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                C.PROMPT_CACHING,
+                C.IMPLICIT_PROMPT_CACHING,
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+            }
+        ),
+    ),
+    # -----------------------------------------------------------------
     # Moonshot Kimi K2.6 / DeepSeek V4 Pro / Xiaomi MiMo V2.5 Pro —
     # routed via the ``openrouter_dict_stringify_recovery`` preset
     # (passthrough schema + DictMapHints + JsonCoerceResponse + OpenAI

@@ -197,6 +197,15 @@ class StrictSchema:
     #: Name of the synthetic key field added when converting dict-maps → arrays.
     KEY_FIELD = "key"
 
+    #: Name of the synthetic value field added for *scalar*-valued dict-maps
+    #: (e.g. ``Dict[str, int]``). Object-valued maps lift the value model's
+    #: own fields onto the synthetic item object and need no wrapper; a scalar
+    #: value has no fields to lift, so without this field the scalar would be
+    #: silently dropped and the model left with nowhere to put it.
+    #: :class:`~tolokaforge.core.llm.response_policy.ArrayDictMapResponse`
+    #: unwraps ``{value: X}`` items back to the bare scalar ``X``.
+    VALUE_FIELD = "value"
+
     _MAX_REF_DEPTH = 16
 
     #: When ``True``, flatten ``oneOf`` discriminated unions into a single
@@ -333,18 +342,34 @@ class StrictSchema:
         return new_tool
 
     @classmethod
-    def _inline_refs(cls, schema: Any, defs: dict[str, Any], depth: int) -> Any:
+    def _inline_refs(
+        cls,
+        schema: Any,
+        defs: dict[str, Any],
+        depth: int,
+        ref_path: tuple[str, ...] = (),
+    ) -> Any:
         """Recursively replace ``{"$ref": "#/$defs/<Name>"}`` with the
         referenced sub-schema. Other dict / list nodes pass through with
         children resolved.
+
+        Recursive (cyclic) ``$ref`` chains — e.g. a ``TreeNode`` whose
+        ``children`` are themselves ``TreeNode`` — cannot be fully inlined and
+        used to raise here. Instead the resolver tracks the ``$ref`` names on
+        the active resolution path (``ref_path``): a ``$ref`` that revisits a
+        name already on the path is a genuine cycle and terminates *that
+        branch* with a permissive ``{"type": "object"}`` node (description
+        preserved). The model has already seen the recursive shape at the outer
+        level and keeps nesting from the user instruction; the permissive
+        terminal simply stops the inliner without discarding the surrounding
+        structure. ``depth`` remains a defensive backstop against pathological
+        non-cyclic nesting and likewise degrades to the permissive terminal
+        rather than raising.
         """
         if depth > cls._MAX_REF_DEPTH:
-            raise ValueError(
-                f"StrictSchema: $ref resolution exceeded depth {cls._MAX_REF_DEPTH} — "
-                "likely a cyclic schema definition."
-            )
+            return {"type": "object"}
         if isinstance(schema, list):
-            return [cls._inline_refs(item, defs, depth + 1) for item in schema]
+            return [cls._inline_refs(item, defs, depth + 1, ref_path) for item in schema]
         if not isinstance(schema, dict):
             return schema
         ref = schema.get("$ref")
@@ -356,21 +381,29 @@ class StrictSchema:
                     f"StrictSchema: $ref {ref!r} points to a missing "
                     f"$defs entry. Available: {sorted(defs.keys())!r}"
                 )
+            if target_name in ref_path:
+                # Cyclic self-reference — inline one level then terminate this
+                # branch with a permissive object so recursion halts safely.
+                terminal: dict[str, Any] = {"type": "object"}
+                desc = schema.get("description")
+                if isinstance(desc, str) and desc:
+                    terminal["description"] = desc
+                return terminal
             # Resolve the target (which may itself contain $refs), then merge
             # any sibling keys from the original node — Pydantic occasionally
             # emits ``{"$ref": ..., "description": ...}`` to attach a per-use
             # description without redefining the model.
-            resolved = cls._inline_refs(target, defs, depth + 1)
+            resolved = cls._inline_refs(target, defs, depth + 1, ref_path + (target_name,))
             siblings = {k: v for k, v in schema.items() if k != "$ref"}
             if not siblings:
                 return resolved
             if isinstance(resolved, dict):
                 merged = dict(resolved)
                 for k, v in siblings.items():
-                    merged[k] = cls._inline_refs(v, defs, depth + 1)
+                    merged[k] = cls._inline_refs(v, defs, depth + 1, ref_path)
                 return merged
             return resolved
-        return {k: cls._inline_refs(v, defs, depth + 1) for k, v in schema.items()}
+        return {k: cls._inline_refs(v, defs, depth + 1, ref_path) for k, v in schema.items()}
 
     # ------------------------------------------------------------------
     # Position-aware recursive walker
@@ -656,8 +689,20 @@ class StrictSchema:
                 "description": "The map key identifier.",
             }
         }
-        for prop_name, prop_schema in value_props.items():
-            items_props[prop_name] = prop_schema  # already sanitised above
+        if value_props:
+            for prop_name, prop_schema in value_props.items():
+                items_props[prop_name] = prop_schema  # already sanitised above
+        else:
+            # Scalar-valued dict-map (e.g. ``Dict[str, int]``): the value schema
+            # has no ``properties`` to lift onto the item. Without a synthetic
+            # value field the scalar is dropped and the model has nowhere to
+            # emit it — observed live as the model inventing a ``{"value": N}``
+            # wrapper of its own. Carry the scalar schema under ``VALUE_FIELD``;
+            # ``ArrayDictMapResponse`` unwraps it back to the bare scalar.
+            items_props[self.VALUE_FIELD] = (
+                sanitised_value if isinstance(sanitised_value, dict) else {}
+            )
+            value_required = [self.VALUE_FIELD]
 
         items_schema: dict[str, Any] = {
             "type": "object",
