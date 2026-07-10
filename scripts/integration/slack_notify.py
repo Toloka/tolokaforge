@@ -89,6 +89,17 @@ def build_mention_prefix(raw: str | None) -> str:
 # --- Slack transport (never raises out) ----------------------------------------
 
 
+def _format_api_error(payload: dict) -> str:
+    """Slack's error plus its missing_scope diagnostics (needed / provided), so a
+    scope misconfig is legible straight from the log - the difference between
+    ``missing_scope`` and ``missing_scope (needed='channels:history', provided=...)``."""
+    detail = payload.get("error") or "unknown"
+    needed, provided = payload.get("needed"), payload.get("provided")
+    if needed or provided:
+        detail += f" (needed={needed!r}, provided={provided!r})"
+    return detail
+
+
 def _call(method: str, request: urllib.request.Request) -> dict | None:
     try:
         with urllib.request.urlopen(request, timeout=_TIMEOUT) as response:
@@ -97,7 +108,7 @@ def _call(method: str, request: urllib.request.Request) -> dict | None:
         _log(f"{method}: transport error: {exc}")
         return None
     if not payload.get("ok"):
-        _log(f"{method}: api error: {payload.get('error')}")
+        _log(f"{method}: api error: {_format_api_error(payload)}")
         return None
     return payload
 
@@ -161,6 +172,14 @@ def _find_or_create_root(channel: str, model: str, pr: int, token: str) -> str |
 # --- commands ------------------------------------------------------------------
 
 
+def _note_failure(what: str) -> None:
+    """Surface a genuinely-failed post as a GitHub Actions warning annotation so it
+    is not a silent green step. The stderr ``[slack_notify]`` lines carry the detail
+    (including which scope is missing); this just makes the run visibly flag it."""
+    if os.environ.get("GITHUB_ACTIONS"):
+        print(f"::warning title=Slack notification skipped::{what} (see [slack_notify] logs)")
+
+
 def _ready(channel: str) -> str | None:
     """Return the bot token if a real post is possible, else None (dry-run)."""
     token = os.environ.get("SLACK_BOT_TOKEN")
@@ -177,6 +196,8 @@ def cmd_ensure_root(channel: str, model: str, pr: int) -> None:
     ts = _find_or_create_root(channel, model, pr, token)
     if ts:
         print(ts)
+    else:
+        _note_failure("could not create or find the thread root")
 
 
 def cmd_reply(channel: str, pr: int, text: str, model: str, mention: bool) -> None:
@@ -186,9 +207,11 @@ def cmd_reply(channel: str, pr: int, text: str, model: str, mention: bool) -> No
     thread_ts = _find_or_create_root(channel, model, pr, token)
     if not thread_ts:
         _log("no thread root and root post failed - dropping reply")
+        _note_failure("could not post the thread reply (no root)")
         return
     prefix = build_mention_prefix(os.environ.get("SLACK_MENTIONS")) if mention else ""
-    _post_message(channel, prefix + text, token, thread_ts=thread_ts)
+    if not _post_message(channel, prefix + text, token, thread_ts=thread_ts):
+        _note_failure("could not post the thread reply")
 
 
 def main(argv: list[str] | None = None) -> int:
