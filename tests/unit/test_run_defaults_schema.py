@@ -1,8 +1,4 @@
-"""Unit tests for RunDefaults + Compute/Storage/Observability schemas.
-
-Stage-1 scope: models only. The loader that consumes these lands in
-the next milestone. See docs/architecture/PROJECTS.md.
-"""
+"""Unit tests for RunDefaults + Compute/Storage/Observability schemas."""
 
 from __future__ import annotations
 
@@ -38,7 +34,7 @@ class TestComputeConfig:
         assert c.workers is None
         assert c.max_budget_usd is None
         assert c.max_requests_per_second is None
-        assert c.max_attempt_retries is None
+        assert c.max_attempt_retries == 0
         assert c.local_docker is None
 
     def test_rejects_unknown_provider(self) -> None:
@@ -98,9 +94,31 @@ class TestStorageConfig:
         assert q.backend == "postgres"
         assert q.postgres_dsn == "postgresql://x@h/db"
 
+    def test_queue_postgres_requires_dsn(self) -> None:
+        with pytest.raises(ValidationError, match="postgres_dsn"):
+            QueueStorageConfig(backend="postgres")
+        with pytest.raises(ValidationError, match="postgres_dsn"):
+            QueueStorageConfig(backend="postgres", postgres_dsn="")
+
     def test_queue_rejects_unknown_backend(self) -> None:
         with pytest.raises(ValidationError):
             QueueStorageConfig(backend="redis")  # type: ignore[arg-type]
+
+    def test_artifacts_union_discriminated_by_type(self) -> None:
+        # Mixed tag: type=local with an s3-only field. The discriminator
+        # must reject rather than silently pick LocalStorageConfig and
+        # drop the extra field.
+        with pytest.raises(ValidationError):
+            StorageConfig.model_validate(
+                {"artifacts": {"type": "local", "path": "/tmp", "bucket": "wrong-mix"}}
+            )
+
+    def test_artifacts_union_selects_by_type_tag(self) -> None:
+        s = StorageConfig.model_validate(
+            {"artifacts": {"type": "s3", "bucket": "b", "prefix": "p"}}
+        )
+        assert isinstance(s.artifacts, S3StorageConfig)
+        assert s.artifacts.bucket == "b"
 
 
 class TestObservabilityConfig:
@@ -120,15 +138,27 @@ class TestObservabilityConfig:
         assert t.exporter == "otlp"
         assert t.endpoint == "http://collector:4317"
 
+    def test_tracing_otlp_requires_endpoint(self) -> None:
+        with pytest.raises(ValidationError, match="endpoint"):
+            TracingConfig(exporter="otlp")
+
     def test_metrics_prometheus(self) -> None:
         m = MetricsConfig(exporter="prometheus", endpoint="http://prom:9090")
         assert m.exporter == "prometheus"
+
+    def test_metrics_prometheus_requires_endpoint(self) -> None:
+        with pytest.raises(ValidationError, match="endpoint"):
+            MetricsConfig(exporter="prometheus")
 
     def test_logging_defaults(self) -> None:
         lg = LoggingConfig()
         assert lg.level == "INFO"
         assert lg.exporter == "stdout"
         assert lg.endpoint is None
+
+    def test_logging_otlp_requires_endpoint(self) -> None:
+        with pytest.raises(ValidationError, match="endpoint"):
+            LoggingConfig(exporter="otlp")
 
     def test_logging_level_rejects_unknown(self) -> None:
         with pytest.raises(ValidationError):

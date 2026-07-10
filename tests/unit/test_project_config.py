@@ -1,8 +1,4 @@
-"""Unit tests for the ProjectConfig / TaskDefaults schema.
-
-Stage-1 scope: models only. No loader wiring, no strict validation.
-See docs/architecture/PROJECTS.md.
-"""
+"""Unit tests for the ProjectConfig / TaskDefaults schema."""
 
 from __future__ import annotations
 
@@ -110,6 +106,14 @@ class TestTaskDefaultsFields:
         )
         assert gd.combine is not None
         assert gd.combine.pass_threshold == 0.7
+
+    def test_grading_defaults_accepts_partial_combine(self) -> None:
+        # A project can declare only pass_threshold without enumerating
+        # every weight — weights defaults to an empty dict.
+        gd = GradingDefaults(combine=GradingCombineConfig(pass_threshold=0.9))
+        assert gd.combine is not None
+        assert gd.combine.pass_threshold == 0.9
+        assert gd.combine.weights == {}
 
     def test_policies_and_adapter_settings_are_dicts(self) -> None:
         td = TaskDefaults(
