@@ -1048,6 +1048,106 @@ _ALL: list[MC] = [
             }
         ),
     ),
+    # -----------------------------------------------------------------
+    # DeepSeek V3.2-Exp — experimental V3.2 reasoning line on the
+    # OpenRouter route. Re-integrated via auto-resolve 2026-07-10 after
+    # a fresh observe pass. Routes through the dedicated ``deepseek_v32``
+    # preset (OpenAI reasoning codec only): unlike the deepseek-v4 line it
+    # round-trips dict-map and SINGLE-turn discriminated-union calls on the
+    # *standard* response policy (dict_map 15/15, nested_union variant
+    # 15/15, heterogeneous array + allOf merge all 15/15), so it needs
+    # neither json_coerce nor dict_map_hints — only the codec so its
+    # reasoning_content summary lands in the trajectory logs like every
+    # other reasoning route. Reasoning is requested as
+    # ``extra_body.reasoning.effort`` via the openrouter provider overlay.
+    #
+    # Posture differs from the pre-de-integration cert on two shape-variance
+    # surfaces added 2026-07-07, both demoted to ``known_unsupported`` (see
+    # per-entry notes): the TWO-turn discriminated-union probe (0/15, model
+    # reuses the turn-1 table instead of switching) and the wide/nested
+    # recursive-$ref variants (10-11/15, too flaky to gate).
+    # -----------------------------------------------------------------
+    MC(
+        model_id="openrouter__deepseek_deepseek-v3.2-exp",
+        provider="openrouter",
+        name="deepseek/deepseek-v3.2-exp",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DICT_MAP_TOOL_CALL,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # Two-turn discriminated-union call is unreliable: both
+                # parametrisations fail 0/15 (observe 2026-07-10). The
+                # SINGLE-turn wire shape is clean (nested_union variant
+                # 15/15), but on turn 2 the model reuses the turn-1
+                # ``table=tickets`` / ``item.kind=ticket`` call instead of
+                # switching to the requested ``comments`` variant — a
+                # turn-2 intent-following gap, not a schema-dialect one (no
+                # preset recovers it). Same posture as the kimi-k2.6
+                # sibling. A single-turn variant of the probe would let
+                # this flip to ``required``.
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                # Recursive-$ref shape variants are flaky: ``simple`` passes
+                # 15/15 and ``deep_chain`` 14/15, but the ``wide_tree``
+                # (10/15) and ``nested_in_object`` (11/15) variants added
+                # 2026-07-07 drop children / emit a non-recursive leaf too
+                # often to gate. A ``required`` capability must pass
+                # reliably, so this stays ``known_unsupported`` until the
+                # route stabilises on the wide/nested shapes.
+                C.RECURSIVE_REF_TOOL_CALL,
+                # Tool-call reliability on a registered Decimal field is
+                # flaky: 6 pass / 9 fail across 15 live calls (observe
+                # 2026-07-10), every failure being "no tool call returned"
+                # (the model answers in prose instead of invoking the
+                # tool). Same posture as the deepseek-v4-pro sibling; a
+                # ``required`` capability must pass reliably, so Decimal
+                # stays ``known_unsupported`` until the route stabilises.
+                C.DECIMAL_FIELD_TOOL_CALL,
+                # OpenRouter surfaces only a ``reasoning_content`` summary,
+                # which OpenAIReasoningCodec yields as a single
+                # ``summary_text`` block, never the structured signed
+                # thinking blocks this capability requires. Same posture as
+                # the deepseek-v4-pro sibling under the identical OpenAI
+                # codec and the GPT-5 family. Observe 2026-07-10: 0/15.
+                C.THINKING_EMITS_BLOCKS,
+                # OpenAI-route reasoning has no replay path:
+                # ``OpenAIReasoningCodec.encode_for_replay`` returns ``{}``
+                # and DeepSeek does not accept echoed reasoning on later
+                # turns, exactly like the deepseek-v4-pro sibling. Observe
+                # 2026-07-10: turn 1 returns no structured reasoning (0/15).
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.UNSIGNED_THINKING_REPLAY,
+                # No Anthropic-style ephemeral cache: the first call created
+                # 0 cache_creation_input_tokens. Observe 2026-07-10: 0/15.
+                C.PROMPT_CACHING,
+                # OpenRouter auto-cache not reproducible in a clean 2-call
+                # 8 k-token probe (``cache_read_input_tokens=0`` on call 2),
+                # exactly like deepseek-v4-pro; production large-prompt runs
+                # may still cache in aggregate. Paired with the ratchet in
+                # ``test_implicit_prompt_caching_unsupported_ratchet`` (which
+                # passes), so the day a 2-call probe observes caching it
+                # flips back to ``required``. Observe 2026-07-10: 0/15.
+                C.IMPLICIT_PROMPT_CACHING,
+            }
+        ),
+    ),
     MC(
         model_id="openrouter__xiaomi_mimo-v2.5-pro",
         provider="openrouter",
