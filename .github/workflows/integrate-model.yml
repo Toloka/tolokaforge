@@ -63,6 +63,9 @@ jobs:
       SLACK_BOT_TOKEN: ${{ secrets.ARENA_AUTOMATION_SLACK_BOT_TOKEN }}
       SLACK_CHANNEL: ${{ vars.ARENA_AUTOMATION_SLACK_CHANNEL }}
       SLACK_MENTIONS: ${{ vars.ARENA_AUTOMATION_SLACK_MENTIONS }}
+      # Run + PR permalinks, passed to the Slack notifier as <url|label> links.
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      PR_URL: ${{ github.server_url }}/${{ github.repository }}/pull/${{ github.event.pull_request.number }}
     steps:
       - name: Reject fork PRs (no secrets on the pull_request event)
         if: env.IS_FORK == 'true'
@@ -102,12 +105,12 @@ jobs:
             gh pr edit "$PR" -R "$REPO" \
               --remove-label 'automation:integrate-running' \
               --add-label 'automation:integrate-needs-human'
-            gh pr comment "$PR" -R "$REPO" --body \
-              "Could not parse the candidate model from the PR title. Expected the convention \`integrate: <openrouter-model-slug>\` (e.g. \`integrate: anthropic/claude-opus-4.8\`). Marked \`automation:integrate-needs-human\`."
-            RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-            MSG="$(printf '%s\nRun: %s' ':warning: Needs human: PR title did not match `integrate: <slug>` (could not parse model)' "$RUN_URL")"
+            CURL="$(gh pr comment "$PR" -R "$REPO" --body \
+              "Could not parse the candidate model from the PR title. Expected the convention \`integrate: <openrouter-model-slug>\` (e.g. \`integrate: anthropic/claude-opus-4.8\`). Marked \`automation:integrate-needs-human\`." || true)"
             python3 scripts/integration/slack_notify.py reply \
-              --channel "$SLACK_CHANNEL" --pr "$PR" --mention --text "$MSG" || true
+              --channel "$SLACK_CHANNEL" --pr "$PR" --mention \
+              --text ':warning: Needs human: PR title did not match `integrate: <slug>` (could not parse model)' \
+              --pr-comment "$CURL" --pr-url "$PR_URL" --run-url "$RUN_URL" || true
             touch "$RUNNER_TEMP/slack_terminal_sent" || true
             echo "::error::PR title does not match 'integrate: <slug>'."
             exit 1
@@ -124,12 +127,11 @@ jobs:
         env:
           CANDIDATE_NAME: ${{ steps.parse.outputs.name }}
         run: |
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           python3 scripts/integration/slack_notify.py ensure-root \
             --channel "$SLACK_CHANNEL" --model "$CANDIDATE_NAME" --pr "$PR" || true
-          MSG="$(printf '%s\nRun: %s' ':arrow_forward: Observe started' "$RUN_URL")"
           python3 scripts/integration/slack_notify.py reply \
-            --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" --text "$MSG" || true
+            --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" \
+            --text ':arrow_forward: Observe started' --run-url "$RUN_URL" || true
 
       - uses: astral-sh/setup-uv@v7
         with:
@@ -300,14 +302,14 @@ jobs:
         env:
           CANDIDATE_NAME: ${{ steps.parse.outputs.name }}
         run: |
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           if [ ! -f observation/findings.json ]; then
             gh pr edit "$PR" -R "$REPO" --remove-label 'automation:integrate-running' \
               --add-label 'automation:integrate-needs-human' || true
             echo "clean=no" >> "$GITHUB_OUTPUT"
-            MSG="$(printf '%s\nRun: %s' ':warning: Needs human: observe did not run to completion (no findings.json - infra failure or crash before aggregation)' "$RUN_URL")"
             python3 scripts/integration/slack_notify.py reply \
-              --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" --mention --text "$MSG" || true
+              --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" --mention \
+              --text ':warning: Needs human: observe did not run to completion (no findings.json - infra failure or crash before aggregation)' \
+              --pr-url "$PR_URL" --run-url "$RUN_URL" || true
             touch "$RUNNER_TEMP/slack_terminal_sent" || true
             echo "no findings.json -> needs human"; exit 0
           fi
@@ -316,17 +318,18 @@ jobs:
             gh pr edit "$PR" -R "$REPO" --remove-label 'automation:integrate-running' \
               --add-label 'automation:resolve-running' || true
             echo "clean=yes" >> "$GITHUB_OUTPUT"
-            MSG="$(printf '%s\nRun: %s' ':white_check_mark: Observe clean, chaining to resolve' "$RUN_URL")"
             python3 scripts/integration/slack_notify.py reply \
-              --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" --text "$MSG" || true
+              --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" \
+              --text ':white_check_mark: Observe clean, chaining to resolve' --run-url "$RUN_URL" || true
             echo "observe clean -> resolve"
           else
             gh pr edit "$PR" -R "$REPO" --remove-label 'automation:integrate-running' \
               --add-label 'automation:integrate-needs-human' || true
             echo "clean=no" >> "$GITHUB_OUTPUT"
-            MSG="$(printf '%s\nRun: %s' ':warning: Needs human: observe infra-dirty (rate-limit / API error / capability suite did not run)' "$RUN_URL")"
             python3 scripts/integration/slack_notify.py reply \
-              --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" --mention --text "$MSG" || true
+              --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" --mention \
+              --text ':warning: Needs human: observe infra-dirty (rate-limit / API error / capability suite did not run)' \
+              --pr-url "$PR_URL" --run-url "$RUN_URL" || true
             touch "$RUNNER_TEMP/slack_terminal_sent" || true
             echo "observe infra-dirty or did-not-run -> needs human"
           fi
@@ -337,10 +340,9 @@ jobs:
         env:
           CANDIDATE_NAME: ${{ steps.parse.outputs.name }}
         run: |
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          MSG="$(printf '%s\nRun: %s' ':wrench: Resolve started' "$RUN_URL")"
           python3 scripts/integration/slack_notify.py reply \
-            --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" --text "$MSG" || true
+            --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" \
+            --text ':wrench: Resolve started' --run-url "$RUN_URL" || true
 
       - name: Configure git identity
         if: steps.gate.outputs.clean == 'yes'
@@ -473,7 +475,10 @@ jobs:
           git commit -m "integrate: ${TF_NAME} via auto-resolve (preset + cert)" \
             -m "Auto-resolve landed the proven policy. See the PR comment for the reprobe evidence and known_unsupported ceilings. Do not merge if this is a disposable test branch."
           git push origin "HEAD:${{ github.event.pull_request.head.ref }}"
-          [ -f observation/resolve/pr_comment.md ] && gh pr comment "$PR" -R "$REPO" --body-file observation/resolve/pr_comment.md || true
+          RECORD_URL=""
+          if [ -f observation/resolve/pr_comment.md ]; then
+            RECORD_URL="$(gh pr comment "$PR" -R "$REPO" --body-file observation/resolve/pr_comment.md || true)"
+          fi
           [ -f observation/resolve/pr_body.md ] && gh pr edit "$PR" -R "$REPO" --body-file observation/resolve/pr_body.md || true
           # Data-scope review gate: an array-under-free-form-object recovery is DATA-BOUND - its
           # scope depends on domain data the observe may not fully surface, so even a converged,
@@ -488,21 +493,22 @@ jobs:
              && grep -qiE "valid (list|array)" observation/findings.json; then
             DATA_SCOPE=yes
           fi
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           if [ "$DATA_SCOPE" = "yes" ]; then
-            gh pr comment "$PR" -R "$REPO" --body \
-              "WARNING - human review required (data-scope): the fix converged and passed the local gates, but it addresses a DATA-RELATED array / free-form-object recovery class whose scope depends on domain data the pipeline did not fully see. A human must verify it covers ALL affected domains and fields (a broader check) before merge - a locally-green fix can still be too narrow (or over-broad) on unseen data." || true
+            WARN_URL="$(gh pr comment "$PR" -R "$REPO" --body \
+              "WARNING - human review required (data-scope): the fix converged and passed the local gates, but it addresses a DATA-RELATED array / free-form-object recovery class whose scope depends on domain data the pipeline did not fully see. A human must verify it covers ALL affected domains and fields (a broader check) before merge - a locally-green fix can still be too narrow (or over-broad) on unseen data." || true)"
             gh pr edit "$PR" -R "$REPO" --remove-label 'automation:resolve-running' \
               --add-label 'automation:integrate-needs-human' || true
-            MSG="$(printf '%s\n%s\nRun: %s' ':warning: Needs human: integrated but a data-scope review is required (free-form array recovery)' 'Fix is committed; a human must verify the recovery scope across all domains before merge.' "$RUN_URL")"
             python3 scripts/integration/slack_notify.py reply \
-              --channel "$SLACK_CHANNEL" --pr "$PR" --model "$TF_NAME" --mention --text "$MSG" || true
+              --channel "$SLACK_CHANNEL" --pr "$PR" --model "$TF_NAME" --mention \
+              --text "$(printf '%s\n%s' ':warning: Needs human: integrated but a data-scope review is required (free-form array recovery)' 'Fix is committed; a human must verify the recovery scope across all domains before merge.')" \
+              --pr-comment "${WARN_URL:-$RECORD_URL}" --pr-url "$PR_URL" --run-url "$RUN_URL" || true
           else
             gh pr edit "$PR" -R "$REPO" --remove-label 'automation:resolve-running' \
               --add-label 'automation:integrate-done' || true
-            MSG="$(printf '%s\n%s\nRun: %s' ':white_check_mark: Integrated: preset + cert committed to the PR branch' 'Draft PR, human review gate, never auto-merged.' "$RUN_URL")"
             python3 scripts/integration/slack_notify.py reply \
-              --channel "$SLACK_CHANNEL" --pr "$PR" --model "$TF_NAME" --mention --text "$MSG" || true
+              --channel "$SLACK_CHANNEL" --pr "$PR" --model "$TF_NAME" --mention \
+              --text "$(printf '%s\n%s' ':white_check_mark: Integrated: preset + cert committed to the PR branch' 'Draft PR, human review gate, never auto-merged.')" \
+              --pr-comment "$RECORD_URL" --pr-url "$PR_URL" --run-url "$RUN_URL" || true
           fi
           touch "$RUNNER_TEMP/slack_terminal_sent" || true
 
@@ -516,12 +522,12 @@ jobs:
         run: |
           gh pr edit "$PR" -R "$REPO" --remove-label 'automation:resolve-running' \
             --add-label 'automation:integrate-needs-human' || true
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          gh pr comment "$PR" -R "$REPO" --body \
-            "Resolve did not converge within ${MAX_ITER} iterations, or converged but finalize failed (agent hit max-turns, wrote no changes, a broken/divergent policy failed the staged verification, or the push failed). Marked \`automation:integrate-needs-human\`. Latest overlay + reprobe are in the run artifacts. Run: ${RUN_URL}"
-          MSG="$(printf '%s\nRun: %s' ':warning: Needs human: resolve did not converge within '"${MAX_ITER}"' iterations (or finalize failed) - see PR for details' "$RUN_URL")"
+          CURL="$(gh pr comment "$PR" -R "$REPO" --body \
+            "Resolve did not converge within ${MAX_ITER} iterations, or converged but finalize failed (agent hit max-turns, wrote no changes, a broken/divergent policy failed the staged verification, or the push failed). Marked \`automation:integrate-needs-human\`. Latest overlay + reprobe are in the run artifacts. Run: ${RUN_URL}" || true)"
           python3 scripts/integration/slack_notify.py reply \
-            --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" --mention --text "$MSG" || true
+            --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" --mention \
+            --text ':warning: Needs human: resolve did not converge within '"${MAX_ITER}"' iterations (or finalize failed)' \
+            --pr-comment "$CURL" --pr-url "$PR_URL" --run-url "$RUN_URL" || true
           touch "$RUNNER_TEMP/slack_terminal_sent" || true
 
       - name: Slack notify - unexpected failure (catch-all)
@@ -536,7 +542,7 @@ jobs:
           if [ -f "$RUNNER_TEMP/slack_terminal_sent" ]; then
             echo "terminal Slack already sent -> no catch-all ping"; exit 0
           fi
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          MSG="$(printf '%s\nRun: %s' ':rotating_light: Pipeline error: unexpected failure, PR left mid-state' "$RUN_URL")"
           python3 scripts/integration/slack_notify.py reply \
-            --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" --mention --text "$MSG" || true
+            --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" --mention \
+            --text ':rotating_light: Pipeline error: unexpected failure, PR left mid-state' \
+            --pr-url "$PR_URL" --run-url "$RUN_URL" || true
