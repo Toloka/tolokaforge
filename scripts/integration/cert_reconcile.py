@@ -52,6 +52,7 @@ CORE_CAPABILITIES = frozenset(
         "usage_metrics_populated",
         "cost_usd_populated",
         "required_fields_complete",
+        "progress_after_success",
     }
 )
 

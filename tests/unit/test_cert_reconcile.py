@@ -156,3 +156,14 @@ def test_core_capability_can_never_be_known_unsupported():
         probed={"basic_completion": 1.0, "cost_usd_populated": 0.0},
     )
     assert not any("CORE-UNSUPPORTED" in v for v in v2)
+
+
+def test_core_capabilities_mirror_canon():
+    # cert_reconcile hardcodes the core set (it is a path-loaded stdlib script that cannot
+    # cheaply import the canon test module at runtime). Guard against drift: it MUST equal
+    # tests/canonical/test_capability_registry.py::_CORE_CAPABILITIES (7 caps incl.
+    # progress_after_success) - a missing entry would reopen the laundering loophole.
+    from tests.canonical.test_capability_registry import _CORE_CAPABILITIES
+
+    canon = {c.value for c in _CORE_CAPABILITIES}
+    assert canon == cert_reconcile.CORE_CAPABILITIES, cert_reconcile.CORE_CAPABILITIES ^ canon
