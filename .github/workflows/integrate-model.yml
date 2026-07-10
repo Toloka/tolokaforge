@@ -429,6 +429,8 @@ jobs:
           TF_PROVIDER: ${{ steps.parse.outputs.provider }}
           TF_NAME: ${{ steps.parse.outputs.name }}
           MODEL_ID: ${{ steps.slug.outputs.model_id }}
+          AUTO_MERGE_ENABLED: ${{ vars.ARENA_AUTOMATION_AUTO_MERGE_ENABLED }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           set -euo pipefail
           P=scripts/integration/prompts
@@ -516,9 +518,35 @@ jobs:
           else
             gh pr edit "$PR" -R "$REPO" --remove-label 'automation:resolve-running' \
               --add-label 'automation:integrate-done' || true
+            # Optional auto-merge (ARENA_AUTOMATION_AUTO_MERGE_ENABLED, case-insensitive `true`):
+            # squash-merge the integration PR on success. NEVER merges a disposable de-integration
+            # test branch (`test/*` - e.g. test/observe-<model> carries cert/preset DELETIONS and
+            # must never merge out). Any failure (branch protection, draft, perms, conflict) leaves
+            # the PR OPEN and never fails the job: false / missing / error => nothing merges.
+            AUTO_MERGE="$(printf '%s' "${AUTO_MERGE_ENABLED:-}" | tr '[:upper:]' '[:lower:]')"
+            MERGED=no
+            if [ "$AUTO_MERGE" = "true" ]; then
+              case "${HEAD_REF:-}" in
+                test/*)
+                  echo "auto-merge skipped: '${HEAD_REF:-}' is a disposable test branch (never merged)" ;;
+                *)
+                  if gh pr merge "$PR" -R "$REPO" --squash; then
+                    MERGED=yes
+                  else
+                    echo "::warning::ARENA_AUTOMATION_AUTO_MERGE_ENABLED=true but squash-merge failed - PR left open for manual merge"
+                  fi ;;
+              esac
+            fi
+            if [ "$MERGED" = "yes" ]; then
+              MSG="$(printf '%s\n%s' ':white_check_mark: Integrated + auto-merged (squash): preset + cert landed on the base branch.' 'ARENA_AUTOMATION_AUTO_MERGE_ENABLED=true - squash-merged automatically on success.')"
+            elif [ "$AUTO_MERGE" = "true" ]; then
+              MSG="$(printf '%s\n%s' ':white_check_mark: Integrated: preset + cert committed to the PR branch.' 'Auto-merge was enabled but did NOT complete (disposable test branch, branch protection, draft, or a merge error) - PR left open for review.')"
+            else
+              MSG="$(printf '%s\n%s' ':white_check_mark: Integrated: preset + cert committed to the PR branch.' 'Human review gate - auto-merge disabled (ARENA_AUTOMATION_AUTO_MERGE_ENABLED not set to true).')"
+            fi
             python3 scripts/integration/slack_notify.py reply \
               --channel "$SLACK_CHANNEL" --pr "$PR" --model "$TF_NAME" --mention \
-              --text "$(printf '%s\n%s' ':white_check_mark: Integrated: preset + cert committed to the PR branch' 'Draft PR, human review gate, never auto-merged.')" \
+              --text "$MSG" \
               --pr-comment "$RECORD_URL" --pr-url "$PR_URL" --run-url "$RUN_URL" || true
           fi
           touch "$RUNNER_TEMP/slack_terminal_sent" || true
