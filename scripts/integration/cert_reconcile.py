@@ -40,6 +40,21 @@ import sys
 HARD_PASS = 0.9
 SOFT_PASS = 0.8
 
+# Mirror of tests/canonical/test_capability_registry.py::_CORE_CAPABILITIES - the
+# capabilities every model MUST support. A core cap can NEVER be `known_unsupported`:
+# e.g. `cost_usd_populated` marked a "ceiling" would launder a missing-pricing gap
+# into a fake capability limit (ADD_NEW_MODEL.md step 1 + the cap's own docstring).
+CORE_CAPABILITIES = frozenset(
+    {
+        "basic_completion",
+        "simple_tool_call",
+        "multi_turn_tool_use",
+        "usage_metrics_populated",
+        "cost_usd_populated",
+        "required_fields_complete",
+    }
+)
+
 
 def probe_base(node_id: str) -> str:
     """``test_dict_map_tool_call[simple-openrouter__x]`` -> ``dict_map_tool_call``."""
@@ -77,6 +92,7 @@ def reconcile(
     required: set[str],
     known_unsupported: set[str],
     probed: dict[str, float],
+    core: frozenset[str] = frozenset(),
     hard: float = HARD_PASS,
     soft: float = SOFT_PASS,
 ) -> tuple[list[str], list[str]]:
@@ -84,6 +100,12 @@ def reconcile(
     declared = required | known_unsupported
     violations: list[str] = []
     warnings: list[str] = []
+    for cap in sorted(known_unsupported & core):
+        violations.append(
+            f"CORE-UNSUPPORTED: `{cap}` is a CORE capability and must be `required` - a core cap "
+            "can never be `known_unsupported` (e.g. cost_usd_populated as a ceiling hides a "
+            "missing-pricing gap)."
+        )
     for cap, rate in sorted(probed.items()):
         if cap not in declared:
             violations.append(
@@ -141,7 +163,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     per_probe = (findings.get("capability") or {}).get("per_probe") or []
     probed = aggregate_probes(per_probe, cap_values)
-    violations, warnings = reconcile(required, known_unsupported, probed)
+    violations, warnings = reconcile(required, known_unsupported, probed, core=CORE_CAPABILITIES)
     for warning in warnings:
         print(f"::warning::cert_reconcile: {warning}")
     for violation in violations:

@@ -164,9 +164,15 @@ sub-agent); the resolve prompts drive the fix loop. `index.yaml` is the machine-
   (probe x rep) pool parallelized at `--cap-parallel`; capability-only inner loop, plus a final
   wire pass on failed wire tasks.
 - `scripts/integration/resolve_greencheck.py` - fix-target convergence check.
+- `scripts/integration/ensure_pricing.py` - best-effort, run before observe: if the candidate's
+  litellm name is missing from `pricing.json`, fetch its OpenRouter pricing and insert one key
+  (minimal diff), so `COST_USD_POPULATED` can pass. `--check` mode (exit 1 if unpriced) is the
+  auto-merge price gate.
 - `scripts/integration/cert_reconcile.py` - reconciles the finalized cert against the observe
-  `findings.json`: fails if any probed capability is undeclared, or if a capability the baseline
-  shows passing (>= 0.9) is marked `known_unsupported`. Runs in the finalize gate before the stash.
+  `findings.json`: fails if any probed capability is undeclared, if a capability the baseline shows
+  passing (>= 0.9) is marked `known_unsupported`, or if any CORE capability (e.g.
+  `cost_usd_populated`) is `known_unsupported` (a laundered pricing gap). Runs in the finalize gate
+  before the stash.
 - `scripts/integration/slack_notify.py` - Slack thread notifier (`ensure-root` / `reply`
   subcommands); stdlib-only (runs under the system `python3` before `uv sync`), dry-run no-op
   without a token. See "Slack notifications" above.
@@ -204,8 +210,10 @@ sub-agent); the resolve prompts drive the fix loop. `index.yaml` is the machine-
   the human review gate, so it stays off unless explicitly enabled. It NEVER fires on a `test/*`
   de-integration branch (those carry deletions and must never merge out), NEVER on the data-scope
   needs-human path, and any merge failure (branch protection / draft / perms / conflict) leaves the
-  PR open (fail-safe - nothing merges on false / missing / error). The Slack success notification
-  states which happened: auto-merged, left-open, or disabled.
+  PR open (fail-safe - nothing merges on false / missing / error). It also requires the candidate to
+  be PRICED (an `ensure_pricing.py --check` gate) - an unpriced model never auto-merges, since its
+  cost reports would be wrong. The Slack success notification states which happened: auto-merged,
+  left-open, or disabled.
 - Disposable de-integration test branches (`test/observe-<model>[-rN]`) simulate a fresh candidate
   by deleting the model's cert/preset (and any bespoke policy class); they carry deletions and are
   NEVER merged out.
