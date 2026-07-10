@@ -93,6 +93,7 @@ them as `known_unsupported`.
 | `RESOLVE_CAPABILITY_K` | 5 | resolve per-iteration capability reprobe (cheap inner loop) |
 | `RESOLVE_CAP_PARALLEL` | 10 | resolve reprobe width (flat probe x rep pool; keep >= `RESOLVE_CAPABILITY_K`, <= ~16 for the rate limit) |
 | `RESOLVE_WIRE_K` | 10 | reserved for the final wire-verification pass (not yet wired) |
+| `ARENA_AUTOMATION_AUTO_MERGE_ENABLED` | (unset = off) | When `true` (case-insensitive), squash-merge the integration PR on a clean success. Never merges a `test/*` de-integration branch; a data-scope needs-human path never merges; any merge error (branch protection, draft, perms, conflict) leaves the PR open. `false` / missing / error => nothing merges. |
 
 ## Labels (the state machine)
 
@@ -189,7 +190,8 @@ sub-agent); the resolve prompts drive the fix loop. `index.yaml` is the machine-
   optimistic than a human baseline. Guardrails: `resolve_agent.md` requires evidence + mechanism
   consistency before marking a capability `required` (no promoting a cap a summary-only codec
   cannot support); the finalize staged-tree gate blocks over-reaching / broken fixes. The
-  draft-PR human gate and the hygiene review remain the backstop: never merge without review.
+  draft-PR human gate and the hygiene review remain the DEFAULT backstop: nothing merges without
+  review UNLESS auto-merge is explicitly enabled (see the auto-merge note below).
 - DATA-SCOPE review: a converged fix that recovers an array nested inside a FREE-FORM / open
   object (an `additionalProperties: true` parent) is DATA-BOUND - which fields carry the array is
   not in the schema, only in the domain data. Such a fix is committed but routed to
@@ -197,6 +199,13 @@ sub-agent); the resolve prompts drive the fix loop. `index.yaml` is the machine-
   locally-green fix can still be too narrow (or over-broad) on domains the observe never surfaced,
   so a human verifies the scope breadth before merge. Triggered by the agent's `data_scope_review`
   flag in `decision.json` OR an observe "valid list/array" rejection signal.
+- AUTO-MERGE (opt-in, OFF by default): when `ARENA_AUTOMATION_AUTO_MERGE_ENABLED` is `true`
+  (case-insensitive), a clean `integrate-done` squash-merges the PR automatically. This bypasses
+  the human review gate, so it stays off unless explicitly enabled. It NEVER fires on a `test/*`
+  de-integration branch (those carry deletions and must never merge out), NEVER on the data-scope
+  needs-human path, and any merge failure (branch protection / draft / perms / conflict) leaves the
+  PR open (fail-safe - nothing merges on false / missing / error). The Slack success notification
+  states which happened: auto-merged, left-open, or disabled.
 - Disposable de-integration test branches (`test/observe-<model>[-rN]`) simulate a fresh candidate
   by deleting the model's cert/preset (and any bespoke policy class); they carry deletions and are
   NEVER merged out.
