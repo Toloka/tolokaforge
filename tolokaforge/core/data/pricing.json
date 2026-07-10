@@ -1645,6 +1645,11 @@
       "input": 0.14,
       "output": 0.57
     },
+    "tencent/hy3": {
+      "input": 0.14,
+      "output": 0.58,
+      "cache_read": 0.035
+    },
     "tencent/hy3-preview": {
       "input": 0.063,
       "output": 0.21,

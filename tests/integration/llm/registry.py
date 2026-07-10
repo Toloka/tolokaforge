@@ -1806,6 +1806,69 @@ _ALL: list[MC] = [
             }
         ),
     ),
+    # HY3 (Tencent Hunyuan 3 GA via OpenRouter) — the released successor to
+    # the hy3-preview sibling below. Routes through the same shared
+    # ``openrouter_dict_stringify_recovery`` preset; the resolved policy
+    # fingerprint is byte-identical to hy3-preview (passthrough schema +
+    # dict_map_hints + json_coerce response + openai reasoning codec,
+    # cache_policy=none), confirmed via ``resolve_policy_names``, so no new
+    # preset is required.
+    #
+    # Live-certified 2026-07-10 via
+    # ``scripts/with_env.sh uv run pytest tests/integration/llm/ -k 'hy3 and not preview'``
+    # (18 passed, 3 skipped; final posture 17 required / 3 known_unsupported).
+    # Posture set by the ADD_NEW_MODEL.md § 3 disciplined flow — NOT copied
+    # from the preview sibling: the three non-structural ``known_unsupported``
+    # entries the preview holds were flipped to ``required`` as the hypothesis
+    # and re-run live. All three PASS on the GA release, so the GA is strictly
+    # stronger than the preview and they stay ``required``:
+    #
+    #   * DECIMAL_FIELD_TOOL_CALL — preview intermittently returned no tool
+    #     call (~2/5 runs); GA emits the Decimal call reliably.
+    #   * DISCRIMINATED_UNION_TOOL_CALL — preview intermittently renamed the
+    #     branch field (``title`` for ``subject``, ~1/5 runs); GA round-trips
+    #     both turns cleanly (json_coerce handles any stringified args).
+    #   * IMPLICIT_PROMPT_CACHING — preview's cold 2-call probe read 0; GA
+    #     surfaces cache_read on call 2.
+    #
+    # The three structural entries stay ``known_unsupported`` (all skipped
+    # live): the openai reasoning codec is summary-only (no signed blocks,
+    # no-op replay → THINKING_REPLAY_ROUNDTRIP / UNSIGNED_THINKING_REPLAY) and
+    # ``cache_policy=none`` attaches no cache_control markers (PROMPT_CACHING).
+    MC(
+        model_id="openrouter__tencent_hy3",
+        provider="openrouter",
+        name="tencent/hy3",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DICT_MAP_TOOL_CALL,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.THINKING_EMITS_BLOCKS,
+                C.IMPLICIT_PROMPT_CACHING,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                C.PROMPT_CACHING,
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.UNSIGNED_THINKING_REPLAY,
+            }
+        ),
+    ),
     # HY3-Preview (Tencent Hunyuan 3 via OpenRouter). Routes through the
     # shared ``openrouter_dict_stringify_recovery`` preset (json_coerce
     # decodes its stringified tool args; the openai codec surfaces its
