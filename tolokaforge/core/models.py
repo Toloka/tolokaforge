@@ -3,7 +3,7 @@
 import dataclasses
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Literal, get_args
+from typing import Annotated, Any, Literal, Self, get_args
 
 from pydantic import BaseModel, Field, field_serializer, field_validator, model_validator
 
@@ -556,6 +556,146 @@ class EngineConfig(BaseModel):
     )
 
 
+class LocalDockerComputeConfig(BaseModel):
+    """Configuration for the ``local-docker`` compute provider."""
+
+
+class ComputeConfig(BaseModel):
+    """Compute substrate + parallelism + budget selection for a run.
+
+    ``provider`` selects the runtime substrate; the sub-block matching
+    the provider (e.g. ``local_docker``) carries provider-specific
+    settings. When another provider is registered it shows up as a new
+    ``Literal`` value on ``provider`` plus its own sub-block.
+    """
+
+    provider: Literal["local-docker"] = "local-docker"
+    workers: int | None = Field(default=None, ge=1)
+    max_budget_usd: float | None = Field(default=None, ge=0.0)
+    max_requests_per_second: float | None = Field(default=None, gt=0.0)
+    max_attempt_retries: int = Field(default=0, ge=0)
+    local_docker: LocalDockerComputeConfig | None = None
+
+
+class LocalStorageConfig(BaseModel):
+    """Local-filesystem storage backend for artifacts or logs.
+
+    Extras rejected so a mis-tagged input (e.g. ``bucket`` on a
+    ``type=local`` block) fails loud instead of dropping the stray
+    field. The discriminator on ``StorageBackend`` selects this variant
+    by ``type``; extras=forbid makes the selection safe.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    type: Literal["local"] = "local"
+    path: str
+
+
+class S3StorageConfig(BaseModel):
+    """S3 storage backend for artifacts or logs.
+
+    Extras rejected — same rationale as :class:`LocalStorageConfig`.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    type: Literal["s3"] = "s3"
+    bucket: str
+    prefix: str | None = None
+
+
+# Discriminated union over the ``type`` tag so mixed-tag inputs fail
+# loud instead of silently dropping the fields of the losing variant.
+StorageBackend = Annotated[LocalStorageConfig | S3StorageConfig, Field(discriminator="type")]
+
+
+class QueueStorageConfig(BaseModel):
+    """Queue backend for orchestrator state.
+
+    ``backend='postgres'`` requires ``postgres_dsn`` — enforced by
+    ``_require_postgres_dsn`` so a partial declaration fails at load
+    instead of falling back silently.
+    """
+
+    backend: Literal["sqlite", "postgres"] = "sqlite"
+    postgres_dsn: str | None = None
+
+    @model_validator(mode="after")
+    def _require_postgres_dsn(self) -> Self:
+        if self.backend == "postgres" and not self.postgres_dsn:
+            raise ValueError("QueueStorageConfig.backend='postgres' requires postgres_dsn.")
+        return self
+
+
+class StorageConfig(BaseModel):
+    """Where a run's artifacts, logs, and queue state live."""
+
+    artifacts: StorageBackend | None = None
+    logs: StorageBackend | None = None
+    queue: QueueStorageConfig | None = None
+
+
+class TracingConfig(BaseModel):
+    """Tracing exporter selection.
+
+    A non-default ``exporter`` requires an ``endpoint``; ``none`` (the
+    default) does not.
+    """
+
+    exporter: Literal["none", "otlp"] = "none"
+    endpoint: str | None = None
+
+    @model_validator(mode="after")
+    def _require_endpoint_when_active(self) -> Self:
+        if self.exporter != "none" and not self.endpoint:
+            raise ValueError(f"TracingConfig.exporter={self.exporter!r} requires endpoint.")
+        return self
+
+
+class MetricsConfig(BaseModel):
+    """Metrics exporter selection.
+
+    A non-default ``exporter`` requires an ``endpoint``; ``none`` (the
+    default) does not.
+    """
+
+    exporter: Literal["none", "prometheus"] = "none"
+    endpoint: str | None = None
+
+    @model_validator(mode="after")
+    def _require_endpoint_when_active(self) -> Self:
+        if self.exporter != "none" and not self.endpoint:
+            raise ValueError(f"MetricsConfig.exporter={self.exporter!r} requires endpoint.")
+        return self
+
+
+class LoggingConfig(BaseModel):
+    """Logging exporter selection.
+
+    ``exporter='otlp'`` requires an ``endpoint``; ``stdout`` (the
+    default) does not.
+    """
+
+    level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    exporter: Literal["stdout", "otlp"] = "stdout"
+    endpoint: str | None = None
+
+    @model_validator(mode="after")
+    def _require_endpoint_when_active(self) -> Self:
+        if self.exporter == "otlp" and not self.endpoint:
+            raise ValueError(f"LoggingConfig.exporter={self.exporter!r} requires endpoint.")
+        return self
+
+
+class ObservabilityConfig(BaseModel):
+    """Tracing, metrics, and logging exporters for a run."""
+
+    tracing: TracingConfig | None = None
+    metrics: MetricsConfig | None = None
+    logging: LoggingConfig | None = None
+
+
 class RunConfig(BaseModel):
     """Complete run configuration"""
 
@@ -563,6 +703,9 @@ class RunConfig(BaseModel):
     orchestrator: OrchestratorConfig
     evaluation: EvaluationConfig
     engine: EngineConfig | None = None
+    compute: ComputeConfig | None = None
+    storage: StorageConfig | None = None
+    observability: ObservabilityConfig | None = None
 
 
 # Task Configuration Models
@@ -692,10 +835,15 @@ class TranscriptRulesConfig(BaseModel):
 
 
 class GradingCombineConfig(BaseModel):
-    """Grading combination configuration"""
+    """Grading combination configuration.
+
+    ``weights`` defaults to an empty dict so a project-level defaults
+    block may declare only a partial view (e.g. ``pass_threshold`` alone).
+    Consumers that require weights validate presence at use-site.
+    """
 
     method: str = "weighted"
-    weights: dict[str, float]
+    weights: dict[str, float] = Field(default_factory=dict)
     pass_threshold: float = 0.8
 
 
@@ -707,3 +855,94 @@ class GradingConfig(BaseModel):
     transcript_rules: TranscriptRulesConfig | None = None
     llm_judge: LLMJudgeConfig | None = None
     custom_checks: dict[str, Any] | None = None  # CustomChecksConfig as dict for flexibility
+
+
+class TimeoutDefaults(BaseModel):
+    """Task-shape timeouts applied to every task via ``task_defaults``."""
+
+    trial_seconds: int = Field(default=600, ge=1)
+    tool_call_seconds: int = Field(default=60, ge=1)
+
+
+class StuckHeuristicsDefaults(BaseModel):
+    """Task-shape stuck-detection knobs applied to every task via
+    ``task_defaults``. Distinct from ``OrchestratorConfig.stuck_heuristics``,
+    which is the run-scoped orchestrator setting."""
+
+    enabled: bool = True
+    max_repeated_tool_calls: int = Field(default=5, ge=1)
+    max_idle_turns: int = Field(default=3, ge=1)
+
+
+class GradingDefaults(BaseModel):
+    """Grading defaults applied to every task via ``task_defaults``. A
+    task's own ``grading.yaml.combine`` deep-merges on top."""
+
+    combine: GradingCombineConfig | None = None
+
+
+class TaskDefaults(BaseModel):
+    """Base task-level configuration inherited by every task in a project.
+
+    Applied at loader time; ``task.yaml`` deltas deep-merge on top with
+    task fields winning on conflict. Every field is optional — omitting a
+    field means the engine default (or an adapter default) applies.
+    """
+
+    adapter_type: str | None = None
+    max_turns: int | None = Field(default=None, ge=1)
+    system_prompt: str | None = None
+    user_simulator: UserSimulatorConfig | None = None
+    policies: dict[str, Any] = Field(default_factory=dict)
+    metadata: TaskMetadata | None = None
+    adapter_settings: dict[str, Any] = Field(default_factory=dict)
+    tools: ToolsConfig | None = None
+    grading_defaults: GradingDefaults | None = None
+    timeouts: TimeoutDefaults | None = None
+    stuck_heuristics: StuckHeuristicsDefaults | None = None
+    continue_prompt: str | None = None
+
+
+class RunDefaults(BaseModel):
+    """Base run-level configuration inherited by every ``run_configs/*.yaml``.
+
+    Applied at loader time; per-invocation run-config files deep-merge on
+    top. Every field is optional — a project without ``run_defaults`` acts
+    as if every run config were a standalone declaration.
+    """
+
+    compute: ComputeConfig | None = None
+    storage: StorageConfig | None = None
+    observability: ObservabilityConfig | None = None
+    orchestrator: OrchestratorConfig | None = None
+    models: dict[str, ModelConfig] = Field(default_factory=dict)
+
+
+class TaskDiscoveryConfig(BaseModel):
+    """Where the loader finds task files under the project directory."""
+
+    glob: str = "tasks/**/task.yaml"
+
+
+class TaskInventoryConfig(BaseModel):
+    """Task discovery configuration on the Project."""
+
+    discovery: TaskDiscoveryConfig = Field(default_factory=TaskDiscoveryConfig)
+
+
+class ProjectConfig(BaseModel):
+    """Top-level Project spec — a ``project.yaml`` at a pack root.
+
+    Holds identity, task discovery, the default environment every task
+    inherits, and two labelled base blocks: ``task_defaults`` (base for
+    tasks) and ``run_defaults`` (base for run configs). See
+    ``docs/architecture/PROJECTS.md``.
+    """
+
+    name: str
+    version: int = 1
+    description: str | None = None
+    tasks: TaskInventoryConfig = Field(default_factory=TaskInventoryConfig)
+    default_environment: EnvironmentManifest | None = None
+    task_defaults: TaskDefaults = Field(default_factory=TaskDefaults)
+    run_defaults: RunDefaults | None = None

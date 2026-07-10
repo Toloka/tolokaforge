@@ -114,6 +114,134 @@ _ALL: list[MC] = [
         ),
     ),
     # -----------------------------------------------------------------
+    # OpenAI GPT-5.6 family (Terra + Sol tiers) — routed through the same
+    # ``openai_gpt5`` preset as gpt-5.4 / gpt-5.5 (strict schema sanitiser +
+    # array_dict_map response policy + OpenAI-style reasoning summary). Both
+    # variants resolve to a policy fingerprint byte-identical to the gpt-5.5
+    # sibling (schema_sanitizer=strict, response_policy=array_dict_map,
+    # reasoning_codec=openai, cache_policy=none), confirmed via
+    # ``resolve_policy_names``, so no new preset is required. OpenRouter
+    # exposes GPT-5.6 only as named tiers (Luna / Terra / Sol, each with a
+    # ``-pro`` reasoning-mode twin); there is no bare ``openai/gpt-5.6``.
+    # Terra ($2.5/$15) and Sol ($5/$30, flagship) are the same underlying
+    # family at different price/quality tiers and returned IDENTICAL live
+    # capability postures, so they share the posture below.
+    #
+    # Live-certified 2026-07-10 via
+    # ``scripts/with_env.sh uv run pytest tests/integration/llm/ -k gpt-5.6``
+    # (first pass: 28 passed, 8 skipped, 6 failed — the 6 fails are the same
+    # 3 capabilities on each variant; final posture 13 required /
+    # 7 known_unsupported per variant). Posture set by the ADD_NEW_MODEL.md
+    # § 3 disciplined flow: the gpt-5.5 sibling posture (16 required /
+    # 4 known_unsupported) was the starting hypothesis, and the THREE
+    # capabilities gpt-5.5 holds as ``required`` but gpt-5.6 refuted live were
+    # demoted (the key divergence from the sibling — NOT a blind copy):
+    #
+    #   * RE2_PATTERN_TOLERANCE — gpt-5.6's endpoint now REJECTS tool schemas
+    #     carrying a RE2-incompatible lookaround ``pattern`` with ``400
+    #     invalid_json_schema: regex lookaround is not supported`` (the error
+    #     names both Azure and OpenAI as rejecting). gpt-5.4/5.5 accept the
+    #     same payload, so this is a gpt-5.6 validator tightening, matching the
+    #     grok-4.3 posture. Production is unaffected:
+    #     ``StrictSchema.strip_re2_incompatible_patterns`` (default True on the
+    #     openai_gpt5 preset) strips the pattern before it reaches the model;
+    #     the raw-probe capability test swaps in PassthroughSchema to reach the
+    #     provider unstripped. Paired ratchet fires if OpenAI relaxes it.
+    #   * DECIMAL_FIELD_TOOL_CALL — intermittently returns NO tool call when a
+    #     Pydantic ``Decimal`` field is present (terra 2/2 fail, sol 1/2 fail
+    #     across two runs 2026-07-10). StrictSchema's Decimal-anyOf collapse
+    #     keeps the schema valid (no 400), so this is a model-behaviour gap,
+    #     not a schema-dialect one; a ``required`` capability must pass
+    #     reliably, so it is demoted. Same failure family as the
+    #     deepseek-v3.2-exp / tencent-hy3 decimal flakiness.
+    #   * IMPLICIT_PROMPT_CACHING — a clean 2-call 8 k-token probe records the
+    #     cache WRITE (cache_write_tokens ~8092) but reads back 0
+    #     cache_read_input_tokens on call 2 (route served by Azure, which does
+    #     not surface the read on a cold back-to-back probe). gpt-5.5's route
+    #     auto-caches; gpt-5.6's does not on this probe. Paired with
+    #     ``test_implicit_prompt_caching_unsupported_ratchet`` so it flips back
+    #     to required the day a 2-call probe observes caching.
+    #
+    # The four structural entries stay ``known_unsupported`` (all skipped
+    # live): the OpenAI reasoning codec surfaces summary-only reasoning (no
+    # signed blocks, no-op replay → THINKING_*), and ``cache_policy=none``
+    # attaches no explicit cache_control markers (PROMPT_CACHING).
+    # -----------------------------------------------------------------
+    MC(
+        model_id="openrouter__openai_gpt-5.6-terra",
+        provider="openrouter",
+        name="openai/gpt-5.6-terra",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.ENUM_SLASH_TOLERANCE,
+                C.DICT_MAP_TOOL_CALL,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # Structural to the openai_gpt5 preset (openai reasoning codec
+                # + cache_policy=none) — see family header.
+                C.THINKING_EMITS_BLOCKS,
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.UNSIGNED_THINKING_REPLAY,
+                C.PROMPT_CACHING,
+                # Demoted from the gpt-5.5 hypothesis after the live run — see
+                # family header for the per-capability evidence.
+                C.RE2_PATTERN_TOLERANCE,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.IMPLICIT_PROMPT_CACHING,
+            }
+        ),
+    ),
+    MC(
+        model_id="openrouter__openai_gpt-5.6-sol",
+        provider="openrouter",
+        name="openai/gpt-5.6-sol",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.ENUM_SLASH_TOLERANCE,
+                C.DICT_MAP_TOOL_CALL,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # Identical live posture to the terra sibling (same underlying
+                # family) — see family header for the full evidence.
+                C.THINKING_EMITS_BLOCKS,
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.UNSIGNED_THINKING_REPLAY,
+                C.PROMPT_CACHING,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.IMPLICIT_PROMPT_CACHING,
+            }
+        ),
+    ),
+    # -----------------------------------------------------------------
     # Anthropic Claude family — structured thinking blocks + ephemeral
     # cache fully wired. Strict schema sanitisation is NOT applied to
     # Anthropic (preset keeps :class:`PassthroughSchema`), so dict-map /
@@ -676,6 +804,75 @@ _ALL: list[MC] = [
                 # test fires when xAI relaxes the validator and the
                 # strip can be retired.
                 C.RE2_PATTERN_TOLERANCE,
+            }
+        ),
+    ),
+    # Grok-4.5 — xAI's successor to the 4.x line, routed through the same
+    # ``xai_grok`` preset as grok-4 / grok-4.3 (strict schema sanitiser +
+    # array_dict_map response policy + OpenAI-style reasoning summary). The
+    # resolved policy fingerprint is byte-identical to the grok-4.3 sibling
+    # (schema_sanitizer=strict, response_policy=array_dict_map,
+    # reasoning_codec=openai, cache_policy=none), confirmed via
+    # ``resolve_policy_names``, so no new preset is required.
+    #
+    # Live-certified 2026-07-09 via
+    # ``scripts/with_env.sh uv run pytest tests/integration/llm/ -k grok-4.5``
+    # (17 passed, 5 skipped; final posture 15 required / 5 known_unsupported).
+    # Posture set by the ADD_NEW_MODEL.md § 3 disciplined flow — NOT copied
+    # from a sibling: the grok-4.3 sibling's three non-structural
+    # ``known_unsupported`` entries were flipped to ``required`` as the
+    # hypothesis and re-run live. All three PASS on grok-4.5, so they stay
+    # ``required`` (matching grok-4, not grok-4.3):
+    #
+    #   * MULTI_TURN_ERROR_RECOVERY — grok-4.3 was demoted for a ~17 %
+    #     field-name-as-value hallucination on the retry; grok-4.5 recovers
+    #     reliably (test passed 2026-07-09).
+    #   * ENUM_SLASH_TOLERANCE + RE2_PATTERN_TOLERANCE — grok-4.3's tightened
+    #     tool-schema validator rejected ``/`` enum values and RE2-incompatible
+    #     ``pattern`` regexes; grok-4.5 accepts both, so the xAI validator
+    #     tightening that landed with 4.3 has been relaxed again.
+    #
+    # The five structural entries stay ``known_unsupported`` (all skipped
+    # live): the ``xai_grok`` preset wires the OpenAI reasoning codec (summary
+    # only — no signed blocks, no-op replay) and ``cache_policy=none`` (no
+    # cache_control markers), so THINKING_* and PROMPT_CACHING cannot fire on
+    # this route regardless of model version; IMPLICIT_PROMPT_CACHING keeps the
+    # grok-family observation that no upstream cache is surfaced on the
+    # OpenRouter x-ai/grok-* routes (paired ratchet
+    # ``test_implicit_prompt_caching_unsupported_ratchet`` passed live).
+    MC(
+        model_id="openrouter__x-ai_grok-4.5",
+        provider="openrouter",
+        name="x-ai/grok-4.5",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DICT_MAP_TOOL_CALL,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                C.THINKING_EMITS_BLOCKS,
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.UNSIGNED_THINKING_REPLAY,
+                C.PROMPT_CACHING,
+                # No implicit upstream cache surfaced on the OpenRouter
+                # x-ai/grok-* routes.
+                C.IMPLICIT_PROMPT_CACHING,
             }
         ),
     ),
@@ -1606,6 +1803,69 @@ _ALL: list[MC] = [
                 # No ephemeral cache markers; auto-cache probe read 0.
                 C.PROMPT_CACHING,
                 C.IMPLICIT_PROMPT_CACHING,
+            }
+        ),
+    ),
+    # HY3 (Tencent Hunyuan 3 GA via OpenRouter) — the released successor to
+    # the hy3-preview sibling below. Routes through the same shared
+    # ``openrouter_dict_stringify_recovery`` preset; the resolved policy
+    # fingerprint is byte-identical to hy3-preview (passthrough schema +
+    # dict_map_hints + json_coerce response + openai reasoning codec,
+    # cache_policy=none), confirmed via ``resolve_policy_names``, so no new
+    # preset is required.
+    #
+    # Live-certified 2026-07-10 via
+    # ``scripts/with_env.sh uv run pytest tests/integration/llm/ -k 'hy3 and not preview'``
+    # (18 passed, 3 skipped; final posture 17 required / 3 known_unsupported).
+    # Posture set by the ADD_NEW_MODEL.md § 3 disciplined flow — NOT copied
+    # from the preview sibling: the three non-structural ``known_unsupported``
+    # entries the preview holds were flipped to ``required`` as the hypothesis
+    # and re-run live. All three PASS on the GA release, so the GA is strictly
+    # stronger than the preview and they stay ``required``:
+    #
+    #   * DECIMAL_FIELD_TOOL_CALL — preview intermittently returned no tool
+    #     call (~2/5 runs); GA emits the Decimal call reliably.
+    #   * DISCRIMINATED_UNION_TOOL_CALL — preview intermittently renamed the
+    #     branch field (``title`` for ``subject``, ~1/5 runs); GA round-trips
+    #     both turns cleanly (json_coerce handles any stringified args).
+    #   * IMPLICIT_PROMPT_CACHING — preview's cold 2-call probe read 0; GA
+    #     surfaces cache_read on call 2.
+    #
+    # The three structural entries stay ``known_unsupported`` (all skipped
+    # live): the openai reasoning codec is summary-only (no signed blocks,
+    # no-op replay → THINKING_REPLAY_ROUNDTRIP / UNSIGNED_THINKING_REPLAY) and
+    # ``cache_policy=none`` attaches no cache_control markers (PROMPT_CACHING).
+    MC(
+        model_id="openrouter__tencent_hy3",
+        provider="openrouter",
+        name="tencent/hy3",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DICT_MAP_TOOL_CALL,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.THINKING_EMITS_BLOCKS,
+                C.IMPLICIT_PROMPT_CACHING,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                C.PROMPT_CACHING,
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.UNSIGNED_THINKING_REPLAY,
             }
         ),
     ),
