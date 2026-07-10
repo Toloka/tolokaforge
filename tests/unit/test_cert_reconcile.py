@@ -134,3 +134,25 @@ def test_corrected_cert_reconciles_clean():
     violations, warnings = cert_reconcile.reconcile(required, known_unsupported, _mimo_probed())
     assert violations == []
     assert any("multi_turn_error_recovery" in w for w in warnings)
+
+
+def test_core_capability_can_never_be_known_unsupported():
+    # A pricing gap makes cost_usd fail live; laundering it into a known_unsupported
+    # ceiling (baseline 0.0, so the false-pessimism >=0.9 rule does NOT catch it) must
+    # still be blocked because cost_usd_populated is a CORE capability.
+    violations, _ = cert_reconcile.reconcile(
+        required={"basic_completion"},
+        known_unsupported={"cost_usd_populated"},
+        probed={"basic_completion": 1.0, "cost_usd_populated": 0.0},
+        core=cert_reconcile.CORE_CAPABILITIES,
+    )
+    assert any(
+        "CORE-UNSUPPORTED" in v and "cost_usd_populated" in v for v in violations
+    ), violations
+    # without the core set (default) it is NOT flagged - proves the guard is what catches it
+    v2, _ = cert_reconcile.reconcile(
+        required={"basic_completion"},
+        known_unsupported={"cost_usd_populated"},
+        probed={"basic_completion": 1.0, "cost_usd_populated": 0.0},
+    )
+    assert not any("CORE-UNSUPPORTED" in v for v in v2)

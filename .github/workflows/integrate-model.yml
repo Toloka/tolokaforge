@@ -159,6 +159,16 @@ jobs:
           echo "model_id=$MODEL_ID" >> "$GITHUB_OUTPUT"
           echo "Candidate model_id: $MODEL_ID"
 
+      - name: Ensure candidate pricing (best-effort; fills pricing.json before COST_USD is probed)
+        # A model litellm does not know natively needs a pricing.json entry, or COST_USD_POPULATED
+        # (a CORE capability) fails in observe. Fetches OpenRouter pricing for the candidate and
+        # inserts one key (minimal diff); best-effort - a miss is not fatal (the finalize agent
+        # tops it up, and the auto-merge price gate is the backstop).
+        env:
+          TF_NAME: ${{ steps.parse.outputs.name }}
+        run: |
+          uv run python scripts/integration/ensure_pricing.py --name "$TF_NAME" || true
+
       # ---------------------------------------------------------------- OBSERVE
       - name: Capability integration probes (report-only, CAPABILITY_K repeats)
         # All capabilities run against the candidate (ephemeral all-required cert injected via
@@ -450,7 +460,7 @@ jobs:
           # cache_policy), and a narrow list silently drops the new file while committing its
           # wiring -> a build-breaking dangling import. Plus the cert + preset.
           git add tolokaforge/core/llm tolokaforge/core/data/model_presets.yaml \
-            tests/integration/llm/registry.py 2>/dev/null || true
+            tolokaforge/core/data/pricing.json tests/integration/llm/registry.py 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "::error::finalize produced no file changes"; exit 1
           fi
@@ -530,7 +540,12 @@ jobs:
                 test/*)
                   echo "auto-merge skipped: '${HEAD_REF:-}' is a disposable test branch (never merged)" ;;
                 *)
-                  if gh pr merge "$PR" -R "$REPO" --squash; then
+                  # Price check is a MERGE PRECONDITION: never auto-merge a model with no
+                  # pricing.json entry (its cost reports would be wrong). ensure_pricing --check
+                  # exits non-zero if the candidate is unpriced.
+                  if ! uv run python scripts/integration/ensure_pricing.py --name "$TF_NAME" --check; then
+                    echo "::warning::auto-merge skipped: '$TF_NAME' has no pricing.json entry (price check failed) - PR left open"
+                  elif gh pr merge "$PR" -R "$REPO" --squash; then
                     MERGED=yes
                   else
                     echo "::warning::ARENA_AUTOMATION_AUTO_MERGE_ENABLED=true but squash-merge failed - PR left open for manual merge"
@@ -540,7 +555,7 @@ jobs:
             if [ "$MERGED" = "yes" ]; then
               MSG="$(printf '%s\n%s' ':white_check_mark: Integrated + auto-merged (squash): preset + cert landed on the base branch.' 'ARENA_AUTOMATION_AUTO_MERGE_ENABLED=true - squash-merged automatically on success.')"
             elif [ "$AUTO_MERGE" = "true" ]; then
-              MSG="$(printf '%s\n%s' ':white_check_mark: Integrated: preset + cert committed to the PR branch.' 'Auto-merge was enabled but did NOT complete (disposable test branch, branch protection, draft, or a merge error) - PR left open for review.')"
+              MSG="$(printf '%s\n%s' ':white_check_mark: Integrated: preset + cert committed to the PR branch.' 'Auto-merge was enabled but did NOT complete (disposable test branch, missing pricing, branch protection, draft, or a merge error) - PR left open for review.')"
             else
               MSG="$(printf '%s\n%s' ':white_check_mark: Integrated: preset + cert committed to the PR branch.' 'Human review gate - auto-merge disabled (ARENA_AUTOMATION_AUTO_MERGE_ENABLED not set to true).')"
             fi
