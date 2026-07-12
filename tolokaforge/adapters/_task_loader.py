@@ -95,7 +95,11 @@ def validate_grading_yaml(grading_path: Path) -> None:
         LLMJudgeConfig(**llm_judge)
 
 
-def load_task_yaml(task_path: Path) -> tuple[TaskConfig, Path]:
+def load_task_yaml(
+    task_path: Path,
+    *,
+    project_task_defaults: dict[str, Any] | None = None,
+) -> tuple[TaskConfig, Path]:
     """Read ``task.yaml``, apply any ``domain:`` merge, return the validated config.
 
     All relative-path fields on the returned :class:`TaskConfig` are expressed
@@ -106,6 +110,12 @@ def load_task_yaml(task_path: Path) -> tuple[TaskConfig, Path]:
 
     Args:
         task_path: Absolute or relative path to ``task.yaml``.
+        project_task_defaults: Optional ``project.task_defaults`` dict from
+            the enclosing project. When supplied, it is layered under the
+            adapter's Domain merge and the task's own fields — task fields
+            still win on conflict; project defaults fill in fields the task
+            (and any Domain bundle) leaves unset. Precedence, low to high:
+            adapter Domain bundle → project defaults → task.yaml.
 
     Returns:
         ``(task_config, effective_task_dir)``. ``effective_task_dir`` is the
@@ -139,6 +149,14 @@ def load_task_yaml(task_path: Path) -> tuple[TaskConfig, Path]:
         _rewrite_task_paths(task_data, task_path.parent, task_root)
 
     task_data = _apply_domain(task_path, task_data, task_root)
+
+    # Layer project.task_defaults under the task's own fields. Task fields
+    # continue to win on conflict; project defaults fill fields the task
+    # (and any adapter Domain bundle) leaves unset. Applied after the
+    # Domain merge so project defaults sit above adapter defaults in the
+    # precedence chain.
+    if project_task_defaults:
+        task_data = _deep_merge_task(project_task_defaults, task_data)
 
     # Resolve environment_manifest.compose_file to an absolute path
     # against the task root so ``EnvironmentManifest``'s file-existence

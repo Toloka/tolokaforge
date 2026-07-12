@@ -17,6 +17,13 @@ from tolokaforge.core.llm.presets import (
 )
 from tolokaforge.core.models import RunConfig
 from tolokaforge.core.orchestrator import Orchestrator
+from tolokaforge.core.project_loader import (
+    detect_project_layout,
+    load_project_config,
+    resolve_effective_run_config_data,
+    synthesize_default_project,
+    warn_legacy_run_config_dir,
+)
 from tolokaforge.core.resume import RunStateManager
 from tolokaforge.core.run_queue import create_run_queue
 from tolokaforge.secrets import init_default, install_global_redactor
@@ -204,6 +211,23 @@ def run(
     with open(config) as f:
         config_data = yaml.safe_load(f)
 
+    # Resolve the enclosing project so ``project.run_defaults`` layers
+    # under the selected run config and ``project.task_defaults`` reaches
+    # the adapter downstream. Packs without ``project.yaml`` get a
+    # synthesised default (transitional — the loader logs an info line so
+    # the fallback is visible).
+    config_path = Path(config).resolve()
+    project_root, used_legacy_dir = detect_project_layout(config_path)
+    if used_legacy_dir:
+        warn_legacy_run_config_dir(config_path)
+    if project_root is not None:
+        project = load_project_config(project_root / "project.yaml")
+    else:
+        # No project.yaml found upstream — synthesise a minimal default so
+        # the rest of the loader treats every pack uniformly.
+        project = synthesize_default_project(project_root=config_path.parent)
+    config_data = resolve_effective_run_config_data(project, config_data)
+
     # Create output directory with timestamp (if not resuming)
     if "output_dir" not in config_data.get("evaluation", {}):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -261,8 +285,11 @@ def run(
     if overlay_path:
         console.print(f"[cyan]Preset overlay: {overlay_path}[/cyan]")
 
-    # Create orchestrator with flags
-    orchestrator = Orchestrator(run_config, resume=resume, verbose=verbose, strict=strict)
+    # Create orchestrator with flags. Pass the resolved project so the
+    # adapter picks up project.task_defaults on task load.
+    orchestrator = Orchestrator(
+        run_config, resume=resume, verbose=verbose, strict=strict, project=project
+    )
 
     # Load tasks
     console.print("[bold blue]Loading tasks...[/bold blue]")

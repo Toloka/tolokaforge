@@ -39,6 +39,7 @@ from tolokaforge.core.metrics import (
 )
 from tolokaforge.core.models import (
     ModelConfig,
+    ProjectConfig,
     RunConfig,
     TaskConfig,
     TerminationReason,
@@ -226,11 +227,18 @@ class Orchestrator:
         verbose: bool = False,
         strict: bool = False,
         deps: OrchestratorDeps | None = None,
+        project: ProjectConfig | None = None,
     ):
         self.config = config
         self.resume = resume
         self.verbose = verbose
         self.strict = strict
+        # Enclosing project (loaded from ``project.yaml``). Adapter
+        # instantiation reads ``project.task_defaults`` from here so every
+        # task inherits the project-level defaults declared alongside
+        # the pack. ``None`` for callers without a project (e.g. old-
+        # shape packs where the CLI synthesises a default upstream).
+        self.project = project
         self.tasks: list[TaskConfig] = []
         self.results: list[Trajectory] = []
         self.state_manager: RunStateManager | None = None
@@ -294,7 +302,10 @@ class Orchestrator:
 
         # Add tasks_glob to params for both native and other adapters
         params["tasks_glob"] = self.config.evaluation.tasks_glob
-        task_packs = list(self.config.evaluation.task_packs)
+        # evaluation.projects is the canonical field (M2); evaluation.task_packs
+        # is a deprecated alias coerced by EvaluationConfig's validator, so
+        # projects always carries the effective list here.
+        task_packs = list(self.config.evaluation.projects)
 
         # In Docker flows, TASK_PACKS_DIRS can override config paths to container-visible mounts.
         env_task_packs = os.environ.get("TASK_PACKS_DIRS", "").strip()
@@ -306,6 +317,15 @@ class Orchestrator:
         typesense_config = self.config.orchestrator.typesense
         if typesense_config and typesense_config.enabled:
             params["typesense"] = typesense_config.model_dump()
+
+        # Layer project.task_defaults under every task the adapter loads.
+        # Adapters consume this via ``load_task_yaml(project_task_defaults=...)``.
+        # ``exclude_defaults`` drops fields the project author didn't set
+        # so we don't repeat schema defaults inside every task dict.
+        if self.project is not None:
+            defaults = self.project.task_defaults.model_dump(exclude_defaults=True)
+            if defaults:
+                params["project_task_defaults"] = defaults
 
         self.logger.info("Creating adapter", type=adapter_type, params=params)
         return get_adapter(adapter_type, params)
