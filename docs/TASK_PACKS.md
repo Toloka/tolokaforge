@@ -1,13 +1,20 @@
 # Task Packs Guide
 
-> **Deprecated.** The "task pack" name is legacy vocabulary; the
-> abstraction is now called a **Project**. Read
-> [`architecture/PROJECTS.md`](architecture/PROJECTS.md) for the
-> current authoring model, schema, and worked scenarios. This
-> guide is kept only to preserve links from older material; new
-> readers should skip straight to `PROJECTS.md`. The
-> `evaluation.task_packs` field name below is scheduled for
-> rename to `evaluation.projects` in a future schema migration.
+> **Naming note.** The "task pack" name is legacy vocabulary; the
+> abstraction is being renamed to **Project** (with related new
+> terms: **Actor**, **Service**, **Backend**). Which document you
+> need depends on what you're doing:
+>
+> - **Authoring or running configs today** — stay on this page.
+>   The single-file run-config format described below is what the
+>   current CLI loads; the Project format is not runnable yet.
+> - **Reading or contributing to the target design** — see
+>   [`architecture/PROJECTS.md`](architecture/PROJECTS.md), a
+>   proposal implemented across milestones #211–#214.
+>
+> The `evaluation.task_packs` field below is scheduled for rename
+> to `evaluation.projects` when the Project loader lands (M2,
+> #211; legacy alias retired in M5, #214).
 
 Task packs let you keep benchmark content outside the harness repository.
 

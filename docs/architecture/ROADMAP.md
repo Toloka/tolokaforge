@@ -60,9 +60,9 @@ it, and additional runtime backends (microVM, Modal, EC2).
 | **0.8.0** | `InProcessConductor.run()` decomposed into named phase methods; `shared_stack_runtime` → `runtime_backend` rename across conductor + orchestrator; new `TrialGrader` Protocol with `RunnerRPCTrialGrader` concrete impl — grading strategy extracted from conductor internals into a swappable seam. Neither Orchestrator nor Conductor grows. Wheel resolver materialises the engine wheel from any PEP 610 install origin instead of scraping a cache. | Shipped    | [0014](adr/0014-trial-grader-protocol.md) |
 | **0.9.0** | `TrialExecutor` Protocol + `ProvisioningTrialExecutor` concrete impl — the per-trial substrate lifecycle bracket (`provision → conductor.run → teardown`) as its own component. Orchestrator dispatch swaps `conductor.run` → `trial_executor.execute`. `SharedStackRuntimeBackend.endpoints()` becomes honest via constructor injection. `TerminationReason.PROVISION_ERROR` + failure-attribution classifier. `--runtime per_trial` fully functional. | Shipped    | [0015](adr/0015-trial-executor-protocol.md) |
 | 0.10.0    | Validation gate — pinned-version runner-image alias applied after the shared-stack build so task compose files can reference `tolokaforge-runner:<version>`. Migration of `coding_public_example_01` to declare `environment_manifest`; runs end-to-end on `--runtime per_trial` against a real workload. ADRs 0009 / 0010 / 0014 / 0015 flip to `Accepted`. Closes the boundaries-and-contracts arc.                                                                                          | In flight  | [0009](adr/0009-environment-manifest.md), [0010](adr/0010-runtime-backend-provisioning-contract.md), [0014](adr/0014-trial-grader-protocol.md), [0015](adr/0015-trial-executor-protocol.md) |
-| 0.11.0    | Project model — `project.yaml` at pack root as the top-level abstraction. Declares shared `default_environment`, `task_defaults`, `models`, `compute`, `storage`, `observability`, `orchestration` for the pack; tasks inherit and override via task-level fields. Per-service isolation vocabulary (`ephemeral`/`shared`/`reset` with a fixed reset-primitive enum) on compose services; content-addressed stack dedup at the `RuntimeBackend` layer materialises shared stacks from declared inheritance. See [`PROJECTS.md`](PROJECTS.md). First multi-container complex adapter ships on the resulting seams.                                                                                                                                                                                                                                                                                                                                | Planned    | tbd                        |
+| 0.11.0    | Project model — `project.yaml` at the project root as the top-level abstraction (#189; schema shipped in #215). Declares identity + task discovery, `assets` (named seeds), `default_environment` with per-service `services` entries, `task_defaults` (including the `actors` map), and `run_defaults` (`compute`, `storage`, `observability`, `orchestrator`, optional shared `models`); tasks inherit and override via task-level deltas; files under `run_configs/` are deltas on `run_defaults`. Per-service isolation vocabulary (`ephemeral`/`shared`/`reset` with seed-backed reset recipes) declared in the **manifest's** `services` entries — substrate files carry no isolation semantics. Milestones: loader + merge chains M2 (#211), isolation redesign M3 (#212), strict schema + example migration M4 (#213), legacy aliases retired M5 (#214). See [`PROJECTS.md`](PROJECTS.md). First multi-container complex adapter ships on the resulting seams.                                                                                                                                                                                                                                                                                                                                | Planned    | tbd                        |
 | 0.12.0    | Remote runner: orchestrator and runner on separate hosts; mTLS + health + retry.                                                                                                                                                                                                                                                                                                                                                                    | Planned    | tbd                        |
-| 0.13.0    | Middle-ground isolation — mechanisms for sharing selected resources across runs (warm image caches, template DB clones, read-only data volumes, container pools) while keeping trial-mutable state isolated. Design informed by the per-service vocabulary shipped in 0.11.0.                                                                                                                                                                       | Planned    | tbd                        |
+| 0.13.0    | Middle-ground isolation — mechanisms for sharing selected resources across runs (warm image caches, template DB clones, read-only data volumes, container pools) while keeping trial-mutable state isolated; content-addressed stack dedup at the `RuntimeBackend` layer; cross-task stack persistence for task sequences (currently explicitly out of scope — see PROJECTS.md § "Explicitly future"). Design informed by the per-service vocabulary shipped in 0.11.0.                                                                                                                                                                       | Planned    | tbd                        |
 | 1.0.0+    | Control plane API + state store; backend-agnostic scheduler.                                                                                                                                                                                                                                                                                                                                                                                        | Planned    | tbd                        |
 | tbd       | Runner as an independently-usable component — expose existing Protocols (`RuntimeBackend`, `TrialGrader`, `Conductor`) as entry-point extension groups; slim the runner Docker image so it installs a runner-only subset; ship a `tolokaforge agent` CLI mode with a stable subprocess contract so external harnesses can drive the runtime as an agent. Same package, same wheel; no multi-package split.                                          | Planned    | tbd                        |
 | tbd       | Open agent loop — streaming event emission on `Conductor`; opt-in `ConductorControl` Protocol for pause/resume + external-message injection. Composes on top of the runner-as-independent-component work above.                                                                                                                                                                                                                                     | Planned    | tbd (ADR-0017 will land first) |
@@ -74,23 +74,30 @@ scope may shift as each release lands. The ordering is fixed.
 **Design investigations currently in flight** — early-stage work that
 informs the rows above but hasn't crystallised into ADRs yet:
 
-- **Multi-container isolation model** — per-service `ephemeral`/
-  `shared`/`reset` vocabulary + reset primitives (postgres template-DB
-  clone, filesystem workspace swap, sqlite truncate). Feeds v0.11.0.
-- **Project model** — `project.yaml` at the pack root as the
-  top-level abstraction, with `default_environment`,
-  `task_defaults`, `tasks.discovery`, and future-reserved sections
-  for `compute`, `storage`, `observability`, `orchestration`.
+- **Service & Backend abstractions** — per-service lifecycle
+  recipes (`start`/`reset`/`terminate` as named primitives;
+  seed-backed `reset`) declared in the manifest's `services`
+  entries, and backends that advertise capabilities matched
+  against a project's declared requirements (network-policy
+  enforcement delegable to a capable backend, e.g. k8s+Cilium).
+  Scaffolding reserved in PROJECTS.md § "Services and backends";
+  full design lands with the M3 ADR. Feeds v0.11.0.
+- **Project model** — `project.yaml` at the project root as the
+  top-level abstraction: `tasks.discovery`, `assets`,
+  `default_environment` (+ `services` entries), `task_defaults`
+  (+ `actors`), `run_defaults` (`compute`, `storage`,
+  `observability`, `orchestrator`; schema shipped in #215).
   Tasks inherit; task-level `environment_manifest` overrides
-  partially or fully. Content-addressed stack dedup at the
-  `RuntimeBackend` layer confirms declared inheritance. See
-  [`PROJECTS.md`](PROJECTS.md); worked example at
+  partially or fully; `run_configs/*.yaml` are deltas on
+  `run_defaults`. See [`PROJECTS.md`](PROJECTS.md); worked
+  example at
   [`../../examples/native/example-microservices-pack/`](../../examples/native/example-microservices-pack/).
   Feeds v0.11.0.
 - **Runner as an independently-usable component** — Protocol
   exposure via entry points + runner image slimming + `AgentAdapter`
   subprocess contract for external harnesses. Feeds the "runner as
-  consumable" row above and the open-agent-loop row after it.
+  an independently-usable component" row above and the
+  open-agent-loop row after it.
 
 ## How to follow progress
 
