@@ -1,6 +1,5 @@
 # Task: identify and fix a slow query in the backend service.
-# Full inheritance from the project. Same resolved manifest as
-# api_endpoint_add — the runtime materialises one stack for both.
+# Full inheritance from the project — declares only identity.
 task_id: "db_query_tuning"
 description: >
   The backend service's GET /orders endpoint takes 4+ seconds on a

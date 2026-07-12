@@ -1,11 +1,11 @@
 # Shared 4-service environment: runner + db-service + postgres +
-# backend-api. Referenced by five of the six tasks in this pack via
-# the project's default_environment.compose_file.
+# backend-api. Referenced by four of the five tasks in this project
+# via the project's default_environment.stack.compose_file.
 #
-# The `labels.tolokaforge.*` labels encode per-service isolation:
-# tolokaforge.isolation is one of `ephemeral | shared | reset`;
-# tolokaforge.reset_primitive names a primitive from the closed enum
-# when isolation is `reset`.
+# This file defines what the services ARE. How the harness treats
+# them between trials (isolation, reset recipes) is declared in
+# project.yaml under default_environment.services — per-service
+# semantics live in the manifest, never in this file.
 
 services:
   # Engine services — same shape as the multi_service_postgres example.
@@ -20,8 +20,6 @@ services:
         condition: service_healthy
       backend-api:
         condition: service_healthy
-    labels:
-      tolokaforge.isolation: "ephemeral"
     healthcheck:
       test:
         - CMD
@@ -37,8 +35,6 @@ services:
     image: "tolokaforge-db-service:local"
     ports:
       - "8000"
-    labels:
-      tolokaforge.isolation: "shared"
     healthcheck:
       test:
         - CMD
@@ -54,19 +50,13 @@ services:
   postgres:
     # ${postgres_version:-16} — typed input with default. A task that
     # doesn't override sees "16"; the postgres_upgrade_test task sets
-    # "17" via environment_manifest.inputs and gets a distinct stack.
+    # "17" via environment_manifest.stack.inputs and gets a distinct
+    # stack.
     image: "postgres:${postgres_version:-16}"
     environment:
       POSTGRES_USER: "postgres"
       POSTGRES_PASSWORD: "example"
       POSTGRES_DB: "app"
-    labels:
-      # `reset` between trials of a single task; state persists across
-      # tasks that share the stack (see agent_flow_setup/verify pair).
-      # `postgres_template_db` primitive — CREATE DATABASE new TEMPLATE
-      # base semantics, ~200ms without recreating the container.
-      tolokaforge.isolation: "reset"
-      tolokaforge.reset_primitive: "postgres_template_db"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d app"]
       interval: 2s
@@ -83,8 +73,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    labels:
-      tolokaforge.isolation: "shared"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O-", "http://localhost:8080/health"]
       interval: 2s

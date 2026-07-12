@@ -1,5 +1,28 @@
-grader: "rubric"
-rubric: >
-  Full credit if GET /health/ready returns 200 with postgres up and
-  503 with postgres down. Partial credit if only the up-case is
-  handled.
+# combine: inherited from project task_defaults.grading_defaults
+# (weighted, pass_threshold 0.8, llm_judge 1.0).
+llm_judge:
+  rubric:
+    reference: >
+      Correct behaviour: GET /health/ready returns 200 when postgres
+      is reachable and 503 otherwise. The check must exercise the
+      live connection (not a cached flag).
+    criteria:
+      - id: ready_returns_200_when_db_up
+        description: >
+          GET /health/ready returns HTTP 200 while postgres is up.
+        weight: 3.0
+        kind: binary
+        required: true
+      - id: ready_returns_503_when_db_down
+        description: >
+          GET /health/ready returns HTTP 503 when postgres is
+          unreachable (verified by stopping or blocking the DB).
+        weight: 3.0
+        kind: binary
+        required: false
+      - id: no_behaviour_regressions
+        description: >
+          Existing endpoints still behave as before the change.
+        weight: 2.0
+        kind: binary
+        required: false

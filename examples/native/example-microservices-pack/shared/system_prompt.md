@@ -14,6 +14,6 @@ Guidelines:
 - **Verify.** After a change, verify the system still works before
   declaring done.
 
-This prompt is the project-level default. Tasks may override it
-per-task; categories may override it via `_shared/domain.yaml`
-(e.g. the `customer_support` category uses a different prompt).
+This prompt is the project-level default
+(`task_defaults.system_prompt`). A task may replace it wholesale
+by declaring its own `system_prompt` — full replacement, no merge.

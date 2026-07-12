@@ -2,8 +2,7 @@
 # Partial override — the task's environment_manifest deep-merges with
 # the project's default_environment. Only `inputs.postgres_version`
 # differs; compose_file and runner_service are inherited from the
-# project. Substitution produces a different resolved compose; the
-# hash differs; this task gets its own stack (stack B).
+# project.
 task_id: "postgres_upgrade_test"
 description: >
   A stakeholder wants to know whether the backend still works after
@@ -11,8 +10,11 @@ description: >
   against the backend and report any behaviour differences.
 
 environment_manifest:
-  inputs:
-    # Overrides the project default of "16". This is the entire
-    # authoring cost of using a different postgres version — no
-    # service redefinition, no whole-manifest replacement.
-    postgres_version: "17"
+  stack:
+    inputs:
+      # Overrides the project default of "16". This is the entire
+      # authoring cost of using a different postgres version — no
+      # service redefinition, no whole-stack replacement (touching
+      # stack.inputs alone deep-merges; only a new compose_file
+      # replaces the stack atomically).
+      postgres_version: "17"

@@ -1,5 +1,10 @@
-# Project spec — the top-level abstraction for this pack.
+# Project spec — the top-level abstraction for this project.
 # See docs/architecture/PROJECTS.md for the full model.
+#
+# NOTE: this project is authored against the PROPOSED Project schema
+# (PROJECTS.md § "Delta from current implementation"). It is not
+# runnable until the M2 loader (#211) lands; it exists as the
+# reference example the milestones implement against.
 #
 # The Project holds identity, task discovery, and the shared bases
 # for tasks (task_defaults) and runs (run_defaults). Per-item
@@ -8,45 +13,70 @@
 name: "microservices-eval"
 version: 1
 description: >
-  Evaluation suite for microservices refactoring tasks. Seven tasks
-  share a base 4-service stack (runner + db-service + postgres +
-  backend-api). One task overrides a single input for a postgres
-  version bump; one ships its own compose file for isolation.
+  Evaluation suite for microservices refactoring tasks. Four of
+  the five tasks share a base 4-service stack (runner +
+  db-service + postgres + backend-api); of those, one overrides a
+  single input for a postgres version bump. The fifth ships its
+  own compose file for isolation.
 
 # ── Task inventory ──────────────────────────────────────────────
 tasks:
   discovery:
     glob: "tasks/**/task.yaml"
 
+# ── Shared assets ───────────────────────────────────────────────
+# Named baselines tasks and service recipes reference by name.
+assets:
+  seeds:
+    app_baseline:
+      path: "./shared/seeds/app_baseline.sql"
+      kind: "sql_dump"             # bound to a service by the reset recipe below
+      digest: "sha256:ea8649942763d29c3b5ae79f3af98e3df5dfa607173c58bd98c03e95431bf729"
+
 # ── Default environment ─────────────────────────────────────────
 # Every task inherits this unless it declares its own
 # `environment_manifest`. Task-level environment_manifest deep-
 # merges on top per-task.
 default_environment:
-  compose_file: "./shared/environment.compose.yaml"
-  runner_service: "runner"
-  inputs:
-    postgres_version: "16"
-  # isolation omitted → defaults to shared_ok. Per-service
-  # tolokaforge.isolation labels in the compose file drive
-  # between-trial behaviour.
-  network_policy: "LOCALHOST_ONLY"
+  # `stack` = the substrate slot: the compose pointer plus
+  # everything scoped to that specific file. Replaces atomically.
+  stack:
+    compose_file: "./shared/environment.compose.yaml"
+    runner_service: "runner"
+    inputs:
+      postgres_version: "16"
+  # isolation omitted → defaults to per_trial (ADR-0009): services
+  # without an entry below are ephemeral between trials.
+  services:
+    # Per-service semantics live HERE, in the manifest — the compose
+    # file only defines what the services are.
+    postgres:
+      isolation: "reset"
+      reset: { seed: "app_baseline" }   # restore to the named seed between trials
+    db-service:
+      isolation: "shared"
+    backend-api:
+      isolation: "shared"
+    # runner: no entry → ephemeral (per_trial default)
+  network_policy: "no_internet"
   security_context_defaults:
-    user: "toloka"
-    group: "toloka"
+    run_as_user: 1000
+    run_as_group: 1000
 
 # ── Task defaults — base for every task ─────────────────────────
 # Applied to every task; task.yaml fields deep-merge on top.
-# Holds task-shape properties (timeouts, stuck_heuristics,
-# continue_prompt) that describe how the pack's tasks are shaped,
-# not how a particular invocation executes.
+# Holds task-shape properties (timeouts, stuck_heuristics) that
+# describe how this project's tasks are shaped, not how a
+# particular invocation executes.
 task_defaults:
   adapter_type: "native"
   max_turns: 20
   system_prompt: "./shared/system_prompt.md"
-  user_simulator:
-    mode: "llm"
-    persona: "curious engineer"
+  actors:
+    user:                          # the conventional counterpart actor
+      mode: "llm"
+      persona: "curious engineer"
+      # No backstory_template here → tasks need no per-task scenario.
   policies:
     max_tool_calls_per_turn: 10
   metadata: {}
@@ -54,11 +84,10 @@ task_defaults:
   tools: {}
   grading_defaults:
     combine:
-      method: "weighted_average"
-      pass_threshold: 0.7
+      method: "weighted"           # combiner methods: all | weighted | any
+      pass_threshold: 0.8
       weights:
-        state_checks: 0.5
-        llm_judge: 0.5
+        llm_judge: 1.0             # all five tasks are judge-graded
   timeouts:
     trial_seconds: 600
     tool_call_seconds: 60
@@ -66,7 +95,6 @@ task_defaults:
     enabled: true
     max_repeated_tool_calls: 5
     max_idle_turns: 3
-  continue_prompt: "Continue."
 
 # ── Run defaults — base for every run config ────────────────────
 # Applied to every run under run_configs/; a run_configs/<name>.yaml
@@ -101,6 +129,7 @@ run_defaults:
       exporter: "stdout"
   orchestrator:
     repeats: 1
-    max_turns: 20
+    # No max_turns here: the run-level cap is optional and this
+    # project doesn't need one — task_defaults.max_turns governs.
     auto_start_services: true
     shuffle_trials: false

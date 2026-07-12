@@ -1,5 +1,33 @@
-grader: "rubric"
-rubric: >
-  Full credit if GET /orders p95 latency drops below 300ms on the
-  seeded workload and the fix is a query/index change (not caching
-  or removing behaviour). Partial credit for latency < 1s.
+# combine: inherited from project task_defaults.grading_defaults.
+llm_judge:
+  rubric:
+    reference: >
+      Correct fix: a query or index change (e.g. adding a covering
+      index, removing an N+1) that brings GET /orders p95 below
+      300ms against the seeded schema under load generated
+      in-trial (the seed ships the schema and a token dataset;
+      volume is produced during the trial). Caching the response
+      or removing behaviour is not an acceptable fix.
+    criteria:
+      - id: latency_target_met
+        description: >
+          GET /orders p95 latency is demonstrated below 300ms on a
+          cold cache after the fix, under the in-trial generated
+          load.
+        weight: 4.0
+        kind: graded
+        required: true
+      - id: fix_is_query_or_index_change
+        description: >
+          The fix changes the query plan (SQL or index), not caching
+          and not behaviour removal.
+        weight: 3.0
+        kind: binary
+        required: true
+      - id: cause_diagnosed_before_fixing
+        description: >
+          The agent identifies the actual cause (e.g. missing index,
+          sequential scan) before changing code.
+        weight: 2.0
+        kind: binary
+        required: false

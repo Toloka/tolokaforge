@@ -1,6 +1,29 @@
-grader: "rubric"
-rubric: >
-  Full credit if the smoke suite passes with no unexplained
-  regressions and the report enumerates any behavioural
-  differences seen. Partial credit for a passing suite without a
-  clear diff report.
+# combine: inherited from project task_defaults.grading_defaults.
+llm_judge:
+  rubric:
+    reference: >
+      The smoke suite runs against postgres 17. Full credit requires
+      a passing suite AND an explicit report enumerating behavioural
+      differences observed (or stating none were found).
+    criteria:
+      - id: smoke_suite_executed
+        description: >
+          The standard smoke suite was actually executed against the
+          upgraded database, not merely reasoned about.
+        weight: 3.0
+        kind: binary
+        required: true
+      - id: differences_reported
+        description: >
+          The final report enumerates behavioural differences seen,
+          or explicitly states that none were observed.
+        weight: 3.0
+        kind: binary
+        required: false
+      - id: regressions_explained
+        description: >
+          Any failing check is investigated and explained rather
+          than ignored.
+        weight: 2.0
+        kind: binary
+        required: false

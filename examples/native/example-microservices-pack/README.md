@@ -1,32 +1,38 @@
 # example-microservices-pack
 
-Task pack demonstrating the **Project** as the top-level abstraction.
-`project.yaml` at the pack root holds shared bases for both tasks
-(`task_defaults`) and runs (`run_defaults`); per-item deltas live
-in `tasks/<name>/task.yaml` and `run_configs/<name>.yaml`. Seven
-tasks show the full range of inheritance and override patterns.
-Read alongside
+Reference project demonstrating the **Project** as the top-level
+abstraction. `project.yaml` at the project root holds shared bases
+for both tasks (`task_defaults`) and runs (`run_defaults`);
+per-item deltas live in `tasks/<name>/task.yaml` and
+`run_configs/<name>.yaml`. Five tasks show the full range of
+inheritance and override patterns. Read alongside
 [`docs/architecture/PROJECTS.md`](../../../docs/architecture/PROJECTS.md).
+
+> **Status.** This project is authored against the **proposed**
+> Project schema (PROJECTS.md § "Delta from current
+> implementation") and is the reference example the milestones
+> implement against. It becomes runnable when the M2 loader
+> (#211) lands; until then, `tolokaforge run` cannot load it.
 
 ## Layout
 
 ```
 example-microservices-pack/
-├── project.yaml                       # identity + task_defaults + run_defaults
+├── project.yaml                       # identity + assets + task_defaults + run_defaults
 ├── run_configs/
 │   └── dev.yaml                       # per-invocation delta on run_defaults
 ├── shared/
 │   ├── environment.compose.yaml       # base 4-service stack referenced by default_environment
+│   ├── seeds/
+│   │   └── app_baseline.sql           # named seed: postgres reset baseline
 │   └── system_prompt.md               # project-level default system prompt
 ├── README.md                          # this file
 └── tasks/
     ├── api_endpoint_add/              # full inheritance from project
-    ├── db_query_tuning/               # full inheritance from project (dedups with above)
+    ├── db_query_tuning/               # full inheritance from project
     ├── postgres_upgrade_test/         # partial env override — inputs.postgres_version
     ├── schema_isolation_migration/    # full env override — task-local compose_file
-    ├── agent_flow_setup/              # full inheritance — sequence part 1
-    ├── agent_flow_verify/             # full inheritance — sequence part 2
-    └── long_debugging_session/        # non-env override — max_turns: 60
+    └── long_debugging_session/        # non-env override — max_turns + grading delta
 ```
 
 ## The base + delta model
@@ -40,24 +46,55 @@ example-microservices-pack/
   every file under `run_configs/`; each `run_configs/<name>.yaml`
   deep-merges its deltas on top.
 
-Plus one supporting section:
+Plus two supporting sections:
 
 - **`default_environment`** — the environment every task inherits;
-  a task's own `environment_manifest` deep-merges on top.
+  a task's own `environment_manifest` deep-merges on top. The
+  `stack` sub-object is the substrate slot (compose pointer +
+  `inputs` + `runner_service`); a task patch containing the
+  `compose_file` key replaces it atomically, while a patch
+  touching only `inputs`/`runner_service` deep-merges;
+  per-service semantics (isolation, reset recipes) are declared
+  outside it under `services:` — the compose file only defines
+  what the services *are*.
+- **`assets`** — named, typed files tasks and service recipes
+  reference by name. This project declares one seed
+  (`app_baseline`, kind `sql_dump`), which is both what postgres
+  starts from and what the `reset` recipe restores between
+  trials.
 
-Per-item files (`task.yaml`, `run_configs/*.yaml`) declare only
-what's different. Loader deep-merges base + delta on both layers.
+Per-item files (`task.yaml`, `run_configs/*.yaml`,
+`grading.yaml`) declare only what's different. The loader
+deep-merges base + delta on both chains.
+
+## Isolation, spelled out
+
+The project declares no `default_environment.isolation`, so the
+`per_trial` default applies (safe by default, ADR-0009): any
+service without a `services:` entry is **ephemeral** — torn down
+and recreated between trials. The entries relax that only where
+the project author asserts it's safe:
+
+| Service | Declaration | Between trials |
+|---|---|---|
+| `postgres` | `isolation: reset`, seed `app_baseline` | restored to the seed baseline |
+| `db-service` | `isolation: shared` | persists (stateless) |
+| `backend-api` | `isolation: shared` | persists (stateless) |
+| `runner` | *(none)* | ephemeral (the default) |
+
+The `schema_isolation_migration` task replaces `compose_file`,
+which discards these entries entirely — its task-local stack
+falls back to all-ephemeral, exactly right for an irreversible
+migration.
 
 ## The tasks, by pattern
 
 ### Full inheritance from the project
 
-`api_endpoint_add`, `db_query_tuning`, `agent_flow_setup`,
-`agent_flow_verify` — `task.yaml` declares only `task_id` and
-`description`. Every other field (adapter_type, max_turns,
-system_prompt, user_simulator, environment, models, compute)
-inherits from the project. All four resolve to byte-identical
-manifests and share **stack A**.
+`api_endpoint_add`, `db_query_tuning` — `task.yaml` declares only
+`task_id` and `description`; `grading.yaml` declares only the
+rubric. Everything else (adapter_type, max_turns, system_prompt,
+actors, environment, grading combine) inherits from the project.
 
 ### Partial environment override
 
@@ -66,12 +103,12 @@ overrides one input:
 
 ```yaml
 environment_manifest:
-  inputs:
-    postgres_version: "17"
+  stack:
+    inputs:
+      postgres_version: "17"
 ```
 
 Everything else in the environment inherits from the project.
-Resolved manifest has a distinct hash → own stack (**stack B**).
 
 ### Full environment override
 
@@ -80,77 +117,49 @@ overrides `compose_file`:
 
 ```yaml
 environment_manifest:
-  compose_file: "./environment.compose.yaml"
-  runner_service: "runner"
+  stack:
+    compose_file: "./environment.compose.yaml"
+    runner_service: "runner"
 ```
 
-The task's own compose file replaces the project default entirely.
-Runs on **stack C**.
+Replacing `stack.compose_file` replaces the project's whole
+`stack` object (clean slate of `inputs`/`runner_service`) and
+drops the project's per-service `services` entries with it.
 
-### Non-environment task-level override
+### Non-environment task-level overrides
 
 [`long_debugging_session/task.yaml`](tasks/long_debugging_session/task.yaml)
-overrides `max_turns`:
-
-```yaml
-task_id: "long_debugging_session"
-description: "..."
-max_turns: 60
-```
-
-The environment inherits from the project (shared stack A); only
-`max_turns` differs. The `ToolCallingLoop` reads the resolved
-task-effective `max_turns` — 60 instead of 20 — for this task.
-Everything else inherits.
+overrides `max_turns: 60` (the task chain resolves 60 instead of
+the project's 20; no run-level cap is set, so 60 stands), and its
+`grading.yaml` overrides one combine field
+(`pass_threshold: 0.7`) while inheriting the rest from
+`task_defaults.grading_defaults`.
 
 ## Resolved-config table
 
 Which scope contributes each field for each task.
 
-| Task | `compose_file` | `postgres_version` | `max_turns` | `system_prompt` |
+| Task | `compose_file` | `postgres_version` | `max_turns` | grading `combine` |
 |---|---|---|---|---|
-| `api_endpoint_add` | Project | Project (16) | Project (20) | Project |
-| `db_query_tuning` | Project | Project (16) | Project (20) | Project |
-| `postgres_upgrade_test` | Project | **Task (17)** | Project (20) | Project |
-| `schema_isolation_migration` | **Task** | Task (task-local default) | Project (20) | Project |
-| `agent_flow_setup` | Project | Project (16) | Project (20) | Project |
-| `agent_flow_verify` | Project | Project (16) | Project (20) | Project |
-| `long_debugging_session` | Project | Project (16) | **Task (60)** | Project |
-
-## Runtime stacks by hash
-
-Approximate — the actual hash function canonicalises YAML before
-hashing.
-
-| Task | Inheritance | `postgres_version` | Resulting stack |
-|---|---|---|---|
-| `api_endpoint_add` | full inheritance | 16 | **A** |
-| `db_query_tuning` | full inheritance | 16 | **A** (shared) |
-| `postgres_upgrade_test` | partial env override | 17 | **B** |
-| `schema_isolation_migration` | full env override | 16 (task-local) | **C** |
-| `agent_flow_setup` | full inheritance | 16 | **A** (shared) |
-| `agent_flow_verify` | full inheritance | 16 | **A** (shared) |
-| `long_debugging_session` | non-env override (max_turns) | 16 | **A** (shared) |
-
-Seven tasks → three stacks. Five tasks share stack **A**; one each
-has stack **B** and stack **C**. Task-level overrides that don't
-touch the environment (`max_turns`) don't affect the stack — the
-runtime materialises fewer stacks than tasks because the hash is
-over the environment, not the full task.
+| `api_endpoint_add` | Project | Project (16) | Project (20) | Project defaults |
+| `db_query_tuning` | Project | Project (16) | Project (20) | Project defaults |
+| `postgres_upgrade_test` | Project | **Task (17)** | Project (20) | Project defaults |
+| `schema_isolation_migration` | **Task** | — (no input; task-local compose pins `postgres:16`) | Project (20) | Project defaults |
+| `long_debugging_session` | Project | Project (16) | **Task (60)** | **Task (threshold 0.7)** |
 
 ## Run-time deltas
 
-The pack's `run_configs/dev.yaml` is slim by design: it declares
-only `models` and `evaluation.output_dir`. Everything else
-(`compute`, `storage`, `observability`, `orchestrator`) comes from
-`project.run_defaults`. Invoke with
+The project's `run_configs/dev.yaml` is slim by design: it
+declares only `models` and `evaluation.output_dir`. Everything
+else (`compute`, `storage`, `observability`, `orchestrator`)
+comes from `project.run_defaults`. Invoke (post-M2) with
 `tolokaforge run --config run_configs/dev.yaml`.
 
-To run the same pack under a different configuration — more
+To run the same project under a different configuration — more
 workers, a stronger judge model, a different output directory —
-add a new file under `run_configs/` (e.g. `run_configs/ci.yaml` or
-`run_configs/nightly.yaml`) with just the fields that differ. The
-loader deep-merges `project.run_defaults` under it.
+add a new file under `run_configs/` (e.g. `run_configs/ci.yaml`
+or `run_configs/nightly.yaml`) with just the fields that differ.
+The loader deep-merges `project.run_defaults` under it.
 
 ## Cross-references
 
@@ -159,5 +168,5 @@ loader deep-merges `project.run_defaults` under it.
 - Roadmap: [`../../../docs/architecture/ROADMAP.md`](../../../docs/architecture/ROADMAP.md)
 - Related multi-service examples:
   - [`../multi_service/`](../multi_service/) — smallest task-declared compose
-  - [`../multi_service_postgres/`](../multi_service_postgres/) — the postgres pattern this pack extends
+  - [`../multi_service_postgres/`](../multi_service_postgres/) — the postgres pattern this project extends
   - [`../native_shared_domain/`](../native_shared_domain/) — the canonical demo of the `native` adapter's `_shared/domain.yaml` merge pattern (an adapter-specific sharing convention, separate from the Project schema)

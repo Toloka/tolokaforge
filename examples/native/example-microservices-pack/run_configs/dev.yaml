@@ -25,7 +25,7 @@ models:
 
 # ── Evaluation ──────────────────────────────────────────────────
 # `evaluation.projects` is optional — omitted here, so the loader
-# uses the enclosing project. See PROJECTS.md § "Deprecations and
-# migrations" for the legacy `task_packs` alias.
+# uses the enclosing project. See PROJECTS.md § "Delta from
+# current implementation" for the legacy `task_packs` alias.
 evaluation:
   output_dir: "results/example_microservices_pack"

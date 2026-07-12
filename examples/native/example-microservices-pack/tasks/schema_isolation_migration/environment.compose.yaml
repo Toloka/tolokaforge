@@ -1,8 +1,11 @@
 # Task-local compose — isolated postgres so a botched migration
 # doesn't leak state to other tasks that share the base stack.
-# This compose is byte-different from the project's shared one
-# (no backend-api, isolation modes vary). Its hash is distinct;
-# this task gets its own stack.
+#
+# No isolation declarations needed anywhere: replacing compose_file
+# discards the project's `services` entries, the task declares none
+# of its own, and the project's `per_trial` default makes every
+# service here ephemeral — recreated between trials, which is
+# exactly right for an irreversible schema migration.
 
 services:
   runner:
@@ -16,8 +19,6 @@ services:
         condition: service_healthy
       postgres-migration-target:
         condition: service_healthy
-    labels:
-      tolokaforge.isolation: "ephemeral"
     healthcheck:
       test:
         - CMD
@@ -33,8 +34,6 @@ services:
     image: "tolokaforge-db-service:local"
     ports:
       - "8000"
-    labels:
-      tolokaforge.isolation: "ephemeral"
     healthcheck:
       test:
         - CMD
@@ -52,10 +51,6 @@ services:
       POSTGRES_USER: "postgres"
       POSTGRES_PASSWORD: "example"
       POSTGRES_DB: "app"
-    labels:
-      # Ephemeral: the migration mutates schema irreversibly; recreate
-      # the container between trials for a clean substrate.
-      tolokaforge.isolation: "ephemeral"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d app"]
       interval: 2s
