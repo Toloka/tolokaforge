@@ -151,6 +151,35 @@ presets:
     prompt_policy: dict_map_hints
     reasoning_codec: openai
 
+  # GLM-5.2 (Zhipu / Z.AI via OpenRouter). Same z-ai/glm-5 family and same
+  # failure mode as the shipped glm-5.1 sibling: the OpenRouter tool-call
+  # adapter serialises nested object / Dict[str, T] / discriminated-union
+  # arguments as JSON-encoded STRINGS instead of native dicts. The observe
+  # baseline (findings.json) reproduced this on every nested-object probe
+  # (recursive_ref simple/deep_chain/wide_tree/nested_in_object 0/15,
+  # discriminated_union bare_union/explicit_discriminator 0/15,
+  # heterogeneous_array nested_in_object 1/15, variant dict_map /
+  # discriminated_union nested_union 0/15) — in each case ``item`` / ``root``
+  # / ``doc`` / ``order`` / ``envelope`` arrived as a str whose first char is
+  # ``{``. ``JsonCoerceResponse._coerce_json_strings`` decodes it back to a
+  # native dict before pydantic validation, so this is a pure recovery, not a
+  # reshape (scalar dict-maps, flat/long heterogeneous arrays, allOf-merge and
+  # array-of-unions all pass 15/15 natively on the default route). Axes mirror
+  # the shared ``openrouter_dict_stringify_recovery`` preset above. A
+  # dedicated entry (not folding glm-5.2 into that preset's globs) keeps the
+  # shared glob narrow. Reasoning surfaces only as an unsigned OpenAI-style
+  # summary on this route, so the THINKING_* capabilities are declared
+  # known_unsupported in registry.py. Integrated via auto-resolve; the final
+  # reprobe went 5/5 on every fix-target.
+  openrouter_glm_5_2_dict_stringify_recovery:
+    match:
+      - "z-ai/glm-5.2*"
+      - "*glm-5.2*"
+    schema_sanitizer: passthrough
+    response_policy: json_coerce
+    prompt_policy: dict_map_hints
+    reasoning_codec: openai
+
   # DeepSeek V3.2-Exp experimental V3.2 reasoning route.
   # Unlike the V4 line (openrouter_dict_stringify_recovery, above) it
   # round-trips dict-map and discriminated-union tool calls cleanly on

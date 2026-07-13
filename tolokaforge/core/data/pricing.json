@@ -1822,7 +1822,7 @@
     "z-ai/glm-5.2": {
       "input": 0.93,
       "output": 3.0,
-      "cache_read": 0.26
+      "cache_read": 0.18
     },
     "z-ai/glm-5v-turbo": {
       "input": 1.2,
