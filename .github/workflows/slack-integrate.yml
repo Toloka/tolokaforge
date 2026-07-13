@@ -78,7 +78,7 @@ jobs:
           uv run automation slack-poll \
             --channel "$SLACK_CHANNEL" \
             --allowed-users "$ALLOWED_USERS" \
-            --window-hours 6 \
+            --window-hours 48 \
             --out plan.json
           echo "plan.json:"; cat plan.json
 

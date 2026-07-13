@@ -153,7 +153,7 @@ def _write_plan(out_path: str, plan: list[dict]) -> None:
 # --- orchestration -------------------------------------------------------------
 
 
-def run(channel: str, allowed_users: str | None, out_path: str, window_hours: float = 6.0) -> int:
+def run(channel: str, allowed_users: str | None, out_path: str, window_hours: float = 48.0) -> int:
     """Scan the channel (last ``window_hours`` of history), resolve each ``@bot integrate``
     request, reply in-thread, and write the integration plan to ``out_path``. Always returns 0
     (a poll must never fail the workflow)."""
@@ -228,7 +228,7 @@ def cli(
         help="comma-separated Slack user-ids allowed to trigger; empty = anyone in the channel",
     ),
     window_hours: float = typer.Option(
-        6.0, "--window-hours", help="only scan Slack messages from the last N hours (0 = no bound)"
+        48.0, "--window-hours", help="only scan Slack messages from the last N hours (0 = no bound)"
     ),
 ) -> None:
     """Scan the channel for @bot integrate requests, reply with the resolution, emit a plan."""

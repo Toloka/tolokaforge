@@ -41,7 +41,7 @@ import typer
 
 _API = "https://slack.com/api/"
 _TIMEOUT = 15
-_HISTORY_SCAN = 200  # bounded scan: newest N top-level messages
+_HISTORY_SCAN = 500  # bounded scan cap: newest N top-level messages (headroom for the 48h window)
 
 
 def _log(message: str) -> None:
@@ -171,7 +171,7 @@ def _post_message(channel: str, text: str, token: str, thread_ts: str | None = N
 
 def _history(channel: str, token: str, oldest: str | None = None) -> list[dict] | None:
     params = {"channel": channel, "limit": str(_HISTORY_SCAN)}
-    if oldest:  # Unix-ts lower bound: only messages newer than this (the poller's 6h window)
+    if oldest:  # Unix-ts lower bound: only messages newer than this (the poller's 48h window)
         params["oldest"] = oldest
     result = _get("conversations.history", token, params)
     return result.get("messages", []) if result is not None else None
