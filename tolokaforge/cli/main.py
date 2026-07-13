@@ -626,12 +626,12 @@ def status(run_dir: str, config: str | None):
     elif config:
         config_data, _project = load_effective_run_config(Path(config))
         run_config = RunConfig(**config_data)
-        if run_config.orchestrator.queue_backend == "postgres":
+        if run_config.effective_queue_backend == "postgres":
             queue = create_run_queue(
                 "postgres",
                 sqlite_path=run_path / "run_queue.sqlite",
-                max_retries=run_config.orchestrator.max_attempt_retries,
-                postgres_dsn=run_config.orchestrator.queue_postgres_dsn,
+                max_retries=run_config.effective_max_attempt_retries,
+                postgres_dsn=run_config.effective_queue_postgres_dsn,
             )
 
     if not info and queue is None:

@@ -24,8 +24,10 @@
   },
   "name": "Example domain \u2014 case A",
   "policies": {},
+  "stuck_heuristics": null,
   "system_prompt": "_shared/system_prompt.md",
   "task_id": "example_domain_case_a",
+  "timeouts": null,
   "tools": {
     "agent": {
       "enabled": [

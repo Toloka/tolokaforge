@@ -193,6 +193,45 @@ class TestTaskLoaderWithProjectDefaults:
         assert task.max_turns == 60  # task wins
         assert task.adapter_type == "native"  # from defaults
 
+    def test_stuck_heuristics_and_timeouts_flow_from_project_defaults(self, tmp_path: Path) -> None:
+        # Project-level task_defaults declares stuck_heuristics and
+        # timeouts; the M2 loader chain layers them under each task; the
+        # constructed TaskConfig carries them (they were dropped before
+        # this milestone because TaskConfig lacked the fields).
+        from tolokaforge.adapters._task_loader import load_task_yaml
+
+        task_dir = tmp_path / "tasks" / "sample_task"
+        task_dir.mkdir(parents=True)
+        _write_yaml(
+            task_dir / "task.yaml",
+            {
+                "task_id": "sample",
+                "description": "sample task",
+                "initial_state": {},
+                "tools": {"agent": {"enabled": []}, "user": {"enabled": []}},
+                "user_simulator": {"mode": "llm"},
+                "grading": "grading.yaml",
+            },
+        )
+        project_defaults = {
+            "stuck_heuristics": {
+                "enabled": True,
+                "max_repeated_tool_calls": 4,
+                "max_idle_turns": 2,
+            },
+            "timeouts": {"trial_seconds": 400, "tool_call_seconds": 30},
+        }
+        task, _ = load_task_yaml(
+            task_dir / "task.yaml",
+            project_task_defaults=project_defaults,
+        )
+        assert task.stuck_heuristics is not None
+        assert task.stuck_heuristics.max_repeated_tool_calls == 4
+        assert task.stuck_heuristics.max_idle_turns == 2
+        assert task.timeouts is not None
+        assert task.timeouts.trial_seconds == 400
+        assert task.timeouts.tool_call_seconds == 30
+
     def test_task_load_without_defaults_matches_legacy_behaviour(self, tmp_path: Path) -> None:
         from tolokaforge.adapters._task_loader import load_task_yaml
 

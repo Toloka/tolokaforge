@@ -27,8 +27,10 @@
     "disallowed_actions": [],
     "guidance": []
   },
+  "stuck_heuristics": null,
   "system_prompt": null,
   "task_id": "browser_basic",
+  "timeouts": null,
   "tools": {
     "agent": {
       "enabled": [

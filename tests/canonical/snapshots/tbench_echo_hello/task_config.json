@@ -32,8 +32,10 @@
   },
   "name": "echo-hello",
   "policies": {},
+  "stuck_heuristics": null,
   "system_prompt": "__adapter__",
   "task_id": "echo-hello",
+  "timeouts": null,
   "tools": {
     "agent": {
       "enabled": [
