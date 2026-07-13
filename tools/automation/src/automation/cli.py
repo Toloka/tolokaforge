@@ -5,9 +5,11 @@ the logic stays unit-testable and the GitHub Actions workflow is a thin caller.
 
 from __future__ import annotations
 
+import json
+
 import typer
 
-from automation import cert, greencheck, observe, pricing, probes, reprobe, slack
+from automation import cert, greencheck, model_resolver, observe, pricing, probes, reprobe, slack
 
 app = typer.Typer(
     help="Arena model automation: observe quirks, resolve a policy + cert, finalize the PR.",
@@ -120,6 +122,19 @@ def observe_findings(
 ) -> None:
     """Emit deterministic observe-stage findings.json (raw stats) from an obs dir."""
     raise typer.Exit(observe.run(obs_dir, out=out, summary_out=summary_out, run_url=run_url))
+
+
+@app.command("resolve-models")
+def resolve_models(
+    request: str = typer.Argument(
+        ..., help="free-text integrate request, e.g. 'integrate Grok 4.5 and GPT 5.6'"
+    ),
+) -> None:
+    """Deterministically resolve the model phrases in a Slack request to OpenRouter slugs.
+    Prints a JSON list of {query, status, slug, candidates} for the poller to act on."""
+    catalog = model_resolver.fetch_openrouter_catalog()
+    resolutions = model_resolver.resolve_all(request, catalog)
+    typer.echo(json.dumps([model_resolver.as_dict(r) for r in resolutions], indent=2))
 
 
 if __name__ == "__main__":
