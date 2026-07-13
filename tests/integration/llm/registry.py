@@ -1057,6 +1057,86 @@ _ALL: list[MC] = [
             }
         ),
     ),
+    # -----------------------------------------------------------------
+    # DeepSeek V4-Flash — the fast/cheap sibling of the V4 line on the
+    # OpenRouter route. Live-certified 2026-07-13 (auto-resolve, PR #257)
+    # via the observe → resolve fix loop. Routes through the dedicated
+    # ``deepseek_v4_flash`` preset (``response_policy: json_coerce`` layered
+    # over ``default``; everything else — passthrough schema, openai
+    # content policy — stays default).
+    #
+    # The baseline (default preset) native-passes 17 tool-call shapes
+    # (0.87–1.0) but the discriminated-union ``explicit_discriminator``
+    # variant only reached 11/15: the model emitted the ``item`` arg as a
+    # JSON-ENCODED STRING instead of a nested dict (the classic
+    # dict-stringify quirk). ``json_coerce`` decodes that back to native
+    # shape before pydantic validation, taking the fix-target probe to
+    # 5/5 on the final reprobe. DISCRIMINATED_UNION_TOOL_CALL is therefore
+    # ``required`` — the recovery policy makes the contract real. Unlike the
+    # deepseek-v4-pro sibling, DECIMAL_FIELD_TOOL_CALL also passes cleanly
+    # (15/15 baseline), so it is required here too.
+    #
+    # Thinking (3 probes) + caching (2 probes) are genuine ceilings: the
+    # OpenRouter route surfaces no structured reasoning blocks and a clean
+    # 2-call 8 k-token probe observes ``cache_creation``/``cache_read`` == 0,
+    # exactly like the deepseek-v4-pro sibling. Declared ``known_unsupported``.
+    # -----------------------------------------------------------------
+    MC(
+        model_id="openrouter__deepseek_deepseek-v4-flash",
+        provider="openrouter",
+        name="deepseek/deepseek-v4-flash",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.DICT_MAP_TOOL_CALL,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                # json_coerce recovers the JSON-encoded-string ``item`` on
+                # the explicit_discriminator variant (11/15 baseline → 5/5
+                # final reprobe). Same dict-stringify recovery the Qwen /
+                # MiMo / Kimi routes use.
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                # Passes 15/15 on the baseline under passthrough schema —
+                # no StrictSchema Decimal collapse needed (unlike the
+                # deepseek-v4-pro sibling, which declares this unsupported).
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # OpenRouter surfaces only a ``reasoning_content`` summary
+                # (never structured signed thinking blocks), and there is no
+                # replay path — same posture as the deepseek-v4-pro /
+                # deepseek-v3.2-exp siblings under the OpenAI reasoning
+                # surface. Probes 0/15 live.
+                C.THINKING_EMITS_BLOCKS,
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.UNSIGNED_THINKING_REPLAY,
+                # No Anthropic-style ephemeral cache: the first call created
+                # 0 cache_creation_input_tokens (probe 0/15 live).
+                C.PROMPT_CACHING,
+                # OpenRouter auto-cache not reproducible in a clean 2-call
+                # 8 k-token probe (``cache_read_input_tokens=0``; 4/15 live),
+                # exactly like deepseek-v4-pro. Paired with the ratchet in
+                # ``test_implicit_prompt_caching_unsupported_ratchet`` so the
+                # day a 2-call probe observes caching it flips to required.
+                C.IMPLICIT_PROMPT_CACHING,
+            }
+        ),
+    ),
     MC(
         model_id="openrouter__xiaomi_mimo-v2.5-pro",
         provider="openrouter",

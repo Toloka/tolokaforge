@@ -167,6 +167,26 @@ presets:
       - "*deepseek-v3.2-exp*"
     reasoning_codec: openai
 
+  # DeepSeek V4-Flash — the fast/cheap sibling of the V4 line. Its tool
+  # calls round-trip cleanly on the DEFAULT response policy for every tool
+  # shape EXCEPT the discriminated-union ``item`` (explicit_discriminator
+  # variant), which it intermittently emits as a JSON-ENCODED STRING instead
+  # of a nested dict, e.g. item = '{"kind": "comment", "ticket_id": "TCK-...",
+  # "body": "..."}'. ``json_coerce`` is the shipped recovery for exactly this
+  # dict-stringify quirk (Qwen / Kimi / MiMo / GLM / non-strict-Grok
+  # precedent): it decodes a str whose first non-ws char is ``{``/``[`` and
+  # that parses as dict/list, and is a no-op on the native dicts/lists every
+  # other probe already emits cleanly. Everything else stays on ``default``
+  # (this entry only layers ``response_policy`` over it): passthrough schema,
+  # content_policy openai, params. Thinking + caching are genuine ceilings
+  # (declared known_unsupported in registry.py), not touched here.
+  # Live-certified 2026-07-13 (see registry.py).
+  deepseek_v4_flash:
+    match:
+      - "deepseek/deepseek-v4-flash*"
+      - "*deepseek-v4-flash*"
+    response_policy: json_coerce
+
   aws_nova:
     match:
       - "nova*"
