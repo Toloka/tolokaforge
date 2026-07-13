@@ -442,6 +442,27 @@ class TestActorRosterSubsetOfModels:
         merged, _ = load_effective_run_config(run_cfg)
         assert merged == {}
 
+    def test_malformed_models_block_is_a_load_error(self, tmp_path: Path) -> None:
+        # A typo where `models:` is a list (or any non-mapping) would
+        # confuse the roster check downstream — surface the shape error
+        # at the check site with the offending type in the message.
+        _write_yaml(
+            tmp_path / "project.yaml",
+            {
+                "name": "p",
+                "task_defaults": {
+                    "actors": {"user": {"mode": "llm", "persona": "curious"}},
+                },
+            },
+        )
+        run_cfg = tmp_path / "run_configs" / "dev.yaml"
+        _write_yaml(run_cfg, {"models": ["not", "a", "mapping"]})
+
+        from tolokaforge.core.project_loader import load_effective_run_config
+
+        with pytest.raises(ValueError, match="`models`.*must be a mapping"):
+            load_effective_run_config(run_cfg)
+
 
 class TestProjectAssetsPathAnchoring:
     """``assets.seeds.<name>.path`` and bare-string shorthand entries

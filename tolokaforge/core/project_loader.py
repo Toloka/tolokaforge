@@ -357,7 +357,11 @@ def validate_actor_roster_subset_of_models(
         return
     models = merged_run_config.get("models") or {}
     if not isinstance(models, dict):
-        return
+        raise ValueError(
+            f"`models` in the resolved run config must be a mapping; got "
+            f"{type(models).__name__}. Fix the `models:` block before the "
+            "actor roster can be checked."
+        )
     missing = sorted(
         name for name, spec in actors.items() if spec.mode == "llm" and name not in models
     )
