@@ -118,7 +118,7 @@ def _load_cert(model_id: str) -> tuple[set[str], set[str], list[str]]:
     """Import the (staged) registry; return ``(required, known_unsupported, cap_values)``.
 
     Inserts the repo root on ``sys.path`` so ``tests`` imports regardless of cwd. The
-    repo root is four levels up from this file (tools/auto-integration/src/auto_integration).
+    repo root is four levels up from this file (tools/automation/src/automation).
     """
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[4]))
     from tests.integration.llm._capability import Capability

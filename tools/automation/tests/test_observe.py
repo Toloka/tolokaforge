@@ -1,4 +1,4 @@
-"""Light unit tests for ``auto_integration.observe`` pure helpers.
+"""Light unit tests for ``automation.observe`` pure helpers.
 
 Covers the per-probe junit aggregation (``_capability_findings``) across reps and the
 markdown ``render_summary`` rendering. The trajectory/wire globbing and the ``run``
@@ -7,7 +7,7 @@ I/O wrapper are exercised end-to-end by the pipeline, not here.
 
 from __future__ import annotations
 
-import auto_integration.observe as observe
+import automation.observe as observe
 
 _REP1 = """<?xml version="1.0"?>
 <testsuite>

@@ -5,9 +5,9 @@ dispatching it to a sub-agent. Fill every `{{PLACEHOLDER}}` first.
 
 You are doing READ-ONLY trajectory analysis of a model's arena eval, one dimension
 per agent, to produce a GO / No-Go plus policy-fix targets. The deterministic layer
-(`auto-integration observe-findings`) has already emitted raw stats; your job
+(`automation observe-findings`) has already emitted raw stats; your job
 is the interpretation it deliberately does not do. A proposed policy fix is later
-proved or refuted by the resolve stage (`auto-integration reprobe`).
+proved or refuted by the resolve stage (`automation reprobe`).
 
 ## Mode (decide which one before dispatching)
 Two modes share these lenses but ask different questions:

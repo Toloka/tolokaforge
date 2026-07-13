@@ -1,4 +1,4 @@
-"""Unit tests for ``auto_integration.cert``.
+"""Unit tests for ``automation.cert``.
 
 The scenario mirrors the real mimo PR #207 observe baseline, whose free-form cert had
 exactly the bugs this guard exists to catch: ``re2_pattern_tolerance`` passed 15/15 but
@@ -8,7 +8,7 @@ was UNDECLARED, and ``implicit_prompt_caching`` passed 14/15 (0.93) but was mark
 
 from __future__ import annotations
 
-import auto_integration.cert as cert
+import automation.cert as cert
 
 
 def test_probe_base_strips_prefix_and_params():

@@ -1,4 +1,4 @@
-"""Light unit tests for ``auto_integration.reprobe`` pure helpers.
+"""Light unit tests for ``automation.reprobe`` pure helpers.
 
 ``k_group`` (junit probe name -> precise ``-k`` group) and the failure selectors
 ``failed_probes`` / ``failed_wire_tasks`` are deterministic; the pytest/tolokaforge
@@ -7,7 +7,7 @@ shell-outs (``run_capability_flat`` / ``run_wire_task`` / ``run``) are not unit-
 
 from __future__ import annotations
 
-import auto_integration.reprobe as reprobe
+import automation.reprobe as reprobe
 
 
 def test_k_group_splits_param_into_and_group():

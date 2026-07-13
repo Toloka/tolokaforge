@@ -1,4 +1,4 @@
-"""Unit tests for ``auto_integration.greencheck.evaluate`` (the resolve fix-loop token).
+"""Unit tests for ``automation.greencheck.evaluate`` (the resolve fix-loop token).
 
 ``evaluate`` is pure: given a decision (its ``fix_targets``) and a reprobe findings dict
 (``capability`` / ``variants`` -> ``per_probe`` of ``{probe, passed, runs}``), it returns
@@ -8,7 +8,7 @@ NO_TARGETS (nothing to prove). The PARSE_FAIL token is ``run``'s job, not ``eval
 
 from __future__ import annotations
 
-import auto_integration.greencheck as greencheck
+import automation.greencheck as greencheck
 
 
 def _reprobe(capability=None, variants=None):

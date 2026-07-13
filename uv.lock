@@ -9,7 +9,7 @@ resolution-markers = [
 
 [manifest]
 members = [
-    "auto-integration",
+    "automation",
     "dev-mcp",
     "pricing-updater",
     "rubric-calibrator",
@@ -245,9 +245,9 @@ wheels = [
 ]
 
 [[package]]
-name = "auto-integration"
+name = "automation"
 version = "0.1.0"
-source = { editable = "tools/auto-integration" }
+source = { editable = "tools/automation" }
 dependencies = [
     { name = "click" },
     { name = "pyyaml" },
@@ -3982,6 +3982,7 @@ terminal-bench = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "automation" },
     { name = "black" },
     { name = "build" },
     { name = "commitizen" },
@@ -4054,6 +4055,7 @@ provides-extras = ["browser", "server", "rag", "office", "terminal-bench", "adap
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "automation", editable = "tools/automation" },
     { name = "black", specifier = "==26.3.1" },
     { name = "build", specifier = ">=1.0.0" },
     { name = "commitizen", specifier = ">=4.0.0" },

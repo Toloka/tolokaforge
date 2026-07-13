@@ -1,4 +1,4 @@
-"""``auto-integration`` CLI: one typer app aggregating the observe / resolve / finalize
+"""``automation`` CLI: one typer app aggregating the observe / resolve / finalize
 subcommands. Each command is a thin wrapper over a module's ``run`` (or pure) logic so
 the logic stays unit-testable and the GitHub Actions workflow is a thin caller.
 """
@@ -7,15 +7,15 @@ from __future__ import annotations
 
 import typer
 
-from auto_integration import cert, greencheck, observe, pricing, probes, reprobe, slack
+from automation import cert, greencheck, observe, pricing, probes, reprobe, slack
 
 app = typer.Typer(
-    help="Arena model auto-integration: observe quirks, resolve a policy + cert, finalize the PR.",
+    help="Arena model automation: observe quirks, resolve a policy + cert, finalize the PR.",
     no_args_is_help=True,
     add_completion=False,
 )
 
-# Slack thread notifications are their own sub-app (`auto-integration slack ...`).
+# Slack thread notifications are their own sub-app (`automation slack ...`).
 app.add_typer(slack.app, name="slack")
 
 

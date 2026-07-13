@@ -1,4 +1,4 @@
-"""Targeted re-probe for the model auto-integration RESOLVE phase.
+"""Targeted re-probe for the model automation RESOLVE phase.
 
 Given the observe baseline findings and a policy overlay (the preset the resolve
 agent SET or CREATED), re-run ONLY the probes that failed in the baseline, under
@@ -29,7 +29,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
-from auto_integration import observe
+from automation import observe
 
 # The user-sim and wire task pack, matching the observe stage.
 WIRE_DATASET = "tests/data/tasks/wire_probes/dataset"

@@ -1,4 +1,4 @@
-"""Slack thread notifications for the model auto-integration pipeline.
+"""Slack thread notifications for the model automation pipeline.
 
 One Slack thread per integration PR: a PR-unique root message
 (``Auto-integration: <model> (PR #<N>)``) plus threaded replies for each
@@ -254,7 +254,7 @@ def cmd_reply(
 # --- typer sub-app -------------------------------------------------------------
 
 app = typer.Typer(
-    help="Slack thread notifications for the auto-integration pipeline.",
+    help="Slack thread notifications for the automation pipeline.",
     no_args_is_help=True,
     add_completion=False,
 )
