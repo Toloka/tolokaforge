@@ -698,6 +698,102 @@ class TestEnvVarInterpolation:
         merged, _ = load_effective_run_config(run_cfg)
         assert merged["models"]["user"]["name"] == "gpt-4o-2026-nightly"
 
+    def test_credential_shaped_names_rejected_at_load(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Rule-2 boundary: even if the env var IS set, a placeholder
+        # with a credential-shaped suffix is rejected. Credentials
+        # must flow through SecretManager, not the plaintext merged
+        # config dict.
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-should-not-leak-here")
+        _write_yaml(tmp_path / "project.yaml", {"name": "p"})
+        run_cfg = tmp_path / "run_configs" / "dev.yaml"
+        _write_yaml(
+            run_cfg,
+            {
+                "models": {"user": {"provider": "openai", "name": "gpt-4o"}},
+                "evaluation": {"output_dir": "results/${OPENAI_API_KEY}"},
+            },
+        )
+        from tolokaforge.core.project_loader import load_effective_run_config
+
+        with pytest.raises(ValueError) as exc:
+            load_effective_run_config(run_cfg)
+        message = str(exc.value)
+        assert "credential-shaped" in message
+        assert "OPENAI_API_KEY" in message
+        assert "SecretManager" in message
+        # And the env var's real value must never appear in the error —
+        # the point of the boundary is to keep it out of every downstream
+        # log surface, starting with our own error path.
+        assert "sk-should-not-leak-here" not in message
+
+    def test_credential_suffix_variants_all_rejected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Suffix-based match mirrors tests/unit/secrets/test_no_raw_secret_access.py.
+        # A representative from each suffix pins the shape.
+        variants = [
+            "MY_TOKEN",
+            "MY_SECRET",
+            "MY_PASSWORD",
+            "POSTGRES_DSN",
+            "GITHUB_PAT",
+            "MY_CREDENTIAL",
+            "MY_CREDENTIALS",
+        ]
+        for var in variants:
+            monkeypatch.setenv(var, "unused")
+        _write_yaml(tmp_path / "project.yaml", {"name": "p"})
+        run_cfg = tmp_path / "run_configs" / "dev.yaml"
+        _write_yaml(
+            run_cfg,
+            {
+                "models": {"user": {"provider": "openai", "name": "gpt-4o"}},
+                "evaluation": {"output_dir": "results/x"},
+                "orchestrator": {
+                    # Field is a string, so it exercises the walker.
+                    "continue_prompt": " ".join(f"${{{v}}}" for v in variants),
+                },
+            },
+        )
+        from tolokaforge.core.project_loader import load_effective_run_config
+
+        with pytest.raises(ValueError, match="credential-shaped") as exc:
+            load_effective_run_config(run_cfg)
+        message = str(exc.value)
+        for var in variants:
+            assert var in message, f"expected {var!r} in error message"
+
+    def test_dict_keys_are_never_interpolated(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Pins that only string VALUES are interpolated. A ${...}-shaped
+        # dict key would parse as a literal string key on the merged
+        # dict — no substitution attempted, no missing-var error.
+        monkeypatch.setenv("SHOULD_NOT_FIRE", "surprise")
+        _write_yaml(tmp_path / "project.yaml", {"name": "p"})
+        run_cfg = tmp_path / "run_configs" / "dev.yaml"
+        _write_yaml(
+            run_cfg,
+            {
+                "models": {"user": {"provider": "openai", "name": "gpt-4o"}},
+                "evaluation": {"output_dir": "results/x"},
+                "orchestrator": {
+                    # A YAML mapping key using ${...} shape — the walker
+                    # must skip keys entirely, so this survives verbatim
+                    # regardless of whether the env var is set.
+                    "typesense": {"${SHOULD_NOT_FIRE}": "literal-value"},
+                },
+            },
+        )
+        from tolokaforge.core.project_loader import load_effective_run_config
+
+        merged, _ = load_effective_run_config(run_cfg)
+        # The key survives untouched; env var value never leaks in.
+        assert "${SHOULD_NOT_FIRE}" in merged["orchestrator"]["typesense"]
+        assert "surprise" not in merged["orchestrator"]["typesense"]
+
     def test_multiple_missing_vars_reported_together(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
