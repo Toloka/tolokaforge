@@ -1072,11 +1072,11 @@ class Orchestrator:
         # Instantiate agent client in orchestrator process
         agent_client = LLMClient(agent_config)
         request_limiter: GlobalRateLimiter | None = None
-        if self.config.orchestrator.max_requests_per_second is not None:
-            request_limiter = GlobalRateLimiter(self.config.orchestrator.max_requests_per_second)
+        if self.config.effective_max_requests_per_second is not None:
+            request_limiter = GlobalRateLimiter(self.config.effective_max_requests_per_second)
             self.logger.info(
                 "Global request limiter enabled",
-                max_requests_per_second=self.config.orchestrator.max_requests_per_second,
+                max_requests_per_second=self.config.effective_max_requests_per_second,
             )
 
         # Task-declared shared-stack manifest: if the run's tasks declare an
@@ -1240,10 +1240,10 @@ class Orchestrator:
         )
 
         run_queue = create_run_queue(
-            self.config.orchestrator.queue_backend,
+            self.config.effective_queue_backend,
             sqlite_path=output_dir / "run_queue.sqlite",
-            max_retries=self.config.orchestrator.max_attempt_retries,
-            postgres_dsn=self.config.orchestrator.queue_postgres_dsn,
+            max_retries=self.config.effective_max_attempt_retries,
+            postgres_dsn=self.config.effective_queue_postgres_dsn,
         )
         run_queue.enqueue_many(pending_trials)
         recovered = run_queue.recover_inflight(
@@ -1252,7 +1252,7 @@ class Orchestrator:
         if recovered > 0:
             self.logger.warning("Recovered stale in-flight attempts", recovered=recovered)
 
-        budget_limit = self.config.orchestrator.max_budget_usd
+        budget_limit = self.config.effective_max_budget_usd
         total_cost_usd = self._collect_existing_cost(output_dir)
         budget_exhausted = False
         total_trials_scheduled = len(pending_trials)
@@ -1270,7 +1270,7 @@ class Orchestrator:
         lease_owner = f"orchestrator:{os.getpid()}"
 
         # Run tasks with parallel workers using the durable queue.
-        with ThreadPoolExecutor(max_workers=self.config.orchestrator.workers) as executor:
+        with ThreadPoolExecutor(max_workers=self.config.effective_workers) as executor:
             active_futures: dict[Any, AttemptLease] = {}
 
             def submit_one() -> bool:
@@ -1323,7 +1323,7 @@ class Orchestrator:
                 active_futures[future] = lease
                 return True
 
-            while len(active_futures) < self.config.orchestrator.workers and submit_one():
+            while len(active_futures) < self.config.effective_workers and submit_one():
                 pass
 
             while active_futures:
@@ -1430,7 +1430,7 @@ class Orchestrator:
                             )
                         continue
 
-                    while len(active_futures) < self.config.orchestrator.workers and submit_one():
+                    while len(active_futures) < self.config.effective_workers and submit_one():
                         pass
 
         counts = run_queue.get_counts()
@@ -1530,8 +1530,8 @@ class Orchestrator:
 
         agent_client = LLMClient(agent_config)
         request_limiter: GlobalRateLimiter | None = None
-        if self.config.orchestrator.max_requests_per_second is not None:
-            request_limiter = GlobalRateLimiter(self.config.orchestrator.max_requests_per_second)
+        if self.config.effective_max_requests_per_second is not None:
+            request_limiter = GlobalRateLimiter(self.config.effective_max_requests_per_second)
 
         runner_address = os.environ.get("EXECUTOR_ADDRESS", "executor:50051")
 
@@ -1577,10 +1577,10 @@ class Orchestrator:
 
         task_by_id = {task.task_id: task for task in self.tasks}
         run_queue = create_run_queue(
-            self.config.orchestrator.queue_backend,
+            self.config.effective_queue_backend,
             sqlite_path=output_dir / "run_queue.sqlite",
-            max_retries=self.config.orchestrator.max_attempt_retries,
-            postgres_dsn=self.config.orchestrator.queue_postgres_dsn,
+            max_retries=self.config.effective_max_attempt_retries,
+            postgres_dsn=self.config.effective_queue_postgres_dsn,
         )
         recovered = run_queue.recover_inflight(
             max_lease_age_s=max(300, self.config.orchestrator.timeouts.episode_s * 2)
@@ -1588,7 +1588,7 @@ class Orchestrator:
         if recovered > 0:
             self.logger.warning("Worker recovered stale in-flight attempts", recovered=recovered)
 
-        budget_limit = self.config.orchestrator.max_budget_usd
+        budget_limit = self.config.effective_max_budget_usd
         total_cost_usd = self._collect_existing_cost(output_dir)
         lease_owner = f"worker:{socket.gethostname()}:{os.getpid()}"
         lease_seconds = max(300, self.config.orchestrator.timeouts.episode_s * 2)
@@ -1717,10 +1717,10 @@ class Orchestrator:
         self._resolve_judge_config()
 
         run_queue = create_run_queue(
-            self.config.orchestrator.queue_backend,
+            self.config.effective_queue_backend,
             sqlite_path=output_dir / "run_queue.sqlite",
-            max_retries=self.config.orchestrator.max_attempt_retries,
-            postgres_dsn=self.config.orchestrator.queue_postgres_dsn,
+            max_retries=self.config.effective_max_attempt_retries,
+            postgres_dsn=self.config.effective_queue_postgres_dsn,
         )
         if reset_queue:
             run_queue.clear_all()
@@ -1750,7 +1750,7 @@ class Orchestrator:
         summary = {
             "queued_attempts": queued_attempts,
             "queue_counts": counts,
-            "queue_backend": self.config.orchestrator.queue_backend,
+            "queue_backend": self.config.effective_queue_backend,
         }
         self.logger.info("Run prepared", **summary)
         return summary

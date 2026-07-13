@@ -30,8 +30,10 @@
       "Report the final order ID and remaining balance to the customer."
     ]
   },
+  "stuck_heuristics": null,
   "system_prompt": "system_prompt.md",
   "task_id": "shop_orders_02",
+  "timeouts": null,
   "tools": {
     "agent": {
       "enabled": [

@@ -484,10 +484,37 @@ class OrchestratorConfig(BaseModel):
     queue_backend: Literal["sqlite", "postgres"] = "sqlite"
     queue_postgres_dsn: str | None = None
     timeouts: TimeoutConfig = Field(default_factory=TimeoutConfig)
+    """Run-level cap on per-trial timeouts. Effective values applied
+    by the runtime = ``min(TaskConfig.timeouts, this)`` — the
+    task-scoped value is authoritative, this is an optional
+    operator-side clamp. Unset means the task-scoped value governs.
+    Field-name migration to ``TimeoutDefaults`` (``trial_seconds`` /
+    ``tool_call_seconds``) lands with the cleanup milestone."""
+
     max_turns: int = 50
+    """Run-level cap on per-trial ``max_turns``. Effective value at
+    runtime = ``min(TaskConfig.max_turns, this)``. Unset behaviour is
+    preserved by the default (50) acting as the cap when the task
+    declares nothing higher — but authors should treat this as an
+    optional clamp rather than the authoritative value."""
+
     auto_start_services: bool = True  # Auto-start Docker services via EngineStack
+
     continue_prompt: str = "Please proceed to the next step."
+    """Deprecated. Not consumed by any runtime code today; the
+    canonical home is ``TaskDefaults.continue_prompt``. Kept for
+    backward compatibility of run configs that declare it; a
+    ``DeprecationWarning`` fires when the field is explicitly set to
+    a non-default value."""
+
     stuck_heuristics: StuckHeuristics = Field(default_factory=StuckHeuristics)
+    """Deprecated. The conductor now reads stuck-heuristics from the
+    task-scoped ``TaskConfig.stuck_heuristics`` (populated via the M2
+    loader's per-task merge chain from
+    ``project.task_defaults.stuck_heuristics``). Kept on this model
+    for backward compatibility; a ``DeprecationWarning`` fires when
+    the field is explicitly set."""
+
     runtime: Literal["shared", "per_trial"] = "shared"
     """Runtime backend selection.
 
@@ -509,8 +536,6 @@ class OrchestratorConfig(BaseModel):
         older run configs continue to load. Emits a ``DeprecationWarning``
         and structured-log-friendly stderr line."""
         if value == "docker":
-            import warnings
-
             warnings.warn(
                 "OrchestratorConfig.runtime = 'docker' is a deprecated alias "
                 "for 'shared'; update your run config.",
@@ -519,6 +544,31 @@ class OrchestratorConfig(BaseModel):
             )
             return "shared"
         return value
+
+    @model_validator(mode="before")
+    @classmethod
+    def _warn_deprecated_task_scope_fields(cls, values: Any) -> Any:
+        """Emit ``DeprecationWarning`` when a caller sets
+        ``stuck_heuristics`` or ``continue_prompt`` on the run-side
+        orchestrator config. Both fields have canonical homes on
+        ``TaskDefaults`` (``TaskDefaults.stuck_heuristics``,
+        ``TaskDefaults.continue_prompt``); the orchestrator copies are
+        retained for backward compatibility and retired with the
+        cleanup milestone.
+        """
+        if not isinstance(values, dict):
+            return values
+        for field_name in ("stuck_heuristics", "continue_prompt"):
+            if field_name in values:
+                warnings.warn(
+                    f"OrchestratorConfig.{field_name} is deprecated; move "
+                    f"it under task_defaults.{field_name} on the enclosing "
+                    "project. The orchestrator copy is retained for "
+                    "backward compatibility only.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+        return values
 
     typesense: TypeSenseConfig | None = None  # TypeSense server configuration
 
@@ -788,6 +838,25 @@ class ObservabilityConfig(BaseModel):
     logging: LoggingConfig | None = None
 
 
+_DUAL_HOME_COMPUTE_ALIASES: tuple[tuple[str, str], ...] = (
+    ("workers", "workers"),
+    ("max_budget_usd", "max_budget_usd"),
+    ("max_requests_per_second", "max_requests_per_second"),
+    ("max_attempt_retries", "max_attempt_retries"),
+)
+"""``orchestrator.<legacy>`` → ``compute.<canonical>`` field pairs.
+Same names on both sides; kept explicit so a future rename hits one
+list."""
+
+_DUAL_HOME_STORAGE_QUEUE_ALIASES: tuple[tuple[str, str], ...] = (
+    ("queue_backend", "backend"),
+    ("queue_postgres_dsn", "postgres_dsn"),
+)
+"""``orchestrator.<legacy>`` → ``storage.queue.<canonical>`` field
+pairs. Legacy names carry the ``queue_`` prefix; canonical names
+don't (the ``queue`` sub-block is the namespace)."""
+
+
 class RunConfig(BaseModel):
     """Complete run configuration"""
 
@@ -798,6 +867,171 @@ class RunConfig(BaseModel):
     compute: ComputeConfig | None = None
     storage: StorageConfig | None = None
     observability: ObservabilityConfig | None = None
+
+    @property
+    def effective_workers(self) -> int:
+        """Effective worker count for this run.
+
+        Canonical home is ``compute.workers``. When the user declared
+        it (directly or via the ``orchestrator.workers`` legacy alias,
+        which the parse-time lift moved to ``compute.workers``), the
+        canonical value wins. Otherwise falls back to the
+        ``OrchestratorConfig.workers`` default so runs that never
+        touched either field still work.
+        """
+        if self.compute is not None and self.compute.workers is not None:
+            return self.compute.workers
+        return self.orchestrator.workers
+
+    @property
+    def effective_max_budget_usd(self) -> float | None:
+        """Effective per-run budget cap in USD. ``compute.max_budget_usd``
+        is canonical; falls back to ``orchestrator.max_budget_usd``."""
+        if self.compute is not None and self.compute.max_budget_usd is not None:
+            return self.compute.max_budget_usd
+        return self.orchestrator.max_budget_usd
+
+    @property
+    def effective_max_requests_per_second(self) -> float | None:
+        """Effective global request throttle. ``compute.max_requests_per_second``
+        is canonical; falls back to
+        ``orchestrator.max_requests_per_second``."""
+        if self.compute is not None and self.compute.max_requests_per_second is not None:
+            return self.compute.max_requests_per_second
+        return self.orchestrator.max_requests_per_second
+
+    @property
+    def effective_max_attempt_retries(self) -> int:
+        """Effective retry attempts for transient infra failures.
+        ``compute.max_attempt_retries`` is canonical; falls back to
+        ``orchestrator.max_attempt_retries``.
+
+        Asymmetric with the other ``effective_*`` accessors: the field
+        is a plain ``int`` with default ``0`` on both sides — there is
+        no ``None`` sentinel to distinguish "unset" from "explicit 0".
+        Whenever ``compute`` exists, its value is authoritative; the
+        parse-time lift ensures both sides agree by the time either is
+        constructed. Object-form callers (``RunConfig(compute=...)``)
+        who need the fallback must leave ``compute`` unset entirely."""
+        if self.compute is not None:
+            return self.compute.max_attempt_retries
+        return self.orchestrator.max_attempt_retries
+
+    @property
+    def effective_queue_backend(self) -> str:
+        """Effective queue-storage backend. ``storage.queue.backend`` is
+        canonical; falls back to ``orchestrator.queue_backend``."""
+        if self.storage is not None and self.storage.queue is not None:
+            return self.storage.queue.backend
+        return self.orchestrator.queue_backend
+
+    @property
+    def effective_queue_postgres_dsn(self) -> str | None:
+        """Effective postgres DSN when the queue backend is ``postgres``.
+        ``storage.queue.postgres_dsn`` is canonical; falls back to
+        ``orchestrator.queue_postgres_dsn``."""
+        if self.storage is not None and self.storage.queue is not None:
+            return self.storage.queue.postgres_dsn
+        return self.orchestrator.queue_postgres_dsn
+
+    @model_validator(mode="before")
+    @classmethod
+    def _lift_orchestrator_dual_home_aliases(cls, values: Any) -> Any:
+        """Lift legacy ``orchestrator.*`` fields to their canonical
+        ``compute.*`` / ``storage.queue.*`` homes at parse time.
+
+        The six aliases (workers, max_budget_usd, max_requests_per_second,
+        max_attempt_retries, queue_backend, queue_postgres_dsn) once
+        lived on ``OrchestratorConfig`` alone; the Project layer moved
+        them to ``ComputeConfig`` / ``StorageConfig``. This validator
+        preserves the legacy shape as a read-time alias so unmigrated
+        run configs still load, emits per-key ``DeprecationWarning``,
+        and drops the legacy key from ``orchestrator`` so downstream
+        reads route through the canonical field.
+
+        Collision policy — if both sides carry values:
+        - Equal values: warn once naming the collision, drop legacy.
+        - Differing values: fail loud naming both keys and both values;
+          the author must pick one.
+
+        Scope: only dict-form inputs are lifted. Object-form callers
+        that pass an already-constructed ``OrchestratorConfig``
+        instance (e.g. tests using ``RunConfig(orchestrator=
+        OrchestratorConfig(workers=4))``) bypass the lift entirely —
+        the effective-config accessors' fallback branch surfaces the
+        orchestrator value in that case, but no deprecation warning
+        fires. Production YAML load always passes dicts, so the lift
+        runs on every real load.
+        """
+        if not isinstance(values, dict):
+            return values
+        orch_input = values.get("orchestrator")
+        if not isinstance(orch_input, dict):
+            return values
+
+        # Copy input containers before mutating so callers who kept a
+        # reference to the raw dict (e.g. ``config_validator`` reads
+        # ``raw["orchestrator"]`` after calling ``RunConfig(**raw)``)
+        # still see their original layout.
+        values = dict(values)
+        orch = dict(orch_input)
+        values["orchestrator"] = orch
+
+        compute_input = values.get("compute")
+        compute = dict(compute_input) if isinstance(compute_input, dict) else {}
+        for legacy_key, canonical_key in _DUAL_HOME_COMPUTE_ALIASES:
+            _lift_alias(orch, legacy_key, compute, canonical_key, "compute")
+        if compute:
+            values["compute"] = compute
+
+        storage_input = values.get("storage")
+        storage = dict(storage_input) if isinstance(storage_input, dict) else {}
+        queue_input = storage.get("queue")
+        queue = dict(queue_input) if isinstance(queue_input, dict) else {}
+        for legacy_key, canonical_key in _DUAL_HOME_STORAGE_QUEUE_ALIASES:
+            _lift_alias(orch, legacy_key, queue, canonical_key, "storage.queue")
+        if queue:
+            storage["queue"] = queue
+            values["storage"] = storage
+
+        return values
+
+
+def _lift_alias(
+    legacy_container: dict[str, Any],
+    legacy_key: str,
+    canonical_container: dict[str, Any],
+    canonical_key: str,
+    canonical_container_label: str,
+) -> None:
+    """Lift a single legacy key into a canonical container in place.
+
+    Removes the legacy key from *legacy_container* (so downstream reads
+    can't accidentally see both). Emits ``DeprecationWarning`` when the
+    legacy key was set; raises ``ValueError`` on a collision with a
+    different canonical value.
+    """
+    if legacy_key not in legacy_container:
+        return
+    legacy_value = legacy_container[legacy_key]
+    canonical_value = canonical_container.get(canonical_key)
+    if canonical_value is not None and canonical_value != legacy_value:
+        raise ValueError(
+            f"orchestrator.{legacy_key}={legacy_value!r} conflicts with "
+            f"{canonical_container_label}.{canonical_key}={canonical_value!r}; "
+            f"drop the legacy `orchestrator.{legacy_key}` and keep the "
+            f"canonical `{canonical_container_label}.{canonical_key}`."
+        )
+    if canonical_value is None:
+        canonical_container[canonical_key] = legacy_value
+    warnings.warn(
+        f"orchestrator.{legacy_key} is deprecated; use "
+        f"{canonical_container_label}.{canonical_key} instead. Legacy "
+        "field will be removed in a future release.",
+        DeprecationWarning,
+        stacklevel=4,
+    )
+    del legacy_container[legacy_key]
 
 
 # Task Configuration Models
@@ -887,6 +1121,27 @@ class TaskMetadata(BaseModel):
     tags: list[str] = Field(default_factory=list)
 
 
+class TimeoutDefaults(BaseModel):
+    """Task-shape timeouts applied to every task via ``task_defaults``.
+    Consumed at task scope; the run-side ``OrchestratorConfig.timeouts``
+    is a run-level cap that clamps these via the min rule at read
+    time."""
+
+    trial_seconds: int = Field(default=600, ge=1)
+    tool_call_seconds: int = Field(default=60, ge=1)
+
+
+class StuckHeuristicsDefaults(BaseModel):
+    """Task-shape stuck-detection knobs applied to every task via
+    ``task_defaults``. The canonical home for stuck-heuristic config;
+    ``OrchestratorConfig.stuck_heuristics`` is deprecated and no longer
+    read by the conductor."""
+
+    enabled: bool = True
+    max_repeated_tool_calls: int = Field(default=5, ge=1)
+    max_idle_turns: int = Field(default=3, ge=1)
+
+
 class TaskConfig(BaseModel):
     """Task specification"""
 
@@ -917,6 +1172,20 @@ class TaskConfig(BaseModel):
     grading: str  # Path to grading.yaml
     system_prompt: str | None = None  # Path to system prompt file (e.g., wiki.md)
     adapter_settings: dict[str, Any] | None = None  # Opaque dict parsed by each adapter type
+
+    stuck_heuristics: StuckHeuristicsDefaults | None = None
+    """Task-scope stuck-detection knobs. Populated by the M2 loader
+    merge chain when ``project.task_defaults.stuck_heuristics`` is set;
+    the task's own ``task.yaml`` overrides win on conflict. The
+    conductor reads from here; ``OrchestratorConfig.stuck_heuristics``
+    is deprecated."""
+
+    timeouts: TimeoutDefaults | None = None
+    """Task-scope timeouts. Populated by the M2 loader merge chain;
+    the runtime clamps effective timeouts to
+    ``min(task, orchestrator)`` — the orchestrator side is a run-level
+    cap, this side is authoritative."""
+
     environment_manifest: EnvironmentPatch | None = None
     """Per-trial substrate declaration (ADR-0009), authored as a patch.
 
@@ -1007,23 +1276,6 @@ class GradingConfig(BaseModel):
     transcript_rules: TranscriptRulesConfig | None = None
     llm_judge: LLMJudgeConfig | None = None
     custom_checks: dict[str, Any] | None = None  # CustomChecksConfig as dict for flexibility
-
-
-class TimeoutDefaults(BaseModel):
-    """Task-shape timeouts applied to every task via ``task_defaults``."""
-
-    trial_seconds: int = Field(default=600, ge=1)
-    tool_call_seconds: int = Field(default=60, ge=1)
-
-
-class StuckHeuristicsDefaults(BaseModel):
-    """Task-shape stuck-detection knobs applied to every task via
-    ``task_defaults``. Distinct from ``OrchestratorConfig.stuck_heuristics``,
-    which is the run-scoped orchestrator setting."""
-
-    enabled: bool = True
-    max_repeated_tool_calls: int = Field(default=5, ge=1)
-    max_idle_turns: int = Field(default=3, ge=1)
 
 
 class GradingDefaults(BaseModel):

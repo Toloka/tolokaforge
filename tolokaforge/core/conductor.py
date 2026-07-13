@@ -516,19 +516,36 @@ class InProcessConductor:
             tool_schemas=user_tool_schemas if user_tool_executor else None,
         )
 
+        # Task-scope stuck_heuristics is canonical (populated by the M2
+        # loader's per-task merge from ``project.task_defaults``); the
+        # run-side ``OrchestratorConfig.stuck_heuristics`` is deprecated
+        # and only used as a fallback when the task declared nothing.
+        stuck_cfg = (
+            task.stuck_heuristics
+            if task.stuck_heuristics is not None
+            else self.config.orchestrator.stuck_heuristics
+        )
         stuck_detector = None
-        if self.config.orchestrator.stuck_heuristics.enabled:
+        if stuck_cfg.enabled:
             stuck_detector = StuckDetector(
-                max_repeated_tool_calls=self.config.orchestrator.stuck_heuristics.max_repeated_tool_calls,
-                max_idle_turns=self.config.orchestrator.stuck_heuristics.max_idle_turns,
+                max_repeated_tool_calls=stuck_cfg.max_repeated_tool_calls,
+                max_idle_turns=stuck_cfg.max_idle_turns,
             )
 
         system_prompt = self._build_system_prompt(task, setup.tool_schemas, setup.task_dir)
 
-        # Respect per-task max_turns when provided; fall back to orchestrator default.
-        max_turns = (
-            task.max_turns if task.max_turns is not None else self.config.orchestrator.max_turns
-        )
+        # Effective max_turns = min(task-resolved, run-level cap). The
+        # run-level cap is optional and acts as an operator-side clamp;
+        # the task's declared value is authoritative for the semantics
+        # of the task itself.
+        task_max_turns = task.max_turns
+        run_cap = self.config.orchestrator.max_turns
+        if task_max_turns is None:
+            max_turns = run_cap
+        elif run_cap is None:
+            max_turns = task_max_turns
+        else:
+            max_turns = min(task_max_turns, run_cap)
 
         # Scale turn budget for complex multi-app mobile tasks only when task max_turns
         # is not explicitly pinned.
@@ -542,6 +559,20 @@ class InProcessConductor:
                 elif app_count == 4:
                     max_turns = max(max_turns, 75)
 
+        # Effective per-trial timeouts = min(task-scope, run-level cap).
+        # Task-side field names (``trial_seconds`` / ``tool_call_seconds``)
+        # map to the run-side legacy names (``episode_s`` / ``turn_s``);
+        # the name reconciliation is a follow-up in the cleanup
+        # milestone.
+        run_turn_s = self.config.orchestrator.timeouts.turn_s
+        run_episode_s = self.config.orchestrator.timeouts.episode_s
+        if task.timeouts is not None:
+            turn_timeout_s = min(task.timeouts.tool_call_seconds, run_turn_s)
+            episode_timeout_s = min(task.timeouts.trial_seconds, run_episode_s)
+        else:
+            turn_timeout_s = run_turn_s
+            episode_timeout_s = run_episode_s
+
         runner = TrialRunner(
             task_id=task.task_id,
             trial_index=setup.trial_idx,
@@ -550,8 +581,8 @@ class InProcessConductor:
             tool_executor=setup.tool_executor,
             tool_schemas=setup.tool_schemas,
             max_turns=max_turns,
-            turn_timeout_s=self.config.orchestrator.timeouts.turn_s,
-            episode_timeout_s=self.config.orchestrator.timeouts.episode_s,
+            turn_timeout_s=turn_timeout_s,
+            episode_timeout_s=episode_timeout_s,
             stuck_detector=stuck_detector,
             user_tool_executor=user_tool_executor,
             request_limiter=self.request_limiter,
