@@ -981,6 +981,72 @@ _ALL: list[MC] = [
         ),
     ),
     # -----------------------------------------------------------------
+    # Xiaomi MiMo V2.5 Pro (OpenRouter) — integrated via auto-resolve from
+    # a fresh observe/reprobe cycle (PR #238). Routed through its own
+    # model-specific ``xiaomi_mimo_v2_5`` preset (passthrough schema +
+    # DictMapHints + JsonCoerceResponse + OpenAI reasoning codec), the same
+    # recipe as the ``qwen`` preset. The observe baseline under ``default``
+    # showed the classic OpenRouter dict-stringify failure mode: flat
+    # containers round-trip cleanly (dict_map base, heterogeneous_array
+    # flat/long_alternating, allof_merge all 15/15) but every NESTED
+    # object/array argument was emitted as a JSON-encoded string, failing
+    # recursive_ref (all 4 shapes), heterogeneous_array[nested_in_object],
+    # discriminated_union (both two-turn variants + nested_union) and
+    # dict_map[nested_in_object] at 0/15. ``JsonCoerceResponse`` decodes the
+    # stringified nested args back to native dicts/lists, turning all 9
+    # fix-target probes green (5/5 on the final reprobe) with no regression
+    # on the passthrough probes.
+    #
+    # ``DISCRIMINATED_UNION_TOOL_CALL`` and ``DECIMAL_FIELD_TOOL_CALL`` are
+    # BOTH ``required`` here (unlike the kimi / deepseek-v4 siblings):
+    # decimal round-trips natively under passthrough (15/15 baseline) and
+    # the discriminated-union stringify is recovered by json_coerce (5/5
+    # reprobe).
+    #
+    # Thinking + caching stay ``known_unsupported``: mimo surfaces only an
+    # OpenAI-style ``reasoning_content`` summary (0 reasoning_tokens, no
+    # signed blocks) and exposes no explicit ``cache_control`` nor implicit
+    # upstream auto-cache (baseline test_prompt_caching / _implicit both
+    # read 0 cache tokens) — same posture as the qwen3.6-plus sibling.
+    # -----------------------------------------------------------------
+    MC(
+        model_id="openrouter__xiaomi_mimo-v2.5-pro",
+        provider="openrouter",
+        name="xiaomi/mimo-v2.5-pro",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DICT_MAP_TOOL_CALL,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                C.THINKING_EMITS_BLOCKS,
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.UNSIGNED_THINKING_REPLAY,
+                C.PROMPT_CACHING,
+                C.IMPLICIT_PROMPT_CACHING,
+            }
+        ),
+    ),
+    # -----------------------------------------------------------------
     # DeepSeek V4-Flash — lighter/cheaper sibling of deepseek-v4-pro on
     # the OpenRouter route, shares the existing ``*deepseek-v4*`` preset
     # (openrouter_dict_stringify_recovery). Live-certified 2026-06-05 via

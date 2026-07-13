@@ -108,6 +108,32 @@ presets:
     prompt_policy: dict_map_hints
     reasoning_codec: openai
 
+  # Xiaomi MiMo V2.5 Pro (OpenRouter). Behaviourally in the same class as
+  # the ``qwen`` preset: an OpenAI-API-compatible native function-calling
+  # route that round-trips flat containers cleanly but systematically
+  # serialises a NESTED object/array argument value as a JSON-ENCODED
+  # STRING instead of a native dict/list (observe baseline: recursive_ref,
+  # heterogeneous_array[nested_in_object], discriminated_union and
+  # dict_map[nested_in_object] all emitted ``root``/``item``/``order``/
+  # ``doc`` as a JSON string). ``json_coerce`` (JsonCoerceResponse) decodes
+  # any top-level string value that ``json.loads`` to a list/dict back to
+  # native shape before validation; native emissions pass through
+  # unchanged, so the probes already at 15/15 do not regress. Mirrors the
+  # live-certified ``qwen`` recipe (passthrough schema + DictMapHints +
+  # JsonCoerceResponse + OpenAI reasoning summary); the reasoning_codec is
+  # observability-only here (mimo emits an OpenAI-style summary, no signed
+  # thinking blocks). Model-specific globs only — no bundled glob matches
+  # mimo, so this shadows ``default`` for mimo without touching any other
+  # route. Integrated via auto-resolve.
+  xiaomi_mimo_v2_5:
+    match:
+      - "xiaomi/mimo-v2.5-pro*"
+      - "*mimo-v2.5-pro*"
+    schema_sanitizer: passthrough
+    prompt_policy: dict_map_hints
+    response_policy: json_coerce
+    reasoning_codec: openai
+
   # DeepSeek V3.2-Exp experimental V3.2 reasoning route.
   # Unlike the V4 line (openrouter_dict_stringify_recovery, above) it
   # round-trips dict-map and discriminated-union tool calls cleanly on
