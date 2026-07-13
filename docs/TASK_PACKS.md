@@ -1,9 +1,16 @@
 # Task Packs Guide
 
-> **Naming note.** The "task pack" name is legacy vocabulary; the
-> abstraction is being renamed to **Project** (with related new
-> terms: **Actor**, **Service**, **Backend**). Which document you
-> need depends on what you're doing:
+> **Naming note.** The user-facing name for what this guide calls a
+> "task pack" is being renamed to **Project** (with related new
+> terms: **Actor**, **Service**, **Backend**). The Project doc
+> explains the two-vocabulary split — see
+> [`architecture/PROJECTS.md` § Naming — "Project" vs "task pack"](architecture/PROJECTS.md#naming--project-vs-task-pack).
+> In short: "Project" is the abstraction (schemas, docs, CLI);
+> "task pack" survives as a *filesystem-layout* term in
+> implementation plumbing (adapter parameters, Docker-mount
+> helpers, env-vars) where the concept is layout-only.
+>
+> Which document you need depends on what you're doing:
 >
 > - **Authoring or running configs today** — stay on this page.
 >   The single-file run-config format described below is what the

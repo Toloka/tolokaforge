@@ -30,6 +30,7 @@ extends),
 ## Contents
 
 - [Delta from current implementation](#delta-from-current-implementation)
+- [Naming — "Project" vs "task pack"](#naming--project-vs-task-pack)
 - [The three pieces of a project](#the-three-pieces-of-a-project)
 - [What a Project is](#what-a-project-is)
 - [What a Task is](#what-a-task-is)
@@ -146,6 +147,45 @@ current as milestones land; delete it when the last one does.
   default, relaxation is an explicit reviewable label.)
 - The per-service vocabulary requires an ADR amending ADR-0018
   before M3 lands.
+
+## Naming — "Project" vs "task pack"
+
+Two vocabularies live in the codebase side by side, on purpose.
+
+**"Project"** is the *abstraction*: the eval spec at a pack root,
+comprising identity, `default_environment`, `task_defaults`,
+`run_defaults`, and task discovery. Every user-facing surface —
+schemas, docs, error messages, CLI — uses this name. It's the
+term to prefer whenever you're talking about what a pack IS.
+
+**"Task pack"** is a *filesystem-layout* term: "a directory that
+contains task files." It appears in implementation plumbing
+(adapter parameters, Docker-mount helpers, env-vars) where the
+concept genuinely is layout-only — the code cares about which
+directories to glob and mount, not about the wrapping
+abstraction. Those internal names aren't in flight to change
+because they describe the layout, not the concept. A future
+reader of `mounts.py` or the Docker helper scripts will still
+encounter "task pack" and it will still be the right word there.
+
+Three legacy *user-facing* task-pack names survive as deprecated
+aliases during the migration window and retire in M5 (#214):
+
+- `evaluation.task_packs` on the run config — canonical field is
+  `evaluation.projects`. The alias is coerced by
+  `EvaluationConfig`'s `mode="before"` validator with a
+  `DeprecationWarning`.
+- `docs/TASK_PACKS.md` — the pre-Project authoring guide; carries
+  a deprecation banner pointing at this document.
+- `TASK_PACKS_DIRS` environment variable — used by Docker flows
+  to name container-visible pack roots. Retirement is coordinated
+  with the Docker override generator's rename.
+
+After M5, "task pack" is gone from every user-facing surface but
+survives in implementation plumbing where it names the filesystem
+layout. This split is deliberate: promoting the abstraction to a
+better name doesn't force renaming every "directory of files"
+mechanism that the abstraction happens to sit on top of.
 
 ## The three pieces of a project
 
