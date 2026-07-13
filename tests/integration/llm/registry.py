@@ -1514,52 +1514,6 @@ _ALL: list[MC] = [
             }
         ),
     ),
-    # GLM-5.2 (Zhipu / Z.AI via OpenRouter). Same z-ai/glm-5 family + shared
-    # ``openrouter_dict_stringify_recovery`` preset as glm-5.1, so this cert
-    # MIRRORS the glm-5.1 sibling (17 required / 3 known_unsupported) as the
-    # integration starting point. NOT yet live-certified: verify against the
-    # live route, and demote any capability it refutes, when the model is
-    # first evaluated (same approach as the nemotron-3-ultra integration, #65).
-    MC(
-        model_id="openrouter__z-ai_glm-5.2",
-        provider="openrouter",
-        name="z-ai/glm-5.2",
-        env_key="OPENROUTER_API_KEY",
-        required=frozenset(
-            {
-                C.BASIC_COMPLETION,
-                C.SIMPLE_TOOL_CALL,
-                C.RECURSIVE_REF_TOOL_CALL,
-                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
-                C.ALLOF_MERGE_TOOL_CALL,
-                C.MULTI_TURN_TOOL_USE,
-                C.MULTI_TURN_ERROR_RECOVERY,
-                C.ENUM_SLASH_TOLERANCE,
-                C.RE2_PATTERN_TOLERANCE,
-                C.DICT_MAP_TOOL_CALL,
-                C.DISCRIMINATED_UNION_TOOL_CALL,
-                C.DECIMAL_FIELD_TOOL_CALL,
-                C.THINKING_EMITS_BLOCKS,
-                C.IMPLICIT_PROMPT_CACHING,
-                C.USAGE_METRICS_POPULATED,
-                C.COST_USD_POPULATED,
-                C.TOOL_NAME_DISCIPLINE,
-                C.LEXICAL_TOOL_INVENTION,
-                C.REQUIRED_FIELDS_COMPLETE,
-                C.PROGRESS_AFTER_SUCCESS,
-            }
-        ),
-        known_unsupported=frozenset(
-            {
-                # No Anthropic-style ephemeral cache markers on this route.
-                C.PROMPT_CACHING,
-                # Reasoning surfaces only as an unsigned summary via the openai
-                # codec (no signed blocks to replay; the codec replay is a no-op).
-                C.THINKING_REPLAY_ROUNDTRIP,
-                C.UNSIGNED_THINKING_REPLAY,
-            }
-        ),
-    ),
     # Mistral-Medium-3.5 (Mistral AI via OpenRouter). Clean tool-caller on
     # the default route — dict-map, discriminated-union, decimal all
     # round-trip natively, so no preset is needed. It is a NON-reasoning
