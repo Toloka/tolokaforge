@@ -143,6 +143,28 @@ class TestResolveDeepMerges:
         assert manifest is not None
         assert manifest.compose_file == ENV_FIXTURE
 
+    def test_initial_state_carries_through_non_replacement_merge(self) -> None:
+        # Non-replacement path (task patches only stack.inputs) must carry
+        # the project's initial_state through as-is — the fixtures are
+        # scoped to the shared stack the task inherited.
+        from tolokaforge.runner.models import InitialStateRef
+
+        # `default` is the sole service declared in safe_one_service.yaml —
+        # the manifest validator cross-checks initial_state keys against
+        # compose services, so keying by anything else fails at construction.
+        project = EnvironmentPatch(
+            stack=StackPatch(compose_file=ENV_FIXTURE, runner_service="default"),
+            initial_state={
+                "default": InitialStateRef.model_validate({"from": "./seed.sql", "kind": "sql"}),
+            },
+        )
+        task = EnvironmentPatch(stack=StackPatch(inputs={"postgres_version": "17"}))
+        manifest = resolve(project, task)
+        assert manifest is not None
+        assert set(manifest.initial_state) == {"default"}
+        assert manifest.initial_state["default"].from_ == "./seed.sql"
+        assert manifest.initial_state["default"].kind == "sql"
+
 
 class TestAtomicStackReplacement:
     """Presence of ``compose_file`` on the task's ``stack`` patch

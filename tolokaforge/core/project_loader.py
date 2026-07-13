@@ -308,9 +308,13 @@ def load_effective_run_config(
 
 _POLICY_REQUEST_FIELDS = ("network_policy", "security_context_defaults")
 """Fields that survive atomic ``stack`` replacement — policy requests
-that are substrate-neutral. Any other patch field is treated as
-service-treatment: scoped to the reviewed stack and discarded when the
-task replaces the stack outright."""
+that are substrate-neutral (they describe the trial regardless of
+substrate)."""
+
+_SERVICE_TREATMENT_FIELDS = ("initial_state", "isolation")
+"""Fields that are scoped to the reviewed stack — discarded on atomic
+``stack`` replacement (the project's opt-outs reviewed the project's
+services, not the replacement stack)."""
 
 
 def resolve(
@@ -409,7 +413,7 @@ def _merge_env_patches(
         return deep_merge(project, task)
 
     merged: dict[str, Any] = {"stack": dict(task_stack)}
-    for field in ("initial_state", "isolation"):
+    for field in _SERVICE_TREATMENT_FIELDS:
         if field in task:
             merged[field] = task[field]
     for field in _POLICY_REQUEST_FIELDS:
