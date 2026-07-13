@@ -1,9 +1,8 @@
-#!/usr/bin/env python
 """Ensure the candidate model has a pricing.json entry (best-effort, minimal diff).
 
 Runs BEFORE observe so ``COST_USD_POPULATED`` can find a price for a model litellm
 may not know natively (the pricing.json fallback). Self-contained (stdlib only) so
-it runs with the system python before uv-sync friction, like ``slack_notify.py``.
+it runs with the system python before uv-sync friction, like the Slack notifier.
 
 Modes:
   (default)  If the candidate's litellm name is missing from pricing.json ``models``,
@@ -17,19 +16,22 @@ Modes:
 
 Units: USD per 1M tokens (OpenRouter reports per-token; multiply by 1e6), matching
 ``tolokaforge/core/data/pricing.json`` and ``tools/pricing-updater``.
+
+The pure helpers (``entry_for`` etc.) are unit-tested; ``run`` does the I/O and
+returns an exit code.
 """
 
 from __future__ import annotations
 
-import argparse
 import json
-import sys
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
 _OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 _TIMEOUT = 30
+
+DEFAULT_PRICING_FILE = "tolokaforge/core/data/pricing.json"
 
 
 def _models(pricing_file: Path) -> dict:
@@ -89,40 +91,34 @@ def _insert(pricing_file: Path, name: str, entry: dict) -> None:
     pricing_file.write_text(json.dumps(data, indent=2) + "\n")
 
 
-def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="Ensure candidate pricing in pricing.json.")
-    ap.add_argument("--name", required=True, help="litellm model name, e.g. xiaomi/mimo-v2.5-pro")
-    ap.add_argument("--pricing-file", default="tolokaforge/core/data/pricing.json")
-    ap.add_argument(
-        "--check", action="store_true", help="exit 0 if priced, 1 if not; no fetch/write"
-    )
-    args = ap.parse_args(argv)
-    pricing_file = Path(args.pricing_file)
-    priced = args.name in _models(pricing_file)
+def run(name: str, pricing_file: str = DEFAULT_PRICING_FILE, check: bool = False) -> int:
+    """Ensure ``name`` is priced in ``pricing_file``. Returns an exit code.
 
-    if args.check:
-        print(f"ensure_pricing --check: '{args.name}' priced={priced}")
+    Default mode is best-effort (always exit 0): fetch OpenRouter and insert the entry
+    if found. ``--check`` mode does no fetch/write and exits 1 if the name is unpriced.
+    """
+    pf = Path(pricing_file)
+    priced = name in _models(pf)
+
+    if check:
+        print(f"ensure_pricing --check: '{name}' priced={priced}")
         return 0 if priced else 1
     if priced:
-        print(f"ensure_pricing: '{args.name}' already priced - no change")
+        print(f"ensure_pricing: '{name}' already priced - no change")
         return 0
     try:
-        entry = entry_for(_fetch_openrouter(), args.name)
+        entry = entry_for(_fetch_openrouter(), name)
     except Exception as exc:  # best-effort: a pricing miss must not block observe
         print(
-            f"::warning::ensure_pricing: OpenRouter fetch failed ({exc}); finalize agent must fill '{args.name}'"
+            f"::warning::ensure_pricing: OpenRouter fetch failed ({exc}); finalize agent must fill '{name}'"
         )
         return 0
     if not entry:
         print(
-            f"::warning::ensure_pricing: '{args.name}' not on OpenRouter with non-zero pricing; "
+            f"::warning::ensure_pricing: '{name}' not on OpenRouter with non-zero pricing; "
             "finalize agent must fill it"
         )
         return 0
-    _insert(pricing_file, args.name, entry)
-    print(f"ensure_pricing: added '{args.name}' = {entry}")
+    _insert(pf, name, entry)
+    print(f"ensure_pricing: added '{name}' = {entry}")
     return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
