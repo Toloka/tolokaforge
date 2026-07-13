@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.8.3 (2026-07-13)
+
+### Feat
+
+- **loader**: resolve project.yaml + run_configs base+delta merge (#219)
+- **schema**: add ProjectConfig, TaskDefaults, RunDefaults + compute/storage/observability blocks (#215)
+
+### Fix
+
+- **deps**: exclude litellm 1.92.0 due to fastapi import regression (#231)
+
 ## v0.8.2 (2026-07-10)
 
 ### Feat
