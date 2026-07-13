@@ -274,6 +274,24 @@ def ensure_root(
     raise typer.Exit(0)
 
 
+@app.command("post-thread")
+def post_thread(
+    channel: str = typer.Option(..., "--channel"),
+    thread_ts: str = typer.Option(..., "--thread-ts", help="parent message ts to reply under"),
+    text: str = typer.Option(..., "--text"),
+) -> None:
+    """Post a plain threaded reply under an arbitrary message ts. The poller workflow uses this to
+    confirm a specific Slack request IN ITS OWN THREAD after the PR opens (with the PR link) or to
+    report that starting it failed - the PR-keyed ``reply`` above threads on a different root."""
+    try:
+        token = _ready(channel)
+        if token and not _post_message(channel, text, token, thread_ts=thread_ts):
+            _note_failure("could not post the threaded follow-up")
+    except Exception as exc:  # a notification must never fail the job
+        _log(f"unexpected error (ignored): {exc}")
+    raise typer.Exit(0)
+
+
 @app.command("reply")
 def reply(
     channel: str = typer.Option(..., "--channel"),
