@@ -91,6 +91,10 @@ _private/
 converted/
 temp/
 .claude/*
+# Shared agent/skill definitions are part of the repo
+!.claude/agents/
+!.claude/skills/
+!.claude/settings.json
 
 # Devcontainer
 devcontainer-lock.json
