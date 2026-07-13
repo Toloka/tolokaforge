@@ -85,6 +85,17 @@ class TestComputeSeedDigest:
         expected = "sha256:" + hashlib.sha256(payload).hexdigest()
         assert compute_seed_digest(seed) == expected
 
+    def test_block_boundary_edge_case(self, tmp_path: Path) -> None:
+        # Non-multiple-of-block-size payloads exercise the "final
+        # chunk shorter than block size" branch of the streaming
+        # loop. 65 KiB = one full 64 KiB block + one 1 KiB tail —
+        # pins that the tail read is included in the hash.
+        seed = tmp_path / "boundary.sql"
+        payload = b"a" * (65 * 1024)
+        seed.write_bytes(payload)
+        expected = "sha256:" + hashlib.sha256(payload).hexdigest()
+        assert compute_seed_digest(seed) == expected
+
     def test_missing_file_raises(self, tmp_path: Path) -> None:
         with pytest.raises(FileNotFoundError):
             compute_seed_digest(tmp_path / "does-not-exist.sql")
@@ -132,6 +143,67 @@ class TestAssetsStampWriteMode:
         assert entry["kind"] == "sql_dump"
         assert entry["digest"] == expected
 
+    def test_multiple_seeds_only_stale_entries_rewritten(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        # Two-seed project: one already-current, one stale. The stamp
+        # must update only the stale entry and leave the current one
+        # untouched byte-for-byte (in the sense that the digest doesn't
+        # get re-computed to something different). Also exercises the
+        # ``changed = True`` accumulation across entries.
+        (tmp_path / "shared" / "seeds").mkdir(parents=True)
+        (tmp_path / "shared" / "seeds" / "a.sql").write_bytes(b"-- a\n")
+        (tmp_path / "shared" / "seeds" / "b.sql").write_bytes(b"-- b\n")
+        digest_a = compute_seed_digest(tmp_path / "shared" / "seeds" / "a.sql")
+        digest_b = compute_seed_digest(tmp_path / "shared" / "seeds" / "b.sql")
+        project_yaml = tmp_path / "project.yaml"
+        project_yaml.write_text(
+            yaml.safe_dump(
+                {
+                    "name": "p",
+                    "assets": {
+                        "seeds": {
+                            # ``a`` is already stamped correctly.
+                            "a": {
+                                "path": "shared/seeds/a.sql",
+                                "kind": "sql_dump",
+                                "digest": digest_a,
+                            },
+                            # ``b`` has a placeholder digest — needs update.
+                            "b": {
+                                "path": "shared/seeds/b.sql",
+                                "kind": "sql_dump",
+                                "digest": "sha256:placeholder",
+                            },
+                        },
+                    },
+                },
+                sort_keys=False,
+            ),
+        )
+
+        result = runner.invoke(cli, ["assets", "stamp", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        # One digest changed, one already correct → wrote 1.
+        assert "wrote 1 digest" in result.output
+
+        rewritten = yaml.safe_load(project_yaml.read_text())["assets"]["seeds"]
+        assert rewritten["a"]["digest"] == digest_a  # unchanged
+        assert rewritten["b"]["digest"] == digest_b  # updated
+
+    def test_explicit_project_yaml_file_argument(self, runner: CliRunner, tmp_path: Path) -> None:
+        # PROJECT_PATH may point directly at a project.yaml file (not
+        # just its containing directory). Pins the file-form branch of
+        # ``_resolve_project_yaml``.
+        project_yaml, seed = _write_project(tmp_path)
+        expected = compute_seed_digest(seed)
+
+        result = runner.invoke(cli, ["assets", "stamp", str(project_yaml)])
+        assert result.exit_code == 0, result.output
+
+        entry = yaml.safe_load(project_yaml.read_text())["assets"]["seeds"]["base"]
+        assert entry["digest"] == expected
+
     def test_relative_path_stays_relative_on_write(self, runner: CliRunner, tmp_path: Path) -> None:
         # The on-disk path must remain project-relative — rewriting to
         # absolute would break portability across checkouts.
@@ -159,15 +231,16 @@ class TestAssetsStampCheckMode:
     def test_check_stale_digest_exits_one_with_diff(
         self, runner: CliRunner, tmp_path: Path
     ) -> None:
-        project_yaml, _ = _write_project(tmp_path)  # placeholder digest
+        project_yaml, seed = _write_project(tmp_path)  # placeholder digest
+        expected_new = compute_seed_digest(seed)
 
         result = runner.invoke(cli, ["assets", "stamp", "--check", str(tmp_path)])
         assert result.exit_code != 0
         assert "stale" in result.output
-        assert "sha256:placeholder" in result.output
-        # The proposed new digest is named too so the author can inspect
-        # before running the write mode.
-        assert "sha256:" in result.output
+        # Both the OLD (placeholder) and the computed NEW digest must
+        # appear in the diff, structured as ``old → new``. A regression
+        # to only-print-one would slip past a looser assertion.
+        assert f"sha256:placeholder → {expected_new}" in result.output
 
 
 class TestAssetsStampMissingFile:
@@ -197,12 +270,12 @@ class TestAssetsStampMissingFile:
 
         result = runner.invoke(cli, ["assets", "stamp", str(tmp_path)])
         assert result.exit_code != 0
-        # Rich console is configured with ``soft_wrap=True`` so paths
-        # stay intact across narrow CI terminals. The offending path
-        # must appear so the author knows exactly which reference to
-        # fix.
-        assert "shared/seeds/missing.sql" in result.output
-        assert "does not exist" in result.output
+        # Errors route through ``err_console`` (stderr) — uniform with
+        # every other fatal-error path in the module. The offending
+        # path must appear on stderr so the author knows exactly which
+        # reference to fix.
+        assert "shared/seeds/missing.sql" in result.stderr
+        assert "does not exist" in result.stderr
 
 
 class TestAssetsStampCheckWithMissingFile:
@@ -234,7 +307,9 @@ class TestAssetsStampCheckWithMissingFile:
 
         result = runner.invoke(cli, ["assets", "stamp", "--check", str(tmp_path)])
         assert result.exit_code != 0
-        assert "shared/seeds/missing.sql" in result.output
+        # Fatal errors route to stderr (see err_console in
+        # assets_commands.py).
+        assert "shared/seeds/missing.sql" in result.stderr
 
 
 class TestAssetsStampProjectResolution:
@@ -256,7 +331,8 @@ class TestAssetsStampProjectResolution:
 
         result = runner.invoke(cli, ["assets", "stamp", str(empty)])
         assert result.exit_code != 0
-        assert "No project.yaml" in result.output
+        # Fatal errors route to stderr.
+        assert "No project.yaml" in result.stderr
 
 
 class TestAssetsStampMalformedShapeFailsLoud:
@@ -299,6 +375,53 @@ class TestAssetsStampMalformedShapeFailsLoud:
 
         result = runner.invoke(cli, ["assets", "stamp", "--check", str(tmp_path)])
         assert result.exit_code != 0
+
+
+class TestAssetsStampCommentDetection:
+    """The comment-loss warning must fire for both whole-line and
+    inline comment shapes; PyYAML strips both."""
+
+    def test_inline_comment_triggers_warning_on_write(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        # Hand-author the project.yaml (yaml.safe_dump produces no
+        # comments, so we have to write raw). Inline comment on the
+        # digest line is a common author pattern.
+        seed = tmp_path / "shared" / "seeds" / "base.sql"
+        seed.parent.mkdir(parents=True)
+        seed.write_bytes(b"-- baseline\n")
+        (tmp_path / "project.yaml").write_text(
+            "name: p\n"
+            "assets:\n"
+            "  seeds:\n"
+            "    base:\n"
+            "      path: shared/seeds/base.sql  # inline note about the seed\n"
+            "      kind: sql_dump\n"
+            "      digest: sha256:placeholder\n",
+        )
+
+        result = runner.invoke(cli, ["assets", "stamp", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "strip on write" in result.output
+
+    def test_whole_line_comment_triggers_warning(self, runner: CliRunner, tmp_path: Path) -> None:
+        seed = tmp_path / "shared" / "seeds" / "base.sql"
+        seed.parent.mkdir(parents=True)
+        seed.write_bytes(b"-- baseline\n")
+        (tmp_path / "project.yaml").write_text(
+            "# Full-line comment at top\n"
+            "name: p\n"
+            "assets:\n"
+            "  seeds:\n"
+            "    base:\n"
+            "      path: shared/seeds/base.sql\n"
+            "      kind: sql_dump\n"
+            "      digest: sha256:placeholder\n",
+        )
+
+        result = runner.invoke(cli, ["assets", "stamp", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "strip on write" in result.output
 
 
 class TestAssetsStampNoSeeds:

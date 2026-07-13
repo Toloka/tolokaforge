@@ -11,6 +11,7 @@ CLI registration stays cheap.
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -24,6 +25,22 @@ from rich.console import Console
 # digests are the primary error surface here; keeping them intact
 # matters more than fitting to terminal width.
 console = Console(soft_wrap=True)
+
+# Errors go to stderr, success messages go to stdout. Two consoles
+# keep the routing uniform without repeatedly threading ``file=``
+# through every call site — the alternative (mix of ``sys.exit`` +
+# ``ClickException``) split the surface across streams depending on
+# the failure mode.
+err_console = Console(stderr=True, soft_wrap=True)
+
+_COMMENT_LINE_PATTERN = re.compile(r"(?:^|\s)#")
+"""Match ``#`` at the start of a line OR preceded by whitespace.
+
+PyYAML's ``safe_dump`` strips both whole-line comments (``# foo``)
+and inline comments (``key: value  # note``). The whitespace guard
+avoids the false-positive of ``#`` embedded inside a string value
+without a space in front of it (``key: "foo#bar"``) — such shapes
+are unusual and outside the warning's target audience."""
 
 
 @click.group()
@@ -72,16 +89,15 @@ def stamp(project_path: Path, check_only: bool) -> None:
 
     project_yaml = _resolve_project_yaml(project_path)
     if project_yaml is None:
-        console.print(
+        err_console.print(
             f"[red]No project.yaml found at or above {project_path!s}[/red]",
-            style="red",
         )
         sys.exit(1)
 
     project_dir = project_yaml.parent
     raw = yaml.safe_load(project_yaml.read_text()) or {}
     if not isinstance(raw, dict):
-        console.print(f"[red]{project_yaml} is not a YAML mapping[/red]")
+        err_console.print(f"[red]{project_yaml} is not a YAML mapping[/red]")
         sys.exit(1)
 
     seeds_container = _extract_seeds(raw)
@@ -90,16 +106,15 @@ def stamp(project_path: Path, check_only: bool) -> None:
         return
 
     updates: list[tuple[str, str | None, str]] = []
+    path_less_entries: list[str] = []
     missing_files: list[tuple[str, Path]] = []
     changed = False
 
     for name, entry in list(seeds_container.items()):
         seed_path_str, existing_digest = _read_seed_entry(entry)
         if seed_path_str is None:
-            console.print(
-                f"[red]{project_yaml}: assets.seeds.{name} has no `path` field[/red]",
-            )
-            sys.exit(1)
+            path_less_entries.append(name)
+            continue
         abs_path = _resolve_seed_path(seed_path_str, project_dir)
         if not abs_path.is_file():
             missing_files.append((name, abs_path))
@@ -111,9 +126,16 @@ def stamp(project_path: Path, check_only: bool) -> None:
             if not check_only:
                 seeds_container[name] = _write_seed_entry(entry, seed_path_str, new_digest)
 
-    if missing_files:
+    # Collate all fatal shape errors so authors fix them in one edit
+    # pass instead of one-per-reload. Path-less entries and missing
+    # files are both reported before we exit.
+    if path_less_entries or missing_files:
+        for name in path_less_entries:
+            err_console.print(
+                f"[red]{project_yaml}: assets.seeds.{name} has no `path` field[/red]",
+            )
         for name, path in missing_files:
-            console.print(
+            err_console.print(
                 f"[red]{project_yaml}: assets.seeds.{name}.path does not exist: {path}[/red]",
             )
         sys.exit(1)
@@ -165,9 +187,11 @@ def _extract_seeds(raw: dict) -> dict | None:
     ``assets`` block with no ``seeds`` key).
 
     Malformed shapes (present but not a mapping) raise
-    ``click.ClickException`` naming the offending key — a
-    ``--check`` in CI must not report green on a file that will
-    blow up at load time. Absent is different from present-but-broken.
+    ``click.ClickException`` (which routes to stderr per Click's
+    contract) naming the offending key — a ``--check`` in CI must
+    not report green on a file that will blow up at load time.
+    Absent is different from present-but-broken. Matches the
+    stderr routing of every other fatal error in this module.
     """
     if "assets" not in raw:
         return None
@@ -250,16 +274,17 @@ def _resolve_seed_path(seed_path: str, project_dir: Path) -> Path:
 
 
 def _has_comments(path: Path) -> bool:
-    """Best-effort check for ``#``-prefixed comment lines in *path*.
-    Full YAML lexing isn't needed — the warning is advisory.
+    """Best-effort check for YAML comments in *path* — either
+    whole-line (``# note``) or inline (``key: value  # note``).
+
+    Full YAML lexing isn't needed — the warning is advisory. The
+    ``_COMMENT_LINE_PATTERN`` regex matches ``#`` at line start OR
+    preceded by whitespace, catching both shapes while ruling out
+    ``#`` embedded in string values without a space in front.
 
     Any ``OSError`` here is genuinely surprising (the file was read
     successfully earlier in the same call), so we let it surface
     rather than silently returning ``False`` and suppressing the
     downstream comment-loss warning.
     """
-    for line in path.read_text().splitlines():
-        stripped = line.lstrip()
-        if stripped.startswith("#"):
-            return True
-    return False
+    return any(_COMMENT_LINE_PATTERN.search(line) for line in path.read_text().splitlines())
