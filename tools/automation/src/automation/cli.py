@@ -9,7 +9,17 @@ import json
 
 import typer
 
-from automation import cert, greencheck, model_resolver, observe, pricing, probes, reprobe, slack
+from automation import (
+    cert,
+    greencheck,
+    model_resolver,
+    observe,
+    poller,
+    pricing,
+    probes,
+    reprobe,
+    slack,
+)
 
 app = typer.Typer(
     help="Arena model automation: observe quirks, resolve a policy + cert, finalize the PR.",
@@ -19,6 +29,9 @@ app = typer.Typer(
 
 # Slack thread notifications are their own sub-app (`automation slack ...`).
 app.add_typer(slack.app, name="slack")
+
+# The Slack-triggered integration poller (`automation slack-poll ...`).
+app.command("slack-poll")(poller.cli)
 
 
 @app.command("reconcile-cert")

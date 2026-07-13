@@ -1,0 +1,129 @@
+name: Slack-triggered integration poller
+
+# Turns a Slack request ("@delivery-tech-bot integrate Grok 4.5 and Hy3") into integration
+# runs, with NO new app and NO PAT - only the github-actions[bot] GITHUB_TOKEN. A bot token
+# cannot be reached from outside GitHub, so the initiative comes from INSIDE: this workflow
+# POLLS the channel (the existing bot token, read-only history), resolves each model phrase to
+# an OpenRouter slug DETERMINISTICALLY (automation.model_resolver - no LLM guessing), and:
+#   * clearly-identified model  -> opens a draft integration PR + dispatches integrate-model.yml
+#   * ambiguous / unknown model -> replies in-thread asking for an exact slug (no run started)
+#
+# It dispatches integrate-model.yml via `gh workflow run` (workflow_dispatch) because a label
+# or PR added with GITHUB_TOKEN would NOT trigger a second workflow (the Actions recursion
+# guard); workflow_dispatch + repository_dispatch are the only two exceptions, so the whole
+# chain stays on github-actions[bot].
+#
+# Dedup is state-free: a request whose thread already has a bot reply is skipped, and a slug is
+# only queued AFTER its reply posts - so re-polling never double-acts and no watermark is stored.
+#
+# NOTE ON SCHEDULE: `on: schedule` only runs from the DEFAULT branch, so the cron activates once
+# this file is on main. Before then (and any time), trigger it manually with `workflow_dispatch`
+# on the working branch - that is how the flow is tested end to end.
+
+on:
+  schedule:
+    # Every 5 minutes (GitHub's floor; scheduled runs can be delayed under load). This is the
+    # poll cadence == the trigger latency. Adjust via editing the cron.
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write # push the seed branch
+  pull-requests: write # open the draft integration PR
+  issues: write # PR labels use the issues API
+  actions: write # gh workflow run integrate-model.yml (workflow_dispatch)
+
+concurrency:
+  # Single-flight: never let two polls overlap (the state-free dedup assumes one poller at a
+  # time; this closes the within-interval race). A queued poll waits for the running one.
+  group: slack-integrate-poll
+  cancel-in-progress: false
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      BASE_REF: ${{ github.ref_name }}
+      RUN_ID: ${{ github.run_id }}
+      # Slack (all optional; an absent token/channel makes the poll a logged no-op).
+      SLACK_BOT_TOKEN: ${{ secrets.ARENA_AUTOMATION_SLACK_BOT_TOKEN }}
+      SLACK_CHANNEL: ${{ vars.ARENA_AUTOMATION_SLACK_CHANNEL }}
+      # Optional comma-separated Slack user-id allowlist. Empty => anyone in the channel may
+      # trigger (channel membership is the authz gate; GitHub only ever sees github-actions[bot]).
+      ALLOWED_USERS: ${{ vars.ARENA_AUTOMATION_SLACK_ALLOWED_USERS }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need origin/<base> to branch the seed commit from
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.9.5"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv python install 3.12
+      - run: uv sync --dev --locked
+
+      - name: Poll the channel and resolve requests
+        # Reads history, resolves each @bot integrate request, posts one threaded reply per
+        # request, and writes plan.json = [{slug, requester, message_ts}] for the resolved models.
+        run: |
+          uv run automation slack-poll \
+            --channel "$SLACK_CHANNEL" \
+            --allowed-users "$ALLOWED_USERS" \
+            --out plan.json
+          echo "plan.json:"; cat plan.json
+
+      - name: Open a draft PR + dispatch the engine per resolved model
+        run: |
+          set -uo pipefail
+          COUNT="$(jq 'length' plan.json 2>/dev/null || echo 0)"
+          echo "plan has ${COUNT} model(s) to integrate"
+          if [ "${COUNT}" = "0" ]; then echo "nothing to integrate"; exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Bootstrap one model: open a seeded draft PR (the seed guarantees a diff so an
+          # already-present model can still open a PR) then dispatch the engine on it. Any
+          # failure logs a warning and returns non-zero so the caller continues to the next model.
+          bootstrap () {
+            SLUG="$1"; REQUESTER="$2"; TS="$3"
+            EXISTING="$(gh pr list -R "$REPO" --state open --search "in:title integrate: $SLUG" --json number --jq 'length' 2>/dev/null || echo 0)"
+            if [ "${EXISTING:-0}" != "0" ]; then
+              echo "open integration PR already exists for '$SLUG' -> skip"; return 0
+            fi
+            SAFE="$(printf '%s' "$SLUG" | tr '/ ' '--' | tr -cd 'A-Za-z0-9._-')"
+            BRANCH="automation/slack-integrate/${SAFE}-${RUN_ID}"
+            git checkout -B "$BRANCH" "origin/${BASE_REF}" || return 1
+            mkdir -p .automation/requests
+            printf '{\n  "slug": "%s",\n  "requested_by": "%s",\n  "slack_message_ts": "%s",\n  "source": "slack"\n}\n' \
+              "$SLUG" "$REQUESTER" "$TS" > ".automation/requests/${SAFE}.json"
+            git add ".automation/requests/${SAFE}.json"
+            git commit -q -m "chore(automation): seed Slack-requested integration of ${SLUG}" || return 1
+            git push -q -u origin "$BRANCH" || return 1
+            PR_URL="$(gh pr create -R "$REPO" --draft --base "$BASE_REF" --head "$BRANCH" \
+              --title "integrate: ${SLUG}" \
+              --body "Auto-opened from a Slack request by <@${REQUESTER}> (message ts ${TS}). The poller resolved the model deterministically against the OpenRouter catalog; this draft PR is the human review gate. The integration engine runs via workflow_dispatch on this PR." )" || return 1
+            PR_NUM="$(printf '%s' "$PR_URL" | grep -oE '[0-9]+$')"
+            [ -n "$PR_NUM" ] || { echo "could not parse PR number from '$PR_URL'"; return 1; }
+            echo "opened PR #${PR_NUM} for ${SLUG} (${PR_URL})"
+            gh workflow run integrate-model.yml -R "$REPO" --ref "$BASE_REF" \
+              -f pr="$PR_NUM" -f head_ref="$BRANCH" -f model="$SLUG" -f source=slack || return 1
+            echo "dispatched integrate-model.yml for PR #${PR_NUM} (${SLUG})"
+          }
+
+          mapfile -t ROWS < <(jq -c '.[]' plan.json)
+          FAIL=0
+          for row in "${ROWS[@]}"; do
+            SLUG="$(printf '%s' "$row" | jq -r '.slug')"
+            REQUESTER="$(printf '%s' "$row" | jq -r '.requester')"
+            TS="$(printf '%s' "$row" | jq -r '.message_ts')"
+            git checkout -q "$BASE_REF" 2>/dev/null || git checkout -q -B "$BASE_REF" "origin/${BASE_REF}"
+            if ! bootstrap "$SLUG" "$REQUESTER" "$TS"; then
+              echo "::warning title=Integration bootstrap failed::could not start integration for ${SLUG} (see log); continuing"
+              FAIL=1
+            fi
+          done
+          exit "$FAIL"
