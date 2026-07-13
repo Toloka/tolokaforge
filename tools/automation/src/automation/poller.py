@@ -29,6 +29,7 @@ import json
 import os
 import pathlib
 import re
+import time
 
 import typer
 
@@ -90,6 +91,15 @@ def bot_replied(replies: list[dict], bot_id: str, parent_ts: str) -> bool:
     return any(m.get("user") == bot_id and m.get("ts") != parent_ts for m in replies)
 
 
+def history_oldest(now: float, window_hours: float) -> str:
+    """Slack ``oldest`` bound (Unix-ts string): only scan messages newer than ``window_hours``
+    ago, so a re-poll never re-reads (or acts on) stale requests and the scan stays cheap. A
+    non-positive window returns "" = no bound (fall back to the 200-message cap)."""
+    if window_hours <= 0:
+        return ""
+    return f"{now - window_hours * 3600:.6f}"
+
+
 def resolved_slugs(resolutions: list[model_resolver.Resolution]) -> list[str]:
     """The slugs to integrate (status == resolved), in request order, de-duplicated. A slug whose
     charset is not a plain OpenRouter id is dropped (see ``_SAFE_SLUG_RE``) - it must never reach
@@ -143,9 +153,10 @@ def _write_plan(out_path: str, plan: list[dict]) -> None:
 # --- orchestration -------------------------------------------------------------
 
 
-def run(channel: str, allowed_users: str | None, out_path: str) -> int:
-    """Scan the channel, resolve each ``@bot integrate`` request, reply in-thread, and write the
-    integration plan to ``out_path``. Always returns 0 (a poll must never fail the workflow)."""
+def run(channel: str, allowed_users: str | None, out_path: str, window_hours: float = 6.0) -> int:
+    """Scan the channel (last ``window_hours`` of history), resolve each ``@bot integrate``
+    request, reply in-thread, and write the integration plan to ``out_path``. Always returns 0
+    (a poll must never fail the workflow)."""
     plan: list[dict] = []
     token = os.environ.get("SLACK_BOT_TOKEN")
     if not token or not channel:
@@ -158,7 +169,8 @@ def run(channel: str, allowed_users: str | None, out_path: str) -> int:
         slack._note_failure("Slack auth.test failed (poller cannot identify the bot)")
         _write_plan(out_path, plan)
         return 0
-    messages = slack._history(channel, token)
+    oldest = history_oldest(time.time(), window_hours)
+    messages = slack._history(channel, token, oldest=oldest or None)
     if messages is None:
         slack._log("history unavailable (missing channels:history / not in channel?)")
         slack._note_failure("Slack history unavailable (poller could not read the channel)")
@@ -215,10 +227,13 @@ def cli(
         "--allowed-users",
         help="comma-separated Slack user-ids allowed to trigger; empty = anyone in the channel",
     ),
+    window_hours: float = typer.Option(
+        6.0, "--window-hours", help="only scan Slack messages from the last N hours (0 = no bound)"
+    ),
 ) -> None:
     """Scan the channel for @bot integrate requests, reply with the resolution, emit a plan."""
     try:
-        code = run(channel, allowed_users, out)
+        code = run(channel, allowed_users, out, window_hours=window_hours)
     except Exception as exc:  # a poll must never fail the workflow
         slack._log(f"unexpected error (ignored): {exc}")
         try:

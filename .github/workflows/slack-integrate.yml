@@ -24,9 +24,13 @@ name: Slack-triggered integration poller
 
 on:
   schedule:
-    # Every 5 minutes (GitHub's floor; scheduled runs can be delayed under load). This is the
-    # poll cadence == the trigger latency. Adjust via editing the cron.
-    - cron: "*/5 * * * *"
+    # Poll cadence == trigger latency. Tiered: busy weekday hours poll often, quiet hours rarely.
+    # Times track HUNGARY LOCAL (CEST = UTC+2); GitHub cron is UTC-only, so shift each hour range
+    # by -1 for winter-exact (CET) timing. Ranges are disjoint, so no minute double-fires.
+    - cron: "*/10 6-17 * * 1-5" # weekday daytime, local ~08:00-20:00 -> every 10 min
+    - cron: "*/30 0-5 * * 1-5" # weekday early morning, local ~02:00-08:00 -> every 30 min
+    - cron: "*/30 18-23 * * 1-5" # weekday evening/night, local ~20:00-02:00 -> every 30 min
+    - cron: "*/30 * * * 0,6" # all weekend (Sat/Sun) -> every 30 min
   workflow_dispatch: {}
 
 permissions:
@@ -74,6 +78,7 @@ jobs:
           uv run automation slack-poll \
             --channel "$SLACK_CHANNEL" \
             --allowed-users "$ALLOWED_USERS" \
+            --window-hours 6 \
             --out plan.json
           echo "plan.json:"; cat plan.json
 

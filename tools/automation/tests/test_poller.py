@@ -93,6 +93,16 @@ class TestAllowlist:
         assert not poller.is_allowed("U2", allowed)
 
 
+class TestHistoryWindow:
+    def test_oldest_is_now_minus_window(self):
+        # 6h before a fixed 'now' (seconds), formatted as a Slack Unix-ts string.
+        assert poller.history_oldest(1_000_000.0, 6) == f"{1_000_000.0 - 6 * 3600:.6f}"
+
+    def test_zero_or_negative_window_is_unbounded(self):
+        assert poller.history_oldest(1_000_000.0, 0) == ""
+        assert poller.history_oldest(1_000_000.0, -1) == ""
+
+
 class TestBotReplied:
     def test_bot_reply_present(self):
         replies = [{"user": "UHUMAN", "ts": "100"}, {"user": BOT, "ts": "101"}]
