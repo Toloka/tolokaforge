@@ -108,6 +108,33 @@ presets:
     prompt_policy: dict_map_hints
     reasoning_codec: openai
 
+  # Xiaomi MiMo V2.5 Pro (OpenRouter) — model-specific dict-stringify
+  # recovery. Observe baseline (raw ``default`` routing) showed one
+  # dominant, preset-fixable failure mode: the model serialises nested
+  # container tool-call arguments as JSON-encoded STRINGS instead of
+  # native dicts/lists. Exact wire shapes captured by the probes —
+  #   discriminated_union  -> ``item``/``envelope`` = '{"kind": "ticket", ...}'
+  #   heterogeneous_array  -> ``message``           = '{"title": ..., "blocks": [...]}'
+  #   recursive_ref        -> ``root``/``doc``      = '{"label": "A", "children": [...]}'
+  #   variant_dict_map     -> ``order``             = '{"order_id": ..., "lines": {...}}'
+  # — all top-level, SCHEMA-DECLARED object params emitted as strings, the
+  # classic dict-stringify quirk (Qwen/Kimi/MiniMax/DeepSeek-V4 family).
+  # The shipped ``json_coerce`` response policy (JsonCoerceResponse)
+  # decodes any top-level arg value whose first non-ws char is ``{``/``[``
+  # and that ``json.loads()``es to a container; native values pass through
+  # untouched. Same recipe already ships for the qwen preset. Schema stays
+  # ``passthrough`` so the dict-shape wire schema, task docs, and the
+  # model's training stay aligned. Integrated via auto-resolve (the final
+  # reprobe went green on every fix-target, 5/5 each); see registry.py for
+  # the cert and observation/resolve/ for the evidence trail.
+  openrouter_mimo_v25_pro:
+    match:
+      - "openrouter/xiaomi/mimo-v2.5-pro*"
+      - "xiaomi/mimo-v2.5-pro*"
+      - "*mimo-v2.5-pro*"
+    schema_sanitizer: passthrough
+    response_policy: json_coerce
+
   # DeepSeek V3.2-Exp experimental V3.2 reasoning route.
   # Unlike the V4 line (openrouter_dict_stringify_recovery, above) it
   # round-trips dict-map and discriminated-union tool calls cleanly on

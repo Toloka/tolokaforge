@@ -1049,6 +1049,68 @@ _ALL: list[MC] = [
         ),
     ),
     # -----------------------------------------------------------------
+    # Xiaomi MiMo V2.5 Pro (OpenRouter) — re-integrated via auto-resolve.
+    # Observe saw raw ``default`` routing: the model stringifies nested
+    # container tool-call arguments (discriminated_union ``item``,
+    # heterogeneous_array ``message``, recursive_ref ``root``/``doc``,
+    # variant_dict_map ``order``) as JSON-encoded strings — the classic
+    # dict-stringify quirk. The model-specific ``openrouter_mimo_v25_pro``
+    # preset (passthrough schema + JsonCoerceResponse) recovers it; the
+    # final reprobe went green on all nine fix-targets (5/5 each), so
+    # RECURSIVE_REF / HETEROGENEOUS_ARRAY / DICT_MAP /
+    # DISCRIMINATED_UNION_TOOL_CALL are all ``required`` — the recovery
+    # policy makes the contract real.
+    #
+    # DECIMAL_FIELD_TOOL_CALL is ``required`` here (passes 15/15 on the
+    # passthrough route, unlike the kimi/deepseek-v4 siblings which declare
+    # it unsupported). IMPLICIT_PROMPT_CACHING stays ``required`` — the
+    # 2-call probe reads cache on 12/15 runs; the 3 misses are provider
+    # auto-cache flakiness, not a model gap (the earlier de-integrated cert
+    # also had it required after a live ratchet promotion).
+    #
+    # PROMPT_CACHING (no ``cache_control`` markers wired for this preset,
+    # 0 cache_creation reported) and the three thinking capabilities (the
+    # OpenAI reasoning codec surfaces no structured/replayable blocks on
+    # this route) are genuine ceilings — ``known_unsupported``.
+    # -----------------------------------------------------------------
+    MC(
+        model_id="openrouter__xiaomi_mimo-v2.5-pro",
+        provider="openrouter",
+        name="xiaomi/mimo-v2.5-pro",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.DICT_MAP_TOOL_CALL,
+                C.ENUM_SLASH_TOLERANCE,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.IMPLICIT_PROMPT_CACHING,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
+                C.PROGRESS_AFTER_SUCCESS,
+                C.RE2_PATTERN_TOLERANCE,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                C.PROMPT_CACHING,
+                C.THINKING_EMITS_BLOCKS,
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.UNSIGNED_THINKING_REPLAY,
+            }
+        ),
+    ),
+    # -----------------------------------------------------------------
     # DeepSeek V3.2-Exp experimental V3.2 reasoning line on
     # the OpenRouter route. Live-certified 2026-06-03 via
     # ``pytest tests/integration/llm/ -k deepseek-v3.2-exp`` (14 passed,
