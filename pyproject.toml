@@ -331,6 +331,7 @@ dev = [
     "psycopg[binary]>=3.2.0",
     "tolokaforge-adapter-terminal-bench",
     "dev-mcp",
+    "automation",
 ]
 
 # =============================================================================
@@ -349,7 +350,7 @@ required-version = ">=0.9.5,<0.10"
 
 [tool.uv.workspace]
 members = [
-    "tools/auto-integration",
+    "tools/automation",
     "tools/dev-mcp",
     "tools/pricing-updater",
     "tools/rubric-calibrator",
@@ -357,7 +358,7 @@ members = [
 ]
 
 [tool.uv.sources]
-auto-integration = { workspace = true }
+automation = { workspace = true }
 dev-mcp = { workspace = true }
 rubric-calibrator = { workspace = true }
 tolokaforge = { workspace = true }

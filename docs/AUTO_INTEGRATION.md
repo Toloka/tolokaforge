@@ -37,7 +37,7 @@ flowchart TD
 
 Deterministic detection on the DEFAULT (raw) preset. Runs the capability integration probes +
 shape variants (report-only, K repeats) and the NON-SCORING wire-probe task-pack, then
-`auto-integration observe-findings` emits `findings.json` (raw pass counts + the
+`automation observe-findings` emits `findings.json` (raw pass counts + the
 tool-arg rejections that graded metrics are blind to). Posts a summary comment. A `gate` step
 then decides:
 
@@ -51,9 +51,9 @@ A DETERMINISTIC loop drives the fix; short Opus Claude Code agents do the reason
 iteration (up to `MAX_ITER`): a `claude -p` agent (`prompts/resolve_agent.md`) reads the
 findings and composes/refines a preset OVERLAY (a model-scoped entry combining reusable
 adapter axes, or a new small adapter class it writes into the engine) plus a `decision.json`
-naming its `fix_targets`, then the WORKFLOW runs `auto-integration reprobe` on ONLY those fix-targets (as a
+naming its `fix_targets`, then the WORKFLOW runs `automation reprobe` on ONLY those fix-targets (as a
 flat probe x rep pool, so both probes and repeats run concurrently) and green-checks them
-(`auto-integration greencheck`). The agent never runs reprobe/git, so it cannot stall on it.
+(`automation greencheck`). The agent never runs reprobe/git, so it cannot stall on it.
 Empirical rule: a fix-target still red under the policy is reclassified as a ceiling
 (known_unsupported), not chased forever. If the agent names NO fix-targets (all failures are
 genuine ceilings), the verdict is `NO_TARGETS` -> converge straight to finalize, which records
@@ -70,7 +70,7 @@ DID produce and routes it for a post-hoc human scope-check.)
   import, must not turn any already-valid tool-call arg invalid (`test_policy_no_regression`, the
   anti-over-reach gate), and must recover the array-corruption shapes so the result validates +
   round-trips against the tool's Pydantic schema (`test_policy_array_recovery`). The cert itself is
-  reconciled against the observe baseline (`auto-integration reconcile-cert`, run before the stash so
+  reconciled against the observe baseline (`automation reconcile-cert`, run before the stash so
   `findings.json` is still present): every probed capability must be declared (no silent auto-skip),
   and no capability the baseline shows passing (>= 0.9) may be `known_unsupported` - catching the
   free-form cert's under-declaration and false-pessimism.
@@ -116,7 +116,7 @@ stored GitHub-side - it is rediscovered by scanning recent channel history for t
 `(PR #<N>)` token, so a re-trigger (and repeated resolve rounds on the same PR) reuse the same
 thread. The PR number is the thread key; the same model in two PRs is two threads. Transport is
 bot-token + `chat.postMessage` (an incoming webhook returns no ts and can neither thread nor read
-history). All config is optional: with any value unset, `auto-integration slack`
+history). All config is optional: with any value unset, `automation slack`
 logs and no-ops, so an unconfigured repo (and a fork PR, which receives no secrets) degrades
 cleanly, and a Slack failure never fails the job.
 
@@ -140,7 +140,7 @@ The fork-reject path is PR-comment-only (a fork `pull_request` run gets no secre
 notifier cannot post). `SLACK_MENTIONS` pings fire on the terminal and error notifications so a
 human is alerted when the PR needs review or the run broke.
 
-## Prompts (`tools/auto-integration/src/auto_integration/prompts/`)
+## Prompts (`tools/automation/src/automation/prompts/`)
 
 The analysis-dimension briefs interpret an eval or observe artifact (one dimension per
 sub-agent); the resolve prompts drive the fix loop. `index.yaml` is the machine-readable map.
@@ -158,27 +158,27 @@ sub-agent); the resolve prompts drive the fix loop. `index.yaml` is the machine-
 
 ## Key files
 
-- `auto-integration observe-findings` - deterministic raw-stat facts emitter (no banding,
+- `automation observe-findings` - deterministic raw-stat facts emitter (no banding,
   no verdict; interpretation is the agent's job).
-- `auto-integration run-probes` - flat (node x rep) parallel runner for the observe
+- `automation run-probes` - flat (node x rep) parallel runner for the observe
   capability + variant steps: collects the candidate's nodes once, then runs each node x rep as
   its own single-node pytest at `OBSERVE_CAP_PARALLEL` width (so nodes AND repeats parallelize,
   not `W` long serial reps - the fix for a slow reasoning model spending hours on the variants).
-- `auto-integration reprobe` - targeted re-probe under a policy overlay; re-runs ONLY the
+- `automation reprobe` - targeted re-probe under a policy overlay; re-runs ONLY the
   named `--targets` (the agent's fix-targets), or all failed probes if none given, as a flat
   (probe x rep) pool parallelized at `--cap-parallel`; capability-only inner loop, plus a final
   wire pass on failed wire tasks.
-- `auto-integration greencheck` - fix-target convergence check.
-- `auto-integration ensure-pricing` - best-effort, run before observe: if the candidate's
+- `automation greencheck` - fix-target convergence check.
+- `automation ensure-pricing` - best-effort, run before observe: if the candidate's
   litellm name is missing from `pricing.json`, fetch its OpenRouter pricing and insert one key
   (minimal diff), so `COST_USD_POPULATED` can pass. `--check` mode (exit 1 if unpriced) is the
   auto-merge price gate.
-- `auto-integration reconcile-cert` - reconciles the finalized cert against the observe
+- `automation reconcile-cert` - reconciles the finalized cert against the observe
   `findings.json`: fails if any probed capability is undeclared, if a capability the baseline shows
   passing (>= 0.9) is marked `known_unsupported`, or if any CORE capability (e.g.
   `cost_usd_populated`) is `known_unsupported` (a laundered pricing gap). Runs in the finalize gate
   before the stash.
-- `auto-integration slack` - Slack thread notifier (`ensure-root` / `reply`
+- `automation slack` - Slack thread notifier (`ensure-root` / `reply`
   subcommands); stdlib-only (runs under the system `python3` before `uv sync`), dry-run no-op
   without a token. See "Slack notifications" above.
 - `tests/integration/llm/test_policy_no_regression.py` - GENERIC (model-agnostic) anti-over-reach
@@ -188,7 +188,7 @@ sub-agent); the resolve prompts drive the fix loop. `index.yaml` is the machine-
   Pydantic tool call, run the resolved policy, and require the result to validate + round-trip
   back (no hand-authored answer-key; an uncorrupted call must survive unchanged = over-reach
   guard). Both run in the finalize staged-tree gate.
-- `tools/auto-integration/src/auto_integration/prompts/` - `_shared_context.md` + the analysis dimension briefs
+- `tools/automation/src/automation/prompts/` - `_shared_context.md` + the analysis dimension briefs
   (`harness_infra` / `preset_codec_leak` / `four_bucket` / `consistency_passk` /
   `task_design_oracle`) and the resolve agent prompts (`resolve_agent.md`, `resolve_finalize.md`).
 

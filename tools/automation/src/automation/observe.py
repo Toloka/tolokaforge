@@ -1,4 +1,4 @@
-"""Deterministic stat collector for the model auto-integration observe stage.
+"""Deterministic stat collector for the model automation observe stage.
 
 Reads the observe artifact (the capability junit reports plus the non-scoring
 wire-probe trajectories) and emits one structured ``findings.json`` of RAW STATS

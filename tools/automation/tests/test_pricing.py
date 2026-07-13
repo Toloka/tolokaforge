@@ -1,4 +1,4 @@
-"""Unit tests for ``auto_integration.pricing`` (migrated from
+"""Unit tests for ``automation.pricing`` (migrated from
 ``tests/unit/test_ensure_pricing.py``). Covers the per-token -> per-1M conversion and
 the ``--check`` exit codes (now ``run(..., check=True)``)."""
 
@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 
-import auto_integration.pricing as pricing
+import automation.pricing as pricing
 
 
 def test_entry_for_converts_per_token_to_per_million():

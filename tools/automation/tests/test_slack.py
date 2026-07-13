@@ -1,5 +1,5 @@
-"""Unit tests for the auto-integration Slack notifier's pure parts
-(migrated from ``tests/unit/test_slack_notify.py``, importing ``auto_integration.slack``).
+"""Unit tests for the automation Slack notifier's pure parts
+(migrated from ``tests/unit/test_slack_notify.py``, importing ``automation.slack``).
 
 The Slack HTTP calls (thread ts flow) are not mockable in a meaningful way and are
 validated live on a probe PR; here we cover the deterministic string-building and
@@ -8,7 +8,7 @@ root-matching that decide which thread a message lands in.
 
 from __future__ import annotations
 
-import auto_integration.slack as slack
+import automation.slack as slack
 import pytest
 
 pytestmark = pytest.mark.unit
@@ -50,7 +50,7 @@ class TestRootMatches:
         assert not slack.root_matches("Auto-integration: `m` (PR #42)", 4)
         assert not slack.root_matches("Auto-integration: `m` (PR #4)", 42)
 
-    def test_requires_auto_integration_marker(self):
+    def test_requires_automation_marker(self):
         # A human message that merely mentions the PR number is not a root.
         assert not slack.root_matches("see (PR #42) for details", 42)
 

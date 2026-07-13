@@ -1,4 +1,4 @@
-"""Light unit tests for ``auto_integration.probes`` pure helpers.
+"""Light unit tests for ``automation.probes`` pure helpers.
 
 Only the deterministic ``build_units`` flat-pool expansion is covered; ``collect_nodes``
 and ``_run_unit`` shell out to pytest and are not unit-tested here.
@@ -6,7 +6,7 @@ and ``_run_unit`` shell out to pytest and are not unit-tested here.
 
 from __future__ import annotations
 
-import auto_integration.probes as probes
+import automation.probes as probes
 
 
 def test_build_units_expands_node_by_rep():
