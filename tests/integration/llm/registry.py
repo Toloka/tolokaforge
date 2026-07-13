@@ -1317,6 +1317,72 @@ _ALL: list[MC] = [
             }
         ),
     ),
+    # GLM-5.2 (Zhipu / Z.AI via OpenRouter). Routes through its own
+    # model-scoped ``openrouter_glm_5_2_dict_stringify_recovery`` preset
+    # (passthrough schema + DictMapHints + JsonCoerceResponse + openai codec)
+    # rather than the shared ``openrouter_dict_stringify_recovery`` glob. Same
+    # stringified-container failure mode as the glm-5.1 sibling: on the default
+    # route it emits every nested OBJECT tool arg (recursive_ref, discriminated
+    # union ``item``, heterogeneous_array ``message``, dict_map ``order``,
+    # nested_union ``envelope``) as a JSON-encoded string, which json_coerce
+    # decodes — the fix-loop reprobe went green 5/5 on all nine fix-targets.
+    # This is NOT a copy of the glm-5.1 posture (per docs/ADD_NEW_MODEL.md
+    # § "copying a sibling cert verbatim"): 5.2 diverges on TWO caps that 5.1
+    # marks required — THINKING_EMITS_BLOCKS (5.2's reasoning surfaces only as
+    # an openai-codec summary, not structured blocks) and IMPLICIT_PROMPT_
+    # CACHING (auto-cache reports hits but the discounted rate is never applied,
+    # so call 2 costs no less than call 1). 18 required / 5 known_unsupported.
+    # Integrated via auto-resolve 2026-07-13.
+    MC(
+        model_id="openrouter__z-ai_glm-5.2",
+        provider="openrouter",
+        name="z-ai/glm-5.2",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DICT_MAP_TOOL_CALL,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # Reasoning surfaces only as an unsigned summary via the
+                # openai codec: the structured-blocks probe finds nothing to
+                # assert on, there are no signed blocks to replay, and the
+                # codec's replay path is a no-op. Sibling glm-5.1 promoted
+                # THINKING_EMITS_BLOCKS; glm-5.2's summary does not satisfy the
+                # structured contract.
+                C.THINKING_EMITS_BLOCKS,
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.UNSIGNED_THINKING_REPLAY,
+                # No Anthropic-style ephemeral cache markers on this route
+                # (call 1 creates 0 cache_creation_input_tokens).
+                C.PROMPT_CACHING,
+                # Auto-cache reports hits (cached_tokens > 0) but the
+                # discounted rate is NOT applied — the cache-read call costs
+                # no less than the initial call — so the implicit-caching
+                # contract is unmet. Sibling glm-5.1 observed the discount and
+                # promoted this; glm-5.2 does not.
+                C.IMPLICIT_PROMPT_CACHING,
+            }
+        ),
+    ),
     # Mistral-Medium-3.5 (Mistral AI via OpenRouter). Clean tool-caller on
     # the default route — dict-map, discriminated-union, decimal all
     # round-trip natively, so no preset is needed. It is a NON-reasoning
