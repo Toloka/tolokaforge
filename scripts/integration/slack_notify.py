@@ -88,6 +88,15 @@ def build_mention_prefix(raw: str | None) -> str:
     return " ".join(ids) + " " if ids else ""
 
 
+def build_mention_suffix(raw: str | None) -> str:
+    """Trailing reviewer line for a terminal notification: ping the configured
+    ``SLACK_MENTIONS`` at the END of the message (under the footer links), or note that
+    none are configured. Reuses :func:`build_mention_prefix` for id normalisation."""
+    ids = build_mention_prefix(raw).strip()
+    sep = chr(10) * 2  # blank line so the reviewer line sits below the links
+    return f"{sep}Notifying: {ids}" if ids else f"{sep}No reviewers configured to notify."
+
+
 def append_footer(text: str, pr_comment: str = "", pr_url: str = "", run_url: str = "") -> str:
     """Append a ' · '-separated footer of Slack ``<url|label>`` links INLINE, on the same
     line as ``text`` (no newline - the Run log / PR links sit right after the status).
@@ -235,9 +244,10 @@ def cmd_reply(
         _log("no thread root and root post failed - dropping reply")
         _note_failure("could not post the thread reply (no root)")
         return
-    prefix = build_mention_prefix(os.environ.get("SLACK_MENTIONS")) if mention else ""
     body = append_footer(text, pr_comment=pr_comment, pr_url=pr_url, run_url=run_url)
-    if not _post_message(channel, prefix + body, token, thread_ts=thread_ts):
+    if mention:
+        body += build_mention_suffix(os.environ.get("SLACK_MENTIONS"))
+    if not _post_message(channel, body, token, thread_ts=thread_ts):
         _note_failure("could not post the thread reply")
 
 
