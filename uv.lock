@@ -4004,7 +4004,7 @@ requires-dist = [
     { name = "jinja2", specifier = ">=3.1.0" },
     { name = "jsonpath-ng", specifier = ">=1.6.0" },
     { name = "jsonschema", specifier = ">=4.20.0" },
-    { name = "litellm", specifier = ">=1.83.14,<2.0.0" },
+    { name = "litellm", specifier = ">=1.83.14,!=1.92.0,<2.0.0" },
     { name = "loguru", specifier = ">=0.7.0" },
     { name = "mcp", specifier = ">=0.1.0" },
     { name = "odata-query", specifier = ">=0.10.0" },
