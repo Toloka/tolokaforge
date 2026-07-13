@@ -31,6 +31,8 @@ task-yaml delta.
 from __future__ import annotations
 
 import logging
+import os
+import re
 import warnings
 from pathlib import Path
 from typing import Any
@@ -292,6 +294,98 @@ def resolve_effective_run_config_data(
 # ── High-level loader entry point ──────────────────────────────────────
 
 
+# ── ${VAR} interpolation ───────────────────────────────────────────────
+
+
+_ENV_VAR_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+"""Match ``${VAR}`` occurrences. Braces are mandatory — bareword
+``$VAR`` is not recognised (ambiguity with literal ``$`` is a
+tar-pit; explicit braces avoid it). Variable names follow the shell
+convention: letter or underscore, then letters / digits / underscores.
+"""
+
+
+def _interpolate_env_vars(
+    node: Any,
+    *,
+    source_path: Path,
+    _key_path: tuple[str, ...] = (),
+) -> Any:
+    """Substitute ``${VAR}`` occurrences in every string value under
+    *node* with values from ``os.environ``. Recursive; walks dicts and
+    lists; leaves non-string leaves untouched.
+
+    Returns a new tree with substitutions applied — the input is not
+    mutated. Missing variables collect into a single error naming the
+    file, every offending key path, and every missing variable so the
+    author fixes them in one pass rather than one-at-a-time.
+
+    Scope: only string *values* are interpolated. Dict keys stay
+    literal. Numbers, booleans, ``None``, and lists-of-non-strings pass
+    through unchanged. Recursion into substituted values does not run —
+    if ``${FOO}`` resolves to a string containing ``${BAR}``, only one
+    pass happens.
+    """
+    missing: list[str] = []
+    result = _interpolate_walk(node, source_path, _key_path, missing)
+    if missing:
+        raise ValueError(
+            f"Run config {source_path}: unresolved environment "
+            f"variable(s): {sorted(set(missing))}. Export them before "
+            "loading (or supply defaults in the run config)."
+        )
+    return result
+
+
+def _interpolate_walk(
+    node: Any,
+    source_path: Path,
+    key_path: tuple[str, ...],
+    missing: list[str],
+) -> Any:
+    """Depth-first walk used by :func:`_interpolate_env_vars`.
+    Splits into a top-level helper so the public entry point owns the
+    "raise once with every miss" contract in a single place.
+    """
+    if isinstance(node, dict):
+        return {
+            k: _interpolate_walk(v, source_path, (*key_path, str(k)), missing)
+            for k, v in node.items()
+        }
+    if isinstance(node, list):
+        return [
+            _interpolate_walk(item, source_path, (*key_path, f"[{idx}]"), missing)
+            for idx, item in enumerate(node)
+        ]
+    if isinstance(node, str):
+        return _interpolate_string(node, source_path, key_path, missing)
+    return node
+
+
+def _interpolate_string(
+    value: str,
+    source_path: Path,
+    key_path: tuple[str, ...],
+    missing: list[str],
+) -> str:
+    """Substitute every ``${VAR}`` occurrence in *value*. Unknown
+    variables record onto *missing* as ``"KEY.PATH → VAR"`` entries for
+    the collated error message; the string is returned with the
+    original placeholders in place so downstream code can still see
+    something reasonable if the caller catches the error."""
+
+    def replace(match: re.Match[str]) -> str:
+        var_name = match.group(1)
+        env_value = os.environ.get(var_name)
+        if env_value is None:
+            joined_path = ".".join(key_path) if key_path else "(root)"
+            missing.append(f"{joined_path} → ${{{var_name}}}")
+            return match.group(0)
+        return env_value
+
+    return _ENV_VAR_PATTERN.sub(replace, value)
+
+
 def load_effective_run_config(
     config_path: Path,
 ) -> tuple[dict[str, Any], ProjectConfig]:
@@ -331,6 +425,7 @@ def load_effective_run_config(
     else:
         project = synthesize_default_project(project_root=config_path.parent)
     merged = resolve_effective_run_config_data(project, config_data)
+    merged = _interpolate_env_vars(merged, source_path=config_path)
     validate_actor_roster_subset_of_models(project, merged)
     return merged, project
 

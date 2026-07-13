@@ -566,6 +566,165 @@ class TestProjectAssetsPathAnchoring:
         assert project.assets.seeds["base"].kind == "sql_dump"
 
 
+class TestEnvVarInterpolation:
+    """``${VAR}`` substitution runs on run-config string values after
+    ``project.run_defaults`` merge and before the roster check. Only
+    string values are interpolated; keys, numbers, booleans, and lists
+    of non-strings pass through untouched. Missing variables collect
+    into a single error naming every offending key path."""
+
+    def test_interpolated_from_env(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MY_OUTPUT_DIR", "results/from-env")
+        _write_yaml(tmp_path / "project.yaml", {"name": "p"})
+        run_cfg = tmp_path / "run_configs" / "dev.yaml"
+        _write_yaml(
+            run_cfg,
+            {
+                "models": {"user": {"provider": "openai", "name": "gpt-4o"}},
+                "evaluation": {"output_dir": "${MY_OUTPUT_DIR}"},
+            },
+        )
+        from tolokaforge.core.project_loader import load_effective_run_config
+
+        merged, _ = load_effective_run_config(run_cfg)
+        assert merged["evaluation"]["output_dir"] == "results/from-env"
+
+    def test_missing_variable_fails_loud(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("DEFINITELY_UNSET_VAR", raising=False)
+        _write_yaml(tmp_path / "project.yaml", {"name": "p"})
+        run_cfg = tmp_path / "run_configs" / "dev.yaml"
+        _write_yaml(
+            run_cfg,
+            {
+                "models": {"user": {"provider": "openai", "name": "gpt-4o"}},
+                "evaluation": {"output_dir": "${DEFINITELY_UNSET_VAR}"},
+            },
+        )
+        from tolokaforge.core.project_loader import load_effective_run_config
+
+        with pytest.raises(
+            ValueError,
+            match=r"unresolved environment variable.*DEFINITELY_UNSET_VAR",
+        ):
+            load_effective_run_config(run_cfg)
+
+    def test_non_strings_pass_through_untouched(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # No env var set — numbers, booleans, and lists of non-strings
+        # must not participate in the walker's string-value branch.
+        _write_yaml(tmp_path / "project.yaml", {"name": "p"})
+        run_cfg = tmp_path / "run_configs" / "dev.yaml"
+        _write_yaml(
+            run_cfg,
+            {
+                "models": {"user": {"provider": "openai", "name": "gpt-4o"}},
+                "orchestrator": {
+                    "workers": 4,
+                    "auto_start_services": True,
+                    "repeats": 1,
+                },
+                "evaluation": {"output_dir": "results/x"},
+            },
+        )
+        from tolokaforge.core.project_loader import load_effective_run_config
+
+        merged, _ = load_effective_run_config(run_cfg)
+        assert merged["orchestrator"]["auto_start_services"] is True
+
+    def test_string_with_no_placeholder_untouched(self, tmp_path: Path) -> None:
+        # A literal string without ``${...}`` must survive verbatim —
+        # the walker's replace callback only rewrites placeholders.
+        _write_yaml(tmp_path / "project.yaml", {"name": "p"})
+        run_cfg = tmp_path / "run_configs" / "dev.yaml"
+        _write_yaml(
+            run_cfg,
+            {
+                "models": {"user": {"provider": "openai", "name": "gpt-4o"}},
+                "evaluation": {"output_dir": "results/literal"},
+            },
+        )
+        from tolokaforge.core.project_loader import load_effective_run_config
+
+        merged, _ = load_effective_run_config(run_cfg)
+        assert merged["evaluation"]["output_dir"] == "results/literal"
+
+    def test_bareword_dollar_not_interpolated(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Only ``${VAR}`` (braces mandatory) is interpolated; ``$VAR``
+        # bareword stays literal — an intentional design choice
+        # documented on the helper.
+        monkeypatch.setenv("BAREWORD_VAR", "would-be-substituted")
+        _write_yaml(tmp_path / "project.yaml", {"name": "p"})
+        run_cfg = tmp_path / "run_configs" / "dev.yaml"
+        _write_yaml(
+            run_cfg,
+            {
+                "models": {"user": {"provider": "openai", "name": "gpt-4o"}},
+                "evaluation": {"output_dir": "prefix-$BAREWORD_VAR"},
+            },
+        )
+        from tolokaforge.core.project_loader import load_effective_run_config
+
+        merged, _ = load_effective_run_config(run_cfg)
+        assert merged["evaluation"]["output_dir"] == "prefix-$BAREWORD_VAR"
+
+    def test_interpolation_fires_after_run_defaults_merge(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Project supplies a base model name with a placeholder that the
+        # operator resolves at run time. The run config doesn't override
+        # models, so the project default flows through the merge into
+        # the effective dict — and then interpolation fires, substituting
+        # the operator-supplied value. Uses `models` (which is a valid
+        # RunDefaults field) since `evaluation` isn't on RunDefaults.
+        monkeypatch.setenv("MODEL_TAG", "gpt-4o-2026-nightly")
+        _write_yaml(
+            tmp_path / "project.yaml",
+            {
+                "name": "p",
+                "run_defaults": {
+                    "models": {"user": {"provider": "openai", "name": "${MODEL_TAG}"}},
+                },
+            },
+        )
+        run_cfg = tmp_path / "run_configs" / "nightly.yaml"
+        _write_yaml(run_cfg, {"evaluation": {"output_dir": "results/nightly"}})
+        from tolokaforge.core.project_loader import load_effective_run_config
+
+        merged, _ = load_effective_run_config(run_cfg)
+        assert merged["models"]["user"]["name"] == "gpt-4o-2026-nightly"
+
+    def test_multiple_missing_vars_reported_together(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Author-ergonomic: report every miss in a single error rather
+        # than one-at-a-time. Fixing three typos should take one edit
+        # pass, not three reload cycles.
+        for var in ("UNSET_A", "UNSET_B", "UNSET_C"):
+            monkeypatch.delenv(var, raising=False)
+        _write_yaml(tmp_path / "project.yaml", {"name": "p"})
+        run_cfg = tmp_path / "run_configs" / "dev.yaml"
+        _write_yaml(
+            run_cfg,
+            {
+                "models": {"user": {"provider": "openai", "name": "${UNSET_A}"}},
+                "evaluation": {"output_dir": "${UNSET_B}/${UNSET_C}"},
+            },
+        )
+        from tolokaforge.core.project_loader import load_effective_run_config
+
+        with pytest.raises(ValueError) as exc:
+            load_effective_run_config(run_cfg)
+        message = str(exc.value)
+        assert "UNSET_A" in message
+        assert "UNSET_B" in message
+        assert "UNSET_C" in message
+
+
 class TestDeepMergeIsSingleImpl:
     """`deep_merge` in the project loader is the single implementation
     the task loader imports — no shadow copy in `_task_loader.py`."""

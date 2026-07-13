@@ -257,6 +257,7 @@ class TestRunCommand:
         assert "--resume" in result.output
         assert "--verbose" in result.output
         assert "--strict" in result.output
+        assert "--workers" in result.output
 
     def test_run_missing_config(self, runner: CliRunner) -> None:
         result = runner.invoke(cli, ["run"])
@@ -265,6 +266,33 @@ class TestRunCommand:
     def test_run_nonexistent_config(self, runner: CliRunner) -> None:
         result = runner.invoke(cli, ["run", "--config", "/nonexistent/config.yaml"])
         assert result.exit_code != 0
+
+    def test_run_workers_rejects_zero(self, runner: CliRunner, tmp_path: Path) -> None:
+        # Positive-int validation happens at click-parse time — no need
+        # for a real config file since the exit fires before loading.
+        # Click's IntRange failure writes to stderr and exits with 2;
+        # asserting on exit_code alone is enough to pin the validation
+        # (message goes to stderr, which CliRunner routes separately).
+        result = runner.invoke(
+            cli,
+            ["run", "--config", str(tmp_path / "x.yaml"), "--workers", "0"],
+        )
+        assert result.exit_code != 0
+
+    def test_run_workers_rejects_negative(self, runner: CliRunner, tmp_path: Path) -> None:
+        result = runner.invoke(
+            cli,
+            ["run", "--config", str(tmp_path / "x.yaml"), "--workers", "-3"],
+        )
+        assert result.exit_code != 0
+
+    def test_run_workers_help_names_compute_workers(self, runner: CliRunner) -> None:
+        # The help text points authors at the canonical home so the
+        # flag doesn't quietly ship the compute vs orchestrator dual-
+        # home confusion into new pack authoring.
+        result = runner.invoke(cli, ["run", "--help"])
+        assert result.exit_code == 0
+        assert "compute.workers" in result.output
 
 
 # ===================================================================

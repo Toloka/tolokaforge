@@ -188,6 +188,16 @@ def _activate_presets_overlay(
         "isolation: per_trial). See docs/architecture/RUNTIME_BACKENDS.md."
     ),
 )
+@click.option(
+    "--workers",
+    "workers",
+    type=click.IntRange(min=1),
+    default=None,
+    help=(
+        "Number of concurrent trial workers. Overrides compute.workers "
+        "in the run config. Must be a positive integer. See docs/CONFIG.md."
+    ),
+)
 def run(
     config: str,
     resume: bool,
@@ -197,6 +207,7 @@ def run(
     judge_model: str | None,
     presets_file: str | None,
     runtime: str | None,
+    workers: int | None,
 ):
     """Run benchmark with specified configuration"""
     console.print(f"[bold blue]Loading configuration from {config}...[/bold blue]")
@@ -241,6 +252,12 @@ def run(
     # value survives every downstream config lookup.
     if runtime is not None:
         config_data.setdefault("orchestrator", {})["runtime"] = runtime
+
+    # --workers writes to the canonical compute.workers home; the dual-
+    # home alias-lift is a no-op here (no `orchestrator.workers` set by
+    # the CLI), so this fires no DeprecationWarning.
+    if workers is not None:
+        config_data.setdefault("compute", {})["workers"] = workers
 
     run_config = RunConfig(**config_data)
 
