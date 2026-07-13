@@ -11,8 +11,19 @@ inheritance and override patterns. Read alongside
 > **Status.** This project is authored against the **proposed**
 > Project schema (PROJECTS.md § "Delta from current
 > implementation") and is the reference example the milestones
-> implement against. It becomes runnable when the M2 loader
-> (#211) lands; until then, `tolokaforge run` cannot load it.
+> implement against.
+>
+> The Project-layer rollout lands in stages: **M2 (#211)** wires
+> the `project.yaml` loader and base+delta merging; **M2.5
+> (#220)** adds the environment-patch / `stack` sub-object /
+> `actors` reservation / dual-home resolution that this pack
+> already uses; **M3 (#212)** delivers the manifest `services`
+> map, seed-backed reset recipes, and the backend-capabilities
+> registry. Until M2.5 lands, `tolokaforge run` will silently
+> ignore fields such as `assets.seeds`, `default_environment.stack`,
+> `default_environment.services`, and `task_defaults.actors`
+> (they're not in today's shipped schema); strict validation
+> that rejects them arrives with **M4 (#213)**.
 
 ## Layout
 

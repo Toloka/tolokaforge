@@ -103,11 +103,13 @@ current as milestones land; delete it when the last one does.
   major release.
 - The [shared-assets registry](#shared-assets--seeds-and-other-project-level-files)
   with `initial_state.seed` / `overlay` and registry-level
-  digests (schema addition), the [`actors` map](#actor-composition) (root-level
-  `user_simulator` becomes a legacy alias for `actors.user`,
-  retired in M5), the
-  [grading provider registry](#grading-model--what-the-harness-owns),
-  and [services/backend scaffolding](#services-and-backends--scaffolding).
+  digests (schema addition; M3, #212 — activated together with
+  seed-backed reset recipes). The [`actors` map](#actor-composition)
+  (root-level `user_simulator` becomes a legacy alias for
+  `actors.user`; the field lands in M4, the alias retires in
+  M5). The [grading provider registry](#grading-model--what-the-harness-owns)
+  (M3, #212) and
+  [services/backend scaffolding](#services-and-backends--scaffolding) (M3, #212).
 - Dual-home knob resolution (see
   [Knobs that exist in both chains](#knobs-that-exist-in-both-chains)):
   `orchestrator.max_turns`/`orchestrator.timeouts` are redefined
@@ -659,6 +661,17 @@ tasks:
   discovery:
     glob: "tasks/**/task.yaml"
 
+# ── Shared assets ───────────────────────────────────────────────
+# Named baselines that tasks and service recipes reference by
+# name. See "Shared assets — seeds and other project-level files"
+# for the full model.
+assets:
+  seeds:
+    app_baseline:
+      path: "./shared/seeds/app_baseline.sql"
+      kind: "sql_dump"             # bound to a service by the reset recipe below
+      digest: "sha256:ea86…"       # stamped via `tolokaforge assets stamp`
+
 # ── Default environment ─────────────────────────────────────────
 # Every task inherits unless it declares its own environment_manifest.
 # Task-level environment_manifest deep-merges on top per-task.
@@ -679,13 +692,20 @@ default_environment:
   # service-TREATMENT fields (isolation, services) are scoped to
   # the reviewed stack and reset with it (see Task override
   # semantics).
-  isolation: "per_trial"           # default (ADR-0009); "shared_ok" opts out
+  # `isolation:` is optional. Unset means services without an
+  # entry in `services:` below default to `per_trial` per
+  # ADR-0009. A task can declare `isolation: "shared_ok"` as an
+  # explicit opt-in when its services allow it — per-service
+  # entries still take precedence over this default.
   services:                        # scaffolding — per-service semantics live in the
     postgres:                      # manifest, never solely in the substrate file
       isolation: "reset"
-      reset: { seed: "baseline" }  # seed-backed reset recipe (see Shared assets)
-    immutable-catalog:
+      reset: { seed: "app_baseline" }  # seed-backed reset recipe (see Shared assets)
+    db-service:
       isolation: "shared"
+    backend-api:
+      isolation: "shared"
+    # runner: no entry → ephemeral (per_trial default)
   network_policy: "no_internet"    # closed enum: no_internet | limited_internet |
                                    # full_internet; parameterisation (e.g. egress
                                    # hosts) is finalised before the first major release
@@ -718,6 +738,12 @@ task_defaults:
       method: "weighted"           # combiner methods: all | weighted | any
       pass_threshold: 0.8
       weights:
+        # `state_checks` is illustrative — it names the future
+        # provider-registry check kind that lands after the
+        # in-process engine cleanup (#217). Today's live check
+        # kinds on the runner side are `transcript_rules` and
+        # `llm_judge`; a v1 pack that grades today should
+        # weight those.
         state_checks: 0.5
         llm_judge: 0.5
   timeouts:
