@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 """Deterministic stat collector for the model auto-integration observe stage.
 
 Reads the observe artifact (the capability junit reports plus the non-scoring
@@ -23,7 +22,6 @@ of grepping every trajectory - but the interpretation stays the agent's job.
 
 from __future__ import annotations
 
-import argparse
 import glob
 import json
 import re
@@ -362,24 +360,20 @@ def render_summary(findings: dict[str, Any], run_url: str | None = None) -> str:
     return "\n".join(lines) + "\n"
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Emit deterministic observe-stage findings.json (raw stats) from an obs dir."
-    )
-    parser.add_argument("obs_dir", help="the observation artifact directory")
-    parser.add_argument(
-        "--out", default=None, help="findings JSON output path (default: <obs_dir>/findings.json)"
-    )
-    parser.add_argument("--summary-out", default=None, help="optional markdown summary output path")
-    parser.add_argument("--run-url", default=None, help="workflow run URL to link in the summary")
-    args = parser.parse_args()
-
-    obs_dir = Path(args.obs_dir)
-    findings = build_findings(obs_dir)
-    out_path = Path(args.out) if args.out else obs_dir / "findings.json"
+def run(
+    obs_dir: str,
+    out: str | None = None,
+    summary_out: str | None = None,
+    run_url: str | None = None,
+) -> int:
+    """Build the findings from ``obs_dir``, write ``findings.json`` (and an optional
+    markdown summary), and return 0."""
+    obs = Path(obs_dir)
+    findings = build_findings(obs)
+    out_path = Path(out) if out else obs / "findings.json"
     out_path.write_text(json.dumps(findings, indent=2) + "\n")
-    if args.summary_out:
-        Path(args.summary_out).write_text(render_summary(findings, args.run_url))
+    if summary_out:
+        Path(summary_out).write_text(render_summary(findings, run_url))
 
     cap = findings["capability"]
     rej = findings["wire"]["tool_arg_rejections"]
@@ -390,7 +384,4 @@ def main() -> None:
         f"{rej.get('rejecting_trials', 0)}/{findings['wire'].get('trials', 0)} trials rejected; "
         f"wrote {out_path}"
     )
-
-
-if __name__ == "__main__":
-    main()
+    return 0

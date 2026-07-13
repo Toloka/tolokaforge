@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 """Slack thread notifications for the model auto-integration pipeline.
 
 One Slack thread per integration PR: a PR-unique root message
@@ -14,23 +13,22 @@ Bot-token + ``chat.postMessage`` only (never an incoming webhook: a webhook
 returns no ts and can neither thread nor read history). The token is read from
 ``SLACK_BOT_TOKEN``; an absent token or channel makes every command a logged
 no-op (a fork PR gets no secrets, a repo without the secret configured degrades
-cleanly). Nothing here exits non-zero on a Slack failure - the caller guards with
-``|| true`` and a notification must never fail the job. Only stdlib is used so the
-workflow can run it with the system ``python3`` before ``uv sync``.
+cleanly). Nothing here exits non-zero on a Slack failure - a notification must
+never fail the job. Only stdlib is used so the workflow can run it with the system
+``python3`` before ``uv sync``.
 
-Subcommands:
+Subcommands (the ``slack`` sub-app):
   ensure-root --channel <id> --model <name> --pr <N>
       Find (or post) the thread root; print its ts to stdout. Idempotent: a
       re-trigger reuses the existing root instead of opening a new one.
   reply --channel <id> --pr <N> --text <msg> [--model <name>] [--mention]
       Reply into the PR's thread (creating the root first if missing). With
-      ``--mention`` the configured ``SLACK_MENTIONS`` users are prefixed so they
+      ``--mention`` the configured ``SLACK_MENTIONS`` users are appended so they
       get pinged; used for the terminal / needs-human / error notifications.
 """
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import re
@@ -38,6 +36,8 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+
+import typer
 
 _API = "https://slack.com/api/"
 _TIMEOUT = 15
@@ -251,44 +251,58 @@ def cmd_reply(
         _note_failure("could not post the thread reply")
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Slack thread notifications for auto-integration.")
-    sub = parser.add_subparsers(dest="cmd", required=True)
+# --- typer sub-app -------------------------------------------------------------
 
-    root = sub.add_parser("ensure-root", help="find or post the PR thread root; print its ts")
-    root.add_argument("--channel", required=True)
-    root.add_argument("--model", default="")
-    root.add_argument("--pr", required=True, type=int)
+app = typer.Typer(
+    help="Slack thread notifications for the auto-integration pipeline.",
+    no_args_is_help=True,
+    add_completion=False,
+)
 
-    reply = sub.add_parser("reply", help="reply into the PR thread (create root if missing)")
-    reply.add_argument("--channel", required=True)
-    reply.add_argument("--pr", required=True, type=int)
-    reply.add_argument("--text", required=True)
-    reply.add_argument("--model", default="")
-    reply.add_argument("--mention", action="store_true")
-    reply.add_argument("--pr-comment", default="", help="deep-link to the PR comment with details")
-    reply.add_argument("--pr-url", default="", help="fallback PR link when no comment url is known")
-    reply.add_argument("--run-url", default="", help="Actions run URL, rendered as a Run log link")
 
-    args = parser.parse_args(argv)
+@app.command("ensure-root")
+def ensure_root(
+    channel: str = typer.Option(..., "--channel"),
+    model: str = typer.Option("", "--model"),
+    pr: int = typer.Option(..., "--pr"),
+) -> None:
+    """Find or post the PR thread root; print its ts."""
     try:
-        if args.cmd == "ensure-root":
-            cmd_ensure_root(args.channel, args.model, args.pr)
-        else:
-            cmd_reply(
-                args.channel,
-                args.pr,
-                args.text,
-                args.model,
-                args.mention,
-                pr_comment=args.pr_comment,
-                pr_url=args.pr_url,
-                run_url=args.run_url,
-            )
+        cmd_ensure_root(channel, model, pr)
     except Exception as exc:  # a notification must never fail the job
         _log(f"unexpected error (ignored): {exc}")
-    return 0
+    raise typer.Exit(0)
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+@app.command("reply")
+def reply(
+    channel: str = typer.Option(..., "--channel"),
+    pr: int = typer.Option(..., "--pr"),
+    text: str = typer.Option(..., "--text"),
+    model: str = typer.Option("", "--model"),
+    mention: bool = typer.Option(False, "--mention"),
+    pr_comment: str = typer.Option(
+        "", "--pr-comment", help="deep-link to the PR comment with details"
+    ),
+    pr_url: str = typer.Option(
+        "", "--pr-url", help="fallback PR link when no comment url is known"
+    ),
+    run_url: str = typer.Option(
+        "", "--run-url", help="Actions run URL, rendered as a Run log link"
+    ),
+) -> None:
+    """Reply into the PR thread (create root if missing)."""
+    try:
+        cmd_reply(
+            channel,
+            pr,
+            text,
+            model,
+            mention,
+            pr_comment=pr_comment,
+            pr_url=pr_url,
+            run_url=run_url,
+        )
+    except Exception as exc:  # a notification must never fail the job
+        _log(f"unexpected error (ignored): {exc}")
+    raise typer.Exit(0)

@@ -56,7 +56,7 @@ jobs:
       RESOLVE_CAPABILITY_K: ${{ vars.RESOLVE_CAPABILITY_K || '5' }}
       RESOLVE_WIRE_K: ${{ vars.RESOLVE_WIRE_K || '10' }}
       RESOLVE_CAP_PARALLEL: ${{ vars.RESOLVE_CAP_PARALLEL || '10' }}
-      # Slack thread notifications (all optional; empty -> scripts/integration/slack_notify.py
+      # Slack thread notifications (all optional; empty -> auto-integration slack
       # no-ops). One thread per PR: a root plus milestone replies (observe/resolve started,
       # clean, integrated, needs-human). SLACK_MENTIONS is a comma-separated Slack user-id list
       # pinged ONLY on terminal / needs-human / error notifications.
@@ -84,16 +84,24 @@ jobs:
             --remove-label 'automation:integrate-model' \
             --add-label 'automation:integrate-running'
 
-      # Checkout BEFORE parse so the (stdlib-only) Slack notifier is on disk for the parse-fail
-      # branch and the final failure() catch-all. Safe: fork PRs are already rejected above, so
-      # this only ever checks out trusted same-repo branch code, and the ref comes from the event
-      # (not from parse), so there is no ordering dependency on the parse step.
+      # Checkout + uv setup BEFORE parse so the auto-integration tool (which posts every Slack
+      # notification, including the parse-fail and the failure() catch-all) is installed and
+      # runnable via `uv run` from the first notifying step. Safe: fork PRs are already rejected
+      # above, so this only checks out trusted same-repo branch code.
       - uses: actions/checkout@v4
         with:
           # head ref + full history so the finalize step can commit the integration back.
           ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
           lfs: true
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.9.5"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv python install 3.12
+      - run: uv sync --dev --locked
 
       - name: Parse candidate model from PR title
         id: parse
@@ -107,7 +115,7 @@ jobs:
               --add-label 'automation:integrate-needs-human'
             CURL="$(gh pr comment "$PR" -R "$REPO" --body \
               "Could not parse the candidate model from the PR title. Expected the convention \`integrate: <openrouter-model-slug>\` (e.g. \`integrate: anthropic/claude-opus-4.8\`). Marked \`automation:integrate-needs-human\`." || true)"
-            python3 scripts/integration/slack_notify.py reply \
+            uv run auto-integration slack reply \
               --channel "$SLACK_CHANNEL" --pr "$PR" --mention \
               --text ':warning: Needs human: PR title did not match `integrate: <slug>` (could not parse model)' \
               --pr-comment "$CURL" --pr-url "$PR_URL" --run-url "$RUN_URL" || true
@@ -127,19 +135,11 @@ jobs:
         env:
           CANDIDATE_NAME: ${{ steps.parse.outputs.name }}
         run: |
-          python3 scripts/integration/slack_notify.py ensure-root \
+          uv run auto-integration slack ensure-root \
             --channel "$SLACK_CHANNEL" --model "$CANDIDATE_NAME" --pr "$PR" || true
-          python3 scripts/integration/slack_notify.py reply \
+          uv run auto-integration slack reply \
             --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" \
             --text ':arrow_forward: Observe started' --run-url "$RUN_URL" || true
-
-      - uses: astral-sh/setup-uv@v7
-        with:
-          version: "0.9.5"
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-      - run: uv python install 3.12
-      - run: uv sync --dev --locked
 
       - name: Create .env (candidate model + user-sim run on the pipeline key)
         # printf from an env var, not echo-interpolation, so a value containing shell
@@ -167,7 +167,7 @@ jobs:
         env:
           TF_NAME: ${{ steps.parse.outputs.name }}
         run: |
-          uv run python scripts/integration/ensure_pricing.py --name "$TF_NAME" || true
+          uv run auto-integration ensure-pricing --name "$TF_NAME" || true
 
       # ---------------------------------------------------------------- OBSERVE
       - name: Capability integration probes (report-only, CAPABILITY_K repeats)
@@ -185,7 +185,7 @@ jobs:
           # each node x rep as its own single-node pytest at CAP_PARALLEL width - so nodes AND
           # repeats parallelize, instead of CAP_PARALLEL long serial reps (the old per-rep pool
           # cost a slow reasoning model hours).
-          uv run python scripts/integration/run_probes.py \
+          uv run auto-integration run-probes \
             --k-expr "(${MODEL_ID}] or ${MODEL_ID}-) and not test_variant" \
             --out observation/capability --reps "$CAPABILITY_K" --workers "$CAP_PARALLEL"
 
@@ -202,7 +202,7 @@ jobs:
           # Same flat (node x rep) pool as the capability step. The variant cases are the
           # slowest for a reasoning model (heavy thinking on the shape-sensitive shapes), so
           # this is where the flat pool matters most (deepseek: ~5h -> a fraction at width 10).
-          uv run python scripts/integration/run_probes.py \
+          uv run auto-integration run-probes \
             --k-expr "(${MODEL_ID}] or ${MODEL_ID}-) and test_variant" \
             --out observation/variants --reps "$CAPABILITY_K" --workers "$CAP_PARALLEL"
 
@@ -275,7 +275,7 @@ jobs:
       - name: Aggregate deterministic findings (report-only)
         run: |
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          uv run python scripts/integration/observe_findings.py observation \
+          uv run auto-integration observe-findings observation \
             --out observation/findings.json \
             --summary-out observation/summary.md \
             --run-url "$RUN_URL"
@@ -316,7 +316,7 @@ jobs:
             gh pr edit "$PR" -R "$REPO" --remove-label 'automation:integrate-running' \
               --add-label 'automation:integrate-needs-human' || true
             echo "clean=no" >> "$GITHUB_OUTPUT"
-            python3 scripts/integration/slack_notify.py reply \
+            uv run auto-integration slack reply \
               --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" --mention \
               --text ':warning: Needs human: observe did not run to completion (no findings.json - infra failure or crash before aggregation)' \
               --pr-url "$PR_URL" --run-url "$RUN_URL" || true
@@ -328,7 +328,7 @@ jobs:
             gh pr edit "$PR" -R "$REPO" --remove-label 'automation:integrate-running' \
               --add-label 'automation:resolve-running' || true
             echo "clean=yes" >> "$GITHUB_OUTPUT"
-            python3 scripts/integration/slack_notify.py reply \
+            uv run auto-integration slack reply \
               --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" \
               --text ':white_check_mark: Observe clean, chaining to resolve' --run-url "$RUN_URL" || true
             echo "observe clean -> resolve"
@@ -336,7 +336,7 @@ jobs:
             gh pr edit "$PR" -R "$REPO" --remove-label 'automation:integrate-running' \
               --add-label 'automation:integrate-needs-human' || true
             echo "clean=no" >> "$GITHUB_OUTPUT"
-            python3 scripts/integration/slack_notify.py reply \
+            uv run auto-integration slack reply \
               --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" --mention \
               --text ':warning: Needs human: observe infra-dirty (rate-limit / API error / capability suite did not run)' \
               --pr-url "$PR_URL" --run-url "$RUN_URL" || true
@@ -350,7 +350,7 @@ jobs:
         env:
           CANDIDATE_NAME: ${{ steps.parse.outputs.name }}
         run: |
-          python3 scripts/integration/slack_notify.py reply \
+          uv run auto-integration slack reply \
             --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" \
             --text ':wrench: Resolve started' --run-url "$RUN_URL" || true
 
@@ -376,7 +376,7 @@ jobs:
         run: |
           set -uo pipefail
           mkdir -p observation/resolve
-          P=scripts/integration/prompts
+          P=tools/auto-integration/src/auto_integration/prompts
           fill () {  # $1 = prompt file, $2 = iteration (or empty)
             sed \
               -e "s|{{OBS_DIR}}|observation|g" -e "s|{{PROVIDER}}|${TF_PROVIDER}|g" \
@@ -425,7 +425,7 @@ jobs:
             else
               # Workflow runs the reprobe (agent never does). Only the fix-targets, K reps
               # each, as a flat (probe x rep) pool at RESOLVE_CAP_PARALLEL width. Fast.
-              uv run python scripts/integration/reprobe.py \
+              uv run auto-integration reprobe \
                 --baseline observation/findings.json --overlay observation/resolve/overlay.yaml \
                 --provider "$TF_PROVIDER" --name "$TF_NAME" \
                 --out "observation/resolve/reprobe_$i" --skip-wire \
@@ -434,7 +434,7 @@ jobs:
               cp "observation/resolve/reprobe_$i/findings.json" observation/resolve/last_reprobe.json 2>/dev/null || true
               # Are all fix-targets green under the overlay? (helper script, not inline
               # python, so YAML indentation cannot break it.)
-              VERDICT="$(uv run python scripts/integration/resolve_greencheck.py observation/resolve/decision.json observation/resolve/last_reprobe.json 2>/dev/null || echo PARSE_FAIL)"
+              VERDICT="$(uv run auto-integration greencheck observation/resolve/decision.json observation/resolve/last_reprobe.json 2>/dev/null || echo PARSE_FAIL)"
             fi
             echo "iteration $i verdict: $VERDICT"
             echo "::endgroup::"
@@ -456,7 +456,7 @@ jobs:
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           set -euo pipefail
-          P=scripts/integration/prompts
+          P=tools/auto-integration/src/auto_integration/prompts
           fill () {
             sed -e "s|{{OBS_DIR}}|observation|g" -e "s|{{PROVIDER}}|${TF_PROVIDER}|g" \
               -e "s|{{NAME}}|${TF_NAME}|g" -e "s|{{MODEL_ID}}|${MODEL_ID}|g" -e "s|{{PR}}|${PR}|g" "$1"
@@ -483,7 +483,7 @@ jobs:
           # (>=0.9) may be `known_unsupported`. Catches the mimo-class under-declaration (re2 15/15
           # omitted from the cert) + false-pessimism (implicit-cache 14/15 -> unsupported). set -e
           # safe (`if !` never aborts the step). Exit 1 -> needs-human.
-          if ! uv run python scripts/integration/cert_reconcile.py \
+          if ! uv run auto-integration reconcile-cert \
                --model-id "$MODEL_ID" --findings observation/findings.json; then
             echo "::error::cert does not reconcile with the observe baseline - refusing to commit"
             exit 1
@@ -534,7 +534,7 @@ jobs:
               "WARNING - human review required (data-scope): the fix converged and passed the local gates, but it addresses a DATA-RELATED array / free-form-object recovery class whose scope depends on domain data the pipeline did not fully see. A human must verify it covers ALL affected domains and fields (a broader check) before merge - a locally-green fix can still be too narrow (or over-broad) on unseen data." || true)"
             gh pr edit "$PR" -R "$REPO" --remove-label 'automation:resolve-running' \
               --add-label 'automation:integrate-needs-human' || true
-            python3 scripts/integration/slack_notify.py reply \
+            uv run auto-integration slack reply \
               --channel "$SLACK_CHANNEL" --pr "$PR" --model "$TF_NAME" --mention \
               --text "$(printf '%s\n%s' ':warning: Needs human: integrated but a data-scope review is required (free-form array recovery)' 'Fix is committed; a human must verify the recovery scope across all domains before merge.')" \
               --pr-comment "${WARN_URL:-$RECORD_URL}" --pr-url "$PR_URL" --run-url "$RUN_URL" || true
@@ -556,7 +556,7 @@ jobs:
                   # Price check is a MERGE PRECONDITION: never auto-merge a model with no
                   # pricing.json entry (its cost reports would be wrong). ensure_pricing --check
                   # exits non-zero if the candidate is unpriced.
-                  if ! uv run python scripts/integration/ensure_pricing.py --name "$TF_NAME" --check; then
+                  if ! uv run auto-integration ensure-pricing --name "$TF_NAME" --check; then
                     echo "::warning::auto-merge skipped: '$TF_NAME' has no pricing.json entry (price check failed) - PR left open"
                   elif gh pr merge "$PR" -R "$REPO" --squash; then
                     MERGED=yes
@@ -576,7 +576,7 @@ jobs:
             else
               MSG="$(printf '%s\n%s' ':white_check_mark: Integrated: preset + cert committed to the PR branch.' "Human review gate - auto-merge off (<$SETTINGS_URL|configure here>).")"
             fi
-            python3 scripts/integration/slack_notify.py reply \
+            uv run auto-integration slack reply \
               --channel "$SLACK_CHANNEL" --pr "$PR" --model "$TF_NAME" --mention \
               --text "$MSG" \
               --pr-comment "$RECORD_URL" --pr-url "$PR_URL" --run-url "$RUN_URL" || true
@@ -604,7 +604,7 @@ jobs:
             SLACK=":warning: Needs human: resolve did not converge within ${MAX_ITER} iterations (or finalize failed)"
           fi
           CURL="$(gh pr comment "$PR" -R "$REPO" --body "$BODY" || true)"
-          python3 scripts/integration/slack_notify.py reply \
+          uv run auto-integration slack reply \
             --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" --mention \
             --text "$SLACK" \
             --pr-comment "$CURL" --pr-url "$PR_URL" --run-url "$RUN_URL" || true
@@ -622,7 +622,7 @@ jobs:
           if [ -f "$RUNNER_TEMP/slack_terminal_sent" ]; then
             echo "terminal Slack already sent -> no catch-all ping"; exit 0
           fi
-          python3 scripts/integration/slack_notify.py reply \
+          uv run auto-integration slack reply \
             --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" --mention \
             --text ':rotating_light: Pipeline error: unexpected failure, PR left mid-state' \
             --pr-url "$PR_URL" --run-url "$RUN_URL" || true

@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 """Targeted re-probe for the model auto-integration RESOLVE phase.
 
 Given the observe baseline findings and a policy overlay (the preset the resolve
@@ -24,19 +23,13 @@ appears in more than one test (e.g. ``nested_in_object``) never cross-selects.
 
 from __future__ import annotations
 
-import argparse
 import json
 import subprocess
-import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
-# Import the deterministic collector that lives next to this script. Running
-# ``python scripts/integration/reprobe.py`` puts this dir on sys.path[0]; the
-# insert makes ``import observe_findings`` work under other invocations too.
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import observe_findings  # noqa: E402
+from auto_integration import observe
 
 # The user-sim and wire task pack, matching the observe stage.
 WIRE_DATASET = "tests/data/tasks/wire_probes/dataset"
@@ -179,100 +172,83 @@ def run_wire_task(
     subprocess.run([*RUN_CMD, "run", "--config", str(cfg_path), "--verbose"], check=False)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Re-run only the failed probes under a policy overlay and emit findings."
-    )
-    parser.add_argument(
-        "--baseline", required=True, help="observe findings.json to read failures from"
-    )
-    parser.add_argument("--overlay", required=True, help="policy preset overlay YAML (the fix)")
-    parser.add_argument("--provider", required=True, help="candidate provider (e.g. openrouter)")
-    parser.add_argument(
-        "--name", required=True, help="candidate model slug (e.g. minimax/minimax-m3)"
-    )
-    parser.add_argument("--out", required=True, help="output dir for the re-probe observation")
-    parser.add_argument("--dataset", default=WIRE_DATASET, help="wire task-pack root")
-    parser.add_argument("--capability-k", type=int, default=15)
-    parser.add_argument("--wire-k", type=int, default=10)
-    parser.add_argument("--workers", type=int, default=10)
-    # Flat (probe x rep) pool width. Bounded by the OpenRouter rate limit (~10-16 safe;
-    # higher risks 429s that erase the gain, since the key does not rotate).
-    parser.add_argument("--cap-parallel", type=int, default=10)
-    parser.add_argument(
-        "--targets",
-        default=None,
-        help="comma-separated probe names to reprobe (the agent's fix_targets); default = "
-        "ALL failed probes from the baseline. Restricting to fix_targets skips the slow, "
-        "un-fixable ceiling probes (thinking/caching) each iteration.",
-    )
-    parser.add_argument(
-        "--skip-wire", action="store_true", help="capability-only (the agent's inner loop)"
-    )
-    parser.add_argument("--run-url", default=None)
-    args = parser.parse_args()
-
+def run(
+    *,
+    baseline: str,
+    overlay: str,
+    provider: str,
+    name: str,
+    out: str,
+    dataset: str = WIRE_DATASET,
+    capability_k: int = 15,
+    wire_k: int = 10,
+    workers: int = 10,
+    cap_parallel: int = 10,
+    targets: str | None = None,
+    skip_wire: bool = False,
+    run_url: str | None = None,
+) -> int:
+    """Re-run only the failed probes under a policy overlay and emit findings. Returns 0."""
     from tolokaforge.core.output.artifacts import model_id_slug
 
-    model_id = model_id_slug(args.provider, args.name)
-    baseline = json.loads(Path(args.baseline).read_text())
-    out_dir = Path(args.out)
+    model_id = model_id_slug(provider, name)
+    baseline_findings = json.loads(Path(baseline).read_text())
+    out_dir = Path(out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Which probes to reprobe: the agent's fix_targets if given (skips the slow, un-fixable
     # ceiling probes), else ALL failed probes from the baseline (capability + variants).
-    if args.targets:
-        probes = [t.strip() for t in args.targets.split(",") if t.strip()]
+    if targets:
+        probes = [t.strip() for t in targets.split(",") if t.strip()]
     else:
-        probes = failed_probes(baseline.get("capability")) + failed_probes(baseline.get("variants"))
+        probes = failed_probes(baseline_findings.get("capability")) + failed_probes(
+            baseline_findings.get("variants")
+        )
     n_var = sum(1 for p in probes if p.startswith("test_variant"))
-    wire_tasks = [] if args.skip_wire else failed_wire_tasks(baseline)
+    wire_tasks = [] if skip_wire else failed_wire_tasks(baseline_findings)
     print(
         f"re-probe targets: {len(probes) - n_var} capability, {n_var} variant, "
-        f"{len(wire_tasks)} wire task(s) under overlay {args.overlay} "
-        f"(flat pool, K={args.capability_k}, width={args.cap_parallel})"
+        f"{len(wire_tasks)} wire task(s) under overlay {overlay} "
+        f"(flat pool, K={capability_k}, width={cap_parallel})"
     )
 
     run_capability_flat(
         probes=probes,
-        overlay=args.overlay,
-        provider=args.provider,
-        name=args.name,
+        overlay=overlay,
+        provider=provider,
+        name=name,
         model_id=model_id,
         out_dir=out_dir,
-        k=args.capability_k,
-        workers=args.cap_parallel,
+        k=capability_k,
+        workers=cap_parallel,
     )
     for task_id in wire_tasks:
         run_wire_task(
             task_id=task_id,
-            overlay=args.overlay,
-            provider=args.provider,
-            name=args.name,
+            overlay=overlay,
+            provider=provider,
+            name=name,
             out_dir=out_dir,
-            dataset=args.dataset,
-            k=args.wire_k,
-            workers=args.workers,
+            dataset=dataset,
+            k=wire_k,
+            workers=workers,
         )
 
     # Tag the findings with the policy under test so the agent can diff against baseline.
     manifest = {
         "schema_version": 1,
         "stage": "reprobe",
-        "candidate": {"provider": args.provider, "name": args.name, "model_id": model_id},
-        "preset": Path(args.overlay).stem,
-        "baseline": str(args.baseline),
+        "candidate": {"provider": provider, "name": name, "model_id": model_id},
+        "preset": Path(overlay).stem,
+        "baseline": str(baseline),
     }
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
-    findings = observe_findings.build_findings(out_dir)
+    findings = observe.build_findings(out_dir)
     (out_dir / "findings.json").write_text(json.dumps(findings, indent=2) + "\n")
-    (out_dir / "summary.md").write_text(observe_findings.render_summary(findings, args.run_url))
+    (out_dir / "summary.md").write_text(observe.render_summary(findings, run_url))
     print(
         f"re-probe findings: all_passed={findings['all_passed']} "
         f"(capability_ran={findings['capability_ran']}); wrote {out_dir / 'findings.json'}"
     )
-
-
-if __name__ == "__main__":
-    main()
+    return 0

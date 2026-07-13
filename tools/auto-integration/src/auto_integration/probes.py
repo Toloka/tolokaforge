@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 """Flat (node x rep) parallel probe runner for the OBSERVE stage.
 
 The old observe steps parallelized at the REP level (``seq 1 K | xargs -P W`` where each rep
@@ -10,9 +9,9 @@ step alone at K=15 / W=4.
 This flattens it: collect the candidate's selected pytest nodes ONCE (``--collect-only``), then
 run each ``(node x rep)`` as its own single-node pytest into ``<out>/u<idx>_rep<rep>.xml``,
 parallelized at ``--workers``. So ``n_nodes x K`` units run concurrently up to the width, not
-``W`` long serial reps. Same trick as ``reprobe.py`` (resolve stage); the observe stage never
-got it. The collector (``observe_findings``) aggregates by testcase NAME across all ``*.xml``,
-so the junit filenames are free-form.
+``W`` long serial reps. Same trick as ``reprobe`` (resolve stage); the observe stage never
+got it. The collector (``observe``) aggregates by testcase NAME across all ``*.xml``, so the
+junit filenames are free-form.
 
 Report-only: a failing probe is data for the next stage, never a gate, so a non-zero pytest
 exit is swallowed. Env (TF_CANDIDATE_* / MODEL_ID / OPENROUTER_API_KEY) is inherited from the
@@ -21,7 +20,6 @@ caller, exactly as the old inline step relied on.
 
 from __future__ import annotations
 
-import argparse
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -68,29 +66,27 @@ def _run_unit(out: Path, idx: int, node: str, rep: int) -> None:
     )
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--k-expr", required=True, help="the pytest -k selection for the candidate")
-    ap.add_argument("--out", required=True, help="junit output dir (e.g. observation/capability)")
-    ap.add_argument("--reps", type=int, default=15, help="repeats per node (CAPABILITY_K)")
-    ap.add_argument("--workers", type=int, default=10, help="flat-pool width (node x rep)")
-    ap.add_argument("--path", default=DEFAULT_PATH, help="test root to collect from")
-    args = ap.parse_args()
-
-    out = Path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
-    nodes = collect_nodes(args.k_expr, args.path)
+def run(
+    k_expr: str,
+    out: str,
+    reps: int = 15,
+    workers: int = 10,
+    path: str = DEFAULT_PATH,
+) -> int:
+    """Collect the candidate's nodes and run each ``(node x rep)`` unit into ``out``,
+    parallelized at ``workers``. Report-only: always returns 0 (a failing probe is data
+    for the next stage, not a gate)."""
+    out_dir = Path(out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    nodes = collect_nodes(k_expr, path)
     if not nodes:
-        print(f"run_probes: no nodes matched -k {args.k_expr!r} under {args.path}")
-        return
-    units = build_units(nodes, args.reps)
-    with ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
-        list(pool.map(lambda u: _run_unit(out, *u), units))
+        print(f"run_probes: no nodes matched -k {k_expr!r} under {path}")
+        return 0
+    units = build_units(nodes, reps)
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        list(pool.map(lambda u: _run_unit(out_dir, *u), units))
     print(
-        f"run_probes: {len(nodes)} nodes x {args.reps} reps = {len(units)} units "
-        f"at width {args.workers} -> {out}"
+        f"run_probes: {len(nodes)} nodes x {reps} reps = {len(units)} units "
+        f"at width {workers} -> {out_dir}"
     )
-
-
-if __name__ == "__main__":
-    main()
+    return 0
