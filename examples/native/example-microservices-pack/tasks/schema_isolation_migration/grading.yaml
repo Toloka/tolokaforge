@@ -1,0 +1,29 @@
+# combine: inherited from project task_defaults.grading_defaults.
+llm_judge:
+  rubric:
+    reference: >
+      Correct outcome: a migration in the project's migration format
+      adding `deleted_at` (nullable timestamp) to `orders` with an
+      index, plus a backfill; applies cleanly on a fresh database
+      and reverts cleanly with no lost rows.
+    criteria:
+      - id: migration_applies_cleanly
+        description: >
+          The migration applies without error on a fresh database.
+        weight: 3.0
+        kind: binary
+        required: true
+      - id: backfill_correct
+        description: >
+          The backfill produces correct `deleted_at` values for
+          existing rows.
+        weight: 3.0
+        kind: binary
+        required: true
+      - id: revert_is_lossless
+        description: >
+          Reverting restores the pre-migration schema with no lost
+          rows.
+        weight: 3.0
+        kind: binary
+        required: true

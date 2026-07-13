@@ -1,0 +1,59 @@
+# Task-local compose — isolated postgres so a botched migration
+# doesn't leak state to other tasks that share the base stack.
+#
+# No isolation declarations needed anywhere: replacing compose_file
+# discards the project's `services` entries, the task declares none
+# of its own, and the project's `per_trial` default makes every
+# service here ephemeral — recreated between trials, which is
+# exactly right for an irreversible schema migration.
+
+services:
+  runner:
+    image: "tolokaforge-runner:local"
+    environment:
+      DB_SERVICE_URL: "http://db-service:8000"
+    ports:
+      - "50051"
+    depends_on:
+      db-service:
+        condition: service_healthy
+      postgres-migration-target:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import grpc; grpc.channel_ready_future(grpc.insecure_channel('localhost:50051')).result(timeout=2)"
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+  db-service:
+    image: "tolokaforge-db-service:local"
+    ports:
+      - "8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 3s
+
+  postgres-migration-target:
+    image: "postgres:16"
+    environment:
+      POSTGRES_USER: "postgres"
+      POSTGRES_PASSWORD: "example"
+      POSTGRES_DB: "app"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d app"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s

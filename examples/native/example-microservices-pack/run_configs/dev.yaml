@@ -1,0 +1,31 @@
+# Run delta for the "dev" invocation profile. This file declares
+# only what makes this run different from `project.run_defaults`;
+# the loader deep-merges `project.run_defaults` under it.
+#
+# Add more profiles (ci.yaml, nightly.yaml, ...) alongside this
+# file. Each declares only its own deltas.
+#
+# See docs/architecture/PROJECTS.md for the full model.
+
+# ── Models — vary per invocation, declared here in full. ────────
+models:
+  agent:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.0
+    max_tokens: 4096
+  user:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.2
+  judge:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.0
+
+# ── Evaluation ──────────────────────────────────────────────────
+# `evaluation.projects` is optional — omitted here, so the loader
+# uses the enclosing project. See PROJECTS.md § "Delta from
+# current implementation" for the legacy `task_packs` alias.
+evaluation:
+  output_dir: "results/example_microservices_pack"

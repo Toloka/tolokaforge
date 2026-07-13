@@ -1,0 +1,20 @@
+# Task: verify the backend still works under postgres 17.
+# Partial override — the task's environment_manifest deep-merges with
+# the project's default_environment. Only `inputs.postgres_version`
+# differs; compose_file and runner_service are inherited from the
+# project.
+task_id: "postgres_upgrade_test"
+description: >
+  A stakeholder wants to know whether the backend still works after
+  a postgres major-version bump. Run the standard smoke suite
+  against the backend and report any behaviour differences.
+
+environment_manifest:
+  stack:
+    inputs:
+      # Overrides the project default of "16". This is the entire
+      # authoring cost of using a different postgres version — no
+      # service redefinition, no whole-stack replacement (touching
+      # stack.inputs alone deep-merges; only a new compose_file
+      # replaces the stack atomically).
+      postgres_version: "17"
