@@ -107,6 +107,15 @@ def load_project_config(path: Path) -> ProjectConfig:
     Raises ``FileNotFoundError`` if the file does not exist, ``RuntimeError``
     if the YAML is not a mapping, and ``pydantic.ValidationError`` if the
     contents don't validate against :class:`ProjectConfig`.
+
+    Scope note: ``${VAR}`` interpolation is **not** applied to
+    ``project.yaml`` values — only the run-config load path (see
+    :func:`load_effective_run_config`) substitutes placeholders. A
+    ``project.yaml`` entry like ``assets.seeds.foo.path:
+    "${SEED_ROOT}/foo.sql"`` stays literal. This is a scope choice
+    (project.yaml is checked into the repo; the operator's env is
+    per-invocation), not a correctness one — extending interpolation
+    to the project side is a follow-up if authors ask for it.
     """
     path = Path(path)
     if not path.is_file():
@@ -385,6 +394,10 @@ def _interpolate_walk(
             for k, v in node.items()
         }
     if isinstance(node, list):
+        # List-index segments are appended without a leading dot so the
+        # rendered path reads ``evaluation.projects[0]`` rather than the
+        # spurious ``evaluation.projects.[0]``. The joiner in
+        # :func:`_render_key_path` treats ``[N]`` segments specially.
         return [
             _interpolate_walk(item, source_path, (*key_path, f"[{idx}]"), missing, credentials)
             for idx, item in enumerate(node)
@@ -392,6 +405,24 @@ def _interpolate_walk(
     if isinstance(node, str):
         return _interpolate_string(node, source_path, key_path, missing, credentials)
     return node
+
+
+def _render_key_path(key_path: tuple[str, ...]) -> str:
+    """Render a walker key path for error messages.
+
+    Dict-key segments join with ``.``; list-index segments (``[N]``)
+    stay attached to the preceding segment without an intervening dot.
+    Returns ``"(root)"`` when the path is empty.
+    """
+    if not key_path:
+        return "(root)"
+    parts: list[str] = []
+    for segment in key_path:
+        if segment.startswith("[") and parts:
+            parts[-1] = parts[-1] + segment
+        else:
+            parts.append(segment)
+    return ".".join(parts)
 
 
 def _interpolate_string(
@@ -409,13 +440,13 @@ def _interpolate_string(
 
     def replace(match: re.Match[str]) -> str:
         var_name = match.group(1)
-        joined_path = ".".join(key_path) if key_path else "(root)"
+        rendered_path = _render_key_path(key_path)
         if _CREDENTIAL_NAME_SUFFIX_PATTERN.search(var_name):
-            credentials.append(f"{joined_path} → ${{{var_name}}}")
+            credentials.append(f"{rendered_path} → ${{{var_name}}}")
             return match.group(0)
         env_value = os.environ.get(var_name)
         if env_value is None:
-            missing.append(f"{joined_path} → ${{{var_name}}}")
+            missing.append(f"{rendered_path} → ${{{var_name}}}")
             return match.group(0)
         return env_value
 

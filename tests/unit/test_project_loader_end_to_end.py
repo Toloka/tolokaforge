@@ -732,7 +732,13 @@ class TestEnvVarInterpolation:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # Suffix-based match mirrors tests/unit/secrets/test_no_raw_secret_access.py.
-        # A representative from each suffix pins the shape.
+        # A representative from each suffix pins the shape. Uses
+        # ``evaluation.output_dir`` (non-deprecated string field) as
+        # the concatenation site so this test doesn't depend on the
+        # deprecated ``orchestrator.continue_prompt`` — if a future
+        # refactor moves interpolation after RunConfig construction,
+        # the assertion still holds without picking up a stray
+        # DeprecationWarning.
         variants = [
             "MY_TOKEN",
             "MY_SECRET",
@@ -750,10 +756,11 @@ class TestEnvVarInterpolation:
             run_cfg,
             {
                 "models": {"user": {"provider": "openai", "name": "gpt-4o"}},
-                "evaluation": {"output_dir": "results/x"},
-                "orchestrator": {
-                    # Field is a string, so it exercises the walker.
-                    "continue_prompt": " ".join(f"${{{v}}}" for v in variants),
+                "evaluation": {
+                    # Non-deprecated string field; the walker sees every
+                    # concatenated placeholder in one pass.
+                    "output_dir": "results/"
+                    + "-".join(f"${{{v}}}" for v in variants),
                 },
             },
         )
@@ -793,6 +800,59 @@ class TestEnvVarInterpolation:
         # The key survives untouched; env var value never leaks in.
         assert "${SHOULD_NOT_FIRE}" in merged["orchestrator"]["typesense"]
         assert "surprise" not in merged["orchestrator"]["typesense"]
+
+    def test_variable_names_with_digits_substitute(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The regex's second-char class is [A-Za-z0-9_], so digits are
+        # allowed after the first character. Pin the common shapes
+        # (``NAME_1``, ``NAME2``, ``NAME_1A``) so a future tightening
+        # of the pattern can't silently break them.
+        monkeypatch.setenv("MY_VAR_1", "one")
+        monkeypatch.setenv("MY_VAR2", "two")
+        monkeypatch.setenv("MY_VAR_1A", "one-a")
+        _write_yaml(tmp_path / "project.yaml", {"name": "p"})
+        run_cfg = tmp_path / "run_configs" / "dev.yaml"
+        _write_yaml(
+            run_cfg,
+            {
+                "models": {"user": {"provider": "openai", "name": "gpt-4o"}},
+                "evaluation": {
+                    "output_dir": "results/${MY_VAR_1}-${MY_VAR2}-${MY_VAR_1A}",
+                },
+            },
+        )
+        from tolokaforge.core.project_loader import load_effective_run_config
+
+        merged, _ = load_effective_run_config(run_cfg)
+        assert merged["evaluation"]["output_dir"] == "results/one-two-one-a"
+
+    def test_key_path_in_error_uses_bracket_index_no_dot(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Pin the rendered key-path format for list indices: the error
+        # should say ``projects[0]`` (not ``projects.[0]``). A regression
+        # in :func:`_render_key_path` would reintroduce the spurious dot.
+        monkeypatch.delenv("MISSING_IN_LIST", raising=False)
+        _write_yaml(tmp_path / "project.yaml", {"name": "p"})
+        run_cfg = tmp_path / "run_configs" / "dev.yaml"
+        _write_yaml(
+            run_cfg,
+            {
+                "models": {"user": {"provider": "openai", "name": "gpt-4o"}},
+                "evaluation": {
+                    "output_dir": "results/x",
+                    "projects": ["${MISSING_IN_LIST}"],
+                },
+            },
+        )
+        from tolokaforge.core.project_loader import load_effective_run_config
+
+        with pytest.raises(ValueError) as exc:
+            load_effective_run_config(run_cfg)
+        message = str(exc.value)
+        assert "evaluation.projects[0]" in message, message
+        assert "projects.[0]" not in message, message
 
     def test_placeholder_in_list_value_substituted(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
