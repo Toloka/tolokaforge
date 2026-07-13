@@ -50,7 +50,7 @@ jobs:
       # old per-rep width of 4 now that nodes AND repeats share the pool.
       CAP_PARALLEL: ${{ vars.OBSERVE_CAP_PARALLEL || '10' }}
       # Resolve fix-loop config.
-      MAX_ITER: ${{ vars.RESOLVE_MAX_ITER || '3' }}
+      MAX_ITER: ${{ vars.RESOLVE_MAX_ITER || '8' }}
       AGENT_MODEL: ${{ vars.RESOLVE_AGENT_MODEL || 'claude-opus-4-8' }}
       RESOLVE_MAX_TURNS: ${{ vars.RESOLVE_MAX_TURNS || '80' }}
       RESOLVE_CAPABILITY_K: ${{ vars.RESOLVE_CAPABILITY_K || '5' }}
@@ -399,6 +399,19 @@ jobs:
             claude -p "$(cat /tmp/compose_$i.md)" --model "$AGENT_MODEL" \
               --allowedTools "Bash,Read,Edit,Write" --dangerously-skip-permissions \
               --max-turns "${RESOLVE_MAX_TURNS}" --verbose || true
+            # Agent-requested escalation: if it lacks the data to produce a CORRECT policy (a
+            # data-bound quirk whose scope needs real-domain evidence the observe never surfaced),
+            # it sets `needs_human: true` in decision.json. Break immediately - no wasted
+            # iterations, no fabricated fix. Checked before the overlay guard: escalation needs
+            # only decision.json (the agent need not write an overlay it does not believe in).
+            NEEDS_HUMAN="$(uv run python -c "import json,sys; print('yes' if json.load(open(sys.argv[1])).get('needs_human') else 'no')" observation/resolve/decision.json 2>/dev/null || echo no)"
+            if [ "$NEEDS_HUMAN" = "yes" ]; then
+              REASON="$(uv run python -c "import json,sys; d=json.load(open(sys.argv[1])); print((d.get('needs_human_reason') or d.get('notes') or 'insufficient data to generate a correct policy').replace(chr(10),' '))" observation/resolve/decision.json 2>/dev/null || echo 'insufficient data to generate a correct policy')"
+              echo "iteration $i: agent requested human review -> $REASON"
+              echo "needs_human=yes" >> "$GITHUB_OUTPUT"
+              echo "needs_human_reason=$REASON" >> "$GITHUB_OUTPUT"
+              echo "::endgroup::"; break
+            fi
             if [ ! -f observation/resolve/overlay.yaml ] || [ ! -f observation/resolve/decision.json ]; then
               echo "::warning::iteration $i produced no overlay/decision (agent stalled or hit max-turns)"
               echo "::endgroup::"; continue
@@ -577,14 +590,23 @@ jobs:
         if: always() && steps.gate.outputs.clean == 'yes' && (steps.loop.outputs.converged != 'yes' || steps.finalize.outcome == 'failure')
         env:
           CANDIDATE_NAME: ${{ steps.parse.outputs.name }}
+          NEEDS_HUMAN: ${{ steps.loop.outputs.needs_human }}
+          NEEDS_HUMAN_REASON: ${{ steps.loop.outputs.needs_human_reason }}
         run: |
           gh pr edit "$PR" -R "$REPO" --remove-label 'automation:resolve-running' \
             --add-label 'automation:integrate-needs-human' || true
-          CURL="$(gh pr comment "$PR" -R "$REPO" --body \
-            "Resolve did not converge within ${MAX_ITER} iterations, or converged but finalize failed (agent hit max-turns, wrote no changes, a broken/divergent policy failed the staged verification, or the push failed). Marked \`automation:integrate-needs-human\`. Latest overlay + reprobe are in the run artifacts. Run: ${RUN_URL}" || true)"
+          if [ "${NEEDS_HUMAN:-}" = "yes" ]; then
+            # The agent itself requested a human: it lacked the data for a correct policy.
+            BODY="The resolve agent requested human review: ${NEEDS_HUMAN_REASON}. It judged it cannot produce a correct policy from the observe data alone (a data-bound quirk) and did not fabricate a fix. Marked \`automation:integrate-needs-human\`. Latest artifacts are on the run. Run: ${RUN_URL}"
+            SLACK=":raising_hand: Needs human (agent-requested): ${NEEDS_HUMAN_REASON}"
+          else
+            BODY="Resolve did not converge within ${MAX_ITER} iterations, or converged but finalize failed (agent hit max-turns, wrote no changes, a broken/divergent policy failed the staged verification, or the push failed). Marked \`automation:integrate-needs-human\`. Latest overlay + reprobe are in the run artifacts. Run: ${RUN_URL}"
+            SLACK=":warning: Needs human: resolve did not converge within ${MAX_ITER} iterations (or finalize failed)"
+          fi
+          CURL="$(gh pr comment "$PR" -R "$REPO" --body "$BODY" || true)"
           python3 scripts/integration/slack_notify.py reply \
             --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" --mention \
-            --text ':warning: Needs human: resolve did not converge within '"${MAX_ITER}"' iterations (or finalize failed)' \
+            --text "$SLACK" \
             --pr-comment "$CURL" --pr-url "$PR_URL" --run-url "$RUN_URL" || true
           touch "$RUNNER_TEMP/slack_terminal_sent" || true
 

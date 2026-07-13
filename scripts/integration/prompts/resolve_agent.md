@@ -70,6 +70,8 @@ and pushes the whole integration to needs-human.
     "ceilings": ["<Capability enum names that are genuine known_unsupported>"],
     "required": ["<Capability enum names the model passes or the policy makes pass = cert required>"],
     "data_scope_review": <true|false - see below>,
+    "needs_human": <true|false - see below>,
+    "needs_human_reason": "<one line naming exactly what data is missing - set iff needs_human>",
     "notes": "<one line: what the policy does + why>"}
    ```
    `fix_targets` MUST be the exact `probe` strings from `findings.json` per_probe (e.g.
@@ -85,6 +87,17 @@ and pushes the whole integration to needs-human.
    merge (even on full convergence) - a locally-green fix can be too narrow (or over-broad) on data
    the pipeline never saw. A fix that touches ONLY SCHEMA-DECLARED array fields (visible type) is
    `data_scope_review: false`.
+
+   Set `needs_human: true` (with a one-line `needs_human_reason`) when you CANNOT produce a correct
+   policy because the necessary evidence is NOT in the observe data - a DATA-BOUND quirk whose
+   correct scope/shape depends on real domain data the observe never surfaced (e.g. which fields
+   carry a nested array under a free-form `additionalProperties: true` object, knowable only from
+   the domain's tool schemas + data, not from the failing probe alone). Do NOT fabricate a fix or a
+   false ceiling to force convergence: set the flag, name exactly what data is missing, and stop.
+   The workflow escalates to a human IMMEDIATELY - it does not burn the remaining iterations. This
+   differs from `data_scope_review` (a fix you DID produce, that a human scope-checks): use
+   `needs_human` when you cannot responsibly produce the fix AT ALL from what you can see. When
+   `needs_human` is true you may leave `fix_targets` empty and skip writing `overlay.yaml`.
 
    `required` must be EVIDENCE-BACKED, never optimistic. List a capability as `required` ONLY if
    it passed NATIVELY in `findings.json` OR the reprobe shows it green under your overlay. Do NOT

@@ -57,7 +57,12 @@ flat probe x rep pool, so both probes and repeats run concurrently) and green-ch
 Empirical rule: a fix-target still red under the policy is reclassified as a ceiling
 (known_unsupported), not chased forever. If the agent names NO fix-targets (all failures are
 genuine ceilings), the verdict is `NO_TARGETS` -> converge straight to finalize, which records
-them as `known_unsupported`.
+them as `known_unsupported`. The agent can also ESCALATE directly: if it judges it cannot produce
+a correct policy from the observe data (a data-bound quirk whose correct scope needs real-domain
+evidence the observe never surfaced), it sets `needs_human: true` in `decision.json` and the loop
+breaks IMMEDIATELY to `automation:integrate-needs-human` with the agent's reason - no wasted
+iterations, no fabricated fix. (Distinct from `data_scope_review`, which commits a fix the agent
+DID produce and routes it for a post-hoc human scope-check.)
 
 - Converged -> a finalize agent (`prompts/resolve_finalize.md`) folds the preset into
   `model_presets.yaml` and writes the cert into `registry.py`. Before committing, the workflow
@@ -87,7 +92,7 @@ them as `known_unsupported`.
 | `OBSERVE_WIRE_K` | 10 | observe wire-probe repeats |
 | `OBSERVE_WORKERS` | 10 | wire-probe orchestrator workers (trial-level) |
 | `OBSERVE_CAP_PARALLEL` | 10 | capability + variant flat (node x rep) pool width (raised from 4; the old per-rep pool was serial-within-rep and cost a slow reasoning model hours) |
-| `RESOLVE_MAX_ITER` | 3 | resolve fix-loop iterations |
+| `RESOLVE_MAX_ITER` | 8 | resolve fix-loop iterations (the agent can also escalate early, see below) |
 | `RESOLVE_MAX_TURNS` | 80 | per-iteration agent turn budget (headroom for code-CREATE; exhausting it degrades to needs-human, never hard-fails) |
 | `RESOLVE_AGENT_MODEL` | claude-opus-4-8 | resolve agent model |
 | `RESOLVE_CAPABILITY_K` | 5 | resolve per-iteration capability reprobe (cheap inner loop) |
