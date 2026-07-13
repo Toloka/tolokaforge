@@ -281,6 +281,28 @@ presets:
     reasoning_codec: openai
     response_policy: minimax_m3_tags
 
+  # Moonshot Kimi K2 Thinking (Moonshot AI via OpenRouter). Unlike the
+  # non-thinking kimi-k2 family, K2 Thinking returns its reasoning over the
+  # OpenRouter ``provider_specific_fields.reasoning_details`` envelope as
+  # UNSIGNED ``reasoning.text`` blocks (no signatures) — the exact archetype
+  # the ``GeminiReasoningCodec`` was built for (Gemini Pro lineage). On the
+  # ``default`` preset (reasoning_codec unset -> none) those blocks decoded to
+  # nothing, sinking test_thinking_emits_blocks + test_unsigned_thinking_replay
+  # at 0/15. Attaching ``reasoning_codec: gemini`` decodes the blocks on
+  # extract and re-emits them as ``reasoning_details`` on replay, landing both.
+  # Everything else is inherited from ``default`` + the ``openrouter`` provider
+  # overlay (passthrough schema, openai content policy, standard response
+  # policy, reasoning_via_extra_body): all tool-call shape probes pass
+  # natively, so no schema/response axis is touched. Signed-block replay
+  # (THINKING_REPLAY_ROUNDTRIP) is a genuine ceiling — Kimi is unsigned — and
+  # neither caching surface fires on this route (see registry.py).
+  # Live-certified 2026-07-13 via auto-resolve (PR #254).
+  moonshotai_kimi_k2_thinking:
+    match:
+      - "moonshotai/kimi-k2-thinking*"
+      - "*kimi-k2-thinking*"
+    reasoning_codec: gemini
+
 providers:
   openrouter:
     params:

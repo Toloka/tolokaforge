@@ -930,6 +930,80 @@ _ALL: list[MC] = [
             }
         ),
     ),
+    # -----------------------------------------------------------------
+    # Kimi K2 Thinking (Moonshot AI via OpenRouter) — the reasoning
+    # sibling of the kimi-k2 line, and NOT a copy of the kimi-k2.6 /
+    # k2.7-code posture. It routes through its OWN ``moonshotai_kimi_k2_thinking``
+    # preset (default + openrouter overlay + ``reasoning_codec: gemini``),
+    # because K2 Thinking returns UNSIGNED ``reasoning.text`` blocks over the
+    # OpenRouter ``reasoning_details`` envelope — the Gemini Pro archetype the
+    # ``GeminiReasoningCodec`` decodes. That codec is why this cert diverges
+    # from the non-thinking kimi siblings in four ways (all re-run live per
+    # docs/ADD_NEW_MODEL.md, not copied):
+    #
+    #   * THINKING_EMITS_BLOCKS + UNSIGNED_THINKING_REPLAY are REQUIRED here
+    #     (known_unsupported on k2.6/k2.7-code): the gemini codec surfaces the
+    #     reasoning_details blocks and round-trips them back out. Baseline on
+    #     the ``default`` preset was 0/15 on both; final reprobe 5/5 each.
+    #   * DISCRIMINATED_UNION_TOOL_CALL + DECIMAL_FIELD_TOOL_CALL pass natively
+    #     on the passthrough schema (both known_unsupported on the k2.6
+    #     sibling): the base two-turn union probe passes and the Decimal-field
+    #     probe emits a clean structured call.
+    #
+    # THINKING_REPLAY_ROUNDTRIP stays known_unsupported — that contract
+    # asserts a SIGNED replay block, and Kimi's reasoning is unsigned (genuine
+    # ceiling, not preset-fixable). Both caching surfaces stay
+    # known_unsupported: no ``cache_control`` markers wired (PROMPT_CACHING)
+    # and the OpenRouter route surfaces 0 cache_read_input_tokens on a clean
+    # 2-call ~8 k-token probe (IMPLICIT_PROMPT_CACHING). Live-certified
+    # 2026-07-13 via auto-resolve (PR #254; disposable test branch).
+    # -----------------------------------------------------------------
+    MC(
+        model_id="openrouter__moonshotai_kimi-k2-thinking",
+        provider="openrouter",
+        name="moonshotai/kimi-k2-thinking",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.DICT_MAP_TOOL_CALL,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                # gemini reasoning codec decodes the unsigned reasoning.text
+                # blocks (0/15 on default -> 5/5 final reprobe).
+                C.THINKING_EMITS_BLOCKS,
+                C.UNSIGNED_THINKING_REPLAY,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # Signed-replay contract: Kimi's reasoning is UNSIGNED, so
+                # there is no signature to round-trip. UNSIGNED_THINKING_REPLAY
+                # (required above) covers its real replay shape.
+                C.THINKING_REPLAY_ROUNDTRIP,
+                # No Anthropic-style ephemeral cache wired (no cache_control
+                # markers) — call 1 creates 0 cache_creation_input_tokens.
+                C.PROMPT_CACHING,
+                # Clean 2-call ~8 k-token probe reads 0 cache_read_input_tokens
+                # on the OpenRouter moonshotai/kimi-k2-thinking route.
+                C.IMPLICIT_PROMPT_CACHING,
+            }
+        ),
+    ),
     MC(
         model_id="openrouter__deepseek_deepseek-v4-pro",
         provider="openrouter",
