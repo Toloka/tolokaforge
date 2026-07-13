@@ -142,9 +142,40 @@ def _resolve_project_paths(data: dict, project_dir: Path) -> None:
     env = data.get("default_environment")
     if isinstance(env, dict):
         _anchor_stack_compose_file(env, project_dir)
+    assets = data.get("assets")
+    if isinstance(assets, dict):
+        _anchor_seed_paths(assets, project_dir)
     task_defaults = data.get("task_defaults")
     if isinstance(task_defaults, dict):
         _rewrite_task_defaults_paths(task_defaults, project_dir)
+
+
+def _anchor_seed_paths(assets_data: dict, project_dir: Path) -> None:
+    """Rewrite every ``assets.seeds.<name>`` entry so its path is
+    absolute under *project_dir*. Handles both authoring shapes: the
+    full ``{path, kind, ...}`` dict and the bare-string shorthand.
+    In-place; no-op when ``seeds`` is absent or an entry is already
+    absolute.
+
+    Runs before Pydantic constructs :class:`SeedRef`, so the model
+    receives an anchored path. Bare-string shorthand is preserved as a
+    string here — :class:`SeedRef`'s ``mode="before"`` normaliser
+    coerces it to the dict form after anchoring.
+    """
+    seeds = assets_data.get("seeds")
+    if not isinstance(seeds, dict):
+        return
+    for name, entry in seeds.items():
+        if isinstance(entry, str):
+            resolved = Path(entry)
+            if not resolved.is_absolute():
+                seeds[name] = str((project_dir / resolved).resolve())
+        elif isinstance(entry, dict):
+            path = entry.get("path")
+            if isinstance(path, str) and path:
+                resolved = Path(path)
+                if not resolved.is_absolute():
+                    entry["path"] = str((project_dir / resolved).resolve())
 
 
 def _anchor_stack_compose_file(env_patch: dict, anchor_dir: Path) -> None:
@@ -300,7 +331,41 @@ def load_effective_run_config(
     else:
         project = synthesize_default_project(project_root=config_path.parent)
     merged = resolve_effective_run_config_data(project, config_data)
+    validate_actor_roster_subset_of_models(project, merged)
     return merged, project
+
+
+def validate_actor_roster_subset_of_models(
+    project: ProjectConfig,
+    merged_run_config: dict[str, Any],
+) -> None:
+    """Every ``actors.<name>`` declaration with ``mode == "llm"`` must
+    have a matching entry in the resolved ``models`` dict.
+
+    Raises ``ValueError`` naming the missing model(s). Runs after
+    ``project.run_defaults`` merges into the selected run config —
+    that's the only point where a project-side actor roster and the
+    run-side model roster are both visible.
+
+    A ``None`` roster (project sets no ``actors``) is a no-op. Actor
+    entries without ``mode == "llm"`` are ignored — scripted actors
+    don't need a model. This is a schema-time cross-check; runtime
+    binding lives in the actor rename milestone.
+    """
+    actors = project.task_defaults.actors
+    if not actors:
+        return
+    models = merged_run_config.get("models") or {}
+    if not isinstance(models, dict):
+        return
+    missing = sorted(
+        name for name, spec in actors.items() if spec.mode == "llm" and name not in models
+    )
+    if missing:
+        raise ValueError(
+            f"Actor roster references models {missing!r} that are not declared "
+            f"under `models`; declared: {sorted(models)!r}."
+        )
 
 
 # ── Environment resolve ────────────────────────────────────────────────

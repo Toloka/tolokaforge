@@ -570,11 +570,15 @@ class SecurityContext(BaseModel):
     these to every service that does not override them in the compose file.
     """
 
-    run_as_user: int | None = None
-    """UID the container process runs as. ``None`` defers to the image default."""
+    run_as_user: int | str | None = None
+    """UID or username the container process runs as. ``None`` defers to
+    the image default. A username (e.g. ``"toloka"``) is resolved to a
+    numeric UID by the substrate at materialisation time — some
+    substrates (k8s ``runAsUser``) require the numeric form."""
 
-    run_as_group: int | None = None
-    """GID the container process runs as. ``None`` defers to the image default."""
+    run_as_group: int | str | None = None
+    """GID or group name the container process runs as. ``None`` defers
+    to the image default. Same resolution rules as ``run_as_user``."""
 
     read_only_root_filesystem: bool = False
     """When ``True``, the container's root filesystem is mounted read-only.
