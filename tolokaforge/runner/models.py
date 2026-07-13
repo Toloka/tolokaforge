@@ -687,8 +687,7 @@ def _check_safe_bind_mounts(services: dict[str, dict[str, Any]]) -> None:
         volumes = body["volumes"]
         if not isinstance(volumes, list):
             raise ValueError(
-                f"compose service {name!r}: `volumes:` must be a list; got "
-                f"{type(volumes).__name__}"
+                f"compose service {name!r}: `volumes:` must be a list; got {type(volumes).__name__}"
             )
         for idx, entry in enumerate(volumes):
             source = _bind_mount_source(entry)
@@ -832,25 +831,135 @@ def _check_initial_state_keys(
             )
 
 
-class EnvironmentManifest(BaseModel):
-    """Points at a Docker Compose file that declares the per-trial environment.
+class StackPatch(BaseModel):
+    """Substrate slot inside an :class:`EnvironmentPatch`.
 
-    The compose file is the source of truth for service topology (images,
-    ports, volumes, health probes, depends_on, resources). This model adds
-    the engine-specific fields the provisioner needs (which service is the
-    runner, how the initial state fixtures apply, the network posture, the
-    security-context defaults) and runs safety validators against the
-    compose contents at construction time.
+    Groups the compose-file pointer with the runner-service name and
+    the compose-input substitutions scoped to that specific file. All
+    fields optional so a task patch can touch a single sub-field
+    (``inputs``, ``runner_service``) without triggering the atomic
+    ``stack`` replacement rule described in
+    :func:`tolokaforge.core.project_loader.resolve`.
+    """
+
+    compose_file: Path | None = None
+    """Path to the docker-compose file. Anchored to the file that
+    declared it — the project directory for project patches, the task
+    directory for task patches — by the loader before this patch is
+    constructed."""
+
+    runner_service: str | None = None
+    """Name of the compose service that runs the agent. ``None`` in a
+    patch means inherit; :func:`resolve` falls back to ``"default"``
+    when the merged patch leaves this unset."""
+
+    inputs: dict[str, str] = Field(default_factory=dict)
+    """Compose-file variable substitutions scoped to ``compose_file``.
+    Passed through to the runtime backend at compose-up time; the
+    compose file's ``${var}`` slots resolve against this mapping."""
+
+    model_config = {"extra": "forbid"}
+
+
+class EnvironmentPatch(BaseModel):
+    """Per-project or per-task environment declaration — an all-optional
+    input shape that :func:`tolokaforge.core.project_loader.resolve`
+    binds to an :class:`EnvironmentManifest`.
+
+    Every field is optional so ``ProjectConfig.default_environment`` and
+    ``TaskConfig.environment_manifest`` share the same type and compose
+    on merge: a task that touches only ``stack.inputs`` inherits the
+    rest from the project. Patches perform no filesystem I/O at
+    construction time; the disk-touching validators live on the
+    :class:`EnvironmentManifest` output type.
+    """
+
+    stack: StackPatch | None = None
+    """Substrate slot — see :class:`StackPatch`. A task patch that sets
+    ``stack.compose_file`` replaces the project's whole ``stack``
+    atomically (clean slate of ``inputs`` and ``runner_service``); a
+    task patch that touches only ``stack.inputs`` /
+    ``stack.runner_service`` deep-merges."""
+
+    initial_state: dict[str, InitialStateRef] | None = None
+    """Per-service fixture-copy operations. Discarded on atomic
+    ``stack`` replacement (fixtures are scoped to the replaced
+    substrate)."""
+
+    network_policy: NetworkPolicy | None = None
+    """Network posture the provisioner is asked to enforce. Survives
+    atomic ``stack`` replacement (policy request, substrate-neutral)."""
+
+    security_context_defaults: SecurityContext | None = None
+    """Security defaults applied to services that do not override them.
+    Survives atomic ``stack`` replacement (policy request,
+    substrate-neutral)."""
+
+    isolation: TaskIsolation | None = None
+    """Isolation requirement. Discarded on atomic ``stack`` replacement
+    (the project's opt-out reviewed the project's services, not the
+    replacement stack — a task-local stack declares its own
+    ``shared_ok`` explicitly if it wants it)."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_flat_stack_fields(cls, data: Any) -> Any:
+        """Accept legacy ``compose_file`` / ``runner_service`` at the
+        patch top level; normalise into ``stack``. Emits a
+        ``DeprecationWarning`` when the legacy shape is used."""
+        if not isinstance(data, dict):
+            return data
+        legacy_keys = {k for k in ("compose_file", "runner_service") if k in data}
+        if not legacy_keys:
+            return data
+        stack = dict(data.get("stack") or {})
+        for key in sorted(legacy_keys):
+            if key in stack:
+                raise ValueError(
+                    f"EnvironmentPatch: both flat {key!r} and stack.{key} declared; "
+                    "the flat form is legacy — declare it only under stack."
+                )
+            stack[key] = data.pop(key)
+        data["stack"] = stack
+        import warnings
+
+        warnings.warn(
+            "EnvironmentPatch: flat compose_file / runner_service at the "
+            "top level is legacy; move under 'stack:'.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return data
+
+
+class EnvironmentManifest(BaseModel):
+    """Resolved per-trial environment — the output of
+    :func:`tolokaforge.core.project_loader.resolve`.
+
+    Produced by binding a project-side and task-side
+    :class:`EnvironmentPatch` pair; consumers (runtime backends,
+    orchestrator, docker stack materialiser) read it directly. The
+    compose file is the source of truth for service topology (images,
+    ports, volumes, health probes, depends_on, resources); this model
+    adds the engine-specific fields the provisioner needs and runs
+    safety validators against the compose contents at construction
+    time.
     """
 
     compose_file: Path
-    """Path to the docker-compose file. Absolute if resolved by a task
-    loader; relative paths are resolved against the current working
-    directory at construction time."""
+    """Path to the docker-compose file. Always absolute — the resolver
+    anchors it to the file that declared it before constructing the
+    manifest."""
 
     runner_service: str = "default"
     """Which compose service is the agent runner. Must be declared in
     the compose file's ``services:`` mapping."""
+
+    stack_inputs: dict[str, str] = Field(default_factory=dict)
+    """Compose-file variable substitutions carried through from
+    :class:`StackPatch.inputs`. Runtime backends pass these to
+    ``docker compose`` as environment values so ``${var}`` slots in
+    the compose file resolve at up-time."""
 
     initial_state: dict[str, InitialStateRef] = Field(default_factory=dict)
     """Fixture-copy operations, keyed by service name."""

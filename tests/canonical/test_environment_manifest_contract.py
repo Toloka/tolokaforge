@@ -441,6 +441,7 @@ class TestManifestWireShape:
         assert set(wire) == {
             "compose_file",
             "runner_service",
+            "stack_inputs",
             "initial_state",
             "network_policy",
             "security_context_defaults",

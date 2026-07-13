@@ -173,15 +173,18 @@ def load_task_yaml(
 
 
 def _resolve_environment_manifest_paths(task_data: dict, task_root: Path, task_path: Path) -> None:
-    """Rewrite ``environment_manifest.compose_file`` to an absolute path
-    when it appears as a task-relative string. In-place edit on the
-    ``task_data`` dict before Pydantic constructs :class:`TaskConfig`.
+    """Rewrite ``environment_manifest.stack.compose_file`` (canonical)
+    or the legacy flat ``environment_manifest.compose_file`` to an
+    absolute path when the value is a task-relative string. In-place
+    edit on the ``task_data`` dict before Pydantic constructs
+    :class:`TaskConfig`, so ``EnvironmentPatch``'s legacy-shape
+    normaliser sees an anchored path.
 
     Raises :class:`RuntimeError` with the offending ``task_path`` when
-    ``environment_manifest`` or ``compose_file`` is present but shaped
-    wrong — matches the loader's fail-loud pattern for corrupt YAML
-    instead of deferring to a generic Pydantic error at ``TaskConfig``
-    construction, which loses the file / field context.
+    the field is present but shaped wrong — matches the loader's
+    fail-loud pattern for corrupt YAML instead of deferring to a
+    generic Pydantic error at ``TaskConfig`` construction, which loses
+    the file / field context.
     """
     if "environment_manifest" not in task_data:
         return
@@ -191,18 +194,32 @@ def _resolve_environment_manifest_paths(task_data: dict, task_root: Path, task_p
             f"Task file {task_path}: 'environment_manifest' must be a YAML mapping "
             f"(got {type(manifest).__name__})"
         )
-    if "compose_file" not in manifest:
-        return
-    compose_file = manifest["compose_file"]
-    if not isinstance(compose_file, str):
-        raise RuntimeError(
-            f"Task file {task_path}: 'environment_manifest.compose_file' must be a "
-            f"string (got {type(compose_file).__name__})"
-        )
-    resolved = Path(compose_file)
-    if not resolved.is_absolute():
-        resolved = (task_root / resolved).resolve()
-    manifest["compose_file"] = str(resolved)
+
+    stack = manifest.get("stack")
+    if isinstance(stack, dict) and "compose_file" in stack:
+        compose_file = stack["compose_file"]
+        if not isinstance(compose_file, str):
+            raise RuntimeError(
+                f"Task file {task_path}: "
+                f"'environment_manifest.stack.compose_file' must be a string "
+                f"(got {type(compose_file).__name__})"
+            )
+        resolved = Path(compose_file)
+        if not resolved.is_absolute():
+            resolved = (task_root / resolved).resolve()
+        stack["compose_file"] = str(resolved)
+
+    if "compose_file" in manifest:
+        compose_file = manifest["compose_file"]
+        if not isinstance(compose_file, str):
+            raise RuntimeError(
+                f"Task file {task_path}: 'environment_manifest.compose_file' must be a "
+                f"string (got {type(compose_file).__name__})"
+            )
+        resolved = Path(compose_file)
+        if not resolved.is_absolute():
+            resolved = (task_root / resolved).resolve()
+        manifest["compose_file"] = str(resolved)
 
 
 def _detect_task_root(task_path: Path) -> Path:

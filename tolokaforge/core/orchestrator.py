@@ -327,6 +327,12 @@ class Orchestrator:
             defaults = self.project.task_defaults.model_dump(exclude_defaults=True)
             if defaults:
                 params["project_task_defaults"] = defaults
+            # Forward the project's default_environment patch so the adapter
+            # can bind it to each task's own environment patch via
+            # ``project_loader.resolve`` and hand the resulting
+            # ``EnvironmentManifest`` to ``TaskDescription``.
+            if self.project.default_environment is not None:
+                params["project_default_environment"] = self.project.default_environment
 
         self.logger.info("Creating adapter", type=adapter_type, params=params)
         return get_adapter(adapter_type, params)

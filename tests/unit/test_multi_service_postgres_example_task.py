@@ -18,7 +18,8 @@ import pytest
 import yaml
 
 from tolokaforge.adapters._task_loader import load_task_yaml
-from tolokaforge.core.trial import EnvironmentManifest, TaskIsolation
+from tolokaforge.core.models import EnvironmentPatch
+from tolokaforge.core.trial import TaskIsolation
 
 pytestmark = pytest.mark.unit
 
@@ -62,7 +63,7 @@ class TestTaskYaml:
     def test_declares_environment_manifest(self) -> None:
         task_config, _ = load_task_yaml(_TASK_DIR / "task.yaml")
         assert task_config.environment_manifest is not None
-        assert isinstance(task_config.environment_manifest, EnvironmentManifest)
+        assert isinstance(task_config.environment_manifest, EnvironmentPatch)
 
     def test_isolation_is_shared_ok(self) -> None:
         task_config, _ = load_task_yaml(_TASK_DIR / "task.yaml")
@@ -70,9 +71,12 @@ class TestTaskYaml:
 
     def test_runner_service_matches_compose_declaration(self) -> None:
         task_config, _ = load_task_yaml(_TASK_DIR / "task.yaml")
-        compose_body = yaml.safe_load(task_config.environment_manifest.compose_file.read_text())
+        stack = task_config.environment_manifest.stack
+        assert stack is not None
+        assert stack.compose_file is not None
+        compose_body = yaml.safe_load(stack.compose_file.read_text())
         declared_services = set(compose_body.get("services", {}).keys())
-        assert task_config.environment_manifest.runner_service in declared_services
+        assert stack.runner_service in declared_services
 
     def test_agent_tools_reach_api(self) -> None:
         task_config, _ = load_task_yaml(_TASK_DIR / "task.yaml")
