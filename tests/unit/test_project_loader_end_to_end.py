@@ -794,6 +794,56 @@ class TestEnvVarInterpolation:
         assert "${SHOULD_NOT_FIRE}" in merged["orchestrator"]["typesense"]
         assert "surprise" not in merged["orchestrator"]["typesense"]
 
+    def test_placeholder_in_list_value_substituted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The walker recurses lists; pin the list-branch positively so
+        # a future refactor to the walker can't silently break list-
+        # of-strings substitution (a shape real packs use for
+        # ``evaluation.projects`` when parameterising by env).
+        monkeypatch.setenv("PACK_ROOT", "/abs/packs")
+        _write_yaml(tmp_path / "project.yaml", {"name": "p"})
+        run_cfg = tmp_path / "run_configs" / "dev.yaml"
+        _write_yaml(
+            run_cfg,
+            {
+                "models": {"user": {"provider": "openai", "name": "gpt-4o"}},
+                "evaluation": {
+                    "output_dir": "results/x",
+                    "projects": ["${PACK_ROOT}/pack-a", "${PACK_ROOT}/pack-b"],
+                },
+            },
+        )
+        from tolokaforge.core.project_loader import load_effective_run_config
+
+        merged, _ = load_effective_run_config(run_cfg)
+        assert merged["evaluation"]["projects"] == [
+            "/abs/packs/pack-a",
+            "/abs/packs/pack-b",
+        ]
+
+    def test_input_dict_not_mutated(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The public helper's contract says the input tree is not
+        # mutated — a caller who kept a reference to the raw dict must
+        # still see it verbatim after the interpolation returns. Pin
+        # via an isolated helper call rather than through the loader
+        # (loader wraps everything in a fresh dict via deep_merge).
+        import copy
+
+        from tolokaforge.core.project_loader import _interpolate_env_vars
+
+        monkeypatch.setenv("VAL", "resolved")
+        original = {
+            "root": "${VAL}/x",
+            "nested": {"leaf": "prefix-${VAL}"},
+            "list_of_strings": ["a", "${VAL}"],
+        }
+        snapshot = copy.deepcopy(original)
+        result = _interpolate_env_vars(original, source_path=tmp_path / "x.yaml")
+        assert original == snapshot, "input dict was mutated"
+        assert result is not original
+        assert result["root"] == "resolved/x"
+
     def test_multiple_missing_vars_reported_together(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

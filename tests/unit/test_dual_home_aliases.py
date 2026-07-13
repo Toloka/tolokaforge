@@ -88,6 +88,23 @@ class TestComputeWorkersAlias:
         # OrchestratorConfig.workers default is 8; compute.workers is None.
         assert cfg.effective_workers == 8
 
+    def test_cli_workers_write_to_compute_no_warning(self) -> None:
+        # The `--workers` CLI flag writes to canonical `compute.workers`
+        # (see tolokaforge.cli.main:run). Pin that writing there does
+        # NOT fire the dual-home DeprecationWarning — the alias-lift
+        # only warns when `orchestrator.workers` is set. A regression
+        # here would silently ship the warning on every CLI-driven run.
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            cfg = RunConfig(**_base(compute={"workers": 4}))
+        assert cfg.effective_workers == 4
+        assert cfg.compute is not None
+        assert cfg.compute.workers == 4
+        assert not any(
+            issubclass(w.category, DeprecationWarning) and "orchestrator.workers" in str(w.message)
+            for w in caught
+        )
+
     def test_object_form_orchestrator_bypasses_lift(self) -> None:
         # Regression pin: the alias-lift only fires on dict-form inputs
         # (production YAML load). Object-form callers who construct
