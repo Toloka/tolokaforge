@@ -82,7 +82,9 @@ class ReadFileTool(Tool):
             # Ensure path is within allowed directory
             requested = self._normalize_requested_path(path)
             full_path = (self.base_path / requested).resolve()
-            if not str(full_path).startswith(str(self.base_path.resolve())):
+            try:
+                full_path.relative_to(self.base_path.resolve())
+            except ValueError:
                 return ToolResult(
                     success=False,
                     output="",
@@ -200,7 +202,9 @@ class WriteFileTool(Tool):
             # Ensure path is within allowed directory
             requested = self._normalize_requested_path(path)
             full_path = (self.base_path / requested).resolve()
-            if not str(full_path).startswith(str(self.base_path.resolve())):
+            try:
+                full_path.relative_to(self.base_path.resolve())
+            except ValueError:
                 return ToolResult(
                     success=False,
                     output="",
@@ -281,7 +285,9 @@ class ListDirTool(Tool):
             # Ensure path is within allowed directory
             requested = self._normalize_requested_path(path)
             full_path = (self.base_path / requested).resolve()
-            if not str(full_path).startswith(str(self.base_path.resolve())):
+            try:
+                full_path.relative_to(self.base_path.resolve())
+            except ValueError:
                 return ToolResult(
                     success=False,
                     output="",

@@ -39,6 +39,7 @@ from tolokaforge.secrets import SecretManager, init_default_from, install_global
 DEFAULT_DB_SERVICE_URL = "http://localhost:8000"
 DEFAULT_RAG_SERVICE_URL = "http://localhost:8001"
 DEFAULT_RUNNER_PORT = 50051
+DEFAULT_MCP_GATEWAY_PORT = 8765
 DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_MAX_WORKERS = 10
 
@@ -106,6 +107,7 @@ def get_config() -> dict:
         "db_service_url": os.environ.get("DB_SERVICE_URL", DEFAULT_DB_SERVICE_URL),
         "rag_service_url": os.environ.get("RAG_SERVICE_URL", DEFAULT_RAG_SERVICE_URL),
         "runner_port": int(os.environ.get("RUNNER_PORT", DEFAULT_RUNNER_PORT)),
+        "mcp_gateway_port": int(os.environ.get("MCP_GATEWAY_PORT", DEFAULT_MCP_GATEWAY_PORT)),
         "log_level": os.environ.get("LOG_LEVEL", DEFAULT_LOG_LEVEL),
         "max_workers": int(os.environ.get("MAX_WORKERS", DEFAULT_MAX_WORKERS)),
     }
@@ -127,6 +129,7 @@ class RunnerServer:
         port: int,
         max_workers: int = DEFAULT_MAX_WORKERS,
         rag_service_url: str | None = None,
+        mcp_gateway_port: int = DEFAULT_MCP_GATEWAY_PORT,
     ):
         """
         Initialize the Runner server.
@@ -141,10 +144,12 @@ class RunnerServer:
         self.rag_service_url = rag_service_url
         self.port = port
         self.max_workers = max_workers
+        self.mcp_gateway_port = mcp_gateway_port
         self.server: grpc.Server | None = None
         self.db_client: DBServiceClient | None = None
         self.rag_client: RAGServiceClient | None = None
         self.service: RunnerServiceImpl | None = None
+        self.mcp_gateway = None
         self._shutdown_event = asyncio.Event()
         self.logger = logging.getLogger(__name__)
 
@@ -167,8 +172,19 @@ class RunnerServer:
             self.rag_client = RAGServiceClient(self.rag_service_url)
             self.logger.info("RAG client initialized")
 
+        # Create the authenticated streamable-HTTP gateway before the service
+        # so trial registration can allocate namespaces immediately.
+        from tolokaforge.runner.mcp_gateway import RunnerMCPGateway
+
+        self.mcp_gateway = RunnerMCPGateway(port=self.mcp_gateway_port)
+        self.mcp_gateway.start()
+
         # Create service implementation
-        self.service = RunnerServiceImpl(self.db_client, self.rag_client)
+        self.service = RunnerServiceImpl(
+            self.db_client,
+            self.rag_client,
+            mcp_gateway=self.mcp_gateway,
+        )
 
         # Create gRPC server
         self.server = grpc.server(
@@ -234,6 +250,13 @@ class RunnerServer:
             self.logger.info(f"Stopping gRPC server (grace period: {grace_period}s)...")
             self.server.stop(grace_period)
 
+        if self.mcp_gateway:
+            self.logger.info("Stopping Runner MCP gateway...")
+            self.mcp_gateway.stop()
+
+        if self.service:
+            self.service.shutdown()
+
         # Close DB client
         if self.db_client:
             self.logger.info("Closing DB client...")
@@ -279,6 +302,7 @@ async def run_server() -> None:
     logger.info(f"  DB Service URL: {config['db_service_url']}")
     logger.info(f"  RAG Service URL: {config['rag_service_url']}")
     logger.info(f"  Runner Port: {config['runner_port']}")
+    logger.info(f"  MCP Gateway Port: {config['mcp_gateway_port']}")
     logger.info(f"  Log Level: {config['log_level']}")
     logger.info(f"  Max Workers: {config['max_workers']}")
     logger.info("=" * 60)
@@ -288,6 +312,7 @@ async def run_server() -> None:
         db_service_url=config["db_service_url"],
         port=config["runner_port"],
         max_workers=config["max_workers"],
+        mcp_gateway_port=config["mcp_gateway_port"],
         rag_service_url=config["rag_service_url"],
     )
 

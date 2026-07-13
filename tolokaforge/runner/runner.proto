@@ -28,6 +28,9 @@ service RunnerService {
   // Get current state snapshot - for debugging
   rpc GetState(GetStateRequest) returns (GetStateResponse);
 
+  // Retrieve the authoritative server-side tool ledger before cleanup
+  rpc GetTrialHistory(GetTrialHistoryRequest) returns (GetTrialHistoryResponse);
+
   // Reset trial state to initial - for retries
   rpc ResetTrial(ResetTrialRequest) returns (ResetTrialResponse);
 
@@ -58,6 +61,10 @@ message RegisterTrialRequest {
 
   // Optional: Override timeout for tool execution (seconds)
   double default_tool_timeout_s = 3;
+
+  // Optional Runner-local per-trial workspace. Harness callers must use an
+  // absolute child of /workspaces; empty preserves the legacy /work layout.
+  string workspace_path = 4;
 }
 
 message RegisterTrialResponse {
@@ -77,6 +84,15 @@ message RegisterTrialResponse {
 
   // Number of user tools registered (for dual-control scenarios)
   int32 num_user_tools = 5;
+
+  // Per-trial streamable-HTTP MCP endpoint for BYOH agent containers.
+  // Empty when the Runner gateway is disabled.
+  string mcp_gateway_url = 6;
+
+  // Ephemeral bearer token accepted only by this trial namespace.
+  // Returned to the host for direct injection into the harness container;
+  // never persisted in task or trial artifacts.
+  string mcp_bearer_token = 7;
 }
 
 // Tool schema in OpenAI function calling format
@@ -267,6 +283,20 @@ message GetStateResponse {
 
   // Full state hash (including unstable fields)
   string full_hash = 5;
+}
+
+// =============================================================================
+// GetTrialHistory - Retrieve the server-side tool ledger
+// =============================================================================
+
+message GetTrialHistoryRequest {
+  string trial_id = 1;
+}
+
+message GetTrialHistoryResponse {
+  bool success = 1;
+  string error = 2;
+  string tool_history_json = 3;
 }
 
 // =============================================================================

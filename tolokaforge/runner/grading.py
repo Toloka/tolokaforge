@@ -444,6 +444,7 @@ def _evaluate_max_turns(rule: dict[str, Any], messages: list[dict[str, Any]]) ->
 
 def evaluate_jsonpath_file_checks(
     checks: list[dict[str, Any]],
+    workspace_path: str = "/work",
 ) -> tuple[float, str]:
     """
     Evaluate jsonpath file assertions against the Runner container's filesystem.
@@ -505,9 +506,15 @@ def evaluate_jsonpath_file_checks(
         # the same place.
         resolved_pattern = path_pattern
         if resolved_pattern.startswith("/env/fs/agent-visible/"):
-            resolved_pattern = "/work/" + resolved_pattern[len("/env/fs/agent-visible/") :]
+            resolved_pattern = str(
+                Path(workspace_path) / resolved_pattern[len("/env/fs/agent-visible/") :]
+            )
         elif resolved_pattern == "/env/fs/agent-visible":
-            resolved_pattern = "/work"
+            resolved_pattern = workspace_path
+        elif resolved_pattern.startswith("/work/"):
+            resolved_pattern = str(Path(workspace_path) / resolved_pattern[len("/work/") :])
+        elif resolved_pattern == "/work":
+            resolved_pattern = workspace_path
 
         # Glob for matching files on the container filesystem
         matching_files = glob.glob(resolved_pattern)
@@ -644,6 +651,7 @@ def evaluate_jsonpath_state_checks(
 def evaluate_jsonpath_checks(
     checks: list[dict[str, Any]],
     state: dict[str, Any] | None = None,
+    workspace_path: str = "/work",
 ) -> tuple[float, str]:
     """
     Evaluate mixed JSONPath checks.
@@ -671,7 +679,9 @@ def evaluate_jsonpath_checks(
     reasons_parts: list[str] = []
 
     if file_checks:
-        file_score, file_reasons = evaluate_jsonpath_file_checks(file_checks)
+        file_score, file_reasons = evaluate_jsonpath_file_checks(
+            file_checks, workspace_path=workspace_path
+        )
         if file_score >= 0:
             passed += file_score * len(file_checks)
         if file_reasons:

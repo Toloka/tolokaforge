@@ -63,6 +63,12 @@ class RunnerServiceStub:
             response_deserializer=runner__pb2.GetStateResponse.FromString,
             _registered_method=True,
         )
+        self.GetTrialHistory = channel.unary_unary(
+            "/tolokaforge.runner.RunnerService/GetTrialHistory",
+            request_serializer=runner__pb2.GetTrialHistoryRequest.SerializeToString,
+            response_deserializer=runner__pb2.GetTrialHistoryResponse.FromString,
+            _registered_method=True,
+        )
         self.ResetTrial = channel.unary_unary(
             "/tolokaforge.runner.RunnerService/ResetTrial",
             request_serializer=runner__pb2.ResetTrialRequest.SerializeToString,
@@ -120,6 +126,12 @@ class RunnerServiceServicer:
         context.set_details("Method not implemented!")
         raise NotImplementedError("Method not implemented!")
 
+    def GetTrialHistory(self, request, context):
+        """Retrieve the authoritative server-side tool ledger before cleanup"""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
+
     def ResetTrial(self, request, context):
         """Reset trial state to initial - for retries"""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
@@ -164,6 +176,11 @@ def add_RunnerServiceServicer_to_server(servicer, server):
             servicer.GetState,
             request_deserializer=runner__pb2.GetStateRequest.FromString,
             response_serializer=runner__pb2.GetStateResponse.SerializeToString,
+        ),
+        "GetTrialHistory": grpc.unary_unary_rpc_method_handler(
+            servicer.GetTrialHistory,
+            request_deserializer=runner__pb2.GetTrialHistoryRequest.FromString,
+            response_serializer=runner__pb2.GetTrialHistoryResponse.SerializeToString,
         ),
         "ResetTrial": grpc.unary_unary_rpc_method_handler(
             servicer.ResetTrial,
@@ -305,6 +322,36 @@ class RunnerService:
             "/tolokaforge.runner.RunnerService/GetState",
             runner__pb2.GetStateRequest.SerializeToString,
             runner__pb2.GetStateResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True,
+        )
+
+    @staticmethod
+    def GetTrialHistory(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            "/tolokaforge.runner.RunnerService/GetTrialHistory",
+            runner__pb2.GetTrialHistoryRequest.SerializeToString,
+            runner__pb2.GetTrialHistoryResponse.FromString,
             options,
             channel_credentials,
             insecure,

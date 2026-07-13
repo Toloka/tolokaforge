@@ -125,7 +125,7 @@ class ToolWrapper(ABC):
     # lifecycle off this capability, never off the adapter type.
     has_lifecycle: bool = False
 
-    def __init__(self, tool_schema: ToolSchemaModel):
+    def __init__(self, tool_schema: ToolSchemaModel, work_dir: str = "/work"):
         self.tool_schema = tool_schema
         self.name = tool_schema.name
         self.timeout_s = tool_schema.timeout_s
@@ -684,21 +684,19 @@ class BuiltinFileToolWrapper(ToolWrapper):
     implementations directly — no subprocess needed.
     """
 
-    def __init__(self, tool_schema: ToolSchemaModel):
+    def __init__(self, tool_schema: ToolSchemaModel, work_dir: str = "/work"):
         super().__init__(tool_schema)
         from tolokaforge.tools.builtin.files import ListDirTool, ReadFileTool, WriteFileTool
 
-        # base_path = /work so the file tools target the same directory as
-        # BashTool's workdir and the runner's filesystem-provisioning code
-        # (see service.py RegisterTrial). Without this, read_file looks at
-        # /env/fs/agent-visible/X but the runner wrote to /work/X.
-        WORK_DIR = "/work"
+        # File tools share the exact per-trial root used by provisioning and
+        # BashTool. Legacy registrations pass /work; harness registrations
+        # pass an isolated child of /workspaces.
         if tool_schema.name == "read_file":
-            self._tool = ReadFileTool(base_path=WORK_DIR)
+            self._tool = ReadFileTool(base_path=work_dir)
         elif tool_schema.name == "write_file":
-            self._tool = WriteFileTool(base_path=WORK_DIR)
+            self._tool = WriteFileTool(base_path=work_dir)
         elif tool_schema.name == "list_dir":
-            self._tool = ListDirTool(base_path=WORK_DIR)
+            self._tool = ListDirTool(base_path=work_dir)
         else:
             raise ToolConfigurationError(
                 tool_schema.name,
@@ -733,7 +731,7 @@ class BuiltinGenericToolWrapper(ToolWrapper):
     ``ToolSchema.tool_config``.
     """
 
-    def __init__(self, tool_schema: ToolSchemaModel):
+    def __init__(self, tool_schema: ToolSchemaModel, work_dir: str = "/work"):
         super().__init__(tool_schema)
         import inspect
 
@@ -757,7 +755,11 @@ class BuiltinGenericToolWrapper(ToolWrapper):
         # filter would mask YAML typos as runtime quirks). The error
         # enumerates the kwargs the tool actually accepts so the
         # caller can spot the typo at trial registration.
-        tool_config = tool_schema.tool_config or {}
+        tool_config = dict(tool_schema.tool_config or {})
+        if tool_schema.name == "bash":
+            # The Runner owns the workdir selection. Task-authored aliases such
+            # as /work must not redirect a harness trial into another workspace.
+            tool_config["workdir"] = work_dir
         valid_kwargs = {p for p in inspect.signature(cls.__init__).parameters if p != "self"}
         unknown = set(tool_config) - valid_kwargs
         if unknown:
@@ -1002,12 +1004,14 @@ class DockerComposeExecToolWrapper(ToolWrapper):
         compose_file: str,
         task_dir: str,
         service: str = "main",
+        tests_dir: str = "tests",
         env_vars: dict[str, str] | None = None,
     ):
         super().__init__(tool_schema)
         self.compose_file = compose_file
         self.task_dir = task_dir
         self.service = service
+        self.tests_dir = tests_dir
         self.env_vars = env_vars or {}
         self.project_name: str | None = None
         self._started = False
@@ -1082,7 +1086,7 @@ class DockerComposeExecToolWrapper(ToolWrapper):
 
         # Copy tests/ and run-tests.sh into the container (Harbor does this too).
         task_dir = self.task_dir
-        tests_src = os.path.join(task_dir, "tests")
+        tests_src = os.path.join(task_dir, self.tests_dir)
         run_tests_src = os.path.join(task_dir, "run-tests.sh")
         env = {**os.environ, **self.env_vars}
 
@@ -1173,6 +1177,7 @@ class ToolFactory:
         rag_client: RAGServiceClient | None = None,
         db_table_names: list[str] | None = None,
         initial_state_data: dict[str, list[dict]] | None = None,
+        work_dir: str = "/work",
     ):
         """
         Initialize the tool factory.
@@ -1185,12 +1190,14 @@ class ToolFactory:
                            These are the source of truth for table name registration.
             initial_state_data: Optional dict mapping table names to their records.
                                Used for ID field matching during model registration.
+            work_dir: Per-trial filesystem root for builtin file and bash tools.
         """
         self.db_client = db_client
         self.trial_id = trial_id
         self.rag_client = rag_client
         self.db_table_names = db_table_names or []
         self._initial_state_data = initial_state_data or {}
+        self.work_dir = work_dir
         self._claimed_tables: set[str] = set()
 
         # Create DB proxies for tools
@@ -1271,8 +1278,8 @@ class ToolFactory:
             if dispatch is builtin_registry.Dispatch.RAG:
                 return self._create_rag_search_wrapper(schema)
             if dispatch is builtin_registry.Dispatch.FILES:
-                return BuiltinFileToolWrapper(schema)
-            return BuiltinGenericToolWrapper(schema)
+                return BuiltinFileToolWrapper(schema, self.work_dir)
+            return BuiltinGenericToolWrapper(schema, self.work_dir)
 
         source = schema.source
         style = source.invocation_style
@@ -1627,6 +1634,7 @@ class ToolFactory:
             compose_file=compose_file,
             task_dir=task_dir,
             service=extra.get("service", "main"),
+            tests_dir=extra.get("tests_dir", "tests"),
             env_vars=extra.get("env_vars", {}),
         )
 

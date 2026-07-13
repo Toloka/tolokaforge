@@ -17,6 +17,7 @@ Usage:
 """
 
 import asyncio
+import hashlib
 import inspect
 import json
 import logging
@@ -75,6 +76,7 @@ logger = logging.getLogger(__name__)
 
 # Service version
 SERVICE_VERSION = "1.0.0"
+WORKSPACES_ROOT = Path("/workspaces")
 
 
 # =============================================================================
@@ -107,6 +109,7 @@ class TrialContextRuntime:
         trial_id: str,
         task_description: TaskDescription,
         default_timeout: float = 30.0,
+        workspace_path: str = "/work",
     ):
         self.trial_id = trial_id
         self.task_description = task_description
@@ -114,6 +117,7 @@ class TrialContextRuntime:
         self.user_tools: dict[str, Callable] = {}
         self.tool_call_history: list[ToolCallRecord] = []
         self.default_timeout = default_timeout
+        self.workspace_path = workspace_path
 
     @property
     def grading_config(self):
@@ -160,6 +164,7 @@ class TrialContextRuntime:
             arguments=arguments,
             executor=executor,
             output=output,
+            result_hash=hashlib.sha256(output.encode("utf-8")).hexdigest(),
             status=status,
             latency_seconds=latency_seconds,
             timestamp=datetime.now(timezone.utc).isoformat(),
@@ -197,6 +202,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         self,
         db_client: DBServiceClient,
         rag_client: RAGServiceClient | None = None,
+        mcp_gateway: Any | None = None,
     ):
         """
         Initialize the Runner service.
@@ -207,6 +213,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         """
         self.db_client = db_client
         self.rag_client = rag_client
+        self.mcp_gateway = mcp_gateway
         self.trials: dict[str, TrialContextRuntime] = {}
         # Report the adapters actually registered (built-in + entry-point plugins),
         # not a hardcoded list, so capabilities reflect what's installed.
@@ -287,7 +294,13 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
     # Tool artifact extraction
     # =========================================================================
 
-    def _extract_tool_artifacts(self, trial_id: str, artifacts: dict[str, str]) -> Path:
+    def _extract_tool_artifacts(
+        self,
+        trial_id: str,
+        artifacts: dict[str, str],
+        *,
+        shared_with_docker: bool = False,
+    ) -> Path:
         """Extract base64-encoded tool artifacts to a temp directory.
 
         Adds the temp directory to sys.path so tool modules can be imported.
@@ -303,7 +316,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         import tempfile
 
         safe_trial_id = trial_id.replace(":", "_").replace("/", "_")
-        extract_dir = Path(tempfile.mkdtemp(prefix=f"tolokaforge-artifacts-{safe_trial_id}-"))
+        shared_root = Path("/workspace")
+        parent = str(shared_root) if shared_with_docker and shared_root.is_dir() else None
+        extract_dir = Path(
+            tempfile.mkdtemp(prefix=f"tolokaforge-artifacts-{safe_trial_id}-", dir=parent)
+        )
 
         for rel_path, b64_content in artifacts.items():
             out_path = extract_dir / rel_path
@@ -389,6 +406,32 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
     # RegisterTrial - Initialize trial with TaskDescription
     # =========================================================================
 
+    @staticmethod
+    def _resolve_workspace_path(requested_path: str) -> Path:
+        """Validate a harness workspace without weakening legacy registrations."""
+        if not requested_path:
+            return Path("/work")
+
+        requested = Path(requested_path)
+        if not requested.is_absolute():
+            raise ValueError("workspace_path must be absolute")
+        if not WORKSPACES_ROOT.is_dir():
+            raise ValueError(
+                "Runner workspace root /workspaces is unavailable; mount the run's "
+                "workspace directory into the Runner at /workspaces"
+            )
+
+        root = WORKSPACES_ROOT.resolve()
+        resolved = requested.resolve()
+        try:
+            resolved.relative_to(root)
+        except ValueError as exc:
+            raise ValueError("workspace_path must be a child of /workspaces") from exc
+        if resolved == root:
+            raise ValueError("workspace_path must identify a per-trial child of /workspaces")
+        resolved.mkdir(parents=True, exist_ok=True)
+        return resolved
+
     def RegisterTrial(
         self,
         request: pb2.RegisterTrialRequest,
@@ -413,6 +456,15 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         trial_id = request.trial_id
         logger.info(f"RegisterTrial: {trial_id}")
 
+        try:
+            workspace_path = self._resolve_workspace_path(request.workspace_path)
+        except (OSError, ValueError) as exc:
+            logger.error(f"RegisterTrial: Invalid workspace path: {exc}")
+            return pb2.RegisterTrialResponse(
+                success=False,
+                error=f"Invalid workspace_path: {exc}",
+            )
+
         # Parse TaskDescription JSON into Pydantic model (fail fast)
         try:
             task_dict = json.loads(request.task_description_json)
@@ -433,7 +485,19 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # Extract tool artifacts to temp directory if present
         artifacts_dir = None
         if task_description.tool_artifacts:
-            artifacts_dir = self._extract_tool_artifacts(trial_id, task_description.tool_artifacts)
+            from tolokaforge.runner.models import InvocationStyle
+
+            shared_with_docker = any(
+                tool.source is not None
+                and tool.source.invocation_style == InvocationStyle.DOCKER_COMPOSE_EXEC
+                and tool.source.extra.get("task_dir") == "__artifacts__"
+                for tool in task_description.agent_tools + task_description.user_tools
+            )
+            artifacts_dir = self._extract_tool_artifacts(
+                trial_id,
+                task_description.tool_artifacts,
+                shared_with_docker=shared_with_docker,
+            )
             logger.info(
                 f"Extracted {len(task_description.tool_artifacts)} tool artifacts "
                 f"to {artifacts_dir}"
@@ -456,10 +520,30 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             trial_id=trial_id,
             task_description=task_description,
             default_timeout=request.default_tool_timeout_s or 30.0,
+            workspace_path=str(workspace_path),
         )
 
         # Initialize DB Service with initial_state (FAIL FAST)
         initial_state = task_description.initial_state
+        if workspace_path != Path("/work"):
+            invalid_absolute_paths = [
+                path
+                for path in initial_state.filesystem
+                if path.startswith("/")
+                and path != "/work"
+                and not path.startswith("/work/")
+                and path != "/env/fs/agent-visible"
+                and not path.startswith("/env/fs/agent-visible/")
+            ]
+            if invalid_absolute_paths:
+                return pb2.RegisterTrialResponse(
+                    success=False,
+                    error=(
+                        "Filesystem provisioning for an isolated harness trial may only use "
+                        "/work or /env/fs/agent-visible paths: "
+                        + ", ".join(sorted(invalid_absolute_paths))
+                    ),
+                )
         try:
             # Run async operation on dedicated event loop thread
             self._run_async(
@@ -482,14 +566,12 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # Provision initial filesystem files (from initial_state.filesystem).
         #
         # Logical paths from task configs (``/env/fs/agent-visible/X``) are
-        # translated to the runner container's actual agent-visible directory
-        # (``/work/X``) so the agent's bash / read_file / write_file tools all
-        # find the file at the same place. ``/work`` is the BashTool default
-        # workdir and the base_path for the file tools.
+        # translated to this trial's agent-visible directory. Harness trials
+        # use a unique child of /workspaces; legacy trials retain /work.
         if initial_state.filesystem:
-            base_dir = Path("/work")
+            base_dir = workspace_path
             for dest_path, content in initial_state.filesystem.items():
-                # Translate logical path to runner-local /work/ path.
+                # Translate logical agent-visible aliases to the trial root.
                 if dest_path.startswith("/env/fs/agent-visible/"):
                     rel = dest_path[len("/env/fs/agent-visible/") :]
                     file_path = base_dir / rel
@@ -497,12 +579,29 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     # Bare directory — nothing to materialise; skip.
                     continue
                 elif dest_path.startswith("/work/"):
-                    file_path = Path(dest_path)
+                    file_path = base_dir / dest_path[len("/work/") :]
                 elif dest_path.startswith("/"):
-                    # Other absolute path — write literally (escape hatch).
+                    if workspace_path != Path("/work"):
+                        return pb2.RegisterTrialResponse(
+                            success=False,
+                            error=(
+                                "Filesystem provisioning for an isolated harness trial may "
+                                "only use /work or /env/fs/agent-visible paths: "
+                                f"{dest_path}"
+                            ),
+                        )
+                    # Preserve the legacy absolute-path escape hatch.
                     file_path = Path(dest_path)
                 else:
                     file_path = base_dir / dest_path
+                if workspace_path != Path("/work"):
+                    try:
+                        file_path.resolve().relative_to(base_dir.resolve())
+                    except ValueError:
+                        return pb2.RegisterTrialResponse(
+                            success=False,
+                            error=f"Filesystem path escapes the trial workspace: {dest_path}",
+                        )
                 try:
                     file_path.parent.mkdir(parents=True, exist_ok=True)
                     file_path.write_text(content, encoding="utf-8")
@@ -557,6 +656,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 rag_client_for_trial,
                 db_table_names,
                 initial_state_data,
+                str(workspace_path),
             )
 
             # Set domain on DB proxy so search_policy tools can resolve
@@ -609,10 +709,47 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     tool.start(lifecycle_ctx)
                 except Exception as e:
                     logger.error(f"RegisterTrial: Failed to start tool lifecycle: {e}")
+                    self._run_async(self.cleanup_trial(trial_id))
                     return pb2.RegisterTrialResponse(
                         success=False,
                         error=f"Tool lifecycle start failed: {e}",
                     )
+
+        mcp_registration = None
+        if self.mcp_gateway is not None:
+
+            async def execute_from_mcp(
+                tool_name: str, arguments: dict[str, Any]
+            ) -> tuple[str, bool]:
+                tool = trial_context.get_tool(tool_name, "agent")
+                if tool is None:
+                    return f"Tool {tool_name!r} not found", True
+                timeout_seconds = getattr(tool, "timeout_s", trial_context.default_timeout)
+                response = await self._execute_tool_async(
+                    trial_context=trial_context,
+                    tool=tool,
+                    tool_name=tool_name,
+                    arguments=arguments,
+                    executor="agent",
+                    timeout_seconds=timeout_seconds,
+                )
+                if response.status == pb2.EXECUTION_STATUS_SUCCESS:
+                    return response.output, False
+                return response.error_message, True
+
+            try:
+                mcp_registration = self.mcp_gateway.register(
+                    trial_id,
+                    [tool.model_dump() for tool in task_description.agent_tools],
+                    execute_from_mcp,
+                )
+            except Exception as e:
+                logger.error(f"RegisterTrial: Failed to register MCP gateway namespace: {e}")
+                self._run_async(self.cleanup_trial(trial_id))
+                return pb2.RegisterTrialResponse(
+                    success=False,
+                    error=f"MCP gateway registration failed: {e}",
+                )
 
         # Build tool schemas for response
         tool_schemas = []
@@ -647,6 +784,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             tool_schemas=tool_schemas,
             num_agent_tools=len(task_description.agent_tools),
             num_user_tools=len(task_description.user_tools),
+            mcp_gateway_url=mcp_registration.url if mcp_registration else "",
+            mcp_bearer_token=mcp_registration.bearer_token if mcp_registration else "",
         )
 
     # =========================================================================
@@ -1010,6 +1149,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             jsonpath_score, jsonpath_reasons = evaluate_jsonpath_checks(
                 jsonpath_checks,
                 state=jsonpath_state,
+                workspace_path=trial_context.workspace_path,
             )
             components.jsonpath_score = jsonpath_score
             components.jsonpath_reasons = jsonpath_reasons
@@ -1437,6 +1577,25 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             full_hash=full_hash,
         )
 
+    def GetTrialHistory(
+        self,
+        request: pb2.GetTrialHistoryRequest,
+        context: grpc.ServicerContext,
+    ) -> pb2.GetTrialHistoryResponse:
+        """Return the authoritative per-trial tool ledger as JSON."""
+        trial_context = self.trials.get(request.trial_id)
+        if trial_context is None:
+            return pb2.GetTrialHistoryResponse(
+                success=False,
+                error=f"Trial '{request.trial_id}' not found",
+            )
+        return pb2.GetTrialHistoryResponse(
+            success=True,
+            tool_history_json=json.dumps(
+                [record.model_dump(mode="json") for record in trial_context.tool_call_history]
+            ),
+        )
+
     # =========================================================================
     # Terminal-bench grading
     # =========================================================================
@@ -1772,9 +1931,19 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         """
         logger.info(f"Cleaning up trial: {trial_id}")
 
-        # Remove from local context
-        if trial_id in self.trials:
-            del self.trials[trial_id]
+        # Tear down per-trial resources before forgetting their wrappers.
+        trial_context = self.trials.pop(trial_id, None)
+        if self.mcp_gateway is not None:
+            self.mcp_gateway.unregister(trial_id)
+        if trial_context is not None:
+            for tool in list(trial_context.agent_tools.values()) + list(
+                trial_context.user_tools.values()
+            ):
+                if getattr(tool, "has_lifecycle", False):
+                    try:
+                        tool.cleanup()
+                    except Exception as e:
+                        logger.warning(f"Failed to clean up tool lifecycle: {e}")
 
         # Drop extracted tool artifacts (no-op if none were extracted)
         self._cleanup_trial_artifacts(trial_id)

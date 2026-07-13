@@ -11,6 +11,7 @@ This module contains all Pydantic models used by the Runner service:
 All models use Pydantic v2 BaseModel for validation and serialization.
 """
 
+import hashlib
 from datetime import datetime
 from enum import Enum
 from typing import Any, Literal
@@ -420,6 +421,7 @@ class ToolCallRecord(BaseModel):
     arguments: dict[str, Any]
     executor: str  # "agent" or "user"
     output: str
+    result_hash: str = ""
     status: str  # "success", "error", "timeout", "tool_not_found", "invalid_arguments"
     latency_seconds: float
     timestamp: str  # ISO format
@@ -502,6 +504,7 @@ class TrialContext(BaseModel):
             arguments=arguments,
             executor=executor,
             output=output,
+            result_hash=hashlib.sha256(output.encode("utf-8")).hexdigest(),
             status=status,
             latency_seconds=latency_seconds,
             timestamp=datetime.now(timezone.utc).isoformat(),
