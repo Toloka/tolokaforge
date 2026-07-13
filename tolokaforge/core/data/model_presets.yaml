@@ -142,8 +142,6 @@ presets:
       - "*kimi-k2*"
       - "deepseek/deepseek-v4*"
       - "*deepseek-v4*"
-      - "z-ai/glm-5*"
-      - "*glm-5*"
       - "tencent/hy3*"
       - "*hy3-preview*"
       - "nvidia/nemotron*"
