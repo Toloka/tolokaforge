@@ -16,6 +16,26 @@ name: Model auto-integration
 on:
   pull_request:
     types: [labeled]
+  # The Slack poller (slack-integrate.yml) dispatches this once per resolved model. A label or
+  # PR created with GITHUB_TOKEN cannot trigger the labeled event (the Actions recursion guard),
+  # and workflow_dispatch is one of its two exceptions - so the poller opens the PR and then
+  # dispatches here with its number + head branch. Every value the labeled path reads from the
+  # PR event has a `|| inputs.*` fallback below, so the pipeline body is identical either way.
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "PR number the poller opened for this model"
+        required: true
+      head_ref:
+        description: "PR head branch to check out and commit the integration back to"
+        required: true
+      model:
+        description: "OpenRouter model slug, e.g. x-ai/grok-4.5"
+        required: true
+      source:
+        description: "what triggered it (e.g. slack); informational only"
+        required: false
+        default: manual
 
 permissions:
   contents: write
@@ -25,22 +45,26 @@ permissions:
 concurrency:
   # One run per PR at a time. A re-label while a run is in flight queues a second run that
   # starts after the first finishes (cancel-in-progress: false), so re-labelling serializes.
-  group: integrate-${{ github.event.pull_request.number }}
+  group: integrate-${{ github.event.pull_request.number || inputs.pr }}
   cancel-in-progress: false
 
 jobs:
   integrate:
-    # Only the trigger label starts the pipeline; any other label is a no-op.
-    if: github.event.label.name == 'automation:integrate-model'
+    # Start on the trigger label (human onboarding PR) OR a poller dispatch. Any other label
+    # is a no-op.
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'automation:integrate-model'
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
-      PR: ${{ github.event.pull_request.number }}
+      PR: ${{ github.event.pull_request.number || inputs.pr }}
       # Untrusted input: only ever referenced as "$PR_TITLE" inside a shell, never
-      # interpolated into a script body.
-      PR_TITLE: ${{ github.event.pull_request.title }}
-      IS_FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
+      # interpolated into a script body. On a dispatch there is no PR-event title, so synthesize
+      # the same `integrate: <slug>` convention the parser expects from the model input.
+      PR_TITLE: "${{ github.event.pull_request.title || format('integrate: {0}', inputs.model) }}"
+      # Only a real pull_request event can be a fork; a dispatch is always same-repo (guard the
+      # null so `null != repo` does not read as a fork and reject the run).
+      IS_FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
       # Observe repeat counts + parallelism (repo Actions variables; defaults 15/10/10/4).
       CAPABILITY_K: ${{ vars.OBSERVE_CAPABILITY_K || '15' }}
       WIRE_K: ${{ vars.OBSERVE_WIRE_K || '10' }}
@@ -65,7 +89,7 @@ jobs:
       SLACK_MENTIONS: ${{ vars.ARENA_AUTOMATION_SLACK_MENTIONS }}
       # Run + PR permalinks, passed to the Slack notifier as <url|label> links.
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-      PR_URL: ${{ github.server_url }}/${{ github.repository }}/pull/${{ github.event.pull_request.number }}
+      PR_URL: ${{ github.server_url }}/${{ github.repository }}/pull/${{ github.event.pull_request.number || inputs.pr }}
     steps:
       - name: Reject fork PRs (no secrets on the pull_request event)
         if: env.IS_FORK == 'true'
@@ -79,10 +103,12 @@ jobs:
           exit 1
 
       - name: Label-once guard (drop trigger, mark running)
+        # Split + tolerant so both paths work: the labeled path has the trigger label to drop;
+        # the workflow_dispatch path (poller-opened PR) never carries it, so the remove is a
+        # no-op there and must not block adding the running label.
         run: |
-          gh pr edit "$PR" -R "$REPO" \
-            --remove-label 'automation:integrate-model' \
-            --add-label 'automation:integrate-running'
+          gh pr edit "$PR" -R "$REPO" --add-label 'automation:integrate-running' || true
+          gh pr edit "$PR" -R "$REPO" --remove-label 'automation:integrate-model' || true
 
       # Checkout + uv setup BEFORE parse so the auto-integration tool (which posts every Slack
       # notification, including the parse-fail and the failure() catch-all) is installed and
@@ -91,7 +117,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           # head ref + full history so the finalize step can commit the integration back.
-          ref: ${{ github.event.pull_request.head.ref }}
+          ref: ${{ github.event.pull_request.head.ref || inputs.head_ref }}
           fetch-depth: 0
           lfs: true
 
@@ -284,7 +310,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: integration-observation-pr${{ github.event.pull_request.number }}
+          name: integration-observation-pr${{ github.event.pull_request.number || inputs.pr }}
           path: observation/
           retention-days: 30
 
@@ -453,7 +479,7 @@ jobs:
           TF_NAME: ${{ steps.parse.outputs.name }}
           MODEL_ID: ${{ steps.slug.outputs.model_id }}
           AUTO_MERGE_ENABLED: ${{ vars.ARENA_AUTOMATION_AUTO_MERGE_ENABLED }}
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref || inputs.head_ref }}
         run: |
           set -euo pipefail
           P=tools/automation/src/automation/prompts
@@ -510,7 +536,7 @@ jobs:
           fi
           git commit -m "integrate: ${TF_NAME} via auto-resolve (preset + cert)" \
             -m "Auto-resolve landed the proven policy. See the PR comment for the reprobe evidence and known_unsupported ceilings. Do not merge if this is a disposable test branch."
-          git push origin "HEAD:${{ github.event.pull_request.head.ref }}"
+          git push origin "HEAD:${HEAD_REF}"
           RECORD_URL=""
           if [ -f observation/resolve/pr_comment.md ]; then
             RECORD_URL="$(gh pr comment "$PR" -R "$REPO" --body-file observation/resolve/pr_comment.md || true)"
