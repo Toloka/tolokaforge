@@ -126,6 +126,26 @@ class TestResolveDeepMerges:
         assert manifest.runner_service == "default"
         assert manifest.network_policy == NetworkPolicy.NO_INTERNET
 
+    def test_task_runner_service_overrides_project_on_deep_merge(self) -> None:
+        # Deep-merge (no compose_file trigger) → task wins on scalar
+        # conflict. safe_one_service.yaml declares the service `default`,
+        # but the runtime cross-check only fires if the manifest names
+        # a service missing from compose; here we exercise the pure
+        # merge behaviour with two distinct values that both name a
+        # declared service. Using `default` on both sides masks
+        # whether task-wins actually applies.
+        project = EnvironmentPatch(
+            stack=StackPatch(compose_file=ENV_FIXTURE, runner_service="project-runner"),
+        )
+        task = EnvironmentPatch(stack=StackPatch(runner_service="default"))
+        # `default` is the only service compose actually declares, so
+        # the manifest accepts it; the point of the test is that the
+        # merger picked the task's value over the project's, not that
+        # either particular string is valid.
+        manifest = resolve(project, task)
+        assert manifest is not None
+        assert manifest.runner_service == "default"
+
     def test_only_project_side(self) -> None:
         project = EnvironmentPatch(
             stack=StackPatch(compose_file=ENV_FIXTURE, runner_service="default"),

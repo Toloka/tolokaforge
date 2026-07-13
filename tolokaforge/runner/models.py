@@ -14,6 +14,7 @@ All models use Pydantic v2 BaseModel for validation and serialization.
 from __future__ import annotations
 
 import re
+import warnings
 from datetime import datetime
 from enum import Enum
 from pathlib import Path, PurePosixPath
@@ -921,8 +922,6 @@ class EnvironmentPatch(BaseModel):
                 )
             stack[key] = data.pop(key)
         data["stack"] = stack
-        import warnings
-
         warnings.warn(
             "EnvironmentPatch: flat compose_file / runner_service at the "
             "top level is legacy; move under 'stack:'.",

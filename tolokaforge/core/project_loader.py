@@ -376,7 +376,7 @@ def resolve(
     runner_service = stack.get("runner_service")
     if runner_service:
         manifest_kwargs["runner_service"] = runner_service
-    for field in ("initial_state", "network_policy", "security_context_defaults", "isolation"):
+    for field in (*_SERVICE_TREATMENT_FIELDS, *_POLICY_REQUEST_FIELDS):
         value = merged.get(field)
         if value is None:
             continue

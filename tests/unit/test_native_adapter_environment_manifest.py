@@ -16,6 +16,7 @@ import pytest
 
 from tests.canonical._factories import write_yaml_file
 from tolokaforge.adapters.native import NativeAdapter
+from tolokaforge.core.models import EnvironmentPatch, StackPatch
 
 pytestmark = pytest.mark.unit
 
@@ -24,6 +25,7 @@ def _build_task(
     tmp_path: Path,
     *,
     environment_manifest: dict | None = None,
+    project_default_environment: EnvironmentPatch | None = None,
 ) -> NativeAdapter:
     task_dir = tmp_path / "tasks" / "manifest_task"
     task_dir.mkdir(parents=True)
@@ -76,7 +78,10 @@ def _build_task(
             },
         },
     )
-    return NativeAdapter({"base_dir": str(tmp_path), "tasks_glob": "tasks/**/task.yaml"})
+    params: dict = {"base_dir": str(tmp_path), "tasks_glob": "tasks/**/task.yaml"}
+    if project_default_environment is not None:
+        params["project_default_environment"] = project_default_environment
+    return NativeAdapter(params)
 
 
 class TestEnvironmentManifestWiring:
@@ -112,3 +117,37 @@ class TestEnvironmentManifestWiring:
         # isolation + runner_service round-trip.
         assert manifest.isolation.value == "per_trial"
         assert manifest.runner_service == "runner"
+
+    def test_project_default_environment_composes_with_task_patch(self, tmp_path: Path) -> None:
+        """The orchestrator forwards ``project.default_environment`` to
+        the adapter via ``project_default_environment``; the adapter
+        binds it to each task's own patch via :func:`resolve`. A task
+        that patches only ``stack.inputs`` inherits ``compose_file`` and
+        ``runner_service`` from the project — this pins that the
+        orchestrator → adapter → resolve chain actually deep-merges."""
+        # The project patch points at the same compose file the task
+        # fixture writes; the concrete task pack lives at
+        # ``tmp_path / "tasks" / "manifest_task" /``.
+        compose_path = tmp_path / "tasks" / "manifest_task" / "environment.compose.yaml"
+        project_patch = EnvironmentPatch(
+            stack=StackPatch(
+                compose_file=compose_path,
+                runner_service="runner",
+                inputs={"postgres_version": "16", "region": "eu"},
+            ),
+        )
+        adapter = _build_task(
+            tmp_path,
+            environment_manifest={"stack": {"inputs": {"postgres_version": "17"}}},
+            project_default_environment=project_patch,
+        )
+        task_description = adapter.to_task_description("manifest_task")
+
+        manifest = task_description.environment_manifest
+        assert manifest is not None
+        # compose_file + runner_service inherited from the project patch.
+        assert manifest.compose_file == compose_path
+        assert manifest.runner_service == "runner"
+        # inputs deep-merged: task wins on the conflicting key, project
+        # value survives for the untouched one.
+        assert manifest.stack_inputs == {"postgres_version": "17", "region": "eu"}

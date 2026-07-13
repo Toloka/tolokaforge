@@ -403,6 +403,47 @@ class TestLoadTaskYaml:
         with pytest.raises(RuntimeError, match="environment_manifest.*YAML mapping"):
             load_task_yaml(task_path)
 
+    def test_canonical_stack_compose_file_is_anchored(self, tmp_path: Path) -> None:
+        """A task authored with the canonical ``stack.compose_file`` shape
+        and a task-relative path gets anchored to an absolute path before
+        ``TaskConfig`` is constructed — the invariant :func:`resolve`
+        relies on for its "paths are absolute" contract."""
+        env_fixture = (
+            Path(__file__).parent.parent
+            / "canonical"
+            / "fixtures"
+            / "environment_manifest"
+            / "safe_one_service.yaml"
+        )
+        task_dir = tmp_path / "flat_task"
+        task_dir.mkdir()
+        rel_compose = task_dir / "environment.compose.yaml"
+        rel_compose.write_text(env_fixture.read_text())
+        task_path = task_dir / "task.yaml"
+        task_path.write_text(
+            yaml.safe_dump(
+                {
+                    "task_id": "x",
+                    "name": "x",
+                    "category": "x",
+                    "description": "x",
+                    "initial_state": {},
+                    "tools": {"agent": {"enabled": []}, "user": {"enabled": []}},
+                    "user_simulator": {"mode": "scripted", "scripted_flow": []},
+                    "grading": "g.yaml",
+                    "environment_manifest": {
+                        "stack": {"compose_file": "environment.compose.yaml"},
+                    },
+                }
+            )
+        )
+        task, _ = load_task_yaml(task_path)
+        assert task.environment_manifest is not None
+        assert task.environment_manifest.stack is not None
+        assert task.environment_manifest.stack.compose_file is not None
+        assert task.environment_manifest.stack.compose_file.is_absolute()
+        assert task.environment_manifest.stack.compose_file == rel_compose.resolve()
+
     def test_dangling_domain_ref_raises(self, tmp_path: Path) -> None:
         task_path = tmp_path / "testcases" / "c" / "task.yaml"
         task_path.parent.mkdir(parents=True)
