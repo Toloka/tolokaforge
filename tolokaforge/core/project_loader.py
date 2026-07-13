@@ -31,6 +31,8 @@ task-yaml delta.
 from __future__ import annotations
 
 import logging
+import os
+import re
 import warnings
 from pathlib import Path
 from typing import Any
@@ -105,6 +107,15 @@ def load_project_config(path: Path) -> ProjectConfig:
     Raises ``FileNotFoundError`` if the file does not exist, ``RuntimeError``
     if the YAML is not a mapping, and ``pydantic.ValidationError`` if the
     contents don't validate against :class:`ProjectConfig`.
+
+    Scope note: ``${VAR}`` interpolation is **not** applied to
+    ``project.yaml`` values — only the run-config load path (see
+    :func:`load_effective_run_config`) substitutes placeholders. A
+    ``project.yaml`` entry like ``assets.seeds.foo.path:
+    "${SEED_ROOT}/foo.sql"`` stays literal. This is a scope choice
+    (project.yaml is checked into the repo; the operator's env is
+    per-invocation), not a correctness one — extending interpolation
+    to the project side is a follow-up if authors ask for it.
     """
     path = Path(path)
     if not path.is_file():
@@ -292,6 +303,156 @@ def resolve_effective_run_config_data(
 # ── High-level loader entry point ──────────────────────────────────────
 
 
+# ── ${VAR} interpolation ───────────────────────────────────────────────
+
+
+_ENV_VAR_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+"""Match ``${VAR}`` occurrences. Braces are mandatory — bareword
+``$VAR`` is not recognised (ambiguity with literal ``$`` is a
+tar-pit; explicit braces avoid it). Variable names follow the shell
+convention: letter or underscore, then letters / digits / underscores.
+"""
+
+_CREDENTIAL_NAME_SUFFIX_PATTERN = re.compile(
+    r"(?:_API_KEY|_API_KEYS|_API_BASE|_TOKEN|_SECRET|_PASSWORD" r"|_DSN|_CREDENTIAL[S]?|_PAT)$"
+)
+"""Variable-name suffixes that mark a placeholder as
+credential-shaped. Mirrors the enforcement pattern in
+``tests/unit/secrets/test_no_raw_secret_access.py`` so authors
+cannot smuggle credentials into a config through ``${VAR}`` —
+credentials must flow through ``SecretManager``, never a run-config
+placeholder that lands as plaintext in the merged dict."""
+
+
+def _interpolate_env_vars(
+    node: Any,
+    *,
+    source_path: Path,
+    _key_path: tuple[str, ...] = (),
+) -> Any:
+    """Substitute ``${VAR}`` occurrences in every string value under
+    *node* with values from ``os.environ``. Recursive; walks dicts and
+    lists; leaves non-string leaves untouched.
+
+    Returns a new tree with substitutions applied — the input is not
+    mutated. Missing variables and credential-shaped placeholders
+    collect into a single error naming the file, every offending key
+    path, and every offending variable so the author fixes them in
+    one pass rather than one-at-a-time.
+
+    Scope: only string *values* are interpolated. Dict keys stay
+    literal. Numbers, booleans, ``None``, and lists-of-non-strings pass
+    through unchanged. Recursion into substituted values does not run —
+    if ``${FOO}`` resolves to a string containing ``${BAR}``, only one
+    pass happens.
+
+    Rule-2 boundary: variable names ending in credential-shaped
+    suffixes (``_API_KEY``, ``_TOKEN``, ``_SECRET``, ``_PASSWORD``,
+    ``_DSN``, ``_CREDENTIAL[S]``, ``_PAT``) are rejected at load
+    time even if the env var is set. Credentials must go through
+    ``SecretManager``, never a plaintext ``${VAR}`` placeholder — the
+    merged run-config dict is logged, dumped, and passed through
+    many hands, so a secret lifted into it via interpolation escapes
+    the single-abstraction invariant.
+    """
+    missing: list[str] = []
+    credentials: list[str] = []
+    result = _interpolate_walk(node, source_path, _key_path, missing, credentials)
+    errors: list[str] = []
+    if credentials:
+        errors.append(
+            f"credential-shaped variable(s) in ${{...}} placeholders: "
+            f"{sorted(set(credentials))}. Credentials must go through "
+            "SecretManager, not a run-config placeholder — the merged "
+            "dict is plaintext and gets logged / dumped downstream."
+        )
+    if missing:
+        errors.append(
+            f"unresolved environment variable(s): {sorted(set(missing))}. "
+            "Export them before loading (or supply defaults in the run config)."
+        )
+    if errors:
+        joined = " | ".join(errors)
+        raise ValueError(f"Run config {source_path}: {joined}")
+    return result
+
+
+def _interpolate_walk(
+    node: Any,
+    source_path: Path,
+    key_path: tuple[str, ...],
+    missing: list[str],
+    credentials: list[str],
+) -> Any:
+    """Depth-first walk used by :func:`_interpolate_env_vars`.
+    Splits into a top-level helper so the public entry point owns the
+    "raise once with every miss" contract in a single place.
+    """
+    if isinstance(node, dict):
+        return {
+            k: _interpolate_walk(v, source_path, (*key_path, str(k)), missing, credentials)
+            for k, v in node.items()
+        }
+    if isinstance(node, list):
+        # List-index segments are appended without a leading dot so the
+        # rendered path reads ``evaluation.projects[0]`` rather than the
+        # spurious ``evaluation.projects.[0]``. The joiner in
+        # :func:`_render_key_path` treats ``[N]`` segments specially.
+        return [
+            _interpolate_walk(item, source_path, (*key_path, f"[{idx}]"), missing, credentials)
+            for idx, item in enumerate(node)
+        ]
+    if isinstance(node, str):
+        return _interpolate_string(node, source_path, key_path, missing, credentials)
+    return node
+
+
+def _render_key_path(key_path: tuple[str, ...]) -> str:
+    """Render a walker key path for error messages.
+
+    Dict-key segments join with ``.``; list-index segments (``[N]``)
+    stay attached to the preceding segment without an intervening dot.
+    Returns ``"(root)"`` when the path is empty.
+    """
+    if not key_path:
+        return "(root)"
+    parts: list[str] = []
+    for segment in key_path:
+        if segment.startswith("[") and parts:
+            parts[-1] = parts[-1] + segment
+        else:
+            parts.append(segment)
+    return ".".join(parts)
+
+
+def _interpolate_string(
+    value: str,
+    source_path: Path,
+    key_path: tuple[str, ...],
+    missing: list[str],
+    credentials: list[str],
+) -> str:
+    """Substitute every ``${VAR}`` occurrence in *value*. Credential-
+    shaped names are rejected before the environment is even queried;
+    unknown names record onto *missing* for the collated error. The
+    return value only matters when both lists stay empty — callers
+    always route the raise through the public entry point."""
+
+    def replace(match: re.Match[str]) -> str:
+        var_name = match.group(1)
+        rendered_path = _render_key_path(key_path)
+        if _CREDENTIAL_NAME_SUFFIX_PATTERN.search(var_name):
+            credentials.append(f"{rendered_path} → ${{{var_name}}}")
+            return match.group(0)
+        env_value = os.environ.get(var_name)
+        if env_value is None:
+            missing.append(f"{rendered_path} → ${{{var_name}}}")
+            return match.group(0)
+        return env_value
+
+    return _ENV_VAR_PATTERN.sub(replace, value)
+
+
 def load_effective_run_config(
     config_path: Path,
 ) -> tuple[dict[str, Any], ProjectConfig]:
@@ -331,6 +492,7 @@ def load_effective_run_config(
     else:
         project = synthesize_default_project(project_root=config_path.parent)
     merged = resolve_effective_run_config_data(project, config_data)
+    merged = _interpolate_env_vars(merged, source_path=config_path)
     validate_actor_roster_subset_of_models(project, merged)
     return merged, project
 

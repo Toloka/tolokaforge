@@ -566,6 +566,371 @@ class TestProjectAssetsPathAnchoring:
         assert project.assets.seeds["base"].kind == "sql_dump"
 
 
+class TestEnvVarInterpolation:
+    """``${VAR}`` substitution runs on run-config string values after
+    ``project.run_defaults`` merge and before the roster check. Only
+    string values are interpolated; keys, numbers, booleans, and lists
+    of non-strings pass through untouched. Missing variables collect
+    into a single error naming every offending key path."""
+
+    def test_interpolated_from_env(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MY_OUTPUT_DIR", "results/from-env")
+        _write_yaml(tmp_path / "project.yaml", {"name": "p"})
+        run_cfg = tmp_path / "run_configs" / "dev.yaml"
+        _write_yaml(
+            run_cfg,
+            {
+                "models": {"user": {"provider": "openai", "name": "gpt-4o"}},
+                "evaluation": {"output_dir": "${MY_OUTPUT_DIR}"},
+            },
+        )
+        from tolokaforge.core.project_loader import load_effective_run_config
+
+        merged, _ = load_effective_run_config(run_cfg)
+        assert merged["evaluation"]["output_dir"] == "results/from-env"
+
+    def test_missing_variable_fails_loud(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("DEFINITELY_UNSET_VAR", raising=False)
+        _write_yaml(tmp_path / "project.yaml", {"name": "p"})
+        run_cfg = tmp_path / "run_configs" / "dev.yaml"
+        _write_yaml(
+            run_cfg,
+            {
+                "models": {"user": {"provider": "openai", "name": "gpt-4o"}},
+                "evaluation": {"output_dir": "${DEFINITELY_UNSET_VAR}"},
+            },
+        )
+        from tolokaforge.core.project_loader import load_effective_run_config
+
+        with pytest.raises(
+            ValueError,
+            match=r"unresolved environment variable.*DEFINITELY_UNSET_VAR",
+        ):
+            load_effective_run_config(run_cfg)
+
+    def test_non_strings_pass_through_untouched(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # No env var set — numbers, booleans, and lists of non-strings
+        # must not participate in the walker's string-value branch.
+        _write_yaml(tmp_path / "project.yaml", {"name": "p"})
+        run_cfg = tmp_path / "run_configs" / "dev.yaml"
+        _write_yaml(
+            run_cfg,
+            {
+                "models": {"user": {"provider": "openai", "name": "gpt-4o"}},
+                "orchestrator": {
+                    "workers": 4,
+                    "auto_start_services": True,
+                    "repeats": 1,
+                },
+                "evaluation": {"output_dir": "results/x"},
+            },
+        )
+        from tolokaforge.core.project_loader import load_effective_run_config
+
+        merged, _ = load_effective_run_config(run_cfg)
+        assert merged["orchestrator"]["auto_start_services"] is True
+
+    def test_string_with_no_placeholder_untouched(self, tmp_path: Path) -> None:
+        # A literal string without ``${...}`` must survive verbatim —
+        # the walker's replace callback only rewrites placeholders.
+        _write_yaml(tmp_path / "project.yaml", {"name": "p"})
+        run_cfg = tmp_path / "run_configs" / "dev.yaml"
+        _write_yaml(
+            run_cfg,
+            {
+                "models": {"user": {"provider": "openai", "name": "gpt-4o"}},
+                "evaluation": {"output_dir": "results/literal"},
+            },
+        )
+        from tolokaforge.core.project_loader import load_effective_run_config
+
+        merged, _ = load_effective_run_config(run_cfg)
+        assert merged["evaluation"]["output_dir"] == "results/literal"
+
+    def test_bareword_dollar_not_interpolated(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Only ``${VAR}`` (braces mandatory) is interpolated; ``$VAR``
+        # bareword stays literal — an intentional design choice
+        # documented on the helper.
+        monkeypatch.setenv("BAREWORD_VAR", "would-be-substituted")
+        _write_yaml(tmp_path / "project.yaml", {"name": "p"})
+        run_cfg = tmp_path / "run_configs" / "dev.yaml"
+        _write_yaml(
+            run_cfg,
+            {
+                "models": {"user": {"provider": "openai", "name": "gpt-4o"}},
+                "evaluation": {"output_dir": "prefix-$BAREWORD_VAR"},
+            },
+        )
+        from tolokaforge.core.project_loader import load_effective_run_config
+
+        merged, _ = load_effective_run_config(run_cfg)
+        assert merged["evaluation"]["output_dir"] == "prefix-$BAREWORD_VAR"
+
+    def test_interpolation_fires_after_run_defaults_merge(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Project supplies a base model name with a placeholder that the
+        # operator resolves at run time. The run config doesn't override
+        # models, so the project default flows through the merge into
+        # the effective dict — and then interpolation fires, substituting
+        # the operator-supplied value. Uses `models` (which is a valid
+        # RunDefaults field) since `evaluation` isn't on RunDefaults.
+        monkeypatch.setenv("MODEL_TAG", "gpt-4o-2026-nightly")
+        _write_yaml(
+            tmp_path / "project.yaml",
+            {
+                "name": "p",
+                "run_defaults": {
+                    "models": {"user": {"provider": "openai", "name": "${MODEL_TAG}"}},
+                },
+            },
+        )
+        run_cfg = tmp_path / "run_configs" / "nightly.yaml"
+        _write_yaml(run_cfg, {"evaluation": {"output_dir": "results/nightly"}})
+        from tolokaforge.core.project_loader import load_effective_run_config
+
+        merged, _ = load_effective_run_config(run_cfg)
+        assert merged["models"]["user"]["name"] == "gpt-4o-2026-nightly"
+
+    def test_credential_shaped_names_rejected_at_load(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Rule-2 boundary: even if the env var IS set, a placeholder
+        # with a credential-shaped suffix is rejected. Credentials
+        # must flow through SecretManager, not the plaintext merged
+        # config dict.
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-should-not-leak-here")
+        _write_yaml(tmp_path / "project.yaml", {"name": "p"})
+        run_cfg = tmp_path / "run_configs" / "dev.yaml"
+        _write_yaml(
+            run_cfg,
+            {
+                "models": {"user": {"provider": "openai", "name": "gpt-4o"}},
+                "evaluation": {"output_dir": "results/${OPENAI_API_KEY}"},
+            },
+        )
+        from tolokaforge.core.project_loader import load_effective_run_config
+
+        with pytest.raises(ValueError) as exc:
+            load_effective_run_config(run_cfg)
+        message = str(exc.value)
+        assert "credential-shaped" in message
+        assert "OPENAI_API_KEY" in message
+        assert "SecretManager" in message
+        # And the env var's real value must never appear in the error —
+        # the point of the boundary is to keep it out of every downstream
+        # log surface, starting with our own error path.
+        assert "sk-should-not-leak-here" not in message
+
+    def test_credential_suffix_variants_all_rejected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Suffix-based match mirrors tests/unit/secrets/test_no_raw_secret_access.py.
+        # A representative from each suffix pins the shape. Uses
+        # ``evaluation.output_dir`` (non-deprecated string field) as
+        # the concatenation site so this test doesn't depend on the
+        # deprecated ``orchestrator.continue_prompt`` — if a future
+        # refactor moves interpolation after RunConfig construction,
+        # the assertion still holds without picking up a stray
+        # DeprecationWarning.
+        variants = [
+            "MY_TOKEN",
+            "MY_SECRET",
+            "MY_PASSWORD",
+            "POSTGRES_DSN",
+            "GITHUB_PAT",
+            "MY_CREDENTIAL",
+            "MY_CREDENTIALS",
+        ]
+        for var in variants:
+            monkeypatch.setenv(var, "unused")
+        _write_yaml(tmp_path / "project.yaml", {"name": "p"})
+        run_cfg = tmp_path / "run_configs" / "dev.yaml"
+        _write_yaml(
+            run_cfg,
+            {
+                "models": {"user": {"provider": "openai", "name": "gpt-4o"}},
+                "evaluation": {
+                    # Non-deprecated string field; the walker sees every
+                    # concatenated placeholder in one pass.
+                    "output_dir": "results/"
+                    + "-".join(f"${{{v}}}" for v in variants),
+                },
+            },
+        )
+        from tolokaforge.core.project_loader import load_effective_run_config
+
+        with pytest.raises(ValueError, match="credential-shaped") as exc:
+            load_effective_run_config(run_cfg)
+        message = str(exc.value)
+        for var in variants:
+            assert var in message, f"expected {var!r} in error message"
+
+    def test_dict_keys_are_never_interpolated(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Pins that only string VALUES are interpolated. A ${...}-shaped
+        # dict key would parse as a literal string key on the merged
+        # dict — no substitution attempted, no missing-var error.
+        monkeypatch.setenv("SHOULD_NOT_FIRE", "surprise")
+        _write_yaml(tmp_path / "project.yaml", {"name": "p"})
+        run_cfg = tmp_path / "run_configs" / "dev.yaml"
+        _write_yaml(
+            run_cfg,
+            {
+                "models": {"user": {"provider": "openai", "name": "gpt-4o"}},
+                "evaluation": {"output_dir": "results/x"},
+                "orchestrator": {
+                    # A YAML mapping key using ${...} shape — the walker
+                    # must skip keys entirely, so this survives verbatim
+                    # regardless of whether the env var is set.
+                    "typesense": {"${SHOULD_NOT_FIRE}": "literal-value"},
+                },
+            },
+        )
+        from tolokaforge.core.project_loader import load_effective_run_config
+
+        merged, _ = load_effective_run_config(run_cfg)
+        # The key survives untouched; env var value never leaks in.
+        assert "${SHOULD_NOT_FIRE}" in merged["orchestrator"]["typesense"]
+        assert "surprise" not in merged["orchestrator"]["typesense"]
+
+    def test_variable_names_with_digits_substitute(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The regex's second-char class is [A-Za-z0-9_], so digits are
+        # allowed after the first character. Pin the common shapes
+        # (``NAME_1``, ``NAME2``, ``NAME_1A``) so a future tightening
+        # of the pattern can't silently break them.
+        monkeypatch.setenv("MY_VAR_1", "one")
+        monkeypatch.setenv("MY_VAR2", "two")
+        monkeypatch.setenv("MY_VAR_1A", "one-a")
+        _write_yaml(tmp_path / "project.yaml", {"name": "p"})
+        run_cfg = tmp_path / "run_configs" / "dev.yaml"
+        _write_yaml(
+            run_cfg,
+            {
+                "models": {"user": {"provider": "openai", "name": "gpt-4o"}},
+                "evaluation": {
+                    "output_dir": "results/${MY_VAR_1}-${MY_VAR2}-${MY_VAR_1A}",
+                },
+            },
+        )
+        from tolokaforge.core.project_loader import load_effective_run_config
+
+        merged, _ = load_effective_run_config(run_cfg)
+        assert merged["evaluation"]["output_dir"] == "results/one-two-one-a"
+
+    def test_key_path_in_error_uses_bracket_index_no_dot(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Pin the rendered key-path format for list indices: the error
+        # should say ``projects[0]`` (not ``projects.[0]``). A regression
+        # in :func:`_render_key_path` would reintroduce the spurious dot.
+        monkeypatch.delenv("MISSING_IN_LIST", raising=False)
+        _write_yaml(tmp_path / "project.yaml", {"name": "p"})
+        run_cfg = tmp_path / "run_configs" / "dev.yaml"
+        _write_yaml(
+            run_cfg,
+            {
+                "models": {"user": {"provider": "openai", "name": "gpt-4o"}},
+                "evaluation": {
+                    "output_dir": "results/x",
+                    "projects": ["${MISSING_IN_LIST}"],
+                },
+            },
+        )
+        from tolokaforge.core.project_loader import load_effective_run_config
+
+        with pytest.raises(ValueError) as exc:
+            load_effective_run_config(run_cfg)
+        message = str(exc.value)
+        assert "evaluation.projects[0]" in message, message
+        assert "projects.[0]" not in message, message
+
+    def test_placeholder_in_list_value_substituted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The walker recurses lists; pin the list-branch positively so
+        # a future refactor to the walker can't silently break list-
+        # of-strings substitution (a shape real packs use for
+        # ``evaluation.projects`` when parameterising by env).
+        monkeypatch.setenv("PACK_ROOT", "/abs/packs")
+        _write_yaml(tmp_path / "project.yaml", {"name": "p"})
+        run_cfg = tmp_path / "run_configs" / "dev.yaml"
+        _write_yaml(
+            run_cfg,
+            {
+                "models": {"user": {"provider": "openai", "name": "gpt-4o"}},
+                "evaluation": {
+                    "output_dir": "results/x",
+                    "projects": ["${PACK_ROOT}/pack-a", "${PACK_ROOT}/pack-b"],
+                },
+            },
+        )
+        from tolokaforge.core.project_loader import load_effective_run_config
+
+        merged, _ = load_effective_run_config(run_cfg)
+        assert merged["evaluation"]["projects"] == [
+            "/abs/packs/pack-a",
+            "/abs/packs/pack-b",
+        ]
+
+    def test_input_dict_not_mutated(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The public helper's contract says the input tree is not
+        # mutated — a caller who kept a reference to the raw dict must
+        # still see it verbatim after the interpolation returns. Pin
+        # via an isolated helper call rather than through the loader
+        # (loader wraps everything in a fresh dict via deep_merge).
+        import copy
+
+        from tolokaforge.core.project_loader import _interpolate_env_vars
+
+        monkeypatch.setenv("VAL", "resolved")
+        original = {
+            "root": "${VAL}/x",
+            "nested": {"leaf": "prefix-${VAL}"},
+            "list_of_strings": ["a", "${VAL}"],
+        }
+        snapshot = copy.deepcopy(original)
+        result = _interpolate_env_vars(original, source_path=tmp_path / "x.yaml")
+        assert original == snapshot, "input dict was mutated"
+        assert result is not original
+        assert result["root"] == "resolved/x"
+
+    def test_multiple_missing_vars_reported_together(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Author-ergonomic: report every miss in a single error rather
+        # than one-at-a-time. Fixing three typos should take one edit
+        # pass, not three reload cycles.
+        for var in ("UNSET_A", "UNSET_B", "UNSET_C"):
+            monkeypatch.delenv(var, raising=False)
+        _write_yaml(tmp_path / "project.yaml", {"name": "p"})
+        run_cfg = tmp_path / "run_configs" / "dev.yaml"
+        _write_yaml(
+            run_cfg,
+            {
+                "models": {"user": {"provider": "openai", "name": "${UNSET_A}"}},
+                "evaluation": {"output_dir": "${UNSET_B}/${UNSET_C}"},
+            },
+        )
+        from tolokaforge.core.project_loader import load_effective_run_config
+
+        with pytest.raises(ValueError) as exc:
+            load_effective_run_config(run_cfg)
+        message = str(exc.value)
+        assert "UNSET_A" in message
+        assert "UNSET_B" in message
+        assert "UNSET_C" in message
+
+
 class TestDeepMergeIsSingleImpl:
     """`deep_merge` in the project loader is the single implementation
     the task loader imports — no shadow copy in `_task_loader.py`."""
