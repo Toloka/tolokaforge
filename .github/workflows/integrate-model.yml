@@ -592,15 +592,16 @@ jobs:
               esac
             fi
             # One settings deep-link (the Actions variables page where
-            # ARENA_AUTOMATION_AUTO_MERGE_ENABLED lives) rendered as "configure here" on every
+            # ARENA_AUTOMATION_AUTO_MERGE_ENABLED lives) rendered as "configure <here>" (only the
+          # word "here" is the link) on every
             # auto-merge outcome. Derived from env + defaulted so it is set -u safe.
             SETTINGS_URL="${GITHUB_SERVER_URL:-https://github.com}/$REPO/settings/variables/actions"
             if [ "$MERGED" = "yes" ]; then
-              MSG="$(printf '%s\n%s' ':white_check_mark: Integrated + auto-merged (squash): preset + cert landed on the base branch.' "Auto-merge is on - squash-merged automatically on success (<$SETTINGS_URL|configure here>).")"
+              MSG="$(printf '%s\n%s' ':white_check_mark: Integrated + auto-merged (squash): preset + cert landed on the base branch.' "Auto-merge is on - squash-merged automatically on success (configure <$SETTINGS_URL|here>).")"
             elif [ "$AUTO_MERGE" = "true" ]; then
-              MSG="$(printf '%s\n%s' ':white_check_mark: Integrated: preset + cert committed to the PR branch.' "Auto-merge is on but did NOT complete (disposable test branch, missing pricing, branch protection, draft, or a merge error) - PR left open (<$SETTINGS_URL|configure here>).")"
+              MSG="$(printf '%s\n%s' ':white_check_mark: Integrated: preset + cert committed to the PR branch.' "Auto-merge is on but did NOT complete (disposable test branch, missing pricing, branch protection, draft, or a merge error) - PR left open (configure <$SETTINGS_URL|here>).")"
             else
-              MSG="$(printf '%s\n%s' ':white_check_mark: Integrated: preset + cert committed to the PR branch.' "Human review gate - auto-merge off (<$SETTINGS_URL|configure here>).")"
+              MSG="$(printf '%s\n%s' ':white_check_mark: Integrated: preset + cert committed to the PR branch.' "Human review gate - auto-merge off (configure <$SETTINGS_URL|here>).")"
             fi
             uv run automation slack reply \
               --channel "$SLACK_CHANNEL" --pr "$PR" --model "$TF_NAME" --mention \
