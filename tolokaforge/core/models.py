@@ -1344,12 +1344,14 @@ no interpretation). Kind selection binds an overlay recipe with the
 isolation-redesign milestone."""
 
 
-_SEED_KIND_BY_EXTENSION: dict[str, SeedKind] = {
+SEED_KIND_BY_EXTENSION: dict[str, SeedKind] = {
     ".sql": "sql_dump",
     ".rdb": "redis_dump",
 }
 """File-extension → seed kind. Ambiguous / unknown extensions require
-the full ``{path, kind}`` shape."""
+the full ``{path, kind}`` shape. Public so the CLI's
+``tolokaforge assets stamp`` verb can reuse the same mapping without
+duplicating (and drifting)."""
 
 
 class SeedRef(BaseModel):
@@ -1388,12 +1390,12 @@ class SeedRef(BaseModel):
             return data
         raw = data
         ext = Path(raw).suffix.lower()
-        inferred = _SEED_KIND_BY_EXTENSION.get(ext)
+        inferred = SEED_KIND_BY_EXTENSION.get(ext)
         if inferred is None:
             raise ValueError(
                 f"SeedRef: cannot infer kind from path {raw!r} "
                 f"(extension {ext!r} not in "
-                f"{sorted(_SEED_KIND_BY_EXTENSION)!r}). Declare the full "
+                f"{sorted(SEED_KIND_BY_EXTENSION)!r}). Declare the full "
                 "form: {path: ..., kind: ...}."
             )
         return {"path": raw, "kind": inferred}

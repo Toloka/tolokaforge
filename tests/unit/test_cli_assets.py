@@ -103,13 +103,13 @@ class TestAssetsStampWriteMode:
         assert rewritten["assets"]["seeds"]["base"]["digest"] == expected
 
         # Idempotent: re-running against the now-stamped file is a
-        # no-op that says so and doesn't touch the file. Rich console
-        # wraps long output, so join on whitespace before asserting on
-        # phrases.
+        # no-op that says so and doesn't touch the file. Rich is
+        # configured with ``soft_wrap=True`` so the phrase stays on
+        # one line even in narrow CI terminals.
         mtime_after_first = project_yaml.stat().st_mtime_ns
         result2 = runner.invoke(cli, ["assets", "stamp", str(tmp_path)])
         assert result2.exit_code == 0
-        assert "already current" in " ".join(result2.output.split())
+        assert "already current" in result2.output
         assert project_yaml.stat().st_mtime_ns == mtime_after_first
 
     def test_bare_string_shorthand_coerced_to_dict_with_digest(
@@ -197,12 +197,44 @@ class TestAssetsStampMissingFile:
 
         result = runner.invoke(cli, ["assets", "stamp", str(tmp_path)])
         assert result.exit_code != 0
-        # Rich wraps output mid-phrase; normalise whitespace before the
-        # phrase check. The offending path must appear so the author
-        # knows exactly which reference to fix.
-        normalised = " ".join(result.output.split())
-        assert "shared/seeds/missing.sql" in normalised
-        assert "does not exist" in normalised
+        # Rich console is configured with ``soft_wrap=True`` so paths
+        # stay intact across narrow CI terminals. The offending path
+        # must appear so the author knows exactly which reference to
+        # fix.
+        assert "shared/seeds/missing.sql" in result.output
+        assert "does not exist" in result.output
+
+
+class TestAssetsStampCheckWithMissingFile:
+    def test_check_mode_fails_when_seed_file_missing(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        # --check must NOT mask a missing seed file — the whole point of
+        # dry-run in CI is catching drift before it lands. Order of the
+        # exit paths (missing file check before check-only branch) is
+        # what makes this work; pinning it here so a future reorder
+        # can't silently break the guarantee.
+        project_yaml = tmp_path / "project.yaml"
+        project_yaml.write_text(
+            yaml.safe_dump(
+                {
+                    "name": "p",
+                    "assets": {
+                        "seeds": {
+                            "base": {
+                                "path": "shared/seeds/missing.sql",
+                                "kind": "sql_dump",
+                            },
+                        },
+                    },
+                },
+                sort_keys=False,
+            ),
+        )
+
+        result = runner.invoke(cli, ["assets", "stamp", "--check", str(tmp_path)])
+        assert result.exit_code != 0
+        assert "shared/seeds/missing.sql" in result.output
 
 
 class TestAssetsStampProjectResolution:
@@ -225,6 +257,48 @@ class TestAssetsStampProjectResolution:
         result = runner.invoke(cli, ["assets", "stamp", str(empty)])
         assert result.exit_code != 0
         assert "No project.yaml" in result.output
+
+
+class TestAssetsStampMalformedShapeFailsLoud:
+    """Present-but-wrong shapes on ``assets`` or ``assets.seeds``
+    must NOT report ``nothing to stamp`` — a ``--check`` in CI
+    should fail so a typo doesn't ride green through the pipeline.
+    Absent vs. present-but-broken is the important distinction."""
+
+    def test_assets_not_a_mapping_fails_loud(self, runner: CliRunner, tmp_path: Path) -> None:
+        project_yaml = tmp_path / "project.yaml"
+        project_yaml.write_text(yaml.safe_dump({"name": "p", "assets": "oops"}))
+
+        result = runner.invoke(cli, ["assets", "stamp", str(tmp_path)])
+        assert result.exit_code != 0
+        # ``click.ClickException`` writes to stderr, and the fixture
+        # is ``mix_stderr=False`` — check the split stream.
+        assert "assets" in result.stderr
+        assert "must be a mapping" in result.stderr
+
+    def test_seeds_not_a_mapping_fails_loud(self, runner: CliRunner, tmp_path: Path) -> None:
+        project_yaml = tmp_path / "project.yaml"
+        project_yaml.write_text(
+            yaml.safe_dump({"name": "p", "assets": {"seeds": "oops"}}),
+        )
+
+        result = runner.invoke(cli, ["assets", "stamp", str(tmp_path)])
+        assert result.exit_code != 0
+        assert "assets.seeds" in result.stderr
+        assert "must be a mapping" in result.stderr
+
+    def test_check_mode_also_fails_loud_on_malformed(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        # The whole point of failing loud on malformed shapes is that
+        # --check in CI catches them. Pin that explicitly.
+        project_yaml = tmp_path / "project.yaml"
+        project_yaml.write_text(
+            yaml.safe_dump({"name": "p", "assets": {"seeds": "oops"}}),
+        )
+
+        result = runner.invoke(cli, ["assets", "stamp", "--check", str(tmp_path)])
+        assert result.exit_code != 0
 
 
 class TestAssetsStampNoSeeds:

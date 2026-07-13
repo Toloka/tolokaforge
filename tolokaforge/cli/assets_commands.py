@@ -17,16 +17,13 @@ from pathlib import Path
 import click
 from rich.console import Console
 
-console = Console()
-
-# Extension-based inference mirrors _SEED_KIND_BY_EXTENSION in the
-# core models module. Kept as a private map here so the CLI can
-# emit the same "kind" the loader would infer when coercing a
-# bare-string entry to dict form before stamping.
-_KIND_BY_EXTENSION: dict[str, str] = {
-    ".sql": "sql_dump",
-    ".rdb": "redis_dump",
-}
+# ``soft_wrap=True`` disables rich's terminal-width wrapping. Without
+# it, narrow CI terminals wrap paths mid-word (``missing.sql`` →
+# ``miss\ning.sql``), which breaks substring assertions in tests and
+# obscures the offending path in human-readable output. Paths and
+# digests are the primary error surface here; keeping them intact
+# matters more than fitting to terminal width.
+console = Console(soft_wrap=True)
 
 
 @click.group()
@@ -38,7 +35,11 @@ def assets():
 @click.argument(
     "project_path",
     type=click.Path(exists=True, file_okay=True, dir_okay=True, path_type=Path),
-    default=Path.cwd(),
+    # ``default="."`` is resolved by click's Path type per-invocation
+    # (against the invoker's actual CWD). ``default=Path.cwd()`` would
+    # freeze the CWD at import time — a subtle footgun that shows up
+    # when the module is imported before the operator ``cd``s.
+    default=".",
     required=False,
 )
 @click.option(
@@ -160,15 +161,26 @@ def _resolve_project_yaml(project_path: Path) -> Path | None:
 
 def _extract_seeds(raw: dict) -> dict | None:
     """Return the ``assets.seeds`` sub-mapping, or ``None`` when
-    absent / malformed. Malformed shapes still return ``None`` (the
-    caller treats it as "nothing to stamp") — schema validation at
-    load time is a separate concern."""
-    assets_section = raw.get("assets")
+    the block is genuinely absent (no ``assets`` key, or an
+    ``assets`` block with no ``seeds`` key).
+
+    Malformed shapes (present but not a mapping) raise
+    ``click.ClickException`` naming the offending key — a
+    ``--check`` in CI must not report green on a file that will
+    blow up at load time. Absent is different from present-but-broken.
+    """
+    if "assets" not in raw:
+        return None
+    assets_section = raw["assets"]
     if not isinstance(assets_section, dict):
+        raise click.ClickException(
+            f"`assets` must be a mapping; got {type(assets_section).__name__}"
+        )
+    if "seeds" not in assets_section:
         return None
-    seeds = assets_section.get("seeds")
+    seeds = assets_section["seeds"]
     if not isinstance(seeds, dict):
-        return None
+        raise click.ClickException(f"`assets.seeds` must be a mapping; got {type(seeds).__name__}")
     return seeds
 
 
@@ -198,25 +210,31 @@ def _write_seed_entry(entry: object, seed_path: str, new_digest: str) -> dict:
     from the file extension) — a string can't carry a digest, so
     stamping always emits dict form for touched entries. Untouched
     fields on an existing dict entry are preserved verbatim.
+
+    Reuses ``SEED_KIND_BY_EXTENSION`` from ``core.models`` so the
+    stamp verb and the loader stay in sync as new seed kinds land —
+    one map, one source of truth.
     """
+    from tolokaforge.core.models import SEED_KIND_BY_EXTENSION
+
     if isinstance(entry, dict):
         out = dict(entry)
         out["path"] = seed_path
         out["digest"] = new_digest
         # Ensure ``kind`` is present — SeedRef requires it in dict form.
         if "kind" not in out:
-            inferred = _KIND_BY_EXTENSION.get(Path(seed_path).suffix.lower())
+            inferred = SEED_KIND_BY_EXTENSION.get(Path(seed_path).suffix.lower())
             if inferred is not None:
                 out["kind"] = inferred
         return out
     # Bare-string entry — coerce to dict form.
-    kind = _KIND_BY_EXTENSION.get(Path(seed_path).suffix.lower())
+    kind = SEED_KIND_BY_EXTENSION.get(Path(seed_path).suffix.lower())
     if kind is None:
         # SeedRef's own load-time normaliser would fail loud here too;
         # match its shape.
         raise click.ClickException(
             f"cannot infer kind from bare-string seed path {seed_path!r} "
-            f"(extension not in {sorted(_KIND_BY_EXTENSION)!r}). Rewrite "
+            f"(extension not in {sorted(SEED_KIND_BY_EXTENSION)!r}). Rewrite "
             "as {path: ..., kind: ...} before stamping."
         )
     return {"path": seed_path, "kind": kind, "digest": new_digest}
@@ -233,12 +251,15 @@ def _resolve_seed_path(seed_path: str, project_dir: Path) -> Path:
 
 def _has_comments(path: Path) -> bool:
     """Best-effort check for ``#``-prefixed comment lines in *path*.
-    Full YAML lexing isn't needed — the warning is advisory."""
-    try:
-        for line in path.read_text().splitlines():
-            stripped = line.lstrip()
-            if stripped.startswith("#"):
-                return True
-    except OSError:
-        pass
+    Full YAML lexing isn't needed — the warning is advisory.
+
+    Any ``OSError`` here is genuinely surprising (the file was read
+    successfully earlier in the same call), so we let it surface
+    rather than silently returning ``False`` and suppressing the
+    downstream comment-loss warning.
+    """
+    for line in path.read_text().splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("#"):
+            return True
     return False
