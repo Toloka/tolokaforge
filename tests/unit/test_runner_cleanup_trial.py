@@ -8,7 +8,9 @@ orchestrator's retry path can re-issue ``RegisterTrial`` for the same
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -82,6 +84,23 @@ class TestCleanupTrialRPC:
         assert response.success is True
         assert response.error == ""
 
+    def test_cleanup_stops_lifecycle_tools(
+        self, runner_service, mock_grpc_context, task_description
+    ):
+        trial_id = "cleanup_lifecycle_test:0"
+        register = _register(runner_service, mock_grpc_context, trial_id, task_description)
+        assert register.success is True, register.error
+        lifecycle_tool = MagicMock()
+        lifecycle_tool.has_lifecycle = True
+        runner_service.trials[trial_id].agent_tools["bash"] = lifecycle_tool
+
+        response = runner_service.CleanupTrial(
+            pb2.CleanupTrialRequest(trial_id=trial_id), mock_grpc_context
+        )
+
+        assert response.success is True, response.error
+        lifecycle_tool.cleanup.assert_called_once_with()
+
     def test_cleanup_enables_reregistration_with_same_trial_id(
         self, runner_service, mock_grpc_context, task_description
     ):
@@ -107,3 +126,25 @@ class TestCleanupTrialRPC:
         second = _register(runner_service, mock_grpc_context, trial_id, task_description)
         assert second.success is True, second.error
         assert trial_id in runner_service.trials
+
+    def test_gateway_coordinates_are_returned_and_unregistered(
+        self, runner_service, mock_grpc_context, task_description
+    ):
+        gateway = MagicMock()
+        gateway.register.return_value = SimpleNamespace(
+            url="http://runner:8765/mcp/namespace",
+            bearer_token="trial-token",
+        )
+        runner_service.mcp_gateway = gateway
+        trial_id = "cleanup_gateway_test:0"
+
+        registered = _register(runner_service, mock_grpc_context, trial_id, task_description)
+        cleaned = runner_service.CleanupTrial(
+            pb2.CleanupTrialRequest(trial_id=trial_id), mock_grpc_context
+        )
+
+        assert registered.success is True, registered.error
+        assert registered.mcp_gateway_url == "http://runner:8765/mcp/namespace"
+        assert registered.mcp_bearer_token == "trial-token"
+        assert cleaned.success is True
+        gateway.unregister.assert_called_once_with(trial_id)

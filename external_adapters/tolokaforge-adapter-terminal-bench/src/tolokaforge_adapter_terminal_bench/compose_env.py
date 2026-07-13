@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import base64
-
+from tolokaforge.adapters.compose import bundle_compose_artifacts
 from tolokaforge_adapter_terminal_bench.task_parser import TerminalBenchTask
 
 
@@ -48,20 +47,9 @@ def bundle_task_artifacts(meta: TerminalBenchTask) -> dict[str, str]:
     Used for cluster deployment (Strategy A) where task files are transmitted
     inside TaskDescription instead of being bind-mounted.
     """
-    artifacts: dict[str, str] = {}
-    task_dir = meta.task_dir
-
-    # docker-compose.yaml
-    compose = task_dir / "docker-compose.yaml"
-    if compose.exists():
-        artifacts["docker-compose.yaml"] = base64.b64encode(compose.read_bytes()).decode()
-
-    # tests/ directory
-    tests_dir = task_dir / "tests"
-    if tests_dir.is_dir():
-        for path in sorted(tests_dir.rglob("*")):
-            if path.is_file():
-                rel = path.relative_to(task_dir)
-                artifacts[str(rel)] = base64.b64encode(path.read_bytes()).decode()
-
-    return artifacts
+    return bundle_compose_artifacts(
+        meta.task_dir,
+        compose_file="docker-compose.yaml",
+        tests_dir="tests",
+        include_compose_context=False,
+    )

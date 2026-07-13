@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from tolokaforge.adapters.base import AdapterEnvironment, BaseAdapter, DockerStackRequirements
+from tolokaforge.adapters.compose import ComposeToolSourceConfig, build_compose_tool_schema
 from tolokaforge.core.models import (
     Grade,
     GradeComponents,
@@ -24,10 +25,7 @@ from tolokaforge.core.models import (
 )
 from tolokaforge.runner.models import (
     AdapterType,
-    InvocationStyle,
     TaskDescription,
-    ToolSchema,
-    ToolSource,
 )
 from tolokaforge.runner.models import (
     GradingConfig as RunnerGradingConfig,
@@ -71,7 +69,8 @@ class TerminalBenchAdapter(BaseAdapter):
         self.runner_task_dir: str | None = params.get("runner_task_dir") or first_pack_str
         # Root for per-task log bind-mounts on the Docker daemon's filesystem.
         # Defaults to LOGS_HOST_ROOT (host-socket).  Pass /workspace for DinD.
-        self.logs_host_root: str = params.get("logs_host_root", self.LOGS_HOST_ROOT)
+        default_logs_root = "/workspace" if self.image_registry else self.LOGS_HOST_ROOT
+        self.logs_host_root: str = params.get("logs_host_root", default_logs_root)
         self._tasks: dict[str, TerminalBenchTask] = {}
 
     # -- Docker stack requirements -------------------------------------------
@@ -82,6 +81,9 @@ class TerminalBenchAdapter(BaseAdapter):
         Docker socket. The Runner inside the stack uses ``docker compose``
         against the host daemon, so paths must resolve identically.
         """
+        if self.image_registry:
+            return DockerStackRequirements(enable_dind=True)
+
         existing_packs: list[Path] = [pack for pack in self.task_packs if pack.exists()]
         return DockerStackRequirements(
             task_pack_mounts=existing_packs,
@@ -200,8 +202,8 @@ class TerminalBenchAdapter(BaseAdapter):
             adapter_type=AdapterType.TERMINAL_BENCH,
             system_prompt=self.get_system_prompt(task_id),
             agent_tools=[
-                ToolSchema(
-                    name="bash",
+                build_compose_tool_schema(
+                    tool_name="bash",
                     description="Execute a bash command inside the task container",
                     parameters={
                         "type": "object",
@@ -213,20 +215,16 @@ class TerminalBenchAdapter(BaseAdapter):
                         },
                         "required": ["command"],
                     },
-                    category="compute",
-                    timeout_s=120.0,
-                    source=ToolSource(
-                        toolset="terminal_bench",
-                        module_path="",
-                        class_name="bash",
-                        invocation_style=InvocationStyle.DOCKER_COMPOSE_EXEC,
-                        extra={
-                            "compose_file": "docker-compose.yaml",
-                            "task_dir": task_dir_value,
-                            "service": "main",
-                            "env_vars": env_vars,
-                        },
+                    source=ComposeToolSourceConfig(
+                        invocation_style="docker_compose_exec",
+                        compose_file="docker-compose.yaml",
+                        service="main",
+                        tests_dir="tests",
+                        env_vars=env_vars,
                     ),
+                    toolset="terminal_bench",
+                    task_dir_value=task_dir_value,
+                    timeout_s=120.0,
                 )
             ],
             user_tools=[],

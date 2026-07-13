@@ -106,7 +106,10 @@ class DockerRunnerAdapter:
         self.tool_logs = []
 
     def register_trial(
-        self, task_description_json: str, default_tool_timeout_s: float = 30.0
+        self,
+        task_description_json: str,
+        default_tool_timeout_s: float = 30.0,
+        workspace_path: str | None = None,
     ) -> dict:
         """
         Register trial with Runner service
@@ -114,6 +117,7 @@ class DockerRunnerAdapter:
         Args:
             task_description_json: Full TaskDescription as JSON string
             default_tool_timeout_s: Default timeout for tool execution
+            workspace_path: Optional Runner-local per-trial workspace
 
         Returns:
             dict with success, error, tool_schemas, num_agent_tools, num_user_tools
@@ -122,6 +126,7 @@ class DockerRunnerAdapter:
             trial_id=self.trial_id,
             task_description_json=task_description_json,
             default_tool_timeout_s=default_tool_timeout_s,
+            workspace_path=workspace_path,
         )
 
     def grade_trial(

@@ -452,6 +452,7 @@ def validate(tasks: str):
     import glob
 
     from tolokaforge.adapters._task_loader import load_task_yaml
+    from tolokaforge.adapters.compose import load_grading_data, validate_native_compose_contract
 
     task_files = glob.glob(tasks, recursive=True)
 
@@ -463,7 +464,9 @@ def validate(tasks: str):
             # load_task_yaml applies the shared-domain merge (if the task.yaml
             # carries a ``domain:`` ref) before TaskConfig validation, so this
             # CLI accepts both flat and shared-domain layouts.
-            load_task_yaml(Path(task_file))
+            task, task_dir = load_task_yaml(Path(task_file))
+            grading_data = load_grading_data(task, task_dir)
+            validate_native_compose_contract(task, task_dir, grading_data)
             console.print(f"[green]✓ {task_file}[/green]")
             valid += 1
         except Exception as e:

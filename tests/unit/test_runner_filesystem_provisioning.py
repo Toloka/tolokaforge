@@ -1,8 +1,9 @@
-"""Verify the runner provisions logical paths into /work/, not /env/fs/agent-visible/.
+"""Verify the runner provisions logical paths into the selected trial root.
 
 When ``InitialStateConfig.filesystem`` declares
 ``{"/env/fs/agent-visible/experiment.csv": "..."}``, the runner must
-materialize the file at ``/work/experiment.csv`` because:
+materialize the file at ``<trial-root>/experiment.csv``. Legacy trials select
+``/work`` while BYOH trials select a unique child of ``/workspaces`` because:
 
 - ``BashTool`` uses ``/work`` as its working directory.
 - ``ReadFileTool`` / ``WriteFileTool`` / ``ListDirTool`` normalise both
@@ -85,13 +86,13 @@ def test_bare_logical_root_is_skipped(tmp_path: Path) -> None:
     assert written == {}
 
 
-def test_runner_service_block_uses_work_base() -> None:
-    """The actual runner code path uses /work as its base — not /env/fs/agent-visible."""
+def test_runner_service_block_uses_registered_workspace() -> None:
+    """Provisioning uses the validated registration root, never the logical alias."""
     import tolokaforge.runner.service as svc_module
 
     src = Path(svc_module.__file__).read_text()
-    # Sanity: the provisioning block declares /work as base_dir.
-    assert 'base_dir = Path("/work")' in src
+    assert "base_dir = workspace_path" in src
+    assert 'return Path("/work")' in src
     # And the literal /env/fs/agent-visible path is NOT used as a write target.
     bad = '\n            base_dir = Path("/env/fs/agent-visible")\n'
     assert bad not in src

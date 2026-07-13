@@ -31,7 +31,8 @@
           "T_BENCH_TEST_DIR": "/tests"
         },
         "service": "main",
-        "task_dir": "<ROOT>/tests/data/terminal_bench_tasks/echo-hello"
+        "task_dir": "<ROOT>/tests/data/terminal_bench_tasks/echo-hello",
+        "tests_dir": "tests"
       },
       "invocation_style": "docker_compose_exec",
       "mcp_server_script": null,

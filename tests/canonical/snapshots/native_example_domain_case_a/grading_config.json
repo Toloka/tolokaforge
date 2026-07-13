@@ -7,6 +7,7 @@
     }
   },
   "custom_checks": null,
+  "grading_method": null,
   "llm_judge": null,
   "state_checks": {
     "db_hash_check": false,

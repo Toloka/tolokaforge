@@ -131,7 +131,11 @@ class RunnerClient:
         self.close()
 
     def register_trial(
-        self, trial_id: str, task_description_json: str, default_tool_timeout_s: float = 30.0
+        self,
+        trial_id: str,
+        task_description_json: str,
+        default_tool_timeout_s: float = 30.0,
+        workspace_path: str | None = None,
     ) -> dict:
         """
         Register a new trial with full TaskDescription
@@ -140,6 +144,7 @@ class RunnerClient:
             trial_id: Unique identifier for this trial (format: "{task_id}:{trial_index}")
             task_description_json: Full TaskDescription as JSON string
             default_tool_timeout_s: Default timeout for tool execution
+            workspace_path: Optional Runner-local per-trial workspace
 
         Returns:
             dict with keys:
@@ -157,6 +162,7 @@ class RunnerClient:
                 trial_id=trial_id,
                 task_description_json=task_description_json,
                 default_tool_timeout_s=default_tool_timeout_s,
+                workspace_path=workspace_path or "",
             )
 
             response = self.stub.RegisterTrial(request)
@@ -182,6 +188,8 @@ class RunnerClient:
                 "tool_schemas": tool_schemas,
                 "num_agent_tools": response.num_agent_tools,
                 "num_user_tools": response.num_user_tools,
+                "mcp_gateway_url": response.mcp_gateway_url or None,
+                "mcp_bearer_token": response.mcp_bearer_token or None,
             }
 
             if response.success:
@@ -450,6 +458,25 @@ class RunnerClient:
         except grpc.RpcError as e:
             logger.error(f"gRPC error in reset_trial: {e}")
             return {"success": False, "error": f"gRPC error: {str(e)}", "state_hash": None}
+
+    def get_trial_history(self, trial_id: str) -> dict:
+        """Retrieve the Runner's authoritative tool-call ledger."""
+        if not self.stub:
+            self.connect()
+
+        try:
+            response = self.stub.GetTrialHistory(
+                runner_pb2.GetTrialHistoryRequest(trial_id=trial_id)
+            )
+            history = json.loads(response.tool_history_json) if response.tool_history_json else []
+            return {
+                "success": response.success,
+                "error": response.error if response.error else None,
+                "tool_history": history,
+            }
+        except (grpc.RpcError, json.JSONDecodeError) as exc:
+            logger.error(f"Error in get_trial_history: {exc}")
+            return {"success": False, "error": str(exc), "tool_history": []}
 
     def cleanup_trial(self, trial_id: str) -> dict:
         """

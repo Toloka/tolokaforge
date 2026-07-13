@@ -249,6 +249,40 @@ class TestRunnerPipeline:
         assert response.success is False
         assert "not found" in response.error.lower()
 
+    def test_get_trial_history_returns_authoritative_ledger(
+        self, runner_service, mock_grpc_context, simple_task_description
+    ):
+        trial_id = "history_test:0"
+        registered = runner_service.RegisterTrial(
+            pb2.RegisterTrialRequest(
+                trial_id=trial_id,
+                task_description_json=json.dumps(simple_task_description),
+            ),
+            mock_grpc_context,
+        )
+        assert registered.success, registered.error
+        runner_service.trials[trial_id].record_tool_call(
+            tool_name="add_note",
+            arguments={"title": "Stand-up"},
+            output='{"id":"note-1"}',
+            status="success",
+            executor="agent",
+            latency_seconds=0.125,
+        )
+
+        response = runner_service.GetTrialHistory(
+            pb2.GetTrialHistoryRequest(trial_id=trial_id), mock_grpc_context
+        )
+        history = json.loads(response.tool_history_json)
+
+        assert response.success
+        assert history[0]["tool_name"] == "add_note"
+        assert history[0]["arguments"] == {"title": "Stand-up"}
+        assert len(history[0]["result_hash"]) == 64
+        assert history[0]["status"] == "success"
+        assert history[0]["latency_seconds"] == 0.125
+        assert history[0]["timestamp"]
+
     def test_get_state_success(self, runner_service, mock_grpc_context, simple_task_description):
         """Test GetState returns current state."""
         trial_id = "get_state_test:0"

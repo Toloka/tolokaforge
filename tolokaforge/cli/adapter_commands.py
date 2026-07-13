@@ -130,6 +130,7 @@ def convert(
 def _validate_converted(output_path: Path, task_ids: list[str], verbose: bool) -> None:
     """Validate converted output by loading via NativeAdapter."""
     from tolokaforge.adapters._task_loader import load_task_yaml
+    from tolokaforge.adapters.compose import load_grading_data, validate_native_compose_contract
 
     console.print("\n[bold blue]Validating converted output…[/bold blue]")
     valid = 0
@@ -140,7 +141,9 @@ def _validate_converted(output_path: Path, task_ids: list[str], verbose: bool) -
         if not task_yaml.exists():
             continue
         try:
-            load_task_yaml(task_yaml)
+            task, task_dir = load_task_yaml(task_yaml)
+            grading_data = load_grading_data(task, task_dir)
+            validate_native_compose_contract(task, task_dir, grading_data)
             valid += 1
             if verbose:
                 console.print(f"  ✓ valid: {task_id}", style="green")

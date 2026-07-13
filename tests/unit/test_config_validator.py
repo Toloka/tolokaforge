@@ -101,6 +101,78 @@ class TestSchemaValidation:
         result = validate_run_config(cfg)
         assert not result.ok
 
+    def test_agent_harness_and_allowlist_are_accepted(self):
+        cfg = _make_config()
+        cfg["agent_harness"] = {
+            "type": "claude-code",
+            "version": "2.1.203",
+            "flags": {"permission_mode": "bypassPermissions"},
+            "env": {"CLAUDE_CODE_DISABLE_TELEMETRY": "1"},
+        }
+        cfg["orchestrator"]["agent_network"] = {
+            "mode": "allowlist",
+            "entries": ["api.anthropic.com", "10.0.0.0/8"],
+        }
+
+        result = validate_run_config(cfg)
+
+        assert result.ok, result.errors
+
+    def test_agent_harness_flags_are_adapter_validated(self):
+        cfg = _make_config()
+        cfg["agent_harness"] = {
+            "type": "claude-code",
+            "version": "2.1.203",
+            "flags": {"not_a_claude_flag": True},
+        }
+
+        result = validate_run_config(cfg)
+
+        assert not result.ok
+        assert "not_a_claude_flag" in result.errors[0].message
+
+    def test_interactive_only_harness_is_rejected(self):
+        cfg = _make_config()
+        cfg["agent_harness"] = {"type": "cursor", "version": "latest"}
+
+        result = validate_run_config(cfg)
+
+        assert not result.ok
+        assert "documentation-only" in result.errors[0].message
+
+    @pytest.mark.parametrize(
+        "key",
+        ["ANTHROPIC_API_KEY", "GITHUB_TOKEN", "CLIENT_SECRET", "DATABASE_DSN"],
+    )
+    def test_agent_harness_rejects_credential_env(self, key):
+        cfg = _make_config()
+        cfg["agent_harness"] = {
+            "type": "claude-code",
+            "version": "2.1.203",
+            "env": {key: "must-not-be-here"},
+        }
+
+        result = validate_run_config(cfg)
+
+        assert not result.ok
+        assert "SecretManager" in result.errors[0].message
+
+    @pytest.mark.parametrize(
+        "agent_network",
+        [
+            {"mode": "allowlist", "entries": []},
+            {"mode": "public", "entries": ["api.example.com"]},
+            {"mode": "allowlist", "entries": ["https://api.example.com/path"]},
+        ],
+    )
+    def test_agent_network_rejects_ambiguous_policy(self, agent_network):
+        cfg = _make_config()
+        cfg["orchestrator"]["agent_network"] = agent_network
+
+        result = validate_run_config(cfg)
+
+        assert not result.ok
+
 
 # ---------------------------------------------------------------------------
 # Reasoning compatibility

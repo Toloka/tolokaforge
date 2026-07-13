@@ -9,7 +9,13 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from tolokaforge.adapters._task_loader import _detect_task_root, load_task_yaml
-from tolokaforge.adapters.base import AdapterEnvironment, BaseAdapter
+from tolokaforge.adapters.base import AdapterEnvironment, BaseAdapter, DockerStackRequirements
+from tolokaforge.adapters.compose import (
+    build_compose_tool_schema,
+    bundle_compose_artifacts,
+    load_grading_data,
+    validate_native_compose_contract,
+)
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import GradingConfig, TaskConfig
 
@@ -203,6 +209,17 @@ class NativeAdapter(BaseAdapter):
             raise ValueError(f"Task {task_id} not found")
         return self._task_roots[task_id]
 
+    def docker_stack_requirements(self) -> DockerStackRequirements:
+        """Enable the shared DinD workspace when any native task uses Compose."""
+
+        for task_id in self.get_task_ids():
+            task = self.get_task(task_id)
+            task_dir = self.get_task_dir(task_id)
+            grading_data = load_grading_data(task, task_dir)
+            if validate_native_compose_contract(task, task_dir, grading_data):
+                return DockerStackRequirements(enable_dind=True)
+        return DockerStackRequirements()
+
     def create_environment(self, task_id: str) -> AdapterEnvironment:
         """Create environment from task's initial_state config.
 
@@ -365,13 +382,11 @@ class NativeAdapter(BaseAdapter):
             EnvAssertion,
             GoldenAction,
             InitializationAction,
-            InvocationStyle,
             RequiredAction,
             SearchConfig,
             StateChecksConfig,
             TaskDescription,
             ToolSchema,
-            ToolSource,
             TranscriptRulesConfig,
         )
         from tolokaforge.runner.models import (
@@ -396,6 +411,8 @@ class NativeAdapter(BaseAdapter):
 
         task = self.get_task(task_id)
         task_dir = self.get_task_dir(task_id)
+        grading_data = load_grading_data(task, task_dir)
+        compose_sources = dict(validate_native_compose_contract(task, task_dir, grading_data))
 
         # Load system prompt
         system_prompt = ""
@@ -438,28 +455,48 @@ class NativeAdapter(BaseAdapter):
                         f"tools.agent.{tool_name} must be a mapping of init kwargs "
                         f"(got {type(raw).__name__}={raw!r}) in task {task.task_id!r}"
                     )
-                tool_configs[tool_name] = dict(raw)
+                tool_configs[tool_name] = {
+                    key: value for key, value in raw.items() if key != "source"
+                }
 
             # Load rich schemas from fixtures/tools.json or via live MCP query.
             # This populates real descriptions and parameter schemas (including
             # required fields) so the LLM receives accurate tool definitions.
-            rich_schemas: dict[str, dict] = {}
+            builtin_schemas = _builtin_tool_schemas(enabled_tools, tool_configs)
+            mcp_schemas: dict[str, dict] = {}
             if mcp_server_ref:
-                rich_schemas = self._load_rich_tool_schemas(task_dir, task_dir / mcp_server_ref)
-            else:
-                # No MCP server — pull parameter schemas from builtin tool
-                # implementations so the LLM receives proper descriptions.
-                rich_schemas = _builtin_tool_schemas(enabled_tools, tool_configs)
+                mcp_schemas = self._load_rich_tool_schemas(task_dir, task_dir / mcp_server_ref)
+            # A native task may intentionally combine builtin tools such as
+            # bash with task-provided MCP tools. MCP schemas win only for names
+            # actually advertised by that server.
+            rich_schemas = {**builtin_schemas, **mcp_schemas}
 
             for tool_name in enabled_tools:
                 rich = rich_schemas.get(tool_name, {})
+                compose_source = compose_sources.get(tool_name)
+                if compose_source is not None:
+                    agent_tools.append(
+                        build_compose_tool_schema(
+                            tool_name=tool_name,
+                            description=rich.get("description", f"Agent tool: {tool_name}"),
+                            parameters=rich.get("parameters", {"type": "object", "properties": {}}),
+                            source=compose_source,
+                            toolset=task.category or "native",
+                            task_dir_value="__artifacts__",
+                            timeout_s=120.0,
+                        )
+                    )
+                    continue
+
                 # Only wire up MCP_SERVER source when the task provides an mcp_server
                 # script. Builtin tools (read_file, write_file, bash, …) have no
                 # script and no ToolSource — the runner's source-less dispatch
                 # arm routes them by name via the unified builtin registry, and
                 # ``tool_config`` carries any per-task init kwargs.
-                source = (
-                    ToolSource(
+                if mcp_server_ref and tool_name in mcp_schemas:
+                    from tolokaforge.runner.models import InvocationStyle, ToolSource
+
+                    source = ToolSource(
                         toolset=task.category or "native",
                         module_path="mcp_server",
                         class_name=tool_name,
@@ -467,9 +504,8 @@ class NativeAdapter(BaseAdapter):
                         # Relative path — Runner resolves it against the extracted artifacts dir.
                         mcp_server_script=mcp_server_ref,
                     )
-                    if mcp_server_ref
-                    else None
-                )
+                else:
+                    source = None
                 tool_schema = ToolSchema(
                     name=tool_name,
                     description=rich.get("description", f"Agent tool: {tool_name}"),
@@ -540,14 +576,6 @@ class NativeAdapter(BaseAdapter):
                     arguments=action.arguments,
                 )
                 initialization_actions.append(init_action)
-
-        # Load grading config
-        grading_data = None
-        if task.grading:
-            grading_path = task_dir / task.grading
-            if grading_path.exists():
-                with open(grading_path) as f:
-                    grading_data = yaml.safe_load(f)
 
         # Build grading config
         state_checks = None
@@ -631,6 +659,7 @@ class NativeAdapter(BaseAdapter):
             combine_method=combine_data.get("method", "weighted"),
             weights=combine_data.get("weights", {"state_checks": 1.0}),
             pass_threshold=combine_data.get("pass_threshold", 1.0),
+            grading_method=grading_data.get("grading_method"),
             state_checks=state_checks,
             transcript_rules=transcript_rules,
             llm_judge=llm_judge_config,
@@ -686,6 +715,15 @@ class NativeAdapter(BaseAdapter):
         # The Runner runs in a separate container without access to the host
         # filesystem, so we transfer all necessary files via gRPC/TaskDescription.
         tool_artifacts = self._bundle_task_artifacts(task_dir) if mcp_server_ref else {}
+        for compose_source in compose_sources.values():
+            tool_artifacts.update(
+                bundle_compose_artifacts(
+                    task_dir,
+                    compose_file=compose_source.compose_file,
+                    tests_dir=compose_source.tests_dir,
+                    include_compose_context=True,
+                )
+            )
 
         # mcp_server.py loads its initial state from ``initial_state.json``
         # next to itself (see ``create_server`` in tools_interface.py). For the

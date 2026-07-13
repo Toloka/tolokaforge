@@ -254,6 +254,7 @@ class TestIsRetryableTrajectory:
         [
             TerminationReason.RATE_LIMIT,
             TerminationReason.API_ERROR,
+            TerminationReason.API_TIMEOUT,
             TerminationReason.TIMEOUT,
             TerminationReason.ERROR,
         ],

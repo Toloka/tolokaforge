@@ -144,6 +144,7 @@ class TestDockerComposeExecWrapperInit:
             task_dir="/tmp",
         )
         assert w.service == "main"
+        assert w.tests_dir == "tests"
         assert w.env_vars == {}
 
 
@@ -510,6 +511,18 @@ class TestTerminalBenchAdapterDockerStackRequirements:
 
         reqs = adapter.docker_stack_requirements()
         assert ghost.resolve() not in reqs.task_pack_mounts
+
+    def test_registry_artifacts_use_dind_shared_workspace(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        adapter = TerminalBenchAdapter(
+            {"terminal_bench_dir": str(tmp_path), "image_registry": "registry.example/tasks"}
+        )
+
+        reqs = adapter.docker_stack_requirements()
+        assert reqs.enable_dind is True
+        assert reqs.mount_docker_socket is False
+        assert adapter.logs_host_root == "/workspace"
 
     def test_first_pack_drives_discovery_and_runner_paths(self, tmp_path):
         from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter

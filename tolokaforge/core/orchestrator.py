@@ -113,12 +113,16 @@ def _tasks_need_full_stack(tasks: list[Any]) -> bool:
         mock_web = (
             initial_state.mock_web
             if hasattr(initial_state, "mock_web")
-            else initial_state.get("mock_web") if isinstance(initial_state, dict) else None
+            else initial_state.get("mock_web")
+            if isinstance(initial_state, dict)
+            else None
         )
         rag = (
             initial_state.rag
             if hasattr(initial_state, "rag")
-            else initial_state.get("rag") if isinstance(initial_state, dict) else None
+            else initial_state.get("rag")
+            if isinstance(initial_state, dict)
+            else None
         )
         if mock_web or rag:
             return True
@@ -239,6 +243,7 @@ class Orchestrator:
         if trajectory.termination_reason in (
             TerminationReason.RATE_LIMIT,
             TerminationReason.API_ERROR,
+            TerminationReason.API_TIMEOUT,
             TerminationReason.TIMEOUT,
             TerminationReason.ERROR,
         ):
@@ -251,16 +256,16 @@ class Orchestrator:
         task_id: str,
         trial_idx: int,
     ) -> None:
-        """Forget the prior attempt's runner-side trial registration before retry.
+        """Forget an attempt's Runner registration after it finishes.
 
         The Runner service tracks each trial in ``self.trials[trial_id]`` plus
         the DB Service trial row. ``RegisterTrial`` rejects duplicates with
         ``Trial 'X' already exists``, so re-attempting a transiently-failed
         trial would otherwise burn every retry on the registration error.
 
-        Idempotent: a stale or already-absent trial is logged and ignored so a
-        failing cleanup never blocks the retry attempt itself (the
-        re-registration will surface a clearer error if state is unrecoverable).
+        This closes lifecycle tools and unregisters the authenticated MCP
+        namespace. It is idempotent so callers use it for successful, failed,
+        and retryable attempts alike.
         """
         if docker_runtime is None:
             return
@@ -269,7 +274,7 @@ class Orchestrator:
             result = docker_runtime.executor_client.cleanup_trial(trial_id)
         except Exception as e:
             self.logger.warning(
-                "Cleanup before retry raised; continuing with re-registration",
+                "Runner trial cleanup raised; continuing",
                 task_id=task_id,
                 trial_index=trial_idx,
                 error=str(e),
@@ -277,7 +282,7 @@ class Orchestrator:
             return
         if not result.get("success"):
             self.logger.warning(
-                "Cleanup before retry returned non-success; continuing with re-registration",
+                "Runner trial cleanup returned non-success; continuing",
                 task_id=task_id,
                 trial_index=trial_idx,
                 error=result.get("error"),
@@ -510,7 +515,8 @@ class Orchestrator:
         agent_config = self.config.models.get("agent")
         user_config = self.config.models.get("user")
 
-        if not agent_config:
+        harness_config = self.config.agent_harness
+        if not agent_config and harness_config is None:
             self.logger.error("Agent model configuration required")
             raise ValueError("Agent model configuration required")
 
@@ -527,14 +533,24 @@ class Orchestrator:
             )
 
         # Log model configuration for both roles
-        self.logger.info(
-            "Model configuration",
-            agent_model=f"{agent_config.provider}/{agent_config.name}",
-            user_model=f"{user_config.provider}/{user_config.name}",
-        )
-
-        # Instantiate agent client in orchestrator process
-        agent_client = LLMClient(agent_config)
+        if harness_config is not None:
+            self.logger.info(
+                "Agent harness configuration",
+                harness_type=harness_config.type,
+                harness_version=harness_config.version,
+                user_simulator_policy=harness_config.user_simulator_policy,
+            )
+            agent_client = None
+        else:
+            assert agent_config is not None
+            self.logger.info(
+                "Model configuration",
+                agent_model=f"{agent_config.provider}/{agent_config.name}",
+                user_model=f"{user_config.provider}/{user_config.name}",
+            )
+            # BYOH selection happens before this point so provider-native
+            # clients are never created for harness-backed trials.
+            agent_client = LLMClient(agent_config)
         request_limiter: GlobalRateLimiter | None = None
         if self.config.orchestrator.max_requests_per_second is not None:
             request_limiter = GlobalRateLimiter(self.config.orchestrator.max_requests_per_second)
@@ -556,6 +572,23 @@ class Orchestrator:
                 core_stack_kwargs = (
                     stack_requirements.to_core_stack_kwargs() if stack_requirements else {}
                 )
+                if harness_config is not None:
+                    workspace_root = (output_dir / "workspaces").resolve()
+                    extra_binds = list(core_stack_kwargs.get("extra_runner_binds", []))
+                    existing_workspace_binds = [
+                        host for host, target in extra_binds if target == "/workspaces"
+                    ]
+                    if (
+                        existing_workspace_binds
+                        and Path(existing_workspace_binds[0]).resolve() != workspace_root
+                    ):
+                        raise ValueError(
+                            "Runner bind target /workspaces is already assigned to a "
+                            "different host directory"
+                        )
+                    if not existing_workspace_binds:
+                        extra_binds.append((str(workspace_root), "/workspaces"))
+                    core_stack_kwargs["extra_runner_binds"] = extra_binds
                 # Ensure host-side paths for any extra bind mounts exist so
                 # Docker doesn't create them as root-owned at start-up.
                 for host_path, _ in core_stack_kwargs.get("extra_runner_binds", []):
@@ -618,6 +651,45 @@ class Orchestrator:
 
         executor_healthy = docker_runtime.health_check()
         self.logger.info("Docker runtime health check", executor_healthy=executor_healthy)
+
+        harness_trial_runner = None
+        harness_network_runtime = None
+        if harness_config is not None:
+            from tolokaforge.harnesses.network import (
+                AgentNetworkRuntime,
+                effective_network_policy,
+            )
+            from tolokaforge.harnesses.registry import get_harness_spec
+            from tolokaforge.harnesses.trial_runner import HarnessTrialRunner
+
+            external_network = (
+                service_stack._networks["runner-net"] if service_stack is not None else None
+            )
+            if external_network is None:
+                from tolokaforge.docker.network import Network
+
+                external_network = Network.create("runner-net")
+            runner_container = (
+                service_stack._containers["runner"].container_id
+                if service_stack is not None
+                else "tolokaforge-runner"
+            )
+            policy = effective_network_policy(
+                self.config.orchestrator.agent_network,
+                get_harness_spec(harness_config.type),
+            )
+            harness_network_runtime = AgentNetworkRuntime.create(
+                policy=policy,
+                external_network=external_network,
+                runner_container=runner_container,
+            )
+            harness_trial_runner = HarnessTrialRunner(
+                harness_config,
+                network=harness_network_runtime.network,
+                workspace_root=output_dir / "workspaces",
+                episode_timeout_s=self.config.orchestrator.timeouts.episode_s,
+                proxy_url=harness_network_runtime.proxy_url,
+            )
 
         # Build pending task/trial pairs and initialize durable queue.
         task_by_id = {task.task_id: task for task in self.tasks}
@@ -694,6 +766,7 @@ class Orchestrator:
                     output_dir,
                     docker_runtime,
                     request_limiter,
+                    harness_trial_runner,
                 )
                 active_futures[future] = lease
                 return True
@@ -709,6 +782,7 @@ class Orchestrator:
                     trial_idx = lease.trial_index
                     try:
                         trajectory = future.result()
+                        self._cleanup_runner_state_for_retry(docker_runtime, task_id, trial_idx)
                         self.results.append(trajectory)
                         trial_cost = trajectory.metrics.cost_usd or 0.0
                         total_cost_usd += trial_cost
@@ -726,9 +800,6 @@ class Orchestrator:
                                 retryable=True,
                             )
                             if should_retry:
-                                self._cleanup_runner_state_for_retry(
-                                    docker_runtime, task_id, trial_idx
-                                )
                                 self.logger.warning(
                                     "Retrying trial after transient failure",
                                     task_id=task_id,
@@ -776,6 +847,7 @@ class Orchestrator:
                             )
                     except Exception as e:
                         should_retry = run_queue.mark_failed(lease.id, str(e), retryable=True)
+                        self._cleanup_runner_state_for_retry(docker_runtime, task_id, trial_idx)
                         self.logger.error(
                             "Trial execution exception",
                             task_id=task_id,
@@ -783,9 +855,7 @@ class Orchestrator:
                             error=str(e),
                             will_retry=should_retry,
                         )
-                        if should_retry:
-                            self._cleanup_runner_state_for_retry(docker_runtime, task_id, trial_idx)
-                        else:
+                        if not should_retry:
                             # Mark as failed only when retries are exhausted.
                             run_state.mark_failed(task_id, trial_idx, str(e))
                             self.state_manager.save_state(run_state)
@@ -825,6 +895,9 @@ class Orchestrator:
             docker_runtime.close()
             self.logger.info("Docker runtime closed")
 
+        if harness_network_runtime is not None:
+            harness_network_runtime.close()
+
         # Stop TypeSense BEFORE destroying the ServiceStack.
         # TypeSense is connected to runner-net (via _connect_typesense_to_runner_network),
         # so it must be removed from that network before the stack can tear it down.
@@ -862,7 +935,8 @@ class Orchestrator:
 
         agent_config = self.config.models.get("agent")
         user_config = self.config.models.get("user")
-        if not agent_config:
+        harness_config = self.config.agent_harness
+        if not agent_config and harness_config is None:
             raise ValueError("Agent model configuration required")
 
         # Apply default user model if not configured
@@ -878,13 +952,16 @@ class Orchestrator:
             )
 
         # Log model configuration for both roles
-        self.logger.info(
-            "Model configuration",
-            agent_model=f"{agent_config.provider}/{agent_config.name}",
-            user_model=f"{user_config.provider}/{user_config.name}",
-        )
-
-        agent_client = LLMClient(agent_config)
+        if harness_config is not None:
+            agent_client = None
+        else:
+            assert agent_config is not None
+            self.logger.info(
+                "Model configuration",
+                agent_model=f"{agent_config.provider}/{agent_config.name}",
+                user_model=f"{user_config.provider}/{user_config.name}",
+            )
+            agent_client = LLMClient(agent_config)
         request_limiter: GlobalRateLimiter | None = None
         if self.config.orchestrator.max_requests_per_second is not None:
             request_limiter = GlobalRateLimiter(self.config.orchestrator.max_requests_per_second)
@@ -895,6 +972,34 @@ class Orchestrator:
             runner_address=os.environ.get("EXECUTOR_ADDRESS", "executor:50051")
         )
         docker_runtime.connect()
+
+        harness_trial_runner = None
+        harness_network_runtime = None
+        if harness_config is not None:
+            from tolokaforge.docker.network import Network
+            from tolokaforge.harnesses.network import (
+                AgentNetworkRuntime,
+                effective_network_policy,
+            )
+            from tolokaforge.harnesses.registry import get_harness_spec
+            from tolokaforge.harnesses.trial_runner import HarnessTrialRunner
+
+            external_network = Network.create("runner-net")
+            harness_network_runtime = AgentNetworkRuntime.create(
+                policy=effective_network_policy(
+                    self.config.orchestrator.agent_network,
+                    get_harness_spec(harness_config.type),
+                ),
+                external_network=external_network,
+                runner_container="tolokaforge-runner",
+            )
+            harness_trial_runner = HarnessTrialRunner(
+                harness_config,
+                network=harness_network_runtime.network,
+                workspace_root=output_dir / "workspaces",
+                episode_timeout_s=self.config.orchestrator.timeouts.episode_s,
+                proxy_url=harness_network_runtime.proxy_url,
+            )
 
         task_by_id = {task.task_id: task for task in self.tasks}
         run_queue = create_run_queue(
@@ -955,6 +1060,10 @@ class Orchestrator:
                         output_dir=output_dir,
                         docker_runtime=docker_runtime,
                         request_limiter=request_limiter,
+                        harness_trial_runner=harness_trial_runner,
+                    )
+                    self._cleanup_runner_state_for_retry(
+                        docker_runtime, lease.task_id, lease.trial_index
                     )
                     self.results.append(trajectory)
                     trial_cost = trajectory.metrics.cost_usd or 0.0
@@ -969,9 +1078,6 @@ class Orchestrator:
                         if run_queue.mark_failed(
                             lease.id, f"Retryable failure: {reason}", retryable=True
                         ):
-                            self._cleanup_runner_state_for_retry(
-                                docker_runtime, lease.task_id, lease.trial_index
-                            )
                             requeued += 1
                         else:
                             failed += 1
@@ -979,10 +1085,10 @@ class Orchestrator:
                         run_queue.mark_completed(lease.id, cost_usd=trial_cost)
                         completed += 1
                 except Exception as e:
+                    self._cleanup_runner_state_for_retry(
+                        docker_runtime, lease.task_id, lease.trial_index
+                    )
                     if run_queue.mark_failed(lease.id, str(e), retryable=True):
-                        self._cleanup_runner_state_for_retry(
-                            docker_runtime, lease.task_id, lease.trial_index
-                        )
                         requeued += 1
                     else:
                         failed += 1
@@ -997,6 +1103,8 @@ class Orchestrator:
         finally:
             if docker_runtime:
                 docker_runtime.close()
+            if harness_network_runtime is not None:
+                harness_network_runtime.close()
             if hasattr(self, "_typesense_server") and self._typesense_server:
                 try:
                     self._typesense_server.stop()
@@ -1059,6 +1167,7 @@ class Orchestrator:
         output_dir: Path,
         docker_runtime: Any,
         request_limiter: GlobalRateLimiter | None = None,
+        harness_trial_runner: Any | None = None,
     ) -> Trajectory:
         """Run a single trial with environment state and grading"""
         assert self.adapter is not None
@@ -1066,7 +1175,7 @@ class Orchestrator:
         # Get task directory from adapter (supports both native and tau)
         task_dir = self.adapter.get_task_dir(task.task_id)
 
-        if agent_client is None:
+        if agent_client is None and harness_trial_runner is None:
             raise ValueError("Agent client must be provided for trial execution")
 
         # Per-trial DB namespace for parallel isolation
@@ -1253,7 +1362,17 @@ class Orchestrator:
         ensure_registered_adapter(task_desc.adapter_type)
         task_desc_json = task_desc.model_dump_json()
 
-        register_result = tool_executor.register_trial(task_description_json=task_desc_json)
+        harness_workspace: Path | None = None
+        runner_workspace_path: str | None = None
+        if harness_trial_runner is not None:
+            harness_workspace = harness_trial_runner.prepare_workspace(task.task_id, trial_idx)
+            workspace_relative = harness_workspace.relative_to(harness_trial_runner.workspace_root)
+            runner_workspace_path = str(Path("/workspaces") / workspace_relative)
+
+        register_result = tool_executor.register_trial(
+            task_description_json=task_desc_json,
+            workspace_path=runner_workspace_path,
+        )
         if not register_result["success"]:
             error = register_result.get("error", "Unknown error")
             raise RuntimeError(
@@ -1280,75 +1399,118 @@ class Orchestrator:
             tool_count=register_result.get("num_agent_tools", len(tool_schemas)),
         )
 
-        # User tool executor is not used in Docker mode (Runner handles tools)
-        user_tool_executor = None
-        user_tool_schemas: list[dict[str, Any]] = []
-
-        # Use backstory from task configuration
-        backstory = task.user_simulator.backstory
-
-        # Create user simulator
-        user_llm_config = user_config if task.user_simulator.mode == "llm" else None
-        user_simulator = UserSimulator(
-            mode=task.user_simulator.mode,
-            llm_config=user_llm_config,
-            persona=task.user_simulator.persona,
-            backstory=backstory,
-            scripted_flow=task.user_simulator.scripted_flow,
-            tool_schemas=user_tool_schemas if user_tool_executor else None,
-        )
-
-        # Create stuck detector with configured heuristics
-        stuck_detector = None
-        if self.config.orchestrator.stuck_heuristics.enabled:
-            stuck_detector = StuckDetector(
-                max_repeated_tool_calls=self.config.orchestrator.stuck_heuristics.max_repeated_tool_calls,
-                max_idle_turns=self.config.orchestrator.stuck_heuristics.max_idle_turns,
-            )
-
         # Build system prompt
         system_prompt = self._build_system_prompt(task, tool_schemas, task_dir)
+        runner: TrialRunner | None = None
+        harness_result: Any | None = None
+        simulator_loss: str | None = None
 
-        # Respect per-task max_turns when provided. Fall back to orchestrator default.
-        max_turns = (
-            task.max_turns if task.max_turns is not None else self.config.orchestrator.max_turns
-        )
+        if harness_trial_runner is not None:
+            harness_config = self.config.agent_harness
+            if harness_config is None:
+                raise RuntimeError("Harness runner provided without agent_harness configuration")
 
-        # Scale turn budget for complex multi-app mobile tasks only when task max_turns
-        # is not explicitly pinned.
-        if task.max_turns is None:
-            mobile_cfg = task.tools.agent.get("mobile", {})
-            mobile_apps = mobile_cfg.get("apps", {}) if isinstance(mobile_cfg, dict) else {}
-            if isinstance(mobile_apps, dict):
-                app_count = len(mobile_apps)
-                if app_count >= 5:
-                    max_turns = max(max_turns, 90)
-                elif app_count == 4:
-                    max_turns = max(max_turns, 75)
+            # Current BYOH execution is deliberately single-shot. Any simulator
+            # capable of producing a follow-up must be explicitly rejected or
+            # acknowledged through first_message_only.
+            has_follow_up_behavior = task.user_simulator.mode == "llm" or bool(
+                task.user_simulator.scripted_flow
+            )
+            if has_follow_up_behavior and harness_config.user_simulator_policy == "reject":
+                raise ValueError(
+                    f"Task {task.task_id!r} requires user simulation, but harness "
+                    "user_simulator_policy is 'reject'"
+                )
+            if has_follow_up_behavior:
+                simulator_loss = "User-simulator follow-up behavior omitted (first_message_only)"
 
-        # Create runner with verbose and strict flags
-        runner = TrialRunner(
-            task_id=task.task_id,
-            trial_index=trial_idx,
-            agent_client=agent_client,
-            user_simulator=user_simulator,
-            tool_executor=tool_executor,
-            tool_schemas=tool_schemas,
-            max_turns=max_turns,
-            turn_timeout_s=self.config.orchestrator.timeouts.turn_s,
-            episode_timeout_s=self.config.orchestrator.timeouts.episode_s,
-            stuck_detector=stuck_detector,
-            user_tool_executor=user_tool_executor,
-            request_limiter=request_limiter,
-            verbose=self.verbose,
-            strict=self.strict,
-        )
+            mcp_url = register_result.get("mcp_gateway_url")
+            mcp_bearer_token = register_result.get("mcp_bearer_token")
+            if not mcp_url or not mcp_bearer_token:
+                raise RuntimeError(
+                    "Runner did not return the authenticated MCP gateway coordinates required "
+                    "for harness execution"
+                )
 
-        # Run trial
-        # Use initial_user_message if provided (e.g., tool-use style tasks)
-        # Otherwise use task.description which will be interpreted by user simulator (e.g., TAU tasks)
-        initial_message = task.initial_user_message if task.initial_user_message else ""
-        trajectory = runner.run(system_prompt, initial_message)
+            initial_message = task.initial_user_message or task.description
+            harness_result = harness_trial_runner.run(
+                task_id=task.task_id,
+                trial_index=trial_idx,
+                instruction=initial_message,
+                system_prompt=system_prompt,
+                mcp_url=mcp_url,
+                mcp_bearer_token=mcp_bearer_token,
+                workspace=harness_workspace,
+            )
+            trajectory = harness_result.trajectory
+            effective_agent_prompt = system_prompt
+            effective_user_prompt = ""
+
+            harness_dir = trial_dir / "harness"
+            harness_dir.mkdir(parents=True, exist_ok=True)
+            (harness_dir / "stdout.log").write_text(harness_result.raw_stdout, encoding="utf-8")
+            (harness_dir / "stderr.log").write_text(harness_result.raw_stderr, encoding="utf-8")
+            (harness_dir / "atif.json").write_text(
+                json.dumps(harness_result.atif, indent=2, default=str) + "\n",
+                encoding="utf-8",
+            )
+        else:
+            if agent_client is None:
+                raise ValueError("Agent client must be provided for native trial execution")
+
+            # User tool executor is not used in Docker mode (Runner handles tools)
+            user_tool_executor = None
+            user_tool_schemas: list[dict[str, Any]] = []
+            user_llm_config = user_config if task.user_simulator.mode == "llm" else None
+            user_simulator = UserSimulator(
+                mode=task.user_simulator.mode,
+                llm_config=user_llm_config,
+                persona=task.user_simulator.persona,
+                backstory=task.user_simulator.backstory,
+                scripted_flow=task.user_simulator.scripted_flow,
+                tool_schemas=user_tool_schemas if user_tool_executor else None,
+            )
+
+            stuck_detector = None
+            if self.config.orchestrator.stuck_heuristics.enabled:
+                stuck_detector = StuckDetector(
+                    max_repeated_tool_calls=self.config.orchestrator.stuck_heuristics.max_repeated_tool_calls,
+                    max_idle_turns=self.config.orchestrator.stuck_heuristics.max_idle_turns,
+                )
+
+            max_turns = (
+                task.max_turns if task.max_turns is not None else self.config.orchestrator.max_turns
+            )
+            if task.max_turns is None:
+                mobile_cfg = task.tools.agent.get("mobile", {})
+                mobile_apps = mobile_cfg.get("apps", {}) if isinstance(mobile_cfg, dict) else {}
+                if isinstance(mobile_apps, dict):
+                    app_count = len(mobile_apps)
+                    if app_count >= 5:
+                        max_turns = max(max_turns, 90)
+                    elif app_count == 4:
+                        max_turns = max(max_turns, 75)
+
+            runner = TrialRunner(
+                task_id=task.task_id,
+                trial_index=trial_idx,
+                agent_client=agent_client,
+                user_simulator=user_simulator,
+                tool_executor=tool_executor,
+                tool_schemas=tool_schemas,
+                max_turns=max_turns,
+                turn_timeout_s=self.config.orchestrator.timeouts.turn_s,
+                episode_timeout_s=self.config.orchestrator.timeouts.episode_s,
+                stuck_detector=stuck_detector,
+                user_tool_executor=user_tool_executor,
+                request_limiter=request_limiter,
+                verbose=self.verbose,
+                strict=self.strict,
+            )
+            initial_message = task.initial_user_message or ""
+            trajectory = runner.run(system_prompt, initial_message)
+            effective_agent_prompt = runner.effective_system_prompt
+            effective_user_prompt = runner.user_system_prompt
 
         # Sync JSON DB state for native tasks (if no MCP server is used)
         # Skip when Docker runtime is active — state comes from Runner DB service.
@@ -1446,6 +1608,25 @@ class Orchestrator:
                 ),
             )
 
+        if docker_runtime:
+            history_result = docker_runtime.executor_client.get_trial_history(trial_id)
+            if history_result.get("success"):
+                trajectory.tool_log = [
+                    {
+                        **record,
+                        "tool": record.get("tool_name"),
+                        "success": record.get("status") == "success",
+                    }
+                    for record in history_result.get("tool_history", [])
+                ]
+            else:
+                self.logger.warning(
+                    "Could not retrieve Runner tool ledger",
+                    task_id=task.task_id,
+                    trial_index=trial_idx,
+                    error=history_result.get("error"),
+                )
+
         # Capture final environment state
         final_state = env_state.get_final_state()
         # Pass agent_visible_dir so the agentic judge can read files from disk
@@ -1454,7 +1635,7 @@ class Orchestrator:
 
         # Check if trial completed successfully - ERROR/TIMEOUT trials should auto-fail
         # This prevents false positives when 429 or other errors occur before any work is done
-        if trajectory.status in (TrialStatus.ERROR, TrialStatus.TIMEOUT):
+        if trajectory.status in (TrialStatus.ERROR, TrialStatus.TIMEOUT, TrialStatus.FAILED):
             self.logger.info(
                 "Trial did not complete successfully - automatic fail",
                 task_id=task.task_id,
@@ -1485,7 +1666,15 @@ class Orchestrator:
             # Grade trajectory via Runner's GradeTrial RPC
             # It computes golden hash via DB service
             trial_id = f"{task.task_id}:{trial_idx}"
-            grade_result = docker_runtime.executor_client.grade_trial(trial_id=trial_id)
+            transcript = [
+                {"role": message.role.value, "content": message.content}
+                for message in trajectory.messages
+                if message.role.value in {"user", "assistant"}
+            ]
+            grade_result = docker_runtime.executor_client.grade_trial(
+                trial_id=trial_id,
+                llm_messages_json=json.dumps(transcript),
+            )
             if grade_result["success"] and grade_result["grade"]:
                 g = grade_result["grade"]
 
@@ -1558,8 +1747,12 @@ class Orchestrator:
         # agent's :class:`LLMClient`; pushing it through the matched
         # ``schema_sanitizer`` reproduces exactly what the provider saw.
         # Self-contained per-trial: no dedup, no cross-trial state.
-        agent_config = agent_client.config
-        sanitized = agent_client.capabilities.schema_sanitizer.sanitize(tool_schemas)
+        configured_agent = agent_client.config if agent_client is not None else None
+        sanitized = (
+            agent_client.capabilities.schema_sanitizer.sanitize(tool_schemas)
+            if agent_client is not None
+            else tool_schemas
+        )
         writer.write_tools_schemas(trial_dir, sanitized)
 
         # Persist the agent's effective (post-policy) system prompt and
@@ -1569,8 +1762,8 @@ class Orchestrator:
         # populated during ``run()``.
         writer.write_prompts(
             trial_dir,
-            agent_prompt=runner.effective_system_prompt,
-            user_prompt=runner.user_system_prompt,
+            agent_prompt=effective_agent_prompt,
+            user_prompt=effective_user_prompt,
         )
 
         # Prepare task config for output (includes model config snapshot for
@@ -1584,15 +1777,23 @@ class Orchestrator:
             "tools": task.tools.model_dump(mode="json"),
             "policies": task.policies,
             "model_config": self._serialize_model_config(
-                agent_config=agent_config, user_config=user_config
+                agent_config=configured_agent, user_config=user_config
             ),
         }
+        if self.config.agent_harness is not None:
+            task_config_dict["agent_harness"] = self.config.agent_harness.model_dump(mode="json")
+        if simulator_loss is not None:
+            task_config_dict["user_simulator_loss"] = simulator_loss
 
         # Write all split output files via the composed writer. The per-trial
         # :class:`OutputWriter` is cached inside FileArtifactWriter keyed on
         # ``trial_dir`` so repeated writes don't re-create the directory.
         writer.write_trial_bundle(
-            trial_dir, trajectory, task_config_dict, final_state, runner.logger
+            trial_dir,
+            trajectory,
+            task_config_dict,
+            final_state,
+            runner.logger if runner is not None else self.logger,
         )
 
         self.logger.info(

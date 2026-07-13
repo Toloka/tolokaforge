@@ -1,6 +1,8 @@
 """Pydantic models for configuration and data structures"""
 
 import dataclasses
+import ipaddress
+import re
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Literal, get_args
@@ -41,6 +43,8 @@ class TerminationReason(str, Enum):
     RATE_LIMIT = "rate_limit"  # API rate limit error
     API_TIMEOUT = "api_timeout"  # API call timed out after retries
     API_ERROR = "api_error"  # Other API errors
+    USAGE_EXHAUSTED = "usage_exhausted"  # Non-retryable provider quota exhaustion
+    SAFETY_REFUSAL = "safety_refusal"  # Non-retryable model refusal
 
 
 class ToolCall(BaseModel):
@@ -383,6 +387,44 @@ class TypeSenseConfig(BaseModel):
     cleanup_on_exit: bool = True  # Remove container on exit (local mode)
 
 
+class AgentNetworkConfig(BaseModel):
+    """Outbound network policy for BYOH agent containers."""
+
+    mode: Literal["no-network", "public", "allowlist"] = "no-network"
+    entries: list[str] = Field(default_factory=list)
+
+    model_config = {"extra": "forbid"}
+
+    @field_validator("entries")
+    @classmethod
+    def _validate_entries(cls, entries: list[str]) -> list[str]:
+        hostname = re.compile(
+            r"^(?:\*\.)?(?=.{1,253}$)(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}"
+            r"[a-zA-Z0-9])?\.)*[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$"
+        )
+        normalized: list[str] = []
+        for entry in entries:
+            value = entry.strip()
+            try:
+                ipaddress.ip_network(value, strict=False)
+            except ValueError:
+                if not value or "://" in value or "/" in value or not hostname.fullmatch(value):
+                    raise ValueError(
+                        f"agent_network entry must be a hostname or CIDR, got {entry!r}"
+                    )
+            if value not in normalized:
+                normalized.append(value)
+        return normalized
+
+    @model_validator(mode="after")
+    def _entries_match_mode(self) -> "AgentNetworkConfig":
+        if self.mode != "allowlist" and self.entries:
+            raise ValueError("agent_network.entries is only valid when mode is 'allowlist'")
+        if self.mode == "allowlist" and not self.entries:
+            raise ValueError("agent_network mode 'allowlist' requires at least one entry")
+        return self
+
+
 class OrchestratorConfig(BaseModel):
     """Orchestrator configuration"""
 
@@ -411,6 +453,7 @@ class OrchestratorConfig(BaseModel):
     stuck_heuristics: StuckHeuristics = Field(default_factory=StuckHeuristics)
     runtime: Literal["docker"] = "docker"  # Runtime mode (docker only; in-process was removed)
     typesense: TypeSenseConfig | None = None  # TypeSense server configuration
+    agent_network: AgentNetworkConfig = Field(default_factory=AgentNetworkConfig)
 
 
 class HarnessAdapterConfig(BaseModel):
@@ -450,6 +493,65 @@ class EngineConfig(BaseModel):
     )
 
 
+_CREDENTIAL_ENV_KEY = re.compile(
+    r"(?:^|_)(?:API_?KEYS?|ACCESS_?KEY(?:_ID)?|TOKEN|SECRET|CLIENT_?SECRET|PASSWORD|"
+    r"PASSWD|CREDENTIALS?|PRIVATE_?KEY|PAT|DSN)$",
+    re.IGNORECASE,
+)
+
+
+class AgentHarnessConfig(BaseModel):
+    """Containerized agent harness selected instead of the native LLM loop."""
+
+    type: str
+    version: str
+    flags: dict[str, Any] = Field(default_factory=dict)
+    env: dict[str, str] = Field(default_factory=dict)
+    user_simulator_policy: Literal["reject", "first_message_only"] = "reject"
+
+    model_config = {"extra": "forbid"}
+
+    @field_validator("type")
+    @classmethod
+    def _nonempty_type(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("agent_harness.type must not be empty")
+        return value
+
+    @field_validator("version")
+    @classmethod
+    def _nonempty_version(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("agent_harness.version must not be empty")
+        return value
+
+    @field_validator("env")
+    @classmethod
+    def _reject_credentials(cls, env: dict[str, str]) -> dict[str, str]:
+        rejected = sorted(key for key in env if _CREDENTIAL_ENV_KEY.search(key))
+        if rejected:
+            raise ValueError(
+                "agent_harness.env cannot contain credential-like keys "
+                f"({', '.join(rejected)}); harness credentials come from SecretManager"
+            )
+        return env
+
+    @model_validator(mode="after")
+    def _validate_adapter_contract(self) -> "AgentHarnessConfig":
+        from tolokaforge.harnesses.registry import get_harness_spec
+
+        spec = get_harness_spec(self.type)
+        if not spec.capabilities.runtime_available:
+            raise ValueError(
+                f"agent harness {self.type!r} is documentation-only because it requires "
+                "interactive authentication"
+            )
+        self.flags = spec.validate_flags(self.flags)
+        return self
+
+
 class RunConfig(BaseModel):
     """Complete run configuration"""
 
@@ -457,6 +559,7 @@ class RunConfig(BaseModel):
     orchestrator: OrchestratorConfig
     evaluation: EvaluationConfig
     engine: EngineConfig | None = None
+    agent_harness: AgentHarnessConfig | None = None
 
 
 # Task Configuration Models
@@ -601,6 +704,7 @@ class GradingConfig(BaseModel):
     """Grading specification"""
 
     combine: GradingCombineConfig
+    grading_method: Literal["hash", "test_execution", "transcript", "llm"] | None = None
     state_checks: StateChecksConfig | None = None
     transcript_rules: TranscriptRulesConfig | None = None
     llm_judge: LLMJudgeConfig | None = None
