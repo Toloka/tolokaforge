@@ -552,13 +552,16 @@ jobs:
                   fi ;;
               esac
             fi
+            # One settings deep-link (the Actions variables page where
+            # ARENA_AUTOMATION_AUTO_MERGE_ENABLED lives) rendered as "configure here" on every
+            # auto-merge outcome. Derived from env + defaulted so it is set -u safe.
+            SETTINGS_URL="${GITHUB_SERVER_URL:-https://github.com}/$REPO/settings/variables/actions"
             if [ "$MERGED" = "yes" ]; then
-              MSG="$(printf '%s\n%s' ':white_check_mark: Integrated + auto-merged (squash): preset + cert landed on the base branch.' 'ARENA_AUTOMATION_AUTO_MERGE_ENABLED=true - squash-merged automatically on success.')"
+              MSG="$(printf '%s\n%s' ':white_check_mark: Integrated + auto-merged (squash): preset + cert landed on the base branch.' "Auto-merge is on - squash-merged automatically on success (<$SETTINGS_URL|configure here>).")"
             elif [ "$AUTO_MERGE" = "true" ]; then
-              MSG="$(printf '%s\n%s' ':white_check_mark: Integrated: preset + cert committed to the PR branch.' 'Auto-merge was enabled but did NOT complete (disposable test branch, missing pricing, branch protection, draft, or a merge error) - PR left open for review.')"
+              MSG="$(printf '%s\n%s' ':white_check_mark: Integrated: preset + cert committed to the PR branch.' "Auto-merge is on but did NOT complete (disposable test branch, missing pricing, branch protection, draft, or a merge error) - PR left open (<$SETTINGS_URL|configure here>).")"
             else
-              SETTINGS_URL="${GITHUB_SERVER_URL:-https://github.com}/$REPO/settings/variables/actions"
-              MSG="$(printf '%s\n%s' ':white_check_mark: Integrated: preset + cert committed to the PR branch.' "Human review gate - auto-merge disabled (enable it <$SETTINGS_URL|here>).")"
+              MSG="$(printf '%s\n%s' ':white_check_mark: Integrated: preset + cert committed to the PR branch.' "Human review gate - auto-merge off (<$SETTINGS_URL|configure here>).")"
             fi
             python3 scripts/integration/slack_notify.py reply \
               --channel "$SLACK_CHANNEL" --pr "$PR" --model "$TF_NAME" --mention \
