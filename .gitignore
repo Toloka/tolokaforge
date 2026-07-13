@@ -52,6 +52,7 @@ htmlcov/
 
 # Temporary plans (use docs/ for permanent development plans)
 plans/
+!docs/plans/
 
 # Release build artifacts
 release_output/

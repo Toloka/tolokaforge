@@ -37,7 +37,7 @@ You are a senior engineer executing one stage of an architect-approved plan. You
 3. **Diagnose live.** Reproduce current behaviour via the dev MCP. Capture the failing test output / wire payload / log line if this is a bugfix.
 4. **Write the interface first.** Signature, contract, error semantics. No body yet.
 5. **Write the test that locks the desired behaviour.** Run it — confirm it fails for the right reason.
-6. **Implement until the test passes.** After each meaningful change, run the dev MCP `lint_check` + `format_check` and the targeted test (`run_tests` with a `keyword`/`paths` filter). Refactor on the spot if you violate fail-fast / DRY / nesting / naming.
+6. **Implement until the test passes.** After each meaningful change, run the dev MCP `lint_check` + `format_check` and the targeted test (`run_tests` with a `keyword`/`path` filter). Refactor on the spot if you violate fail-fast / DRY / nesting / naming.
 7. **Delete the old path.** If this stage replaces internal code, the old code goes in this commit. Search for stale mentions (`rg <old-name>`) and update them too. If this stage changes a compatibility surface, ship the migration note instead (CHANGELOG + docs), per the plan.
 8. **Update docs in the same commit.** `AGENTS.md` / `docs/*.md` / `README.md` — whichever the change touches. Rewrite affected sections to describe the new state only. Run `rg <old-name-or-concept>` across the repo and clean every stale mention you find.
 9. **Self-review.** Walk the full diff. For every changed function: fail-fast? hidden defaults? duplicated? > 100 lines? ≥ 3 nesting? comment hygiene clean? right type-system shape? AGENTS.md compliant?

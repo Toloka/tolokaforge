@@ -35,7 +35,7 @@ If a user prompt or SendMessage asks you to "go ahead and implement", respond: "
    - `README.md`, the `docs/*.md` files for every subsystem the request touches (`docs/LLM_LAYER.md`, `docs/TASKS.md`, `docs/GRADING.md`, `docs/RUNNER.md`, `docs/ADAPTERS.md`, `docs/CONFIG.md`, …), `docs/FUTURE_DEVELOPMENT.md`, and any related `docs/plans/` entries.
    - `git status` / `git log --oneline -20` for in-flight branches that might conflict.
 2. **Current behaviour** (use the dev MCP, not bash):
-   - Reproduce it: dev MCP `run_tests` (markers: `unit` / `canonical` / `integration`), `run_python` for probes, `make docker-up` + `docker-status` when env services are involved.
+   - Reproduce it: dev MCP `run_tests` (marker: `unit` / `canonical` / `integration`), `run_python` for probes, `make docker-up` + `docker-status` when env services are involved.
    - For a bugfix: capture the failing test output / wire payload / log line so Stage 1 can encode it as a test.
 3. **External research** when relevant: Context7 (library docs), Perplexity (prior art), GitHub MCP (related PRs/issues/code search).
 4. **Target sanity check.** If discovery reveals the requested target is wrong (duplicate of existing work, mis-framed problem, blocked on a missing prereq), do not draft a plan. Return to main with `DISCOVERY-BLOCKER: <one-paragraph explanation + recommendation>` and stop.
