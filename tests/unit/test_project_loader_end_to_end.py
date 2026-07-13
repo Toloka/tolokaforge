@@ -369,6 +369,164 @@ class TestSchemaAliasCollision:
         )
 
 
+class TestActorRosterSubsetOfModels:
+    """The roster check runs after ``project.run_defaults`` merges into
+    the selected run config — the only point where both ``actors`` and
+    ``models`` are visible together."""
+
+    def test_llm_actor_present_in_models_passes(self, tmp_path: Path) -> None:
+        _write_yaml(
+            tmp_path / "project.yaml",
+            {
+                "name": "p",
+                "task_defaults": {
+                    "actors": {"user": {"mode": "llm", "persona": "curious"}},
+                },
+                "run_defaults": {
+                    "models": {"user": {"provider": "openai", "name": "gpt-4o"}},
+                },
+            },
+        )
+        run_cfg = tmp_path / "run_configs" / "dev.yaml"
+        _write_yaml(run_cfg, {"models": {"user": {"provider": "openai", "name": "gpt-4o"}}})
+
+        from tolokaforge.core.project_loader import load_effective_run_config
+
+        merged, _ = load_effective_run_config(run_cfg)
+        assert "user" in merged["models"]
+
+    def test_llm_actor_missing_from_models_fails_loud(self, tmp_path: Path) -> None:
+        _write_yaml(
+            tmp_path / "project.yaml",
+            {
+                "name": "p",
+                "task_defaults": {
+                    "actors": {"user": {"mode": "llm", "persona": "curious"}},
+                },
+            },
+        )
+        run_cfg = tmp_path / "run_configs" / "dev.yaml"
+        _write_yaml(run_cfg, {"models": {"judge": {"provider": "openai", "name": "gpt-4o"}}})
+
+        from tolokaforge.core.project_loader import load_effective_run_config
+
+        with pytest.raises(ValueError, match="not declared under `models`"):
+            load_effective_run_config(run_cfg)
+
+    def test_scripted_actor_does_not_require_model(self, tmp_path: Path) -> None:
+        _write_yaml(
+            tmp_path / "project.yaml",
+            {
+                "name": "p",
+                "task_defaults": {
+                    "actors": {"user": {"mode": "scripted"}},
+                },
+            },
+        )
+        run_cfg = tmp_path / "run_configs" / "dev.yaml"
+        _write_yaml(run_cfg, {})
+
+        from tolokaforge.core.project_loader import load_effective_run_config
+
+        # Scripted actors don't need a matching model entry — must not raise.
+        merged, _ = load_effective_run_config(run_cfg)
+        assert merged.get("models", {}) == {}
+
+    def test_no_actors_declared_is_no_op(self, tmp_path: Path) -> None:
+        _write_yaml(tmp_path / "project.yaml", {"name": "p"})
+        run_cfg = tmp_path / "run_configs" / "dev.yaml"
+        _write_yaml(run_cfg, {})
+
+        from tolokaforge.core.project_loader import load_effective_run_config
+
+        merged, _ = load_effective_run_config(run_cfg)
+        assert merged == {}
+
+    def test_llm_actor_fails_when_models_is_empty(self, tmp_path: Path) -> None:
+        # Boundary case: `models: {}` is a valid mapping but has no
+        # entries. An llm actor still fails loud — pinning it explicitly
+        # so the "missing" branch isn't confused with a shape-error
+        # branch by a future refactor.
+        _write_yaml(
+            tmp_path / "project.yaml",
+            {
+                "name": "p",
+                "task_defaults": {
+                    "actors": {"user": {"mode": "llm", "persona": "curious"}},
+                },
+            },
+        )
+        run_cfg = tmp_path / "run_configs" / "dev.yaml"
+        _write_yaml(run_cfg, {"models": {}})
+
+        from tolokaforge.core.project_loader import load_effective_run_config
+
+        with pytest.raises(ValueError, match="not declared under `models`"):
+            load_effective_run_config(run_cfg)
+
+    def test_malformed_models_block_is_a_load_error(self, tmp_path: Path) -> None:
+        # A typo where `models:` is a list (or any non-mapping) would
+        # confuse the roster check downstream — surface the shape error
+        # at the check site with the offending type in the message.
+        _write_yaml(
+            tmp_path / "project.yaml",
+            {
+                "name": "p",
+                "task_defaults": {
+                    "actors": {"user": {"mode": "llm", "persona": "curious"}},
+                },
+            },
+        )
+        run_cfg = tmp_path / "run_configs" / "dev.yaml"
+        _write_yaml(run_cfg, {"models": ["not", "a", "mapping"]})
+
+        from tolokaforge.core.project_loader import load_effective_run_config
+
+        with pytest.raises(ValueError, match="`models`.*must be a mapping"):
+            load_effective_run_config(run_cfg)
+
+
+class TestProjectAssetsPathAnchoring:
+    """``assets.seeds.<name>.path`` and bare-string shorthand entries
+    resolve to absolute paths under the project directory."""
+
+    def test_dict_form_relative_path_anchored(self, tmp_path: Path) -> None:
+        # A seed file that must exist so downstream consumers can find it.
+        seed = tmp_path / "shared" / "seeds" / "base.sql"
+        seed.parent.mkdir(parents=True)
+        seed.write_text("-- fixture\n")
+        _write_yaml(
+            tmp_path / "project.yaml",
+            {
+                "name": "p",
+                "assets": {
+                    "seeds": {
+                        "base": {
+                            "path": "shared/seeds/base.sql",
+                            "kind": "sql_dump",
+                        },
+                    },
+                },
+            },
+        )
+        project = load_project_config(tmp_path / "project.yaml")
+        assert project.assets is not None
+        assert project.assets.seeds["base"].path == seed.resolve()
+
+    def test_bare_string_shorthand_relative_anchored(self, tmp_path: Path) -> None:
+        seed = tmp_path / "shared" / "seeds" / "base.sql"
+        seed.parent.mkdir(parents=True)
+        seed.write_text("-- fixture\n")
+        _write_yaml(
+            tmp_path / "project.yaml",
+            {"name": "p", "assets": {"seeds": {"base": "shared/seeds/base.sql"}}},
+        )
+        project = load_project_config(tmp_path / "project.yaml")
+        assert project.assets is not None
+        assert project.assets.seeds["base"].path == seed.resolve()
+        assert project.assets.seeds["base"].kind == "sql_dump"
+
+
 class TestDeepMergeIsSingleImpl:
     """`deep_merge` in the project loader is the single implementation
     the task loader imports — no shadow copy in `_task_loader.py`."""

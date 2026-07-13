@@ -1,4 +1,5 @@
 {
+  "actors": null,
   "adapter_settings": {
     "compose_file": "<ROOT>/tests/data/terminal_bench_tasks/echo-hello/docker-compose.yaml",
     "difficulty": "easy",

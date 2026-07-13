@@ -4,6 +4,7 @@ import dataclasses
 import warnings
 from datetime import datetime, timezone
 from enum import Enum
+from pathlib import Path
 from typing import Annotated, Any, Literal, Self, get_args
 
 from pydantic import BaseModel, Field, field_serializer, field_validator, model_validator
@@ -622,6 +623,51 @@ class ComputeConfig(BaseModel):
     max_attempt_retries: int = Field(default=0, ge=0)
     local_docker: LocalDockerComputeConfig | None = None
 
+    capabilities: list[Any] = Field(default_factory=list)
+    """Backend-capability declarations. Each entry is either a bare
+    ``"name"`` string or a ``{"name": {params}}`` mapping with a single
+    key. Field is typed ``list[Any]`` so :meth:`_validate_capability_entries`
+    can emit context-rich errors (Pydantic's built-in union resolution
+    reports the failure against every union arm, which reads badly for
+    authors). Registry lookup and admission gate land with the isolation
+    redesign; this field reserves the shape so packs can start
+    declaring capabilities against the eventual registry vocabulary."""
+
+    @field_validator("capabilities")
+    @classmethod
+    def _validate_capability_entries(cls, value: list[Any]) -> list[Any]:
+        for idx, entry in enumerate(value):
+            if isinstance(entry, str):
+                if not entry:
+                    raise ValueError(
+                        f"ComputeConfig.capabilities[{idx}]: bare-string entry "
+                        "must be a non-empty capability name."
+                    )
+                continue
+            if isinstance(entry, dict):
+                if len(entry) != 1:
+                    raise ValueError(
+                        f"ComputeConfig.capabilities[{idx}]: dict entry must have "
+                        f"exactly one key (the capability name); got {sorted(entry)!r}."
+                    )
+                ((name, params),) = entry.items()
+                if not isinstance(name, str) or not name:
+                    raise ValueError(
+                        f"ComputeConfig.capabilities[{idx}]: capability name must "
+                        f"be a non-empty string; got {name!r}."
+                    )
+                if not isinstance(params, dict):
+                    raise ValueError(
+                        f"ComputeConfig.capabilities[{idx}]: params for capability "
+                        f"{name!r} must be a mapping; got {type(params).__name__}."
+                    )
+                continue
+            raise ValueError(
+                f"ComputeConfig.capabilities[{idx}]: entry must be a string or a "
+                f"single-key dict; got {type(entry).__name__}."
+            )
+        return value
+
 
 class LocalStorageConfig(BaseModel):
     """Local-filesystem storage backend for artifacts or logs.
@@ -793,6 +839,46 @@ class UserSimulatorConfig(BaseModel):
     scripted_flow: list[dict[str, str]] | None = None
 
 
+_RESERVED_ACTOR_NAMES = frozenset({"agent", "judge"})
+"""Actor names reserved for future actors. ``actors.user`` is the
+counterpart actor today; ``actors.agent`` / ``actors.judge`` are
+reserved so a pack cannot use the names for something else in the
+meantime."""
+
+
+class ActorSpec(BaseModel):
+    """Single entry inside the ``actors`` map.
+
+    Fields mirror the shape :class:`UserSimulatorConfig` carries today —
+    binding ``actors.user`` to the simulator's config lands with the
+    canonical rename. Sub-keys ``tools`` and ``service`` are reserved
+    by the design for future actor types; using them today is a load
+    error (``extra="forbid"``).
+    """
+
+    mode: Literal["scripted", "llm"] | None = None
+    persona: str | None = None
+    backstory: str | None = None
+    scripted_flow: list[dict[str, str]] | None = None
+
+    model_config = {"extra": "forbid"}
+
+
+def _validate_actors_map(
+    value: dict[str, ActorSpec] | None,
+) -> dict[str, ActorSpec] | None:
+    """Reject reserved actor names on any ``actors`` map."""
+    if value is None:
+        return value
+    reserved = _RESERVED_ACTOR_NAMES & set(value)
+    if reserved:
+        raise ValueError(
+            f"actors: name(s) {sorted(reserved)!r} are reserved for future "
+            "actors and cannot be declared today."
+        )
+    return value
+
+
 class TaskMetadata(BaseModel):
     """Optional metadata used for analytics slicing."""
 
@@ -805,8 +891,13 @@ class TaskConfig(BaseModel):
     """Task specification"""
 
     task_id: str
-    name: str
-    category: str
+    name: str | None = None
+    """Display name. Optional — falls back to ``task_id`` in the adapter."""
+
+    category: str | None = None
+    """Legacy grouping label. Optional — project-level association
+    replaces the informational role this served for reporting."""
+
     description: str
     adapter_type: str = "native"  # Adapter runtime type (native, tlk_mcp_core, tau, …)
     max_turns: int | None = None  # Optional per-task turn cap override
@@ -814,6 +905,11 @@ class TaskConfig(BaseModel):
     initial_state: InitialStateConfig
     tools: ToolsConfig
     user_simulator: UserSimulatorConfig
+    actors: dict[str, ActorSpec] | None = None
+    """Task-level actor overrides. Reserved at the parse layer; runtime
+    binding lands with the canonical rename. Reserved actor names
+    (``agent``, ``judge``) rejected at load time — same rule as
+    :class:`TaskDefaults`."""
     metadata: TaskMetadata = Field(default_factory=TaskMetadata)
     policies: dict[str, Any] = Field(
         default_factory=dict
@@ -831,6 +927,13 @@ class TaskConfig(BaseModel):
     inherit the project default (or run on the shared stack when the
     project sets no default either). ``stack.compose_file`` is
     task-relative and anchored by the loader before construction."""
+
+    @field_validator("actors")
+    @classmethod
+    def _reject_reserved_actor_names(
+        cls, value: dict[str, ActorSpec] | None
+    ) -> dict[str, ActorSpec] | None:
+        return _validate_actors_map(value)
 
 
 # Grading Configuration Models
@@ -942,6 +1045,12 @@ class TaskDefaults(BaseModel):
     max_turns: int | None = Field(default=None, ge=1)
     system_prompt: str | None = None
     user_simulator: UserSimulatorConfig | None = None
+    actors: dict[str, ActorSpec] | None = None
+    """Named actor map. ``actors.user`` is the counterpart actor today
+    (co-existing with ``user_simulator`` until the canonical rename);
+    ``actors.agent`` and ``actors.judge`` are reserved and rejected at
+    load time. Runtime binding lands with the rename milestone."""
+
     policies: dict[str, Any] = Field(default_factory=dict)
     metadata: TaskMetadata | None = None
     adapter_settings: dict[str, Any] = Field(default_factory=dict)
@@ -950,6 +1059,13 @@ class TaskDefaults(BaseModel):
     timeouts: TimeoutDefaults | None = None
     stuck_heuristics: StuckHeuristicsDefaults | None = None
     continue_prompt: str | None = None
+
+    @field_validator("actors")
+    @classmethod
+    def _reject_reserved_actor_names(
+        cls, value: dict[str, ActorSpec] | None
+    ) -> dict[str, ActorSpec] | None:
+        return _validate_actors_map(value)
 
 
 class RunDefaults(BaseModel):
@@ -965,6 +1081,81 @@ class RunDefaults(BaseModel):
     observability: ObservabilityConfig | None = None
     orchestrator: OrchestratorConfig | None = None
     models: dict[str, ModelConfig] = Field(default_factory=dict)
+
+
+SeedKind = Literal["sql_dump", "filesystem_dir", "redis_dump", "bare"]
+"""Vocabulary for the reset-seed kinds :class:`SeedRef` accepts.
+
+``sql_dump`` (postgres/sqlite dumps), ``filesystem_dir`` (copy into a
+service workspace), ``redis_dump`` (RDB snapshots), ``bare`` (raw file,
+no interpretation). Kind selection binds an overlay recipe with the
+isolation-redesign milestone."""
+
+
+_SEED_KIND_BY_EXTENSION: dict[str, SeedKind] = {
+    ".sql": "sql_dump",
+    ".rdb": "redis_dump",
+}
+"""File-extension → seed kind. Ambiguous / unknown extensions require
+the full ``{path, kind}`` shape."""
+
+
+class SeedRef(BaseModel):
+    """One entry in ``assets.seeds`` — a named baseline that reset
+    recipes and initial-state fixtures reference by name.
+
+    Two authoring shapes both parse: the full ``{path, kind, digest?}``
+    dict, or a bare string path (kind inferred from the extension when
+    unambiguous). ``digest`` verification lands with the reset-recipe
+    milestone; this milestone reserves the field."""
+
+    path: Path
+    """Location of the seed file. Anchored to the project directory by
+    the loader before this model is constructed."""
+
+    kind: SeedKind
+    """How the seed is applied. Values that require file-format-specific
+    handling map to matching kinds; ``bare`` covers raw files that a
+    later recipe consumes verbatim."""
+
+    digest: str | None = None
+    """``sha256:...`` content hash. Optional today; the reset-recipe
+    milestone verifies it at load time so a swap without stamping the
+    digest fails loud."""
+
+    model_config = {"extra": "forbid"}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_bare_string_shorthand(cls, data: Any) -> Any:
+        """A bare string coerces to ``{path: <s>}`` with ``kind``
+        inferred from the file extension. Ambiguous / unknown
+        extensions are load-time errors — the author must switch to
+        the full form."""
+        if not isinstance(data, str):
+            return data
+        raw = data
+        ext = Path(raw).suffix.lower()
+        inferred = _SEED_KIND_BY_EXTENSION.get(ext)
+        if inferred is None:
+            raise ValueError(
+                f"SeedRef: cannot infer kind from path {raw!r} "
+                f"(extension {ext!r} not in "
+                f"{sorted(_SEED_KIND_BY_EXTENSION)!r}). Declare the full "
+                "form: {path: ..., kind: ...}."
+            )
+        return {"path": raw, "kind": inferred}
+
+
+class AssetsConfig(BaseModel):
+    """Project-level asset registry.
+
+    Currently only ``seeds`` — a name → :class:`SeedRef` map — is
+    modelled. Additional asset categories land as the design grows."""
+
+    seeds: dict[str, SeedRef] = Field(default_factory=dict)
+
+    model_config = {"extra": "forbid"}
 
 
 class TaskDiscoveryConfig(BaseModel):
@@ -997,6 +1188,10 @@ class ProjectConfig(BaseModel):
     own ``environment_manifest`` patch by
     :func:`tolokaforge.core.project_loader.resolve` to produce the
     concrete :class:`EnvironmentManifest`."""
+
+    assets: AssetsConfig | None = None
+    """Project-level asset registry. Only ``seeds`` is modelled today;
+    reset-recipe binding lands with the isolation redesign."""
 
     task_defaults: TaskDefaults = Field(default_factory=TaskDefaults)
     run_defaults: RunDefaults | None = None
