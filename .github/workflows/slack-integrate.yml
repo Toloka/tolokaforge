@@ -28,6 +28,12 @@ on:
     # poll cadence == the trigger latency. Adjust via editing the cron.
     - cron: "*/5 * * * *"
   workflow_dispatch: {}
+  # TEMP (remove before merge): one live pre-merge run of the poller on this branch. schedule /
+  # workflow_dispatch only activate once this file is on the default branch, so a push trigger is
+  # the only way to exercise the poller in Actions from the feature branch. Idempotent to re-runs
+  # (state-free dedup skips an already-answered request), so extra pushes are safe.
+  push:
+    branches: ["feat/wire-probe-integration-tests"]
 
 permissions:
   contents: write # push the seed branch
