@@ -138,8 +138,6 @@ presets:
     match:
       - "xiaomi/mimo*"
       - "*mimo-v2*"
-      - "moonshotai/kimi-k2*"
-      - "*kimi-k2*"
       - "deepseek/deepseek-v4*"
       - "*deepseek-v4*"
       - "z-ai/glm-5*"
