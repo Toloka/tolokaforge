@@ -557,7 +557,8 @@ jobs:
             elif [ "$AUTO_MERGE" = "true" ]; then
               MSG="$(printf '%s\n%s' ':white_check_mark: Integrated: preset + cert committed to the PR branch.' 'Auto-merge was enabled but did NOT complete (disposable test branch, missing pricing, branch protection, draft, or a merge error) - PR left open for review.')"
             else
-              MSG="$(printf '%s\n%s' ':white_check_mark: Integrated: preset + cert committed to the PR branch.' 'Human review gate - auto-merge disabled (ARENA_AUTOMATION_AUTO_MERGE_ENABLED not set to true).')"
+              SETTINGS_URL="${GITHUB_SERVER_URL:-https://github.com}/$REPO/settings/variables/actions"
+              MSG="$(printf '%s\n%s' ':white_check_mark: Integrated: preset + cert committed to the PR branch.' "Human review gate - auto-merge disabled (enable it <$SETTINGS_URL|here>).")"
             fi
             python3 scripts/integration/slack_notify.py reply \
               --channel "$SLACK_CHANNEL" --pr "$PR" --model "$TF_NAME" --mention \
