@@ -165,3 +165,16 @@ class TestBuildMentionPrefix:
 
     def test_only_empty_tokens_yields_no_prefix(self):
         assert slack_notify.build_mention_prefix(" , , ") == ""
+
+
+class TestMentionSuffix:
+    def test_configured_mentions_render_a_trailing_notifying_line(self):
+        sep = chr(10) * 2
+        assert slack_notify.build_mention_suffix("U0B1AN4QYMR") == sep + "Notifying: <@U0B1AN4QYMR>"
+        assert slack_notify.build_mention_suffix("U1, U2") == sep + "Notifying: <@U1> <@U2>"
+
+    def test_no_mentions_notes_none_configured(self):
+        expected = chr(10) * 2 + "No reviewers configured to notify."
+        assert slack_notify.build_mention_suffix("") == expected
+        assert slack_notify.build_mention_suffix(None) == expected
+        assert slack_notify.build_mention_suffix(" , , ") == expected
