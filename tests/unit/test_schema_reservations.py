@@ -81,6 +81,24 @@ class TestActorsMapReservation:
                 actors={"agent": ActorSpec(mode="llm")},
             )
 
+    def test_task_config_accepts_user_actor(self) -> None:
+        # Positive counterpart to the reserved-name rejection — a task
+        # override with a non-reserved actor name parses cleanly. The
+        # runtime binding of ``actors.user`` back to today's simulator
+        # lives in the actor-rename milestone; here we only pin that
+        # the shape parses at the task layer, matching TaskDefaults.
+        t = TaskConfig(
+            task_id="x",
+            description="y",
+            initial_state=InitialStateConfig(),
+            tools=ToolsConfig(),
+            user_simulator=UserSimulatorConfig(),
+            grading="grading.yaml",
+            actors={"user": ActorSpec(mode="llm", persona="task-local")},
+        )
+        assert t.actors is not None
+        assert t.actors["user"].persona == "task-local"
+
 
 # ── ComputeConfig.capabilities ──────────────────────────────────
 
@@ -151,6 +169,23 @@ class TestSeedRef:
     def test_extra_keys_rejected(self) -> None:
         with pytest.raises(ValidationError):
             SeedRef.model_validate({"path": "/x/y.sql", "kind": "sql_dump", "unknown": 1})
+
+    @pytest.mark.parametrize(
+        "kind",
+        ["sql_dump", "filesystem_dir", "redis_dump", "bare"],
+    )
+    def test_all_seed_kinds_accepted_in_dict_form(self, kind: str) -> None:
+        # Pin the full vocabulary — a future refactor that narrows the
+        # Literal type without updating the reset-recipe milestone
+        # would silently strip authoring options for existing packs.
+        s = SeedRef.model_validate({"path": f"/abs/x.{kind[:3]}", "kind": kind})
+        assert s.kind == kind
+
+    def test_bare_string_extension_lookup_is_case_insensitive(self) -> None:
+        # Extension inference uses .suffix.lower(); pin the case-fold so
+        # a Windows-authored fixture path like `Foo.SQL` still parses.
+        s = SeedRef.model_validate("/abs/Foo.SQL")
+        assert s.kind == "sql_dump"
 
 
 class TestAssetsConfig:

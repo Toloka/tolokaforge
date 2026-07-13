@@ -342,10 +342,22 @@ def validate_actor_roster_subset_of_models(
     """Every ``actors.<name>`` declaration with ``mode == "llm"`` must
     have a matching entry in the resolved ``models`` dict.
 
+    "Matching entry" means the actor's map-key must appear as a key in
+    ``models`` — e.g. an actor at ``actors.user`` with ``mode: llm``
+    requires ``models.user`` to be declared. ``ActorSpec`` has no
+    ``.model`` field today; the by-key match is the only decidable
+    semantic. If a future milestone adds an explicit
+    ``actors.<name>.model`` reference the check should follow that.
+
     Raises ``ValueError`` naming the missing model(s). Runs after
     ``project.run_defaults`` merges into the selected run config —
     that's the only point where a project-side actor roster and the
     run-side model roster are both visible.
+
+    Scope: this check covers ``project.task_defaults.actors`` only.
+    Task-level ``TaskConfig.actors`` overrides bypass it — enforcement
+    for task-level actors will land alongside the runtime binding
+    (the ``actors.user`` ↔ user-simulator rename milestone).
 
     A ``None`` roster (project sets no ``actors``) is a no-op. Actor
     entries without ``mode == "llm"`` are ignored — scripted actors

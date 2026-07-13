@@ -442,6 +442,28 @@ class TestActorRosterSubsetOfModels:
         merged, _ = load_effective_run_config(run_cfg)
         assert merged == {}
 
+    def test_llm_actor_fails_when_models_is_empty(self, tmp_path: Path) -> None:
+        # Boundary case: `models: {}` is a valid mapping but has no
+        # entries. An llm actor still fails loud — pinning it explicitly
+        # so the "missing" branch isn't confused with a shape-error
+        # branch by a future refactor.
+        _write_yaml(
+            tmp_path / "project.yaml",
+            {
+                "name": "p",
+                "task_defaults": {
+                    "actors": {"user": {"mode": "llm", "persona": "curious"}},
+                },
+            },
+        )
+        run_cfg = tmp_path / "run_configs" / "dev.yaml"
+        _write_yaml(run_cfg, {"models": {}})
+
+        from tolokaforge.core.project_loader import load_effective_run_config
+
+        with pytest.raises(ValueError, match="not declared under `models`"):
+            load_effective_run_config(run_cfg)
+
     def test_malformed_models_block_is_a_load_error(self, tmp_path: Path) -> None:
         # A typo where `models:` is a list (or any non-mapping) would
         # confuse the roster check downstream — surface the shape error
