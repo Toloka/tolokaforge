@@ -349,6 +349,7 @@ required-version = ">=0.9.5,<0.10"
 
 [tool.uv.workspace]
 members = [
+    "tools/auto-integration",
     "tools/dev-mcp",
     "tools/pricing-updater",
     "tools/rubric-calibrator",
@@ -356,6 +357,7 @@ members = [
 ]
 
 [tool.uv.sources]
+auto-integration = { workspace = true }
 dev-mcp = { workspace = true }
 rubric-calibrator = { workspace = true }
 tolokaforge = { workspace = true }
