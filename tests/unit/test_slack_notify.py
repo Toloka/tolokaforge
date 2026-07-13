@@ -105,20 +105,20 @@ class TestAppendFooter:
         assert slack_notify.append_footer("hi") == "hi"
 
     def test_run_url_only(self):
-        assert slack_notify.append_footer("hi", run_url="R") == "hi\n<R|Run log>"
+        assert slack_notify.append_footer("hi", run_url="R") == "hi · <R|Run log>"
 
     def test_pr_comment_and_run(self):
         assert (
             slack_notify.append_footer("hi", pr_comment="C", run_url="R")
-            == "hi\n<C|PR comment> · <R|Run log>"
+            == "hi · <C|PR comment> · <R|Run log>"
         )
 
     def test_pr_comment_preferred_over_pr_url(self):
         # Workflow passes both (comment url may be empty if gh failed); comment wins.
-        assert slack_notify.append_footer("hi", pr_comment="C", pr_url="P") == "hi\n<C|PR comment>"
+        assert slack_notify.append_footer("hi", pr_comment="C", pr_url="P") == "hi · <C|PR comment>"
 
     def test_pr_url_fallback_when_no_comment(self):
-        assert slack_notify.append_footer("hi", pr_comment="", pr_url="P") == "hi\n<P|PR>"
+        assert slack_notify.append_footer("hi", pr_comment="", pr_url="P") == "hi · <P|PR>"
 
     def test_empty_urls_skipped(self):
         assert slack_notify.append_footer("hi", pr_comment="", pr_url="", run_url="") == "hi"

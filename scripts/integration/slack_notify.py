@@ -89,7 +89,8 @@ def build_mention_prefix(raw: str | None) -> str:
 
 
 def append_footer(text: str, pr_comment: str = "", pr_url: str = "", run_url: str = "") -> str:
-    """Append a ' · '-separated footer of Slack ``<url|label>`` links to ``text``.
+    """Append a ' · '-separated footer of Slack ``<url|label>`` links INLINE, on the same
+    line as ``text`` (no newline - the Run log / PR links sit right after the status).
     Prefers a specific PR-comment deep-link over the generic PR link; skips any empty
     url. Formatting lives here (not in the workflow) so a format tweak is one place."""
     refs = []
@@ -99,7 +100,7 @@ def append_footer(text: str, pr_comment: str = "", pr_url: str = "", run_url: st
         refs.append(f"<{pr_url}|PR>")
     if run_url:
         refs.append(f"<{run_url}|Run log>")
-    return f"{text}\n{' · '.join(refs)}" if refs else text
+    return f"{text} · {' · '.join(refs)}" if refs else text
 
 
 # --- Slack transport (never raises out) ----------------------------------------
