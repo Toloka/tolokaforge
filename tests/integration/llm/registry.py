@@ -1781,6 +1781,79 @@ _ALL: list[MC] = [
             }
         ),
     ),
+    # -----------------------------------------------------------------
+    # Claude Haiku 4.5 (Anthropic via OpenRouter). Live-certified
+    # 2026-07-13 (r2) via the auto-resolve observe/reprobe loop. Routes
+    # through the dedicated ``anthropic_claude_haiku_4_5`` preset
+    # (model_presets.yaml): same Anthropic content/reasoning/ephemeral-cache
+    # axes as the opus/fable siblings, PLUS ``response_policy: json_coerce``.
+    #
+    # The json_coerce delta is load-bearing: on the plain ``anthropic``
+    # preset (response_policy: standard) Haiku 4.5 failed the
+    # ``explicit_discriminator`` discriminated-union probe 0/15 — it emitted
+    # the top-level ``item`` object as a JSON-encoded string
+    # (``{"kind": "ticket", "subject": ...}``) instead of a native dict.
+    # ``JsonCoerceResponse`` decodes that back to native shape before
+    # pydantic validation; the reprobe under the overlay went 5/5. Because
+    # the union call recovers cleanly, DISCRIMINATED_UNION_TOOL_CALL is
+    # ``required`` here — unlike the opus-4.8 / fable-5 siblings, which stay
+    # on standard response policy and declare it known_unsupported.
+    #
+    # Unlike those siblings, THINKING/CACHE surfaces (THINKING_EMITS_BLOCKS,
+    # THINKING_REPLAY_ROUNDTRIP, UNSIGNED_THINKING_REPLAY, PROMPT_CACHING,
+    # IMPLICIT_PROMPT_CACHING) all passed reliably on this route in the
+    # observe baseline (15/15 each) and are declared ``required``.
+    #
+    # The one ceiling: DECIMAL_FIELD_TOOL_CALL. The $42.50-charge probe
+    # returned "no tool call returned" on 6/15 runs (9/15 pass) — the model
+    # intermittently answers in prose instead of invoking the tool when a
+    # Pydantic ``Decimal`` field is present. That is a model consistency
+    # gap, not a wire quirk json_coerce can recover, so it stays
+    # known_unsupported (a ``required`` capability must pass reliably).
+    # -----------------------------------------------------------------
+    MC(
+        model_id="openrouter__anthropic_claude-haiku-4.5",
+        provider="openrouter",
+        name="anthropic/claude-haiku-4.5",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DICT_MAP_TOOL_CALL,
+                # Recovered by json_coerce on the dedicated preset — see
+                # header. 5/5 on the overlay reprobe (0/15 on standard).
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.THINKING_EMITS_BLOCKS,
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.UNSIGNED_THINKING_REPLAY,
+                C.PROMPT_CACHING,
+                C.IMPLICIT_PROMPT_CACHING,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # $42.50-charge probe returned "no tool call returned" on
+                # 6/15 runs (9/15 pass) — a model consistency gap on
+                # Decimal-bearing tool args, not a recoverable wire quirk.
+                # A required capability must pass reliably. See header.
+                C.DECIMAL_FIELD_TOOL_CALL,
+            }
+        ),
+    ),
 ]
 
 

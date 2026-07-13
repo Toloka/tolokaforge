@@ -66,6 +66,30 @@ presets:
       drop_sampling_when_thinking: true
       reasoning_budget_default: 8000
 
+  # Claude Haiku 4.5 — same Anthropic content/reasoning/cache contract as the
+  # generic ``anthropic`` preset (structured thinking + ephemeral cache), but
+  # with ONE delta: ``response_policy: json_coerce``. On the plain ``anthropic``
+  # preset (response_policy: standard) Haiku 4.5 failed the
+  # ``explicit_discriminator`` discriminated-union probe on every run — it emits
+  # the top-level ``item`` object argument as a JSON-encoded string instead of a
+  # native dict (the classic dict-stringify wire quirk json_coerce already
+  # recovers for Qwen/Kimi/MiniMax). ``JsonCoerceResponse`` decodes that back to
+  # a native dict before validation, and the reprobe went 5/5 green.
+  # Listed BEFORE the generic ``anthropic`` preset so first-match-wins routing
+  # picks this version-specific entry up. Live-certified 2026-07-13 (r2);
+  # see registry.py. DECIMAL_FIELD_TOOL_CALL stays a known_unsupported ceiling
+  # (9/15 "no tool call returned" — a model consistency gap, not a wire quirk).
+  anthropic_claude_haiku_4_5:
+    match:
+      - "anthropic/claude-haiku-4.5*"
+      - "*claude-haiku-4.5*"
+    content_policy: anthropic
+    reasoning_codec: anthropic
+    cache_policy: anthropic_ephemeral
+    response_policy: json_coerce
+    params:
+      supports_seed: false
+
   anthropic:
     match:
       - "anthropic/*"
