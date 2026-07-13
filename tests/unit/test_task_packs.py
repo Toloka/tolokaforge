@@ -18,7 +18,28 @@ def _write_minimal_task_yaml(path: Path, task_id: str) -> None:
         yaml.safe_dump({"task_id": task_id}, f)
 
 
-def test_run_config_parses_task_packs():
+def test_run_config_parses_projects():
+    """Canonical field: evaluation.projects is populated directly."""
+    config_data = {
+        "evaluation": {
+            "projects": ["/tmp/pack_a", "/tmp/pack_b"],
+            "tasks_glob": "**/task.yaml",
+            "output_dir": "output/test",
+        },
+        "models": {
+            "agent": {"provider": "openai", "name": "gpt-4o-mini"},
+        },
+        "orchestrator": {"workers": 1, "repeats": 1},
+    }
+
+    run_config = RunConfig(**config_data)
+    assert run_config.evaluation.projects == ["/tmp/pack_a", "/tmp/pack_b"]
+    assert run_config.evaluation.tasks_glob == "**/task.yaml"
+
+
+def test_run_config_task_packs_alias_still_accepted():
+    """Legacy alias: evaluation.task_packs is coerced into projects with
+    a DeprecationWarning."""
     config_data = {
         "evaluation": {
             "task_packs": ["/tmp/pack_a", "/tmp/pack_b"],
@@ -31,9 +52,10 @@ def test_run_config_parses_task_packs():
         "orchestrator": {"workers": 1, "repeats": 1},
     }
 
-    run_config = RunConfig(**config_data)
-    assert run_config.evaluation.task_packs == ["/tmp/pack_a", "/tmp/pack_b"]
-    assert run_config.evaluation.tasks_glob == "**/task.yaml"
+    with pytest.warns(DeprecationWarning, match="task_packs is deprecated"):
+        run_config = RunConfig(**config_data)
+    assert run_config.evaluation.projects == ["/tmp/pack_a", "/tmp/pack_b"]
+    assert run_config.evaluation.task_packs == []  # drained by the validator
 
 
 def test_native_adapter_discovers_tasks_from_multiple_task_packs(tmp_path: Path):

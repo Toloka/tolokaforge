@@ -88,6 +88,11 @@ class NativeAdapter(BaseAdapter):
         self.tasks_glob = params["tasks_glob"]
         self.base_dir = Path(params.get("base_dir", "."))
         self.task_packs: list[str] = params.get("task_packs", [])
+        # project.task_defaults dict from the enclosing project — layered
+        # under every task.yaml at load time so shared task-level defaults
+        # don't have to be repeated in each task file. Empty when the
+        # caller (typically the Orchestrator) has no project context.
+        self._project_task_defaults: dict[str, Any] = params.get("project_task_defaults", {})
 
         # Validate: tasks_glob must be relative when task_packs is provided
         if self.task_packs and Path(self.tasks_glob).is_absolute():
@@ -180,7 +185,10 @@ class NativeAdapter(BaseAdapter):
             raise ValueError(f"Task {task_id} not found")
 
         task_path = self._task_files[task_id]
-        task, task_dir = load_task_yaml(task_path)
+        task, task_dir = load_task_yaml(
+            task_path,
+            project_task_defaults=self._project_task_defaults or None,
+        )
         self._tasks[task_id] = task
         # Loader is the authority on the effective task dir; refresh the cache
         # populated by _discover_tasks so the two stay consistent. (They agree

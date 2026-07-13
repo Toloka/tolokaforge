@@ -1,6 +1,7 @@
 """Pydantic models for configuration and data structures"""
 
 import dataclasses
+import warnings
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Annotated, Any, Literal, Self, get_args
@@ -527,13 +528,56 @@ class HarnessAdapterConfig(BaseModel):
 
 
 class EvaluationConfig(BaseModel):
-    """Evaluation configuration"""
+    """Evaluation configuration.
+
+    ``projects`` lists project roots this run pulls tasks from. When
+    omitted the loader defaults to the enclosing project (the project
+    directory containing the run config file). Legacy configs may use
+    ``task_packs`` — it is accepted here as an alias for ``projects``
+    and coerced with a ``DeprecationWarning``.
+    """
 
     tasks_glob: str = "**/task.yaml"
+    projects: list[str] = Field(default_factory=list)
     task_packs: list[str] = Field(default_factory=list)
     output_dir: str
     cache_images: bool = True
     harness_adapter: HarnessAdapterConfig | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_task_packs_alias(cls, values: Any) -> Any:
+        """Accept ``task_packs`` as a deprecated alias for ``projects``.
+
+        Emits a ``DeprecationWarning`` when the legacy key appears with
+        a non-empty value and no explicit ``projects`` key. When both
+        keys carry values the loader keeps ``projects`` and drops
+        ``task_packs`` (with a warning naming the collision).
+        """
+        if not isinstance(values, dict):
+            return values
+        legacy = values.get("task_packs")
+        canonical = values.get("projects")
+        if not legacy:
+            return values
+        if canonical:
+            warnings.warn(
+                "evaluation.task_packs and evaluation.projects both set; "
+                "projects wins. Drop task_packs from the run config.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            values["task_packs"] = []
+            return values
+        warnings.warn(
+            "evaluation.task_packs is deprecated; use evaluation.projects "
+            "instead. task_packs still accepted as an alias for one release.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        values["projects"] = list(legacy)
+        values["task_packs"] = []
+        return values
 
 
 class EngineConfig(BaseModel):

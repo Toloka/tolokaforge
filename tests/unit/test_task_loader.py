@@ -16,9 +16,10 @@ import yaml
 from pydantic import ValidationError
 
 from tolokaforge.adapters._task_loader import (
-    _apply_domain,
     _detect_task_root,
+    _load_domain_dict,
     _rewrite_task_paths,
+    deep_merge,
     load_task_yaml,
 )
 
@@ -142,18 +143,17 @@ class TestDetectTaskRoot:
 
 
 # ---------------------------------------------------------------------------
-# _apply_domain
+# _load_domain_dict + deep_merge
 # ---------------------------------------------------------------------------
 
 
-class TestApplyDomain:
-    def test_no_domain_ref_is_passthrough(self, tmp_path: Path) -> None:
+class TestLoadDomainDict:
+    def test_no_domain_ref_returns_empty(self, tmp_path: Path) -> None:
         task_path = tmp_path / "task.yaml"
         task_data = {"task_id": "x", "category": "tool_use"}
-        out = _apply_domain(task_path, task_data, tmp_path)
-        assert out == {"task_id": "x", "category": "tool_use"}
+        assert _load_domain_dict(task_path, task_data, tmp_path) == {}
 
-    def test_deep_merge_task_wins_on_conflict(self, tmp_path: Path) -> None:
+    def test_loads_domain_yaml_contents(self, tmp_path: Path) -> None:
         domain_path = tmp_path / "dom" / "_shared" / "domain.yaml"
         _write_yaml(
             domain_path,
@@ -164,48 +164,32 @@ class TestApplyDomain:
         )
         task_path = tmp_path / "dom" / "testcases" / "c1" / "task.yaml"
         task_path.parent.mkdir(parents=True)
-        task_data = {
-            "task_id": "c1",
-            "domain": "../../_shared/domain.yaml",
-            "category": "case_override",
-            "tools": {"agent": {"enabled": ["t_case"]}},
-        }
-        merged = _apply_domain(task_path, task_data, tmp_path / "dom")
-        # Scalar conflict: case wins.
-        assert merged["category"] == "case_override"
-        # Nested dict conflict: deep-merge, case-side leaf wins.
-        assert merged["tools"]["agent"]["enabled"] == ["t_case"]
-
-    def test_strips_domain_key(self, tmp_path: Path) -> None:
-        domain_path = tmp_path / "dom" / "_shared" / "domain.yaml"
-        _write_yaml(domain_path, {"category": "x"})
-        task_path = tmp_path / "dom" / "testcases" / "c" / "task.yaml"
-        task_path.parent.mkdir(parents=True)
-        merged = _apply_domain(
+        loaded = _load_domain_dict(
             task_path,
-            {"task_id": "c", "domain": "../../_shared/domain.yaml"},
+            {"domain": "../../_shared/domain.yaml"},
             tmp_path / "dom",
         )
-        assert "domain" not in merged
+        assert loaded == {
+            "category": "domain_default",
+            "tools": {"agent": {"enabled": ["t_domain"]}},
+        }
 
     def test_missing_domain_file_raises(self, tmp_path: Path) -> None:
         task_path = tmp_path / "task.yaml"
         with pytest.raises(RuntimeError, match="Domain file referenced"):
-            _apply_domain(task_path, {"domain": "missing.yaml"}, tmp_path)
+            _load_domain_dict(task_path, {"domain": "missing.yaml"}, tmp_path)
 
     def test_non_mapping_domain_raises(self, tmp_path: Path) -> None:
         bad = tmp_path / "bad.yaml"
         bad.write_text("- just\n- a\n- list\n")
         task_path = tmp_path / "task.yaml"
         with pytest.raises(RuntimeError, match="not a YAML mapping"):
-            _apply_domain(task_path, {"domain": "bad.yaml"}, tmp_path)
+            _load_domain_dict(task_path, {"domain": "bad.yaml"}, tmp_path)
 
     def test_domain_paths_rewritten_to_task_root(self, tmp_path: Path) -> None:
         # Domain-side ``mcp_server: mcp_server.py`` lives at <dom>/_shared/.
-        # The task root is <dom>. After merge the path should resolve to
-        # ``_shared/mcp_server.py`` from the task root frame, not from the
-        # case dir frame — that's the bug surfaced by
-        # test_load_task_yaml_real_example.
+        # After the loader rewrites paths into the task_root frame, the
+        # value must resolve to ``_shared/mcp_server.py`` from that frame.
         domain_dir = tmp_path / "dom" / "_shared"
         domain_dir.mkdir(parents=True)
         (domain_dir / "mcp_server.py").write_text("# stub\n")
@@ -215,14 +199,28 @@ class TestApplyDomain:
         )
         case_dir = tmp_path / "dom" / "testcases" / "c1"
         case_dir.mkdir(parents=True)
-        merged = _apply_domain(
+        loaded = _load_domain_dict(
             case_dir / "task.yaml",
             {"task_id": "c1", "domain": "../../_shared/domain.yaml"},
             tmp_path / "dom",
         )
-        # After merge, the path resolves cleanly from task_root.
-        assert merged["tools"]["agent"]["mcp_server"] == "_shared/mcp_server.py"
-        assert (tmp_path / "dom" / merged["tools"]["agent"]["mcp_server"]).exists()
+        assert loaded["tools"]["agent"]["mcp_server"] == "_shared/mcp_server.py"
+        assert (tmp_path / "dom" / loaded["tools"]["agent"]["mcp_server"]).exists()
+
+
+class TestDeepMerge:
+    """Task-side merge combines domain + task via ``deep_merge`` — task
+    wins on conflict, nested dicts recurse."""
+
+    def test_task_wins_on_scalar_conflict(self) -> None:
+        domain = {"category": "domain_default"}
+        task = {"category": "case_override"}
+        assert deep_merge(domain, task) == {"category": "case_override"}
+
+    def test_nested_dict_deep_merges_with_task_wins(self) -> None:
+        domain = {"tools": {"agent": {"enabled": ["t_domain"]}}}
+        task = {"tools": {"agent": {"enabled": ["t_case"]}}}
+        assert deep_merge(domain, task) == {"tools": {"agent": {"enabled": ["t_case"]}}}
 
 
 # ---------------------------------------------------------------------------
