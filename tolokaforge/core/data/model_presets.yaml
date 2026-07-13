@@ -146,8 +146,6 @@ presets:
       - "*glm-5*"
       - "tencent/hy3*"
       - "*hy3-preview*"
-      - "nvidia/nemotron*"
-      - "*nemotron-*"
     schema_sanitizer: passthrough
     response_policy: json_coerce
     prompt_policy: dict_map_hints
