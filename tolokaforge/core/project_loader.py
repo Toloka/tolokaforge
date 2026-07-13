@@ -37,7 +37,12 @@ from typing import Any
 
 import yaml
 
-from tolokaforge.core.models import ProjectConfig, TaskDefaults
+from tolokaforge.core.models import (
+    EnvironmentManifest,
+    EnvironmentPatch,
+    ProjectConfig,
+    TaskDefaults,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +128,9 @@ def _resolve_project_paths(data: dict, project_dir: Path) -> None:
 
     Two field families are covered:
 
-    - ``default_environment.compose_file`` — the substrate pointer.
+    - ``default_environment.stack.compose_file`` (canonical) or
+      ``default_environment.compose_file`` (legacy flat form) — the
+      substrate pointer.
     - Every path field inside ``task_defaults`` that a per-task
       ``task.yaml`` may carry (``system_prompt``, ``grading``,
       ``tools.{agent,user}.mcp_server``, ``initial_state.json_db``,
@@ -134,14 +141,29 @@ def _resolve_project_paths(data: dict, project_dir: Path) -> None:
     """
     env = data.get("default_environment")
     if isinstance(env, dict):
-        compose = env.get("compose_file")
-        if isinstance(compose, str) and compose:
-            resolved = Path(compose)
-            if not resolved.is_absolute():
-                env["compose_file"] = str((project_dir / resolved).resolve())
+        _anchor_stack_compose_file(env, project_dir)
     task_defaults = data.get("task_defaults")
     if isinstance(task_defaults, dict):
         _rewrite_task_defaults_paths(task_defaults, project_dir)
+
+
+def _anchor_stack_compose_file(env_patch: dict, anchor_dir: Path) -> None:
+    """Rewrite ``env_patch.stack.compose_file`` (or the legacy flat
+    ``env_patch.compose_file``) to an absolute path under *anchor_dir*.
+    In-place; no-op when the field is absent or already absolute.
+    """
+    stack = env_patch.get("stack")
+    if isinstance(stack, dict):
+        compose = stack.get("compose_file")
+        if isinstance(compose, str) and compose:
+            resolved = Path(compose)
+            if not resolved.is_absolute():
+                stack["compose_file"] = str((anchor_dir / resolved).resolve())
+    compose = env_patch.get("compose_file")
+    if isinstance(compose, str) and compose:
+        resolved = Path(compose)
+        if not resolved.is_absolute():
+            env_patch["compose_file"] = str((anchor_dir / resolved).resolve())
 
 
 def _rewrite_task_defaults_paths(task_defaults: dict, project_dir: Path) -> None:
@@ -267,7 +289,7 @@ def load_effective_run_config(
         config_data = yaml.safe_load(f) or {}
     if not isinstance(config_data, dict):
         raise RuntimeError(
-            f"Run config {config_path} is not a YAML mapping " f"(got {type(config_data).__name__})"
+            f"Run config {config_path} is not a YAML mapping (got {type(config_data).__name__})"
         )
 
     project_root, used_legacy_dir = detect_project_layout(config_path)
@@ -279,6 +301,127 @@ def load_effective_run_config(
         project = synthesize_default_project(project_root=config_path.parent)
     merged = resolve_effective_run_config_data(project, config_data)
     return merged, project
+
+
+# ── Environment resolve ────────────────────────────────────────────────
+
+
+_POLICY_REQUEST_FIELDS = ("network_policy", "security_context_defaults")
+"""Fields that survive atomic ``stack`` replacement — policy requests
+that are substrate-neutral (they describe the trial regardless of
+substrate)."""
+
+_SERVICE_TREATMENT_FIELDS = ("initial_state", "isolation")
+"""Fields that are scoped to the reviewed stack — discarded on atomic
+``stack`` replacement (the project's opt-outs reviewed the project's
+services, not the replacement stack)."""
+
+
+def resolve(
+    project_env: EnvironmentPatch | None,
+    task_env: EnvironmentPatch | None,
+) -> EnvironmentManifest | None:
+    """Bind a project-side and task-side :class:`EnvironmentPatch` pair
+    to an :class:`EnvironmentManifest`.
+
+    Deep-merges the two patches (task wins on conflict), then materialises
+    the manifest — the point where the disk-touching validators
+    (compose-file existence, safety checks) run. Returns ``None`` when
+    neither side declares an environment; raises ``ValueError`` when the
+    merged patch has no ``compose_file`` (the manifest would be
+    unconstructible).
+
+    Atomic ``stack`` replacement — the trigger is the presence of the
+    ``compose_file`` key on the task's ``stack`` patch, never path
+    identity. When it fires:
+
+    - The task's ``stack`` replaces the project's ``stack`` outright —
+      clean slate of ``inputs`` and ``runner_service`` (a foreign
+      compose file's ``${var}`` slots must never silently capture
+      inherited values).
+    - Service-treatment fields (``initial_state``, root ``isolation``)
+      are discarded — the project's opt-outs reviewed the project's
+      services, not the replacement stack.
+    - Policy-request fields (``network_policy``,
+      ``security_context_defaults``) survive — substrate-neutral, they
+      describe the trial regardless of substrate.
+
+    Anchoring: ``stack.compose_file`` paths must already be absolute
+    when this runs. The project loader and the task loader anchor them
+    to the file that declared them before ``ProjectConfig`` /
+    ``TaskConfig`` are constructed; this function assumes that
+    invariant.
+    """
+    if project_env is None and task_env is None:
+        return None
+
+    project_data = _dump_patch(project_env)
+    task_data = _dump_patch(task_env)
+
+    merged = _merge_env_patches(project_data, task_data)
+
+    stack = merged.get("stack") or {}
+    compose_file = stack.get("compose_file")
+    if not compose_file:
+        raise ValueError(
+            "EnvironmentPatch resolve produced no compose_file — either the "
+            "project's default_environment or the task's environment_manifest "
+            "must declare `stack.compose_file`."
+        )
+
+    manifest_kwargs: dict[str, Any] = {
+        "compose_file": compose_file,
+        "stack_inputs": dict(stack.get("inputs") or {}),
+    }
+    runner_service = stack.get("runner_service")
+    if runner_service:
+        manifest_kwargs["runner_service"] = runner_service
+    for field in (*_SERVICE_TREATMENT_FIELDS, *_POLICY_REQUEST_FIELDS):
+        value = merged.get(field)
+        if value is None:
+            continue
+        manifest_kwargs[field] = value
+
+    return EnvironmentManifest(**manifest_kwargs)
+
+
+def _dump_patch(patch: EnvironmentPatch | None) -> dict[str, Any]:
+    """Return a merge-friendly dict view of *patch*. Empty dict when
+    *patch* is ``None``; drops fields left at their patch defaults
+    (all ``None``) so that later layers cleanly overwrite unset ones.
+    """
+    if patch is None:
+        return {}
+    return patch.model_dump(exclude_none=True, mode="python")
+
+
+def _merge_env_patches(
+    project: dict[str, Any],
+    task: dict[str, Any],
+) -> dict[str, Any]:
+    """Deep-merge two patch dicts with the atomic-``stack`` rule.
+
+    Standard deep-merge (task wins) applies to every field except
+    ``stack``. The atomic rule fires only when the task declares
+    ``stack.compose_file``: the task's ``stack`` replaces the project's
+    entirely, and service-treatment fields are dropped so they don't
+    silently extend from a reviewed stack to an unreviewed one.
+    """
+    task_stack = task.get("stack")
+    stack_replacement = isinstance(task_stack, dict) and "compose_file" in task_stack
+    if not stack_replacement:
+        return deep_merge(project, task)
+
+    merged: dict[str, Any] = {"stack": dict(task_stack)}
+    for field in _SERVICE_TREATMENT_FIELDS:
+        if field in task:
+            merged[field] = task[field]
+    for field in _POLICY_REQUEST_FIELDS:
+        if field in task:
+            merged[field] = task[field]
+        elif field in project:
+            merged[field] = project[field]
+    return merged
 
 
 # ── Legacy alias warnings ──────────────────────────────────────────────

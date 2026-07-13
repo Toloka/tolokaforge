@@ -161,7 +161,7 @@ class TestLoadProjectConfig:
         assert isinstance(project.task_defaults, TaskDefaults)
         assert project.run_defaults is None
 
-    def test_resolves_default_environment_compose_relative_path(self, tmp_path: Path) -> None:
+    def test_resolves_default_environment_stack_compose_relative_path(self, tmp_path: Path) -> None:
         # Copy the fixture compose file into a project-relative path so
         # relative-path resolution has something to hit.
         env_dir = tmp_path / "shared"
@@ -172,14 +172,18 @@ class TestLoadProjectConfig:
             tmp_path,
             {
                 "default_environment": {
-                    "compose_file": "shared/environment.compose.yaml",
+                    "stack": {
+                        "compose_file": "shared/environment.compose.yaml",
+                    },
                 },
             },
         )
         project = load_project_config(path)
         assert project.default_environment is not None
-        assert project.default_environment.compose_file.is_absolute()
-        assert project.default_environment.compose_file == rel_compose.resolve()
+        assert project.default_environment.stack is not None
+        assert project.default_environment.stack.compose_file is not None
+        assert project.default_environment.stack.compose_file.is_absolute()
+        assert project.default_environment.stack.compose_file == rel_compose.resolve()
 
     def test_missing_file_raises(self, tmp_path: Path) -> None:
         with pytest.raises(FileNotFoundError):

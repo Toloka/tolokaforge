@@ -18,7 +18,7 @@ from tolokaforge.core.models import (
     TimeoutDefaults,
     UserSimulatorConfig,
 )
-from tolokaforge.runner.models import EnvironmentManifest
+from tolokaforge.runner.models import EnvironmentPatch, StackPatch
 
 pytestmark = pytest.mark.unit
 
@@ -165,18 +165,16 @@ class TestProjectConfigWithEnvironment:
     def test_default_environment_binds(self) -> None:
         p = ProjectConfig(
             name="with-env",
-            default_environment=EnvironmentManifest(compose_file=ENV_FIXTURE),
+            default_environment=EnvironmentPatch(stack=StackPatch(compose_file=ENV_FIXTURE)),
         )
         assert p.default_environment is not None
-        assert p.default_environment.compose_file == ENV_FIXTURE
+        assert p.default_environment.stack is not None
+        assert p.default_environment.stack.compose_file == ENV_FIXTURE
 
-    def test_missing_compose_file_fails(self) -> None:
-        # Regression: EnvironmentManifest still enforces its own file
-        # existence check inside the ProjectConfig graph.
-        with pytest.raises(ValidationError):
-            ProjectConfig(
-                name="broken-env",
-                default_environment=EnvironmentManifest(
-                    compose_file=Path("/nonexistent/compose.yaml"),
-                ),
-            )
+    def test_patch_constructs_with_no_io(self) -> None:
+        # The patch shape is I/O-free at construction: pointing at a
+        # non-existent compose file must not raise. Validation is
+        # deferred to :func:`resolve`, which materialises the manifest.
+        patch = EnvironmentPatch(stack=StackPatch(compose_file=Path("/nonexistent/compose.yaml")))
+        assert patch.stack is not None
+        assert patch.stack.compose_file == Path("/nonexistent/compose.yaml")

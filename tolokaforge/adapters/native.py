@@ -11,7 +11,8 @@ import yaml
 from tolokaforge.adapters._task_loader import _detect_task_root, load_task_yaml
 from tolokaforge.adapters.base import AdapterEnvironment, BaseAdapter
 from tolokaforge.core.logging import get_logger
-from tolokaforge.core.models import GradingConfig, TaskConfig
+from tolokaforge.core.models import EnvironmentPatch, GradingConfig, TaskConfig
+from tolokaforge.core.project_loader import resolve as resolve_environment
 
 if TYPE_CHECKING:
     from tolokaforge.runner.models import TaskDescription
@@ -93,6 +94,14 @@ class NativeAdapter(BaseAdapter):
         # don't have to be repeated in each task file. Empty when the
         # caller (typically the Orchestrator) has no project context.
         self._project_task_defaults: dict[str, Any] = params.get("project_task_defaults", {})
+        # project.default_environment patch from the enclosing project.
+        # Bound to each task's own environment patch by
+        # :func:`resolve_environment` in :meth:`to_task_description`.
+        # ``None`` when the caller has no project or the project sets no
+        # default environment.
+        self._project_default_environment: EnvironmentPatch | None = params.get(
+            "project_default_environment"
+        )
 
         # Validate: tasks_glob must be relative when task_packs is provided
         if self.task_packs and Path(self.tasks_glob).is_absolute():
@@ -719,12 +728,15 @@ class NativeAdapter(BaseAdapter):
                     "ascii"
                 )
 
-        # environment_manifest passes through as-is. The task loader
-        # (:func:`_task_loader.load_task_yaml`) resolves the manifest's
-        # ``compose_file`` to an absolute path before ``TaskConfig`` is
-        # constructed, so ``EnvironmentManifest``'s file-existence
-        # validator succeeds regardless of CWD at load time.
-        environment_manifest = task.environment_manifest
+        # Bind the project's default_environment patch to the task's own
+        # patch via :func:`resolve_environment`; the resolver merges them
+        # (with the atomic-``stack`` rule) and constructs the
+        # ``EnvironmentManifest`` — the point where the compose file's
+        # existence and safety validators run.
+        environment_manifest = resolve_environment(
+            self._project_default_environment,
+            task.environment_manifest,
+        )
 
         # Create TaskDescription
         task_description = TaskDescription(
