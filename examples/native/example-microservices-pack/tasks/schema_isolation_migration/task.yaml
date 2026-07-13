@@ -1,0 +1,21 @@
+# Task: apply a breaking schema migration to the postgres database.
+# Full override — the task declares its own stack.compose_file,
+# which replaces the project's whole `stack` object and discards
+# the project's per-service `services` entries (they describe the
+# shared stack, not this one). This task doesn't share a runtime
+# stack with any other task.
+task_id: "schema_isolation_migration"
+description: >
+  The backend team wants to add a `deleted_at` column to the `orders`
+  table with a corresponding index and a data backfill. Write the
+  migration in the project's migration format and verify it applies
+  cleanly + reverts cleanly.
+
+environment_manifest:
+  # Task-local stack — deliberately not the project's shared one.
+  # Replacing stack.compose_file replaces the WHOLE stack object
+  # (clean slate of inputs/runner_service) and discards the
+  # project's service-keyed maps.
+  stack:
+    compose_file: "./environment.compose.yaml"
+    runner_service: "runner"

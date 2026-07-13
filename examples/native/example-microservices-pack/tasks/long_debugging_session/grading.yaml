@@ -1,0 +1,32 @@
+# Overrides the project's grading_defaults.combine: a long
+# open-ended debugging task gets a slightly lower pass bar.
+# All other combine fields inherit (method: weighted, llm_judge 1.0).
+combine:
+  pass_threshold: 0.7
+
+llm_judge:
+  rubric:
+    reference: >
+      Correct outcome: the intermittent 500s on GET /orders are
+      traced to their root cause, a fix lands, and the original
+      failure is reproduced before the fix and shown gone after it.
+    criteria:
+      - id: root_cause_identified
+        description: >
+          The agent identifies the actual root cause, not a symptom.
+        weight: 4.0
+        kind: binary
+        required: true
+      - id: fix_applies_cleanly
+        description: >
+          The fix applies without breaking other endpoints.
+        weight: 4.0
+        kind: binary
+        required: false
+      - id: verification_step
+        description: >
+          The agent reproduces the original failure and demonstrates
+          it no longer occurs after the fix.
+        weight: 2.0
+        kind: binary
+        required: false

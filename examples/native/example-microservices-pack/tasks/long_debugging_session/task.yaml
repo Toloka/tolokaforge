@@ -1,0 +1,17 @@
+# Task: debug a production incident with intermittent 500 errors.
+# Full inheritance from the project for the environment; overrides
+# `max_turns` at task level because a real debugging session needs
+# more agent turns than the project's default of 20.
+#
+# This demonstrates a task-level override of a non-environment field:
+# the task inherits everything except the one field it explicitly
+# changes. Deep-typed merge: only `max_turns` differs from the
+# project default.
+task_id: "long_debugging_session"
+description: >
+  Backend service is returning intermittent 500s on GET /orders under
+  load. Investigate the logs, hypothesise the cause, verify by
+  reproducing the failure, and land a fix. Reproduce + fix + verify
+  requires more agent turns than a typical task.
+
+max_turns: 60

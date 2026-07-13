@@ -1,0 +1,81 @@
+# Shared 4-service environment: runner + db-service + postgres +
+# backend-api. Referenced by four of the five tasks in this project
+# via the project's default_environment.stack.compose_file.
+#
+# This file defines what the services ARE. How the harness treats
+# them between trials (isolation, reset recipes) is declared in
+# project.yaml under default_environment.services — per-service
+# semantics live in the manifest, never in this file.
+
+services:
+  # Engine services — same shape as the multi_service_postgres example.
+  runner:
+    image: "tolokaforge-runner:local"
+    environment:
+      DB_SERVICE_URL: "http://db-service:8000"
+    ports:
+      - "50051"
+    depends_on:
+      db-service:
+        condition: service_healthy
+      backend-api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import grpc; grpc.channel_ready_future(grpc.insecure_channel('localhost:50051')).result(timeout=2)"
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+  db-service:
+    image: "tolokaforge-db-service:local"
+    ports:
+      - "8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 3s
+
+  # Task-adjacent application services.
+  postgres:
+    # ${postgres_version:-16} — typed input with default. A task that
+    # doesn't override sees "16"; the postgres_upgrade_test task sets
+    # "17" via environment_manifest.stack.inputs and gets a distinct
+    # stack.
+    image: "postgres:${postgres_version:-16}"
+    environment:
+      POSTGRES_USER: "postgres"
+      POSTGRES_PASSWORD: "example"
+      POSTGRES_DB: "app"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d app"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+  backend-api:
+    image: "myrepo/example-backend:v1.4.0"     # pinned; never `latest`
+    environment:
+      DATABASE_URL: "postgresql://postgres:example@postgres/app"
+    ports:
+      - "8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:8080/health"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s

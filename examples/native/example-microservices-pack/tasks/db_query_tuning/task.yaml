@@ -1,0 +1,7 @@
+# Task: identify and fix a slow query in the backend service.
+# Full inheritance from the project — declares only identity.
+task_id: "db_query_tuning"
+description: >
+  The backend service's GET /orders endpoint takes 4+ seconds on a
+  cold cache. Diagnose the cause, propose the SQL/index change, and
+  submit a fix that reduces p95 latency below 300ms.
