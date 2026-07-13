@@ -1125,6 +1125,67 @@ _ALL: list[MC] = [
             }
         ),
     ),
+    # -----------------------------------------------------------------
+    # Xiaomi MiMo V2.5 Pro (OpenRouter) — routed via the model-specific
+    # ``openrouter_mimo_v25_pro_dict_stringify_recovery`` preset (passthrough
+    # schema + ``JsonCoerceResponse``). MiMo emits object/array-typed
+    # tool-call arguments as JSON-encoded strings at the root of the call
+    # (recursive_ref, discriminated_union, heterogeneous_array[nested],
+    # variant dict_map/union); ``json_coerce`` decodes them back to native
+    # dicts before pydantic validation, so DICT_MAP / DISCRIMINATED_UNION /
+    # RECURSIVE_REF / HETEROGENEOUS_ARRAY are all ``required``. Integrated via
+    # auto-resolve after the fix loop converged (candidate PR #222); the final
+    # reprobe went 5/5 on every fix-target.
+    #
+    # DECIMAL_FIELD_TOOL_CALL passes natively under the passthrough schema
+    # (no StrictSchema collapse needed) — ``required``. IMPLICIT_PROMPT_CACHING
+    # is ``required``: OpenRouter/xiaomi auto-caches large prompts on this
+    # route (cache_read surfaced on call 2).
+    #
+    # thinking_* stay ``known_unsupported`` — the OpenAI reasoning codec would
+    # surface only a flat ``reasoning_content`` summary, and the observe
+    # baseline showed reasoning_tokens=0 (no structured blocks to replay).
+    # PROMPT_CACHING (the explicit Anthropic-ephemeral contract) stays
+    # ``known_unsupported`` — we attach no ``cache_control`` markers and the
+    # baseline created 0 cache_creation tokens.
+    # -----------------------------------------------------------------
+    MC(
+        model_id="openrouter__xiaomi_mimo-v2.5-pro",
+        provider="openrouter",
+        name="xiaomi/mimo-v2.5-pro",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.DICT_MAP_TOOL_CALL,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.IMPLICIT_PROMPT_CACHING,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                C.THINKING_EMITS_BLOCKS,
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.UNSIGNED_THINKING_REPLAY,
+                C.PROMPT_CACHING,
+            }
+        ),
+    ),
     MC(
         model_id="openrouter__google_gemini-3.1-pro-preview",
         provider="openrouter",
