@@ -66,6 +66,37 @@ presets:
       drop_sampling_when_thinking: true
       reasoning_budget_default: 8000
 
+  # Claude Haiku 4.5 (via OpenRouter) — routes to the generic ``anthropic``
+  # axes (content/reasoning/cache = anthropic, schema = passthrough) EXCEPT it
+  # adds ``response_policy: json_coerce``. Under the plain ``anthropic`` preset
+  # this model is clean on 30/31 capability probes; the one gap is the
+  # discriminated-union ``explicit_discriminator`` variant, where the nested
+  # ``item`` member is emitted as a JSON-ENCODED STRING
+  # (``{"item": "{\"kind\": \"ticket\", ...}"}``) instead of a nested dict.
+  # ``JsonCoerceResponse._coerce_json_strings`` decodes a str whose first
+  # non-ws char is ``{``/``[`` and whose ``json.loads`` yields a container;
+  # native dicts, scalar strings and IDs pass through untouched, so it is a
+  # safe recovery for the 30 already-passing probes.
+  #
+  # We deliberately do NOT reuse ``openrouter_dict_stringify_recovery``: it
+  # forces ``reasoning_codec: openai``, which would drop this Anthropic model's
+  # signed thinking blocks (THINKING_EMITS_BLOCKS / *_THINKING_REPLAY all pass
+  # under the anthropic codec). Instead we clone the ``anthropic`` axes verbatim
+  # and add only ``response_policy: json_coerce``. Listed BEFORE the generic
+  # ``anthropic`` entry so first-match-wins routing picks this haiku-only preset
+  # up first. Live-certified 2026-07-13 (see registry.py).
+  anthropic_claude_haiku_4_5:
+    match:
+      - "anthropic/claude-haiku-4.5*"
+      - "*claude-haiku-4.5*"
+    schema_sanitizer: passthrough
+    content_policy: anthropic
+    reasoning_codec: anthropic
+    cache_policy: anthropic_ephemeral
+    response_policy: json_coerce
+    params:
+      supports_seed: false
+
   anthropic:
     match:
       - "anthropic/*"

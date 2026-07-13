@@ -382,6 +382,78 @@ _ALL: list[MC] = [
         ),
     ),
     # -----------------------------------------------------------------
+    # Claude Haiku 4.5 (via OpenRouter) — Anthropic's fast-tier model.
+    # Live-certified 2026-07-13 via ``pytest tests/integration/llm/ -k
+    # claude-haiku-4.5`` (22 required / 1 known_unsupported). Routes through a
+    # dedicated ``anthropic_claude_haiku_4_5`` preset that clones the generic
+    # ``anthropic`` axes (anthropic content/reasoning/cache + passthrough schema)
+    # and adds ONLY ``response_policy: json_coerce``. Under the plain anthropic
+    # preset the observe baseline was clean on 30/31 probes; the sole gap was the
+    # discriminated-union ``explicit_discriminator`` variant emitting the nested
+    # ``item`` member as a JSON-encoded string. ``JsonCoerceResponse`` decodes
+    # that back to a native dict, so the reprobe went 5/5 (15/15 in the earlier
+    # observe run) and DISCRIMINATED_UNION_TOOL_CALL is ``required`` here — unlike
+    # the opus-4.6/4.7/4.8 + fable-5 siblings, whose anthropic-only route has no
+    # json_coerce recovery and declares it known_unsupported.
+    #
+    # This is NOT a copy of a sibling cert (docs/ADD_NEW_MODEL.md § "copying a
+    # sibling cert verbatim"): every capability was run live. Notable divergences
+    # from the opus/fable Anthropic siblings:
+    #   * DICT_MAP_TOOL_CALL passes under Anthropic PassthroughSchema (like 4.8 /
+    #     fable-5), required.
+    #   * IMPLICIT_PROMPT_CACHING + UNSIGNED_THINKING_REPLAY passed their probes
+    #     live and are declared required here (the opus/fable siblings keep them
+    #     known_unsupported on a pass-but-artifact / pass-but-wrong-shape reading;
+    #     the haiku observe run recorded clean passes, so they land as required).
+    #
+    # DECIMAL_FIELD_TOOL_CALL is the one ceiling: the $42.50 charge probe returns
+    # ``no tool call returned`` on 6/15 runs (9/15 pass) — a genuine no-wrapper
+    # tool-call consistency gap under passthrough schema, not a policy-fixable
+    # wire-shape one, so it stays known_unsupported.
+    # -----------------------------------------------------------------
+    MC(
+        model_id="openrouter__anthropic_claude-haiku-4.5",
+        provider="openrouter",
+        name="anthropic/claude-haiku-4.5",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.DICT_MAP_TOOL_CALL,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                # json_coerce recovers the stringified discriminated-union
+                # ``item`` member — reprobe went green (see header).
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.PROGRESS_AFTER_SUCCESS,
+                C.TOOL_NAME_DISCIPLINE,
+                C.THINKING_EMITS_BLOCKS,
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.UNSIGNED_THINKING_REPLAY,
+                C.PROMPT_CACHING,
+                C.IMPLICIT_PROMPT_CACHING,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # $42.50 charge probe returns ``no tool call returned`` on 6/15
+                # runs (9/15 pass) — a no-wrapper tool-call consistency gap under
+                # Anthropic PassthroughSchema, not a policy-fixable wire shape.
+                C.DECIMAL_FIELD_TOOL_CALL,
+            }
+        ),
+    ),
+    # -----------------------------------------------------------------
     # Qwen — preset routes it through the same strict trio as GPT-5.
     # Reasoning surface is OpenAI-style summary only, no signed blocks,
     # so thinking capabilities are ``known_unsupported``.
