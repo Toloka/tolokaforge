@@ -1,0 +1,22 @@
+# BYOH concurrency example. Requires ANTHROPIC_API_KEY through SecretManager.
+models: {}
+
+agent_harness:
+  type: claude-code
+  version: 2.1.203
+  flags:
+    permission_mode: bypassPermissions
+  user_simulator_policy: first_message_only
+
+orchestrator:
+  workers: 2
+  repeats: 2
+  max_turns: 8
+  queue_backend: sqlite
+
+evaluation:
+  task_packs:
+    - "examples/native/native_shared_domain/dataset"
+  tasks_glob: "**/testcases/**/task.yaml"
+  output_dir: "results/native_shared_domain_byoh_claude"
+

@@ -29,10 +29,10 @@ For adapter architecture and interface contracts see
 adapter for tasks authored directly in the TolokaForge repository and does not
 require any external plugins.
 
-Tools are provided by a task-local `mcp_server.py` script that the adapter
-references from `task.yaml`.  The runner (local or Docker) starts the MCP
-server as a subprocess and exposes its tools to the agent via the standard
-tool registry.
+Tools can be provided by a task-local `mcp_server.py`, by the builtin tool
+registry, or by a Docker Compose environment. The Compose form uses the same
+Runner lifecycle wrapper as the terminal-bench adapter, including per-trial
+project names and teardown.
 
 **Key properties:**
 
@@ -40,8 +40,8 @@ tool registry.
 |----------|-------|
 | Adapter key | `native` (built-in, no install needed) |
 | Task detection | Glob pattern matching `**/task.yaml` |
-| Tool loading | MCP server subprocess (`mcp_server.py`) |
-| Grading | JSONPath checks + transcript rules + optional hash |
+| Tool loading | MCP server, builtin registry, or Docker Compose exec |
+| Grading | JSONPath/transcript/hash, or Compose test execution |
 | `harness_adapter` in `run.yaml` | Not needed (auto-selected) |
 
 ---
@@ -59,6 +59,17 @@ tasks/<category>/<task_id>/
 │   └── *.py
 └── fixtures/
     └── tools.json               # optional — pre-generated tool schemas (cache)
+```
+
+Compose-backed tasks conventionally add:
+
+```
+environment/
+├── docker-compose.yaml          # required by the source declaration
+├── Dockerfile                   # optional build context artifact
+└── .env                         # optional, non-secret environment settings
+tests/
+└── test.sh                      # required test_execution verifier
 ```
 
 The `fixtures/tools.json` file is auto-generated on the first run if it does
@@ -116,6 +127,32 @@ policies:
 grading: "grading.yaml"                 # path to grading file (relative to task dir)
 system_prompt: "system_prompt.md"       # path to system prompt file (relative to task dir)
 ```
+
+### Docker Compose execution
+
+Use a per-tool `source` declaration when the task must execute inside a
+Compose service rather than in the Runner container:
+
+```yaml
+tools:
+  agent:
+    enabled: [bash]
+    bash:
+      source:
+        invocation_style: docker_compose_exec
+        compose_file: environment/docker-compose.yaml
+        service: main
+        tests_dir: tests
+        env_vars:
+          PROJECT_MODE: benchmark
+```
+
+Paths are relative to the task directory and cannot escape it. Validation
+fails before a run when the Compose file, named service, tests directory, or
+`tests/test.sh` is missing. Compose files, their environment directory, and
+the verifier directory are bundled into the Runner; solution and golden
+directories are excluded. The adapter automatically enables the shared DinD
+workspace needed by the lifecycle tool.
 
 ### initial_state.json format
 
@@ -186,6 +223,21 @@ transcript_rules:
     - info: "paid"
       required: true
 ```
+
+For Compose-backed verification, declare test execution explicitly:
+
+```yaml
+grading_method: test_execution
+combine:
+  method: weighted
+  weights: {custom_checks: 1.0}
+  pass_threshold: 0.5
+```
+
+The Runner copies `tests_dir` into the declared service, runs `test.sh`, and
+reads `/logs/verifier/reward.txt`. The reward must be a number from `0` to `1`.
+`test_execution` without a Compose-backed enabled tool is rejected during
+validation rather than falling through to normal Runner grading.
 
 ### Grading scoring
 
@@ -272,6 +324,12 @@ at runtime (see `get_registry_tools` note below).
 Both return empty lists.  For native tasks the orchestrator loads the MCP
 server directly via `InvocationStyle.MCP_SERVER` and the tool registry is
 populated at trial start time, not at adapter init time.
+
+A task may combine a local `mcp_server` with builtins or compose-backed tools.
+Only names advertised by `tools/list` receive `MCP_SERVER` dispatch; names such
+as `bash`, `read_file`, and `write_file` retain their builtin/declared source.
+This is used by converted Harbor tasks whose tool-use sidecar becomes a portable
+stdio MCP server while their workspace remains compose-backed.
 
 ### `get_grading_config(task_id)`
 
