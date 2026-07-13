@@ -29,7 +29,7 @@ def test_normalize_task_pack_paths_raises_for_missing(tmp_path: Path):
     config_path = tmp_path / "run.yaml"
     config_path.write_text("evaluation: {}")
 
-    with pytest.raises(FileNotFoundError, match="Task-pack path does not exist"):
+    with pytest.raises(FileNotFoundError, match="Project path does not exist"):
         normalize_task_pack_paths(["./missing"], config_path)
 
 

@@ -54,6 +54,7 @@ from typing import Any
 import yaml
 
 from tolokaforge.core.models import TaskConfig
+from tolokaforge.core.project_loader import deep_merge
 
 
 def validate_grading_yaml(grading_path: Path) -> None:
@@ -111,11 +112,12 @@ def load_task_yaml(
     Args:
         task_path: Absolute or relative path to ``task.yaml``.
         project_task_defaults: Optional ``project.task_defaults`` dict from
-            the enclosing project. When supplied, it is layered under the
-            adapter's Domain merge and the task's own fields — task fields
-            still win on conflict; project defaults fill in fields the task
-            (and any Domain bundle) leaves unset. Precedence, low to high:
-            adapter Domain bundle → project defaults → task.yaml.
+            the enclosing project. When supplied, it is layered above the
+            adapter's Domain merge and below the task's own fields.
+            Precedence, low to high: adapter Domain bundle → project
+            defaults → task.yaml. Task fields win on conflict; project
+            defaults win over the Domain bundle where they overlap and
+            the task doesn't set the field.
 
     Returns:
         ``(task_config, effective_task_dir)``. ``effective_task_dir`` is the
@@ -144,19 +146,22 @@ def load_task_yaml(
     # merge so we never double-rewrite domain-supplied paths. No-op for the
     # flat layout (task_root == task.yaml parent) so legacy callers see no
     # change. The ``domain`` ref itself is not in ``_PATH_FIELD_REWRITERS``
-    # so this step leaves it untouched for ``_apply_domain`` to consume.
+    # so this step leaves it untouched for ``_load_domain_dict`` to consume.
     if task_root != task_path.parent:
         _rewrite_task_paths(task_data, task_path.parent, task_root)
 
-    task_data = _apply_domain(task_path, task_data, task_root)
+    # Load the adapter's Domain bundle (if any) but don't merge yet — the
+    # merge order matters: `domain` sits below `project_task_defaults`,
+    # which sits below `task.yaml`. Later layers win on conflict.
+    domain_data = _load_domain_dict(task_path, task_data, task_root)
+    task_data.pop("domain", None)
 
-    # Layer project.task_defaults under the task's own fields. Task fields
-    # continue to win on conflict; project defaults fill fields the task
-    # (and any adapter Domain bundle) leaves unset. Applied after the
-    # Domain merge so project defaults sit above adapter defaults in the
-    # precedence chain.
+    # Build the precedence chain from lowest to highest. ``deep_merge``
+    # is delta-wins, so the second argument overrides the first on conflict.
+    base = domain_data
     if project_task_defaults:
-        task_data = _deep_merge_task(project_task_defaults, task_data)
+        base = deep_merge(base, project_task_defaults)
+    task_data = deep_merge(base, task_data)
 
     # Resolve environment_manifest.compose_file to an absolute path
     # against the task root so ``EnvironmentManifest``'s file-existence
@@ -214,17 +219,19 @@ def _detect_task_root(task_path: Path) -> Path:
     return parent
 
 
-def _apply_domain(task_path: Path, task_data: dict, task_root: Path) -> dict:
-    """Deep-merge the ``domain:`` ref into *task_data* if one is present.
+def _load_domain_dict(task_path: Path, task_data: dict, task_root: Path) -> dict:
+    """Return the ``domain:`` ref's contents with paths rewritten into the
+    task-root frame. Returns ``{}`` when the task has no ``domain`` ref.
 
-    Domain-side path fields are rewritten from the domain file's parent dir
-    into the *task_root* frame before merge so downstream callers see one
-    consistent set of paths. The ``domain`` key is stripped from the returned
-    dict.
+    The caller is responsible for merging the returned dict into the
+    task's own dict. Splitting load from merge lets the caller layer
+    additional sources (e.g. ``project.task_defaults``) between the
+    domain bundle and the task's own fields, with the correct
+    precedence.
     """
     domain_ref = task_data.get("domain")
     if not domain_ref or not isinstance(domain_ref, str):
-        return task_data
+        return {}
 
     domain_path = (task_path.parent / domain_ref).resolve()
     if not domain_path.exists():
@@ -249,27 +256,7 @@ def _apply_domain(task_path: Path, task_data: dict, task_root: Path) -> dict:
         )
 
     _rewrite_task_paths(domain_data, domain_path.parent, task_root)
-    merged = _deep_merge_task(domain_data, task_data)
-    merged.pop("domain", None)
-    return merged
-
-
-def _deep_merge_task(domain: dict, task: dict) -> dict:
-    """Deep-merge *domain* into *task*; task values win on conflict.
-
-    Nested dicts merge recursively. Lists and scalars from the task side
-    replace the domain side — split a structure across both files only if its
-    inner values are identical for every case; otherwise keep it whole on one
-    side.
-    """
-    result: dict = dict(domain)
-    for key, val in task.items():
-        existing = result.get(key)
-        if isinstance(existing, dict) and isinstance(val, dict):
-            result[key] = _deep_merge_task(existing, val)
-        else:
-            result[key] = val
-    return result
+    return domain_data
 
 
 def _rewrite_path(value: str, from_dir: Path, to_dir: Path) -> str:

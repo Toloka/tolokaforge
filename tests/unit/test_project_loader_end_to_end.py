@@ -193,7 +193,7 @@ class TestTaskLoaderWithProjectDefaults:
         assert task.max_turns == 60  # task wins
         assert task.adapter_type == "native"  # from defaults
 
-    def test_task_load_without_defaults_matches_pre_m2_behaviour(self, tmp_path: Path) -> None:
+    def test_task_load_without_defaults_matches_legacy_behaviour(self, tmp_path: Path) -> None:
         from tolokaforge.adapters._task_loader import load_task_yaml
 
         task_dir = tmp_path / "tasks" / "legacy"
@@ -216,3 +216,165 @@ class TestTaskLoaderWithProjectDefaults:
         task, _ = load_task_yaml(task_dir / "task.yaml")
         assert task.task_id == "legacy"
         assert task.max_turns == 40
+
+    def test_project_defaults_outrank_domain_bundle(self, tmp_path: Path) -> None:
+        """Precedence chain (low → high): domain → project defaults → task.
+
+        Reproduces the specific case where domain sets a field, project
+        sets the same field to a different value, and the task doesn't
+        touch it — project must win.
+        """
+        from tolokaforge.adapters._task_loader import load_task_yaml
+
+        domain_dir = tmp_path / "_shared"
+        domain_dir.mkdir()
+        _write_yaml(
+            domain_dir / "domain.yaml",
+            {
+                "adapter_type": "native",
+                "max_turns": 15,
+                "policies": {"guidance": ["from domain"]},
+            },
+        )
+        task_dir = tmp_path / "testcases" / "case_a"
+        task_dir.mkdir(parents=True)
+        _write_yaml(
+            task_dir / "task.yaml",
+            {
+                "domain": "../../_shared/domain.yaml",
+                "task_id": "case_a",
+                "name": "Case A",
+                "category": "demo",
+                "description": "domain-referring task",
+                "initial_state": {},
+                "tools": {"agent": {"enabled": []}, "user": {"enabled": []}},
+                "user_simulator": {"mode": "llm"},
+                "grading": "grading.yaml",
+            },
+        )
+        # Project overrides the same fields the domain set.
+        project_defaults = {
+            "adapter_type": "tlk_mcp_core",  # differs from domain's "native"
+            "max_turns": 50,  # differs from domain's 15
+        }
+        task, _ = load_task_yaml(
+            task_dir / "task.yaml",
+            project_task_defaults=project_defaults,
+        )
+        assert task.adapter_type == "tlk_mcp_core"  # project wins over domain
+        assert task.max_turns == 50  # project wins over domain
+        # Fields set only by domain still survive when project/task are silent.
+        assert task.policies == {"guidance": ["from domain"]}
+
+    def test_task_still_beats_project_and_domain(self, tmp_path: Path) -> None:
+        """Task.yaml is the top of the precedence chain."""
+        from tolokaforge.adapters._task_loader import load_task_yaml
+
+        domain_dir = tmp_path / "_shared"
+        domain_dir.mkdir()
+        _write_yaml(
+            domain_dir / "domain.yaml",
+            {"max_turns": 10},
+        )
+        task_dir = tmp_path / "testcases" / "case_b"
+        task_dir.mkdir(parents=True)
+        _write_yaml(
+            task_dir / "task.yaml",
+            {
+                "domain": "../../_shared/domain.yaml",
+                "task_id": "case_b",
+                "name": "Case B",
+                "category": "demo",
+                "description": "task overrides everything",
+                "initial_state": {},
+                "tools": {"agent": {"enabled": []}, "user": {"enabled": []}},
+                "user_simulator": {"mode": "llm"},
+                "grading": "grading.yaml",
+                "max_turns": 99,  # task's own value
+            },
+        )
+        task, _ = load_task_yaml(
+            task_dir / "task.yaml",
+            project_task_defaults={"max_turns": 50},
+        )
+        assert task.max_turns == 99  # task wins over project and domain
+
+
+class TestProjectPathResolution:
+    """`_resolve_project_paths` must rewrite every task-side path field
+    that shows up in project.task_defaults, not just the two the earlier
+    version handled."""
+
+    def test_project_system_prompt_resolved_to_absolute_path(self, tmp_path: Path) -> None:
+        prompt = tmp_path / "shared" / "system.md"
+        prompt.parent.mkdir()
+        prompt.write_text("hi")
+        _write_yaml(
+            tmp_path / "project.yaml",
+            {
+                "name": "demo",
+                "task_defaults": {"system_prompt": "shared/system.md"},
+            },
+        )
+        from tolokaforge.core.project_loader import load_project_config
+
+        project = load_project_config(tmp_path / "project.yaml")
+        assert project.task_defaults.system_prompt == str(prompt.resolve())
+
+    def test_project_tools_mcp_server_path_resolved(self, tmp_path: Path) -> None:
+        """A ``tools.agent.mcp_server`` string on task_defaults is a path
+        field per the task loader's declaration; the project loader must
+        resolve it before Pydantic construction so downstream consumers
+        find the file."""
+        mcp = tmp_path / "shared" / "mcp_server.py"
+        mcp.parent.mkdir()
+        mcp.write_text("# stub")
+        _write_yaml(
+            tmp_path / "project.yaml",
+            {
+                "name": "demo",
+                "task_defaults": {
+                    "tools": {"agent": {"mcp_server": "shared/mcp_server.py"}},
+                },
+            },
+        )
+        from tolokaforge.core.project_loader import load_project_config
+
+        project = load_project_config(tmp_path / "project.yaml")
+        assert project.task_defaults.tools is not None
+        assert project.task_defaults.tools.agent["mcp_server"] == str(mcp.resolve())
+
+
+class TestSchemaAliasCollision:
+    """`EvaluationConfig` must emit a clear DeprecationWarning when a
+    caller sets both ``projects`` and ``task_packs``."""
+
+    def test_both_set_projects_wins(self) -> None:
+        import warnings as _warnings
+
+        from tolokaforge.core.models import EvaluationConfig
+
+        with _warnings.catch_warnings(record=True) as caught:
+            _warnings.simplefilter("always")
+            cfg = EvaluationConfig(
+                output_dir="results/x",
+                projects=["a", "b"],
+                task_packs=["c", "d"],
+            )
+        assert cfg.projects == ["a", "b"]
+        assert cfg.task_packs == []
+        assert any(
+            issubclass(w.category, DeprecationWarning) and "both set" in str(w.message)
+            for w in caught
+        )
+
+
+class TestDeepMergeIsSingleImpl:
+    """`deep_merge` in the project loader is the single implementation
+    the task loader imports — no shadow copy in `_task_loader.py`."""
+
+    def test_task_loader_imports_from_project_loader(self) -> None:
+        from tolokaforge.adapters import _task_loader
+        from tolokaforge.core import project_loader
+
+        assert _task_loader.deep_merge is project_loader.deep_merge

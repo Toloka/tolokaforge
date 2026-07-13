@@ -40,9 +40,14 @@ def main() -> int:
         config = yaml.safe_load(f) or {}
 
     evaluation = config.get("evaluation", {}) or {}
-    task_pack_values = evaluation.get("task_packs", []) or []
+    # ``evaluation.projects`` is the canonical field; ``task_packs`` is
+    # accepted here as a deprecated alias for symmetry with the loader's
+    # own alias validator (``EvaluationConfig._coerce_task_packs_alias``).
+    # Reading either lets Docker-mode users migrate the loader side and
+    # the compose-override side in lockstep.
+    task_pack_values = evaluation.get("projects") or evaluation.get("task_packs") or []
     if not isinstance(task_pack_values, list):
-        raise ValueError("evaluation.task_packs must be a list of paths")
+        raise ValueError("evaluation.projects must be a list of paths")
 
     try:
         task_packs = normalize_task_pack_paths([str(p) for p in task_pack_values], config_path)
@@ -68,7 +73,7 @@ def main() -> int:
             f"-f {output_path} --profile test up --build --abort-on-container-exit"
         )
     else:
-        print("No evaluation.task_packs in config; override contains empty task-pack mounts.")
+        print("No evaluation.projects in config; override contains empty task-pack mounts.")
 
     return 0
 

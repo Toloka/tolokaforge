@@ -10,7 +10,6 @@ import glob
 from pathlib import Path
 
 import click
-import yaml
 from rich.console import Console
 
 from tolokaforge.core.config_validator import Severity, validate_run_config
@@ -18,6 +17,7 @@ from tolokaforge.core.llm.presets import (
     resolve_overlay_path,
     validate_overlay_file,
 )
+from tolokaforge.core.project_loader import load_effective_run_config
 
 console = Console()
 
@@ -76,10 +76,14 @@ def validate(config_path: str, strict: bool, presets_file: str | None) -> None:
     for p in sorted(paths):
         console.print(f"\n[bold]Validating:[/bold] {p}")
         try:
-            with open(p) as f:
-                raw = yaml.safe_load(f)
+            # Layer the enclosing project's run_defaults under the file
+            # before validation so a run config that legitimately
+            # delegates required fields to project.run_defaults doesn't
+            # report a schema error the actual `run` subcommand would
+            # never hit.
+            raw, _project = load_effective_run_config(Path(p))
         except Exception as exc:
-            console.print(f"  [red]✗ Failed to parse YAML: {exc}[/red]")
+            console.print(f"  [red]✗ Failed to load config: {exc}[/red]")
             total_errors += 1
             continue
 

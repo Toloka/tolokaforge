@@ -31,8 +31,9 @@ def normalize_task_pack_paths(task_packs: list[str], config_path: Path) -> list[
 
         if not candidate.exists():
             raise FileNotFoundError(
-                "Task-pack path does not exist: "
-                f"{candidate}. Update evaluation.task_packs or create the path before docker run."
+                "Project path does not exist: "
+                f"{candidate}. Update evaluation.projects or create the path "
+                "before docker run."
             )
 
         normalized.append(candidate)

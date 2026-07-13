@@ -302,9 +302,10 @@ class Orchestrator:
 
         # Add tasks_glob to params for both native and other adapters
         params["tasks_glob"] = self.config.evaluation.tasks_glob
-        # evaluation.projects is the canonical field (M2); evaluation.task_packs
-        # is a deprecated alias coerced by EvaluationConfig's validator, so
-        # projects always carries the effective list here.
+        # ``evaluation.projects`` is the canonical field; the deprecated
+        # ``evaluation.task_packs`` alias is coerced by
+        # ``EvaluationConfig`` so ``projects`` always carries the
+        # effective list here.
         task_packs = list(self.config.evaluation.projects)
 
         # In Docker flows, TASK_PACKS_DIRS can override config paths to container-visible mounts.

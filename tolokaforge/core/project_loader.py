@@ -17,15 +17,15 @@ Public helpers:
 - :func:`deep_merge` — recursive dict merge; delta wins on conflict.
 - :func:`resolve_effective_run_config_data` — apply ``project.run_defaults``
   under a run-config dict.
-- :func:`resolve_effective_task_data` — apply ``project.task_defaults`` under
-  a task-yaml dict.
 - :func:`detect_project_layout` — resolve the enclosing project root and
   flag whether the run config sits under the legacy ``run_config/``
   (singular) directory.
 
-The task-side merge in this module operates on **dicts** so it plugs into
-the existing :mod:`tolokaforge.adapters._task_loader` flow, which merges
-domain / task dicts before Pydantic validation.
+The task-side merge is executed inside
+:func:`tolokaforge.adapters._task_loader.load_task_yaml`, which imports
+``deep_merge`` from here and layers the project ``task_defaults`` under
+each task's own fields between the adapter's Domain merge and the
+task-yaml delta.
 """
 
 from __future__ import annotations
@@ -120,6 +120,17 @@ def _resolve_project_paths(data: dict, project_dir: Path) -> None:
     """Rewrite relative paths in *data* to absolute paths under
     *project_dir*, in place. No-op if the fields are absent or already
     absolute.
+
+    Two field families are covered:
+
+    - ``default_environment.compose_file`` — the substrate pointer.
+    - Every path field inside ``task_defaults`` that a per-task
+      ``task.yaml`` may carry (``system_prompt``, ``grading``,
+      ``tools.{agent,user}.mcp_server``, ``initial_state.json_db``,
+      ``initial_state.system_prompt``, ``initial_state.filesystem.copy[].from``).
+      The task loader's ``_PATH_FIELD_REWRITERS`` is the canonical
+      enumeration; this function reuses it so a project-level default
+      resolves the same way a task-level value does.
     """
     env = data.get("default_environment")
     if isinstance(env, dict):
@@ -130,11 +141,28 @@ def _resolve_project_paths(data: dict, project_dir: Path) -> None:
                 env["compose_file"] = str((project_dir / resolved).resolve())
     task_defaults = data.get("task_defaults")
     if isinstance(task_defaults, dict):
-        prompt = task_defaults.get("system_prompt")
-        if isinstance(prompt, str) and prompt:
-            resolved = Path(prompt)
-            if not resolved.is_absolute():
-                task_defaults["system_prompt"] = str((project_dir / resolved).resolve())
+        _rewrite_task_defaults_paths(task_defaults, project_dir)
+
+
+def _rewrite_task_defaults_paths(task_defaults: dict, project_dir: Path) -> None:
+    """Rewrite every path-bearing field inside ``task_defaults`` from a
+    project-relative string to an absolute path under *project_dir*.
+
+    Imports ``_PATH_FIELD_REWRITERS`` from the task loader so the field
+    set stays a single declaration — adding a new task-level path field
+    on that side automatically covers the project-level default here.
+    Silently skips any field whose value is not a relative string.
+    """
+    from tolokaforge.adapters._task_loader import _PATH_FIELD_REWRITERS
+
+    def rewrite(val: str) -> str:
+        resolved = Path(val)
+        if resolved.is_absolute():
+            return val
+        return str((project_dir / resolved).resolve())
+
+    for rewriter in _PATH_FIELD_REWRITERS:
+        rewriter(task_defaults, rewrite)
 
 
 def synthesize_default_project(
@@ -142,15 +170,16 @@ def synthesize_default_project(
     project_root: Path,
     task_defaults: TaskDefaults | None = None,
 ) -> ProjectConfig:
-    """Return a minimal ``ProjectConfig`` for packs without a
-    ``project.yaml``.
+    """Return a minimal ``ProjectConfig`` used when a pack does not ship
+    a ``project.yaml``.
 
-    Emits an info-level log line so operators can see the fallback took
-    effect. Used by the CLI to keep old-shape packs loading while the
-    strict-validation milestone hasn't landed yet.
+    Emits an info-level log line so operators can see the synthesised
+    fallback took effect. Loaders route through here whenever
+    ``find_project_yaml`` returns ``None`` so downstream code always
+    has a ``ProjectConfig`` to consume.
     """
     logger.info(
-        "project.yaml not found under %s; using synthesised default (transitional)",
+        "project.yaml not found under %s; using synthesised default",
         project_root,
     )
     return ProjectConfig(
@@ -207,27 +236,49 @@ def resolve_effective_run_config_data(
     return deep_merge(base, run_config_data)
 
 
-def resolve_effective_task_data(
-    project: ProjectConfig | None,
-    task_data: dict[str, Any],
-) -> dict[str, Any]:
-    """Layer *project.task_defaults* under *task_data*.
+# ── High-level loader entry point ──────────────────────────────────────
 
-    The task fields (``task_data``) win on conflict. Called by
-    :mod:`tolokaforge.adapters._task_loader` after any adapter-side
-    Domain merge and before ``TaskConfig`` validation. When *project* is
-    ``None`` or its ``task_defaults`` are effectively empty, *task_data*
-    is returned unchanged.
+
+def load_effective_run_config(
+    config_path: Path,
+) -> tuple[dict[str, Any], ProjectConfig]:
+    """Load the run-config YAML at *config_path* and layer
+    ``project.run_defaults`` under it.
+
+    Returns ``(config_data, project)``:
+
+    - ``config_data`` is the merged dict, ready to feed into
+      ``RunConfig(**config_data)``.
+    - ``project`` is the enclosing ``ProjectConfig`` (loaded from the
+      discovered ``project.yaml``) or a synthesised default for packs
+      that don't ship one.
+
+    Emits a ``DeprecationWarning`` when the run config sits under the
+    legacy ``run_config/`` (singular) directory.
+
+    Every CLI subcommand that constructs a ``RunConfig`` from disk
+    should route through here so that ``project.run_defaults`` reaches
+    every code path uniformly. Direct ``yaml.safe_load`` + ``RunConfig``
+    construction skips the merge and produces a config that behaves
+    differently between ``run`` and any other subcommand.
     """
-    if project is None:
-        return dict(task_data)
-    # ``exclude_defaults`` skips fields the project author didn't
-    # override (None for optionals, {} / [] for containers) so we
-    # never merge a schema-default value into the task dict.
-    defaults = project.task_defaults.model_dump(exclude_defaults=True)
-    if not defaults:
-        return dict(task_data)
-    return deep_merge(defaults, task_data)
+    config_path = Path(config_path).resolve()
+    with config_path.open() as f:
+        config_data = yaml.safe_load(f) or {}
+    if not isinstance(config_data, dict):
+        raise RuntimeError(
+            f"Run config {config_path} is not a YAML mapping " f"(got {type(config_data).__name__})"
+        )
+
+    project_root, used_legacy_dir = detect_project_layout(config_path)
+    if used_legacy_dir:
+        warn_legacy_run_config_dir(config_path)
+    if project_root is not None:
+        project = load_project_config(project_root / PROJECT_FILENAME)
+    else:
+        project = synthesize_default_project(project_root=config_path.parent)
+    merged = resolve_effective_run_config_data(project, config_data)
+    return merged, project
 
 
 # ── Legacy alias warnings ──────────────────────────────────────────────

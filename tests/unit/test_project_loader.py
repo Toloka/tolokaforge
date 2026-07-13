@@ -18,7 +18,6 @@ from tolokaforge.core.project_loader import (
     find_project_yaml,
     load_project_config,
     resolve_effective_run_config_data,
-    resolve_effective_task_data,
     synthesize_default_project,
     warn_legacy_run_config_dir,
 )
@@ -256,42 +255,3 @@ class TestResolveEffectiveRunConfig:
         run_config = {"orchestrator": {"workers": 4}}
         merged = resolve_effective_run_config_data(project, run_config)
         assert merged is not run_config
-
-
-# ── resolve_effective_task_data ────────────────────────────────────────
-
-
-class TestResolveEffectiveTask:
-    def test_none_project_returns_task_unchanged(self) -> None:
-        task = {"task_id": "t1", "max_turns": 30}
-        assert resolve_effective_task_data(None, task) == task
-
-    def test_empty_defaults_returns_task_unchanged(self) -> None:
-        project = ProjectConfig(name="p")  # task_defaults is empty
-        task = {"task_id": "t1", "max_turns": 30}
-        assert resolve_effective_task_data(project, task) == task
-
-    def test_task_defaults_layered_under_task(self) -> None:
-        project = ProjectConfig(
-            name="p",
-            task_defaults=TaskDefaults(
-                adapter_type="native",
-                max_turns=20,
-                continue_prompt="Continue.",
-            ),
-        )
-        task = {"task_id": "t1", "max_turns": 60}  # task overrides only max_turns
-        merged = resolve_effective_task_data(project, task)
-        assert merged["task_id"] == "t1"
-        assert merged["max_turns"] == 60  # task wins
-        assert merged["adapter_type"] == "native"  # from defaults
-        assert merged["continue_prompt"] == "Continue."  # from defaults
-
-    def test_returns_new_dict(self) -> None:
-        project = ProjectConfig(
-            name="p",
-            task_defaults=TaskDefaults(adapter_type="native"),
-        )
-        task = {"task_id": "t1"}
-        merged = resolve_effective_task_data(project, task)
-        assert merged is not task

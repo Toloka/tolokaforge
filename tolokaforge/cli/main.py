@@ -17,13 +17,7 @@ from tolokaforge.core.llm.presets import (
 )
 from tolokaforge.core.models import RunConfig
 from tolokaforge.core.orchestrator import Orchestrator
-from tolokaforge.core.project_loader import (
-    detect_project_layout,
-    load_project_config,
-    resolve_effective_run_config_data,
-    synthesize_default_project,
-    warn_legacy_run_config_dir,
-)
+from tolokaforge.core.project_loader import load_effective_run_config
 from tolokaforge.core.resume import RunStateManager
 from tolokaforge.core.run_queue import create_run_queue
 from tolokaforge.secrets import init_default, install_global_redactor
@@ -207,26 +201,11 @@ def run(
     """Run benchmark with specified configuration"""
     console.print(f"[bold blue]Loading configuration from {config}...[/bold blue]")
 
-    # Load config
-    with open(config) as f:
-        config_data = yaml.safe_load(f)
-
-    # Resolve the enclosing project so ``project.run_defaults`` layers
-    # under the selected run config and ``project.task_defaults`` reaches
-    # the adapter downstream. Packs without ``project.yaml`` get a
-    # synthesised default (transitional — the loader logs an info line so
-    # the fallback is visible).
-    config_path = Path(config).resolve()
-    project_root, used_legacy_dir = detect_project_layout(config_path)
-    if used_legacy_dir:
-        warn_legacy_run_config_dir(config_path)
-    if project_root is not None:
-        project = load_project_config(project_root / "project.yaml")
-    else:
-        # No project.yaml found upstream — synthesise a minimal default so
-        # the rest of the loader treats every pack uniformly.
-        project = synthesize_default_project(project_root=config_path.parent)
-    config_data = resolve_effective_run_config_data(project, config_data)
+    # Load config with the enclosing project's run_defaults layered under
+    # it. Every subcommand that constructs a RunConfig from disk goes
+    # through the same helper so `run`, `prepare`, `worker`, `status`,
+    # and `config validate` treat the same YAML identically.
+    config_data, project = load_effective_run_config(Path(config))
 
     # Create output directory with timestamp (if not resuming)
     if "output_dir" not in config_data.get("evaluation", {}):
@@ -349,15 +328,16 @@ def prepare(
 ):
     """Prepare a queue-backed run directory for distributed workers."""
     console.print(f"[bold blue]Preparing run from config {config}...[/bold blue]")
-    with open(config) as f:
-        config_data = yaml.safe_load(f)
+    config_data, project = load_effective_run_config(Path(config))
     run_config = RunConfig(**config_data)
 
     overlay_path = _activate_presets_overlay(presets_file, run_config)
     if overlay_path:
         console.print(f"[cyan]Preset overlay: {overlay_path}[/cyan]")
 
-    orchestrator = Orchestrator(run_config, resume=False, verbose=verbose, strict=strict)
+    orchestrator = Orchestrator(
+        run_config, resume=False, verbose=verbose, strict=strict, project=project
+    )
     orchestrator.load_tasks()
     summary = orchestrator.prepare_run(Path(run_dir), reset_queue=reset_queue)
 
@@ -405,8 +385,7 @@ def worker(
 ):
     """Run a queue worker process (distributed execution mode)."""
     console.print(f"[bold blue]Loading worker config from {config}...[/bold blue]")
-    with open(config) as f:
-        config_data = yaml.safe_load(f)
+    config_data, project = load_effective_run_config(Path(config))
     run_config = RunConfig(**config_data)
 
     # Worker overlay precedence: --presets-file > ``prepare``-persisted queue
@@ -415,7 +394,9 @@ def worker(
     if overlay_path:
         console.print(f"[cyan]Preset overlay: {overlay_path}[/cyan]")
 
-    orchestrator = Orchestrator(run_config, resume=False, verbose=verbose, strict=strict)
+    orchestrator = Orchestrator(
+        run_config, resume=False, verbose=verbose, strict=strict, project=project
+    )
     orchestrator.load_tasks()
     summary = orchestrator.run_worker(Path(run_dir), max_attempts=max_attempts)
 
@@ -643,8 +624,7 @@ def status(run_dir: str, config: str | None):
     if queue_db.exists():
         queue = create_run_queue("sqlite", sqlite_path=queue_db, max_retries=0)
     elif config:
-        with open(config) as f:
-            config_data = yaml.safe_load(f)
+        config_data, _project = load_effective_run_config(Path(config))
         run_config = RunConfig(**config_data)
         if run_config.orchestrator.queue_backend == "postgres":
             queue = create_run_queue(
