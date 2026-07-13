@@ -88,6 +88,31 @@ class TestComputeWorkersAlias:
         # OrchestratorConfig.workers default is 8; compute.workers is None.
         assert cfg.effective_workers == 8
 
+    def test_object_form_orchestrator_bypasses_lift(self) -> None:
+        # Regression pin: the alias-lift only fires on dict-form inputs
+        # (production YAML load). Object-form callers who construct
+        # OrchestratorConfig directly bypass the lift and fire no
+        # deprecation warning — the effective accessor's fallback
+        # branch surfaces the value via the orchestrator side. This
+        # behaviour is documented on the validator and is deliberate;
+        # pinning here so a refactor that touches the lift path can't
+        # regress it silently.
+        from tolokaforge.core.models import ModelConfig, OrchestratorConfig
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            cfg = RunConfig(
+                models={"user": ModelConfig(provider="openai", name="gpt-4o")},
+                orchestrator=OrchestratorConfig(workers=4),
+                evaluation={"output_dir": "results/x"},
+            )
+        assert cfg.effective_workers == 4  # via fallback branch
+        assert cfg.compute is None
+        assert not any(
+            issubclass(w.category, DeprecationWarning) and "orchestrator.workers" in str(w.message)
+            for w in caught
+        )
+
 
 class TestQueueBackendAlias:
     def test_legacy_queue_backend_lifts_to_storage_queue(self) -> None:

@@ -904,8 +904,15 @@ class RunConfig(BaseModel):
     def effective_max_attempt_retries(self) -> int:
         """Effective retry attempts for transient infra failures.
         ``compute.max_attempt_retries`` is canonical; falls back to
-        ``orchestrator.max_attempt_retries`` (default 0 on both sides,
-        so the fallback is safe)."""
+        ``orchestrator.max_attempt_retries``.
+
+        Asymmetric with the other ``effective_*`` accessors: the field
+        is a plain ``int`` with default ``0`` on both sides — there is
+        no ``None`` sentinel to distinguish "unset" from "explicit 0".
+        Whenever ``compute`` exists, its value is authoritative; the
+        parse-time lift ensures both sides agree by the time either is
+        constructed. Object-form callers (``RunConfig(compute=...)``)
+        who need the fallback must leave ``compute`` unset entirely."""
         if self.compute is not None:
             return self.compute.max_attempt_retries
         return self.orchestrator.max_attempt_retries
@@ -946,6 +953,15 @@ class RunConfig(BaseModel):
         - Equal values: warn once naming the collision, drop legacy.
         - Differing values: fail loud naming both keys and both values;
           the author must pick one.
+
+        Scope: only dict-form inputs are lifted. Object-form callers
+        that pass an already-constructed ``OrchestratorConfig``
+        instance (e.g. tests using ``RunConfig(orchestrator=
+        OrchestratorConfig(workers=4))``) bypass the lift entirely —
+        the effective-config accessors' fallback branch surfaces the
+        orchestrator value in that case, but no deprecation warning
+        fires. Production YAML load always passes dicts, so the lift
+        runs on every real load.
         """
         if not isinstance(values, dict):
             return values
