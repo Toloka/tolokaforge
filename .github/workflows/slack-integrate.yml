@@ -16,9 +16,11 @@ name: Slack-triggered integration poller
 # Dedup is state-free: a request whose thread already has a bot reply is skipped, and a slug is
 # only queued AFTER its reply posts - so re-polling never double-acts and no watermark is stored.
 #
-# NOTE ON SCHEDULE: `on: schedule` only runs from the DEFAULT branch, so the cron activates once
-# this file is on main. Before then (and any time), trigger it manually with `workflow_dispatch`
-# on the working branch - that is how the flow is tested end to end.
+# NOTE ON TRIGGERS: GitHub only runs `schedule` and accepts `workflow_dispatch` for a workflow
+# once this file is on the DEFAULT branch (a brand-new workflow on a feature branch is not yet
+# registered), so the scheduled poll + manual dispatch activate after this lands on main. Before
+# then the flow is validated by the unit tests + a local resolver dry-run, and, for one live run,
+# by TEMPORARILY adding a `push:` trigger on the feature branch (removed before merge).
 
 on:
   schedule:
@@ -29,8 +31,7 @@ on:
 
 permissions:
   contents: write # push the seed branch
-  pull-requests: write # open the draft integration PR
-  issues: write # PR labels use the issues API
+  pull-requests: write # open the draft integration PR (the poller adds no labels)
   actions: write # gh workflow run integrate-model.yml (workflow_dispatch)
 
 concurrency:
@@ -90,7 +91,11 @@ jobs:
           # failure logs a warning and returns non-zero so the caller continues to the next model.
           bootstrap () {
             SLUG="$1"; REQUESTER="$2"; TS="$3"
-            EXISTING="$(gh pr list -R "$REPO" --state open --search "in:title integrate: $SLUG" --json number --jq 'length' 2>/dev/null || echo 0)"
+            # EXACT open-PR check (grep -Fx, not the fuzzy `--search in:title`): the fuzzy form
+            # would let "integrate: x-ai/grok-4.5" match an open "integrate: x-ai/grok-4" (skip)
+            # or miss on `/`.`-tokenization (duplicate). -F makes SLUG a literal, not a pattern.
+            EXISTING="$(gh pr list -R "$REPO" --state open --json title --jq '.[].title' 2>/dev/null \
+              | grep -Fxc "integrate: $SLUG" || true)"
             if [ "${EXISTING:-0}" != "0" ]; then
               echo "open integration PR already exists for '$SLUG' -> skip"; return 0
             fi
@@ -112,6 +117,10 @@ jobs:
             gh workflow run integrate-model.yml -R "$REPO" --ref "$BASE_REF" \
               -f pr="$PR_NUM" -f head_ref="$BRANCH" -f model="$SLUG" -f source=slack || return 1
             echo "dispatched integrate-model.yml for PR #${PR_NUM} (${SLUG})"
+            # Confirm in the requester's own thread, WITH the PR link (the poll-step reply was
+            # posted before the PR existed; the engine's progress thread is a separate root).
+            uv run automation slack post-thread --channel "$SLACK_CHANNEL" --thread-ts "$TS" \
+              --text ":rocket: Opened <${PR_URL}|PR #${PR_NUM}> for ${SLUG} - the integration run has started." || true
           }
 
           mapfile -t ROWS < <(jq -c '.[]' plan.json)
@@ -123,6 +132,11 @@ jobs:
             git checkout -q "$BASE_REF" 2>/dev/null || git checkout -q -B "$BASE_REF" "origin/${BASE_REF}"
             if ! bootstrap "$SLUG" "$REQUESTER" "$TS"; then
               echo "::warning title=Integration bootstrap failed::could not start integration for ${SLUG} (see log); continuing"
+              # Not silent: the poll-step reply already said this model was starting, so tell the
+              # requester in-thread that it did NOT, and to re-request (the reply marker means it
+              # will not auto-retry).
+              uv run automation slack post-thread --channel "$SLACK_CHANNEL" --thread-ts "$TS" \
+                --text ":x: I could not start the integration for ${SLUG} (a transient error opening the PR or dispatching). Please re-request it by tagging me with that model again." || true
               FAIL=1
             fi
           done

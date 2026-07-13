@@ -19,7 +19,8 @@ its reply posts, so a Slack failure retries next poll instead of dispatching wit
 
 Never raises: a missing token / channel / scope degrades to a logged no-op with an empty plan,
 so the poll step never fails the workflow (a notification path must never break the pipeline).
-Only stdlib + the sibling modules are used.
+Only stdlib + the sibling modules are used. (Marker-based dedup has one inherent property:
+deleting the bot's reply lets a request reprocess - acceptable, and it needs Slack delete perms.)
 """
 
 from __future__ import annotations
@@ -38,6 +39,12 @@ from automation import model_resolver, slack
 # match against the live catalog - even "hy3" -> ``tencent/hy3`` - so an alias is only needed
 # for a genuinely opaque codename, added here when one appears.
 ALIASES: dict[str, str] = {}
+
+# The charset a real OpenRouter slug ever uses. A resolved slug is always a live catalog id so it
+# passes, but the catalog is an EXTERNAL untrusted source and slugs flow into shell (branch name,
+# PR title/body, `gh workflow run -f model=`); a slug with a shell metacharacter is dropped, never
+# interpolated. Defence-in-depth behind the resolver's own "only ever returns a catalog entry".
+_SAFE_SLUG_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
 
 
 # --- pure helpers (unit-tested) ------------------------------------------------
@@ -84,13 +91,20 @@ def bot_replied(replies: list[dict], bot_id: str, parent_ts: str) -> bool:
 
 
 def resolved_slugs(resolutions: list[model_resolver.Resolution]) -> list[str]:
-    """The slugs to integrate (status == resolved), in request order, de-duplicated."""
+    """The slugs to integrate (status == resolved), in request order, de-duplicated. A slug whose
+    charset is not a plain OpenRouter id is dropped (see ``_SAFE_SLUG_RE``) - it must never reach
+    the shell."""
     seen: set[str] = set()
     out: list[str] = []
     for resolution in resolutions:
-        if resolution.status == "resolved" and resolution.slug and resolution.slug not in seen:
-            seen.add(resolution.slug)
-            out.append(resolution.slug)
+        slug = resolution.slug
+        if resolution.status != "resolved" or not slug or slug in seen:
+            continue
+        if not _SAFE_SLUG_RE.match(slug):
+            slack._log(f"dropping resolved slug with unexpected charset: {slug!r}")
+            continue
+        seen.add(slug)
+        out.append(slug)
     return out
 
 
@@ -207,6 +221,9 @@ def cli(
         code = run(channel, allowed_users, out)
     except Exception as exc:  # a poll must never fail the workflow
         slack._log(f"unexpected error (ignored): {exc}")
-        _write_plan(out, [])
+        try:
+            _write_plan(out, [])
+        except Exception:  # even the fallback write must not fail the step
+            pass
         code = 0
     raise typer.Exit(code)

@@ -146,3 +146,13 @@ class TestResolvedSlugsPlan:
             mr.Resolution("c", "resolved", slug="x/z"),
         ]
         assert poller.resolved_slugs(res) == ["x/y", "x/z"]
+
+    def test_unsafe_charset_slug_dropped(self):
+        # Defence-in-depth: a slug with a shell metacharacter never reaches the plan (so it can
+        # never be interpolated into the bash bootstrap), even if the catalog somehow yielded it.
+        res = [
+            mr.Resolution("a", "resolved", slug="x-ai/grok-4.5"),
+            mr.Resolution("b", "resolved", slug="evil/$(rm -rf /)"),
+            mr.Resolution("c", "resolved", slug="also/`whoami`"),
+        ]
+        assert poller.resolved_slugs(res) == ["x-ai/grok-4.5"]
