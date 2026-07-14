@@ -23,11 +23,15 @@ jobs:
       issues: write
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
-      - uses: anthropics/claude-code-action@beta
+      # Pinned to the SHA of v1.0.173 (the moving @beta tag broke overnight
+      # on 2026-07-13 — a rolling update crashed the runner mid-review).
+      # Bumping is a one-line diff; commit SHAs are immutable so this is
+      # supply-chain safer than a floating tag.
+      - uses: anthropics/claude-code-action@1281377b9fdacad00368735a20d0d153fa1b82bd  # v1.0.173
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
