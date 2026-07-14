@@ -477,6 +477,7 @@ Full six-step process: [`docs/ADD_NEW_MODEL.md`](docs/ADD_NEW_MODEL.md).
 | Configuration | `docs/CONFIG.md` |
 | Docker / Runner | `docs/RUNNER.md` |
 | Adapters | `docs/ADAPTERS.md` |
+| CLI | `docs/CLI.md` |
 | Future plans | `docs/FUTURE_DEVELOPMENT.md` |
 | API reference | `docs/API.md` |
 | Troubleshooting | `docs/TROUBLESHOOTING.md` |

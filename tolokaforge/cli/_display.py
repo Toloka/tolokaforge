@@ -72,11 +72,15 @@ def make_progress(
     redirect_stdout: bool = True,
     redirect_stderr: bool = True,
 ) -> Progress:
-    """Return a ``Progress`` bound to the shared console.
+    """Return a ``Progress`` bound to the module's shared console.
 
     ``columns`` overrides the default column set entirely. Passing ``None``
     yields the CLI's opinionated set: spinner, description, bar, m/n,
     percent, elapsed, remaining.
+
+    The default ``console`` is early-bound at import time — reassigning
+    ``_display.console`` afterwards does not reach this default; pass
+    ``console=`` explicitly to redirect.
     """
 
     target_console = console if console is not None else _SHARED_CONSOLE
@@ -105,7 +109,12 @@ def make_live(
     redirect_stdout: bool = True,
     redirect_stderr: bool = True,
 ) -> Live:
-    """Return a ``Live`` bound to the shared console."""
+    """Return a ``Live`` bound to the module's shared console.
+
+    The default ``console`` is early-bound at import time — reassigning
+    ``_display.console`` afterwards does not reach this default; pass
+    ``console=`` explicitly to redirect.
+    """
 
     target_console = console if console is not None else _SHARED_CONSOLE
     return Live(

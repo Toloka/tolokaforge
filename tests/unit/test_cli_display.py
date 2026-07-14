@@ -92,6 +92,31 @@ def test_make_progress_custom_columns_override_default() -> None:
     assert isinstance(progress.columns[0], SpinnerColumn)
 
 
+def test_make_progress_default_kwargs() -> None:
+    progress = make_progress()
+    assert progress.live.transient is False
+    assert progress.live.auto_refresh is True
+    assert progress.live.refresh_per_second == 10.0
+    # Rich stores redirect_stdout/redirect_stderr on Live's private fields
+    # (same class of internal-accessor risk documented for Progress.live.transient).
+    assert progress.live._redirect_stdout is True
+    assert progress.live._redirect_stderr is True
+
+
+def test_make_progress_redirect_kwargs_passthrough() -> None:
+    progress = make_progress(redirect_stdout=False, redirect_stderr=False)
+    assert progress.live._redirect_stdout is False
+    assert progress.live._redirect_stderr is False
+
+
+def test_make_progress_auto_refresh_kwarg() -> None:
+    assert make_progress(auto_refresh=False).live.auto_refresh is False
+
+
+def test_make_progress_refresh_per_second_kwarg() -> None:
+    assert make_progress(refresh_per_second=2.5).live.refresh_per_second == 2.5
+
+
 def test_make_live_uses_shared_console() -> None:
     assert make_live().console is console
 
@@ -105,6 +130,14 @@ def test_make_live_defaults() -> None:
     assert live._screen is False
     assert live.auto_refresh is True
     assert live.vertical_overflow == "ellipsis"
+    assert live._redirect_stdout is True
+    assert live._redirect_stderr is True
+
+
+def test_make_live_redirect_kwargs_passthrough() -> None:
+    live = make_live(redirect_stdout=False, redirect_stderr=False)
+    assert live._redirect_stdout is False
+    assert live._redirect_stderr is False
 
 
 def test_make_live_accepts_renderable() -> None:
