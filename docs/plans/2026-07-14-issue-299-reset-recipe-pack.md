@@ -88,7 +88,11 @@ would fail. `repeats: 2` exercises the recipe twice.
       the existing microservices pack). The `reset`/`ephemeral` mix
       still makes `requires_per_trial` true, forcing per-trial selection.
     - `task_defaults` (adapter `native`, small `max_turns`, `actors.user`),
-      `run_defaults` (compute/storage/observability; `orchestrator`).
+      `run_defaults` (compute + `orchestrator` only; storage/observability
+      are **intentionally omitted** — see plan note below on the loader
+      discriminator-strip bug — and the effective RunConfig picks up the
+      identical local-storage / sqlite-queue defaults from `RunConfig`
+      itself).
   - `run_config.yaml` at pack root (root file, not a legacy `run_config/`
     dir — sits next to `project.yaml` so discovery resolves it):
     - `models.agent` + `models.user` (cheap model, e.g.
@@ -217,7 +221,23 @@ would fail. `repeats: 2` exercises the recipe twice.
     `integration` but needs neither Docker nor an LLM key (pure
     load/resolve/select) — it should be `canonical`. Correcting it while
     adding the sibling `canonical` wiring test keeps the tier discipline
-    consistent. (Confirm with main; skip if it risks scope creep.)
+    consistent. **Main decision (2026-07-14): skip this in-PR to keep #299
+    tightly scoped; file as a separate follow-up if needed.**
+
+- **Loader discriminator-strip bug (surfaced during Stage 1 implementation).**
+  `resolve_effective_run_config_data` in
+  [`tolokaforge/core/project_loader.py`](../../tolokaforge/core/project_loader.py)
+  dumps `run_defaults` with `exclude_defaults=True`, which strips the
+  `type: "local"` discriminator tag from `storage.artifacts` / `storage.logs`,
+  making the merged `RunConfig` unloadable with
+  `union_tag_not_found`. Any pack declaring `run_defaults.storage` trips
+  this — the shipped `examples/native/example-microservices-pack/run_configs/dev.yaml`
+  reproduces it, only masked because that pack isn't runnable. Filed as a
+  separate GitHub issue (see below); NOT fixed in this PR (touches the
+  loader/models, out of #299 scope). This is why Stage 1 ships
+  `run_defaults` with only `compute` + `orchestrator` — the pack must be
+  runnable end-to-end for Stage 2's proof, and declaring
+  `run_defaults.storage` currently makes it unloadable.
 - **File as issues (GitHub MCP was unavailable in this session — main
   should file these):**
   1. **Shared-stack reset seam is unreachable via `tolokaforge run`.**
