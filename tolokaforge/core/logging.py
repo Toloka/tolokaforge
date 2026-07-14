@@ -2,15 +2,201 @@
 
 This module provides structured logging with YAML output, context support,
 and optional strict mode that raises errors on ERROR level.
+
+It also provides the process-wide log formatter (`StructuredFormatter`,
+`LogFormat`) and root-handler bootstrap (`configure_root_logging`) used
+by the CLI to render every `logging.getLogger(...)` record with a
+consistent `HH:MM:SS.mmm | LEVEL | k=v | message` shape on stderr.
 """
 
+from __future__ import annotations
+
+import json
 import logging
 import sys
+from collections.abc import Callable
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 import yaml
+
+
+class LogFormat(str, Enum):
+    """Line shape emitted by `StructuredFormatter`."""
+
+    PRETTY = "pretty"
+    PLAIN = "plain"
+    JSON = "json"
+
+
+_LOG_RECORD_RESERVED: frozenset[str] = frozenset(
+    {
+        "args",
+        "asctime",
+        "created",
+        "exc_info",
+        "exc_text",
+        "filename",
+        "funcName",
+        "levelname",
+        "levelno",
+        "lineno",
+        "message",
+        "module",
+        "msecs",
+        "msg",
+        "name",
+        "pathname",
+        "process",
+        "processName",
+        "relativeCreated",
+        "stack_info",
+        "taskName",
+        "thread",
+        "threadName",
+    }
+)
+
+_ANSI_RESET = "\x1b[0m"
+_LEVEL_ANSI: dict[str, str] = {
+    "DEBUG": "\x1b[2m",
+    "INFO": "\x1b[36m",
+    "WARNING": "\x1b[33m",
+    "ERROR": "\x1b[1;31m",
+    "CRITICAL": "\x1b[1;31m",
+}
+
+_TOLOKAFORGE_ROOT_HANDLER_SENTINEL = "_tolokaforge_root_handler"
+
+
+def _render_scalar(key: str, value: Any) -> str:
+    text = str(value)
+    if any(ch.isspace() for ch in text) or "|" in text:
+        return f"{key}={value!r}"
+    return f"{key}={text}"
+
+
+def _to_jsonable(value: Any) -> Any:
+    try:
+        json.dumps(value)
+    except (TypeError, ValueError):
+        return repr(value)
+    return value
+
+
+class StructuredFormatter(logging.Formatter):
+    """Render a `LogRecord` in one of the three `LogFormat` modes.
+
+    Layout (pretty & plain):
+
+        HH:MM:SS.mmm | LEVEL | k1=v1 k2=v2 | message
+
+    - Timestamp is millisecond-resolution local time. `clock` may inject a
+      deterministic `datetime` factory for tests (default: `datetime.now`).
+    - Scope pairs are every `LogRecord.__dict__` key not in
+      `_LOG_RECORD_RESERVED` and not starting with `_`. Keys are sorted
+      alphabetically for deterministic goldens.
+    - Values render bare (`k=v`) unless `str(v)` contains whitespace or
+      `|`, in which case the value renders via `repr` (`k='hello world'`).
+    - Empty scope renders as an empty middle segment — the two spaces
+      between the surrounding `|` delimiters are preserved (`... | LEVEL
+      |  | message`).
+
+    JSON mode emits one JSON object per line with keys
+    `{"ts", "level", "logger", "message", "extra"}`. Non-JSONable
+    extra values fall back to `repr`.
+
+    Pretty mode wraps the entire line with the ANSI escape sequence for
+    the record's level (INFO=cyan, WARNING=yellow, ERROR=bold red,
+    DEBUG=dim) — matching the semantics of
+    `tolokaforge.cli._display.THEME`.
+    """
+
+    def __init__(
+        self,
+        mode: LogFormat,
+        *,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
+        super().__init__()
+        self.mode = mode
+        self._clock = clock or datetime.now
+
+    def format(self, record: logging.LogRecord) -> str:
+        timestamp = self._render_timestamp()
+        scope = self._scope_pairs(record)
+        message = record.getMessage()
+        if self.mode is LogFormat.JSON:
+            return self._render_json(timestamp, record, scope, message)
+        scope_segment = " ".join(_render_scalar(k, v) for k, v in scope.items())
+        line = f"{timestamp} | {record.levelname} | {scope_segment} | {message}"
+        if self.mode is LogFormat.PRETTY:
+            color = _LEVEL_ANSI.get(record.levelname)
+            if color is not None:
+                line = f"{color}{line}{_ANSI_RESET}"
+        return line
+
+    def _render_timestamp(self) -> str:
+        now = self._clock()
+        return f"{now:%H:%M:%S}.{now.microsecond // 1000:03d}"
+
+    @staticmethod
+    def _scope_pairs(record: logging.LogRecord) -> dict[str, Any]:
+        return {
+            key: record.__dict__[key]
+            for key in sorted(record.__dict__)
+            if key not in _LOG_RECORD_RESERVED and not key.startswith("_")
+        }
+
+    @staticmethod
+    def _render_json(
+        timestamp: str,
+        record: logging.LogRecord,
+        scope: dict[str, Any],
+        message: str,
+    ) -> str:
+        payload = {
+            "ts": timestamp,
+            "level": record.levelname,
+            "logger": record.name,
+            "message": message,
+            "extra": {k: _to_jsonable(v) for k, v in scope.items()},
+        }
+        return json.dumps(payload, ensure_ascii=False)
+
+
+def configure_root_logging(
+    *,
+    level: int = logging.INFO,
+    log_format: LogFormat | None = None,
+    stream: TextIO | None = None,
+) -> None:
+    """Install (or replace) the tolokaforge root log handler.
+
+    Idempotent: a previously installed tolokaforge root handler (tagged
+    via the `_tolokaforge_root_handler` sentinel attribute) is removed
+    before the new one is added. Foreign handlers on `logging.root`
+    (e.g. pytest's `caplog`) are left untouched.
+
+    `log_format=None` auto-selects `PRETTY` if `stream.isatty()` returns
+    truthy, otherwise `PLAIN`. `stream=None` defaults to `sys.stderr`.
+    """
+    target_stream = stream if stream is not None else sys.stderr
+    if log_format is None:
+        log_format = LogFormat.PRETTY if target_stream.isatty() else LogFormat.PLAIN
+
+    root = logging.getLogger()
+    for handler in list(root.handlers):
+        if getattr(handler, _TOLOKAFORGE_ROOT_HANDLER_SENTINEL, False):
+            root.removeHandler(handler)
+
+    handler = logging.StreamHandler(target_stream)
+    handler.setFormatter(StructuredFormatter(log_format))
+    setattr(handler, _TOLOKAFORGE_ROOT_HANDLER_SENTINEL, True)
+    root.addHandler(handler)
+    root.setLevel(level)
 
 
 class StructuredLogger:
