@@ -180,6 +180,12 @@ def configure_root_logging(
     before the new one is added. Foreign handlers on `logging.root`
     (e.g. pytest's `caplog`) are left untouched.
 
+    Both the root logger and the tolokaforge handler are set to `level`
+    — the handler level is authoritative so a child logger that raises
+    its own effective level (e.g. `Orchestrator.__init__` calling
+    `logging.getLogger("tolokaforge.docker").setLevel(INFO)`) still gets
+    filtered when root `-q` requests WARNING+ on console.
+
     `log_format=None` auto-selects `PRETTY` if `stream.isatty()` returns
     truthy, otherwise `PLAIN`. `stream=None` defaults to `sys.stderr`.
     """
@@ -194,6 +200,7 @@ def configure_root_logging(
 
     handler = logging.StreamHandler(target_stream)
     handler.setFormatter(StructuredFormatter(log_format))
+    handler.setLevel(level)
     setattr(handler, _TOLOKAFORGE_ROOT_HANDLER_SENTINEL, True)
     root.addHandler(handler)
     root.setLevel(level)

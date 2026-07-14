@@ -177,6 +177,43 @@ def test_root_quiet_alone_silences_info_records(runner: CliRunner, spy: _ListHan
     assert logging.WARNING in levels
 
 
+def test_root_quiet_silences_docker_namespace_even_when_child_level_is_info() -> None:
+    """Root ``-q`` must gate ``tolokaforge.docker.*`` INFO records at the handler.
+
+    ``Orchestrator.__init__`` sets ``logging.getLogger("tolokaforge.docker").setLevel(INFO)``
+    unconditionally, so the child logger admits INFO records at origin. Without a
+    handler-level cap, those records would propagate to the root's tolokaforge
+    handler (default level 0) and emit — contradicting the ``-q`` promise. The
+    handler-level cap in ``configure_root_logging`` is what makes ``-q`` authoritative.
+    """
+    import io
+
+    stream = io.StringIO()
+    configure_root_logging(level=logging.WARNING, log_format=LogFormat.PLAIN, stream=stream)
+
+    # Verify the fix is in place: the tolokaforge handler carries the level cap.
+    root_handler = next(
+        h
+        for h in logging.getLogger().handlers
+        if getattr(h, _TOLOKAFORGE_ROOT_HANDLER_SENTINEL, False)
+    )
+    assert root_handler.level == logging.WARNING
+
+    # Simulate Orchestrator.__init__'s setLevel(INFO) on the docker namespace.
+    docker_logger = logging.getLogger("tolokaforge.docker")
+    saved = docker_logger.level
+    try:
+        docker_logger.setLevel(logging.INFO)
+        docker_logger.info("pulled image")
+        docker_logger.warning("pull failed")
+    finally:
+        docker_logger.setLevel(saved)
+
+    output = stream.getvalue()
+    assert "pulled image" not in output, output
+    assert "pull failed" in output, output
+
+
 def test_root_verbose_and_quiet_together_is_usage_error(runner: CliRunner) -> None:
     result = runner.invoke(cli, ["-v", "-q", "run", "--help"])
 

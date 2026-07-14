@@ -354,3 +354,37 @@ def test_configure_root_logging_replaces_previous_formatter(isolated_root):
     assert len(handlers) == 1
     assert handlers[0] is not first
     assert handlers[0].formatter.mode is LogFormat.JSON
+
+
+def test_redaction_scrubs_secret_before_formatter_renders(isolated_root):
+    """The record factory scrubs before StructuredFormatter renders.
+
+    Locks the composed pipeline (redactor factory → StructuredFormatter),
+    not just each piece independently. A future refactor that swaps their
+    order would leak the secret into the formatted line and fail here.
+    """
+    from tolokaforge.secrets.log_filter import (
+        _FACTORY_SENTINEL,
+        PLACEHOLDER,
+        install_global_redactor,
+    )
+    from tolokaforge.secrets.manager import SecretManager, init_default_from
+
+    secret = "supersecretvalue123"
+    saved_factory = logging.getLogRecordFactory()
+    try:
+        # Reset to a clean factory so install_global_redactor wraps only the default.
+        logging.setLogRecordFactory(logging.LogRecord)
+        init_default_from(SecretManager.from_dict({"API_KEY": secret}))
+        install_global_redactor()
+        assert getattr(logging.getLogRecordFactory(), _FACTORY_SENTINEL, False)
+
+        stream = _FakeStream(is_tty=False)
+        configure_root_logging(log_format=LogFormat.PLAIN, stream=stream)
+        logging.getLogger("t").warning("token %s in header", secret)
+
+        output = stream.getvalue()
+        assert secret not in output, output
+        assert PLACEHOLDER in output, output
+    finally:
+        logging.setLogRecordFactory(saved_factory)
