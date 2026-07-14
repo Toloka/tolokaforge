@@ -9,10 +9,9 @@ Uses lazy imports to avoid requiring docker dependency at CLI registration time.
 from __future__ import annotations
 
 import click
-from rich.console import Console
 from rich.table import Table
 
-console = Console()
+from tolokaforge.cli._display import console
 
 
 @click.group()

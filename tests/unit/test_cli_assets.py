@@ -107,20 +107,20 @@ class TestAssetsStampWriteMode:
         expected = compute_seed_digest(seed)
 
         result = runner.invoke(cli, ["assets", "stamp", str(tmp_path)])
-        assert result.exit_code == 0, result.output
-        assert "wrote 1 digest" in result.output
+        assert result.exit_code == 0, result.stderr
+        assert "wrote 1 digest" in result.stderr
 
         rewritten = yaml.safe_load(project_yaml.read_text())
         assert rewritten["assets"]["seeds"]["base"]["digest"] == expected
 
         # Idempotent: re-running against the now-stamped file is a
-        # no-op that says so and doesn't touch the file. Rich is
-        # configured with ``soft_wrap=True`` so the phrase stays on
-        # one line even in narrow CI terminals.
+        # no-op that says so and doesn't touch the file. The shared
+        # console is configured with ``soft_wrap=True`` so the phrase
+        # stays on one line even in narrow CI terminals.
         mtime_after_first = project_yaml.stat().st_mtime_ns
         result2 = runner.invoke(cli, ["assets", "stamp", str(tmp_path)])
         assert result2.exit_code == 0
-        assert "already current" in result2.output
+        assert "already current" in result2.stderr
         assert project_yaml.stat().st_mtime_ns == mtime_after_first
 
     def test_bare_string_shorthand_coerced_to_dict_with_digest(
@@ -183,9 +183,9 @@ class TestAssetsStampWriteMode:
         )
 
         result = runner.invoke(cli, ["assets", "stamp", str(tmp_path)])
-        assert result.exit_code == 0, result.output
+        assert result.exit_code == 0, result.stderr
         # One digest changed, one already correct → wrote 1.
-        assert "wrote 1 digest" in result.output
+        assert "wrote 1 digest" in result.stderr
 
         rewritten = yaml.safe_load(project_yaml.read_text())["assets"]["seeds"]
         assert rewritten["a"]["digest"] == digest_a  # unchanged
@@ -224,8 +224,8 @@ class TestAssetsStampCheckMode:
 
         mtime_before = project_yaml.stat().st_mtime_ns
         result = runner.invoke(cli, ["assets", "stamp", "--check", str(tmp_path)])
-        assert result.exit_code == 0, result.output
-        assert "match" in result.output
+        assert result.exit_code == 0, result.stderr
+        assert "match" in result.stderr
         assert project_yaml.stat().st_mtime_ns == mtime_before
 
     def test_check_stale_digest_exits_one_with_diff(
@@ -236,11 +236,11 @@ class TestAssetsStampCheckMode:
 
         result = runner.invoke(cli, ["assets", "stamp", "--check", str(tmp_path)])
         assert result.exit_code != 0
-        assert "stale" in result.output
+        assert "stale" in result.stderr
         # Both the OLD (placeholder) and the computed NEW digest must
         # appear in the diff, structured as ``old → new``. A regression
         # to only-print-one would slip past a looser assertion.
-        assert f"sha256:placeholder → {expected_new}" in result.output
+        assert f"sha256:placeholder → {expected_new}" in result.stderr
 
 
 class TestAssetsStampMissingFile:
@@ -270,10 +270,9 @@ class TestAssetsStampMissingFile:
 
         result = runner.invoke(cli, ["assets", "stamp", str(tmp_path)])
         assert result.exit_code != 0
-        # Errors route through ``err_console`` (stderr) — uniform with
-        # every other fatal-error path in the module. The offending
-        # path must appear on stderr so the author knows exactly which
-        # reference to fix.
+        # All CLI output routes through the shared stderr console, so
+        # the offending path lands on stderr and the author sees
+        # exactly which reference to fix.
         assert "shared/seeds/missing.sql" in result.stderr
         assert "does not exist" in result.stderr
 
@@ -307,8 +306,7 @@ class TestAssetsStampCheckWithMissingFile:
 
         result = runner.invoke(cli, ["assets", "stamp", "--check", str(tmp_path)])
         assert result.exit_code != 0
-        # Fatal errors route to stderr (see err_console in
-        # assets_commands.py).
+        # All CLI output routes through the shared stderr console.
         assert "shared/seeds/missing.sql" in result.stderr
 
 
@@ -331,7 +329,7 @@ class TestAssetsStampProjectResolution:
 
         result = runner.invoke(cli, ["assets", "stamp", str(empty)])
         assert result.exit_code != 0
-        # Fatal errors route to stderr.
+        # All CLI output routes through the shared stderr console.
         assert "No project.yaml" in result.stderr
 
 
@@ -347,8 +345,8 @@ class TestAssetsStampMalformedShapeFailsLoud:
 
         result = runner.invoke(cli, ["assets", "stamp", str(tmp_path)])
         assert result.exit_code != 0
-        # ``click.ClickException`` writes to stderr, and the fixture
-        # is ``mix_stderr=False`` — check the split stream.
+        # ``click.ClickException`` writes to stderr; the fixture uses
+        # ``mix_stderr=False`` so the split stream is inspectable.
         assert "assets" in result.stderr
         assert "must be a mapping" in result.stderr
 
@@ -401,8 +399,8 @@ class TestAssetsStampCommentDetection:
         )
 
         result = runner.invoke(cli, ["assets", "stamp", str(tmp_path)])
-        assert result.exit_code == 0, result.output
-        assert "strip on write" in result.output
+        assert result.exit_code == 0, result.stderr
+        assert "strip on write" in result.stderr
 
     def test_whole_line_comment_triggers_warning(self, runner: CliRunner, tmp_path: Path) -> None:
         seed = tmp_path / "shared" / "seeds" / "base.sql"
@@ -420,8 +418,8 @@ class TestAssetsStampCommentDetection:
         )
 
         result = runner.invoke(cli, ["assets", "stamp", str(tmp_path)])
-        assert result.exit_code == 0, result.output
-        assert "strip on write" in result.output
+        assert result.exit_code == 0, result.stderr
+        assert "strip on write" in result.stderr
 
 
 class TestAssetsStampNoSeeds:
@@ -433,7 +431,7 @@ class TestAssetsStampNoSeeds:
 
         result = runner.invoke(cli, ["assets", "stamp", str(tmp_path)])
         assert result.exit_code == 0
-        assert "nothing to stamp" in result.output
+        assert "nothing to stamp" in result.stderr
 
 
 class TestAssetsStampHelpText:
