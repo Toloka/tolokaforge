@@ -32,6 +32,10 @@ on:
     - cron: "*/30 18-23 * * 1-5" # weekday evening/night, local ~20:00-02:00 -> every 30 min
     - cron: "*/30 * * * 0,6" # all weekend (Sat/Sun) -> every 30 min
   workflow_dispatch: {}
+  # TEMP (remove after this run): first live poll of #arena-eval-automation from the branch,
+  # since schedule/workflow_dispatch only activate once this file is on the default branch.
+  push:
+    branches: ["feat/wire-probe-integration-tests"]
 
 permissions:
   contents: write # push the seed branch
