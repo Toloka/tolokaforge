@@ -8,8 +8,6 @@ TolokaForge format.
 from __future__ import annotations
 
 import json
-import logging
-import sys
 from pathlib import Path
 
 import click
@@ -33,7 +31,9 @@ def adapter():
 @click.option("--adapter-params", default="{}", help="JSON string of extra adapter params")
 @click.option("--validate", "do_validate", is_flag=True, help="Validate converted output")
 @click.option("--verbose", is_flag=True, help="Enable debug output")
+@click.pass_context
 def convert(
+    ctx: click.Context,
     name: str,
     tasks_glob: str,
     output: str,
@@ -43,7 +43,9 @@ def convert(
 ) -> None:
     """Convert external tasks to native TolokaForge format."""
     if verbose:
-        logging.basicConfig(level=logging.DEBUG, stream=sys.stderr)
+        from tolokaforge.cli.main import _bump_console_debug_if_allowed
+
+        _bump_console_debug_if_allowed(ctx)
 
     from tolokaforge.adapters import get_adapter
     from tolokaforge.adapters.bundle_writer import write_bundle

@@ -200,7 +200,7 @@ def configure_root_logging(
 
 
 class StructuredLogger:
-    """Thread-safe structured logger with JSON output and strict mode
+    """Thread-safe structured logger with in-memory list + YAML output.
 
     Attributes:
         name: Logger name (typically module or trial ID)
@@ -208,6 +208,11 @@ class StructuredLogger:
         log_file: Optional file path for log output
         strict: If True, raise RuntimeError on ERROR level
         logs: Collected structured log entries
+
+    Records are routed through the stdlib logger with `propagate=True` so
+    the root handler installed by `configure_root_logging` owns rendering.
+    The in-memory `logs` list and `save_to_file` YAML shape are separate
+    from the console rendering.
     """
 
     def __init__(
@@ -223,26 +228,26 @@ class StructuredLogger:
         self.strict = strict
         self.logs: list[dict[str, Any]] = []
 
-        # Create standard logger for console output
         self.logger = logging.getLogger(name)
         self.logger.setLevel(level)
-
-        # Remove existing handlers to avoid duplicates
         self.logger.handlers.clear()
+        self.logger.propagate = True
 
-        # Add console handler
-        console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setLevel(level)
+    @staticmethod
+    def _sanitize_extra(context: dict[str, Any]) -> dict[str, Any]:
+        """Rename keys that would collide with `LogRecord` attributes.
 
-        # Format: timestamp - name - level - message
-        formatter = logging.Formatter(
-            "%(asctime)s - %(name)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
-        )
-        console_handler.setFormatter(formatter)
-        self.logger.addHandler(console_handler)
-
-        # Prevent propagation to root logger
-        self.logger.propagate = False
+        `logging.Logger.log(..., extra=...)` copies each key straight onto
+        `LogRecord.__dict__`; a key like `module` or `name` would raise
+        `KeyError` at `LogRecord.__init__`. Prefix such collisions with
+        `ctx_` so the record survives — the `StructuredFormatter` reads the
+        renamed keys via the same scope-pair rule.
+        """
+        sanitized: dict[str, Any] = {}
+        for key, value in context.items():
+            safe_key = f"ctx_{key}" if key in _LOG_RECORD_RESERVED else key
+            sanitized[safe_key] = value
+        return sanitized
 
     def _log(self, level: str, message: str, context: dict[str, Any] | None = None, **kwargs):
         """Internal logging method
@@ -253,20 +258,16 @@ class StructuredLogger:
             context: Optional context dictionary
             **kwargs: Additional context as keyword arguments
         """
-        # Get numeric log level
         log_level = getattr(logging, level)
 
-        # Skip if below threshold (filter based on logger level)
         if log_level < self.level:
             return
 
         # Defensive handling for non-dict context (e.g., exception passed as positional arg)
         if context is not None and not isinstance(context, dict):
             context = {"context": str(context)}
-        # Merge context and kwargs
         full_context = {**(context or {}), **kwargs}
 
-        # Create structured log entry
         log_entry = {
             "timestamp": datetime.now(tz=timezone.utc).isoformat(),
             "level": level,
@@ -276,20 +277,11 @@ class StructuredLogger:
         }
         self.logs.append(log_entry)
 
-        # Format context for display
-        if full_context:
-            context_str = ", ".join(f"{k}={v}" for k, v in full_context.items())
-            display_message = f"{message} ({context_str})"
-        else:
-            display_message = message
+        self.logger.log(log_level, message, extra=self._sanitize_extra(full_context))
 
-        self.logger.log(log_level, display_message)
-
-        # Raise exception in strict mode for ERROR level
         if self.strict and level == "ERROR":
             error_msg = f"[STRICT MODE] {message}"
             if full_context:
-                # Format context in a way that matches test expectations
                 context_parts = [f"{k}={v}" for k, v in full_context.items()]
                 error_msg += f" ({', '.join(context_parts)})"
             raise RuntimeError(error_msg)

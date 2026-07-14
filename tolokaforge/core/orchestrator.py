@@ -273,21 +273,11 @@ class Orchestrator:
         log_level = logging.DEBUG if verbose else logging.INFO
         self.logger = get_logger("orchestrator", level=log_level, strict=strict)
 
-        # Configure standard Python logging for Docker modules so their
-        # progress messages (image building, container startup, health checks)
-        # are visible to the user.  These modules use logging.getLogger(__name__)
-        # which defaults to WARNING without explicit configuration.
-        docker_logger = logging.getLogger("tolokaforge.docker")
-        if not docker_logger.handlers:
-            handler = logging.StreamHandler()
-            handler.setFormatter(
-                logging.Formatter(
-                    "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-                    datefmt="%Y-%m-%d %H:%M:%S",
-                )
-            )
-            docker_logger.addHandler(handler)
-        docker_logger.setLevel(log_level)
+        # Docker submodules use `logging.getLogger(__name__)`; the root
+        # handler installed by `configure_root_logging` renders them via
+        # propagation. Set the namespace threshold so INFO-level progress
+        # messages emit even when root sits at WARNING.
+        logging.getLogger("tolokaforge.docker").setLevel(log_level)
 
     def _create_adapter(self) -> BaseAdapter:
         """Create adapter based on configuration"""
