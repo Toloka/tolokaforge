@@ -3,6 +3,23 @@ name: Claude Code PR Review
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+    # Skip the (paid) review for mechanical PRs: model integration /
+    # registration (presets, registry, pricing — e.g. #261, #257, #196),
+    # dependabot lock bumps, docs/ADR edits, and changelog updates.
+    # GitHub skips the run only when EVERY changed file matches this list,
+    # so a PR that also touches real code is still reviewed. Deliberately
+    # NOT ignored: AGENTS.md / CLAUDE.md / README.md (policy the review
+    # enforces) and pyproject.toml (workspace + dependency rules). A review
+    # can always be requested manually on a skipped PR via an `@claude`
+    # comment (the issue_comment trigger has no path filter).
+    paths-ignore:
+      - tolokaforge/core/data/model_presets.yaml
+      - tolokaforge/core/data/pricing.json
+      - tests/integration/llm/registry.py
+      - .automation/requests/**
+      - uv.lock
+      - docs/**
+      - CHANGELOG.md
   issue_comment:
     types: [created]
   pull_request_review_comment:
