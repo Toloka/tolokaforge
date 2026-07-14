@@ -99,6 +99,11 @@ from tolokaforge.cli.config_commands import config  # noqa: E402
 
 cli.add_command(config)
 
+# Register assets subcommand group (`tolokaforge assets stamp` verb).
+from tolokaforge.cli.assets_commands import assets  # noqa: E402
+
+cli.add_command(assets)
+
 
 # Default user model configuration
 DEFAULT_USER_MODEL = "anthropic/claude-sonnet-4.6"

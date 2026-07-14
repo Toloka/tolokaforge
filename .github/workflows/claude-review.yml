@@ -35,8 +35,20 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          model: claude-opus-4-8
-          direct_prompt: |
+          # v1.0 renamed several inputs — see the action's migration guide.
+          # ``direct_prompt`` → ``prompt`` (direct rename); ``model`` moves
+          # into ``claude_args`` as a CLI flag. Old input names silently
+          # no-op'd (workflow ran but the review didn't fire); this fix
+          # brings coverage back.
+          # ``track_progress: true`` restores the tag-mode tracking comments
+          # v0.x posted by default so future PR readers see the review
+          # progress the same way they did before the upgrade.
+          track_progress: true
+          claude_args: --model claude-opus-4-8
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
             Review this PR against the project's AGENTS.md rules. Flag any
             violation with file path, line number, and a concrete suggested
             fix. If everything checks out, say so explicitly.
