@@ -148,13 +148,18 @@ class TestSeedRef:
         assert s.digest == "sha256:aaaa"
 
     def test_bare_string_infers_kind_from_sql_extension(self) -> None:
-        s = SeedRef.model_validate("/abs/foo.sql")
-        assert s.path == Path("/abs/foo.sql")
-        assert s.kind == "sql_dump"
+        # Bare-string shorthand still parses; digest is required by the
+        # model so a full-form call needs it — but the shorthand path
+        # here is only exercising kind inference. Bypass the missing
+        # digest by asserting the ValidationError names the required
+        # field so the migration path (`tolokaforge assets stamp`) is
+        # discoverable.
+        with pytest.raises(ValidationError, match="digest"):
+            SeedRef.model_validate("/abs/foo.sql")
 
     def test_bare_string_infers_kind_from_rdb_extension(self) -> None:
-        s = SeedRef.model_validate("/abs/dump.rdb")
-        assert s.kind == "redis_dump"
+        with pytest.raises(ValidationError, match="digest"):
+            SeedRef.model_validate("/abs/dump.rdb")
 
     def test_bare_string_unknown_extension_rejected(self) -> None:
         # A ``.zip`` seed could be a filesystem_dir or a bare — ambiguous;
@@ -162,13 +167,20 @@ class TestSeedRef:
         with pytest.raises(ValidationError, match="cannot infer kind"):
             SeedRef.model_validate("/abs/thing.zip")
 
-    def test_digest_optional(self) -> None:
-        s = SeedRef.model_validate({"path": "/x/y.sql", "kind": "sql_dump"})
-        assert s.digest is None
+    def test_digest_required(self) -> None:
+        with pytest.raises(ValidationError, match="digest"):
+            SeedRef.model_validate({"path": "/x/y.sql", "kind": "sql_dump"})
 
     def test_extra_keys_rejected(self) -> None:
         with pytest.raises(ValidationError):
-            SeedRef.model_validate({"path": "/x/y.sql", "kind": "sql_dump", "unknown": 1})
+            SeedRef.model_validate(
+                {
+                    "path": "/x/y.sql",
+                    "kind": "sql_dump",
+                    "digest": "sha256:aaaa",
+                    "unknown": 1,
+                }
+            )
 
     @pytest.mark.parametrize(
         "kind",
@@ -178,14 +190,18 @@ class TestSeedRef:
         # Pin the full vocabulary — a future refactor that narrows the
         # Literal type without updating the reset-recipe milestone
         # would silently strip authoring options for existing packs.
-        s = SeedRef.model_validate({"path": f"/abs/x.{kind[:3]}", "kind": kind})
+        s = SeedRef.model_validate(
+            {"path": f"/abs/x.{kind[:3]}", "kind": kind, "digest": "sha256:aaaa"}
+        )
         assert s.kind == kind
 
     def test_bare_string_extension_lookup_is_case_insensitive(self) -> None:
-        # Extension inference uses .suffix.lower(); pin the case-fold so
-        # a Windows-authored fixture path like `Foo.SQL` still parses.
-        s = SeedRef.model_validate("/abs/Foo.SQL")
-        assert s.kind == "sql_dump"
+        # Extension inference uses .suffix.lower(); a Windows-authored
+        # path like `Foo.SQL` reaches the digest-required error rather
+        # than the ambiguous-extension one — that proves inference works
+        # (extension → sql_dump) before the digest check fires.
+        with pytest.raises(ValidationError, match="digest"):
+            SeedRef.model_validate("/abs/Foo.SQL")
 
 
 class TestAssetsConfig:
@@ -207,7 +223,13 @@ class TestProjectConfigAssets:
         p = ProjectConfig(
             name="p",
             assets=AssetsConfig(
-                seeds={"baseline": SeedRef(path=Path("/abs/x.sql"), kind="sql_dump")}
+                seeds={
+                    "baseline": SeedRef(
+                        path=Path("/abs/x.sql"),
+                        kind="sql_dump",
+                        digest="sha256:aaaa",
+                    )
+                }
             ),
         )
         assert p.assets is not None

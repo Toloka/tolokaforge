@@ -35,6 +35,7 @@ from tolokaforge.core.compose_materialisation import (
     resolve_runner_endpoint,
     shutdown_compose,
 )
+from tolokaforge.core.models import SeedRef
 from tolokaforge.core.runtime import IsolationMode, ProvisionError
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, EnvEndpoints, EnvironmentManifest
 from tolokaforge.runner import (
@@ -685,7 +686,20 @@ class SharedStackRuntimeBackend:
     isolation_mode: IsolationMode = IsolationMode.SHARED_STACK
     """Every trial in the run talks to the same runner container. Read by
     the orchestrator's compatibility check to refuse runs whose tasks
-    declare ``environment_manifest.isolation: per_trial``."""
+    require per-trial substrate materialisation."""
+
+    advertised_capabilities: frozenset[str] = frozenset(
+        {
+            "shared_stack",
+            "reset_recipes:sql_dump",
+            "reset_recipes:filesystem_dir",
+            "reset_recipes:redis_dump",
+            "reset_recipes:bare",
+            "network_isolation:no_internet",
+        }
+    )
+    """Local-docker shared-stack capability advertisement. Read by
+    :func:`tolokaforge.core.backend_capabilities.check_admission`."""
 
     def __init__(
         self,
@@ -693,6 +707,7 @@ class SharedStackRuntimeBackend:
         endpoints: EnvEndpoints | None = None,
         env_manifest: EnvironmentManifest | None = None,
         run_id: str = "run",
+        seeds: dict[str, SeedRef] | None = None,
     ):
         """Initialize the shared-stack runtime.
 
@@ -721,6 +736,7 @@ class SharedStackRuntimeBackend:
         self._run_id = run_id
         self._compose: DockerCompose | None = None
         self._temp_dir: Path | None = None
+        self.seeds: dict[str, SeedRef] = dict(seeds or {})
 
         self.runner_client: GrpcRunnerClient | None
         self._endpoints: EnvEndpoints | None
@@ -918,6 +934,51 @@ class SharedStackRuntimeBackend:
     def teardown(self, handle: EnvHandle) -> None:  # noqa: ARG002 — Protocol conformance
         """No-op: the shared stack lives for the whole run and is torn
         down at :meth:`close`, not per-trial. Idempotent by construction."""
+
+    def reset_services_for_next_trial(self, manifest: EnvironmentManifest) -> None:
+        """Dispatch reset recipes for every ``isolation="reset"`` service
+        against the shared compose stack.
+
+        Called at the trial-boundary — after one trial finishes and
+        before the next one starts. ``shared`` services no-op (state
+        persists across trials, which is the point of the label);
+        ``ephemeral`` services are rejected — a shared-stack backend
+        cannot honour a full compose-down between trials, and the
+        admission gate is expected to have refused the run upstream.
+        """
+        from tolokaforge.runtime.reset_recipes import dispatch
+
+        if self._compose is None:
+            raise RuntimeError(
+                "SharedStackRuntimeBackend.reset_services_for_next_trial requires "
+                "a materialised compose stack; construct with env_manifest and "
+                "connect() first."
+            )
+        for service_name, service_spec in manifest.services.items():
+            if service_spec.isolation == "shared":
+                continue
+            if service_spec.isolation == "ephemeral":
+                raise RuntimeError(
+                    f"SharedStackRuntimeBackend cannot honour "
+                    f"isolation='ephemeral' on service {service_name!r}; the "
+                    "shared stack lives for the whole run. Backend selection "
+                    "should have routed this run onto PerTrialRuntimeBackend."
+                )
+            if service_spec.reset is None:
+                raise RuntimeError(
+                    f"service {service_name!r} labelled 'reset' has no "
+                    "'reset.seed' pointer — schema validation should have "
+                    "rejected the manifest earlier."
+                )
+            seed_name = service_spec.reset.seed
+            seed = self.seeds.get(seed_name)
+            if seed is None:
+                raise RuntimeError(
+                    f"service {service_name!r} names seed {seed_name!r} but "
+                    f"the backend has no such seed in its registry "
+                    f"(available: {sorted(self.seeds)!r})."
+                )
+            dispatch(seed, service_name, self._compose)
 
     # ---- Per-trial RPC operations (ADR-0013) ----
     # Thin delegates to ``self.runner_client``. Kept as explicit methods
