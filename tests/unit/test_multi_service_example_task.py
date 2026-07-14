@@ -16,7 +16,6 @@ import yaml
 
 from tolokaforge.adapters._task_loader import load_task_yaml
 from tolokaforge.core.models import EnvironmentPatch
-from tolokaforge.core.trial import TaskIsolation
 
 pytestmark = pytest.mark.unit
 
@@ -66,12 +65,15 @@ class TestTaskYaml:
         assert task_config.environment_manifest is not None
         assert isinstance(task_config.environment_manifest, EnvironmentPatch)
 
-    def test_isolation_is_shared_ok(self) -> None:
-        """Case B requires ``isolation: shared_ok`` — a per_trial
-        declaration would route to ``PerTrialRuntimeBackend`` instead
-        of the new shared+env_manifest path."""
+    def test_all_services_labelled_shared(self) -> None:
+        """Case B requires every service labelled ``shared`` — any
+        ``reset``/``ephemeral`` label would route the run to
+        ``PerTrialRuntimeBackend`` instead of the shared+env_manifest
+        path."""
         task_config, _ = load_task_yaml(_TASK_DIR / "task.yaml")
-        assert task_config.environment_manifest.isolation == TaskIsolation.SHARED_OK
+        services = task_config.environment_manifest.services
+        assert services is not None
+        assert all(spec.isolation == "shared" for spec in services.values())
 
     def test_runner_service_matches_compose_declaration(self) -> None:
         """``runner_service`` in the patch must name a service actually

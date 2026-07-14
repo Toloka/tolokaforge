@@ -102,7 +102,7 @@ class TestEnvironmentManifestWiring:
             tmp_path,
             environment_manifest={
                 "compose_file": "./environment.compose.yaml",
-                "isolation": "per_trial",
+                "services": {"db": {"isolation": "ephemeral"}},
                 "runner_service": "runner",
             },
         )
@@ -114,8 +114,10 @@ class TestEnvironmentManifestWiring:
         assert manifest.compose_file.is_absolute()
         assert manifest.compose_file.name == "environment.compose.yaml"
         assert manifest.compose_file.exists()
-        # isolation + runner_service round-trip.
-        assert manifest.isolation.value == "per_trial"
+        # services + runner_service round-trip.
+        assert manifest.services["db"].isolation == "ephemeral"
+        assert manifest.services["runner"].isolation == "ephemeral"
+        assert manifest.requires_per_trial is True
         assert manifest.runner_service == "runner"
 
     def test_project_default_environment_composes_with_task_patch(self, tmp_path: Path) -> None:

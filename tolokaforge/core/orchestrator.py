@@ -574,52 +574,160 @@ class Orchestrator:
             )
         return next(iter(manifests_by_compose.values()))
 
+    def _select_backend_from_tasks(self) -> str:
+        """Return ``"per_trial"`` if any task's manifest requires per-trial
+        materialisation, otherwise ``"shared"``.
+
+        Reads :attr:`EnvironmentManifest.requires_per_trial` for every
+        task; a task without a manifest contributes no signal. When
+        every task with a manifest is fully-``shared`` labelled, the
+        selector picks the shared backend.
+        """
+        if self.adapter is None:
+            raise RuntimeError(
+                "Task-driven backend selection requires the adapter to be loaded first."
+            )
+        for task in self.tasks:
+            task_desc = self._task_desc_cache.get(task.task_id)
+            if task_desc is None:
+                task_desc = self.adapter.to_task_description(task.task_id)
+                self._task_desc_cache[task.task_id] = task_desc
+            manifest = task_desc.environment_manifest
+            if manifest is not None and manifest.requires_per_trial:
+                return "per_trial"
+        return "shared"
+
+    def _resolve_effective_runtime_choice(self) -> str:
+        """Return the effective runtime choice — the operator override
+        when set, otherwise the task-driven signal.
+
+        Callers that need to route on "per-trial mode" (stack bring-up,
+        endpoint logging) read this helper so the override path and the
+        task-driven path stay in lock-step with backend construction.
+        """
+        override = self.config.orchestrator.runtime
+        if override is not None:
+            return override
+        return self._select_backend_from_tasks()
+
+    def _admit_capabilities(self, runtime_backend: RuntimeBackend) -> None:
+        """Refuse to start the run if ``compute.capabilities`` names any
+        capability the selected backend does not advertise.
+
+        Read from ``config.compute.capabilities`` (empty when the run
+        config omits the ``compute`` block or its capabilities list).
+        The admission gate itself lives in
+        :mod:`tolokaforge.core.backend_capabilities`.
+        """
+        from tolokaforge.core.backend_capabilities import check_admission
+
+        requested: list[Any] = []
+        if self.config.compute is not None:
+            requested = list(self.config.compute.capabilities)
+        advertised = getattr(runtime_backend, "advertised_capabilities", frozenset())
+        check_admission(requested, advertised)
+
+    def _emit_environment_identities(self) -> None:
+        """Log the sha256 identity of every task's resolved environment
+        manifest at info level.
+
+        Observability only — the digest is stable over the compose file
+        bytes, ``stack_inputs``, the per-service isolation map, and the
+        referenced seed digests, so equal manifests emit equal
+        identities across runs. Consumers of the identity for
+        materialisation dedup land later per the public roadmap.
+        """
+        from tolokaforge.core.env_identity import resolve_environment_identity
+
+        if self.adapter is None:
+            return
+        seed_digests: dict[str, str] = {}
+        if self.project is not None and self.project.assets is not None:
+            seed_digests = {name: seed.digest for name, seed in self.project.assets.seeds.items()}
+        for task in self.tasks:
+            task_desc = self._task_desc_cache.get(task.task_id)
+            if task_desc is None:
+                task_desc = self.adapter.to_task_description(task.task_id)
+                self._task_desc_cache[task.task_id] = task_desc
+            manifest = task_desc.environment_manifest
+            if manifest is None:
+                continue
+            referenced_digests = {
+                spec.reset.seed: seed_digests[spec.reset.seed]
+                for spec in manifest.services.values()
+                if spec.reset is not None and spec.reset.seed in seed_digests
+            }
+            identity = resolve_environment_identity(manifest, referenced_digests)
+            self.logger.info(
+                "run.environment_identity",
+                task_id=task.task_id,
+                environment_identity=identity,
+            )
+
     def _construct_runtime_backend(
         self,
         runner_address: str,
         env_manifest: EnvironmentManifest | None = None,
         run_id: str = "run",
     ) -> RuntimeBackend:
-        """Construct the runtime backend from ``config.orchestrator.runtime``.
+        """Construct the runtime backend from the task-driven signal,
+        with the deprecated ``config.orchestrator.runtime`` override
+        taking precedence when set.
 
-        ``shared`` (default) → :class:`SharedStackRuntimeBackend`. When
-        ``env_manifest`` is passed the backend materialises the
-        task-declared compose stack once per run at ``connect`` time.
-        When absent, the backend connects to the built-in shared engine
-        at ``runner_address`` with endpoints resolved via
-        :func:`_build_env_endpoints`.
-
-        ``per_trial`` → :class:`PerTrialRuntimeBackend` (env_manifest is
-        consumed per-trial there; ignored here).
+        Task-driven selection: any task requiring per-trial materialisation
+        → :class:`PerTrialRuntimeBackend`; otherwise
+        :class:`SharedStackRuntimeBackend`. When ``env_manifest`` is
+        passed the shared backend materialises the task-declared compose
+        stack once per run at ``connect`` time; without it the backend
+        connects to the built-in shared engine at ``runner_address``.
 
         Called when no backend is injected via
         ``Orchestrator.__init__(runtime_backend=...)``.
         """
-        runtime_choice = self.config.orchestrator.runtime
+        override = self.config.orchestrator.runtime
+        if override is not None:
+            runtime_choice = override
+            source = "config-override"
+        else:
+            runtime_choice = self._select_backend_from_tasks()
+            source = "tasks"
+
+        seeds = self._project_seed_registry()
         if runtime_choice == "per_trial":
             from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
 
             self.logger.info(
-                "runtime.backend.selected", backend="PerTrialRuntimeBackend", source="config"
+                "runtime.backend.selected",
+                backend="PerTrialRuntimeBackend",
+                source=source,
             )
-            return PerTrialRuntimeBackend()
+            return PerTrialRuntimeBackend(seeds=seeds)
         from tolokaforge.core.shared_stack_runtime import SharedStackRuntimeBackend
 
         self.logger.info(
             "runtime.backend.selected",
             backend="SharedStackRuntimeBackend",
-            source="config" if runtime_choice == "shared" else "default",
+            source=source,
             env_manifest_present=env_manifest is not None,
         )
         if env_manifest is not None:
             return SharedStackRuntimeBackend(
                 env_manifest=env_manifest,
                 run_id=run_id,
+                seeds=seeds,
             )
         return SharedStackRuntimeBackend(
             runner_address=runner_address,
             endpoints=_build_env_endpoints(runner_address),
+            seeds=seeds,
         )
+
+    def _project_seed_registry(self) -> dict[str, Any]:
+        """Return the project's ``assets.seeds`` map for backend
+        construction. Empty dict when the project has no assets block."""
+        if self.project is None or self.project.assets is None:
+            return {}
+        return dict(self.project.assets.seeds)
 
     _LOCAL_ALIAS_TAG: str = "local"
     """Stable secondary tag applied to freshly-built engine images after
@@ -706,28 +814,24 @@ class Orchestrator:
         )
 
     def _verify_isolation_compatibility(self, runtime_backend: RuntimeBackend) -> None:
-        """Refuse to start the run if any task declares per-trial isolation
-        but the selected runtime backend cannot provide it.
+        """Refuse to start the run if any task requires per-trial
+        substrate materialisation but the selected runtime backend
+        cannot provide it.
 
-        Called after backend selection and before any trial runs.
-        Silent cross-trial state contamination is the failure mode this
-        guard prevents — a task that declares
-        ``environment_manifest.isolation: per_trial`` would produce wrong
-        verdicts when run against a shared stack.
-
-        Reads :attr:`RuntimeBackend.isolation_mode` rather than inspecting
-        the concrete class, so a future backend on a different substrate
-        (Kubernetes, Modal, ...) plugs into this check by setting the
-        attribute correctly.
+        Task-driven backend selection already routes such runs onto
+        :class:`PerTrialRuntimeBackend`; this guard only fires under
+        the deprecated ``orchestrator.runtime`` override path when the
+        operator forces a shared backend against a per-trial-requiring
+        task set. It also catches an ``ephemeral``-labelled service on
+        a shared backend — that isolation label cannot be honoured
+        without a full compose-down cycle.
 
         Raises :class:`RuntimeError` naming the offending tasks and the
         concrete fix.
         """
         from tolokaforge.core.runtime import IsolationMode
-        from tolokaforge.runner.models import TaskIsolation
 
         if runtime_backend.isolation_mode is IsolationMode.PER_TRIAL_STACK:
-            # Any per-trial backend satisfies every isolation requirement.
             return
 
         if self.adapter is None:
@@ -735,7 +839,8 @@ class Orchestrator:
                 "Isolation-compatibility check requires the adapter to be loaded first."
             )
 
-        violations: list[str] = []
+        per_trial_violations: list[str] = []
+        ephemeral_violations: list[tuple[str, list[str]]] = []
         for task in self.tasks:
             task_desc = self._task_desc_cache.get(task.task_id)
             if task_desc is None:
@@ -744,20 +849,34 @@ class Orchestrator:
             manifest = task_desc.environment_manifest
             if manifest is None:
                 continue
-            if manifest.isolation is TaskIsolation.PER_TRIAL:
-                violations.append(task.task_id)
+            if manifest.requires_per_trial:
+                per_trial_violations.append(task.task_id)
+            ephemeral = sorted(
+                name for name, spec in manifest.services.items() if spec.isolation == "ephemeral"
+            )
+            if ephemeral:
+                ephemeral_violations.append((task.task_id, ephemeral))
 
-        if violations:
+        if per_trial_violations:
             raise RuntimeError(
                 f"Runtime backend {type(runtime_backend).__name__} shares state "
-                f"across every trial in the run, but {len(violations)} task(s) "
-                f"declare `environment_manifest.isolation: per_trial`: "
-                f"{sorted(violations)!r}. These tasks would silently produce "
-                "wrong verdicts on a shared-stack backend.\n"
-                "  Fix: select a per-trial runtime backend in the run config "
-                "(e.g. PerTrialRuntimeBackend), or set `isolation: shared_ok` "
-                "on the task(s) that genuinely tolerate shared state across "
-                "trials."
+                f"across every trial in the run, but {len(per_trial_violations)} "
+                f"task(s) require per-trial materialisation via their "
+                f"`services.<name>.isolation` labels: "
+                f"{sorted(per_trial_violations)!r}. These tasks would silently "
+                "produce wrong verdicts on a shared-stack backend.\n"
+                "  Fix: drop the deprecated `orchestrator.runtime` override so "
+                "backend selection is task-driven, or label every service "
+                "`isolation: shared` on the task(s) that genuinely tolerate "
+                "shared state across trials."
+            )
+        if ephemeral_violations:
+            raise RuntimeError(
+                "Shared-stack backend cannot honour `isolation: ephemeral` "
+                "services (they require a compose-down between trials). "
+                f"Offending: {ephemeral_violations!r}. "
+                "Fix: drop the deprecated `orchestrator.runtime` override "
+                "so the task-driven selector picks a per-trial backend."
             )
 
     def _build_pending_trials(
@@ -1132,7 +1251,7 @@ class Orchestrator:
                     self.logger.info("Creating service stack (db-service + runner)")
                     stack_factory = core_stack
                 service_stack = stack_factory(**core_stack_kwargs)
-                per_trial_mode = self.config.orchestrator.runtime == "per_trial"
+                per_trial_mode = self._resolve_effective_runtime_choice() == "per_trial"
                 # In per_trial mode OR shared+env_manifest mode the built-in engine
                 # containers go unused — the task-declared compose stack owns the
                 # runner + db-service. The engine images still need to be BUILT so
@@ -1199,9 +1318,11 @@ class Orchestrator:
         runtime_backend.connect()
         self.logger.info("Runtime backend connected")
         self._verify_isolation_compatibility(runtime_backend)
+        self._admit_capabilities(runtime_backend)
+        self._emit_environment_identities()
 
         env_endpoints = _build_env_endpoints(runner_address)
-        if self.config.orchestrator.runtime == "per_trial" or run_env_manifest is not None:
+        if self._resolve_effective_runtime_choice() == "per_trial" or run_env_manifest is not None:
             # Per-trial backend resolves fresh endpoints per trial via
             # ``endpoints(handle)``. Shared+env_manifest resolves them once
             # at connect time from the materialised stack. In both cases the
@@ -1558,6 +1679,8 @@ class Orchestrator:
             runtime_backend = self._construct_runtime_backend(runner_address)
         runtime_backend.connect()
         self._verify_isolation_compatibility(runtime_backend)
+        self._admit_capabilities(runtime_backend)
+        self._emit_environment_identities()
 
         env_endpoints = _build_env_endpoints(runner_address)
         self.logger.info(
