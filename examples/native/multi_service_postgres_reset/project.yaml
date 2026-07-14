@@ -1,0 +1,69 @@
+# Project spec for the reset-recipe example.
+#
+# Demonstrates the wired reset code path end-to-end via `tolokaforge run`:
+# `app-db` is labelled `isolation: reset` and bound to the named seed
+# `postgres_baseline`. At the start of every trial the per-trial backend
+# brings up a fresh compose stack and applies the seed, overwriting the
+# `factory_default` row init.sql seeded with `baseline`. See README.md.
+#
+# See docs/architecture/PROJECTS.md for the full Project model.
+
+name: "multi-service-postgres-reset"
+version: 1
+description: >
+  Single-task project proving the seed-backed reset recipe fires through
+  the CLI. A real postgres service (app-db) is reset to the
+  `postgres_baseline` SQL seed per trial; the agent reads the seeded value
+  back over a PostgREST API and grading asserts it observed `baseline`.
+
+tasks:
+  discovery:
+    glob: "tasks/**/task.yaml"
+
+# ── Shared assets ───────────────────────────────────────────────
+# Named baselines the reset recipe references by name.
+assets:
+  seeds:
+    postgres_baseline:
+      path: "./assets/postgres_baseline.sql"
+      kind: "sql_dump"
+      digest: "sha256:6ef10f37326ab35c4fa4c20efbe902a7ce961be7c8916db2bef89dd5fb655580"
+
+# ── Default environment ─────────────────────────────────────────
+# Every task inherits this unless it declares its own
+# `environment_manifest`. The reset_probe task declares none, so it
+# inherits this stack whole (including `app-db: reset`).
+default_environment:
+  stack:
+    compose_file: "./shared/environment.compose.yaml"
+    runner_service: "runner"
+  services:
+    # `app-db` is reset to the named seed at the start of every trial.
+    # The other three compose services carry no entry → they default to
+    # `ephemeral` (fresh per trial), matching the per-trial reality. The
+    # reset/ephemeral mix makes `requires_per_trial` true, forcing
+    # per-trial backend selection.
+    app-db:
+      isolation: "reset"
+      reset: { seed: "postgres_baseline" }
+
+# ── Task defaults — base for every task ─────────────────────────
+task_defaults:
+  adapter_type: "native"
+  max_turns: 8
+  actors:
+    user:
+      mode: "llm"
+      persona: "cooperative"
+
+# ── Run defaults — base for every run config ────────────────────
+# Storage and observability use the RunConfig defaults (local artifacts
+# + logs, sqlite queue); only compute and orchestrator knobs are set as
+# project-wide bases here.
+run_defaults:
+  compute:
+    provider: "local-docker"
+    workers: 1
+  orchestrator:
+    auto_start_services: true
+    shuffle_trials: false
