@@ -49,7 +49,7 @@ def _redis_cli(compose: DockerCompose, *args: str) -> str:
         "redis-cli",
         *args,
     ]
-    result = subprocess.run(cmd, capture_output=True, check=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, check=True, text=True, cwd=compose.context)
     return result.stdout.strip()
 
 
@@ -81,6 +81,7 @@ def _generate_baseline_rdb(tmp_path: Path) -> Path:
             ],
             check=True,
             capture_output=True,
+            cwd=compose.context,
         )
     return rdb_out
 

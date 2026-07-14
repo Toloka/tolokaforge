@@ -56,7 +56,9 @@ class FilesystemDirDispatcher:
             "-c",
             f'rm -rf "{WORKSPACE_TARGET}"/* "{WORKSPACE_TARGET}"/.[!.]* 2>/dev/null || true',
         ]
-        wipe_result = subprocess.run(wipe_cmd, capture_output=True, check=False)
+        wipe_result = subprocess.run(
+            wipe_cmd, capture_output=True, check=False, cwd=compose.context
+        )
         if wipe_result.returncode != 0:
             raise RuntimeError(
                 f"filesystem_dir reset (wipe stage) failed for service "
@@ -71,7 +73,7 @@ class FilesystemDirDispatcher:
             f"{seed.path!s}/.",
             f"{service_name}:{WORKSPACE_TARGET}",
         ]
-        cp_result = subprocess.run(cp_cmd, capture_output=True, check=False)
+        cp_result = subprocess.run(cp_cmd, capture_output=True, check=False, cwd=compose.context)
         if cp_result.returncode != 0:
             raise RuntimeError(
                 f"filesystem_dir reset (copy stage) failed for service "

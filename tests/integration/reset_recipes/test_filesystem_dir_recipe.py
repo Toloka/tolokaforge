@@ -47,7 +47,7 @@ def _cat(compose: DockerCompose, path: str) -> str:
         "cat",
         path,
     ]
-    result = subprocess.run(cmd, capture_output=True, check=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, check=True, text=True, cwd=compose.context)
     return result.stdout
 
 
@@ -63,7 +63,7 @@ def _write(compose: DockerCompose, path: str, contents: str) -> None:
         "-c",
         f"printf %s '{contents}' > {path}",
     ]
-    subprocess.run(cmd, capture_output=True, check=True)
+    subprocess.run(cmd, capture_output=True, check=True, cwd=compose.context)
 
 
 def _seed_ref_from_tree(tree: Path) -> SeedRef:

@@ -94,7 +94,9 @@ def _psql(backend: SharedStackRuntimeBackend, sql: str) -> str:
         "-c",
         sql,
     ]
-    result = subprocess.run(cmd, capture_output=True, check=True, text=True)
+    result = subprocess.run(
+        cmd, capture_output=True, check=True, text=True, cwd=backend._compose.context
+    )
     return result.stdout.strip()
 
 
@@ -112,6 +114,7 @@ def _kv_write(backend: SharedStackRuntimeBackend, contents: str) -> None:
         ],
         check=True,
         capture_output=True,
+        cwd=backend._compose.context,
     )
 
 
@@ -130,6 +133,7 @@ def _kv_read(backend: SharedStackRuntimeBackend) -> str:
         check=True,
         capture_output=True,
         text=True,
+        cwd=backend._compose.context,
     )
     return result.stdout
 

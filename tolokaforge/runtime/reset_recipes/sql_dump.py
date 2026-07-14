@@ -59,6 +59,7 @@ class SqlDumpDispatcher:
             input=dump_bytes,
             capture_output=True,
             check=False,
+            cwd=compose.context,
         )
         if result.returncode != 0:
             raise RuntimeError(

@@ -67,7 +67,7 @@ def _psql(compose: DockerCompose, sql: str) -> str:
         "-c",
         sql,
     ]
-    result = subprocess.run(cmd, capture_output=True, check=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, check=True, text=True, cwd=compose.context)
     return result.stdout.strip()
 
 
