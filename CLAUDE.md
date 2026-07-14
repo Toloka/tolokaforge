@@ -14,7 +14,6 @@ Read `AGENTS.md` for all project instructions — it is the single source of tru
   every dev tool call runs the OLD server code. This applies whether the
   edit came from you or from a subagent's stage.
 - **Skills are loaded on demand.** Invoke them with `/<skill-name>`:
-  - `/brainstorming` — turn an idea into an approved design before any implementation
   - `/code-review` — review the current branch against `AGENTS.md` rules
   - `/writing-development-tickets`, `/executing-development-tickets` —
     ticket lifecycle (the executing pipeline drives architect → critic →
