@@ -185,6 +185,6 @@ def test_pinned_python_version_reads_cleanly_in_process() -> None:
     value = _pinned_python_version()
     assert value, "_pinned_python_version() returned an empty string"
     repo_root_value = (_REPO_ROOT / ".python-version").read_text().strip()
-    assert value == repo_root_value, (
-        f"_pinned_python_version() returned {value!r} but repo-root pin is " f"{repo_root_value!r}"
-    )
+    assert (
+        value == repo_root_value
+    ), f"_pinned_python_version() returned {value!r} but repo-root pin is {repo_root_value!r}"

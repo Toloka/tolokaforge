@@ -1,7 +1,10 @@
 # 0018. Multi-container capability under shared runtime
 
-- **Status:** Accepted
+- **Status:** Accepted (amended)
 - **Date:** 2026-07-04
+- **Amended:** 2026-07-14 — isolation is per-service in the manifest;
+  backend selection is task-driven; `orchestrator.runtime` is a
+  deprecated override.
 - **Deciders:** @CiroGamboa
 - **Supersedes:** —
 - **Superseded by:** —
@@ -15,6 +18,57 @@ that needed a realistic multi-service environment but were fine sharing state
 across trials had no path. This ADR decouples them by extending
 `SharedStackRuntimeBackend` to consume `environment_manifest` — task-declared
 services get materialised **once per run** under shared semantics.
+
+## Amendment — per-service isolation, task-driven backend selection
+
+The originally-shipped whole-manifest `isolation` field
+(`per_trial` / `shared_ok`) is superseded. Isolation now lives per
+compose service under `default_environment.services.<name>.isolation`
+in the manifest, with the vocabulary `shared` / `reset` /
+`ephemeral`. Services without a manifest entry default to `ephemeral`;
+the overall default per ADR-0009 stays `per_trial` (a manifest with no
+explicit `services` entries is treated as per-trial-requiring).
+
+Backend selection is **task-driven**: the orchestrator resolves the
+task set, reads each task's `EnvironmentManifest.requires_per_trial`
+(true iff any service is not `shared`), and picks
+`PerTrialRuntimeBackend` when any task requires it, otherwise
+`SharedStackRuntimeBackend`. The legacy `orchestrator.runtime` field
+survives as a deprecated operator override — setting it emits a
+`DeprecationWarning`; retirement is deferred to a later milestone.
+The isolation-compatibility guard (`_verify_isolation_compatibility`)
+now only fires under that override path — when an operator forces a
+shared backend against a per-trial-requiring task set (or asks for an
+`ephemeral` service on a shared backend, which cannot be honoured
+without a compose-down between trials).
+
+The 2×2 matrix below is unchanged in shape — cases A / B / C still
+map onto the same cells — but each cell is now reached via the
+task-driven signal derived from the per-service isolation map. Case B
+(shared + task-declared stack) is entered by declaring every service
+`isolation: shared`; case C (per-trial + task-declared stack) by
+declaring at least one `reset` or `ephemeral` service.
+
+Compose files carry **zero isolation semantics**. The manifest is the
+single authority; the compose file is the substrate definition. A
+task can declare its own `services.<name>` entries as a patch on top
+of the project's; the resolver treats a task override of a service as
+an atomic replacement of that service's whole `ServiceSpec` (a stale
+`reset` sibling from the project side can't leak through). Atomic
+`stack` replacement (a task supplying its own `stack.compose_file`)
+still discards the project's service-treatment fields — the project's
+per-service opt-outs reviewed the project's services, not the
+replacement stack.
+
+The substrate-agnostic resolver lives at
+`tolokaforge/runtime/isolation.py` (`resolve_service_isolation`,
+`resolve_service_specs`). It consumes `EnvironmentPatch` inputs only —
+no filesystem I/O — so a future Kubernetes backend consumes the same
+resolved per-service map without any change to the resolver's shape.
+
+See also [ADR-0009](0009-environment-manifest.md); the manifest's
+outer contract is unchanged, only the isolation surface it carries
+moved sub-tree.
 
 ## The two independent axes
 
@@ -200,9 +254,10 @@ Key differences from Case A:
   engine's runner + db-service go unused; the task's compose owns them via
   `:local` alias references.
 - **Every trial sees the same substrate.** State persists across trials.
-  Task authors opt into this by setting `environment_manifest.isolation:
-  shared_ok`; the isolation guard refuses shared+manifest for
-  `isolation: per_trial` declarations.
+  Task authors opt into this by labelling every service
+  `services.<name>.isolation: shared` in the manifest; any `reset` or
+  `ephemeral` label routes the run onto `PerTrialRuntimeBackend` via
+  task-driven selection.
 
 ### Case C — `per_trial` + task-declared stack (already shipped)
 
@@ -255,8 +310,8 @@ flowchart TB
   Q2{Do trials mutate<br/>state that the grader<br/>reads at trial end?}
   Q3{Is the task<br/>state-mutation<br/>trial-scoped?}
   A[Case A<br/>shared + built-in<br/>no env_manifest]
-  B[Case B<br/>shared + env_manifest<br/>isolation: shared_ok]
-  C[Case C<br/>per_trial + env_manifest<br/>isolation: per_trial]
+  B[Case B<br/>shared + env_manifest<br/>every service isolation: shared]
+  C[Case C<br/>per_trial + env_manifest<br/>at least one reset / ephemeral service]
 
   START --> Q1
   Q1 -- No --> A
@@ -279,10 +334,12 @@ flowchart TB
 - **Prefer Case B over Case C when possible.** Case B pays compose-up cost
   once per run; Case C pays it every trial. Case C is only worth its
   overhead when trials genuinely need fresh state that the grader reads.
-- **`isolation: per_trial` is a task-author declaration, not an operator
-  choice.** The task's declaration determines the case; the operator picks
-  the runtime backend and the isolation guard refuses incompatible
-  combinations (shared runtime + per_trial-declared task → fail loud).
+- **Isolation is a task-author declaration, not an operator choice.**
+  The manifest's per-service isolation map determines the case; backend
+  selection is task-driven from that map. The deprecated
+  `orchestrator.runtime` override still wins if set, and the isolation-
+  compatibility guard refuses incompatible overrides (shared runtime
+  forced against a per-trial-requiring task set → fail loud).
 
 ## Consequences
 
@@ -303,9 +360,9 @@ flowchart TB
 ### Negative / Trade-offs
 
 - **Case B ties every trial to the same substrate.** State contamination
-  is the task author's problem to prevent, same as Case A. The
-  `isolation: shared_ok` declaration is a task-author acknowledgment of
-  that responsibility.
+  is the task author's problem to prevent, same as Case A. Labelling
+  every service `isolation: shared` in the manifest is a task-author
+  acknowledgment of that responsibility.
 - **A run whose tasks declare different `environment_manifest.compose_file`
   values cannot be materialised into one shared substrate.** The
   orchestrator's `_extract_run_env_manifest()` helper fails loud at run

@@ -54,9 +54,11 @@ examples/native/multi_service/
 
 ## Design notes
 
-- **`isolation: shared_ok`** — the task tolerates state sharing across
-  trials. Its grading only inspects the agent's output (a written file);
-  the app-service is read-only static content that doesn't mutate.
+- **Every service labelled `isolation: shared`** — the task tolerates
+  state sharing across trials. Its grading only inspects the agent's
+  output (a written file); the app-service is read-only static content
+  that doesn't mutate. A single non-`shared` label would route the run
+  onto `PerTrialRuntimeBackend`.
 - **`app-service` is deliberately trivial** — nginx serving a static JSON
   file. The point of the example is to demonstrate the multi-service
   materialisation path, not to be a realistic application. Real task

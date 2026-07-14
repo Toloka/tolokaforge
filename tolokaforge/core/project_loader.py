@@ -45,6 +45,7 @@ from tolokaforge.core.models import (
     ProjectConfig,
     TaskDefaults,
 )
+from tolokaforge.runtime.isolation import resolve_service_specs
 
 logger = logging.getLogger(__name__)
 
@@ -554,10 +555,18 @@ _POLICY_REQUEST_FIELDS = ("network_policy", "security_context_defaults")
 that are substrate-neutral (they describe the trial regardless of
 substrate)."""
 
-_SERVICE_TREATMENT_FIELDS = ("initial_state", "isolation")
-"""Fields that are scoped to the reviewed stack — discarded on atomic
-``stack`` replacement (the project's opt-outs reviewed the project's
-services, not the replacement stack)."""
+_SERVICE_TREATMENT_FIELDS = ("initial_state",)
+"""Fields scoped to the reviewed stack — discarded on atomic
+``stack`` replacement (the project's per-service opt-outs reviewed the
+project's services, not the replacement stack).
+
+``services`` is treated the same way (dropped on atomic replacement)
+but its merge is not a straight deep-merge — it lives on the manifest's
+per-service isolation surface where a task override must atomically
+replace the project's :class:`ServiceSpec` for the same service so a
+stale ``reset`` sibling can't leak through. See
+:func:`_fill_missing_service_defaults` and
+:func:`tolokaforge.runtime.isolation.resolve_service_specs`."""
 
 
 def resolve(
@@ -582,12 +591,17 @@ def resolve(
       clean slate of ``inputs`` and ``runner_service`` (a foreign
       compose file's ``${var}`` slots must never silently capture
       inherited values).
-    - Service-treatment fields (``initial_state``, root ``isolation``)
-      are discarded — the project's opt-outs reviewed the project's
-      services, not the replacement stack.
+    - Service-treatment fields (``initial_state``, ``services``) are
+      discarded — the project's per-service opt-outs reviewed the
+      project's services, not the replacement stack.
     - Policy-request fields (``network_policy``,
       ``security_context_defaults``) survive — substrate-neutral, they
       describe the trial regardless of substrate.
+
+    After manifest construction, every compose service missing from the
+    merged ``services`` map is filled with an ``ephemeral`` default via
+    :func:`tolokaforge.runtime.isolation.resolve_service_specs` so
+    downstream consumers see the complete map.
 
     Anchoring: ``stack.compose_file`` paths must already be absolute
     when this runs. The project loader and the task loader anchor them
@@ -625,7 +639,42 @@ def resolve(
             continue
         manifest_kwargs[field] = value
 
-    return EnvironmentManifest(**manifest_kwargs)
+    manifest = EnvironmentManifest(**manifest_kwargs)
+    _fill_missing_service_defaults(manifest, project_env, task_env)
+    return manifest
+
+
+def _fill_missing_service_defaults(
+    manifest: EnvironmentManifest,
+    project_env: EnvironmentPatch | None,
+    task_env: EnvironmentPatch | None,
+) -> None:
+    """Populate ``manifest.services`` with the merged
+    ``{service_name: ServiceSpec}`` map for every compose service
+    declared in the manifest's compose file.
+
+    On atomic-stack replacement (task supplies its own
+    ``stack.compose_file``) the project's ``services`` map is dropped —
+    the project's per-service opt-outs reviewed the project's services,
+    not the replacement stack. Task-side entries and the ``ephemeral``
+    fallback fill the map.
+    """
+    compose_services = manifest.load_compose().get("services") or {}
+    project_for_defaults = project_env
+    if _is_atomic_stack_replacement(task_env):
+        project_for_defaults = None
+    manifest.services.clear()
+    manifest.services.update(
+        resolve_service_specs(project_for_defaults, task_env, compose_services.keys())
+    )
+
+
+def _is_atomic_stack_replacement(task_env: EnvironmentPatch | None) -> bool:
+    return (
+        task_env is not None
+        and task_env.stack is not None
+        and task_env.stack.compose_file is not None
+    )
 
 
 def _dump_patch(patch: EnvironmentPatch | None) -> dict[str, Any]:

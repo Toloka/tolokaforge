@@ -17,9 +17,11 @@ from tolokaforge.runner.models import (
     InitialStateKind,
     InitialStateRef,
     NetworkPolicy,
+    ResetSpec,
     SecurityContext,
+    ServiceIsolation,
+    ServiceSpec,
     TaskDescription,
-    TaskIsolation,
 )
 
 DEFAULT_TOOL_TIMEOUT_S = 30.0
@@ -154,8 +156,10 @@ __all__ = [
     "InitialStateKind",
     "InitialStateRef",
     "NetworkPolicy",
+    "ResetSpec",
     "SecurityContext",
-    "TaskIsolation",
+    "ServiceIsolation",
+    "ServiceSpec",
     "TrialResult",
     "TrialSpec",
 ]

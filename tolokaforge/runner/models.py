@@ -613,28 +613,60 @@ class NetworkPolicy(str, Enum):
     """Unrestricted egress. Still no cross-trial reachability."""
 
 
-class TaskIsolation(str, Enum):
-    """Isolation requirement the task declares to the runtime backend.
+ServiceIsolation = Literal["shared", "reset", "ephemeral"]
+"""Per-service isolation vocabulary.
 
-    A task that mutates state (writes DB rows, applies fixtures, modifies
-    per-trial files) needs a fresh environment per trial to grade
-    correctly. Running such a task on a shared-stack backend produces
-    silent cross-trial contamination — the manifest's declaration lets
-    the orchestrator refuse an incompatible backend before any trial
-    runs.
+* ``shared`` — service persists across trials (state carries over).
+* ``reset`` — service is reset between trials via a seed-backed recipe
+  named by :attr:`ServiceSpec.reset`.
+* ``ephemeral`` — service is torn down and recreated between trials.
+"""
+
+
+class ResetSpec(BaseModel):
+    """Seed pointer for a service labelled ``reset``. Names the entry in
+    the project's ``assets.seeds`` map whose recipe restores the service
+    to a known baseline between trials."""
+
+    seed: str
+    """Name of the seed entry in the project's ``assets.seeds`` map."""
+
+    model_config = {"extra": "forbid"}
+
+
+class ServiceSpec(BaseModel):
+    """Per-service manifest entry — the harness's declaration of how a
+    compose service is treated between trials.
+
+    ``reset`` is required when ``isolation == "reset"`` and forbidden
+    otherwise; :meth:`_check_reset_agrees_with_isolation` enforces the
+    invariant so a stale ``reset`` sibling from a deep merge fails loud
+    at load.
     """
 
-    PER_TRIAL = "per_trial"
-    """Task requires a fresh environment per trial. The orchestrator
-    refuses to run the task on ``SharedStackRuntimeBackend``. Safe
-    default — any task that has a manifest almost certainly wants this
-    (it is why the task declared a manifest in the first place)."""
+    isolation: ServiceIsolation
+    """Per-service isolation label — see :data:`ServiceIsolation`."""
 
-    SHARED_OK = "shared_ok"
-    """Task tolerates running against a stack shared with other trials.
-    Opt-out for stateless tasks that would otherwise pay the per-trial
-    cold-start cost unnecessarily. The orchestrator accepts either
-    backend for these tasks."""
+    reset: ResetSpec | None = None
+    """Reset recipe pointer. Required for ``isolation="reset"``, forbidden
+    for the other labels."""
+
+    model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def _check_reset_agrees_with_isolation(self) -> ServiceSpec:
+        if self.isolation == "reset" and self.reset is None:
+            raise ValueError(
+                "ServiceSpec: isolation='reset' requires a 'reset.seed' pointer; "
+                "declare `reset: {seed: <name>}` or change isolation."
+            )
+        if self.isolation != "reset" and self.reset is not None:
+            raise ValueError(
+                f"ServiceSpec: isolation={self.isolation!r} cannot carry a 'reset' "
+                "recipe. Either change isolation to 'reset' or drop the 'reset' "
+                "sibling (e.g. `reset: null` on the overriding side)."
+            )
+        return self
 
 
 def _compose_services(content: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -836,6 +868,19 @@ def _check_initial_state_keys(
             )
 
 
+def _check_services_keys(
+    compose_services: dict[str, dict[str, Any]],
+    manifest_services: dict[str, ServiceSpec],
+) -> None:
+    for key in manifest_services:
+        if key not in compose_services:
+            raise ValueError(
+                f"EnvironmentManifest.services has entry {key!r} that does not "
+                f"match any declared compose service; compose declares "
+                f"{sorted(compose_services)!r}."
+            )
+
+
 class StackPatch(BaseModel):
     """Substrate slot inside an :class:`EnvironmentPatch`.
 
@@ -900,11 +945,12 @@ class EnvironmentPatch(BaseModel):
     Survives atomic ``stack`` replacement (policy request,
     substrate-neutral)."""
 
-    isolation: TaskIsolation | None = None
-    """Isolation requirement. Discarded on atomic ``stack`` replacement
-    (the project's opt-out reviewed the project's services, not the
-    replacement stack — a task-local stack declares its own
-    ``shared_ok`` explicitly if it wants it)."""
+    services: dict[str, ServiceSpec] | None = None
+    """Per-service isolation + reset declarations, keyed by compose
+    service name. Discarded on atomic ``stack`` replacement — the
+    project's per-service opt-outs reviewed the project's services,
+    not the replacement stack. Deep-merges over the project side
+    entry-by-entry on non-replacement paths."""
 
     @model_validator(mode="before")
     @classmethod
@@ -974,13 +1020,29 @@ class EnvironmentManifest(BaseModel):
     """Applied by the provisioner to every service that does not override
     the equivalent settings in the compose file."""
 
-    isolation: TaskIsolation = TaskIsolation.PER_TRIAL
-    """Isolation requirement. Defaults to per-trial — the orchestrator
-    refuses to run a per-trial task on ``SharedStackRuntimeBackend``.
-    Set to ``shared_ok`` to opt out for stateless tasks that tolerate
-    a shared stack."""
+    services: dict[str, ServiceSpec] = Field(default_factory=dict)
+    """Per-service isolation + reset declarations, keyed by compose
+    service name. Populated by :func:`tolokaforge.core.project_loader.resolve`
+    which merges the project-side and task-side patches and then fills
+    any compose service missing from the merged map with an
+    ``ephemeral`` default. Consumed by :attr:`requires_per_trial` (for
+    backend selection) and by the runtime backends (for between-trial
+    reset dispatch)."""
 
     model_config = {"extra": "forbid"}
+
+    @property
+    def requires_per_trial(self) -> bool:
+        """True iff at least one service is labelled ``reset`` or
+        ``ephemeral``, or the manifest declares no services at all.
+
+        Read by :meth:`Orchestrator._select_backend_from_tasks` to pick
+        :class:`PerTrialRuntimeBackend` for any run whose tasks need
+        per-trial substrate materialisation.
+        """
+        if not self.services:
+            return True
+        return any(spec.isolation != "shared" for spec in self.services.values())
 
     _compose_content: dict[str, Any] = PrivateAttr(default_factory=dict)
     """Parsed compose file contents cached at construction time. Populated
@@ -1009,6 +1071,7 @@ class EnvironmentManifest(BaseModel):
         _check_depends_on_resolves(services)
         _check_runner_service_declared(services, self.runner_service)
         _check_initial_state_keys(services, self.initial_state)
+        _check_services_keys(services, self.services)
         self._compose_content = content
         return self
 

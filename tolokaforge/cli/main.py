@@ -63,8 +63,7 @@ def _print_runtime_banner(*, console: Console, runtime_choice: str, source: str)
     }.get(runtime_choice, runtime_choice)
     isolation_line = {
         "shared": (
-            "one docker-compose stack shared across every trial (fastest, "
-            "no cross-trial isolation)"
+            "one docker-compose stack shared across every trial (fastest, no cross-trial isolation)"
         ),
         "per_trial": (
             "one docker-compose stack per trial via Testcontainers "
@@ -186,11 +185,11 @@ def _activate_presets_overlay(
     type=click.Choice(["shared", "per_trial"]),
     default=None,
     help=(
-        "Runtime backend. Overrides orchestrator.runtime in the run config. "
-        "'shared' (default) uses one docker-compose stack across every trial; "
-        "'per_trial' materialises an isolated stack per trial via Testcontainers "
-        "(required by tasks whose environment_manifest declares "
-        "isolation: per_trial). See docs/architecture/RUNTIME_BACKENDS.md."
+        "Deprecated operator override — backend selection is task-driven "
+        "from `default_environment.services.<name>.isolation`. `shared` "
+        "forces `SharedStackRuntimeBackend`; `per_trial` forces "
+        "`PerTrialRuntimeBackend`. Emits a DeprecationWarning; retired in "
+        "a future release. See docs/architecture/RUNTIME_BACKENDS.md."
     ),
 )
 @click.option(

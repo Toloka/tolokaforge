@@ -519,10 +519,9 @@ def test_int_valued_aggregate_fields_preserve_int_type() -> None:
         "latency_p50_s_macro",
     ):
         value = getattr(model, field)
-        assert isinstance(value, int) and not isinstance(value, bool), (
-            f"AggregateMetrics.{field}: int input coerced to {type(value).__name__}. "
-            f"Got {value!r}."
-        )
+        assert isinstance(value, int) and not isinstance(
+            value, bool
+        ), f"AggregateMetrics.{field}: int input coerced to {type(value).__name__}. Got {value!r}."
 
     # And rate fields DID stay narrow float — a regression that widens them
     # would be caught by mypy at consumer sites, but a runtime guard here

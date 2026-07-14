@@ -203,12 +203,12 @@ def test_live_eval_records_overlay_preset_in_trial_output(
     trial_yaml = yaml.safe_load(trial_yamls[0].read_text())
     agent_block = trial_yaml.get("model_config", {}).get("agent", {})
     resolved = agent_block.get("resolved", {})
-    assert resolved, (
-        f"trial {trial_yamls[0]} missing model_config.agent.resolved; " f"got: {agent_block}"
-    )
-    assert resolved.get("effective_preset") == _OVERLAY_PRESET_NAME, (
-        f"expected overlay preset {_OVERLAY_PRESET_NAME!r} in resolved block, " f"got {resolved!r}"
-    )
+    assert (
+        resolved
+    ), f"trial {trial_yamls[0]} missing model_config.agent.resolved; got: {agent_block}"
+    assert (
+        resolved.get("effective_preset") == _OVERLAY_PRESET_NAME
+    ), f"expected overlay preset {_OVERLAY_PRESET_NAME!r} in resolved block, got {resolved!r}"
     # Policy slots set by the overlay must be reflected too — proves the
     # overlay's content reached capability resolution, not just the name tag.
     assert resolved.get("content_policy") == "anthropic"

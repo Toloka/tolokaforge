@@ -56,8 +56,9 @@ examples/native/multi_service_advanced/
 
 ## Design notes
 
-- **`isolation: shared_ok`** — the task's grading only inspects the agent's
-  written output; both APIs are read-only static content.
+- **Every service labelled `isolation: shared`** — the task's grading
+  only inspects the agent's written output; both APIs are read-only
+  static content.
 - **Both APIs use pinned nginx tags (`1.27-alpine`)** so runs are
   reproducible; the manifest validator rejects floating tags.
 

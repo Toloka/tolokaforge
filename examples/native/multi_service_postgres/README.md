@@ -88,11 +88,12 @@ examples/native/multi_service_postgres/
   independent of `app-db` (the task's own postgres). This example
   demonstrates that a task's application backend can be a completely
   different technology from the engine's own state backend.
-- **`isolation: shared_ok`.** The task's grading inspects the agent's
-  written output only; the read-only API doesn't mutate state across
-  trials. If the task wrote through PostgREST (which permissions would
-  need to allow), `per_trial` isolation would be appropriate to avoid
-  cross-trial contamination.
+- **Every service labelled `isolation: shared`.** The task's grading
+  inspects the agent's written output only; the read-only API doesn't
+  mutate state across trials. If the task wrote through PostgREST
+  (which permissions would need to allow), labelling any mutating
+  service `reset` or `ephemeral` would route the run onto
+  `PerTrialRuntimeBackend` to avoid cross-trial contamination.
 - **Both API endpoints use pinned tags.** `postgrest/postgrest:v12.2.0`
   and `postgres:16` are pinned per the manifest validator's
   non-floating-tag rule.

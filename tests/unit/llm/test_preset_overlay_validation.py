@@ -185,9 +185,9 @@ class TestValidatorRegistrySync:
         }
         discovered = set(_discover_policy_registries().keys())
         missing = baseline_names - discovered
-        assert not missing, (
-            f"baseline registries missing from the presets module: " f"{sorted(missing)}"
-        )
+        assert (
+            not missing
+        ), f"baseline registries missing from the presets module: {sorted(missing)}"
 
     def test_policy_registries_keys_match_slot_names(self) -> None:
         # The string keys in _POLICY_REGISTRIES are the YAML slot names

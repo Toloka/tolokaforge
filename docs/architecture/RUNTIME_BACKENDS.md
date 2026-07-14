@@ -48,11 +48,11 @@ graph TB
     LRB -->|"one client per trial<br/>keyed by trial_id"| T2
 ```
 
-Selection is a run-level choice with two knobs and a safety enforcement:
+Selection is **task-driven** with a deprecated operator override and a safety enforcement:
 
-- **Config**: `orchestrator.runtime: shared | per_trial` in the run config YAML. Default `shared`.
-- **CLI override**: `tolokaforge run --runtime {shared,per_trial}` overrides the config for a single invocation. The banner printed at run start names the backend and the source (`cli-flag` vs `config` vs `default`) so operators can see what actually got chosen.
-- **Task-side enforcement**: every task's `environment_manifest.isolation` declares its requirement (`per_trial` default, `shared_ok` opt-out). The orchestrator refuses to start the run if any task requires `per_trial` and the selected backend is `SharedStackRuntimeBackend` — silent cross-trial state contamination is what this guard prevents. See "Isolation enforcement" below.
+- **Task-side signal (default path)**: the orchestrator resolves the task set and reads each task's `default_environment.services.<name>.isolation` map. Any task whose manifest carries a non-`shared` label (`reset` or `ephemeral`, or an unlabelled compose service that fills to `ephemeral`) forces `PerTrialRuntimeBackend`. When every task with a manifest is fully-`shared` labelled, the selector picks `SharedStackRuntimeBackend`. A task without a manifest contributes no signal.
+- **Deprecated override**: `orchestrator.runtime: shared | per_trial` in the run config YAML (or `tolokaforge run --runtime {shared,per_trial}` on the CLI) bypasses the task-driven signal and forces the named backend. Setting it emits a `DeprecationWarning`; retirement is deferred to a later milestone. The banner printed at run start names the backend and the source (`config-override` vs `tasks`) so operators can see which path fired.
+- **Task-side enforcement**: the orchestrator refuses to start the run if the deprecated override forces `SharedStackRuntimeBackend` against a task set that requires per-trial materialisation — silent cross-trial state contamination is what this guard prevents. It also refuses `ephemeral`-labelled services on a shared backend (they require a compose-down between trials). See "Isolation enforcement" below.
 
 Legacy `orchestrator.runtime: docker` is accepted as a deprecated alias for `shared` with a `DeprecationWarning` at config load.
 
@@ -264,27 +264,31 @@ A second `teardown(handle)` call finds nothing in the cache, exits quickly. Fore
 
 ## Isolation enforcement
 
-Every `EnvironmentManifest` declares a `TaskIsolation` (default `per_trial`, opt-out `shared_ok`). The orchestrator reads this immediately after backend selection and refuses the run if the combination is unsafe.
+Every `EnvironmentManifest` carries a `services: dict[str, ServiceSpec]` map — one entry per compose service, each labelled `shared` / `reset` / `ephemeral`. A compose service missing from the merged map fills with `ephemeral` after resolve. `manifest.requires_per_trial` is true iff any service is non-`shared` (or the map is empty). Backend selection reads that flag; the isolation-enforcement guard runs after backend construction and only fires under the deprecated `orchestrator.runtime` override.
 
 ```mermaid
 flowchart TD
-    Start[Orchestrator.run] --> Backend[Construct RuntimeBackend<br/>per config / CLI override]
-    Backend --> Check{{"For each task in the run:<br/>manifest.isolation ?"}}
-    Check -->|None or shared_ok| OK[Compatible]
-    Check -->|per_trial + PerTrialRuntimeBackend| OK
-    Check -->|per_trial + SharedStackRuntimeBackend| Refuse["Refuse run<br/>RuntimeError names offending tasks<br/>+ two concrete fixes"]
+    Start[Orchestrator.run] --> Select{{"orchestrator.runtime<br/>override set?"}}
+    Select -->|No| Task[Task-driven selector<br/>reads manifest.requires_per_trial<br/>for every task]
+    Select -->|Yes, DeprecationWarning| Backend[Construct forced backend]
+    Task --> Backend
+    Backend --> Check{{"Backend.isolation_mode ?"}}
+    Check -->|PER_TRIAL_STACK| OK[Compatible — any task safe]
+    Check -->|SHARED_STACK| Verify{{"For each task:<br/>manifest.requires_per_trial ?<br/>any ephemeral service ?"}}
+    Verify -->|No non-shared services| OK
+    Verify -->|Yes| Refuse["Refuse run<br/>RuntimeError names offending tasks<br/>+ concrete fixes"]
     OK --> Trials[Run trials]
     Refuse --> Stop[Zero trials executed]
 ```
 
-Fail-loud fix message names both remedies:
+Fail-loud fix message names two remedies:
 
-- Switch the runtime: pass `--runtime per_trial` or set `orchestrator.runtime: per_trial` in the config.
-- Opt the task out: set `environment_manifest.isolation: shared_ok` (only appropriate for genuinely stateless tasks).
+- Drop the deprecated `orchestrator.runtime` override so backend selection is task-driven (the task-driven selector will pick `PerTrialRuntimeBackend` automatically for any task requiring per-trial materialisation).
+- Label every service `isolation: shared` on tasks that genuinely tolerate shared state across trials.
 
 Enforcement lives at the orchestrator layer, not on `SharedStackRuntimeBackend.provision()`. Refusing the run BEFORE any trial starts (rather than trial-by-trial) means the operator sees the whole failure at once instead of watching trials time out or produce garbage verdicts.
 
-`PerTrialRuntimeBackend` accepts every task — per-trial isolation is a superset of shared-stack semantics for correctness purposes. Cost of per-trial provisioning for genuinely stateless tasks is a separate concern (the loud-defaults banner surfaces the cost/benefit trade so operators can pick the right backend for their workload).
+`PerTrialRuntimeBackend` accepts every task — per-trial isolation is a superset of shared-stack semantics for correctness purposes. Cost of per-trial provisioning for genuinely stateless tasks is a separate concern (the task-driven selector routes fully-`shared` task sets onto the shared backend automatically).
 
 ## Failure modes
 
@@ -330,14 +334,14 @@ See also: [ADR-0016](adr/0016-runtime-backend-comparison.md) — resource-use, g
 
 Both satisfy the same `RuntimeBackend` Protocol. Callers depend only on the Protocol — swapping backends is a construction-time choice, not a callsite change.
 
-## Adapter compatibility with `per_trial`
+## Adapter compatibility with per-trial materialisation
 
-`--runtime per_trial` is opt-in per task, gated on `TaskConfig.environment_manifest`. An adapter opts a task into orchestrator-driven per-trial isolation by populating that field on the `TaskConfig` it produces. Tasks without a manifest belong on `SharedStackRuntimeBackend`; pointing `PerTrialRuntimeBackend` at them raises `ProvisionError("… task did not declare one")` at provision time — fail-loud by design, no silent fallback.
+Per-trial materialisation is opt-in per task, gated on `TaskConfig.environment_manifest`. An adapter opts a task into orchestrator-driven per-trial isolation by populating that field on the `TaskConfig` it produces (with at least one service labelled non-`shared`, or an implicit `ephemeral` from an unlabelled compose service). Tasks without a manifest belong on `SharedStackRuntimeBackend`; pointing `PerTrialRuntimeBackend` at them raises `ProvisionError("… task did not declare one")` at provision time — fail-loud by design, no silent fallback.
 
-| Adapter | Populates `environment_manifest` | Compatible with `--runtime per_trial` |
+| Adapter | Populates `environment_manifest` | Compatible with `PerTrialRuntimeBackend` |
 |---|---|---|
 | `native` | Yes — reads it from the task's `task.yaml` when declared. | Yes. Tested end-to-end with `coding_public_example_01`. |
-| `terminal_bench` | No — the adapter synthesises `TaskConfig` from `TerminalBenchTask` metadata and leaves `environment_manifest = None` by design. | No. Terminal-bench tasks run only under `--runtime shared` today. |
+| `terminal_bench` | No — the adapter synthesises `TaskConfig` from `TerminalBenchTask` metadata and leaves `environment_manifest = None` by design. | No. Terminal-bench tasks run only on `SharedStackRuntimeBackend` today. |
 
 **Why terminal-bench sits outside `PerTrialRuntimeBackend`.** Each terminal-bench task already ships its own `docker-compose.yaml`, which the adapter materialises through the `DOCKER_COMPOSE_EXEC` tool style (see `adapter_settings.compose_file` in the produced `TaskDescription`). That gives terminal-bench tasks *adapter-owned* per-task isolation — a fresh container per task, orchestrated inside the tool-invocation path — but it lives one level below the runtime backend seam. From the orchestrator's perspective, terminal-bench tasks look like shared-stack workloads: the engine services (`runner`, `db-service`) come up once for the run, and the adapter handles each task's own container itself.
 

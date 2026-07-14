@@ -683,9 +683,10 @@ class SharedStackRuntimeBackend:
     """
 
     isolation_mode: IsolationMode = IsolationMode.SHARED_STACK
-    """Every trial in the run talks to the same runner container. Read by
-    the orchestrator's compatibility check to refuse runs whose tasks
-    declare ``environment_manifest.isolation: per_trial``."""
+    """Every trial in the run talks to the same runner container. Read
+    by the orchestrator's compatibility check to refuse runs whose tasks
+    require per-trial materialisation (any service labelled ``reset``
+    or ``ephemeral`` in the manifest)."""
 
     def __init__(
         self,

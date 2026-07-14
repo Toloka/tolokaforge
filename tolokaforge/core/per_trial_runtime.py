@@ -98,8 +98,9 @@ class PerTrialRuntimeBackend:
 
     isolation_mode: IsolationMode = IsolationMode.PER_TRIAL_STACK
     """Every trial gets its own compose project. Advertised to the
-    orchestrator's compatibility check so tasks that declare
-    ``environment_manifest.isolation: per_trial`` are satisfied."""
+    orchestrator's compatibility check so tasks whose manifest carries
+    any non-``shared`` service label (``reset`` / ``ephemeral``) are
+    satisfied."""
 
     connect_timeout: float = 30.0
     """Seconds to wait for a per-trial runner's gRPC server to become

@@ -13,9 +13,15 @@ from pathlib import Path
 
 import pytest
 
-from tolokaforge.core.models import EnvironmentManifest, EnvironmentPatch, StackPatch
+from tolokaforge.core.models import (
+    EnvironmentManifest,
+    EnvironmentPatch,
+    ResetSpec,
+    ServiceSpec,
+    StackPatch,
+)
 from tolokaforge.core.project_loader import resolve
-from tolokaforge.runner.models import NetworkPolicy, SecurityContext, TaskIsolation
+from tolokaforge.runner.models import NetworkPolicy, SecurityContext
 
 pytestmark = pytest.mark.unit
 
@@ -45,7 +51,7 @@ class TestEnvironmentPatchNoIO:
         assert patch.initial_state is None
         assert patch.network_policy is None
         assert patch.security_context_defaults is None
-        assert patch.isolation is None
+        assert patch.services is None
 
     def test_stack_patch_all_fields_optional(self) -> None:
         stack = StackPatch()
@@ -209,15 +215,17 @@ class TestAtomicStackReplacement:
         # not the project's declaration.
         assert manifest.runner_service == "default"
 
-    def test_replacement_discards_project_isolation(self) -> None:
+    def test_replacement_discards_project_services(self) -> None:
         project = EnvironmentPatch(
             stack=StackPatch(compose_file=ENV_FIXTURE),
-            isolation=TaskIsolation.SHARED_OK,
+            services={"default": ServiceSpec(isolation="shared")},
         )
         task = EnvironmentPatch(stack=StackPatch(compose_file=ENV_FIXTURE))
         manifest = resolve(project, task)
         assert manifest is not None
-        assert manifest.isolation == TaskIsolation.PER_TRIAL
+        # After replacement the project's services map is dropped; resolve()
+        # then fills the compose service with the ephemeral default.
+        assert manifest.services["default"].isolation == "ephemeral"
 
     def test_replacement_discards_project_initial_state(self) -> None:
         from tolokaforge.runner.models import InitialStateRef
@@ -261,6 +269,158 @@ class TestAtomicStackReplacement:
 class TestResolveWithoutComposeFileFailsLoud:
     def test_neither_side_declares_compose_file(self) -> None:
         project = EnvironmentPatch(network_policy=NetworkPolicy.NO_INTERNET)
-        task = EnvironmentPatch(isolation=TaskIsolation.PER_TRIAL)
+        task = EnvironmentPatch(services={"default": ServiceSpec(isolation="shared")})
         with pytest.raises(ValueError, match="no compose_file"):
             resolve(project, task)
+
+
+class TestServicesMergeAndDefaults:
+    """The per-service map merges deep-by-name (task wins per service);
+    every compose service missing from both sides fills with the
+    ``ephemeral`` default after resolve()."""
+
+    def test_task_service_entry_overrides_project(self) -> None:
+        project = EnvironmentPatch(
+            stack=StackPatch(compose_file=ENV_FIXTURE),
+            services={"default": ServiceSpec(isolation="shared")},
+        )
+        task = EnvironmentPatch(
+            services={
+                "default": ServiceSpec(isolation="reset", reset=ResetSpec(seed="baseline")),
+            },
+        )
+        manifest = resolve(project, task)
+        assert manifest is not None
+        assert manifest.services["default"].isolation == "reset"
+        assert manifest.services["default"].reset is not None
+        assert manifest.services["default"].reset.seed == "baseline"
+
+    def test_task_service_override_drops_project_reset_sibling(self) -> None:
+        """When project labels a service ``reset`` with a seed and task
+        re-labels the same service ``shared``, the project's ``reset``
+        sibling must not leak through (would fail ServiceSpec's
+        cross-field validator)."""
+        project = EnvironmentPatch(
+            stack=StackPatch(compose_file=ENV_FIXTURE),
+            services={
+                "default": ServiceSpec(isolation="reset", reset=ResetSpec(seed="baseline")),
+            },
+        )
+        task = EnvironmentPatch(
+            services={"default": ServiceSpec(isolation="shared")},
+        )
+        manifest = resolve(project, task)
+        assert manifest is not None
+        assert manifest.services["default"].isolation == "shared"
+        assert manifest.services["default"].reset is None
+
+    def test_project_service_survives_when_task_touches_a_different_service(self) -> None:
+        two_service = ENV_FIXTURE.parent / "safe_two_service.yaml"
+        project = EnvironmentPatch(
+            stack=StackPatch(compose_file=two_service, runner_service="default"),
+            services={"default": ServiceSpec(isolation="shared")},
+        )
+        task = EnvironmentPatch(
+            services={
+                "db": ServiceSpec(isolation="reset", reset=ResetSpec(seed="baseline")),
+            },
+        )
+        manifest = resolve(project, task)
+        assert manifest is not None
+        assert manifest.services["default"].isolation == "shared"
+        assert manifest.services["db"].isolation == "reset"
+
+    def test_missing_compose_service_defaults_to_ephemeral(self) -> None:
+        two_service = ENV_FIXTURE.parent / "safe_two_service.yaml"
+        project = EnvironmentPatch(
+            stack=StackPatch(compose_file=two_service, runner_service="default"),
+            services={"default": ServiceSpec(isolation="shared")},
+        )
+        manifest = resolve(project, None)
+        assert manifest is not None
+        assert manifest.services["default"].isolation == "shared"
+        assert manifest.services["db"].isolation == "ephemeral"
+
+    def test_requires_per_trial_true_when_any_service_non_shared(self) -> None:
+        two_service = ENV_FIXTURE.parent / "safe_two_service.yaml"
+        project = EnvironmentPatch(
+            stack=StackPatch(compose_file=two_service, runner_service="default"),
+            services={
+                "default": ServiceSpec(isolation="shared"),
+                "db": ServiceSpec(isolation="reset", reset=ResetSpec(seed="s")),
+            },
+        )
+        manifest = resolve(project, None)
+        assert manifest is not None
+        assert manifest.requires_per_trial is True
+
+    def test_requires_per_trial_false_when_all_services_shared(self) -> None:
+        two_service = ENV_FIXTURE.parent / "safe_two_service.yaml"
+        project = EnvironmentPatch(
+            stack=StackPatch(compose_file=two_service, runner_service="default"),
+            services={
+                "default": ServiceSpec(isolation="shared"),
+                "db": ServiceSpec(isolation="shared"),
+            },
+        )
+        manifest = resolve(project, None)
+        assert manifest is not None
+        assert manifest.requires_per_trial is False
+
+    def test_atomic_stack_replacement_task_services_survive(self) -> None:
+        """Task declares its own ``stack.compose_file`` **and** a
+        ``services`` block: the project's services are discarded (atomic
+        replacement), and the task's per-service entries survive on the
+        replaced stack."""
+        two_service = ENV_FIXTURE.parent / "safe_two_service.yaml"
+        project = EnvironmentPatch(
+            stack=StackPatch(compose_file=ENV_FIXTURE),
+            services={"default": ServiceSpec(isolation="shared")},
+        )
+        task = EnvironmentPatch(
+            stack=StackPatch(compose_file=two_service, runner_service="default"),
+            services={"db": ServiceSpec(isolation="shared")},
+        )
+        manifest = resolve(project, task)
+        assert manifest is not None
+        assert manifest.compose_file == two_service
+        # Task's services declaration survives.
+        assert manifest.services["db"].isolation == "shared"
+        # Project's "default" declaration is discarded; the compose
+        # service `default` therefore falls back to ephemeral.
+        assert manifest.services["default"].isolation == "ephemeral"
+
+
+class TestServicesSchemaStrictness:
+    """Validation invariants that guard the ``services`` schema at load
+    time — pinning these locks the loud-fail behaviour under future
+    refactors."""
+
+    def test_unknown_isolation_vocab_rejected_at_patch_construction(self) -> None:
+        with pytest.raises(Exception) as exc:
+            EnvironmentPatch.model_validate({"services": {"postgres": {"isolation": "resett"}}})
+        assert "isolation" in str(exc.value)
+
+    def test_unknown_service_name_rejected_at_manifest_construction(self) -> None:
+        # safe_one_service.yaml declares only the compose service `default`.
+        # A manifest that labels a service the compose file does not
+        # declare must fail loud with the compose-declared names in the
+        # error message.
+        with pytest.raises(Exception) as exc:
+            EnvironmentManifest(
+                compose_file=ENV_FIXTURE,
+                services={"nonexistent": ServiceSpec(isolation="shared")},
+            )
+        message = str(exc.value)
+        assert "nonexistent" in message
+        assert "default" in message
+
+    def test_reset_without_seed_rejected(self) -> None:
+        with pytest.raises(Exception) as exc:
+            ServiceSpec(isolation="reset")
+        assert "reset" in str(exc.value)
+
+    def test_shared_with_reset_sibling_rejected(self) -> None:
+        with pytest.raises(Exception) as exc:
+            ServiceSpec(isolation="shared", reset=ResetSpec(seed="baseline"))
+        assert "cannot carry" in str(exc.value)

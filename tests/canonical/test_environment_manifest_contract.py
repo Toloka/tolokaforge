@@ -19,12 +19,12 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
+from tolokaforge.core.models import ResetSpec, ServiceSpec
 from tolokaforge.core.trial import (
     EnvironmentManifest,
     InitialStateRef,
     NetworkPolicy,
     SecurityContext,
-    TaskIsolation,
 )
 from tolokaforge.runner.models import TaskDescription
 
@@ -126,43 +126,55 @@ class TestNetworkPolicyContract:
 
 
 # ---------------------------------------------------------------------------
-# TaskIsolation — per-task isolation-requirement enum
+# ServiceIsolation — per-service isolation vocabulary
 # ---------------------------------------------------------------------------
 
 
-class TestTaskIsolationContract:
-    @pytest.mark.parametrize(
-        "value",
-        [TaskIsolation.PER_TRIAL, TaskIsolation.SHARED_OK],
-    )
-    def test_member_values_are_isolation_strings(self, value: TaskIsolation) -> None:
-        assert value.value in {"per_trial", "shared_ok"}
+class TestServiceIsolationContract:
+    @pytest.mark.parametrize("value", ["shared", "reset", "ephemeral"])
+    def test_service_spec_accepts_every_label(self, value: str) -> None:
+        if value == "reset":
+            spec = ServiceSpec(isolation=value, reset=ResetSpec(seed="s"))
+        else:
+            spec = ServiceSpec(isolation=value)
+        assert spec.isolation == value
 
-    def test_string_construction(self) -> None:
-        assert TaskIsolation("per_trial") is TaskIsolation.PER_TRIAL
-        assert TaskIsolation("shared_ok") is TaskIsolation.SHARED_OK
+    def test_reset_label_requires_seed(self) -> None:
+        with pytest.raises(ValidationError, match="reset"):
+            ServiceSpec(isolation="reset")
 
-    def test_default_on_manifest_is_per_trial(self) -> None:
-        """Safety default: a manifest that does not opt out requires
-        per-trial isolation. This is the load-bearing invariant that
-        prevents silent cross-trial state contamination."""
+    def test_shared_label_rejects_seed(self) -> None:
+        with pytest.raises(ValidationError, match="cannot carry"):
+            ServiceSpec(isolation="shared", reset=ResetSpec(seed="s"))
+
+    def test_default_empty_manifest_requires_per_trial(self) -> None:
+        """Safety default: a manifest whose services map is empty is
+        treated as per-trial-requiring. Keeps the ADR-0009 invariant
+        under the new schema."""
         m = EnvironmentManifest(compose_file=_fixture("safe_one_service.yaml"))
-        assert m.isolation is TaskIsolation.PER_TRIAL
+        assert m.services == {}
+        assert m.requires_per_trial is True
 
-    def test_shared_ok_is_accepted(self) -> None:
+    def test_all_shared_services_do_not_require_per_trial(self) -> None:
         m = EnvironmentManifest(
             compose_file=_fixture("safe_one_service.yaml"),
-            isolation=TaskIsolation.SHARED_OK,
+            services={"default": ServiceSpec(isolation="shared")},
         )
-        assert m.isolation is TaskIsolation.SHARED_OK
+        assert m.requires_per_trial is False
 
-    def test_round_trip_preserves_isolation(self) -> None:
+    def test_round_trip_preserves_services(self) -> None:
         m = EnvironmentManifest(
             compose_file=_fixture("safe_two_service.yaml"),
-            isolation=TaskIsolation.SHARED_OK,
+            services={
+                "db": ServiceSpec(isolation="reset", reset=ResetSpec(seed="baseline")),
+                "default": ServiceSpec(isolation="shared"),
+            },
         )
         reloaded = EnvironmentManifest.model_validate_json(m.model_dump_json())
-        assert reloaded.isolation is TaskIsolation.SHARED_OK
+        assert reloaded.services["db"].isolation == "reset"
+        assert reloaded.services["db"].reset is not None
+        assert reloaded.services["db"].reset.seed == "baseline"
+        assert reloaded.services["default"].isolation == "shared"
 
 
 # ---------------------------------------------------------------------------
@@ -436,6 +448,10 @@ class TestManifestWireShape:
             },
             network_policy=NetworkPolicy.NO_INTERNET,
             security_context_defaults=SecurityContext(),
+            services={
+                "db": ServiceSpec(isolation="reset", reset=ResetSpec(seed="baseline")),
+                "default": ServiceSpec(isolation="shared"),
+            },
         )
         wire = m.model_dump(mode="json")
         assert set(wire) == {
@@ -445,11 +461,14 @@ class TestManifestWireShape:
             "initial_state",
             "network_policy",
             "security_context_defaults",
-            "isolation",
+            "services",
         }
         assert wire["runner_service"] == "default"
         assert wire["network_policy"] == "no_internet"
-        assert wire["isolation"] == "per_trial"
+        assert wire["services"] == {
+            "db": {"isolation": "reset", "reset": {"seed": "baseline"}},
+            "default": {"isolation": "shared", "reset": None},
+        }
         assert wire["initial_state"] == {"db": {"from_": "./fixtures/seed.sql", "kind": "sql"}}
         assert wire["security_context_defaults"] == {
             "run_as_user": None,

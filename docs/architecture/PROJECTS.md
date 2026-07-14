@@ -264,7 +264,6 @@ tasks:
 default_environment:
   stack:
     compose_file: "./shared/environment.compose.yaml"
-  isolation: "per_trial"
 
 task_defaults:
   adapter_type: "native"
@@ -729,14 +728,13 @@ default_environment:
   # Everything below is substrate-neutral — no compose-isms.
   # Two classes, though: policy REQUESTS (network_policy,
   # security_context_defaults) survive a stack replacement;
-  # service-TREATMENT fields (isolation, services) are scoped to
-  # the reviewed stack and reset with it (see Task override
+  # service-TREATMENT fields (initial_state, services) are scoped
+  # to the reviewed stack and reset with it (see Task override
   # semantics).
-  # `isolation:` is optional. Unset means services without an
-  # entry in `services:` below default to `per_trial` per
-  # ADR-0009. A task can declare `isolation: "shared_ok"` as an
-  # explicit opt-in when its services allow it — per-service
-  # entries still take precedence over this default.
+  # Backend selection is task-driven from `services.<name>.isolation`:
+  # any non-`shared` label (or any unlabelled compose service, which
+  # fills to `ephemeral`) routes the run onto PerTrialRuntimeBackend.
+  # Fully-`shared` task sets route onto SharedStackRuntimeBackend.
   services:                        # scaffolding — per-service semantics live in the
     postgres:                      # manifest, never solely in the substrate file
       isolation: "reset"
@@ -745,7 +743,7 @@ default_environment:
       isolation: "shared"
     backend-api:
       isolation: "shared"
-    # runner: no entry → ephemeral (per_trial default)
+    # runner: no entry → ephemeral
   network_policy: "no_internet"    # closed enum: no_internet | limited_internet |
                                    # full_internet; parameterisation (e.g. egress
                                    # hosts) is finalised before the first major release
@@ -872,19 +870,17 @@ Some fields replace instead of merge:
   `runner_service` (a foreign file's `${var}` slots must never
   silently capture inherited values). Replacement also resets the
   service-*treatment* fields: the project's service-keyed maps
-  (`services` entries, `initial_state`) are discarded, and the
-  root `isolation` falls back to the `per_trial` default even if
-  the project declared `shared_ok` — the project's opt-out was a
-  review of the project's services, and it must not silently
-  extend to a stack nobody reviewed under it. Policy-*request*
-  fields (`network_policy`, `security_context_defaults`) are
-  stack-independent and survive. A task-local stack declares its
-  own `services` entries (and its own `shared_ok`, explicitly) if
-  it needs them. `stack: null` and `stack: {compose_file: null}`
-  are both load errors — a task cannot unset the environment (or
-  its substrate pointer) out from under a project that declares
-  one, and there is no engine-default compose file to fall
-  through to.
+  (`services` entries, `initial_state`) are discarded — the
+  project's per-service opt-outs were a review of the project's
+  services, and they must not silently extend to a stack nobody
+  reviewed under it. The replacement stack's compose services fill
+  with the `ephemeral` default unless the task's own `services`
+  block relabels them. Policy-*request* fields (`network_policy`,
+  `security_context_defaults`) are stack-independent and survive.
+  `stack: null` and `stack: {compose_file: null}` are both load
+  errors — a task cannot unset the environment (or its substrate
+  pointer) out from under a project that declares one, and there
+  is no engine-default compose file to fall through to.
 - **`system_prompt`**: pointing at a different file (or inline
   text) replaces the project prompt entirely; no merge.
 
@@ -1285,7 +1281,6 @@ default_environment:
   stack:
     compose_file: "./shared/environment.compose.yaml"
     runner_service: "runner"
-  isolation: "per_trial"
 
 task_defaults:
   adapter_type: "native"
@@ -1438,9 +1433,9 @@ output path. `nightly.yaml` is longer because nightly differs
 more (S3 storage, OTLP tracing, more workers, more repeats), but
 even it only declares the fields that actually differ; the
 shared local-docker / sqlite-queue boilerplate from
-`run_defaults` (and the project's `per_trial` isolation stance,
-which lives in `default_environment`) doesn't appear in either
-file.
+`run_defaults` (and the project's per-service isolation stance,
+which lives in `default_environment.services`) doesn't appear in
+either file.
 
 ### Scenario C — Cross-model bake-off
 

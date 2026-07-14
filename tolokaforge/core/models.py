@@ -23,7 +23,10 @@ from tolokaforge.runner.models import CriterionResult as CriterionResult
 from tolokaforge.runner.models import EnvironmentManifest as EnvironmentManifest
 from tolokaforge.runner.models import EnvironmentPatch as EnvironmentPatch
 from tolokaforge.runner.models import LLMJudgeConfig as LLMJudgeConfig
+from tolokaforge.runner.models import ResetSpec as ResetSpec
 from tolokaforge.runner.models import Rubric as Rubric
+from tolokaforge.runner.models import ServiceIsolation as ServiceIsolation
+from tolokaforge.runner.models import ServiceSpec as ServiceSpec
 from tolokaforge.runner.models import StackPatch as StackPatch
 
 
@@ -515,26 +518,26 @@ class OrchestratorConfig(BaseModel):
     for backward compatibility; a ``DeprecationWarning`` fires when
     the field is explicitly set."""
 
-    runtime: Literal["shared", "per_trial"] = "shared"
-    """Runtime backend selection.
+    runtime: Literal["shared", "per_trial"] | None = None
+    """Deprecated operator override for runtime-backend selection.
 
-    * ``shared`` (default) — one docker-compose stack shared across every
-      trial in the run (``SharedStackRuntimeBackend``). Preserves today's
-      behaviour; fastest for stateless tasks.
-    * ``per_trial`` — one docker-compose stack per trial via Testcontainers
-      (``PerTrialRuntimeBackend``). Required by tasks whose manifest
-      declares ``isolation: per_trial``.
+    Backend selection is task-driven: the orchestrator picks
+    :class:`PerTrialRuntimeBackend` when any task's manifest requires
+    per-trial materialisation, otherwise :class:`SharedStackRuntimeBackend`.
+    Setting this field bypasses the task-driven signal and emits a
+    ``DeprecationWarning``. Retired in a future release.
 
-    Legacy value ``docker`` is accepted as an alias for ``shared`` with a
-    deprecation warning at load time; drop it from configs going forward.
+    Legacy value ``docker`` is accepted as an alias for ``shared`` with
+    the same deprecation warning; drop both from configs going forward.
     """
 
     @field_validator("runtime", mode="before")
     @classmethod
     def _accept_legacy_docker_alias(cls, value: Any) -> Any:
-        """Accept ``docker`` as a deprecated alias for ``shared`` so
-        older run configs continue to load. Emits a ``DeprecationWarning``
-        and structured-log-friendly stderr line."""
+        """Accept ``docker`` as an alias for ``shared`` and emit the
+        deprecation warning for any explicit setting."""
+        if value is None:
+            return value
         if value == "docker":
             warnings.warn(
                 "OrchestratorConfig.runtime = 'docker' is a deprecated alias "
@@ -542,7 +545,16 @@ class OrchestratorConfig(BaseModel):
                 DeprecationWarning,
                 stacklevel=2,
             )
-            return "shared"
+            value = "shared"
+        warnings.warn(
+            "OrchestratorConfig.runtime is deprecated; backend selection is "
+            "now task-driven (any task requiring per-trial isolation forces "
+            "PerTrialRuntimeBackend, otherwise SharedStackRuntimeBackend). "
+            "Drop `orchestrator.runtime` from the run config. Retired in a "
+            "future release.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return value
 
     @model_validator(mode="before")

@@ -89,9 +89,9 @@ def test_supported_effort_levels_still_emit_normally() -> None:
             seed=None,
             reasoning=ReasoningConfig(mode="adaptive", effort_hint=ok_effort),
         )
-        assert kwargs.get("reasoning_effort") == ok_effort, (
-            f"effort={ok_effort} should emit reasoning_effort={ok_effort}, " f"got {kwargs!r}"
-        )
+        assert (
+            kwargs.get("reasoning_effort") == ok_effort
+        ), f"effort={ok_effort} should emit reasoning_effort={ok_effort}, got {kwargs!r}"
 
 
 def test_empty_unsupported_set_is_default_behaviour() -> None:

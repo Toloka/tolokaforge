@@ -846,7 +846,7 @@ class ReinstallWheelProvider(WheelProvider):
         whl = _newest_whl_for_version(cache_dir, _ENGINE_PKG, ver)
         if whl is None:
             self.last_failure = (
-                f"materialize completed but no {_ENGINE_PKG}-{ver}-*.whl " f"landed in {cache_dir}"
+                f"materialize completed but no {_ENGINE_PKG}-{ver}-*.whl landed in {cache_dir}"
             )
             return None
         return WheelArtifact(
