@@ -541,6 +541,13 @@ class Orchestrator:
         """Return the shared ``environment_manifest`` declared by the run's
         tasks, or ``None`` if none of them declare one.
 
+        Each task carries an :class:`EnvironmentPatch` (input shape,
+        pre-resolve); this method calls
+        :func:`tolokaforge.core.project_loader.resolve` per task to bind
+        the project-side and task-side patches into an
+        :class:`EnvironmentManifest`, then dedupes by compose-file
+        identity.
+
         The run's tasks must be consistent: either every task in the run
         declares the same ``environment_manifest.compose_file`` or none do.
         Mixed runs (some tasks with, some without; or different compose
@@ -548,13 +555,16 @@ class Orchestrator:
         can only materialise one substrate per run, and a mixed declaration
         signals an ambiguous operator intent.
         """
+        from tolokaforge.core.project_loader import resolve
+
+        project_env = self.project.default_environment if self.project is not None else None
         manifests_by_compose: dict[str, EnvironmentManifest] = {}
         tasks_by_manifest_status: dict[bool, list[str]] = {True: [], False: []}
         for task in self.tasks:
-            manifest = task.environment_manifest
-            tasks_by_manifest_status[manifest is not None].append(task.task_id)
-            if manifest is not None:
-                manifests_by_compose[str(manifest.compose_file)] = manifest
+            resolved = resolve(project_env, task.environment_manifest)
+            tasks_by_manifest_status[resolved is not None].append(task.task_id)
+            if resolved is not None:
+                manifests_by_compose[str(resolved.compose_file)] = resolved
         if not manifests_by_compose:
             return None
         if tasks_by_manifest_status[False]:
