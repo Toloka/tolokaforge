@@ -61,10 +61,7 @@ jobs:
           # v0.x posted by default so future PR readers see the review
           # progress the same way they did before the upgrade.
           track_progress: true
-          # v1.0.173's bundled Claude Code CLI does not recognise claude-opus-4-8;
-          # it returns is_error:true immediately. Pin to claude-opus-4-7 which is
-          # in the bundled CLI at this SHA.
-          claude_args: --model claude-opus-4-7
+          claude_args: --model claude-opus-4-8
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
