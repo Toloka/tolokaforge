@@ -2,6 +2,8 @@
 # UserPromptSubmit re-injection: keeps the cbm-first rule fresh in context on
 # EVERY prompt so it can't be summarized away mid-session. Tight by design
 # (~70 tokens) since it fires every turn. Silent outside a git repo.
+set -euo pipefail
+
 toplevel=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 project="${toplevel#/}"
 project="${project//\//-}"

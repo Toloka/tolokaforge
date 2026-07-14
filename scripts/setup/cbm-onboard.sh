@@ -49,6 +49,10 @@ for arg in "$@"; do
   esac
 done
 
+# Pinned installer ref — bump deliberately after checking the upstream diff;
+# never point at `main` (would execute whatever is there at run time).
+CBM_INSTALLER_URL="https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/v0.9.0/install.sh"
+
 # ── prerequisites ───────────────────────────────────────────────────
 command -v jq >/dev/null 2>&1 || { echo "ERROR: jq is required (apt-get install jq / brew install jq)" >&2; exit 1; }
 
@@ -90,8 +94,8 @@ if command -v codebase-memory-mcp >/dev/null 2>&1; then
 elif [ "$INSTALL_BINARY" -eq 0 ]; then
   echo "  skipping per --no-binary (cbm will not work until you install it)"
 else
-  echo "  not installed. Official one-line installer:"
-  echo "    curl -fsSL https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/main/install.sh | bash"
+  echo "  not installed. Official one-line installer (pinned):"
+  echo "    curl -fsSL $CBM_INSTALLER_URL | bash"
   install_now=0
   if [ "$ASSUME_YES" -eq 1 ]; then
     install_now=1
@@ -109,7 +113,7 @@ else
     if [ "$DRY_RUN" -eq 1 ]; then
       say_dry 'curl -fsSL <installer> | bash'
     else
-      curl -fsSL https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/main/install.sh | bash
+      curl -fsSL "$CBM_INSTALLER_URL" | bash
     fi
   fi
 fi

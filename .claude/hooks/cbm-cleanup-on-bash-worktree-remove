@@ -53,5 +53,5 @@ project=$(printf '%s' "$project" | tr -s '-')
 [ -n "$project" ] || exit 0
 
 command -v codebase-memory-mcp >/dev/null 2>&1 || exit 0
-codebase-memory-mcp cli delete_project "{\"project\": \"$project\"}" >/dev/null 2>&1 || true
+codebase-memory-mcp cli delete_project --project "$project" >/dev/null 2>&1 || true
 exit 0

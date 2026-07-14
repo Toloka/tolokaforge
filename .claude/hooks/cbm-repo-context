@@ -5,7 +5,7 @@
 # call, and a question-shape decision table to defeat the failure mode
 # where the agent reads the protocol and greps anyway.
 # Silent (exit 0) outside a git repo.
-set -e
+set -euo pipefail
 
 toplevel=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 cwd="$PWD"
