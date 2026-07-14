@@ -9,6 +9,7 @@ import click
 import yaml
 from rich.console import Console
 
+from tolokaforge.cli._display import console
 from tolokaforge.core.engine_run_state import read_persisted_presets_file
 from tolokaforge.core.llm.presets import (
     resolve_overlay_path,
@@ -47,8 +48,6 @@ _secrets.export_to_environ(
     ]
 )
 
-console = Console()
-
 
 def _print_runtime_banner(*, console: Console, runtime_choice: str, source: str) -> None:
     """Print a loud banner naming the selected runtime backend and the
@@ -63,8 +62,7 @@ def _print_runtime_banner(*, console: Console, runtime_choice: str, source: str)
     }.get(runtime_choice, runtime_choice)
     isolation_line = {
         "shared": (
-            "one docker-compose stack shared across every trial (fastest, "
-            "no cross-trial isolation)"
+            "one docker-compose stack shared across every trial (fastest, no cross-trial isolation)"
         ),
         "per_trial": (
             "one docker-compose stack per trial via Testcontainers "

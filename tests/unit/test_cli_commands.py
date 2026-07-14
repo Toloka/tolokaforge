@@ -81,7 +81,7 @@ class TestValidateCommand:
         # Glob pattern matching no files → 0 valid, 0 invalid
         result = runner.invoke(cli, ["validate", "--tasks", str(tmp_path / "*.xyz")])
         assert result.exit_code == 0
-        assert "0 valid" in result.output
+        assert "0 valid" in result.stderr
 
     def test_validate_valid_task_yaml(self, runner: CliRunner, tmp_path: Path) -> None:
         """Validate a minimal valid task.yaml file."""
@@ -99,7 +99,7 @@ class TestValidateCommand:
 
         result = runner.invoke(cli, ["validate", "--tasks", str(task_file)])
         # Either valid or shows validation result
-        assert result.exit_code == 0 or "invalid" in result.output.lower()
+        assert result.exit_code == 0 or "invalid" in result.stderr.lower()
 
     def test_validate_invalid_yaml(self, runner: CliRunner, tmp_path: Path) -> None:
         """Validate a file with invalid YAML."""
@@ -107,11 +107,12 @@ class TestValidateCommand:
         task_file.write_text("not: valid: yaml: [broken")
 
         result = runner.invoke(cli, ["validate", "--tasks", str(task_file)])
-        # Should handle the error gracefully
+        # Should handle the error gracefully — Rich output routes to
+        # stderr via the shared display console.
         assert (
-            "invalid" in result.output.lower()
+            "invalid" in result.stderr.lower()
             or result.exit_code != 0
-            or "0 valid" in result.output
+            or "0 valid" in result.stderr
         )
 
 
@@ -217,7 +218,7 @@ class TestConfigCommands:
         """Validating an empty directory → no YAML files found."""
         result = runner.invoke(cli, ["config", "validate", "--config", str(tmp_path)])
         assert result.exit_code != 0
-        assert "No YAML files found" in result.output
+        assert "No YAML files found" in result.stderr
 
     def test_config_validate_invalid_yaml(self, runner: CliRunner, tmp_path: Path) -> None:
         """Config validate with invalid YAML content."""
@@ -225,10 +226,11 @@ class TestConfigCommands:
         cfg_file.write_text("[not: valid: yaml: [")
 
         result = runner.invoke(cli, ["config", "validate", "--config", str(cfg_file)])
-        # Either shows error or fails
+        # Either shows error or fails — Rich output routes to stderr
+        # via the shared display console.
         assert (
-            "parse" in result.output.lower()
-            or "error" in result.output.lower()
+            "parse" in result.stderr.lower()
+            or "error" in result.stderr.lower()
             or result.exit_code != 0
         )
 
@@ -238,7 +240,7 @@ class TestConfigCommands:
         cfg_file.write_text("- item1\n- item2\n")
 
         result = runner.invoke(cli, ["config", "validate", "--config", str(cfg_file)])
-        assert "mapping" in result.output.lower() or result.exit_code != 0
+        assert "mapping" in result.stderr.lower() or result.exit_code != 0
 
 
 # ===================================================================

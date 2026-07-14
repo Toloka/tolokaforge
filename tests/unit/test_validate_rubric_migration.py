@@ -68,9 +68,10 @@ def test_validate_rejects_legacy_rubric_str(tmp_path: Path):
 
     result = CliRunner(mix_stderr=False).invoke(cli, ["validate", "--tasks", str(task_file)])
 
-    # validate reports per-task pass/fail to stdout and exits 0; the task must be
-    # flagged invalid with the migration message naming rubric + the new shape.
-    out = result.output
+    # validate reports per-task pass/fail via the shared stderr console and
+    # exits 0; the task must be flagged invalid with the migration message
+    # naming rubric + the new shape.
+    out = result.stderr
     assert "1 valid, 0 invalid" not in out
     assert "0 valid, 1 invalid" in out
     assert "rubric is now a structured Rubric" in out
@@ -101,7 +102,7 @@ def test_validate_rejects_legacy_model_ref(tmp_path: Path):
 
     result = CliRunner(mix_stderr=False).invoke(cli, ["validate", "--tasks", str(task_file)])
 
-    out = result.output
+    out = result.stderr
     assert "0 valid, 1 invalid" in out
     assert "model_ref moved to the run config" in out
 
@@ -128,7 +129,7 @@ def test_validate_accepts_structured_rubric(tmp_path: Path):
     )
 
     result = CliRunner(mix_stderr=False).invoke(cli, ["validate", "--tasks", str(task_file)])
-    assert "1 valid, 0 invalid" in result.output
+    assert "1 valid, 0 invalid" in result.stderr
 
 
 def test_validate_grading_yaml_rejects_removed_output_schema(tmp_path: Path):

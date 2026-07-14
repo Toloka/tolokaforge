@@ -16,22 +16,8 @@ import sys
 from pathlib import Path
 
 import click
-from rich.console import Console
 
-# ``soft_wrap=True`` disables rich's terminal-width wrapping. Without
-# it, narrow CI terminals wrap paths mid-word (``missing.sql`` →
-# ``miss\ning.sql``), which breaks substring assertions in tests and
-# obscures the offending path in human-readable output. Paths and
-# digests are the primary error surface here; keeping them intact
-# matters more than fitting to terminal width.
-console = Console(soft_wrap=True)
-
-# Errors go to stderr, success messages go to stdout. Two consoles
-# keep the routing uniform without repeatedly threading ``file=``
-# through every call site — the alternative (mix of ``sys.exit`` +
-# ``ClickException``) split the surface across streams depending on
-# the failure mode.
-err_console = Console(stderr=True, soft_wrap=True)
+from tolokaforge.cli._display import console
 
 _COMMENT_LINE_PATTERN = re.compile(r"(?:^|\s)#")
 """Match ``#`` at the start of a line OR preceded by whitespace.
@@ -89,7 +75,7 @@ def stamp(project_path: Path, check_only: bool) -> None:
 
     project_yaml = _resolve_project_yaml(project_path)
     if project_yaml is None:
-        err_console.print(
+        console.print(
             f"[red]No project.yaml found at or above {project_path!s}[/red]",
         )
         sys.exit(1)
@@ -97,7 +83,7 @@ def stamp(project_path: Path, check_only: bool) -> None:
     project_dir = project_yaml.parent
     raw = yaml.safe_load(project_yaml.read_text()) or {}
     if not isinstance(raw, dict):
-        err_console.print(f"[red]{project_yaml} is not a YAML mapping[/red]")
+        console.print(f"[red]{project_yaml} is not a YAML mapping[/red]")
         sys.exit(1)
 
     seeds_container = _extract_seeds(raw)
@@ -131,11 +117,11 @@ def stamp(project_path: Path, check_only: bool) -> None:
     # files are both reported before we exit.
     if path_less_entries or missing_files:
         for name in path_less_entries:
-            err_console.print(
+            console.print(
                 f"[red]{project_yaml}: assets.seeds.{name} has no `path` field[/red]",
             )
         for name, path in missing_files:
-            err_console.print(
+            console.print(
                 f"[red]{project_yaml}: assets.seeds.{name}.path does not exist: {path}[/red]",
             )
         sys.exit(1)
@@ -187,11 +173,9 @@ def _extract_seeds(raw: dict) -> dict | None:
     ``assets`` block with no ``seeds`` key).
 
     Malformed shapes (present but not a mapping) raise
-    ``click.ClickException`` (which routes to stderr per Click's
-    contract) naming the offending key — a ``--check`` in CI must
-    not report green on a file that will blow up at load time.
-    Absent is different from present-but-broken. Matches the
-    stderr routing of every other fatal error in this module.
+    ``click.ClickException`` naming the offending key — a ``--check``
+    in CI must not report green on a file that will blow up at load
+    time. Absent is different from present-but-broken.
     """
     if "assets" not in raw:
         return None

@@ -13,9 +13,8 @@ import sys
 from pathlib import Path
 
 import click
-from rich.console import Console
 
-console = Console()
+from tolokaforge.cli._display import console
 
 
 @click.group()
