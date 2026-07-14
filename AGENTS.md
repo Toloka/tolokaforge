@@ -262,6 +262,7 @@ Recommended MCP servers for AI agents working on this project:
 - **Context7** — Library/framework documentation lookup. Use BEFORE guessing at APIs
 - **GitHub** — PR creation, issue management, code search
 - **Web Search** — Best practices, bug reports, when Context7 is insufficient
+- **codebase-memory-mcp** — Code knowledge graph (symbols, references, call chains). First call for any "where is X / who calls X / how is X wired to Y" question — `search_graph`, `trace_path`, `get_code_snippet`. Prefer over `grep -r` / `find -name`. Per-engineer opt-in: `make cbm-onboard` (see [`scripts/README.md`](scripts/README.md))
 
 ## Python Conventions
 

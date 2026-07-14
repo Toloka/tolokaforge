@@ -1,0 +1,85 @@
+#!/bin/bash
+# SessionStart hook: emit the repo's codebase-memory-mcp project key, the
+# AGENTS.md chain for the cwd, and the cbm-first protocol reminder.
+# Hardened with constraint framing, negative examples, an explicit first
+# call, and a question-shape decision table to defeat the failure mode
+# where the agent reads the protocol and greps anyway.
+# Silent (exit 0) outside a git repo.
+set -e
+
+toplevel=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+cwd="$PWD"
+relpath="${cwd#$toplevel}"
+relpath="${relpath#/}"
+[ -z "$relpath" ] && relpath="."
+
+# AGENTS.md chain (toplevel → cwd)
+chain=()
+[ -f "$toplevel/AGENTS.md" ] && chain+=("AGENTS.md")
+sub="$toplevel"
+IFS=/ read -ra parts <<< "$relpath"
+for part in "${parts[@]}"; do
+  [ "$part" = "." ] && continue
+  sub="$sub/$part"
+  rel="${sub#$toplevel/}"
+  [ -f "$sub/AGENTS.md" ] && chain+=("$rel/AGENTS.md")
+done
+
+# codebase-memory-mcp project name: matches list_projects (strip leading '/',
+# '/' → '-', and collapse runs of '-' to a single '-' — cbm's internal
+# normalization). Without `tr -s '-'`, double-dash worktree paths like
+# /…/repo--branch would emit a project key cbm has not stored under, and the
+# agent's lookups miss.
+project="${toplevel#/}"
+project="${project//\//-}"
+project=$(printf '%s' "$project" | tr -s '-')
+
+echo "Repo: $(basename "$toplevel") · codebase-memory-mcp project: ${project} · cwd: ${relpath}"
+
+if [ ${#chain[@]} -gt 0 ]; then
+  echo "Nearest AGENTS.md chain (read top-down before grepping code):"
+  for p in "${chain[@]}"; do
+    echo "  - $p"
+  done
+fi
+
+cat <<'PROTOCOL'
+
+────────────────────────────────────────
+First tool call for ANY code/symbol/reference question — load schemas BEFORE you can use them (they're deferred):
+  ToolSearch query='select:mcp__codebase-memory-mcp__search_graph,mcp__codebase-memory-mcp__search_code,mcp__codebase-memory-mcp__trace_path,mcp__codebase-memory-mcp__get_code_snippet,mcp__codebase-memory-mcp__get_architecture,mcp__codebase-memory-mcp__query_graph'
+
+Question-shape → first cbm call (always pass project from the line above):
+  "Where is X defined?"                  → search_graph(query="X")
+  "What calls/uses X?"                   → trace_path(function_name="X", direction="inbound")
+  "How is X wired to Y?"                 → search_code(pattern="X.*Y")  or  trace_path(mode="cross_service")
+  "Show me X's source"                   → search_graph(query="X") → get_code_snippet(qualified_name=...)
+  "What does this module/dir do?"        → get_architecture(aspects=["clusters","packages"])
+  "Find <literal> in .yaml/.toml/.md"    → search_code(pattern="<literal>", file_pattern="*.yaml")   ← still cbm, not raw grep
+  "Perf hot paths / O(n²) smells"        → query_graph Cypher on f.transitive_loop_depth, f.linear_scan_in_loop
+
+DO NOT (failure mode — wastes 5–10× tokens, misses transitive refs, is non-deterministic):
+  ❌ grep -r / grep -ril / rg <pattern>  over the repo to discover symbols/references/relationships
+  ❌ find . -name '<glob>'               to discover where X lives
+  ❌ ls + grep                           to map out where a concept is implemented
+
+The "grep allowed for non-code" carve-out is NARROW: only when you have a literal string AND you already know the single file to read. Repo-wide grep for "how is X connected to Y" is exactly the failure mode this protocol exists to prevent — that question is search_code/trace_path territory, even when the answer lives in .yaml or .md.
+────────────────────────────────────────
+PROTOCOL
+
+# cwd-aware first-call hint
+case "$relpath" in
+  tolokaforge*)
+    echo "For engine work: search_graph(query='<concept>') + get_architecture(aspects=['clusters','packages']) for module layout, then get_code_snippet(qualified_name) for exact source. Model-specific behaviour lives in presets and policy slots — trace_path(direction='inbound') before touching a shared contract."
+    ;;
+  tests*)
+    echo "For test work: find existing coverage first — search_graph(query='<target>') then trace_path(function_name='<target>', direction='inbound') to see what already exercises it. Extend the existing test file; don't mint a duplicate."
+    ;;
+  docs*|.agents*|.claude*)
+    echo "For docs/skills work: search_code with file_pattern='*.md' — BM25 (query='...') beats pattern when intent is fuzzy."
+    ;;
+  examples*|tools*|scripts*)
+    echo "For examples/tools/scripts work: search_code(pattern='<key>', file_pattern='*.yaml') for config references; get_architecture(aspects=['packages']) for how a tool wires into the uv workspace."
+    ;;
+esac
+exit 0

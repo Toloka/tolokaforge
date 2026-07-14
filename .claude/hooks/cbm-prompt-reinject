@@ -1,0 +1,17 @@
+#!/bin/bash
+# UserPromptSubmit re-injection: keeps the cbm-first rule fresh in context on
+# EVERY prompt so it can't be summarized away mid-session. Tight by design
+# (~70 tokens) since it fires every turn. Silent outside a git repo.
+toplevel=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+project="${toplevel#/}"
+project="${project//\//-}"
+# Match cbm's internal normalization: it stores the project key with runs of
+# `-` collapsed to a single `-` (a worktree at /…/repo--branch becomes
+# project `…-repo-branch`, not `…-repo--branch`). Without this, the project
+# string we inject into prompts won't match the indexed key for double-dash
+# worktree paths and lookups silently miss.
+project=$(printf '%s' "$project" | tr -s '-')
+cat <<MSG
+<cbm-rule project="${project}">For ANY code/symbol/reference/"how is X wired to Y" question: first call is search_graph / search_code / trace_path on this project. Do NOT grep -r / find -name / rg the repo to discover symbols, references, or relationships — even when the answer lives in .yaml, .toml, or .md.</cbm-rule>
+MSG
+exit 0
