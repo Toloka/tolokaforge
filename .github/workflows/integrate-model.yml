@@ -300,7 +300,6 @@ jobs:
 
       - name: Aggregate deterministic findings (report-only)
         run: |
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           uv run automation observe-findings observation \
             --out observation/findings.json \
             --summary-out observation/summary.md \
@@ -323,7 +322,6 @@ jobs:
           if [ -f observation/summary.md ]; then
             gh pr comment "$PR" -R "$REPO" --body-file observation/summary.md
           else
-            RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
             gh pr comment "$PR" -R "$REPO" --body \
               "Observation stage ran for \`$CANDIDATE_NAME\` but no findings summary was produced (a step failed before aggregation). Run: ${RUN_URL}"
           fi
@@ -526,8 +524,8 @@ jobs:
           uv run python -c "import tolokaforge.core.llm" || VERIFY_OK=no
           if [ "$VERIFY_OK" = "yes" ]; then
             uv run python -m pytest -q -p no:cacheprovider \
-              tests/integration/llm/test_policy_no_regression.py \
-              tests/integration/llm/test_policy_array_recovery.py || VERIFY_OK=no
+              tests/unit/llm/test_policy_no_regression.py \
+              tests/unit/llm/test_policy_array_recovery.py || VERIFY_OK=no
           fi
           git stash pop >/dev/null 2>&1 || true
           if [ "$VERIFY_OK" != "yes" ]; then
@@ -592,9 +590,9 @@ jobs:
               esac
             fi
             # One settings deep-link (the Actions variables page where
-            # ARENA_AUTOMATION_AUTO_MERGE_ENABLED lives) rendered as "configure <here>" (only the
-          # word "here" is the link) on every
-            # auto-merge outcome. Derived from env + defaulted so it is set -u safe.
+            # ARENA_AUTOMATION_AUTO_MERGE_ENABLED lives) rendered as "configure <here>" (only
+            # the word "here" is the link) on every auto-merge outcome. Derived from env +
+            # defaulted so it is set -u safe.
             SETTINGS_URL="${GITHUB_SERVER_URL:-https://github.com}/$REPO/settings/variables/actions"
             if [ "$MERGED" = "yes" ]; then
               MSG="$(printf '%s\n%s' ':white_check_mark: Integrated + auto-merged (squash): preset + cert landed on the base branch.' "Auto-merge is on - squash-merged automatically on success (configure <$SETTINGS_URL|here>).")"

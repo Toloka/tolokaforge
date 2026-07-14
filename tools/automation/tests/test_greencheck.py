@@ -9,6 +9,9 @@ NO_TARGETS (nothing to prove). The PARSE_FAIL token is ``run``'s job, not ``eval
 from __future__ import annotations
 
 import automation.greencheck as greencheck
+import pytest
+
+pytestmark = pytest.mark.unit
 
 
 def _reprobe(capability=None, variants=None):

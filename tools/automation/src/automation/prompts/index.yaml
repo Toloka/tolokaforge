@@ -45,7 +45,7 @@ placeholders:
   NAME: "candidate model slug, e.g. deepseek/deepseek-v3.2-exp"
   MODEL_ID: "candidate model_id slug, e.g. openrouter__deepseek_deepseek-v3.2-exp"
   PR: "the candidate integration PR number"
-  MAX_ITER: "max resolve fix-loop iterations (default 3)"
+  MAX_ITER: "max resolve fix-loop iterations (default 8)"
   ITER: "current resolve fix-loop iteration (1-based)"
 
 prompts:

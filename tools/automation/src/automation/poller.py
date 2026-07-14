@@ -17,10 +17,10 @@ be stored (a repo variable would need admin the bot token lacks). A single-fligh
 group on the workflow closes the within-interval race. A slug is added to the plan only AFTER
 its reply posts, so a Slack failure retries next poll instead of dispatching with no marker.
 
-Never raises: a missing token / channel / scope degrades to a logged no-op with an empty plan,
-so the poll step never fails the workflow (a notification path must never break the pipeline).
-Only stdlib + the sibling modules are used. (Marker-based dedup has one inherent property:
-deleting the bot's reply lets a request reprocess - acceptable, and it needs Slack delete perms.)
+A missing token / channel / scope degrades to a logged no-op with an empty plan (a notification
+path must never break the pipeline), but an unexpected exception - a bug - fails the run loudly
+with a GH warning annotation. (Marker-based dedup has one inherent property: deleting the bot's
+reply lets a request reprocess - acceptable, and it needs Slack delete perms.)
 """
 
 from __future__ import annotations
@@ -234,11 +234,15 @@ def cli(
     """Scan the channel for @bot integrate requests, reply with the resolution, emit a plan."""
     try:
         code = run(channel, allowed_users, out, window_hours=window_hours)
-    except Exception as exc:  # a poll must never fail the workflow
-        slack._log(f"unexpected error (ignored): {exc}")
+    except Exception as exc:
+        # Slack-transport degradations are handled (exit 0) inside run(); anything reaching
+        # here is a bug and must fail the run loudly - a green schedule that silently drops
+        # every request is worse than a red one. Still write an empty plan so a downstream
+        # step reading plan.json fails on "0 requests", not on a missing file.
+        slack._note_failure(f"poller crashed: {exc!r}")
         try:
             _write_plan(out, [])
-        except Exception:  # even the fallback write must not fail the step
+        except Exception:
             pass
-        code = 0
+        raise
     raise typer.Exit(code)

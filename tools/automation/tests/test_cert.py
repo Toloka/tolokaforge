@@ -9,6 +9,9 @@ was UNDECLARED, and ``implicit_prompt_caching`` passed 14/15 (0.93) but was mark
 from __future__ import annotations
 
 import automation.cert as cert
+import pytest
+
+pytestmark = pytest.mark.unit
 
 
 def test_probe_base_strips_prefix_and_params():

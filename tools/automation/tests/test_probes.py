@@ -7,6 +7,9 @@ and ``_run_unit`` shell out to pytest and are not unit-tested here.
 from __future__ import annotations
 
 import automation.probes as probes
+import pytest
+
+pytestmark = pytest.mark.unit
 
 
 def test_build_units_expands_node_by_rep():

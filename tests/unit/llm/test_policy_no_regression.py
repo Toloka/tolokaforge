@@ -11,7 +11,7 @@ Unlike the per-model recovery fixtures (which encode a specific quirk), this car
 knowledge: the only property is "a valid call stays valid". A policy scoped correctly (like the
 shipped MiniMax-M3 tags recovery) passes; a whole-tree fix that listifies any ``{"item": X}``
 (the round-2 auto-resolve divergence) turns the legitimate ``item`` object into a list and fails
-here - regardless of which model shipped it. Pure Python; no live model, no network.
+here - regardless of which model shipped it.
 """
 
 from __future__ import annotations
@@ -22,9 +22,10 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, ConfigDict, TypeAdapter
 
+from tests.integration.llm.registry import ALL_MODELS
 from tolokaforge.core.llm.presets import build_capabilities
 
-from .registry import ALL_MODELS
+pytestmark = pytest.mark.unit
 
 
 class _Item(BaseModel):

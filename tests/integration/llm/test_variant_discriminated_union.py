@@ -1,16 +1,18 @@
 """Structural VARIANTS of the discriminated-union capability probe (observe stage).
 
-``test_discriminated_union_tool_call_two_turns`` is a LEGACY test we do
-not own; it already parametrises the explicit-vs-bare union SHAPE over two
-turns. Rather than edit it, this parallel variant suite stresses the SAME
-``DISCRIMINATED_UNION_TOOL_CALL`` capability at different structural
-PLACEMENTS - an array of union members, a union nested inside an object,
-and a union as a dict-map value - because a model that special-cases a
-single top-level union member may still stringify or flatten it once it is
-repeated in an array or buried a level deeper.
+The SAME ``DISCRIMINATED_UNION_TOOL_CALL`` capability that
+``test_discriminated_union_tool_call_two_turns`` certifies (that test
+already parametrises the explicit-vs-bare union SHAPE over two turns),
+stressed at different structural PLACEMENTS - an array of union members,
+a union nested inside an object, and a union as a dict-map value -
+because a model that special-cases a single top-level union member may
+still stringify or flatten it once it is repeated in an array or buried a
+level deeper. A separate file (not a placement axis on the cert test)
+because variants are observe-only: gating them out of the standing cert
+suite keeps that suite cheap and its pass/fail meaning per-capability,
+not per-placement.
 
-Self-contained (its own schema + prompt + structural check per variant),
-living in the canonical package with a ``test_variant_`` filename prefix.
+Self-contained (its own schema + prompt + structural check per variant).
 Gated by the cert AND ``TF_RUN_VARIANTS`` so a normal CI run skips it; the
 auto-integration observe workflow runs it (sets the flag + injects the
 all-required candidate cert) into a separate junit dir. The ``ShapeVariant``

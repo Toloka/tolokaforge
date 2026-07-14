@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Arena model automation: observe a candidate model's tool-calling quirks, resolve a policy + certificate, and finalize the integration PR."
 requires-python = ">=3.10"
 dependencies = [
+    "tolokaforge",
     "typer>=0.12.5,<0.13",
     "click>=8.0.0,<8.2.0",
     "rich>=13.0.0",

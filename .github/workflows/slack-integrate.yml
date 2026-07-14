@@ -91,9 +91,10 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # Bootstrap one model: open a seeded draft PR (the seed guarantees a diff so an
-          # already-present model can still open a PR) then dispatch the engine on it. Any
-          # failure logs a warning and returns non-zero so the caller continues to the next model.
+          # Bootstrap one model: open a draft PR on an empty seed commit (a PR needs >=1 commit
+          # ahead of base, not a file diff, so no artifact is committed; the request metadata
+          # lives in the commit message + PR body) then dispatch the engine on it. Any failure
+          # logs a warning and returns non-zero so the caller continues to the next model.
           bootstrap () {
             SLUG="$1"; REQUESTER="$2"; TS="$3"
             # EXACT open-PR check (grep -Fx, not the fuzzy `--search in:title`): the fuzzy form
@@ -107,11 +108,9 @@ jobs:
             SAFE="$(printf '%s' "$SLUG" | tr '/ ' '--' | tr -cd 'A-Za-z0-9._-')"
             BRANCH="automation/slack-integrate/${SAFE}-${RUN_ID}"
             git checkout -B "$BRANCH" "origin/${BASE_REF}" || return 1
-            mkdir -p .automation/requests
-            printf '{\n  "slug": "%s",\n  "requested_by": "%s",\n  "slack_message_ts": "%s",\n  "source": "slack"\n}\n' \
-              "$SLUG" "$REQUESTER" "$TS" > ".automation/requests/${SAFE}.json"
-            git add ".automation/requests/${SAFE}.json"
-            git commit -q -m "chore(automation): seed Slack-requested integration of ${SLUG}" || return 1
+            git commit -q --allow-empty \
+              -m "chore(automation): seed Slack-requested integration of ${SLUG}" \
+              -m "requested_by: ${REQUESTER}" -m "slack_message_ts: ${TS}" -m "source: slack" || return 1
             git push -q -u origin "$BRANCH" || return 1
             PR_URL="$(gh pr create -R "$REPO" --draft --base "$BASE_REF" --head "$BRANCH" \
               --title "integrate: ${SLUG}" \

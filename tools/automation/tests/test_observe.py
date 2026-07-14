@@ -8,6 +8,9 @@ I/O wrapper are exercised end-to-end by the pipeline, not here.
 from __future__ import annotations
 
 import automation.observe as observe
+import pytest
+
+pytestmark = pytest.mark.unit
 
 _REP1 = """<?xml version="1.0"?>
 <testsuite>

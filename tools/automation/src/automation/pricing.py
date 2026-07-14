@@ -1,8 +1,7 @@
 """Ensure the candidate model has a pricing.json entry (best-effort, minimal diff).
 
 Runs BEFORE observe so ``COST_USD_POPULATED`` can find a price for a model litellm
-may not know natively (the pricing.json fallback). Self-contained (stdlib only) so
-it runs with the system python before uv-sync friction, like the Slack notifier.
+may not know natively (the pricing.json fallback).
 
 Modes:
   (default)  If the candidate's litellm name is missing from pricing.json ``models``,

@@ -130,9 +130,9 @@ request, resolves each free-text model phrase to an OpenRouter slug DETERMINISTI
 (`automation resolve-models` / `model_resolver`, no LLM guessing - strict version discipline, so
 "Grok 4.5" never resolves to `grok-4` or `grok-4.3`), then:
 
-- **resolved** (exactly one slug) -> opens a draft `integrate: <slug>` PR (a seed commit under
-  `.automation/requests/` guarantees a diff) and dispatches `integrate-model.yml` on it via
-  `workflow_dispatch`, then replies in-thread with the PR link;
+- **resolved** (exactly one slug) -> opens a draft `integrate: <slug>` PR (on an empty seed
+  commit carrying the request metadata - no artifact is committed) and dispatches
+  `integrate-model.yml` on it via `workflow_dispatch`, then replies in-thread with the PR link;
 - **ambiguous** (several slugs match) -> replies in-thread with the exact slugs to choose from;
 - **unknown** (no catalog match) -> replies that it could not find the model.
 
@@ -227,16 +227,16 @@ sub-agent); the resolve prompts drive the fix loop. `index.yaml` is the machine-
   `cost_usd_populated`) is `known_unsupported` (a laundered pricing gap). Runs in the finalize gate
   before the stash.
 - `automation slack` - Slack thread notifier (`ensure-root` / `reply` / `post-thread`
-  subcommands); stdlib-only (runs under the system `python3` before `uv sync`), dry-run no-op
-  without a token. See "Slack notifications" above. `post-thread` posts a plain threaded reply
-  under an arbitrary message ts (the poller's per-request confirmation, with the PR link).
+  subcommands); dry-run no-op without a token. See "Slack notifications" above. `post-thread`
+  posts a plain threaded reply under an arbitrary message ts (the poller's per-request
+  confirmation, with the PR link).
 - `automation slack-poll` / `resolve-models` - the Slack-triggered poller: `model_resolver`
   resolves free-text model phrases to OpenRouter slugs (deterministic, version-strict), and
   `slack-poll` scans the channel (last `--window-hours`), replies per request, and emits the
   integration plan that `slack-integrate.yml` turns into a draft PR + `workflow_dispatch`.
-- `tests/integration/llm/test_policy_no_regression.py` - GENERIC (model-agnostic) anti-over-reach
+- `tests/unit/llm/test_policy_no_regression.py` - GENERIC (model-agnostic) anti-over-reach
   gate: every model's resolved response policy must keep an already-valid tool-call arg valid.
-- `tests/integration/llm/test_policy_array_recovery.py` - schema-driven recovery oracle: inject
+- `tests/unit/llm/test_policy_array_recovery.py` - schema-driven recovery oracle: inject
   each XML->JSON array-corruption shape (`{item:[...]}` / stringified / empty) into a VALID
   Pydantic tool call, run the resolved policy, and require the result to validate + round-trip
   back (no hand-authored answer-key; an uncorrupted call must survive unchanged = over-reach

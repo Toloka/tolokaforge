@@ -1,5 +1,4 @@
-"""Unit tests for the automation Slack notifier's pure parts
-(migrated from ``tests/unit/test_slack_notify.py``, importing ``automation.slack``).
+"""Unit tests for the automation Slack notifier's pure parts.
 
 The Slack HTTP calls (thread ts flow) are not mockable in a meaningful way and are
 validated live on a probe PR; here we cover the deterministic string-building and

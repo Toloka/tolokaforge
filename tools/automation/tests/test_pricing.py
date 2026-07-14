@@ -1,12 +1,14 @@
-"""Unit tests for ``automation.pricing`` (migrated from
-``tests/unit/test_ensure_pricing.py``). Covers the per-token -> per-1M conversion and
-the ``--check`` exit codes (now ``run(..., check=True)``)."""
+"""Unit tests for ``automation.pricing``: the per-token -> per-1M conversion and
+the ``--check`` exit codes (``run(..., check=True)``)."""
 
 from __future__ import annotations
 
 import json
 
 import automation.pricing as pricing
+import pytest
+
+pytestmark = pytest.mark.unit
 
 
 def test_entry_for_converts_per_token_to_per_million():

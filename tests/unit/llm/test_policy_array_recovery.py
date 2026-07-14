@@ -15,7 +15,10 @@ listifies a legitimate single-key ``item`` object breaks this). Pure Python; no 
 
 Per-model schema+instance is unavoidable (recovery is scoped to the real declared-array fields),
 but it carries NO policy-output answer-key: it is a real valid call, corrupted and required to be
-restored. Add a model by adding a CASES entry.
+restored. Add a model by adding a CASES entry. The MiniMax-M3 rows are the seed rows of the
+auto-resolve oracle; the shipped M3 recovery itself is locked exhaustively (composite, scoping,
+preset wiring) in ``test_minimax_m3_tag_recovery.py`` - this file locks the schema-driven
+round-trip property the resolve pipeline green-checks against.
 """
 
 from __future__ import annotations
@@ -28,6 +31,8 @@ import pytest
 from pydantic import BaseModel, ConfigDict, TypeAdapter
 
 from tolokaforge.core.llm.presets import build_capabilities
+
+pytestmark = pytest.mark.unit
 
 
 # --- schemas at the two sites the shipped MiniMax-M3 tags recovery is scoped to (updates.tags / item.tags) ---

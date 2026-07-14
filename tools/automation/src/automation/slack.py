@@ -14,8 +14,7 @@ returns no ts and can neither thread nor read history). The token is read from
 ``SLACK_BOT_TOKEN``; an absent token or channel makes every command a logged
 no-op (a fork PR gets no secrets, a repo without the secret configured degrades
 cleanly). Nothing here exits non-zero on a Slack failure - a notification must
-never fail the job. Only stdlib is used so the workflow can run it with the system
-``python3`` before ``uv sync``.
+never fail the job.
 
 Subcommands (the ``slack`` sub-app):
   ensure-root --channel <id> --model <name> --pr <N>

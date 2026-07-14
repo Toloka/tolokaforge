@@ -1,16 +1,17 @@
 """Structural VARIANTS of the dict-map capability probe (observe stage).
 
-``test_dict_map_tool_call`` is a LEGACY test we do not own, so instead of
-editing it we add this parallel variant suite: the SAME
-``DICT_MAP_TOOL_CALL`` capability stressed at different structural shapes
-(nested inside an object, a wider map, scalar-valued) so intermittent
-shape-dependent mis-shapes surface that the single canonical probe
-misses. Empirical motivation - the MiniMax-M3 ``{"item": [...]}`` artifact
-on dict-map fields was worse when the map was NESTED, so
-``nested_in_object`` is the highest-value variant.
+The SAME ``DICT_MAP_TOOL_CALL`` capability that ``test_dict_map_tool_call``
+certifies, stressed at different structural shapes (nested inside an
+object, a wider map, scalar-valued) so intermittent shape-dependent
+mis-shapes surface that the single canonical probe misses. A separate
+file (not a ``shape`` axis on the cert test) because variants are
+observe-only: gating them out of the standing cert suite keeps that suite
+cheap and its pass/fail meaning per-capability, not per-shape. Empirical
+motivation - the MiniMax-M3 ``{"item": [...]}`` artifact on dict-map
+fields was worse when the map was NESTED, so ``nested_in_object`` is the
+highest-value variant.
 
-Self-contained (its own schema + prompt + structural check per variant),
-living in the canonical package with a ``test_variant_`` filename prefix.
+Self-contained (its own schema + prompt + structural check per variant).
 Gated by the cert AND ``TF_RUN_VARIANTS`` so a normal CI run skips it; the
 auto-integration observe workflow runs it (sets the flag + injects the
 all-required candidate cert) into a separate junit dir. The ``ShapeVariant``

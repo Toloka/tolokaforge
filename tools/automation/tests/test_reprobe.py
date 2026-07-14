@@ -8,6 +8,9 @@ shell-outs (``run_capability_flat`` / ``run_wire_task`` / ``run``) are not unit-
 from __future__ import annotations
 
 import automation.reprobe as reprobe
+import pytest
+
+pytestmark = pytest.mark.unit
 
 
 def test_k_group_splits_param_into_and_group():
