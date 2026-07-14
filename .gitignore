@@ -71,6 +71,7 @@ amzn_delivery/
 
 *.log
 !tasks/**/fixtures/*.log
+!tests/canonical/golden/**/*.log
 
 # TypeSense data
 .cache/

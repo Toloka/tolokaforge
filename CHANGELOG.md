@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Feat
+
+- **logging**: structured console format `HH:MM:SS.mmm | LEVEL | k=v | message` with root `--verbose` / `--quiet` / `--log-format={pretty,plain,json}` flags; auto-select `pretty` on TTY / `plain` on pipe; ANSI palette matches `_display.THEME`. See [docs/CLI.md](docs/CLI.md) § Structured logging. (#279)
+
+### Breaking Changes
+
+1. **`StructuredLogger` console output moves from `sys.stdout` to `sys.stderr`.** Every tolokaforge log record — including the `orchestrator`, `runner`, `output_writer`, and adapter records that previously wrote to `stdout` via `StructuredLogger`'s private handler — now propagates through the root handler installed by `configure_root_logging`, which writes to `sys.stderr`. Downstream consumers piping tolokaforge's stdout to capture log lines should switch to `2>&1 | …` or to `--log-format=json` (still on stderr). Aligned with the `stdout=artifact` carveout coming in #280.
+2. **Console log line shape changed to `HH:MM:SS.mmm | LEVEL | k=v | message`.** The legacy `"%(asctime)s - %(name)s - %(levelname)s - %(message)s"` format (seconds resolution, inline `(k=v, k=v)` in the message string) is gone. Machine consumers grepping the old shape need to update to the new column layout — the pipe-separated columns, ANSI palette, and JSON schema are pinned by canonical goldens under `tests/canonical/golden/logging/`. (#279)
+
 ## v0.8.3 (2026-07-13)
 
 ### Feat

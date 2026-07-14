@@ -99,80 +99,115 @@ logger.error("Failed to load MCP server", path="/path/to/mcp_server.py")
 
 ## CLI Flags
 
-### --verbose
-Enables DEBUG level logging:
+### Root flags — verbosity and line shape
+
+Three flags on the top-level `tolokaforge` group control every log record the CLI emits. They apply to every subcommand and are set before the subcommand runs.
+
+| Flag | Effect |
+|------|--------|
+| `--verbose` / `-v` | Console level → `DEBUG`. |
+| `--quiet` / `-q` | Console level → `WARNING`. |
+| `--log-format={pretty,plain,json}` | Line shape (see § Log stream). Default: `pretty` on a TTY, `plain` otherwise. |
+
+`-v` and `-q` are mutually exclusive; passing both exits with `UsageError`.
 
 ```bash
-# Normal mode (INFO and above)
-tolokaforge run --config config.yaml
+# Debug-level console output
+tolokaforge -v run --config config.yaml
 
-# Verbose mode (DEBUG and above)
-tolokaforge run --config config.yaml --verbose
+# Silence everything below WARNING
+tolokaforge -q run --config config.yaml
+
+# Machine-parseable JSON logs (one object per line, still on stderr)
+tolokaforge --log-format=json run --config config.yaml
 ```
 
-**Use cases:**
-- Debugging task execution
-- Understanding tool behavior
-- Analyzing performance
-- Troubleshooting MCP integration
+### Subcommand `--verbose` on `run` / `prepare` / `worker` / `convert`
 
-### --strict
-Raises RuntimeError on ERROR logs:
+The subcommand `--verbose` flag drives the per-trial `logs.yaml` level (via `Orchestrator(verbose=True)` → `StructuredLogger(level=DEBUG)`) and, when the root `-q` flag is *not* set, additionally bumps the root console handler to `DEBUG` so the terminal shows the same detail.
+
+**Composition rule:** root `-q` wins on the console. Passing `-q ... --verbose` silences the terminal to `WARNING` while `logs.yaml` still records at `DEBUG`.
+
+| Root | Subcommand `--verbose` | Console level | `logs.yaml` level |
+|------|------------------------|---------------|-------------------|
+| (none) | (none) | INFO | INFO |
+| `-v` | (none) | DEBUG | INFO |
+| `-q` | (none) | WARNING | INFO |
+| (none) | `--verbose` | DEBUG | DEBUG |
+| `-v` | `--verbose` | DEBUG | DEBUG |
+| `-q` | `--verbose` | WARNING | DEBUG |
+| `-v -q` | (any) | `UsageError` — exit 2 | — |
+
+### `--strict`
+
+Raises `RuntimeError` on any ERROR-level log so a bad trial aborts immediately.
 
 ```bash
-# Normal mode (logs errors, continues)
-tolokaforge run --config config.yaml
-
-# Strict mode (raises on errors)
+# Fail-fast: any ERROR raises
 tolokaforge run --config config.yaml --strict
 ```
 
-**Use cases:**
-- CI/CD pipelines (fail fast)
-- Development (catch errors immediately)
-- Debugging specific failures
-- Testing error handling
+Use in CI, when validating golden sets, or when debugging a single failing trial. Combine with root `-v` for maximum visibility on the failure.
 
-### Combined
+## Log stream
+
+Every tolokaforge log record — the stdlib `logging` records from `tolokaforge.docker.*`, `tolokaforge.adapters.*`, `tolokaforge.core.*`, and the `StructuredLogger` records surfaced by `orchestrator` / `runner` / `output_writer` — writes to `sys.stderr` through the single root handler installed by `configure_root_logging`. `sys.stdout` is reserved for the machine-parseable artifact path a later milestone introduces (issue #280).
+
+Pipe with `2>&1` when you want log lines in a text capture:
+
 ```bash
-tolokaforge run --config config.yaml --verbose --strict
+tolokaforge run --config config.yaml 2>&1 | tee run.log
 ```
 
-**Use cases:**
-- Maximum visibility + fail-fast behavior
-- Debugging complex issues
-- Validating golden sets
+For a machine consumer, prefer `--log-format=json` — each line is a single JSON object with the schema documented in § Log Output Structure below, still on stderr.
 
 ## Log Output Structure
 
 ### Console Output
+
+Every root-formatter line has the shape `HH:MM:SS.mmm | LEVEL | k=v k=v | message` with alphabetically sorted scope pairs and millisecond-resolution local time. The three modes selected by `--log-format` differ only in the wrapper:
+
+- **`pretty`** (default on a TTY) — the whole line is wrapped in an ANSI level colour: `INFO`=cyan, `WARNING`=yellow, `ERROR`=bold red, `DEBUG`=dim. Colours match `tolokaforge.cli._display.THEME`.
+- **`plain`** (default on a pipe) — identical layout, no ANSI escape codes. Safe for `grep -F`.
+- **`json`** — one JSON object per line, keys `{"ts", "level", "logger", "message", "extra"}`.
+
+Empty scope preserves the double-space middle so column grep stays trivial:
+
 ```
-2025-11-24 15:22:50 - trial-123:0 - INFO - Starting trial execution (task_id=task-123,  trial_index=0, max_turns=50)
-2025-11-24 15:22:51 - trial-123:0 - DEBUG - Agent response received (turn=0, prompt_tokens=8450, completion_tokens=215, reasoning_tokens=0, cache_read_input_tokens=7800)
-2025-11-24 15:22:52 - trial-123:0 - WARNING - Tool execution failed (tool=get_user, error=not found)
-2025-11-24 15:22:53 - trial-123:0 - INFO - Trial execution finished (status=completed, turns=5, latency_s=3.2)
+14:30:00.500 | INFO |  | trial started
+14:30:00.500 | INFO | judge=kimi-k2 run_id=abc sample=42 | trial started
+14:30:00.500 | WARNING | error='not found' tool=get_user | tool execution failed
 ```
 
-### JSON Output (logs.json)
-```json
-{
-  "trial_id": "task-123:0",
-  "total_logs": 45,
-  "logs": [
-    {
-      "timestamp": "2025-11-24T15:22:50.185275",
-      "level": "INFO",
-      "module": "task-123:0",
-      "message": "Starting trial execution",
-      "context": {
-        "task_id": "task-123",
-        "trial_index": 0,
-        "max_turns": 50
-      }
-    }
-  ]
-}
+Values that contain whitespace or `|` render via `repr` (`k='hello world'`, `k='pipe|here'`) so the delimiter stays unambiguous.
+
+### JSON output on the wire (`--log-format=json`)
+
 ```
+{"ts": "14:30:00.500", "level": "INFO", "logger": "tolokaforge.orch", "message": "trial started", "extra": {"judge": "kimi-k2", "run_id": "abc", "sample": 42}}
+```
+
+The `{ts, level, logger, message, extra}` shape is locked by canonical goldens (`tests/canonical/golden/logging/json__*.log`). A schema change requires a CHANGELOG entry and updated goldens in the same commit.
+
+### On-disk YAML output (`logs.yaml`)
+
+Every trial's `StructuredLogger` writes its collected records to `<trial_dir>/logs.yaml` via `save_to_file`:
+
+```yaml
+trial_id: task-123:0
+total_logs: 45
+logs:
+- timestamp: '2026-07-14T15:22:50.185275+00:00'
+  level: INFO
+  module: task-123:0
+  message: Starting trial execution
+  context:
+    task_id: task-123
+    trial_index: 0
+    max_turns: 50
+```
+
+Timestamps are UTC ISO-8601 with microsecond precision — a distinct shape from the console line's `HH:MM:SS.mmm`. The on-disk YAML keys `{timestamp, level, module, message, context}` are a separate contract from the JSON-on-the-wire keys `{ts, level, logger, message, extra}`; see [`docs/OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md) § `logs.yaml`.
 
 ## Logger Registry
 
