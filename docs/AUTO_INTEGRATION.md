@@ -2,16 +2,25 @@
 
 Automates onboarding a new candidate model into the arena eval: DETECT its tool-calling
 quirks, propose and PROVE a policy fix (or classify a genuine ceiling), and land a preset +
-capability cert on the PR for human review. A SINGLE label-triggered GitHub Actions workflow
+capability cert on the PR for human review. A SINGLE GitHub Actions workflow
 (`.github/workflows/integrate-model.yml`) runs OBSERVE and, on a clean observe, RESOLVE in the
 SAME run - one job, not two workflows, because a `GITHUB_TOKEN` label add cannot trigger a
 second workflow. It NEVER merges: the draft PR is the human review gate.
 
 ## Trigger
 
-Open a PR titled `integrate: <openrouter-model-slug>` (e.g. `integrate: qwen/qwen3.6-plus`)
-and add the label `automation:integrate-model`. That starts OBSERVE; a clean observe chains
-straight into RESOLVE in the same run (an in-job gate, no second workflow).
+Two entry points, same engine run:
+
+1. **By hand:** open a PR titled `integrate: <openrouter-model-slug>` (e.g.
+   `integrate: qwen/qwen3.6-plus`) and add the label `automation:integrate-model`.
+2. **From Slack:** tag the bot in the automation channel
+   (`@delivery-tech-bot integrate <model>`) and the poller opens the PR + dispatches the engine
+   for you (see [Slack-triggered poller](#slack-triggered-poller-alternative-entry-point)).
+
+Either way this starts OBSERVE; a clean observe chains straight into RESOLVE in the same run (an
+in-job gate, no second workflow). The engine also accepts a `workflow_dispatch` (inputs `pr` /
+`head_ref` / `model`, with `|| inputs.*` fallbacks for every value the labeled path reads from
+the PR event) - that is how the poller starts it, since a `GITHUB_TOKEN` label add cannot.
 
 ## Flow
 
@@ -108,6 +117,44 @@ DID produce and routes it for a post-hoc human scope-check.)
 convergence, or a broken/over-reaching fix failing staged verification). There is no
 `automation:resolve` handoff label anymore - observe and resolve are one run.
 
+## Slack-triggered poller (alternative entry point)
+
+Instead of opening the PR by hand, tag the bot in the automation channel:
+
+```
+@delivery-tech-bot integrate <model>       e.g. "integrate Grok 4.5 and GPT 5.6"
+```
+
+A scheduled workflow (`.github/workflows/slack-integrate.yml`) polls the channel and, per
+request, resolves each free-text model phrase to an OpenRouter slug DETERMINISTICALLY
+(`automation resolve-models` / `model_resolver`, no LLM guessing - strict version discipline, so
+"Grok 4.5" never resolves to `grok-4` or `grok-4.3`), then:
+
+- **resolved** (exactly one slug) -> opens a draft `integrate: <slug>` PR (a seed commit under
+  `.automation/requests/` guarantees a diff) and dispatches `integrate-model.yml` on it via
+  `workflow_dispatch`, then replies in-thread with the PR link;
+- **ambiguous** (several slugs match) -> replies in-thread with the exact slugs to choose from;
+- **unknown** (no catalog match) -> replies that it could not find the model.
+
+It runs entirely on the `github-actions[bot]` `GITHUB_TOKEN` (no PAT, no GitHub App): a bot
+token cannot be reached from outside GitHub, so the initiative comes from INSIDE (the workflow
+polls Slack with the existing bot token). It dispatches the engine via `workflow_dispatch`
+because a label or PR created with `GITHUB_TOKEN` cannot trigger a second workflow (the Actions
+recursion guard); `workflow_dispatch` + `repository_dispatch` are its only two exceptions.
+
+Dedup is STATE-FREE: a request whose thread already has a bot reply is skipped (the reply IS the
+processed-marker), and a slug is queued only after its reply posts, so re-polling never
+double-acts. A single-flight `concurrency` group serializes overlapping polls.
+
+Cadence (edit the cron in `slack-integrate.yml`): weekdays 08:00-20:00 -> every 10 min, weekday
+nights + weekends -> every 30 min (tracks Hungary/CEST; GitHub cron is UTC-only, so shift the
+hour ranges by -1 for winter-exact timing). Each poll scans only the last `--window-hours` (48)
+of channel history.
+
+GOTCHA: `schedule` and `workflow_dispatch` only activate once this file is on the DEFAULT branch
+(a brand-new workflow on a feature branch is not yet registered). Before then, exercise the poller
+by TEMPORARILY adding a `push:` trigger on the feature branch (remove it before merge).
+
 ## Slack notifications (optional)
 
 One Slack thread per integration PR: a root the pipeline posts once
@@ -123,8 +170,9 @@ cleanly, and a Slack failure never fails the job.
 | Config | Kind | Meaning |
 |---|---|---|
 | `ARENA_AUTOMATION_SLACK_BOT_TOKEN` | secret | bot `xoxb-` token; needs `chat:write` + `channels:history` (history read is what finds the root), and the bot must be a member of the channel |
-| `ARENA_AUTOMATION_SLACK_CHANNEL` | variable | target channel id |
+| `ARENA_AUTOMATION_SLACK_CHANNEL` | variable | target channel id (both the notifier's thread root and the poller's scan target) |
 | `ARENA_AUTOMATION_SLACK_MENTIONS` | variable | comma-separated Slack user ids to @mention; empty -> no mention |
+| `ARENA_AUTOMATION_SLACK_ALLOWED_USERS` | variable | (poller) comma-separated Slack user-ids allowed to trigger an integration; empty -> anyone in the channel (channel membership is the authz gate, since GitHub only ever sees the bot) |
 
 Messages are emoji-prefixed and carry the run URL. `mention` = the `SLACK_MENTIONS` users are
 pinged (terminal / attention states only):
@@ -178,9 +226,14 @@ sub-agent); the resolve prompts drive the fix loop. `index.yaml` is the machine-
   passing (>= 0.9) is marked `known_unsupported`, or if any CORE capability (e.g.
   `cost_usd_populated`) is `known_unsupported` (a laundered pricing gap). Runs in the finalize gate
   before the stash.
-- `automation slack` - Slack thread notifier (`ensure-root` / `reply`
+- `automation slack` - Slack thread notifier (`ensure-root` / `reply` / `post-thread`
   subcommands); stdlib-only (runs under the system `python3` before `uv sync`), dry-run no-op
-  without a token. See "Slack notifications" above.
+  without a token. See "Slack notifications" above. `post-thread` posts a plain threaded reply
+  under an arbitrary message ts (the poller's per-request confirmation, with the PR link).
+- `automation slack-poll` / `resolve-models` - the Slack-triggered poller: `model_resolver`
+  resolves free-text model phrases to OpenRouter slugs (deterministic, version-strict), and
+  `slack-poll` scans the channel (last `--window-hours`), replies per request, and emits the
+  integration plan that `slack-integrate.yml` turns into a draft PR + `workflow_dispatch`.
 - `tests/integration/llm/test_policy_no_regression.py` - GENERIC (model-agnostic) anti-over-reach
   gate: every model's resolved response policy must keep an already-valid tool-call arg valid.
 - `tests/integration/llm/test_policy_array_recovery.py` - schema-driven recovery oracle: inject
