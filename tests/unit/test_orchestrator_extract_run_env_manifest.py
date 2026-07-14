@@ -19,9 +19,10 @@ from tolokaforge.core.models import (
     ModelConfig,
     OrchestratorConfig,
     RunConfig,
+    ServiceSpec,
 )
 from tolokaforge.core.orchestrator import Orchestrator
-from tolokaforge.core.trial import EnvironmentManifest, TaskIsolation
+from tolokaforge.core.trial import EnvironmentManifest
 
 pytestmark = pytest.mark.unit
 
@@ -148,29 +149,38 @@ class TestRunWorkerGuard:
         assert orch._extract_run_env_manifest() is not None
 
 
-class TestIsolationDeclarationsPreserved:
-    """The helper doesn't need to validate ``isolation`` — that's
+class TestServicesDeclarationsPreserved:
+    """The helper doesn't need to validate isolation labels — that's
     :meth:`_verify_isolation_compatibility`'s job. But it must not
-    strip or alter the manifest's isolation declaration when returning."""
+    strip or alter the manifest's per-service declarations."""
 
-    def test_per_trial_isolation_survives(self) -> None:
+    def test_reset_service_survives(self) -> None:
+        from tolokaforge.core.models import ResetSpec
+
         m = EnvironmentManifest(
             compose_file=_FIXTURES / "safe_two_service.yaml",
-            isolation=TaskIsolation.PER_TRIAL,
+            services={
+                "db": ServiceSpec(isolation="reset", reset=ResetSpec(seed="baseline")),
+                "default": ServiceSpec(isolation="shared"),
+            },
         )
         orch = Orchestrator(_run_config())
         orch.tasks = [_task("t1", m)]
         result = orch._extract_run_env_manifest()
         assert result is not None
-        assert result.isolation == TaskIsolation.PER_TRIAL
+        assert result.services["db"].isolation == "reset"
 
-    def test_shared_ok_isolation_survives(self) -> None:
+    def test_all_shared_survives(self) -> None:
         m = EnvironmentManifest(
             compose_file=_FIXTURES / "safe_two_service.yaml",
-            isolation=TaskIsolation.SHARED_OK,
+            services={
+                "db": ServiceSpec(isolation="shared"),
+                "default": ServiceSpec(isolation="shared"),
+            },
         )
         orch = Orchestrator(_run_config())
         orch.tasks = [_task("t1", m)]
         result = orch._extract_run_env_manifest()
         assert result is not None
-        assert result.isolation == TaskIsolation.SHARED_OK
+        assert result.services["db"].isolation == "shared"
+        assert result.services["default"].isolation == "shared"

@@ -45,9 +45,11 @@ from tolokaforge.core.compose_materialisation import (
     resolve_runner_endpoint,
     shutdown_compose,
 )
+from tolokaforge.core.models import SeedRef
 from tolokaforge.core.runtime import EnvHandle, IsolationMode, ProvisionError
 from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient, RunnerClient
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, EnvEndpoints
+from tolokaforge.runner.models import EnvironmentManifest
 
 if TYPE_CHECKING:
     from tolokaforge.core.trial import TrialSpec
@@ -98,8 +100,21 @@ class PerTrialRuntimeBackend:
 
     isolation_mode: IsolationMode = IsolationMode.PER_TRIAL_STACK
     """Every trial gets its own compose project. Advertised to the
-    orchestrator's compatibility check so tasks that declare
-    ``environment_manifest.isolation: per_trial`` are satisfied."""
+    orchestrator's compatibility check so tasks whose manifests require
+    per-trial substrate materialisation are satisfied."""
+
+    advertised_capabilities: frozenset[str] = frozenset(
+        {
+            "per_trial_stack",
+            "reset_recipes:sql_dump",
+            "reset_recipes:filesystem_dir",
+            "reset_recipes:redis_dump",
+            "reset_recipes:bare",
+            "network_isolation:no_internet",
+        }
+    )
+    """Local-docker per-trial capability advertisement. Read by
+    :func:`tolokaforge.core.backend_capabilities.check_admission`."""
 
     connect_timeout: float = 30.0
     """Seconds to wait for a per-trial runner's gRPC server to become
@@ -111,6 +126,12 @@ class PerTrialRuntimeBackend:
     connect_retry_interval: float = 1.0
     """Poll interval for the runner-side health check during
     :meth:`_connect_runner_client`."""
+
+    seeds: dict[str, SeedRef] = field(default_factory=dict)
+    """Project-level seed registry — the ``name → SeedRef`` map read
+    from ``project.assets.seeds``. Consumed by :meth:`_apply_reset_recipes`
+    to resolve ``services.<name>.reset.seed`` references at reset time.
+    Empty dict means no reset recipes will fire."""
 
     _clients: dict[str, RunnerClient] = field(default_factory=dict)
     _connected_trials: set[str] = field(default_factory=set)
@@ -184,6 +205,7 @@ class PerTrialRuntimeBackend:
                 wait=True,
             )
             compose.start()
+            self._apply_reset_recipes(manifest, compose, spec)
         except Exception as exc:  # noqa: BLE001 — surface as typed ProvisionError
             cleanup_partial_materialisation(compose, temp_dir)
             raise ProvisionError(
@@ -331,6 +353,49 @@ class PerTrialRuntimeBackend:
             # Contract says cleanup is idempotent; report success.
             return {"success": True, "error": None}
         return client.cleanup_trial(trial_id)
+
+    # ---- Reset seam ----
+
+    def _apply_reset_recipes(
+        self,
+        manifest: EnvironmentManifest,
+        compose: DockerCompose,
+        spec: TrialSpec,
+    ) -> None:
+        """Dispatch the reset recipe for every service labelled ``reset``.
+
+        Runs once per trial, right after ``docker compose up`` returns.
+        The stack is already fresh; the recipe seeds it deterministically
+        before the trial body starts.
+        """
+        from tolokaforge.runtime.reset_recipes import dispatch
+
+        for service_name, service_spec in manifest.services.items():
+            if service_spec.isolation != "reset":
+                continue
+            if service_spec.reset is None:
+                raise ProvisionError(
+                    trial_id=spec.trial_id,
+                    stage="provision",
+                    reason=(
+                        f"service {service_name!r} labelled 'reset' has no "
+                        "'reset.seed' pointer — schema validation should have "
+                        "rejected the manifest earlier."
+                    ),
+                )
+            seed_name = service_spec.reset.seed
+            seed = self.seeds.get(seed_name)
+            if seed is None:
+                raise ProvisionError(
+                    trial_id=spec.trial_id,
+                    stage="provision",
+                    reason=(
+                        f"service {service_name!r} names seed {seed_name!r} but "
+                        f"the backend has no such seed in its registry "
+                        f"(available: {sorted(self.seeds)!r})."
+                    ),
+                )
+            dispatch(seed, service_name, compose)
 
     # ---- Internal helpers ----
 

@@ -70,10 +70,11 @@ current as milestones land; delete it when the last one does.
 - The loader and both base+delta merge chains (M2, #211).
 - Per-service isolation declarations
   (`default_environment.services.<name>.isolation`:
-  `shared` / `reset` / `ephemeral`) and seed-backed reset
-  recipes (M3, #212). This amends ADR-0018's whole-stack model;
-  the final vocabulary is fixed in the M3 ADR. Compose labels
-  are **not** an input: no label mechanism exists today and none
+  `shared` / `reset` / `ephemeral`), seed-backed reset recipes,
+  task-driven backend selection, backend-capability admission,
+  and `resolve_environment_identity` for observability (M3,
+  #212, shipped — amends ADR-0018's whole-stack model). Compose
+  labels are **not** an input: no label mechanism exists and none
   is added — the manifest is the only home for per-service
   semantics.
 - Strict unknown-key rejection with closest-match hints (M4,
@@ -145,8 +146,8 @@ current as milestones land; delete it when the last one does.
   unlabelled services default to `ephemeral`. (An earlier draft
   proposed `shared_ok` by default; that is withdrawn: safe by
   default, relaxation is an explicit reviewable label.)
-- The per-service vocabulary requires an ADR amending ADR-0018
-  before M3 lands.
+- The per-service vocabulary amends ADR-0018 — see the ADR's
+  "Amendment" section.
 
 ## Naming — "Project" vs "task pack"
 
@@ -264,7 +265,6 @@ tasks:
 default_environment:
   stack:
     compose_file: "./shared/environment.compose.yaml"
-  isolation: "per_trial"
 
 task_defaults:
   adapter_type: "native"
@@ -729,23 +729,21 @@ default_environment:
   # Everything below is substrate-neutral — no compose-isms.
   # Two classes, though: policy REQUESTS (network_policy,
   # security_context_defaults) survive a stack replacement;
-  # service-TREATMENT fields (isolation, services) are scoped to
-  # the reviewed stack and reset with it (see Task override
-  # semantics).
-  # `isolation:` is optional. Unset means services without an
-  # entry in `services:` below default to `per_trial` per
-  # ADR-0009. A task can declare `isolation: "shared_ok"` as an
-  # explicit opt-in when its services allow it — per-service
-  # entries still take precedence over this default.
-  services:                        # scaffolding — per-service semantics live in the
-    postgres:                      # manifest, never solely in the substrate file
+  # service-TREATMENT fields (services, initial_state) are
+  # scoped to the reviewed stack and reset with it (see Task
+  # override semantics).
+  # Per-service isolation lives in `services.<name>`; services
+  # without an entry default to `ephemeral` (the overall default
+  # per ADR-0009 stays `per_trial`).
+  services:                        # per-service semantics live in the manifest,
+    postgres:                      # never in the substrate file
       isolation: "reset"
       reset: { seed: "app_baseline" }  # seed-backed reset recipe (see Shared assets)
     db-service:
       isolation: "shared"
     backend-api:
       isolation: "shared"
-    # runner: no entry → ephemeral (per_trial default)
+    # runner: no entry → ephemeral
   network_policy: "no_internet"    # closed enum: no_internet | limited_internet |
                                    # full_internet; parameterisation (e.g. egress
                                    # hosts) is finalised before the first major release
@@ -872,19 +870,17 @@ Some fields replace instead of merge:
   `runner_service` (a foreign file's `${var}` slots must never
   silently capture inherited values). Replacement also resets the
   service-*treatment* fields: the project's service-keyed maps
-  (`services` entries, `initial_state`) are discarded, and the
-  root `isolation` falls back to the `per_trial` default even if
-  the project declared `shared_ok` — the project's opt-out was a
-  review of the project's services, and it must not silently
-  extend to a stack nobody reviewed under it. Policy-*request*
-  fields (`network_policy`, `security_context_defaults`) are
-  stack-independent and survive. A task-local stack declares its
-  own `services` entries (and its own `shared_ok`, explicitly) if
-  it needs them. `stack: null` and `stack: {compose_file: null}`
-  are both load errors — a task cannot unset the environment (or
-  its substrate pointer) out from under a project that declares
-  one, and there is no engine-default compose file to fall
-  through to.
+  (`services` entries, `initial_state`) are discarded — the
+  project's per-service opt-outs reviewed the project's services,
+  and they must not silently extend to a stack nobody reviewed
+  under it. Policy-*request* fields (`network_policy`,
+  `security_context_defaults`) are stack-independent and survive.
+  A task-local stack declares its own `services` entries if it
+  needs them; anything unlisted falls back to `ephemeral`.
+  `stack: null` and `stack: {compose_file: null}` are both load
+  errors — a task cannot unset the environment (or its substrate
+  pointer) out from under a project that declares one, and there
+  is no engine-default compose file to fall through to.
 - **`system_prompt`**: pointing at a different file (or inline
   text) replaces the project prompt entirely; no merge.
 
@@ -1285,7 +1281,6 @@ default_environment:
   stack:
     compose_file: "./shared/environment.compose.yaml"
     runner_service: "runner"
-  isolation: "per_trial"
 
 task_defaults:
   adapter_type: "native"
@@ -1507,45 +1502,42 @@ A run consists of many trials against a project's tasks. The
 question this section answers is: **how much state carries from
 one trial to the next?**
 
-Isolation is expressed through two knobs, both in the manifest:
+Isolation is expressed **per compose service in the manifest**
+under `default_environment.services.<name>.isolation` — the
+authoritative declaration with vocabulary `shared` / `reset` (with a
+seed-backed recipe) / `ephemeral`. Services without a manifest
+entry default to `ephemeral`. There is no manifest-wide isolation
+field: compose files carry zero isolation semantics and the manifest
+is the single authority for how the harness treats each service
+between trials.
 
-- **`default_environment.isolation`** (on the Project, or
-  overridable per task) — the between-trial default for services
-  that don't have their own `services.<name>` entry. `per_trial`
-  (the default, per ADR-0009) means undeclared services resolve
-  to `ephemeral`: torn down and recreated between trials.
-  `shared_ok` is the explicit opt-out: undeclared services
-  persist across trials.
-- **`default_environment.services.<name>.isolation`** — the
-  authoritative per-service declaration: `shared`, `reset` (with
-  a seed-backed recipe), or `ephemeral`. Wins over the
-  task-level default for that service.
-
-The per-service entry is always authoritative;
-`default_environment.isolation` only supplies the default for
-services without one. The more granular declaration wins —
-consistent with every other override in the schema.
+Backend selection follows the per-service map: any task with a
+`reset` or `ephemeral` service routes the run onto
+`PerTrialRuntimeBackend`; runs whose every task labels every service
+`shared` route onto `SharedStackRuntimeBackend`. Operators do not
+set the backend directly — the legacy `orchestrator.runtime` field
+survives as a deprecated override with a `DeprecationWarning`.
 
 Two consistency rules run on the resolved document:
 
-- **Label and recipe must agree.** The isolation label is
-  shorthand for which recipe runs between trials, so a recipe may
-  only be present when the label implies it runs: `isolation:
-  "shared"` alongside an inherited `reset: {...}` sibling (an
-  easy deep-merge accident) is a load error, not dangling config.
-  The rule cuts both ways: `isolation: "reset"` on a service with
-  no `reset:` recipe (declared or inherited) is equally a load
-  error — there is nothing to reset to. The legitimate override
-  is spelled with the `null`-unset rule — a task flipping an
-  inherited `reset` (or `ephemeral`-with-lingering-recipe)
-  service to a laxer label writes both keys, e.g.
-  `{isolation: "shared", reset: null}` — and the load error's
-  message names exactly that fix.
+- **Label and recipe must agree.** `ServiceSpec` fails loud when
+  `isolation: "reset"` has no `reset.seed` pointer, and when any
+  other label carries a `reset` sibling — a stale sibling from a
+  deep merge would otherwise sit dangling. The legitimate override
+  spells the null-unset explicitly: a task flipping an inherited
+  `reset` service to a laxer label writes both keys, e.g.
+  `{isolation: "shared", reset: null}`.
 - **`services` keys must name real services.** Every
   `services.<name>` entry must resolve against the *effective*
   compose file, post-merge; an entry for a service that doesn't
   exist fails loud (the shipped `initial_state` validators are
   the precedent).
+- **Reset seeds bind to `assets.seeds`.** A service labelled
+  `reset` names a seed in `project.assets.seeds`; the loader
+  verifies the seed file's sha256 against the declared digest at
+  load time and dispatches through the recipe registry (kind →
+  module under `tolokaforge/runtime/reset_recipes/`) at reset
+  time.
 
 **Per-service semantics live in the manifest, never in the
 substrate file.** The compose file defines what a service *is*;
@@ -1560,28 +1552,33 @@ At a glance:
 
 | Stance | Cost between trials | Safety guarantee | How you get it |
 |---|---|---|---|
-| Completely shared | Lowest — services persist | Weakest — all state carries over | Explicit `isolation: "shared_ok"` opt-out |
+| Completely shared | Lowest — services persist | Weakest — all state carries over | Every service labelled `isolation: "shared"` in the manifest |
 | Declared mixed | Middle — seed-backed resets are cheap relative to teardown | Per-service explicit; strong where declared | Per-service labels + reset primitives |
-| Total isolation | Highest — unlabelled services rebuilt per trial | Strong; relaxations require an explicit label | **The default** — declare nothing |
+| Total isolation | Highest — unlabelled services rebuilt per trial | Strong; relaxations require an explicit label | **The default** — declare nothing (services default to `ephemeral`) |
 
-### Stance 1 — Completely shared (explicit opt-out)
+### Stance 1 — Completely shared
 
 Every service persists across trials. State carries over between
-trials. This never happens by accident: the project must declare
-`shared_ok`, and no service entry may declare anything narrower
-than `shared`.
+trials. This never happens by accident: every service the compose
+file declares must be listed under `services` with
+`isolation: "shared"`. Any missing entry defaults to `ephemeral` and
+routes the run onto `PerTrialRuntimeBackend`.
 
 ```yaml
-# project.yaml — explicit opt-out from the per_trial default
+# project.yaml — every declared service labelled shared
 default_environment:
   stack:
     compose_file: "./shared/environment.compose.yaml"
-  isolation: "shared_ok"
+  services:
+    postgres:
+      isolation: "shared"
+    backend-api:
+      isolation: "shared"
 ```
 
 ```yaml
-# shared/environment.compose.yaml — services without a manifest
-# entry inherit the declared shared_ok stance
+# shared/environment.compose.yaml — the compose file is the
+# substrate definition; isolation semantics live in the manifest.
 services:
   postgres:
     image: "postgres:${postgres_version:-16}"
@@ -1609,14 +1606,13 @@ Stance 2 instead.
 Per-service manifest entries decide what happens between trials.
 Some services stay as-is, some get reset via a seed-backed
 recipe, some are torn down and recreated. Any service without an
-entry inherits the task's `default_environment.isolation`.
+entry defaults to `ephemeral`.
 
 ```yaml
 # project.yaml — per-service isolation mix, declared in the manifest
 default_environment:
   stack:
     compose_file: "./shared/environment.compose.yaml"
-  isolation: "shared_ok"            # default for services without an entry
   services:
     postgres:
       isolation: "reset"
@@ -1655,18 +1651,16 @@ workloads land here.
 
 ### Stance 3 — Total isolation (default)
 
-The default stance: under `isolation: per_trial` every service
-without a manifest entry resolves to `ephemeral` — torn down and
-recreated between trials. A specific service can still opt out
-with an explicit `shared` or `reset` entry if the project author
-has a reason.
+The default stance: every service without a manifest entry
+resolves to `ephemeral` — torn down and recreated between trials.
+A specific service can still opt out with an explicit `shared` or
+`reset` entry if the project author has a reason.
 
 ```yaml
-# project.yaml — declaring per_trial is optional; it is the default
+# project.yaml — undeclared services default to ephemeral
 default_environment:
   stack:
     compose_file: "./shared/environment.compose.yaml"
-  isolation: "per_trial"          # undeclared services default to ephemeral
   services:
     immutable-catalog:
       isolation: "shared"         # explicit exception: safe across trials
@@ -1674,7 +1668,7 @@ default_environment:
 
 ```yaml
 # shared/environment.compose.yaml — no isolation semantics here;
-# postgres has no manifest entry → ephemeral (per_trial default)
+# postgres has no manifest entry → ephemeral
 services:
   postgres:
     image: "postgres:${postgres_version:-16}"
@@ -1695,18 +1689,19 @@ share.
 
 ## Services and backends — scaffolding
 
-> This section reserves schema shape only. The full Service and
-> Backend designs are future iterations (M3 ADR and beyond);
-> nothing here is final except the *location* of the
-> declarations, so that manifests written today don't need
-> restructuring later.
+> Per-service isolation, seed-backed reset recipes, and the
+> backend-capability registry are shipped. Later lifecycle events
+> (`start` / `terminate` recipes) and Kubernetes / other
+> substrates remain future work; nothing below promises a
+> restructuring of what ships today.
 
 ### Services — lifecycle recipes
 
 `default_environment.services.<name>` is the manifest home for
 everything the harness needs to know about a sidecar service.
-Today it holds `isolation` (and the seed-backed `reset` recipe).
-The intended evolution is a **recipe per lifecycle event**:
+Today it holds `isolation` and, for `isolation: "reset"`, a
+`reset.seed` pointer at an entry in `project.assets.seeds`. The
+intended evolution is a **recipe per lifecycle event**:
 
 ```yaml
 # Illustrative future shape — NOT part of the current schema
@@ -1733,48 +1728,49 @@ Design constraints already settled:
   shorthand for *which recipe runs between trials*: `shared` =
   none, `reset` = the reset recipe, `ephemeral` = terminate +
   start.
+- Reset dispatchers live in
+  `tolokaforge/runtime/reset_recipes/`, one module per kind
+  (`sql_dump`, `filesystem_dir`, `redis_dump`, `bare`), and
+  populate a `RECIPE_REGISTRY` keyed on `SeedKind`.
 
 ### Backends — declared capabilities
 
 The manifest is one level above any concrete substrate — a k8s
 cluster can itself be *inside* the sandbox. Compose, k8s, and
 future runtimes are **backends** that materialise the same
-manifest. Two consequences, reserved now:
+manifest. Three consequences:
 
-- **Backends advertise capabilities; projects declare
-  requirements.** The run side picks the backend
-  (`run_defaults.compute`); the project may declare what it
-  needs from whichever backend runs it:
+- **Backends advertise capabilities; runs declare requirements.**
+  The run side declares what it needs on the run config under
+  `compute.capabilities`:
 
   ```yaml
-  # project.yaml — illustrative future shape
-  requires:
-    backend_capabilities:
-      - per_service_reset
-      - network_policy_enforcement
+  # run_configs/dev.yaml
+  compute:
+    capabilities:
+      - reset_recipes:sql_dump
+      - network_isolation:no_internet
   ```
 
-  The loader refuses a project/backend pairing whose
-  requirements aren't covered, naming the gaps — the same
-  fail-loud guard pattern as isolation (ADR-0018). Two shape
-  rules, reserved now: a capability entry is `string | {name:
-  <params>}` (the bare string is the parameterless common case;
-  quotas and budgets arrive as params without a list-to-struct
-  migration), and capability *names* come from a registry (the
-  same entry-point mechanism as adapters and check providers), so
-  a typo'd requirement fails as "unknown capability", not as a
-  plausible-looking gap.
+  Each backend exposes `advertised_capabilities`; the admission
+  gate at run start (`tolokaforge/core/backend_capabilities.py`)
+  refuses `requested - advertised` non-empty, and refuses names
+  absent from the registry outright. A capability entry is
+  `string | {name: <params>}` (the bare string is the
+  parameterless common case; quotas and budgets arrive as params
+  without a list-to-struct migration). Local-docker's baseline
+  vocabulary is `per_trial_stack`, `shared_stack`,
+  `reset_recipes:{sql_dump,filesystem_dir,redis_dump,bare}`, and
+  `network_isolation:no_internet`.
 
-- **Backend admission is derived from the per-service label set,
-  not read off the root `isolation` field.** A manifest declaring
-  `shared_ok` *plus* a `reset` entry is not shared-backend-
-  compatible unless the backend can reset that service: any
-  `reset` entry implies `per_service_reset` in the project's
-  effective requirements; any `ephemeral` entry under a shared
-  lifecycle implies per-service recreate support. The M3 ADR
-  (#212) owns this derivation table — and must also settle which
-  run-side field owns the lifecycle axis (`compute.provider` vs
-  `orchestrator.runtime`, which today split it between them).
+- **Backend selection is derived from the per-service isolation
+  map, not read off a root `isolation` field.** Any task with a
+  `reset` or `ephemeral` service routes onto
+  `PerTrialRuntimeBackend`; runs whose every task labels every
+  service `shared` route onto `SharedStackRuntimeBackend`. The
+  deprecated `orchestrator.runtime` field survives as an operator
+  override with a `DeprecationWarning`; retirement lands with a
+  later cleanup milestone.
 
 - **Enforcement can be delegated to a capable backend.** For
   `network_policy`, the manifest declares the *need*; the *grant*
@@ -1786,6 +1782,17 @@ manifest. Two consequences, reserved now:
   hosts) extend it to a struct is a decision to finalise before
   the first major release, not folklore to accrete.
 
+### Environment identity
+
+`resolve_environment_identity(env)` returns a `sha256:...` digest
+over the canonicalised compose bytes, `stack_inputs`, per-service
+isolation map, and referenced seed digests. Two manifests with
+identical inputs produce equal identities regardless of YAML
+formatting; any change to a covered input flips the digest. The
+orchestrator logs it at info level once per task at run start.
+Materialisation / dedup consumers land later per the public
+roadmap.
+
 ### Explicitly future — not defined by this document
 
 - **Task sequences / cross-task stack persistence** (task A
@@ -1794,9 +1801,10 @@ manifest. Two consequences, reserved now:
   `shuffle_trials` / `repeats` / parallel workers provide no
   ordering guarantees. Until a future iteration specifies this,
   every task in a project must be independently runnable.
-- **Content-addressed stack identity** (deduplicating identical
-  environment stacks across tasks by manifest hash). Roadmapped;
-  no schema or semantics exist yet.
+- **Content-addressed materialisation and dedup** (keying
+  substrate materialisation on `resolve_environment_identity`).
+  The digest is emitted for observability today; consumers land
+  later per the public roadmap.
 
 ---
 

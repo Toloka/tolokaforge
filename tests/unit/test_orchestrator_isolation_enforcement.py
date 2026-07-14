@@ -1,9 +1,13 @@
-"""Unit tests for ``Orchestrator._verify_isolation_compatibility``.
+"""Unit tests for ``Orchestrator._verify_isolation_compatibility`` under
+task-driven backend selection.
 
-Refusing a shared-stack backend when any task in the run declares
-``environment_manifest.isolation: per_trial`` is the load-bearing
-invariant that prevents silent cross-trial state contamination.
-The tests here pin every branch of the enforcement helper.
+Backend selection is now task-driven: any task whose manifest carries a
+non-``shared`` service label routes the run onto
+:class:`PerTrialRuntimeBackend`. The isolation-compatibility guard is
+therefore only reachable under the deprecated ``orchestrator.runtime``
+override — when the operator forces a shared backend against a
+per-trial-requiring task set (or an ``ephemeral``-labelled service in a
+shared context). These tests pin those branches.
 """
 
 from __future__ import annotations
@@ -20,11 +24,12 @@ from tolokaforge.core.models import (
     ModelConfig,
     OrchestratorConfig,
     RunConfig,
+    ServiceSpec,
 )
 from tolokaforge.core.orchestrator import Orchestrator
 from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
 from tolokaforge.core.shared_stack_runtime import SharedStackRuntimeBackend
-from tolokaforge.core.trial import EnvironmentManifest, TaskIsolation
+from tolokaforge.core.trial import EnvironmentManifest
 from tolokaforge.runner.models import TaskDescription
 
 pytestmark = pytest.mark.unit
@@ -42,8 +47,6 @@ def _make_run_config() -> RunConfig:
 
 
 def _make_task_config(task_id: str) -> Any:
-    """The enforcement helper only reads ``.task_id`` from each entry —
-    a bare object with that attribute is sufficient."""
     task = MagicMock()
     task.task_id = task_id
     return task
@@ -59,16 +62,14 @@ def _make_orchestrator(
     return orch
 
 
-def _manifest_with(isolation: TaskIsolation) -> EnvironmentManifest:
+def _manifest_with_services(services: dict[str, ServiceSpec]) -> EnvironmentManifest:
     return EnvironmentManifest(
         compose_file=_FIXTURES / "safe_two_service.yaml",
-        isolation=isolation,
+        services=services,
     )
 
 
 def _shared_stack_backend() -> SharedStackRuntimeBackend:
-    """Constructed but never connected — enforcement only touches
-    ``isinstance``, so no daemon required."""
     return SharedStackRuntimeBackend(runner_address="sentinel:50051")
 
 
@@ -77,7 +78,8 @@ def _per_trial_backend() -> PerTrialRuntimeBackend:
 
 
 class TestSharedStackRuntimePath:
-    """The load-bearing case: SharedStackRuntimeBackend refuses per-trial tasks."""
+    """The load-bearing case: SharedStackRuntimeBackend refuses tasks
+    whose manifest requires per-trial materialisation."""
 
     def test_no_tasks_with_manifest_passes(self) -> None:
         tasks = [_make_task_config("t1"), _make_task_config("t2")]
@@ -86,39 +88,52 @@ class TestSharedStackRuntimePath:
             "t2": make_task_description(task_id="t2", environment_manifest=None),
         }
         orch = _make_orchestrator(tasks, task_descs)
-        # Must not raise.
         orch._verify_isolation_compatibility(_shared_stack_backend())
 
-    def test_shared_ok_manifest_passes(self) -> None:
+    def test_all_shared_services_passes(self) -> None:
         tasks = [_make_task_config("stateless")]
         task_descs = {
             "stateless": make_task_description(
                 task_id="stateless",
-                environment_manifest=_manifest_with(TaskIsolation.SHARED_OK),
+                environment_manifest=_manifest_with_services(
+                    {
+                        "db": ServiceSpec(isolation="shared"),
+                        "default": ServiceSpec(isolation="shared"),
+                    }
+                ),
             ),
         }
         orch = _make_orchestrator(tasks, task_descs)
         orch._verify_isolation_compatibility(_shared_stack_backend())
 
-    def test_per_trial_manifest_raises(self) -> None:
+    def test_reset_service_raises(self) -> None:
+        from tolokaforge.core.models import ResetSpec
+
         tasks = [_make_task_config("stateful")]
         task_descs = {
             "stateful": make_task_description(
                 task_id="stateful",
-                environment_manifest=_manifest_with(TaskIsolation.PER_TRIAL),
+                environment_manifest=_manifest_with_services(
+                    {
+                        "db": ServiceSpec(
+                            isolation="reset",
+                            reset=ResetSpec(seed="baseline"),
+                        ),
+                        "default": ServiceSpec(isolation="shared"),
+                    }
+                ),
             ),
         }
         orch = _make_orchestrator(tasks, task_descs)
-        with pytest.raises(RuntimeError, match="per_trial") as exc:
+        with pytest.raises(RuntimeError, match="per-trial") as exc:
             orch._verify_isolation_compatibility(_shared_stack_backend())
         assert "stateful" in str(exc.value)
 
-    def test_per_trial_default_is_the_enforced_default(self) -> None:
-        """A manifest that does not specify isolation defaults to
-        per_trial — that default must trigger the shared-stack refusal
-        just like an explicit per_trial declaration."""
+    def test_empty_services_defaults_to_per_trial(self) -> None:
+        """A manifest with no explicit services is treated as
+        per-trial-requiring — that keeps the ADR-0009 safety default."""
         manifest = EnvironmentManifest(compose_file=_FIXTURES / "safe_two_service.yaml")
-        assert manifest.isolation is TaskIsolation.PER_TRIAL  # documents the default
+        assert manifest.requires_per_trial is True
         tasks = [_make_task_config("stateful-implicit")]
         task_descs = {
             "stateful-implicit": make_task_description(
@@ -130,74 +145,61 @@ class TestSharedStackRuntimePath:
         with pytest.raises(RuntimeError, match="stateful-implicit"):
             orch._verify_isolation_compatibility(_shared_stack_backend())
 
-    def test_mixed_manifests_only_per_trial_names_reported(self) -> None:
-        tasks = [
-            _make_task_config("stateful-a"),
-            _make_task_config("stateful-b"),
-            _make_task_config("stateless"),
-            _make_task_config("no-manifest"),
-        ]
+    def test_ephemeral_service_on_shared_raises_dedicated_error(self) -> None:
+        tasks = [_make_task_config("wants-ephemeral")]
         task_descs = {
-            "stateful-a": make_task_description(
-                task_id="stateful-a",
-                environment_manifest=_manifest_with(TaskIsolation.PER_TRIAL),
-            ),
-            "stateful-b": make_task_description(
-                task_id="stateful-b",
-                environment_manifest=_manifest_with(TaskIsolation.PER_TRIAL),
-            ),
-            "stateless": make_task_description(
-                task_id="stateless",
-                environment_manifest=_manifest_with(TaskIsolation.SHARED_OK),
-            ),
-            "no-manifest": make_task_description(task_id="no-manifest", environment_manifest=None),
-        }
-        orch = _make_orchestrator(tasks, task_descs)
-        with pytest.raises(RuntimeError) as exc:
-            orch._verify_isolation_compatibility(_shared_stack_backend())
-        message = str(exc.value)
-        assert "stateful-a" in message
-        assert "stateful-b" in message
-        assert "stateless" not in message
-        assert "no-manifest" not in message
-        assert "2 task(s)" in message
-
-    def test_error_names_the_fix(self) -> None:
-        tasks = [_make_task_config("t")]
-        task_descs = {
-            "t": make_task_description(
-                task_id="t",
-                environment_manifest=_manifest_with(TaskIsolation.PER_TRIAL),
+            "wants-ephemeral": make_task_description(
+                task_id="wants-ephemeral",
+                environment_manifest=_manifest_with_services(
+                    {
+                        "db": ServiceSpec(isolation="ephemeral"),
+                        "default": ServiceSpec(isolation="shared"),
+                    }
+                ),
             ),
         }
         orch = _make_orchestrator(tasks, task_descs)
-        with pytest.raises(RuntimeError) as exc:
+        with pytest.raises(RuntimeError, match="per-trial") as exc:
             orch._verify_isolation_compatibility(_shared_stack_backend())
-        message = str(exc.value)
-        assert "PerTrialRuntimeBackend" in message
-        assert "shared_ok" in message
+        # ephemeral triggers the requires_per_trial branch first.
+        assert "wants-ephemeral" in str(exc.value)
 
 
 class TestPerTrialRuntimePath:
     """PerTrialRuntimeBackend satisfies every isolation requirement."""
 
-    def test_per_trial_task_passes(self) -> None:
+    def test_reset_service_passes(self) -> None:
+        from tolokaforge.core.models import ResetSpec
+
         tasks = [_make_task_config("stateful")]
         task_descs = {
             "stateful": make_task_description(
                 task_id="stateful",
-                environment_manifest=_manifest_with(TaskIsolation.PER_TRIAL),
+                environment_manifest=_manifest_with_services(
+                    {
+                        "db": ServiceSpec(
+                            isolation="reset",
+                            reset=ResetSpec(seed="baseline"),
+                        ),
+                        "default": ServiceSpec(isolation="shared"),
+                    }
+                ),
             ),
         }
         orch = _make_orchestrator(tasks, task_descs)
         orch._verify_isolation_compatibility(_per_trial_backend())
 
-    def test_shared_ok_task_passes(self) -> None:
+    def test_all_shared_services_passes(self) -> None:
         tasks = [_make_task_config("stateless")]
         task_descs = {
             "stateless": make_task_description(
                 task_id="stateless",
-                environment_manifest=_manifest_with(TaskIsolation.SHARED_OK),
+                environment_manifest=_manifest_with_services(
+                    {
+                        "db": ServiceSpec(isolation="shared"),
+                        "default": ServiceSpec(isolation="shared"),
+                    }
+                ),
             ),
         }
         orch = _make_orchestrator(tasks, task_descs)
@@ -216,27 +218,6 @@ class TestAdapterGuard:
     def test_missing_adapter_raises_clear_error(self) -> None:
         orch = Orchestrator(_make_run_config())
         orch.tasks = [_make_task_config("t")]
-        orch.adapter = None  # simulates called before load_tasks()
+        orch.adapter = None
         with pytest.raises(RuntimeError, match="adapter"):
             orch._verify_isolation_compatibility(_shared_stack_backend())
-
-
-class TestTaskDescriptionCaching:
-    def test_cache_populated_from_call(self) -> None:
-        """Repeated invocations don't re-query the adapter for
-        already-resolved task descriptions."""
-        tasks = [_make_task_config("t")]
-        task_descs = {
-            "t": make_task_description(
-                task_id="t",
-                environment_manifest=_manifest_with(TaskIsolation.SHARED_OK),
-            ),
-        }
-        orch = _make_orchestrator(tasks, task_descs)
-        assert orch._task_desc_cache == {}
-        orch._verify_isolation_compatibility(_shared_stack_backend())
-        assert "t" in orch._task_desc_cache
-        # Second call hits the cache — adapter not called again.
-        adapter_calls_before = orch.adapter.to_task_description.call_count
-        orch._verify_isolation_compatibility(_shared_stack_backend())
-        assert orch.adapter.to_task_description.call_count == adapter_calls_before

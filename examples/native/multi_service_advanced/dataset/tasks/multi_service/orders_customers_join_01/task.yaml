@@ -19,8 +19,12 @@ initial_user_message: |
 adapter_type: "native"
 environment_manifest:
   compose_file: "./environment.compose.yaml"
-  isolation: "shared_ok"
   runner_service: "runner"
+  services:
+    runner: {isolation: "shared"}
+    db-service: {isolation: "shared"}
+    orders-api: {isolation: "shared"}
+    customers-api: {isolation: "shared"}
 initial_state:
   filesystem: {}
 tools:
