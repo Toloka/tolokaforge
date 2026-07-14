@@ -1,0 +1,57 @@
+#!/bin/bash
+# PostToolUse hook for Bash: when an agent runs `git worktree remove <path>`
+# successfully, drop the matching cbm index DB so the per-worktree leak doesn't
+# accumulate. Idempotent — delete_project on a missing project is a no-op.
+# Silent on no-match / errors / missing binary.
+#
+# Intentionally NO `set -e`: a PostToolUse hook must silent-noop on every
+# failure path (missing jq, malformed input, missing binary) — never propagate
+# a non-zero exit, which Claude Code would surface as a hook error.
+command -v jq >/dev/null 2>&1 || exit 0
+
+input=$(cat) || exit 0
+cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null)
+[ -n "$cmd" ] || exit 0
+printf '%s' "$cmd" | grep -qE '\bgit[[:space:]]+worktree[[:space:]]+remove\b' || exit 0
+
+# Skip when the tool itself errored (e.g. refused to remove dirty worktree).
+err=$(printf '%s' "$input" | jq -r '.tool_response.is_error // .tool_response.isError // false' 2>/dev/null)
+[ "$err" = "true" ] && exit 0
+
+# Path is the first non-flag arg after `remove`. Handles `remove <path>` and
+# `remove -f <path>` / `remove --force <path>`.
+path=$(printf '%s' "$cmd" | awk '
+  {
+    for (i = 1; i <= NF; i++) {
+      if ($i == "remove") { saw_remove = 1; continue }
+      if (!saw_remove) continue
+      if ($i ~ /^-/) continue
+      print $i
+      exit
+    }
+  }
+')
+[ -n "$path" ] || exit 0
+
+# Resolve relative paths against the cwd the tool ran in.
+case "$path" in
+  /*) abs="$path" ;;
+  *)
+    cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null)
+    [ -n "$cwd" ] || exit 0
+    parent_dir=$(cd "$cwd" 2>/dev/null && cd "$(dirname "$path")" 2>/dev/null && pwd) || exit 0
+    abs="$parent_dir/$(basename "$path")"
+    ;;
+esac
+
+# cbm key = absolute path with leading slash stripped, `/` → `-`, and runs of
+# `-` collapsed to single (a worktree at /home/u/code/repo--branch becomes
+# project home-u-code-repo-branch, not …repo--branch).
+project="${abs#/}"
+project="${project//\//-}"
+project=$(printf '%s' "$project" | tr -s '-')
+[ -n "$project" ] || exit 0
+
+command -v codebase-memory-mcp >/dev/null 2>&1 || exit 0
+codebase-memory-mcp cli delete_project --project "$project" >/dev/null 2>&1 || true
+exit 0

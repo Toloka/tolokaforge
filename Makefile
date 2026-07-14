@@ -1,4 +1,4 @@
-.PHONY: install install-dev sync test test-coverage lint lint-fix format format-check clean docker-build docker-build-core docker-up docker-down docker-status help
+.PHONY: install install-dev sync test test-coverage lint lint-fix format format-check clean docker-build docker-build-core docker-up docker-down docker-status help cbm-onboard cbm-offboard
 
 # =============================================================================
 # Installation (using uv)
@@ -88,6 +88,16 @@ validate:
 	uv run tolokaforge validate --tasks "$(TASKS_GLOB)"
 
 # =============================================================================
+# Claude Code tooling (per-engineer, opt-in)
+# =============================================================================
+
+cbm-onboard:
+	bash scripts/setup/cbm-onboard.sh
+
+cbm-offboard:
+	bash scripts/setup/cbm-offboard.sh
+
+# =============================================================================
 # Cleanup
 # =============================================================================
 
@@ -137,6 +147,10 @@ help:
 	@echo "Benchmarking:"
 	@echo "  make run          - Run benchmark"
 	@echo "  make validate     - Validate task configurations"
+	@echo ""
+	@echo "Claude Code tooling:"
+	@echo "  make cbm-onboard  - Install codebase-memory-mcp + Claude Code hooks (per-engineer, opt-in)"
+	@echo "  make cbm-offboard - Remove the cbm hooks + settings.json entries"
 	@echo ""
 	@echo "Cleanup:"
 	@echo "  make clean        - Clean build artifacts"

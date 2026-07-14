@@ -162,14 +162,14 @@ make docker-status       # Show Docker service status
 |---|---|---|
 | `benchmark.yml` | Manual / scheduled | Run benchmark suites against branches |
 | `ci.yml` | Push to `main`, PRs, manual | Lint, test matrix, build, integration, validate |
-| `claude-code-review.yml` | PR opened/synced, `@claude` comment, inline review comment | AI code review via the Claude Code Action — flags violations of the rules in this file |
+| `claude-review.yml` | PR opened/synced, `@claude` comment, inline review comment | AI code review via the Claude Code Action — flags violations of the rules in this file |
 | `release-gate.yml` | Tag/release events | Final pre-release gate |
 
 **Required GitHub secrets:**
 
 | Secret | Required by |
 |---|---|
-| `ANTHROPIC_API_KEY` | `claude-code-review.yml` (the reviewer model) and any integration tests that use Claude |
+| `ANTHROPIC_API_KEY` | `claude-review.yml` (the reviewer model) and any integration tests that use Claude |
 
 Optional secrets (integration tests auto-skip without them): `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY`, `NOVA_API_KEY`, `TYPESENSE_API_KEY`. CI passes provider keys to test jobs as env vars; runtime code reads them via `SecretManager` (never directly).
 
@@ -262,6 +262,7 @@ Recommended MCP servers for AI agents working on this project:
 - **Context7** — Library/framework documentation lookup. Use BEFORE guessing at APIs
 - **GitHub** — PR creation, issue management, code search
 - **Web Search** — Best practices, bug reports, when Context7 is insufficient
+- **codebase-memory-mcp** — Code knowledge graph (symbols, references, call chains). First call for any "where is X / who calls X / how is X wired to Y" question — `search_graph`, `trace_path`, `get_code_snippet`. Prefer over `grep -r` / `find -name`. Per-engineer opt-in: `make cbm-onboard` (see [`scripts/README.md`](scripts/README.md))
 
 ## Python Conventions
 

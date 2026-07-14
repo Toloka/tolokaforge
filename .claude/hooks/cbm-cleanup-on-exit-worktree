@@ -1,0 +1,31 @@
+#!/bin/bash
+# PostToolUse hook for ExitWorktree(action="remove"): drop the matching cbm
+# index DB after the tool actually removed the worktree on disk. Safety net
+# for any flow that ever moves to EnterWorktree(name=...)-created worktrees;
+# the bash-worktree-remove hook is the primary path today.
+# Idempotent + silent on no-match / errors / missing binary.
+#
+# Intentionally NO `set -e`: PostToolUse hooks must silent-noop on every
+# failure path; a non-zero exit would surface as a hook error in Claude Code.
+command -v jq >/dev/null 2>&1 || exit 0
+
+input=$(cat) || exit 0
+action=$(printf '%s' "$input" | jq -r '.tool_input.action // empty' 2>/dev/null)
+[ "$action" = "remove" ] || exit 0
+
+err=$(printf '%s' "$input" | jq -r '.tool_response.is_error // .tool_response.isError // false' 2>/dev/null)
+[ "$err" = "true" ] && exit 0
+
+# Claude Code's PostToolUse envelope carries the cwd the tool ran from, which
+# (for ExitWorktree) is the worktree about to be removed.
+cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null)
+[ -n "$cwd" ] || exit 0
+
+project="${cwd#/}"
+project="${project//\//-}"
+project=$(printf '%s' "$project" | tr -s '-')
+[ -n "$project" ] || exit 0
+
+command -v codebase-memory-mcp >/dev/null 2>&1 || exit 0
+codebase-memory-mcp cli delete_project --project "$project" >/dev/null 2>&1 || true
+exit 0

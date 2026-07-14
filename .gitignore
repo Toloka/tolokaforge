@@ -52,6 +52,7 @@ htmlcov/
 
 # Temporary plans (use docs/ for permanent development plans)
 plans/
+!docs/plans/
 
 # Release build artifacts
 release_output/
@@ -91,6 +92,11 @@ _private/
 converted/
 temp/
 .claude/*
+# Shared agent/skill definitions are part of the repo
+!.claude/agents/
+!.claude/hooks/
+!.claude/skills/
+!.claude/settings.json
 
 # Devcontainer
 devcontainer-lock.json
