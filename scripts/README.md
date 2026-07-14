@@ -45,17 +45,20 @@ Use the Makefile targets — no shell wrappers needed:
 Opt-in: nothing here runs for engineers who don't onboard.
 
 - `make cbm-onboard` — installs the `codebase-memory-mcp` binary (via the
-  official installer, prompted; the installer also registers the MCP server
-  with your coding agents), symlinks the four `.claude/hooks/cbm-*` files
-  into `~/.claude/hooks/`, and patches `~/.claude/settings.json` with 7
-  hook entries (SessionStart × 4, UserPromptSubmit, PostToolUse:Bash,
-  PostToolUse:ExitWorktree). Idempotent — safe to re-run after every
+  official installer, pinned to a release tag, prompted; the installer also
+  registers the MCP server with your coding agents), symlinks the four
+  `.claude/hooks/cbm-*` files into `~/.claude/hooks/`, patches
+  `~/.claude/settings.json` with 7 hook entries (SessionStart × 4,
+  UserPromptSubmit, PostToolUse:Bash, PostToolUse:ExitWorktree), and indexes
+  this repo (`index_repository`, mode `full` — the filtered modes exclude
+  `scripts/`, `docs/`, `.github/`). Idempotent — safe to re-run after every
   `git pull`. Symlinks (not copies) mean hook updates land via `git pull`
   with no re-run.
 - `make cbm-offboard` — reverses the on-disk changes. Leaves the cbm
   binary in place.
 - Flags via direct invocation: `bash scripts/setup/cbm-onboard.sh
-  --dry-run` (preview), `--no-binary`, `--yes`; offboard takes `--dry-run`.
+  --dry-run` (preview), `--no-binary`, `--no-index`, `--yes`; offboard
+  takes `--dry-run`.
 
 Backups of `~/.claude/settings.json` are written to
 `~/.claude/settings.json.bak.cbm-*.<timestamp>` on every write.
@@ -63,8 +66,10 @@ Backups of `~/.claude/settings.json` are written to
 What the hooks do:
 
 - `cbm-repo-context` (SessionStart) — emits the repo's cbm project key,
-  the nearest `AGENTS.md` chain, and the cbm-first protocol reminder
-  (use `search_graph` / `trace_path` / `search_code`, don't grep the repo).
+  the nearest `AGENTS.md` chain, a loud warning if the repo has no cbm
+  index yet (first call must be `index_repository`), and the cbm-first
+  protocol reminder (use `search_graph` / `trace_path` / `search_code`,
+  don't grep the repo).
 - `cbm-prompt-reinject` (UserPromptSubmit) — re-injects a ~70-token
   cbm-first rule on every prompt so it survives context compaction.
 - `cbm-cleanup-on-bash-worktree-remove` / `cbm-cleanup-on-exit-worktree`

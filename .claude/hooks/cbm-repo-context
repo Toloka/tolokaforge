@@ -1,6 +1,7 @@
 #!/bin/bash
 # SessionStart hook: emit the repo's codebase-memory-mcp project key, the
-# AGENTS.md chain for the cwd, and the cbm-first protocol reminder.
+# AGENTS.md chain for the cwd, a loud warning when the repo has no cbm
+# index yet, and the cbm-first protocol reminder.
 # Hardened with constraint framing, negative examples, an explicit first
 # call, and a question-shape decision table to defeat the failure mode
 # where the agent reads the protocol and greps anyway.
@@ -41,6 +42,31 @@ if [ ${#chain[@]} -gt 0 ]; then
   for p in "${chain[@]}"; do
     echo "  - $p"
   done
+fi
+
+# Warn when the project has no index: the protocol below prescribes search
+# tools that all return empty against an unindexed repo. index_status exits 0
+# either way — presence of "status":"ready" in the body is the real signal.
+# String-match (no pipe into grep -q): under pipefail, grep -q's early exit
+# would SIGPIPE the cli and misreport an indexed repo as missing.
+indexed=1
+if command -v codebase-memory-mcp >/dev/null 2>&1; then
+  status_out=$(codebase-memory-mcp cli index_status --project "$project" 2>/dev/null || true)
+  case "$status_out" in
+    *'"status":"ready"'*) ;;
+    *) indexed=0 ;;
+  esac
+fi
+if [ "$indexed" -eq 0 ]; then
+  cat <<NOTINDEXED
+
+⚠ NOT INDEXED: cbm has no index for project '${project}'. Every search below
+returns empty until you index. FIRST tool calls, before anything else:
+  ToolSearch query='select:mcp__codebase-memory-mcp__index_repository'
+  index_repository(repo_path="${toplevel}", mode="full")
+(mode full, not fast: the filtered modes exclude scripts/, docs/, .github/ —
+a zero-hit search against a filtered index is silence, not absence.)
+NOTINDEXED
 fi
 
 cat <<'PROTOCOL'

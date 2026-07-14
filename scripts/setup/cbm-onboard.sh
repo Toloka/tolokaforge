@@ -18,6 +18,10 @@
 #                                                command) added in-place. Existing
 #                                                entries untouched. Backup at
 #                                                ~/.claude/settings.json.bak.cbm-onboard.<ts>.
+#   4. cbm index of this repo                  — built via `cli index_repository`
+#                                                so the first agent session doesn't
+#                                                start against an empty graph
+#                                                (skippable: --no-index).
 #
 # Symlinks (not copies) mean every `git pull` of this repo updates the hook
 # behavior automatically. No re-run required.
@@ -26,20 +30,23 @@
 #   make cbm-onboard                                 # interactive defaults
 #   bash scripts/setup/cbm-onboard.sh --dry-run      # show diff, don't write
 #   bash scripts/setup/cbm-onboard.sh --no-binary    # skip the binary install
+#   bash scripts/setup/cbm-onboard.sh --no-index     # skip indexing this repo
 #   bash scripts/setup/cbm-onboard.sh --yes          # don't prompt for the binary install
 
 set -euo pipefail
 
 DRY_RUN=0
 INSTALL_BINARY=1
+INDEX_REPO=1
 ASSUME_YES=0
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=1 ;;
     --no-binary) INSTALL_BINARY=0 ;;
+    --no-index) INDEX_REPO=0 ;;
     --yes|-y) ASSUME_YES=1 ;;
     -h|--help)
-      sed -n '2,29p' "$0"
+      sed -n '2,34p' "$0"
       exit 0
       ;;
     *)
@@ -243,7 +250,26 @@ else
   echo "  patched (7 hook entries upserted, idempotent on re-run)"
 fi
 
-# ── 4. summary ───────────────────────────────────────────────────────
+# ── 4. index this repo ───────────────────────────────────────────────
+echo
+echo "==> cbm index for $REPO_ROOT"
+if [ "$INDEX_REPO" -eq 0 ]; then
+  echo "  skipping per --no-index"
+elif ! command -v codebase-memory-mcp >/dev/null 2>&1; then
+  echo "  binary not installed — skipping. Index later with:"
+  echo "    codebase-memory-mcp cli index_repository --repo-path \"$REPO_ROOT\" --mode full"
+elif [ "$DRY_RUN" -eq 1 ]; then
+  say_dry "codebase-memory-mcp cli index_repository --repo-path $(printf %q "$REPO_ROOT") --mode full"
+else
+  # mode full, not fast/moderate: the filtered modes exclude scripts/, docs/,
+  # .github/ — exactly the files this repo's stale-reference sweeps rely on —
+  # and a zero-hit search_code against a filtered index reads as "no
+  # references" when the truth is "never looked".
+  echo "  indexing (mode full — takes a few minutes on first run)…"
+  codebase-memory-mcp cli index_repository --repo-path "$REPO_ROOT" --mode full
+fi
+
+# ── 5. summary ───────────────────────────────────────────────────────
 echo
 echo "==> done"
 echo "  Verify hooks with: jq '.hooks' '$USER_SETTINGS'"
