@@ -363,6 +363,8 @@ def test_redaction_scrubs_secret_before_formatter_renders(isolated_root):
     not just each piece independently. A future refactor that swaps their
     order would leak the secret into the formatted line and fail here.
     """
+    from tolokaforge.secrets import log_filter as log_filter_module
+    from tolokaforge.secrets import manager as manager_module
     from tolokaforge.secrets.log_filter import (
         _FACTORY_SENTINEL,
         PLACEHOLDER,
@@ -372,9 +374,15 @@ def test_redaction_scrubs_secret_before_formatter_renders(isolated_root):
 
     secret = "supersecretvalue123"
     saved_factory = logging.getLogRecordFactory()
+    saved_manager = manager_module._default_manager
+    saved_cached_manager = log_filter_module._cached_manager
+    saved_cached_values = log_filter_module._cached_values
     try:
-        # Reset to a clean factory so install_global_redactor wraps only the default.
         logging.setLogRecordFactory(logging.LogRecord)
+        manager_module._default_manager = None
+        log_filter_module._cached_manager = None
+        log_filter_module._cached_values = frozenset()
+
         init_default_from(SecretManager.from_dict({"API_KEY": secret}))
         install_global_redactor()
         assert getattr(logging.getLogRecordFactory(), _FACTORY_SENTINEL, False)
@@ -388,3 +396,6 @@ def test_redaction_scrubs_secret_before_formatter_renders(isolated_root):
         assert PLACEHOLDER in output, output
     finally:
         logging.setLogRecordFactory(saved_factory)
+        manager_module._default_manager = saved_manager
+        log_filter_module._cached_manager = saved_cached_manager
+        log_filter_module._cached_values = saved_cached_values
