@@ -4,7 +4,6 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
-from tolokaforge.cli._run_display import _NULL_EVENTS, RunDisplayEvents
 from tolokaforge.core.llm import GenerationResult, LLMClient, UserSimulator
 from tolokaforge.core.logging import StructuredLogger, init_trial_logger
 from tolokaforge.core.loop import (
@@ -23,6 +22,7 @@ from tolokaforge.core.models import (
     TrialStatus,
 )
 from tolokaforge.core.rate_limiter import GlobalRateLimiter
+from tolokaforge.core.run_display_events import _NULL_EVENTS, RunDisplayEvents
 from tolokaforge.core.stuck import StuckDetector
 from tolokaforge.tools.registry import ToolExecutor
 

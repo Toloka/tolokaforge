@@ -27,7 +27,6 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Protocol, runtime_checkable
 
 from rich.layout import Layout
 from rich.live import Live
@@ -36,6 +35,10 @@ from rich.text import Text
 
 from tolokaforge.cli._display import DisplayMode, make_live
 from tolokaforge.core.logging import _TOLOKAFORGE_ROOT_HANDLER_SENTINEL
+from tolokaforge.core.run_display_events import (
+    _NULL_EVENTS,
+    RunDisplayEvents,
+)
 
 _LOGGER = logging.getLogger("tolokaforge.cli.run_display")
 
@@ -46,64 +49,6 @@ def _now() -> datetime:
     Extracted so tests can monkey-patch it to a deterministic factory when
     they need a strictly-ordered sequence of ``last_update_ts`` values."""
     return datetime.now()
-
-
-@runtime_checkable
-class RunDisplayEvents(Protocol):
-    """Per-trial lifecycle events the runner emits into a display.
-
-    Every method is kwarg-only so a future field addition does not break
-    positional callers. Implementations must not raise — a raise would
-    corrupt the runner loop. :data:`_NULL_EVENTS` is the default sink.
-    """
-
-    def run_started(self, *, total_trials: int, initial_completed: int) -> None:
-        """Fired once when the orchestrator has primed its trial queue."""
-
-    def trial_started(self, *, trial_id: str, task_id: str, trial_index: int) -> None:
-        """Fired when a worker leases a trial and enters provisioning."""
-
-    def trial_progress(
-        self,
-        *,
-        trial_id: str,
-        prompt_tokens_delta: int,
-        completion_tokens_delta: int,
-        cost_delta_usd: float,
-    ) -> None:
-        """Fired after each LLM generation inside the trial's agent loop."""
-
-    def trial_completed(self, *, trial_id: str, binary_pass: bool, score: float | None) -> None:
-        """Fired on a terminal, non-retryable success."""
-
-    def trial_failed(self, *, trial_id: str, error: str, retryable: bool) -> None:
-        """Fired on terminal failure (retryable-exhausted or hard raise)."""
-
-    def judgment_scored(self, *, trial_id: str, score: float, binary_pass: bool) -> None:
-        """Fired after the rubric judge populates ``trajectory.grade``."""
-
-    def run_finished(self, *, output_dir: Path) -> None:
-        """Fired at the very end of ``Orchestrator.run()``."""
-
-
-class _NullRunDisplayEvents:
-    """No-op :class:`RunDisplayEvents`.
-
-    Wired as the default on ``OrchestratorDeps.events`` so the orchestrator,
-    conductor, and runner never branch on ``events is None`` — they just
-    call every method.
-    """
-
-    def run_started(self, **_: object) -> None: ...
-    def trial_started(self, **_: object) -> None: ...
-    def trial_progress(self, **_: object) -> None: ...
-    def trial_completed(self, **_: object) -> None: ...
-    def trial_failed(self, **_: object) -> None: ...
-    def judgment_scored(self, **_: object) -> None: ...
-    def run_finished(self, **_: object) -> None: ...
-
-
-_NULL_EVENTS: RunDisplayEvents = _NullRunDisplayEvents()
 
 
 @dataclass
@@ -323,7 +268,7 @@ class LiveRunDisplay:
             card.turn_count += 1
             card.last_event_kind = "progress"
             # last_update_ts intentionally NOT bumped — focus is stable across
-            # per-turn ticks (D7).
+            # per-turn ticks.
             self._prompt_tokens += prompt_tokens_delta
             self._completion_tokens += completion_tokens_delta
             self._total_cost_usd += cost_delta_usd
@@ -421,22 +366,24 @@ class LiveRunDisplay:
 
         Every running trial is always shown; completed / failed trials scroll
         off in ``last_update_ts`` order once :attr:`_max_trial_rows` fills.
+        Holds the lock across the whole sort/partition so a concurrent event
+        cannot mutate ``card.status`` or ``card.last_update_ts`` mid-read.
         """
         with self._lock:
             all_cards = list(self._trials.values())
-        if len(all_cards) <= self._max_trial_rows:
-            return sorted(all_cards, key=lambda c: c.last_update_ts, reverse=True)
-        running = [c for c in all_cards if c.status == "running"]
-        terminal = sorted(
-            (c for c in all_cards if c.status != "running"),
-            key=lambda c: c.last_update_ts,
-            reverse=True,
-        )
-        running_sorted = sorted(running, key=lambda c: c.last_update_ts, reverse=True)
-        remaining = self._max_trial_rows - len(running_sorted)
-        if remaining <= 0:
-            return running_sorted[: self._max_trial_rows]
-        return running_sorted + terminal[:remaining]
+            if len(all_cards) <= self._max_trial_rows:
+                return sorted(all_cards, key=lambda c: c.last_update_ts, reverse=True)
+            running = [c for c in all_cards if c.status == "running"]
+            terminal = sorted(
+                (c for c in all_cards if c.status != "running"),
+                key=lambda c: c.last_update_ts,
+                reverse=True,
+            )
+            running_sorted = sorted(running, key=lambda c: c.last_update_ts, reverse=True)
+            remaining = self._max_trial_rows - len(running_sorted)
+            if remaining <= 0:
+                return running_sorted[: self._max_trial_rows]
+            return running_sorted + terminal[:remaining]
 
     def _estimate_eta_seconds(self) -> float | None:
         """Linear extrapolation from run-elapsed wall-time × remaining/completed.

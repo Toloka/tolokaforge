@@ -30,7 +30,6 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from tolokaforge.adapters import BaseAdapter
 from tolokaforge.adapters.native import NativeAdapter
-from tolokaforge.cli._run_display import _NULL_EVENTS, RunDisplayEvents, _NullRunDisplayEvents
 from tolokaforge.core.docker_adapter import DockerRunnerAdapter
 from tolokaforge.core.env_state import EnvironmentState
 from tolokaforge.core.llm import LLMClient, UserSimulator, build_capabilities
@@ -50,6 +49,11 @@ from tolokaforge.core.models import (
 )
 from tolokaforge.core.output.artifacts import TrialArtifactWriter
 from tolokaforge.core.rate_limiter import GlobalRateLimiter
+from tolokaforge.core.run_display_events import (
+    _NULL_EVENTS,
+    RunDisplayEvents,
+    _NullRunDisplayEvents,
+)
 from tolokaforge.core.runner import TrialRunner
 from tolokaforge.core.runtime import RuntimeBackend
 from tolokaforge.core.stuck import StuckDetector

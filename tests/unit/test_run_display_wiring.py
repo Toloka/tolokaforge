@@ -25,10 +25,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tolokaforge.cli._run_display import RunDisplayEvents
 from tolokaforge.core.llm import GenerationResult
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.models import Metrics
+from tolokaforge.core.run_display_events import RunDisplayEvents
 
 pytestmark = pytest.mark.unit
 
@@ -158,8 +158,8 @@ def test_conductor_context_carries_events_field() -> None:
 
 
 def test_orchestrator_deps_defaults_to_null_events() -> None:
-    from tolokaforge.cli._run_display import _NullRunDisplayEvents
     from tolokaforge.core.orchestrator import OrchestratorDeps
+    from tolokaforge.core.run_display_events import _NullRunDisplayEvents
 
     deps = OrchestratorDeps()
     assert isinstance(deps.events, _NullRunDisplayEvents)

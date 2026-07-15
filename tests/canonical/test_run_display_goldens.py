@@ -183,11 +183,13 @@ def test_run_display_module_exports_public_surface() -> None:
     """
 
     from tolokaforge.cli._run_display import (
-        _NULL_EVENTS,
         LiveRunDisplay,
+        _TrialCard,
+    )
+    from tolokaforge.core.run_display_events import (
+        _NULL_EVENTS,
         RunDisplayEvents,
         _NullRunDisplayEvents,
-        _TrialCard,
     )
 
     assert callable(LiveRunDisplay)

@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Any
 
 from tolokaforge.adapters import BaseAdapter, ensure_registered_adapter, get_adapter
-from tolokaforge.cli._run_display import RunDisplayEvents, _NullRunDisplayEvents
 from tolokaforge.core.conductor import (
     Conductor,
     ConductorContext,
@@ -52,6 +51,7 @@ from tolokaforge.core.output.aggregates import FileAggregateWriter, RunAggregate
 from tolokaforge.core.output.artifacts import FileArtifactWriter, TrialArtifactWriter
 from tolokaforge.core.rate_limiter import GlobalRateLimiter
 from tolokaforge.core.resume import RunStateManager
+from tolokaforge.core.run_display_events import RunDisplayEvents, _NullRunDisplayEvents
 from tolokaforge.core.run_queue import AttemptLease, create_run_queue
 from tolokaforge.core.runtime import RuntimeBackend
 from tolokaforge.core.trial import (

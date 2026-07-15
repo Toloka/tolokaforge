@@ -29,9 +29,9 @@ from click.testing import CliRunner
 
 import tolokaforge.cli.main as cli_main
 from tolokaforge.cli._display import DisplayMode
-from tolokaforge.cli._run_display import _NULL_EVENTS
 from tolokaforge.cli.main import cli
 from tolokaforge.core.logging import _TOLOKAFORGE_ROOT_HANDLER_SENTINEL
+from tolokaforge.core.run_display_events import _NULL_EVENTS
 
 pytestmark = pytest.mark.unit
 
