@@ -88,7 +88,7 @@ Tasks that declare many services or slow-starting services (large postgres seeds
 
 Cross-referencing `RUNTIME_BACKENDS.md`'s "Failure modes" section, the mode-specific soft failures are:
 
-- **`shared` only — cross-trial state contamination.** Two trials writing to the same DB can see each other's writes. Deterministic-grading tasks (whose grader reads the DB) can produce wrong verdicts if the code that writes to the DB doesn't scope by `trial_id`. Detection is task-author responsibility — the runtime doesn't know what a task's grader expects. Guardrail: the task's `environment_manifest.isolation` declaration; `SharedStackRuntimeBackend` refuses to run tasks that declare `isolation: per_trial`.
+- **`shared` only — cross-trial state contamination.** Two trials writing to the same DB can see each other's writes. Deterministic-grading tasks (whose grader reads the DB) can produce wrong verdicts if the code that writes to the DB doesn't scope by `trial_id`. Detection is task-author responsibility — the runtime doesn't know what a task's grader expects. Guardrail: per-service `services.<name>.isolation` labels drive backend selection. `SharedStackRuntimeBackend` runs a task only when every service is labelled `isolation: shared` — the task author's acknowledgment of the shared-state responsibility. A task declaring any service `isolation: reset` or `ephemeral` is auto-routed to `PerTrialRuntimeBackend` by task-driven selection. The deprecated `orchestrator.runtime` override is the only way to force a shared backend against a per-trial-requiring task set, and `_verify_isolation_compatibility` refuses that at startup.
 - **`per_trial` only — daemon-throughput ceiling.** Running many workers on one host multiplies compose-up cost by worker count. On daemons with low concurrent-project limits or slow image cache, workers can starve at the docker-daemon boundary. Guardrail: bound worker count against observed daemon throughput; ADR-0010 requires provisioners to fail loud on `ProvisionError` and attribute the failure deterministically so throughput ceilings surface in the aggregate report rather than looking like task failures.
 
 Hard failures (image build error, network bring-up error, grader RPC error, runner crash) are shared between modes and covered in `RUNTIME_BACKENDS.md`.
@@ -97,11 +97,11 @@ Hard failures (image build error, network bring-up error, grader RPC error, runn
 
 A concrete flow, per task:
 
-1. **Does the task declare `environment_manifest.isolation: per_trial`?** → run on `PerTrialRuntimeBackend`. The declaration says the task's grader cannot tolerate shared state; the shared backend refuses to run it (isolation-enforcement guard).
-2. **Does the task declare `environment_manifest.isolation: shared_ok`?** → `SharedStackRuntimeBackend` is safe and faster. `PerTrialRuntimeBackend` also works and provides stronger isolation than needed; pick based on throughput and cost preference.
-3. **Does the task not declare an `environment_manifest`?** → `SharedStackRuntimeBackend` only. `PerTrialRuntimeBackend.provision()` requires a manifest and fails loud without one. Migration to per-trial isolation requires the task-pack side to author a manifest.
-4. **Genuinely stateless workload where cost dominates?** → `shared`, with the caveat that the author is responsible for the "no cross-trial contamination" invariant.
-5. **Cross-trial isolation matters more than cost?** → `per_trial`, budget the ~10 s and ~9% cost premium per trial visible in the A/B numbers above.
+1. **Does the task declare any service `isolation: reset` or `ephemeral`?** → the run lands on `PerTrialRuntimeBackend`, selected automatically. The declaration says the task's grader cannot tolerate shared state; task-driven selection routes it there without operator action.
+2. **Does the task declare every service `isolation: shared`?** → the run lands on `SharedStackRuntimeBackend`, which is safe and faster. `PerTrialRuntimeBackend` also provides stronger isolation than needed; the deprecated `orchestrator.runtime` override is the only way to force it.
+3. **Does the task not declare an `environment_manifest`?** → no `services:` map means nothing requires per-trial materialisation, so task-driven selection lands the run on `SharedStackRuntimeBackend`. `PerTrialRuntimeBackend.provision()` requires a manifest and fails loud without one, so a task that needs per-trial isolation must first author a manifest with per-service labels.
+4. **Genuinely stateless workload where cost dominates?** → label every service `isolation: shared`; the run lands on `SharedStackRuntimeBackend` (substrate materialised once per run), and the author owns the "no cross-trial contamination" invariant the label asserts.
+5. **Cross-trial isolation matters more than cost?** → label the relevant services `isolation: reset` or `ephemeral`; the run lands on `PerTrialRuntimeBackend`. Budget the ~10 s and ~9% cost premium per trial visible in the A/B numbers above.
 
 ## Observability parity
 
@@ -126,7 +126,7 @@ Logging, metrics, and artifact writes do **not** vary by mode:
 
 ### Follow-ups
 
-- **Task-pack migration to per-trial.** Migration of the existing task packs that declare `isolation: per_trial` semantics (or need it in principle) into `environment_manifest`-shaped tasks is separate task-pack work. This ADR does not gate that migration.
+- **Task-pack migration to per-trial.** Migration of the existing task packs that need per-trial isolation into `environment_manifest`-shaped tasks with `isolation: reset` / `ephemeral` service labels is separate task-pack work. This ADR does not gate that migration.
 - **Runner image publication.** `RUNTIME_BACKENDS.md` "Follow-up work" already tracks publishing engine images to a public registry so task compose files can reference published tags directly (`:local` stays as the local-dev alias). Independent of this ADR.
 - **Per-trial concurrency benchmarks.** The resource profile table gives order-of-magnitude framing; a proper benchmark harness would produce numbers on a range of task shapes and daemon configurations. Filed as a follow-up.
 - **Cost-premium characterisation.** The small-sample runs cited above don't distinguish LLM-routing noise from any putative substrate-driven $-cost premium. Open questions: does the trial clock consume LLM tokens during compose-up (e.g. via user-simulator warm-up or agent context establishment)? Does openrouter route consistently at temperature=0 across mode-differentiated runs? A ≥20-trial-per-arm run with token-level accounting would settle both. Filed as a follow-up.
