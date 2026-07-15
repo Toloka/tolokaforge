@@ -46,7 +46,7 @@ from tolokaforge.core.logging import (
 from tolokaforge.core.models import ModelConfig, ProjectConfig, RunConfig
 from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps, resolve_run_directory
 from tolokaforge.core.project_loader import load_effective_run_config
-from tolokaforge.core.resume import RunStateManager
+from tolokaforge.core.resume import RunStateManager, resolve_resume_run_directory
 from tolokaforge.core.run_queue import create_run_queue
 from tolokaforge.secrets import init_default, install_global_redactor
 
@@ -441,6 +441,17 @@ def _run_dry_run(
     "--config", required=True, type=click.Path(exists=True), help="Path to run config YAML"
 )
 @click.option("--resume", is_flag=True, help="Resume from interrupted run")
+@click.option(
+    "--run-dir",
+    "run_dir_option",
+    type=click.Path(exists=True, file_okay=False),
+    default=None,
+    help=(
+        "Existing run directory to reuse. Required with --resume; forbidden "
+        "without it. The directory must contain engine_run_state.json or "
+        "run_state.json from a prior invocation. See docs/CLI.md § Resume."
+    ),
+)
 @click.option("--verbose", is_flag=True, help="Enable DEBUG level logging")
 @click.option("--strict", is_flag=True, help="Raise error immediately on logging ERROR level")
 @click.option(
@@ -570,6 +581,7 @@ def run(
     ctx: click.Context,
     config: str,
     resume: bool,
+    run_dir_option: str | None,
     verbose: bool,
     strict: bool,
     user_model: str | None,
@@ -592,6 +604,14 @@ def run(
     if dry_run and resume:
         raise click.UsageError(
             "--dry-run and --resume are mutually exclusive; --dry-run does not consult run state"
+        )
+    if resume and run_dir_option is None:
+        raise click.UsageError(
+            "--resume requires --run-dir <path> pointing at an existing run directory"
+        )
+    if run_dir_option is not None and not resume:
+        raise click.UsageError(
+            "--run-dir requires --resume; use it only to point --resume at an existing run directory"
         )
     samples_source = ctx.get_parameter_source("dry_run_samples")
     if not dry_run and samples_source is not click.core.ParameterSource.DEFAULT:
@@ -715,8 +735,30 @@ def run(
 
     display_mode = ctx.find_root().obj.get("display_mode", DisplayMode.PLAIN)
 
-    run_id, run_dir = resolve_run_directory(run_config.evaluation.output_dir)
-    print_run_start_banner(run_id=run_id, run_dir=run_dir, console=console)
+    if resume:
+        assert run_dir_option is not None
+        run_id, run_dir = resolve_resume_run_directory(Path(run_dir_option))
+        state_manager = RunStateManager(run_dir)
+        plan = state_manager.describe_resume_plan()
+        if plan is None:
+            raise click.ClickException(
+                f"--resume: {run_dir}/run_state.json is missing; --run-dir must "
+                "point at a completed prepare or a prior run"
+            )
+        if plan.is_complete:
+            console.print(
+                f"[muted]→[/muted] Nothing to do; run already complete "
+                f"({plan.completed}/{plan.total} completed)"
+            )
+            emit_artifact_path(run_dir)
+            return
+        console.print(
+            f"[bold]Resuming:[/bold] {plan.already_done}/{plan.total} completed, "
+            f"{plan.to_retry} to retry"
+        )
+    else:
+        run_id, run_dir = resolve_run_directory(run_config.evaluation.output_dir)
+    print_run_start_banner(run_id=run_id, run_dir=run_dir, console=console, resumed=resume)
 
     # Resolve the cost budget once — feeds both the composite budget the
     # orchestrator drives and the live panel's amber/red threshold logic.

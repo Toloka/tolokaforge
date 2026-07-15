@@ -257,6 +257,7 @@ class TestRunCommand:
         assert result.exit_code == 0
         assert "--config" in result.output
         assert "--resume" in result.output
+        assert "--run-dir" in result.output
         assert "--verbose" in result.output
         assert "--strict" in result.output
         assert "--workers" in result.output
