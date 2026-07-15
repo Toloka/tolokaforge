@@ -158,9 +158,12 @@ examples/             # Reference task layouts with runnable run_config.yaml
 ├── native/           # default `native` adapter
 │   ├── browser_task/
 │   ├── coding/
-│   ├── multi_service/          # task-declared compose (nginx catalog)
-│   ├── multi_service_advanced/ # multi-endpoint join
-│   ├── multi_service_postgres/ # PostgREST + postgres three-tier
+│   ├── multi_service/                # task-declared compose (nginx catalog)
+│   ├── multi_service_advanced/       # multi-endpoint join
+│   ├── multi_service_postgres/       # PostgREST + postgres three-tier
+│   ├── multi_service_postgres_reset/ # project layer + per-trial postgres reset
+│   ├── multi_service_slow_start/     # startup-order stress (slow-start postgres)
+│   ├── example-microservices-pack/   # reference project for the Project schema
 │   ├── native_shared_domain/
 │   └── tool_use/
 └── terminal_bench/   # `terminal_bench` adapter (Docker compose)
@@ -177,6 +180,8 @@ examples/             # Reference task layouts with runnable run_config.yaml
 | Browser/mobile tools | [docs/BROWSER_TOOLS.md](docs/BROWSER_TOOLS.md) |
 | Runner & distributed execution | [docs/RUNNER.md](docs/RUNNER.md) |
 | Runtime backends (shared vs per-trial) | [docs/architecture/RUNTIME_BACKENDS.md](docs/architecture/RUNTIME_BACKENDS.md) |
+| Projects — top-level abstraction | [docs/architecture/PROJECTS.md](docs/architecture/PROJECTS.md) |
+| Reset recipes (seed-backed per-trial reset) | [docs/architecture/RESET_RECIPES.md](docs/architecture/RESET_RECIPES.md) |
 | Isolated trials guide | [docs/guides/isolated_trials.md](docs/guides/isolated_trials.md) |
 | Multi-container task guide | [docs/guides/multi_container_tasks.md](docs/guides/multi_container_tasks.md) |
 | Adapter architecture | [docs/ADAPTER_ARCHITECTURE.md](docs/ADAPTER_ARCHITECTURE.md) |
@@ -210,6 +215,9 @@ additional services (see [multi_container_tasks.md](docs/guides/multi_container_
 | [`examples/native/multi_service/`](examples/native/multi_service/) | Smallest multi-service task — runner + db-service + nginx product catalog |
 | [`examples/native/multi_service_advanced/`](examples/native/multi_service_advanced/) | Multi-endpoint aggregation across two task-specific HTTP APIs |
 | [`examples/native/multi_service_postgres/`](examples/native/multi_service_postgres/) | Realistic three-tier stack — PostgREST + postgres, no application code in the task pack |
+| [`examples/native/multi_service_postgres_reset/`](examples/native/multi_service_postgres_reset/) | Project layer — per-trial postgres reset via a named `sql_dump` seed |
+| [`examples/native/multi_service_slow_start/`](examples/native/multi_service_slow_start/) | Cross-service startup-order stress — slow-start postgres + `depends_on: service_healthy` |
+| [`examples/native/example-microservices-pack/`](examples/native/example-microservices-pack/) | Reference project for the full Project schema (see [`docs/architecture/PROJECTS.md`](docs/architecture/PROJECTS.md)) |
 
 ## Testing
 
