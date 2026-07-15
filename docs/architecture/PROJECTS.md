@@ -5,15 +5,10 @@ in TolokaForge: what a project owns, how tasks inherit from it, how
 per-invocation settings compose on top, and how every config file
 that a project ships fits into the layered model.
 
-> **Status: PROPOSAL — part of the Project-layer refactoring.**
-> This is the *target* design (#189, delivered via milestones
-> #211–#214); it intentionally describes behaviour that does not
-> exist yet. The schema models shipped in #215; the loader, merge
-> chains, strict validation, and isolation vocabulary have not.
-> [Delta from current implementation](#delta-from-current-implementation)
-> lists exactly what this design adds, what it changes, and which
-> ADRs it amends. Examples are written against the *proposed*
-> schema and are not runnable against the current CLI.
+> **Status: Shipped.** M2 (loader, base+delta merging) shipped in
+> v0.8.3; M3 (per-service isolation, seed-backed reset recipes, backend
+> capabilities, environment identity) shipped in v0.8.4. This document
+> reflects the current implementation.
 
 Companion reading:
 [`RUNTIME_BACKENDS.md`](RUNTIME_BACKENDS.md) (compute substrates,
@@ -50,104 +45,25 @@ extends),
 
 ## Delta from current implementation
 
-What exists today vs. what this proposal adds. Keep this section
-current as milestones land; delete it when the last one does.
+The Project layer landed across two milestones. M2 delivered the loader
+and both base+delta merge chains, the environment-schema restructuring
+(`EnvironmentPatch` as the type of both `default_environment` and task
+`environment_manifest`, with the `stack` sub-object and post-merge
+`resolve()`), strict unknown-key rejection, `evaluation.projects`,
+dual-home knob resolution, task-schema relaxation to `task_id` +
+`description`, and `${VAR}` run-config interpolation. M3 delivered
+per-service isolation (`services.<name>.isolation`:
+`shared` / `reset` / `ephemeral`), seed-backed reset recipes,
+task-driven backend selection, backend-capability admission, the
+shared-assets registry, the grading provider registry, and
+`resolve_environment_identity`. See the CHANGELOG for the per-release
+detail.
 
-**Exists today (v0.8.x):**
-
-- Schema models `ProjectConfig`, `TaskDefaults`, `RunDefaults` and
-  the compute/storage/observability blocks (#215) — schema only;
-  nothing loads or merges them yet.
-- Single-file run configs: `tolokaforge run --config <file>` parses
-  the named file directly into `RunConfig` (`models`,
-  `orchestrator`, `evaluation` all required). No `run_defaults`
-  merging happens yet.
-- `evaluation.task_packs` — the current name for what this document
-  calls `evaluation.projects`.
-
-**This proposal adds (owning milestone in parentheses):**
-
-- The loader and both base+delta merge chains (M2, #211).
-- Per-service isolation declarations
-  (`default_environment.services.<name>.isolation`:
-  `shared` / `reset` / `ephemeral`), seed-backed reset recipes,
-  task-driven backend selection, backend-capability admission,
-  and `resolve_environment_identity` for observability (M3,
-  #212, shipped — amends ADR-0018's whole-stack model). Compose
-  labels are **not** an input: no label mechanism exists and none
-  is added — the manifest is the only home for per-service
-  semantics.
-- Strict unknown-key rejection with closest-match hints (M4,
-  #213). Today unknown keys are **silently ignored** (Pydantic
-  default) on all Project-layer models.
-- `evaluation.projects` as the rename of `evaluation.task_packs`
-  (legacy alias retired in M5, #214).
-- The environment-schema restructuring (M2; a clean break —
-  nothing loads these files yet, so no aliases):
-  `EnvironmentPatch` (all-optional, no construction-time I/O) as
-  the type of both `default_environment` and task
-  `environment_manifest`, with today's eagerly-validating
-  `EnvironmentManifest` becoming the output of a post-merge
-  `resolve()` — see
-  [Patches and the resolved environment document](#patches-and-the-resolved-environment-document);
-  the `stack` sub-object grouping `compose_file` / `inputs` /
-  `runner_service` with atomic replacement (`inputs` is new —
-  today's schema would reject it); `SecurityContext`
-  `run_as_user`/`run_as_group` widened to `int | str`.
-- Shape reservations, name-squatted now to avoid migrations
-  later: typed seed-registry entries (`{path, kind}`, bare-string
-  shorthand); `agent`/`judge` reserved as illegal actor names +
-  the roster ⊆ `models` load-time cross-check;
-  `actors.<name>.tools` and `actors.<name>.service`;
-  backend-capability entries as `string | {name: params}` with a
-  registry-owned vocabulary. `network_policy` deliberately stays
-  a closed enum; parameterisation is finalised before the first
-  major release.
-- The [shared-assets registry](#shared-assets--seeds-and-other-project-level-files)
-  with `initial_state.seed` / `overlay` and registry-level
-  digests (schema addition; M3, #212 — activated together with
-  seed-backed reset recipes). The [`actors` map](#actor-composition)
-  (root-level `user_simulator` becomes a legacy alias for
-  `actors.user`; the field lands in M4, the alias retires in
-  M5). The [grading provider registry](#grading-model--what-the-harness-owns)
-  (M3, #212) and
-  [services/backend scaffolding](#services-and-backends--scaffolding) (M3, #212).
-- Dual-home knob resolution (see
-  [Knobs that exist in both chains](#knobs-that-exist-in-both-chains)):
-  `orchestrator.max_turns`/`orchestrator.timeouts` are redefined
-  as run-level caps; `orchestrator.stuck_heuristics` is
-  deprecated (M2 repoints the conductor); `continue_prompt` is
-  wired or dropped in M2. On the run side, `compute.*` becomes
-  the only home for `workers` / `max_budget_usd` /
-  `max_requests_per_second` / `max_attempt_retries` and
-  `storage.queue` for the queue backend; the `OrchestratorConfig`
-  duplicates become read-time aliases retired in M5 (#214).
-- Task-schema relaxation: today's `TaskConfig` requires `name`,
-  `category`, `initial_state`, `tools`, `user_simulator`, and
-  `grading`; the minimal task in this design is `task_id` +
-  `description`. M2 relaxes the required set; `name` and
-  `category` are dropped (identity is `task_id`; the domain
-  association lives at project level).
-- `${VAR}` interpolation in run-config string values,
-  substituted from the process environment at load time;
-  unresolved variables fail loud.
-- Env-var layer restricted to infrastructure fields: the CLI's
-  current `USER_MODEL`/`JUDGE_MODEL` env-var overrides are
-  retired in M5 — model choices belong in version-controlled run
-  configs.
-- New CLI surface (M2): a `--workers` flag and the
-  `tolokaforge assets stamp` verb (final name settled in M2).
-  Seed references gain an optional `target: <service>` binding
-  for `sql_dump` seeds not consumed by a recipe.
-
-**ADR alignment:**
-
-- The isolation default stays `per_trial`, per ADR-0009 —
-  unlabelled services default to `ephemeral`. (An earlier draft
-  proposed `shared_ok` by default; that is withdrawn: safe by
-  default, relaxation is an explicit reviewable label.)
-- The per-service vocabulary amends ADR-0018 — see the ADR's
-  "Amendment" section.
+Two ADR-alignment facts carry into the current design: the isolation
+default stays `per_trial` per ADR-0009 (unlabelled services default to
+`ephemeral`), and the per-service isolation vocabulary amends ADR-0018 —
+see the ADR's "Amendment" section. Compose files carry no isolation
+semantics; the manifest is the only home for per-service treatment.
 
 ## Naming — "Project" vs "task pack"
 
