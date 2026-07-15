@@ -25,7 +25,10 @@ Dev install:
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 uv sync
+uv tool install --editable . --python 3.12   # exposes `tolokaforge` on PATH
 ```
+
+The last line installs the `tolokaforge` command globally (into `~/.local/bin/`). `--editable` keeps it pointing at your working tree so `git pull` updates it. All examples below assume `tolokaforge` is on PATH; if you skip the install step, prefix every command with `uv run` (e.g. `uv run tolokaforge run …`).
 
 See [Python Package Guide](docs/PYTHON_PACKAGE.md) for all extras and programmatic API usage.
 
@@ -36,11 +39,11 @@ See [Python Package Guide](docs/PYTHON_PACKAGE.md) for all extras and programmat
 cp .env.example .env
 
 # 2. Run one of the included examples
-uv run tolokaforge run --config examples/native/coding/run_config.yaml
+tolokaforge run --config examples/native/coding/run_config.yaml
 
 # 3. Check results
-uv run tolokaforge status --run-dir results/coding_example
-uv run tolokaforge analyze --trajectory results/coding_example/trials/<task_id>/0/trajectory.yaml
+tolokaforge status --run-dir results/coding_example
+tolokaforge analyze --trajectory results/coding_example/trials/<task_id>/0/trajectory.yaml
 ```
 
 That's it. Docker services for browser / mobile / RAG tasks start automatically via
@@ -73,7 +76,7 @@ To write your own benchmark, copy a working example as a starting point:
 ```bash
 cp examples/native/coding/run_config.yaml my_run.yaml
 $EDITOR my_run.yaml         # change model, tasks_glob, output_dir
-uv run tolokaforge run --config my_run.yaml
+tolokaforge run --config my_run.yaml
 ```
 
 Every example under [`examples/`](examples/) ships a `run_config.yaml` next to its
@@ -97,7 +100,7 @@ that stack is scoped:
 Pick per-run via the CLI flag or the config key:
 
 ```bash
-uv run tolokaforge run --config my_run.yaml --runtime per_trial
+tolokaforge run --config my_run.yaml --runtime per_trial
 ```
 
 ```yaml

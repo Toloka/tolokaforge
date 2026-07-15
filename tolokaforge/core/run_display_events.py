@@ -54,6 +54,24 @@ class RunDisplayEvents(Protocol):
     def run_finished(self, *, output_dir: Path) -> None:
         """Fired at the very end of ``Orchestrator.run()``."""
 
+    def phase_changed(self, *, phase: str, detail: str | None = None) -> None:
+        """Fired at pipeline milestones BEFORE and after :meth:`run_started`.
+
+        Purpose: give the panel a chance to render "Starting services…"
+        during the 10-30s Docker startup window that used to display
+        ``0/0 · 0 running``. ``phase`` values are documented literals:
+
+        - ``"loading_tasks"`` — before adapter loads task manifests.
+        - ``"starting_services"`` — before ``service_stack.start_all()``.
+        - ``"services_ready"`` — after the service health check passes.
+        - ``"connecting_runtime"`` — before ``runtime_backend.connect()``.
+        - ``"priming_queue"`` — before the trial pool starts leasing.
+
+        ``detail`` is an optional one-line adornment (e.g. container count).
+        Implementations must not raise. Backward-compatible: existing
+        display consumers get :data:`_NULL_EVENTS`' no-op.
+        """
+
 
 class _NullRunDisplayEvents:
     """No-op :class:`RunDisplayEvents`.
@@ -70,6 +88,7 @@ class _NullRunDisplayEvents:
     def trial_failed(self, **_: object) -> None: ...
     def judgment_scored(self, **_: object) -> None: ...
     def run_finished(self, **_: object) -> None: ...
+    def phase_changed(self, **_: object) -> None: ...
 
 
 _NULL_EVENTS: RunDisplayEvents = _NullRunDisplayEvents()

@@ -72,7 +72,9 @@ uv sync
 # Run Python scripts
 uv run python <script>
 
-# Run CLI tools
+# Run CLI tools — direct after `uv tool install --editable . --python 3.12`
+tolokaforge --help
+# Or without the global install:
 uv run tolokaforge --help
 
 # List installed packages
@@ -127,7 +129,7 @@ uv run pytest tests/ -v -m canonical
 scripts/with_env.sh uv run pytest tests/ -v -m integration
 
 # Validate task definitions (tasks/ must be cloned locally or use a custom TASKS_GLOB)
-uv run tolokaforge validate --tasks "tasks/**/task.yaml"
+tolokaforge validate --tasks "tasks/**/task.yaml"
 ```
 
 **`scripts/with_env.sh` convention:** Use `scripts/with_env.sh uv run ...` when you need `.env` variables (API keys, service URLs). Use plain `uv run ...` for tasks that don't need environment variables (unit tests, linting).

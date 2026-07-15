@@ -433,6 +433,34 @@ class Orchestrator:
         return total_cost
 
     @staticmethod
+    def _is_auth_failure(trajectory: Trajectory) -> bool:
+        """Return True when a trajectory terminated on a provider auth error.
+
+        Auth errors are deterministic — the same request will fail the same
+        way on retry — so they classify as non-retryable regardless of the
+        broader ``API_ERROR`` bucket. Signal comes from the trailing SYSTEM
+        message the loop appends on ``TerminationReason.API_ERROR``:
+        ``"API error: LLM API call failed: … AuthenticationError …"``.
+        """
+        if trajectory.termination_reason != TerminationReason.API_ERROR:
+            return False
+        messages = getattr(trajectory, "messages", None) or []
+        for msg in reversed(messages):
+            content = getattr(msg, "content", None)
+            if not isinstance(content, str):
+                continue
+            # Match litellm-wrapped provider auth strings.
+            if "AuthenticationError" in content:
+                return True
+            if '"code":401' in content or '"code": 401' in content:
+                return True
+            if '"code":403' in content or '"code": 403' in content:
+                return True
+            # Only inspect the most recent narrative-carrying message.
+            break
+        return False
+
+    @staticmethod
     def _is_retryable_trajectory(trajectory: Trajectory) -> bool:
         """Classify retryable infrastructure failures.
 
@@ -445,8 +473,14 @@ class Orchestrator:
         daemon flake) from deterministic config faults, this branch will
         gate on that finer signal; today, fail-fast preserves diagnostic
         clarity and matches AGENTS.md rule 1.
+
+        Auth-shaped ``API_ERROR`` trajectories short-circuit to
+        non-retryable via :meth:`_is_auth_failure` — bad keys are
+        deterministic across attempts.
         """
         if trajectory.termination_reason == TerminationReason.PROVISION_ERROR:
+            return False
+        if Orchestrator._is_auth_failure(trajectory):
             return False
         if trajectory.status in (TrialStatus.ERROR, TrialStatus.TIMEOUT):
             return True
@@ -1079,6 +1113,7 @@ class Orchestrator:
 
         # Ensure TypeSense is started and tasks are loaded
         if not self.tasks:
+            self._events.phase_changed(phase="loading_tasks")
             self.load_tasks()
 
         # Initialize resume state manager
@@ -1244,7 +1279,12 @@ class Orchestrator:
                         "Building Docker images and starting containers "
                         "(this may take a few minutes on first run)..."
                     )
+                    self._events.phase_changed(
+                        phase="starting_services",
+                        detail="docker compose up",
+                    )
                     service_stack.start_all(wait=True)
+                    self._events.phase_changed(phase="services_ready")
                     self._ensure_engine_image_local_aliases(service_stack)
                     # Use localhost address — the orchestrator runs on the host,
                     # not inside Docker, so Docker container names don't resolve.
@@ -1287,6 +1327,7 @@ class Orchestrator:
                 env_manifest=run_env_manifest,
                 run_id=run_id,
             )
+        self._events.phase_changed(phase="connecting_runtime")
         runtime_backend.connect()
         self.logger.info("Runtime backend connected")
         self._verify_isolation_compatibility(runtime_backend)

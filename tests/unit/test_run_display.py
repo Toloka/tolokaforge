@@ -47,7 +47,7 @@ def test_live_run_display_satisfies_protocol() -> None:
     assert isinstance(LiveRunDisplay(), RunDisplayEvents)
 
 
-def test_protocol_declares_seven_lifecycle_methods() -> None:
+def test_protocol_declares_eight_lifecycle_methods() -> None:
     expected = {
         "run_started",
         "trial_started",
@@ -56,6 +56,7 @@ def test_protocol_declares_seven_lifecycle_methods() -> None:
         "trial_failed",
         "judgment_scored",
         "run_finished",
+        "phase_changed",
     }
     declared = {
         name
@@ -63,7 +64,7 @@ def test_protocol_declares_seven_lifecycle_methods() -> None:
         if not name.startswith("_") and callable(vars(RunDisplayEvents)[name])
     }
     # `RunDisplayEvents` inherits from Protocol which contributes some dunders;
-    # the visible surface must equal the seven lifecycle methods.
+    # the visible surface must equal the eight lifecycle methods.
     assert declared == expected
 
 
