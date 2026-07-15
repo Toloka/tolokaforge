@@ -472,6 +472,7 @@ class _FakeEvents:
     def judgment_scored(self, **_: Any) -> None: ...
     def run_finished(self, **_: Any) -> None: ...
     def phase_changed(self, **_: Any) -> None: ...
+    def trial_provisioned(self, **_: Any) -> None: ...
 
 
 class TestEventsFlowEndToEnd:
@@ -516,6 +517,9 @@ class TestEventsFlowEndToEnd:
 
             def phase_changed(self, **_: Any) -> None:
                 received.append("phase_changed")
+
+            def trial_provisioned(self, **_: Any) -> None:
+                received.append("trial_provisioned")
 
         recording_events = _RecordingFakeEvents()
 

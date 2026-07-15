@@ -57,7 +57,11 @@ from tolokaforge.core.output.aggregates import FileAggregateWriter, RunAggregate
 from tolokaforge.core.output.artifacts import FileArtifactWriter, TrialArtifactWriter
 from tolokaforge.core.rate_limiter import GlobalRateLimiter
 from tolokaforge.core.resume import RunStateManager
-from tolokaforge.core.run_display_events import RunDisplayEvents, _NullRunDisplayEvents
+from tolokaforge.core.run_display_events import (
+    RunDisplayEvents,
+    ServiceSnapshot,
+    _NullRunDisplayEvents,
+)
 from tolokaforge.core.run_queue import AttemptLease, create_run_queue
 from tolokaforge.core.runtime import RuntimeBackend
 from tolokaforge.core.trial import (
@@ -203,6 +207,46 @@ def _normalise_runner_url(runner_address: str) -> str:
     return f"http://{runner_address}"
 
 
+def _declared_engine_service_snapshots(service_stack: Any) -> list[ServiceSnapshot]:
+    """Return one ``ServiceSnapshot`` per declared engine service.
+
+    Fired on ``phase_changed(phase="starting_services", …)`` so the
+    panel can render the service list with ``status="created"`` before
+    any container has been brought up. Reads ``service_stack.services``
+    — the declared :class:`ServiceDefinition` mapping — so it works
+    before ``start_all()``.
+    """
+    snapshots: list[ServiceSnapshot] = []
+    for name in service_stack.services:
+        snapshots.append(ServiceSnapshot(name=name, status="created", ports={}, role="engine"))
+    return snapshots
+
+
+def _engine_service_snapshots(service_stack: Any) -> list[ServiceSnapshot]:
+    """Return one ``ServiceSnapshot`` per running engine service.
+
+    Fired on ``phase_changed(phase="services_ready", …)`` after
+    ``start_all()`` completes so the panel can render live status +
+    resolved ports. Reads ``service_stack.get_status()`` for the
+    lifecycle string and ``.health`` for the probe verdict; the widget
+    prefers ``health`` when present because ``status="running"`` on a
+    container whose probe is still starting overstates readiness.
+    """
+    statuses = service_stack.get_status()
+    snapshots: list[ServiceSnapshot] = []
+    for name, status in statuses.items():
+        effective = status.health if status.health not in (None, "unknown") else status.status
+        snapshots.append(
+            ServiceSnapshot(
+                name=name,
+                status=effective,
+                ports=dict(status.ports),
+                role="engine",
+            )
+        )
+    return snapshots
+
+
 def _build_env_endpoints(runner_address: str) -> EnvEndpoints:
     """Resolve the per-trial service URLs for inclusion in :class:`TrialSpec`.
 
@@ -325,6 +369,11 @@ class Orchestrator:
         # — repeating that K times for ``repeats=K`` trials of the same
         # task is wasted work. Populated lazily by ``_build_trial_spec``.
         self._task_desc_cache: dict[str, TaskDescription] = {}
+        # Run-wide trial ordering: ``(task_id, trial_index) → total_index``
+        # (0..total-1). Populated by :meth:`_build_pending_trials` and
+        # read at the ``trial_started`` emission site so the panel can
+        # render a global ``[N/M]`` prefix.
+        self._total_index_by_key: dict[tuple[str, int], int] = {}
 
         # Initialize logger
         log_level = logging.DEBUG if verbose else logging.INFO
@@ -807,6 +856,11 @@ class Orchestrator:
         ``trial_executor.execute`` to the worker pool in place of
         ``conductor.run``; the bracket runs on the worker thread so
         provisioning parallelism equals worker count.
+
+        Threads :attr:`_events` in so the executor can fire
+        ``trial_provisioned`` after :meth:`RuntimeBackend.await_ready`
+        returns — the runtime is the only place with a handle on the
+        materialised infrastructure snapshot.
         """
         from tolokaforge.core.trial_executor import ProvisioningTrialExecutor
 
@@ -814,6 +868,7 @@ class Orchestrator:
             runtime_backend=runtime_backend,
             conductor=conductor,
             logger=self.logger,
+            events=self._events,
         )
 
     def _verify_isolation_compatibility(self, runtime_backend: RuntimeBackend) -> None:
@@ -882,6 +937,10 @@ class Orchestrator:
         Order is (task, trial_index) lexicographic. With
         ``orchestrator.shuffle_trials`` set, the order is randomized —
         diagnostic only, does not eliminate state leakage between trials.
+
+        Populates :attr:`_total_index_by_key` as a side effect so the
+        ``trial_started`` emission site can render a run-wide
+        ``[N/M]`` prefix without recomputing.
         """
         pending_trials: list[tuple[str, int]] = []
         for task in tasks:
@@ -892,6 +951,7 @@ class Orchestrator:
 
         if self.config.orchestrator.shuffle_trials:
             random.shuffle(pending_trials)
+        self._total_index_by_key = {key: idx for idx, key in enumerate(pending_trials)}
         return pending_trials
 
     def _ensure_typesense_started(self) -> None:
@@ -1282,9 +1342,13 @@ class Orchestrator:
                     self._events.phase_changed(
                         phase="starting_services",
                         detail="docker compose up",
+                        services=_declared_engine_service_snapshots(service_stack),
                     )
                     service_stack.start_all(wait=True)
-                    self._events.phase_changed(phase="services_ready")
+                    self._events.phase_changed(
+                        phase="services_ready",
+                        services=_engine_service_snapshots(service_stack),
+                    )
                     self._ensure_engine_image_local_aliases(service_stack)
                     # Use localhost address — the orchestrator runs on the host,
                     # not inside Docker, so Docker container names don't resolve.
@@ -1444,6 +1508,7 @@ class Orchestrator:
                     trial_id=f"{lease.task_id}:{lease.trial_index}",
                     task_id=lease.task_id,
                     trial_index=lease.trial_index,
+                    total_index=self._total_index_by_key.get((lease.task_id, lease.trial_index), 0),
                 )
 
                 try:

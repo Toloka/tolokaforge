@@ -133,10 +133,12 @@ The root flag `--display={full,rich,plain,log,none}` and the equivalent env var 
 
 ### Live run panel (`--display=rich` during `tolokaforge run`)
 
-`tolokaforge run` under `--display=rich` renders inside a `rich.Live` region owned by `tolokaforge.dx.live_panel.LiveRunDisplay`. The panel has three regions:
+`tolokaforge run` under `--display=rich` renders inside a `rich.Live` region owned by `tolokaforge.dx.live_panel.LiveRunDisplay`. The panel has three regions, plus two conditional ones:
 
-- **Left pane — trial list.** One line per trial: `<glyph> task_id · trial_index` where `<glyph>` is `⏳` for running, `✓` for completed, `✗` for failed. Running trials always render; completed and failed trials scroll off in `last_update_ts` order once the window (default 20 rows) fills.
-- **Right pane — focused trial.** Structured summary of the trial that most recently transitioned state: `turn N · in Xk / out Y tok · $Z.ZZ · last: <event_kind>`. Focus follows lifecycle transitions only (`trial_started`, `trial_completed`, `trial_failed`, `judgment_scored`) — per-turn `trial_progress` events mutate counters but leave focus stable, so the pane does not alternate on high-frequency ticks.
+- **Optional banner (top).** Populated on the first auth-shaped `trial_failed` so a bad API key doesn't hide as one row of `fail N` in the bottom bar.
+- **Optional services widget (below the banner).** Only visible during the startup window (before the first `run_started`) when `phase_changed(services=…)` has fired. One row per built-in `EngineStack` service: name, lifecycle status, health glyph (`✓` healthy, `⋯` starting/created, `✗` unhealthy, `~` no probe), port summary (`container_port→host_port`). Disappears once trials dispatch.
+- **Left pane — trial list.** One line per trial: `<glyph> [N/M] task_id · trial_index` where `<glyph>` is `⏳` for running, `✓` for completed, `✗` for failed and `[N/M]` is the run-wide 1-indexed position, zero-padded to the width of `M`. Running trials always render; completed and failed trials scroll off in `last_update_ts` order once the window (default 20 rows) fills. The main region is height-adaptive — three trials in a tall terminal give a short pane instead of filling the screen.
+- **Right pane — focused trial.** Structured summary of the trial that most recently transitioned state: `turn N · in Xk / out Y tok · $Z.ZZ · last: <event_kind>`. Focus follows lifecycle transitions only (`trial_started`, `trial_completed`, `trial_failed`, `judgment_scored`) — per-turn `trial_progress` events mutate counters but leave focus stable, so the pane does not alternate on high-frequency ticks. Once `trial_provisioned` has fired for the focused trial, a compact "Infrastructure" sub-panel appears under the summary listing the per-container health glyphs and published ports for the trial's compose stack.
 - **Bottom bar.** One line, format:
 
   ```
@@ -145,9 +147,9 @@ The root flag `--display={full,rich,plain,log,none}` and the equivalent env var 
 
   Concrete example: `142/500 · 12 running · $0.87 · in 41.2k / out 6.8k tok · fail 3 · eta 03:14`. `cost` renders `$<0.01` below one cent and `$0.00` at zero. `prompt` / `completion` render with a `k` suffix at ≥ 5 000 tokens. `eta` is `MM:SS` under one hour, `HH:MM:SS` above, and `n/a` before the first in-run completion. The pinned literal shape lives in `tests/canonical/golden/run_display/panel_{80,120}.svg`.
 
-The orchestrator, conductor, and runner emit lifecycle events into a `RunDisplayEvents` Protocol (`run_started`, `trial_started`, `trial_progress`, `trial_completed`, `trial_failed`, `judgment_scored`, `run_finished`). `LiveRunDisplay` subscribes and repaints at 4 Hz. `_NULL_EVENTS` is the default sink under any non-active mode — the orchestrator / conductor / runner never branch on `events is None`, they just call every method.
+The orchestrator, conductor, and runner emit lifecycle events into a `RunDisplayEvents` Protocol (`run_started`, `trial_started`, `trial_progress`, `trial_provisioned`, `trial_completed`, `trial_failed`, `judgment_scored`, `run_finished`, `phase_changed`). `LiveRunDisplay` subscribes and repaints at 4 Hz. `_NULL_EVENTS` is the default sink under any non-active mode — the orchestrator / conductor / runner never branch on `events is None`, they just call every method.
 
-Log lines from `configure_root_logging` interleave above the panel: on `__enter__`, `LiveRunDisplay` re-points the sentinel-tagged root handler's `.stream` attribute to the Rich-wrapped `sys.stderr` so the handler shares the Live region's cooperative rendering; `__exit__` restores the snapshotted stream.
+Log lines from `configure_root_logging` route through a `_LogSink` installed for the lifetime of the Live context. INFO / DEBUG records land in a bounded 500-record ring buffer inside the panel (available via `LiveRunDisplay.log_records()` for the future Textual log pane) and are otherwise swallowed so the Docker-boot log wall no longer scrolls the panel off-screen; WARNING and above still write to the original stderr the sentinel handler was wired to, so real problems surface above the panel. `__exit__` reinstalls the original sentinel handler.
 
 `--display=full` today collapses to `--display=rich` because `textual` is not a dependency; when the Textual TUI (C3) lands, `--display=full` will render a Textual class that consumes the same `RunDisplayEvents` Protocol.
 

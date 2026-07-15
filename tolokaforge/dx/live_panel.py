@@ -21,26 +21,37 @@ still thread ``events`` through without conditional branches.
 from __future__ import annotations
 
 import logging
-import sys
 import threading
+from collections import deque
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import TextIO
 
 from rich.layout import Layout
 from rich.live import Live
 from rich.panel import Panel
+from rich.table import Table
 from rich.text import Text
 
 from tolokaforge.core.logging import _TOLOKAFORGE_ROOT_HANDLER_SENTINEL
 from tolokaforge.core.run_display_events import (
     _NULL_EVENTS,
+    ContainerSnapshot,
     RunDisplayEvents,
+    ServiceSnapshot,
 )
 from tolokaforge.dx._display import DisplayMode, format_duration, make_live
 
 _LOGGER = logging.getLogger("tolokaforge.dx.live_panel")
+
+_LOG_BUFFER_MAX = 500
+"""Ring-buffer size for INFO/DEBUG records held inside the panel. The
+buffer is scoped to one run — ~500 records covers the busiest observed
+Docker-boot window with a few hundred records of headroom for
+in-trial output — and never grows without bound thanks to
+``deque(maxlen=…)``."""
 
 
 def _now() -> datetime:
@@ -49,6 +60,43 @@ def _now() -> datetime:
     Extracted so tests can monkey-patch it to a deterministic factory when
     they need a strictly-ordered sequence of ``last_update_ts`` values."""
     return datetime.now()
+
+
+class _LogSink(logging.Handler):
+    """Root-logger handler installed for the lifetime of :class:`LiveRunDisplay`.
+
+    Every record is appended to :attr:`buffer` (a bounded ring); records
+    at ``WARNING`` or above are also formatted and written to the wrapped
+    stream — the stream the sentinel handler was writing to *before*
+    Rich patched ``sys.stderr`` — so real problems still land above the
+    panel. INFO/DEBUG records are swallowed for on-panel display,
+    preventing the Docker-boot log wall from scrolling the Live region
+    off-screen.
+    """
+
+    def __init__(
+        self,
+        *,
+        wrapped_stream: TextIO,
+        formatter: logging.Formatter | None,
+        buffer: deque[logging.LogRecord],
+    ) -> None:
+        super().__init__()
+        self._wrapped_stream = wrapped_stream
+        if formatter is not None:
+            self.setFormatter(formatter)
+        self.buffer = buffer
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.buffer.append(record)
+        if record.levelno < logging.WARNING:
+            return
+        try:
+            line = self.format(record)
+            self._wrapped_stream.write(line + "\n")
+            self._wrapped_stream.flush()
+        except Exception:  # noqa: BLE001 — handlers must never raise past logging
+            self.handleError(record)
 
 
 @dataclass
@@ -66,6 +114,7 @@ class _TrialCard:
     task_id: str
     trial_index: int
     status: str  # "running" | "completed" | "failed"
+    total_index: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
     cost_usd: float = 0.0
@@ -75,6 +124,7 @@ class _TrialCard:
     last_update_ts: datetime = field(default_factory=_now)
     turn_count: int = 0
     last_event_kind: str = "started"
+    containers: list[ContainerSnapshot] | None = None
 
 
 @dataclass
@@ -190,6 +240,80 @@ def _format_phase_line(phase: str, detail: str | None) -> str:
     return f"{label}…"
 
 
+_HEALTH_GLYPHS: dict[str, str] = {
+    "healthy": "✓",
+    "unhealthy": "✗",
+    "starting": "⋯",
+    "created": "⋯",
+    "no_probe": "~",
+    "unknown": "~",
+}
+
+
+def _health_glyph(status: str) -> str:
+    """Return the compact health glyph for a service/container status.
+
+    ``✓`` healthy, ``⋯`` starting/created, ``✗`` unhealthy, ``~`` no
+    probe / unknown. Unknown inputs fall through to ``~`` — a status
+    string we don't recognise is treated as "no readable probe".
+    """
+    return _HEALTH_GLYPHS.get(status, "~")
+
+
+def _summarise_ports(ports: dict[int, int]) -> str:
+    """Render a compact ``container_port→host_port`` port list.
+
+    Empty ports render as an empty string so callers can skip a bare
+    ``-`` column when the service publishes nothing.
+    """
+    if not ports:
+        return ""
+    return ", ".join(f"{container}→{host}" for container, host in sorted(ports.items()))
+
+
+def _render_services_table(services: list[ServiceSnapshot]) -> Table:
+    """Compact one-row-per-service table for the startup-window widget.
+
+    Columns: name / status / health glyph / port summary. Called by both
+    the mid-region renderer (when ``_total_trials == 0``) and the tests
+    covering the widget's shape.
+    """
+    table = Table(show_header=True, header_style="bold", expand=True, pad_edge=False)
+    table.add_column("service", ratio=2, no_wrap=True)
+    table.add_column("status", ratio=2, no_wrap=True)
+    table.add_column("", width=1, no_wrap=True)
+    table.add_column("ports", ratio=3, no_wrap=True)
+    for svc in services:
+        table.add_row(
+            svc["name"],
+            svc["status"],
+            _health_glyph(svc.get("status", "unknown")),
+            _summarise_ports(svc.get("ports", {})),
+        )
+    return table
+
+
+def _render_containers_table(containers: list[ContainerSnapshot]) -> Table:
+    """Compact per-container table for the focused-trial infra sub-panel.
+
+    Columns: container name / health glyph / port summary. State + health
+    combine into a single glyph so the sub-panel stays short enough for
+    the right pane's limited width.
+    """
+    table = Table(show_header=False, expand=True, pad_edge=False, box=None)
+    table.add_column("name", ratio=3, no_wrap=True)
+    table.add_column("", width=1, no_wrap=True)
+    table.add_column("ports", ratio=3, no_wrap=True)
+    for container in containers:
+        health = container.get("health") or container.get("state", "unknown")
+        table.add_row(
+            container.get("name", ""),
+            _health_glyph(health),
+            _summarise_ports(container.get("ports", {})),
+        )
+    return table
+
+
 def _looks_like_auth_error(error_str: str) -> bool:
     """True when ``error_str`` came from a 401/403 provider auth failure.
 
@@ -299,11 +423,21 @@ class LiveRunDisplay:
         # switches to counters) or no phase event has fired yet.
         self._current_phase: str | None = None
         self._current_phase_detail: str | None = None
+        # Latest services snapshot from ``phase_changed`` — populated on
+        # ``starting_services`` and ``services_ready`` transitions. Feeds
+        # the mid-region widget until trials dispatch.
+        self._services: list[ServiceSnapshot] | None = None
         # Top-of-panel error banner. Populated once the first auth-shaped
         # ``trial_failed`` fires so a bad key doesn't hide as ``fail 1``
         # in the counters. Tuple: (title, message, hint | None).
         self._banner: tuple[str, str, str | None] | None = None
-        self._saved_log_streams: list[tuple[logging.Handler, object]] = []
+        # Ring buffer feeding the (future) log pane and available now via
+        # :meth:`log_records`. Populated by :class:`_LogSink` for the
+        # lifetime of the Live context.
+        self._log_buffer: deque[logging.LogRecord] = deque(maxlen=_LOG_BUFFER_MAX)
+        # Sentinel handlers we removed on ``__enter__`` and re-install on
+        # ``__exit__``, paired with the ``_LogSink`` that replaced each.
+        self._replaced_log_handlers: list[tuple[logging.Handler, _LogSink]] = []
         self._layout: Layout = self._build_layout()
 
     @classmethod
@@ -331,23 +465,45 @@ class LiveRunDisplay:
         """The event sink the caller threads into the orchestrator."""
         return self
 
+    def log_records(self) -> tuple[logging.LogRecord, ...]:
+        """Return a snapshot of the panel-scoped log ring buffer.
+
+        Consumers (the future Textual log pane / debug dumps) get a
+        stable, immutable view — the underlying ``deque`` continues to
+        rotate as new records arrive.
+        """
+        with self._lock:
+            return tuple(self._log_buffer)
+
     def __enter__(self) -> LiveRunDisplay:
         self._live = make_live(self._layout, refresh_per_second=self._refresh_per_second)
         self._live.__enter__()
+        root = logging.getLogger()
         # In production, ``configure_root_logging`` guarantees at most one
         # sentinel-tagged handler at any time; iterating defensively keeps
-        # the re-point correct if an embedder or test suite has installed
+        # the replacement correct if an embedder or test suite has installed
         # additional sentinel handlers.
-        for handler in logging.getLogger().handlers:
-            if getattr(handler, _TOLOKAFORGE_ROOT_HANDLER_SENTINEL, False):
-                self._saved_log_streams.append((handler, handler.stream))
-                handler.stream = sys.stderr
+        for handler in list(root.handlers):
+            if not getattr(handler, _TOLOKAFORGE_ROOT_HANDLER_SENTINEL, False):
+                continue
+            sink = _LogSink(
+                wrapped_stream=handler.stream,
+                formatter=handler.formatter,
+                buffer=self._log_buffer,
+            )
+            sink.setLevel(handler.level)
+            setattr(sink, _TOLOKAFORGE_ROOT_HANDLER_SENTINEL, True)
+            root.removeHandler(handler)
+            root.addHandler(sink)
+            self._replaced_log_handlers.append((handler, sink))
         return self
 
     def __exit__(self, *exc_info: object) -> None:
-        for handler, stream in self._saved_log_streams:
-            handler.stream = stream
-        self._saved_log_streams = []
+        root = logging.getLogger()
+        for original, sink in self._replaced_log_handlers:
+            root.removeHandler(sink)
+            root.addHandler(original)
+        self._replaced_log_handlers = []
         if self._live is not None:
             self._live.__exit__(*exc_info)
             self._live = None
@@ -366,25 +522,43 @@ class LiveRunDisplay:
             self._current_phase_detail = None
             self._refresh_live_locked()
 
-    def phase_changed(self, *, phase: str, detail: str | None = None) -> None:
+    def phase_changed(
+        self,
+        *,
+        phase: str,
+        detail: str | None = None,
+        services: list[ServiceSnapshot] | None = None,
+    ) -> None:
         """Record a pre-``run_started`` milestone (Docker startup, etc.).
 
         The bottom bar reads :attr:`_current_phase` when ``_total_trials == 0``
         and renders ``"Starting services… (detail)"`` instead of the empty
-        ``0/0 · 0 running · …`` line. Once ``run_started`` fires, phase state
-        is cleared and the bar switches to counters.
+        ``0/0 · 0 running · …`` line. When ``services`` is supplied the
+        panel adds a mid-region widget with one row per service. Once
+        ``run_started`` fires, phase state is cleared and the bar switches
+        to counters.
         """
         with self._lock:
             self._current_phase = phase
             self._current_phase_detail = detail
+            if services is not None:
+                self._services = list(services)
             self._refresh_live_locked()
 
-    def trial_started(self, *, trial_id: str, task_id: str, trial_index: int) -> None:
+    def trial_started(
+        self,
+        *,
+        trial_id: str,
+        task_id: str,
+        trial_index: int,
+        total_index: int,
+    ) -> None:
         with self._lock:
             card = _TrialCard(
                 trial_id=trial_id,
                 task_id=task_id,
                 trial_index=trial_index,
+                total_index=total_index,
                 status="running",
                 last_update_ts=_now(),
                 last_event_kind="started",
@@ -414,6 +588,18 @@ class LiveRunDisplay:
             self._prompt_tokens += prompt_tokens_delta
             self._completion_tokens += completion_tokens_delta
             self._total_cost_usd += cost_delta_usd
+            self._refresh_live_locked()
+
+    def trial_provisioned(
+        self,
+        *,
+        trial_id: str,
+        containers: list[ContainerSnapshot],
+        endpoints: dict[str, str],  # noqa: ARG002 — future log-pane field
+    ) -> None:
+        with self._lock:
+            card = self._trials.get(trial_id) or self._lazy_card_locked(trial_id)
+            card.containers = list(containers)
             self._refresh_live_locked()
 
     def trial_completed(self, *, trial_id: str, binary_pass: bool, score: float | None) -> None:
@@ -507,6 +693,7 @@ class LiveRunDisplay:
             trial_id=trial_id,
             task_id=task_id or trial_id,
             trial_index=trial_index,
+            total_index=0,
             status="running",
             last_update_ts=_now(),
             last_event_kind="started",
@@ -553,29 +740,56 @@ class LiveRunDisplay:
         elapsed = (_now() - self._run_start_ts).total_seconds()
         return elapsed / completed_this_run * remaining
 
+    def _viewport_rows(self) -> int:
+        """Return the current terminal height in rows.
+
+        Reads ``self._live.console.height`` when the Live context is
+        active (the size Rich actually renders into); falls back to
+        Rich's default 25 lines otherwise. Used by :meth:`_build_layout`
+        to cap the trials-pane height so a 3-trial run doesn't waste
+        vertical space.
+        """
+        if self._live is not None:
+            return self._live.console.height
+        return 25
+
     def _build_layout(self) -> Layout:
         """Build (or rebuild) the layout tree from current state.
 
-        The optional ``banner`` row appears only when :attr:`_banner` is
-        populated — a failed panel with no banner is byte-identical to the
-        pre-banner layout so existing goldens still match on non-auth
-        failure paths.
+        Row composition:
+
+        - Optional ``banner`` (size 5) — first auth-shaped failure.
+        - Optional ``services`` (size = ``len(services) + 3`` for headers
+          and borders) — only during the startup window (``_total_trials
+          == 0`` and ``_services`` populated). Once trials dispatch the
+          services widget disappears; the built-in-stack summary shifts
+          to a one-liner inside the focused pane.
+        - ``main`` (fixed height driven by visible-trial count, capped at
+          viewport rows minus everything else) — the trials + focused
+          split.
+        - ``bottom`` (size 1) — the counters / phase line.
         """
         layout = Layout()
         with self._lock:
             banner = self._banner
+            services = self._services
+            in_startup = self._total_trials == 0 and services
+        row_defs: list[Layout] = []
         if banner is not None:
-            layout.split_column(
-                Layout(name="banner", size=5),
-                Layout(name="main", ratio=1),
-                Layout(name="bottom", size=1),
-            )
+            row_defs.append(Layout(name="banner", size=5))
+        if in_startup:
+            services_size = len(services) + 3
+            row_defs.append(Layout(name="services", size=services_size))
+        main_size = self._main_region_size(
+            reserved=(5 if banner is not None else 0) + ((len(services) + 3) if in_startup else 0)
+        )
+        row_defs.append(Layout(name="main", size=main_size))
+        row_defs.append(Layout(name="bottom", size=1))
+        layout.split_column(*row_defs)
+        if banner is not None:
             layout["banner"].update(self._render_banner(banner))
-        else:
-            layout.split_column(
-                Layout(name="main", ratio=1),
-                Layout(name="bottom", size=1),
-            )
+        if in_startup:
+            layout["services"].update(Panel(_render_services_table(services), title="Services"))
         layout["main"].split_row(
             Layout(name="trials", ratio=2),
             Layout(name="focused", ratio=3),
@@ -584,6 +798,25 @@ class LiveRunDisplay:
         layout["focused"].update(self._render_right_pane())
         layout["bottom"].update(self._render_bottom_bar())
         return layout
+
+    def _main_region_size(self, *, reserved: int) -> int:
+        """Return the trials/focused row height for the current state.
+
+        Sized to ``min(cards + 2, viewport - reserved - 1)`` so:
+
+        - 3 running trials in a 40-row terminal give a 5-row pane instead
+          of ~35 rows of empty column.
+        - Many trials in a small terminal still fit — the cap prevents
+          rows from being clipped by the bottom bar.
+        - Two rows of headroom cover the panel border (top + bottom).
+        """
+        visible = self._visible_cards()
+        viewport = self._viewport_rows()
+        available = max(viewport - reserved - 1, 3)
+        desired = len(visible) + 2
+        # At least three rows so the empty-state ``(no trials yet)`` line
+        # still renders inside its border.
+        return max(3, min(desired, available))
 
     def _render_banner(self, banner: tuple[str, str, str | None]) -> Panel:
         title, message, hint = banner
@@ -595,20 +828,23 @@ class LiveRunDisplay:
 
     def _render_left_pane(self) -> Panel:
         glyphs = {"running": "⏳", "completed": "✓", "failed": "✗"}
+        visible = self._visible_cards()
+        with self._lock:
+            total_trials = self._total_trials
+        index_width = max(len(str(total_trials)), 1) if total_trials else 1
         rendered: list[str] = []
         has_markup = False
-        for card in self._visible_cards():
+        for card in visible:
             glyph = glyphs.get(card.status, "•")
-            base = f"{glyph} {card.task_id} · {card.trial_index}"
+            human_index = card.total_index + 1
+            prefix = f"[{human_index:>{index_width}}/{total_trials or '?'}]"
+            base = f"{glyph} {prefix} {card.task_id} · {card.trial_index}"
             if card.status == "failed" and card.error:
                 err = _truncate_error(card.error, width=40)
                 rendered.append(f"{base}  [error]{err}[/error]")
                 has_markup = True
             else:
                 rendered.append(base)
-        # Preserve byte-identical output vs pre-error-render goldens: only
-        # switch to ``Text.from_markup`` when we actually have markup to
-        # interpret. Rows with no bracket content render via plain ``Text``.
         if not rendered:
             body = Text("(no trials yet)")
         elif has_markup:
@@ -632,6 +868,7 @@ class LiveRunDisplay:
                     str | None,  # error
                     str,  # task_id
                     int,  # trial_index
+                    list[ContainerSnapshot] | None,  # containers
                 ]
                 | None
             ) = (
@@ -645,46 +882,57 @@ class LiveRunDisplay:
                     card.error,
                     card.task_id,
                     card.trial_index,
+                    list(card.containers) if card.containers is not None else None,
                 )
                 if card is not None
                 else None
             )
         if snapshot is None:
             body = Text("(waiting for first trial)")
-        else:
-            (
-                turn,
-                prompt,
-                completion,
-                cost,
-                last_kind,
-                status,
-                error,
-                task_id,
-                trial_index,
-            ) = snapshot
-            if status == "failed" and error:
-                # Give the operator the full picture on the focused failed
-                # trial: task identity, first line of the error, and — for
-                # recognisable failure signatures — a remediation hint.
-                hint = _derive_hint(error)
-                parts = [
-                    f"[error]FAILED[/error]  {task_id} · {trial_index}",
-                    "",
-                    _truncate_error(error, width=200),
-                ]
-                if hint:
-                    parts.append("")
-                    parts.append(f"[warn]Hint:[/warn] {hint}")
-                body = Text.from_markup("\n".join(parts))
-            else:
-                body = Text(
-                    f"turn {turn} · "
-                    f"in {_format_tokens(prompt)} / out {_format_tokens(completion)} tok · "
-                    f"{_format_cost(cost)} · "
-                    f"last: {last_kind}"
-                )
-        return Panel(body, title="Focused trial")
+            return Panel(body, title="Focused trial")
+        (
+            turn,
+            prompt,
+            completion,
+            cost,
+            last_kind,
+            status,
+            error,
+            task_id,
+            trial_index,
+            containers,
+        ) = snapshot
+        if status == "failed" and error:
+            hint = _derive_hint(error)
+            parts = [
+                f"[error]FAILED[/error]  {task_id} · {trial_index}",
+                "",
+                _truncate_error(error, width=200),
+            ]
+            if hint:
+                parts.append("")
+                parts.append(f"[warn]Hint:[/warn] {hint}")
+            body: Text | Table = Text.from_markup("\n".join(parts))
+            return Panel(body, title="Focused trial")
+        summary = Text(
+            f"turn {turn} · "
+            f"in {_format_tokens(prompt)} / out {_format_tokens(completion)} tok · "
+            f"{_format_cost(cost)} · "
+            f"last: {last_kind}"
+        )
+        if not containers:
+            return Panel(summary, title="Focused trial")
+        # Focused trial has a compose stack: append a compact
+        # "Infrastructure" sub-panel under the summary. Rich Group renders
+        # both children in sequence within the outer Panel.
+        from rich.console import Group
+
+        infra_panel = Panel(
+            _render_containers_table(containers),
+            title="Infrastructure",
+            border_style="muted",
+        )
+        return Panel(Group(summary, infra_panel), title="Focused trial")
 
     def _render_bottom_bar(self) -> Text:
         with self._lock:

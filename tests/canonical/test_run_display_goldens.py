@@ -83,14 +83,14 @@ def _replay_events(display: LiveRunDisplay) -> None:
     """
 
     display.run_started(total_trials=50, initial_completed=0)
-    display.trial_started(trial_id="task_a:0", task_id="task_a", trial_index=0)
+    display.trial_started(trial_id="task_a:0", task_id="task_a", trial_index=0, total_index=0)
     display.trial_progress(
         trial_id="task_a:0",
         prompt_tokens_delta=1200,
         completion_tokens_delta=340,
         cost_delta_usd=0.008,
     )
-    display.trial_started(trial_id="task_b:0", task_id="task_b", trial_index=0)
+    display.trial_started(trial_id="task_b:0", task_id="task_b", trial_index=0, total_index=1)
     display.trial_progress(
         trial_id="task_b:0",
         prompt_tokens_delta=41200,
@@ -99,20 +99,20 @@ def _replay_events(display: LiveRunDisplay) -> None:
     )
     display.judgment_scored(trial_id="task_a:0", score=0.85, binary_pass=True)
     display.trial_completed(trial_id="task_a:0", binary_pass=True, score=0.85)
-    display.trial_started(trial_id="task_c:0", task_id="task_c", trial_index=0)
+    display.trial_started(trial_id="task_c:0", task_id="task_c", trial_index=0, total_index=2)
     display.trial_failed(
         trial_id="task_c:0",
         error="LLMApiTimeoutError",
         retryable=False,
     )
-    display.trial_started(trial_id="task_d:0", task_id="task_d", trial_index=0)
+    display.trial_started(trial_id="task_d:0", task_id="task_d", trial_index=0, total_index=3)
     display.trial_progress(
         trial_id="task_d:0",
         prompt_tokens_delta=500,
         completion_tokens_delta=120,
         cost_delta_usd=0.002,
     )
-    display.trial_started(trial_id="task_e:0", task_id="task_e", trial_index=0)
+    display.trial_started(trial_id="task_e:0", task_id="task_e", trial_index=0, total_index=4)
     display.trial_progress(
         trial_id="task_e:0",
         prompt_tokens_delta=8200,

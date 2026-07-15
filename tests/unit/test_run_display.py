@@ -10,7 +10,6 @@ from __future__ import annotations
 import io
 import itertools
 import logging
-import sys
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -47,7 +46,7 @@ def test_live_run_display_satisfies_protocol() -> None:
     assert isinstance(LiveRunDisplay(), RunDisplayEvents)
 
 
-def test_protocol_declares_eight_lifecycle_methods() -> None:
+def test_protocol_declares_nine_lifecycle_methods() -> None:
     expected = {
         "run_started",
         "trial_started",
@@ -57,6 +56,7 @@ def test_protocol_declares_eight_lifecycle_methods() -> None:
         "judgment_scored",
         "run_finished",
         "phase_changed",
+        "trial_provisioned",
     }
     declared = {
         name
@@ -64,7 +64,7 @@ def test_protocol_declares_eight_lifecycle_methods() -> None:
         if not name.startswith("_") and callable(vars(RunDisplayEvents)[name])
     }
     # `RunDisplayEvents` inherits from Protocol which contributes some dunders;
-    # the visible surface must equal the eight lifecycle methods.
+    # the visible surface must equal the nine lifecycle methods.
     assert declared == expected
 
 
@@ -94,7 +94,7 @@ def test_noop_ctx_supports_context_manager_shape() -> None:
     with LiveRunDisplay.for_mode(DisplayMode.PLAIN) as ctx:
         # Every Protocol method is a no-op — must not raise.
         ctx.events.run_started(total_trials=1, initial_completed=0)
-        ctx.events.trial_started(trial_id="a:0", task_id="a", trial_index=0)
+        ctx.events.trial_started(trial_id="a:0", task_id="a", trial_index=0, total_index=0)
         ctx.events.trial_progress(
             trial_id="a:0",
             prompt_tokens_delta=10,
@@ -131,7 +131,7 @@ def test_run_started_with_resume_sets_completed_head_start() -> None:
 def test_trial_started_creates_running_card_and_focuses_it() -> None:
     display = LiveRunDisplay()
     display.run_started(total_trials=10, initial_completed=0)
-    display.trial_started(trial_id="a:0", task_id="a", trial_index=0)
+    display.trial_started(trial_id="a:0", task_id="a", trial_index=0, total_index=0)
     card = display._trials["a:0"]
     assert card.status == "running"
     assert card.last_event_kind == "started"
@@ -143,7 +143,7 @@ def test_trial_started_creates_running_card_and_focuses_it() -> None:
 
 def test_trial_progress_accumulates_and_does_not_bump_last_update_ts() -> None:
     display = LiveRunDisplay()
-    display.trial_started(trial_id="a:0", task_id="a", trial_index=0)
+    display.trial_started(trial_id="a:0", task_id="a", trial_index=0, total_index=0)
     ts_after_start = display._trials["a:0"].last_update_ts
     display.trial_progress(
         trial_id="a:0",
@@ -169,7 +169,7 @@ def test_trial_completed_updates_status_and_bumps_last_update_ts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     display = LiveRunDisplay()
-    display.trial_started(trial_id="a:0", task_id="a", trial_index=0)
+    display.trial_started(trial_id="a:0", task_id="a", trial_index=0, total_index=0)
     ts_after_start = display._trials["a:0"].last_update_ts
     _install_incrementing_now(monkeypatch, start=ts_after_start + timedelta(seconds=1))
     display.trial_completed(trial_id="a:0", binary_pass=True, score=0.85)
@@ -186,7 +186,7 @@ def test_trial_completed_updates_status_and_bumps_last_update_ts(
 
 def test_trial_failed_updates_status(monkeypatch: pytest.MonkeyPatch) -> None:
     display = LiveRunDisplay()
-    display.trial_started(trial_id="b:0", task_id="b", trial_index=0)
+    display.trial_started(trial_id="b:0", task_id="b", trial_index=0, total_index=0)
     ts_after_start = display._trials["b:0"].last_update_ts
     _install_incrementing_now(monkeypatch, start=ts_after_start + timedelta(seconds=1))
     display.trial_failed(trial_id="b:0", error="LLMApiTimeoutError", retryable=False)
@@ -201,8 +201,8 @@ def test_trial_failed_updates_status(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_judgment_scored_updates_score_and_focuses_trial(monkeypatch: pytest.MonkeyPatch) -> None:
     display = LiveRunDisplay()
-    display.trial_started(trial_id="a:0", task_id="a", trial_index=0)
-    display.trial_started(trial_id="b:0", task_id="b", trial_index=0)
+    display.trial_started(trial_id="a:0", task_id="a", trial_index=0, total_index=0)
+    display.trial_started(trial_id="b:0", task_id="b", trial_index=0, total_index=0)
     assert display._focused_trial_id == "b:0"
     ts_after_start = display._trials["a:0"].last_update_ts
     _install_incrementing_now(monkeypatch, start=ts_after_start + timedelta(seconds=2))
@@ -243,7 +243,7 @@ def test_trial_progress_before_trial_started_lazily_creates_card() -> None:
 def test_trial_started_is_kwarg_only() -> None:
     display = LiveRunDisplay()
     with pytest.raises(TypeError):
-        display.trial_started("x:0", "x", 0)  # type: ignore[misc]
+        display.trial_started("x:0", "x", 0, 0)  # type: ignore[misc]
 
 
 # ---------------------------------------------------------------------------
@@ -269,7 +269,7 @@ def test_focus_does_not_alternate_under_interleaved_progress(
 ) -> None:
     _install_incrementing_now(monkeypatch)
     display = LiveRunDisplay()
-    display.trial_started(trial_id="a:0", task_id="a", trial_index=0)
+    display.trial_started(trial_id="a:0", task_id="a", trial_index=0, total_index=0)
     assert display._focused_trial_id == "a:0"
 
     # Fire 100 interleaved trial_progress events across two trials.
@@ -286,7 +286,7 @@ def test_focus_does_not_alternate_under_interleaved_progress(
         ), f"trial_progress on iteration {i} unexpectedly moved focus"
 
     # Lifecycle event on b:0 moves focus.
-    display.trial_started(trial_id="b:0", task_id="b", trial_index=0)
+    display.trial_started(trial_id="b:0", task_id="b", trial_index=0, total_index=0)
     assert display._focused_trial_id == "b:0"
 
 
@@ -295,8 +295,8 @@ def test_focus_stays_on_just_completed_trial_while_others_still_running(
 ) -> None:
     _install_incrementing_now(monkeypatch)
     display = LiveRunDisplay()
-    display.trial_started(trial_id="a:0", task_id="a", trial_index=0)
-    display.trial_started(trial_id="b:0", task_id="b", trial_index=0)
+    display.trial_started(trial_id="a:0", task_id="a", trial_index=0, total_index=0)
+    display.trial_started(trial_id="b:0", task_id="b", trial_index=0, total_index=0)
     assert display._focused_trial_id == "b:0"
 
     display.trial_completed(trial_id="a:0", binary_pass=True, score=1.0)
@@ -358,7 +358,7 @@ def test_trial_started_and_completed_are_atomic_under_concurrent_workers() -> No
 
     def worker(idx: int) -> None:
         trial_id = f"t{idx}:0"
-        display.trial_started(trial_id=trial_id, task_id=f"t{idx}", trial_index=0)
+        display.trial_started(trial_id=trial_id, task_id=f"t{idx}", trial_index=0, total_index=0)
         display.trial_completed(trial_id=trial_id, binary_pass=True, score=1.0)
 
     threads = [threading.Thread(target=worker, args=(i,)) for i in range(worker_count)]
@@ -381,7 +381,7 @@ def test_visible_cards_returns_all_when_under_window(monkeypatch: pytest.MonkeyP
     _install_incrementing_now(monkeypatch)
     display = LiveRunDisplay(max_trial_rows=20)
     for i in range(5):
-        display.trial_started(trial_id=f"t{i}:0", task_id=f"t{i}", trial_index=0)
+        display.trial_started(trial_id=f"t{i}:0", task_id=f"t{i}", trial_index=0, total_index=0)
     visible = display._visible_cards()
     assert len(visible) == 5
 
@@ -409,7 +409,7 @@ def test_visible_cards_always_includes_all_running(monkeypatch: pytest.MonkeyPat
     display = LiveRunDisplay(max_trial_rows=5)
     # 3 running trials.
     for i in range(3):
-        display.trial_started(trial_id=f"r{i}:0", task_id=f"r{i}", trial_index=0)
+        display.trial_started(trial_id=f"r{i}:0", task_id=f"r{i}", trial_index=0, total_index=0)
     # 10 completed trials — window is 5, running gets 3 slots so completed
     # gets 2, and the 8 oldest completed scroll off.
     for i in range(10):
@@ -513,7 +513,7 @@ def test_format_bottom_bar_eta_edge_cases(eta_seconds: float | None, expected_se
 
 
 # ---------------------------------------------------------------------------
-# __enter__ / __exit__ — D5 sentinel-handler stream re-point
+# __enter__ / __exit__ — sentinel handler is replaced with a `_LogSink`
 # ---------------------------------------------------------------------------
 
 
@@ -535,59 +535,73 @@ def _clean_root_handlers() -> object:
         root.handlers = saved
 
 
-def test_enter_repoints_sentinel_handler_stream_and_exit_restores(
+def test_enter_replaces_sentinel_handler_and_exit_restores(
     _clean_root_handlers: object,
 ) -> None:
+    from tolokaforge.dx.live_panel import _LogSink
+
     fake_stream = io.StringIO()
     handler = logging.StreamHandler(fake_stream)
     setattr(handler, _TOLOKAFORGE_ROOT_HANDLER_SENTINEL, True)
-    logging.getLogger().addHandler(handler)
+    root = logging.getLogger()
+    root.addHandler(handler)
 
-    assert handler.stream is fake_stream
     display = LiveRunDisplay(refresh_per_second=1000)
     with display:
-        assert handler.stream is sys.stderr
-    assert handler.stream is fake_stream
+        assert handler not in root.handlers
+        sinks = [h for h in root.handlers if isinstance(h, _LogSink)]
+        assert len(sinks) == 1
+    assert handler in root.handlers
+    assert not [h for h in root.handlers if isinstance(h, _LogSink)]
 
 
 def test_enter_exit_is_idempotent_across_fresh_displays(
     _clean_root_handlers: object,
 ) -> None:
+    from tolokaforge.dx.live_panel import _LogSink
+
     fake_stream = io.StringIO()
     handler = logging.StreamHandler(fake_stream)
     setattr(handler, _TOLOKAFORGE_ROOT_HANDLER_SENTINEL, True)
-    logging.getLogger().addHandler(handler)
+    root = logging.getLogger()
+    root.addHandler(handler)
 
     with LiveRunDisplay(refresh_per_second=1000):
-        assert handler.stream is sys.stderr
-    assert handler.stream is fake_stream
+        assert handler not in root.handlers
+    assert handler in root.handlers
     with LiveRunDisplay(refresh_per_second=1000):
-        assert handler.stream is sys.stderr
-    assert handler.stream is fake_stream
+        assert handler not in root.handlers
+        assert any(isinstance(h, _LogSink) for h in root.handlers)
+    assert handler in root.handlers
+    assert not [h for h in root.handlers if isinstance(h, _LogSink)]
 
 
 def test_enter_exit_swaps_every_sentinel_handler(_clean_root_handlers: object) -> None:
-    """Multiple sentinel handlers (e.g. embedder mutation) all get re-pointed."""
+    """Multiple sentinel handlers (e.g. embedder mutation) all get replaced."""
+    from tolokaforge.dx.live_panel import _LogSink
+
     stream_a, stream_b = io.StringIO(), io.StringIO()
     handler_a = logging.StreamHandler(stream_a)
     handler_b = logging.StreamHandler(stream_b)
     setattr(handler_a, _TOLOKAFORGE_ROOT_HANDLER_SENTINEL, True)
     setattr(handler_b, _TOLOKAFORGE_ROOT_HANDLER_SENTINEL, True)
-    logging.getLogger().addHandler(handler_a)
-    logging.getLogger().addHandler(handler_b)
+    root = logging.getLogger()
+    root.addHandler(handler_a)
+    root.addHandler(handler_b)
 
     with LiveRunDisplay(refresh_per_second=1000):
-        assert handler_a.stream is sys.stderr
-        assert handler_b.stream is sys.stderr
-    assert handler_a.stream is stream_a
-    assert handler_b.stream is stream_b
+        assert handler_a not in root.handlers
+        assert handler_b not in root.handlers
+        assert sum(isinstance(h, _LogSink) for h in root.handlers) == 2
+    assert handler_a in root.handlers
+    assert handler_b in root.handlers
 
 
 def test_enter_exit_without_sentinel_handler_is_a_noop(
     _clean_root_handlers: object,
 ) -> None:
     with LiveRunDisplay(refresh_per_second=1000) as display:
-        assert display._saved_log_streams == []
+        assert display._replaced_log_handlers == []
 
 
 def test_events_push_updated_layout_to_live() -> None:
@@ -600,9 +614,13 @@ def test_events_push_updated_layout_to_live() -> None:
     triggers exactly one Live.update call with a freshly-built layout.
     """
 
+    class _StubConsole:
+        height = 40
+
     class _StubLive:
         def __init__(self) -> None:
             self.updates: list[object] = []
+            self.console = _StubConsole()
 
         def update(self, renderable: object, *, refresh: bool = False) -> None:
             self.updates.append(renderable)
@@ -612,7 +630,7 @@ def test_events_push_updated_layout_to_live() -> None:
     display._live = stub  # type: ignore[assignment]
 
     display.run_started(total_trials=3, initial_completed=0)
-    display.trial_started(trial_id="a:0", task_id="a", trial_index=0)
+    display.trial_started(trial_id="a:0", task_id="a", trial_index=0, total_index=0)
     display.trial_progress(
         trial_id="a:0",
         prompt_tokens_delta=100,
@@ -633,5 +651,281 @@ def test_refresh_live_locked_is_noop_when_live_is_none() -> None:
     display = LiveRunDisplay()
     assert display._live is None
     # No events should raise; internal state should update.
-    display.trial_started(trial_id="a:0", task_id="a", trial_index=0)
+    display.trial_started(trial_id="a:0", task_id="a", trial_index=0, total_index=0)
     assert display._trials["a:0"].status == "running"
+
+
+# ---------------------------------------------------------------------------
+# `_LogSink` — INFO/DEBUG swallowed, WARNING+ forwarded, buffer always fills
+# ---------------------------------------------------------------------------
+
+
+def _make_log_record(level: int, message: str) -> logging.LogRecord:
+    return logging.LogRecord(
+        name="tolokaforge.probe",
+        level=level,
+        pathname=__file__,
+        lineno=0,
+        msg=message,
+        args=None,
+        exc_info=None,
+    )
+
+
+def test_log_sink_swallows_info_records() -> None:
+    from collections import deque
+
+    from tolokaforge.dx.live_panel import _LogSink
+
+    buffer: deque[logging.LogRecord] = deque(maxlen=500)
+    stream = io.StringIO()
+    sink = _LogSink(
+        wrapped_stream=stream,
+        formatter=logging.Formatter("%(levelname)s %(message)s"),
+        buffer=buffer,
+    )
+
+    sink.emit(_make_log_record(logging.INFO, "hello"))
+    sink.emit(_make_log_record(logging.DEBUG, "quiet"))
+
+    assert stream.getvalue() == ""
+    assert [r.getMessage() for r in buffer] == ["hello", "quiet"]
+
+
+def test_log_sink_forwards_warning_and_above_to_wrapped_stream() -> None:
+    from collections import deque
+
+    from tolokaforge.dx.live_panel import _LogSink
+
+    buffer: deque[logging.LogRecord] = deque(maxlen=500)
+    stream = io.StringIO()
+    sink = _LogSink(
+        wrapped_stream=stream,
+        formatter=logging.Formatter("%(levelname)s %(message)s"),
+        buffer=buffer,
+    )
+
+    sink.emit(_make_log_record(logging.WARNING, "warn me"))
+    sink.emit(_make_log_record(logging.ERROR, "oh no"))
+
+    assert stream.getvalue() == "WARNING warn me\nERROR oh no\n"
+    assert [r.getMessage() for r in buffer] == ["warn me", "oh no"]
+
+
+def test_log_sink_buffer_is_bounded() -> None:
+    from collections import deque
+
+    from tolokaforge.dx.live_panel import _LogSink
+
+    buffer: deque[logging.LogRecord] = deque(maxlen=3)
+    sink = _LogSink(wrapped_stream=io.StringIO(), formatter=None, buffer=buffer)
+
+    for i in range(10):
+        sink.emit(_make_log_record(logging.INFO, f"msg-{i}"))
+
+    assert [r.getMessage() for r in buffer] == ["msg-7", "msg-8", "msg-9"]
+
+
+def test_log_records_returns_buffered_records(_clean_root_handlers: object) -> None:
+    """``log_records`` gives the future Textual log pane a snapshot of the
+    buffer without leaking the mutable deque."""
+    fake_stream = io.StringIO()
+    handler = logging.StreamHandler(fake_stream)
+    setattr(handler, _TOLOKAFORGE_ROOT_HANDLER_SENTINEL, True)
+    root = logging.getLogger()
+    root.addHandler(handler)
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    with display:
+        logging.getLogger("tolokaforge.probe").warning("routed")
+
+    records = display.log_records()
+    assert isinstance(records, tuple)
+    assert any(r.getMessage() == "routed" for r in records)
+
+
+# ---------------------------------------------------------------------------
+# Services widget — mid-region during startup, one-liner once trials dispatch
+# ---------------------------------------------------------------------------
+
+
+def test_phase_changed_populates_services_and_renders_widget() -> None:
+    from tolokaforge.core.run_display_events import ServiceSnapshot
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    services: list[ServiceSnapshot] = [
+        {"name": "runner", "status": "starting", "ports": {50051: 50051}, "role": "engine"},
+        {"name": "db-service", "status": "healthy", "ports": {8000: 8000}, "role": "engine"},
+    ]
+
+    display.phase_changed(phase="starting_services", detail="docker compose up", services=services)
+
+    assert display._services == services
+    # `_total_trials == 0` and services populated: services widget region present.
+    layout = display._build_layout()
+    child_names = {getattr(child, "name", None) for child in layout.children}
+    assert "services" in child_names
+
+
+def test_services_widget_absent_once_trials_dispatch() -> None:
+    from tolokaforge.core.run_display_events import ServiceSnapshot
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    services: list[ServiceSnapshot] = [
+        {"name": "runner", "status": "healthy", "ports": {}, "role": "engine"},
+    ]
+    display.phase_changed(phase="services_ready", services=services)
+    display.run_started(total_trials=1, initial_completed=0)
+
+    layout = display._build_layout()
+    child_names = {getattr(child, "name", None) for child in layout.children}
+    assert "services" not in child_names
+
+
+# ---------------------------------------------------------------------------
+# `trial_provisioned` — containers land on the focused card
+# ---------------------------------------------------------------------------
+
+
+def test_trial_provisioned_populates_card_containers() -> None:
+    from tolokaforge.core.run_display_events import ContainerSnapshot
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    display.trial_started(trial_id="a:0", task_id="a", trial_index=0, total_index=0)
+    containers: list[ContainerSnapshot] = [
+        {
+            "name": "trial-runner",
+            "service": "runner",
+            "state": "running",
+            "health": "healthy",
+            "ports": {50051: 50051},
+        }
+    ]
+    display.trial_provisioned(
+        trial_id="a:0",
+        containers=containers,
+        endpoints={"runner": "http://localhost:50051"},
+    )
+    assert display._trials["a:0"].containers == containers
+
+
+def test_trial_provisioned_lazy_creates_card_when_started_missed() -> None:
+    from tolokaforge.core.run_display_events import ContainerSnapshot
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    containers: list[ContainerSnapshot] = [
+        {"name": "x", "service": "runner", "state": "running", "health": None, "ports": {}}
+    ]
+    display.trial_provisioned(trial_id="ghost:0", containers=containers, endpoints={})
+    assert display._trials["ghost:0"].containers == containers
+
+
+# ---------------------------------------------------------------------------
+# Left-pane row prefix — `[N/M]` global-index column, width fixed by total
+# ---------------------------------------------------------------------------
+
+
+def test_left_pane_renders_global_index_prefix_at_fixed_width() -> None:
+    from rich.console import Console
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    display.run_started(total_trials=500, initial_completed=0)
+    display.trial_started(trial_id="task_a:0", task_id="task_a", trial_index=0, total_index=16)
+
+    console = Console(width=80, force_terminal=True, color_system="truecolor", record=True)
+    console.print(display._render_left_pane())
+    body = console.export_text()
+
+    # 500 → three-digit column, index 17 (0-based 16) rendered as ` 17`.
+    assert "[ 17/500]" in body
+    assert "task_a" in body
+
+
+def test_left_pane_prefix_width_adapts_to_total() -> None:
+    from rich.console import Console
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    display.run_started(total_trials=8, initial_completed=0)
+    display.trial_started(trial_id="task_a:0", task_id="task_a", trial_index=0, total_index=2)
+
+    console = Console(width=80, force_terminal=True, color_system="truecolor", record=True)
+    console.print(display._render_left_pane())
+    body = console.export_text()
+
+    # 8 → single-digit column, no leading spaces inside the brackets.
+    assert "[3/8]" in body
+
+
+# ---------------------------------------------------------------------------
+# Adaptive main-region sizing
+# ---------------------------------------------------------------------------
+
+
+def test_main_region_size_matches_visible_cards_when_terminal_is_tall() -> None:
+    """Three trials in a 40-row terminal give a 5-row main region, not 39."""
+
+    class _StubConsole:
+        height = 40
+
+    class _StubLive:
+        def __init__(self) -> None:
+            self.console = _StubConsole()
+
+        def update(self, *_a, **_kw) -> None:  # noqa: D401 — stub
+            pass
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    display._live = _StubLive()  # type: ignore[assignment]
+    display.run_started(total_trials=3, initial_completed=0)
+    for i in range(3):
+        display.trial_started(trial_id=f"t{i}:0", task_id=f"t{i}", trial_index=0, total_index=i)
+
+    size = display._main_region_size(reserved=0)
+    assert size == 5  # 3 cards + 2 border rows
+
+
+def test_main_region_size_caps_at_viewport_when_trials_overflow() -> None:
+    """Many trials in a 12-row terminal cap the main region below the desired
+    size so the bottom bar remains visible."""
+
+    class _StubConsole:
+        height = 12
+
+    class _StubLive:
+        def __init__(self) -> None:
+            self.console = _StubConsole()
+
+        def update(self, *_a, **_kw) -> None:  # noqa: D401 — stub
+            pass
+
+    display = LiveRunDisplay(refresh_per_second=1000, max_trial_rows=50)
+    display._live = _StubLive()  # type: ignore[assignment]
+    display.run_started(total_trials=50, initial_completed=0)
+    for i in range(30):
+        display.trial_started(trial_id=f"t{i}:0", task_id=f"t{i}", trial_index=0, total_index=i)
+
+    size = display._main_region_size(reserved=0)
+    # 12 - 0 - 1 = 11, capped to at least 3 by design.
+    assert size == 11
+
+
+def test_main_region_size_reserves_space_for_banner_and_services() -> None:
+    class _StubConsole:
+        height = 40
+
+    class _StubLive:
+        def __init__(self) -> None:
+            self.console = _StubConsole()
+
+        def update(self, *_a, **_kw) -> None:  # noqa: D401 — stub
+            pass
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    display._live = _StubLive()  # type: ignore[assignment]
+    display.run_started(total_trials=2, initial_completed=0)
+    display.trial_started(trial_id="a:0", task_id="a", trial_index=0, total_index=0)
+    display.trial_started(trial_id="b:0", task_id="b", trial_index=0, total_index=1)
+
+    # Reserved 5 (banner) + 5 (services region) leaves 40 - 10 - 1 = 29
+    # available; desired = 2 cards + 2 = 4; min wins.
+    assert display._main_region_size(reserved=10) == 4

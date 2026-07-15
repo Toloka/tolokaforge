@@ -39,12 +39,14 @@ from testcontainers.compose import DockerCompose
 from tolokaforge.core.compose_materialisation import (
     RUNNER_PORT_DEFAULT,
     cleanup_partial_materialisation,
+    compose_container_to_snapshot,
     copy_compose_context,
     make_project_temp_dir,
     resolve_env_endpoints,
     resolve_runner_endpoint,
     shutdown_compose,
 )
+from tolokaforge.core.run_display_events import ContainerSnapshot
 from tolokaforge.core.runtime import EnvHandle, IsolationMode, ProvisionError
 from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient, RunnerClient
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, EnvEndpoints
@@ -264,6 +266,27 @@ class PerTrialRuntimeBackend:
                 )
         shutdown_compose(handle.compose)
         shutil.rmtree(handle.temp_dir, ignore_errors=True)
+
+    def get_infrastructure_snapshot(self, handle: EnvHandle) -> list[ContainerSnapshot]:
+        """Return the per-trial container snapshot from the compose stack.
+
+        Reads ``handle.compose.get_containers()`` and maps each
+        :class:`ComposeContainer` to a :class:`ContainerSnapshot`. Errors
+        from the docker CLI are logged and swallowed — the display path
+        must never raise past the orchestrator, and a missing infra
+        snapshot degrades gracefully to "no infrastructure panel".
+        """
+        if not isinstance(handle, _LocalEnvHandle):
+            return []
+        try:
+            containers = handle.compose.get_containers()
+        except Exception:  # noqa: BLE001 — display must never raise past orchestrator
+            logger.exception(
+                "PerTrialRuntimeBackend.get_infrastructure_snapshot: docker ps failed for %s",
+                handle.trial_id,
+            )
+            return []
+        return [compose_container_to_snapshot(c) for c in containers]
 
     # ---- Per-trial RPC operations (ADR-0013) ----
 

@@ -63,6 +63,9 @@ class _RecordingEvents:
     def phase_changed(self, **kwargs: Any) -> None:
         self.calls.append(("phase_changed", kwargs))
 
+    def trial_provisioned(self, **kwargs: Any) -> None:
+        self.calls.append(("trial_provisioned", kwargs))
+
     def kinds(self) -> list[str]:
         return [name for name, _ in self.calls]
 
