@@ -73,6 +73,7 @@ Defaults: `refresh_per_second=4.0`, `transient=False`, `screen=False`, `vertical
 - **One-shot line** (banner, error, single result): `console.print(...)`.
 - **Iteration with a known total** (per-trial grading, batch uploads): `make_progress()`.
 - **Persistent status region that repaints in place** (multi-line dashboard, live cost tracker): `make_live()`.
+- **Run-scoped multi-region panel** (per-trial list + summary + status bar during `tolokaforge run`): `LiveRunDisplay` in `tolokaforge.cli._run_display`. Wraps `make_live` and consumes a `RunDisplayEvents` Protocol threaded through `OrchestratorDeps.events` — see [§ Display modes](#display-modes).
 
 Nested progress inside a Live region is supported by Rich — pass the same `console` (the default) and Rich cooperates automatically.
 
@@ -123,12 +124,32 @@ The root flag `--display={full,rich,plain,log,none}` and the equivalent env var 
 | Value    | Behaviour                                                                                                 |
 |----------|-----------------------------------------------------------------------------------------------------------|
 | `full`   | Textual TUI. Falls back to `rich` when textual is not installed (a WARNING log line notes the fallback).  |
-| `rich`   | Rich Live panel.                                                                                          |
+| `rich`   | Rich Live panel during `tolokaforge run` — left-pane trial list (status glyphs), right-pane structured summary of the focused trial (`turn N · in Xk / out Y tok · $Z.ZZ · last: <event_kind>`), bottom bar `{completed}/{total} · {running} running · ${cost} · in {prompt} / out {completion} tok · fail {failed} · eta {eta}`. Log lines from `configure_root_logging` interleave above the panel. Every other subcommand renders through the shared `console.print(...)` calls. |
 | `plain`  | Human-readable log-line stream. Default on non-TTY / when `CI` is set.                                    |
 | `log`    | Pure log stream — no banners, no progress bars.                                                           |
 | `none`   | Silent on stderr on success. `emit_artifact_path` still writes the artifact path to stdout.               |
 
-`--display=rich` renders through the existing per-command `console.print(...)` calls; `--display=full` always falls back to `rich` because textual is not a dependency.
+### Live run panel (`--display=rich` during `tolokaforge run`)
+
+`tolokaforge run` under `--display=rich` renders inside a `rich.Live` region owned by `tolokaforge.cli._run_display.LiveRunDisplay`. The panel has three regions:
+
+- **Left pane — trial list.** One line per trial: `<glyph> task_id · trial_index` where `<glyph>` is `⏳` for running, `✓` for completed, `✗` for failed. Running trials always render; completed and failed trials scroll off in `last_update_ts` order once the window (default 20 rows) fills.
+- **Right pane — focused trial.** Structured summary of the trial that most recently transitioned state: `turn N · in Xk / out Y tok · $Z.ZZ · last: <event_kind>`. Focus follows lifecycle transitions only (`trial_started`, `trial_completed`, `trial_failed`, `judgment_scored`) — per-turn `trial_progress` events mutate counters but leave focus stable, so the pane does not alternate on high-frequency ticks.
+- **Bottom bar.** One line, format:
+
+  ```
+  {completed}/{total} · {running} running · ${cost} · in {prompt} / out {completion} tok · fail {failed} · eta {eta}
+  ```
+
+  Concrete example: `142/500 · 12 running · $0.87 · in 41.2k / out 6.8k tok · fail 3 · eta 03:14`. `cost` renders `$<0.01` below one cent and `$0.00` at zero. `prompt` / `completion` render with a `k` suffix at ≥ 5 000 tokens. `eta` is `MM:SS` under one hour, `HH:MM:SS` above, and `n/a` before the first in-run completion. The pinned literal shape lives in `tests/canonical/golden/run_display/panel_{80,120}.svg`.
+
+The orchestrator, conductor, and runner emit lifecycle events into a `RunDisplayEvents` Protocol (`run_started`, `trial_started`, `trial_progress`, `trial_completed`, `trial_failed`, `judgment_scored`, `run_finished`). `LiveRunDisplay` subscribes and repaints at 4 Hz. `_NULL_EVENTS` is the default sink under any non-active mode — the orchestrator / conductor / runner never branch on `events is None`, they just call every method.
+
+Log lines from `configure_root_logging` interleave above the panel: on `__enter__`, `LiveRunDisplay` re-points the sentinel-tagged root handler's `.stream` attribute to the Rich-wrapped `sys.stderr` so the handler shares the Live region's cooperative rendering; `__exit__` restores the snapshotted stream.
+
+`--display=full` today collapses to `--display=rich` because `textual` is not a dependency; when the Textual TUI (C3) lands, `--display=full` will render a Textual class that consumes the same `RunDisplayEvents` Protocol.
+
+Under `--display={plain,log,none}` and on non-TTY streams, `LiveRunDisplay.for_mode(...)` returns a no-op context manager and the existing log-line stream is what the operator sees.
 
 ### Precedence
 
