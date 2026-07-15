@@ -46,6 +46,7 @@ __all__ = [
     "StandardResponse",
     "UnwrapInputResponse",
     "JsonCoerceResponse",
+    "JsonDeepCoerceResponse",
     "ArrayDictMapResponse",
     "JsonRecursiveCoerceResponse",
     "ItemRecursiveUnwrapResponse",
@@ -129,6 +130,47 @@ def _coerce_json_strings(arguments: dict[str, Any]) -> dict[str, Any]:
         if isinstance(decoded, (list, dict)):
             out[key] = decoded
     return out
+
+
+#: Depth guard for the recursive JSON-string decoder — mirrors
+#: ``_MAX_UNWRAP_DEPTH`` and bounds pathological/self-referential inputs so a
+#: malformed argument can never cause unbounded recursion.
+_MAX_DEEP_COERCE_DEPTH = 24
+
+
+def _coerce_json_strings_deep(value: Any, _depth: int = 0) -> Any:
+    """Recursively apply the :func:`_coerce_json_strings` heuristic.
+
+    Unlike the flat helper (which only decodes *top-level* argument values),
+    this walks the whole argument tree: after decoding a container it
+    re-descends into the result, so a stringified subtree that is itself
+    nested one (or more) levels deep — e.g. a recursive ``children`` array
+    serialised as a string *inside* an already-native parent node — is also
+    recovered. The per-node decoding rule is identical to the flat helper
+    (only ``str`` values whose first non-whitespace char is ``[``/``{`` and
+    that ``json.loads`` to a ``list``/``dict`` are promoted; scalars, IDs and
+    parse failures pass through), so it never corrupts a genuine string.
+    """
+    if _depth >= _MAX_DEEP_COERCE_DEPTH:
+        return value
+    if isinstance(value, str):
+        stripped = value.lstrip()
+        if not stripped or stripped[0] not in "[{":
+            return value
+        try:
+            decoded = json.loads(value)
+        except (ValueError, TypeError):
+            return value
+        if not isinstance(decoded, (list, dict)):
+            return value
+        # Decoded a container — re-descend so nested stringified subtrees
+        # (double/partial serialisation) are recovered too.
+        return _coerce_json_strings_deep(decoded, _depth + 1)
+    if isinstance(value, dict):
+        return {k: _coerce_json_strings_deep(v, _depth + 1) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_coerce_json_strings_deep(item, _depth + 1) for item in value]
+    return value
 
 
 @runtime_checkable
@@ -244,6 +286,46 @@ class JsonCoerceResponse:
         # decoding so empty strings never reach ``json.loads``.
         coerced = _coerce_empty_containers(arguments, param_types)
         return _coerce_json_strings(coerced)
+
+
+class JsonDeepCoerceResponse:
+    """Recursive, schema-agnostic variant of :class:`JsonCoerceResponse`.
+
+    Some models (observed: ``z-ai/glm-5.2``) stringify container values at
+    *multiple nesting depths* rather than only at the argument's top level.
+    The flat :class:`JsonCoerceResponse` recovers a top-level stringified
+    argument but leaves a subtree that was serialised one level deep — e.g. a
+    recursive ``$ref`` node whose ``children`` array is emitted as a
+    JSON-encoded string *inside* an otherwise-native parent dict. The eval
+    then sees ``{"label": "A", "children": "[...]"}``; the tool's Pydantic
+    model rejects the string ``children`` and the trial fails as
+    ``{"label": "A"}`` (children dropped).
+
+    This policy applies the exact same conservative decode heuristic as the
+    flat helper but walks the whole argument tree
+    (:func:`_coerce_json_strings_deep`): after decoding a container it
+    re-descends so nested / doubly-serialised subtrees are recovered too.
+    The native root case (no stringification anywhere) passes through
+    unchanged. It is intentionally schema-agnostic and site-unscoped — unlike
+    the ``tags``-scoped :class:`JsonRecursiveCoerceResponse` — because the
+    quirk here is structural (recursion depth), not tied to a known field
+    path; the per-node ``[``/``{`` + ``json.loads``-to-container guard keeps
+    it from ever promoting a scalar ID or free-text string.
+
+    Empty-container coercion (schema-aware) still runs first at the top level,
+    matching :class:`JsonCoerceResponse`.
+    """
+
+    def parse_arguments(
+        self,
+        arguments: dict[str, Any],
+        *,
+        param_types: Mapping[str, str] | None = None,
+    ) -> dict[str, Any]:
+        coerced = _coerce_empty_containers(arguments, param_types)
+        deep = _coerce_json_strings_deep(coerced)
+        # _coerce_json_strings_deep preserves the top-level dict shape.
+        return deep if isinstance(deep, dict) else coerced
 
 
 class ArrayDictMapResponse:

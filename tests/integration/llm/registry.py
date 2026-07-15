@@ -1514,6 +1514,73 @@ _ALL: list[MC] = [
             }
         ),
     ),
+    # GLM-5.2 (Zhipu / Z.AI via OpenRouter) — the successor to the glm-5.1
+    # sibling above. Shares the GLM family wire posture (passthrough schema,
+    # dict_map hints, openai reasoning-summary codec) but stringifies container
+    # values at DEEPER nesting than the flat json_coerce recovers, so it routes
+    # through its OWN ``openrouter_glm52_deep_stringify_recovery`` preset
+    # (response_policy: json_deep_coerce) rather than the shared
+    # ``openrouter_dict_stringify_recovery``. The deep coercer walks the whole
+    # argument tree, recovering the recursive ``$ref`` node whose ``children``
+    # array is a JSON string inside an otherwise-native parent, the
+    # discriminated-union ``item`` string, and the nested ``message`` / ``doc``
+    # object string — the exact fix-target failures the flat coercer left
+    # dropped/str.
+    #
+    # Integrated via auto-resolve; the resolve fix loop CONVERGED — the final
+    # reprobe (2026-07-15) went green on every fix-target: the two
+    # discriminated_union_two_turns variants, heterogeneous_array
+    # nested_in_object, and recursive_ref simple / nested_in_object / wide_tree
+    # all at 5/5 runs. RECURSIVE_REF_TOOL_CALL stays required at 24/25 under the
+    # overlay (the residual deep_chain 1/5 miss is a genuine native-dict
+    # node-collapse, not a stringify leak, so it was dropped as a fix-target,
+    # not the capability). The four ceilings below are structural to the openai
+    # codec + no cache_control markers, matching the glm-5.1 posture plus the
+    # THINKING_EMITS_BLOCKS demotion (glm-5.2 surfaced no structured reasoning
+    # block on the observe baseline). 19 required / 4 known_unsupported.
+    MC(
+        model_id="openrouter__z-ai_glm-5.2",
+        provider="openrouter",
+        name="z-ai/glm-5.2",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DICT_MAP_TOOL_CALL,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.IMPLICIT_PROMPT_CACHING,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # openai-codec reasoning is summary-only: no structured
+                # thinking block surfaced on the observe baseline, no signed
+                # blocks to replay, and the codec's replay path is a no-op.
+                C.THINKING_EMITS_BLOCKS,
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.UNSIGNED_THINKING_REPLAY,
+                # No Anthropic-style ephemeral cache markers on this route
+                # (cache_policy=none). IMPLICIT_PROMPT_CACHING (the OpenRouter
+                # auto-cache surface) is required above.
+                C.PROMPT_CACHING,
+            }
+        ),
+    ),
     # Mistral-Medium-3.5 (Mistral AI via OpenRouter). Clean tool-caller on
     # the default route — dict-map, discriminated-union, decimal all
     # round-trip natively, so no preset is needed. It is a NON-reasoning

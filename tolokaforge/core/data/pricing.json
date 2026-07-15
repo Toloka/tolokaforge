@@ -1840,9 +1840,9 @@
       "cache_read": 0.182
     },
     "z-ai/glm-5.2": {
-      "input": 0.93,
-      "output": 3.0,
-      "cache_read": 0.26
+      "input": 0.861,
+      "output": 2.706,
+      "cache_read": 0.1599
     },
     "z-ai/glm-5v-turbo": {
       "input": 1.2,
