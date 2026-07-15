@@ -116,7 +116,61 @@ def _resolve_display_mode(
     return mode
 
 
-@click.group()
+class _GroupedCommandsGroup(click.Group):
+    """Click Group that renders ``Commands:`` as fixed-order group sections.
+
+    Every visible command must appear in ``COMMAND_GROUPS``. A registered
+    command missing from the map raises ``RuntimeError`` at ``--help`` time
+    so a new top-level verb never silently disappears from the help output.
+    """
+
+    GROUP_ORDER: tuple[str, ...] = ("Runs", "Tasks", "Docker", "Config", "Assets", "Adapters")
+
+    COMMAND_GROUPS: dict[str, str] = {
+        "run": "Runs",
+        "prepare": "Runs",
+        "worker": "Runs",
+        "status": "Runs",
+        "analyze": "Runs",
+        "validate": "Tasks",
+        "docker": "Docker",
+        "config": "Config",
+        "assets": "Assets",
+        "adapter": "Adapters",
+    }
+
+    def format_commands(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
+        visible_commands: dict[str, click.Command] = {}
+        for name in self.list_commands(ctx):
+            cmd = self.get_command(ctx, name)
+            if cmd is None or cmd.hidden:
+                continue
+            visible_commands[name] = cmd
+
+        sections: dict[str, list[tuple[str, click.Command]]] = {
+            heading: [] for heading in self.GROUP_ORDER
+        }
+        for name, cmd in visible_commands.items():
+            heading = self.COMMAND_GROUPS.get(name)
+            if heading is None:
+                raise RuntimeError(
+                    f"_GroupedCommandsGroup: no group heading for command '{name}'; "
+                    "add it to COMMAND_GROUPS"
+                )
+            sections[heading].append((name, cmd))
+
+        limit = formatter.width - 6 - max((len(n) for n in visible_commands), default=0)
+        for heading in self.GROUP_ORDER:
+            rows_source = sorted(sections[heading], key=lambda item: item[0])
+            if not rows_source:
+                continue
+            rows = [(name, cmd.get_short_help_str(limit)) for name, cmd in rows_source]
+            with formatter.section(heading):
+                formatter.write_dl(rows)
+
+
+@click.group(cls=_GroupedCommandsGroup)
+@click.version_option(package_name="tolokaforge")
 @click.option(
     "--verbose",
     "-v",
