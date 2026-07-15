@@ -23,7 +23,7 @@ Main is responsible for: target confirmation, critique-loop mediation, plan appr
 ## Invocation
 
 ```
-/executing-development-tickets <issue-number>
+/executing-development-tickets <issue-number> [base_branch=<ref>]
 ```
 
 or natural language: "execute issue #237", "let's do #244".
@@ -31,8 +31,11 @@ or natural language: "execute issue #237", "let's do #244".
 Examples:
 - `/executing-development-tickets 237`
 - "Execute issue #245"
+- `/executing-development-tickets 245 base_branch=feat/terminal-dx` — target a milestone integration branch
 
 The skill expects the issue to live in `Toloka/tolokaforge`. If a different repo is needed, ask the user.
+
+**Base branch.** Optional context, defaults to `main`. Direct invocations should almost always use the default. `/implement-milestone` passes `base_branch=feat/<milestone-slug>` so per-issue branches stack on the milestone integration branch and per-issue PRs merge into it rather than `main`. When set, it replaces `main` in Step 6 (branch creation) and Step 10 (PR creation). Nothing else changes — the critic, implementer, and reviewer are agnostic to the base branch.
 
 ## Workflow
 
@@ -118,12 +121,12 @@ When the critique loop settles:
 
 ```bash
 git fetch origin
-git checkout main
-git pull origin main
+git checkout <base_branch>            # main by default; feat/<slug> under /implement-milestone
+git pull --ff-only origin <base_branch>
 git checkout -b <branch-from-plan>
 ```
 
-Confirm clean working tree first (`git status`). If dirty, ask the user before proceeding.
+Confirm clean working tree first (`git status`). If dirty, ask the user before proceeding. If `<base_branch>` doesn't exist on `origin`, stop and ask — a milestone integration branch that should exist but doesn't is a bookkeeping error, not something to paper over.
 
 ### Step 7 — Stage dispatch loop
 
@@ -158,9 +161,9 @@ Per-stage cycle cap: if a stage requires more than 2 corrective implementer laun
 When all stages are done, launch `branch-code-reviewer` via the Agent tool. Prompt:
 
 ```
-Review the current branch vs main against AGENTS.md and the code-review skill rules.
-Plan: <docs/plans/...>. Cover branch + staged + unstaged. Return findings in the
-standard format.
+Review the current branch vs <base_branch> against AGENTS.md and the code-review
+skill rules. Plan: <docs/plans/...>. Cover branch + staged + unstaged. Return
+findings in the standard format.
 ```
 
 ### Step 9 — Fix Blocker / Major findings
@@ -183,10 +186,18 @@ Nit / Minor findings: surface to the user as optional follow-ups; don't block th
 
 ### Step 10 — Open the PR
 
+Per-issue PR bodies are read by three audiences: the human reviewer, the next agent that plans work in this area, and the milestone consolidation PR (which draws its Decision / Rationale rows from every stacked PR). The template below gives each of them what they need without ballooning the body — every heading below is required; keep bullets tight.
+
 ```bash
-gh pr create --title "<concise title from plan>" --body "$(cat <<'EOF'
+gh pr create --base <base_branch> --title "<concise title from plan>" --body "$(cat <<'EOF'
 ## Summary
-<2–3 bullets from the plan's Goal>
+<2–3 bullets from the plan's Goal — what user-visible thing changes>
+
+## Design choices
+- **<Decision>**: <"X because Y" — one line each; 1–3 rows for a typical ticket, more only if the ticket genuinely introduced multiple decisions>
+
+## Concepts introduced
+<One short paragraph naming any new abstraction, contract, policy slot, or vocabulary the reader will encounter. If none, write "None — mechanical change."  This is the section the milestone consolidation PR cites when explaining the whole to a future reader or agent.>
 
 ## Plan
 See docs/plans/<file>
@@ -198,12 +209,14 @@ See docs/plans/<file>
 ## Test plan
 - <bullets — what to verify post-merge>
 
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
+Closes #<issue>
 EOF
 )"
 ```
 
-The `claude-review.yml` workflow will run its own hygiene pass on the PR — treat its findings like reviewer findings (fix or rebut, don't ignore).
+Do not add an AI-attribution footer. The `claude-review.yml` workflow will run its own hygiene pass on the PR — treat its findings like reviewer findings (fix or rebut, don't ignore).
+
+Full worked template with placeholder examples lives at `.agents/skills/implement-milestone/pr-templates.md` — same source of truth used by the milestone consolidation PR.
 
 ### Step 11 — Hand-off
 
@@ -235,6 +248,7 @@ Surface to the user:
 | Implementer drifts from the plan | Justified → update the plan, show diff, continue. Unjustified → corrective implementer launch. Cap at 2 corrections per stage; then revise the plan with the architect. |
 | Reviewer keeps finding the same Blocker | Stop after 2 fix rounds and ask the user. Don't loop indefinitely. |
 | Working tree dirty when Step 6 starts | Ask the user before mutating — uncommitted work may be theirs. |
+| `base_branch` passed but not present on `origin` | Stop and ask. A milestone integration branch that should exist but doesn't is a bookkeeping error upstream in `/implement-milestone`, not something to paper over by silently falling back to `main`. |
 
 ## Anti-patterns
 
