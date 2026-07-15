@@ -142,7 +142,7 @@ class _RecordingStubOrchestrator:
     def load_tasks(self) -> None:
         type(self)._ordering.append("load_tasks")
 
-    def run(self) -> Path:
+    def run(self, **_: object) -> Path:
         type(self)._ordering.append("run")
         if self._events is not None:
             self._events.run_started(total_trials=1, initial_completed=0)

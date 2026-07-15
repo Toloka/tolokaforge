@@ -84,7 +84,7 @@ def _make_stub_orchestrator(
         def load_tasks(self) -> None:
             return None
 
-        def run(self) -> Path:
+        def run(self, **_: object) -> Path:
             if run_raises is not None:
                 raise run_raises
             assert run_return is not None

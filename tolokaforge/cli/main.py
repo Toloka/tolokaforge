@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import time
 from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
@@ -19,6 +20,10 @@ from tolokaforge.cli._display import (
     select_display_mode,
     silence_console,
 )
+from tolokaforge.cli._run_banner import (
+    print_run_end_banner,
+    print_run_start_banner,
+)
 from tolokaforge.cli._run_display import LiveRunDisplay
 from tolokaforge.core.engine_run_state import read_persisted_presets_file
 from tolokaforge.core.llm.presets import (
@@ -32,7 +37,7 @@ from tolokaforge.core.logging import (
     silence_root_logging,
 )
 from tolokaforge.core.models import RunConfig
-from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
+from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps, resolve_run_directory
 from tolokaforge.core.project_loader import load_effective_run_config
 from tolokaforge.core.resume import RunStateManager
 from tolokaforge.core.run_queue import create_run_queue
@@ -469,39 +474,54 @@ def run(
 
     display_mode = ctx.find_root().obj.get("display_mode", DisplayMode.PLAIN)
 
-    with LiveRunDisplay.for_mode(display_mode) as display:
-        # Create orchestrator with flags. Pass the resolved project so the
-        # adapter picks up project.task_defaults on task load. The display's
-        # event sink threads through OrchestratorDeps down to the runner.
-        orchestrator = Orchestrator(
-            run_config,
-            resume=resume,
-            verbose=verbose,
-            strict=strict,
-            project=project,
-            deps=OrchestratorDeps(events=display.events),
-        )
+    run_id, run_dir = resolve_run_directory(run_config.evaluation.output_dir)
+    print_run_start_banner(run_id=run_id, run_dir=run_dir, console=console)
 
-        console.print("[bold blue]Loading tasks...[/bold blue]")
-        orchestrator.load_tasks()
-
-        if not orchestrator.tasks:
-            console.print("[red]No tasks found![/red]")
-            raise SystemExit(1)
-
-        console.print(f"[green]Found {len(orchestrator.tasks)} tasks[/green]")
-
-        if resume:
-            console.print("[bold yellow]Resuming run (skipping completed trials)...[/bold yellow]")
-        else:
-            console.print(
-                f"[bold blue]Running {run_config.orchestrator.repeats} trials per task...[/bold blue]"
+    start_ts = time.monotonic()
+    success = False
+    try:
+        with LiveRunDisplay.for_mode(display_mode) as display:
+            # Create orchestrator with flags. Pass the resolved project so
+            # the adapter picks up project.task_defaults on task load. The
+            # display's event sink threads through OrchestratorDeps down to
+            # the runner.
+            orchestrator = Orchestrator(
+                run_config,
+                resume=resume,
+                verbose=verbose,
+                strict=strict,
+                project=project,
+                deps=OrchestratorDeps(events=display.events),
             )
 
-        output_dir = orchestrator.run()
+            console.print("[bold blue]Loading tasks...[/bold blue]")
+            orchestrator.load_tasks()
 
-    console.print("[bold green]✓ Run complete![/bold green]")
-    console.print(f"Results saved to: {output_dir}")
+            if not orchestrator.tasks:
+                console.print("[red]No tasks found![/red]")
+                raise SystemExit(1)
+
+            console.print(f"[green]Found {len(orchestrator.tasks)} tasks[/green]")
+
+            if resume:
+                console.print(
+                    "[bold yellow]Resuming run (skipping completed trials)...[/bold yellow]"
+                )
+            else:
+                console.print(
+                    f"[bold blue]Running {run_config.orchestrator.repeats} trials per task...[/bold blue]"
+                )
+
+            output_dir = orchestrator.run(run_id=run_id, output_dir=run_dir)
+        success = True
+    finally:
+        print_run_end_banner(
+            run_id=run_id,
+            run_dir=run_dir,
+            duration_seconds=time.monotonic() - start_ts,
+            success=success,
+            console=console,
+        )
     emit_artifact_path(output_dir)
 
 
