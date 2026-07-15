@@ -188,6 +188,46 @@ def test_task_builds_description_with_judge_rubric_and_llm_user(task_id: str) ->
     assert task_desc.user_simulator.mode == "llm"
 
 
+# ``pass_threshold`` inherited from the project default (0.8) unless the task
+# overrides it; ``long_debugging_session`` ships ``combine.pass_threshold: 0.7``.
+_EXPECTED_PASS_THRESHOLD = {
+    "api_endpoint_add": 0.8,
+    "db_query_tuning": 0.8,
+    "long_debugging_session": 0.7,
+    "postgres_upgrade_test": 0.8,
+    "schema_isolation_migration": 0.8,
+}
+
+
+@pytest.mark.parametrize("task_id", sorted(_EXPECTED_TASK_IDS))
+def test_task_combine_inherits_project_grading_defaults(task_id: str) -> None:
+    """Each task's resolved ``combine`` inherits the project's
+    ``grading_defaults.combine`` (``method="weighted"``,
+    ``weights={"llm_judge": 1.0}``) key-by-key; a task that ships its own
+    ``combine`` (``long_debugging_session``: ``pass_threshold: 0.7``)
+    overrides that field while still inheriting the project's ``weights``."""
+    adapter = _make_pack_adapter()
+
+    grading = adapter.to_task_description(task_id).grading
+
+    assert grading.combine_method == "weighted"
+    assert grading.weights == {"llm_judge": 1.0}
+    assert grading.pass_threshold == _EXPECTED_PASS_THRESHOLD[task_id]
+
+
+def test_get_grading_config_no_longer_crashes_on_no_combine_task() -> None:
+    """``get_grading_config`` on a task that ships no ``combine`` block
+    (``api_endpoint_add``) resolves the project default instead of raising
+    on core ``GradingConfig``'s required ``combine`` field."""
+    adapter = _make_pack_adapter()
+
+    grading = adapter.get_grading_config("api_endpoint_add")
+
+    assert grading.combine.method == "weighted"
+    assert grading.combine.weights == {"llm_judge": 1.0}
+    assert grading.combine.pass_threshold == 0.8
+
+
 @pytest.mark.parametrize("task_id", sorted(_EXPECTED_TASK_IDS))
 def test_task_manifest_resolves_expected_stack(task_id: str) -> None:
     """``schema_isolation_migration`` resolves its task-local
