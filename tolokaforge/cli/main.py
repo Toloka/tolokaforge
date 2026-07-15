@@ -1,6 +1,7 @@
 """Main CLI entry point"""
 
 import json
+import logging
 import os
 from datetime import datetime
 from pathlib import Path
@@ -16,6 +17,7 @@ from tolokaforge.core.llm.presets import (
     set_overlay_path,
     validate_overlay_file,
 )
+from tolokaforge.core.logging import LogFormat, configure_root_logging
 from tolokaforge.core.models import RunConfig
 from tolokaforge.core.orchestrator import Orchestrator
 from tolokaforge.core.project_loader import load_effective_run_config
@@ -77,9 +79,66 @@ def _print_runtime_banner(*, console: Console, runtime_choice: str, source: str)
 
 
 @click.group()
-def cli():
+@click.option(
+    "--verbose",
+    "-v",
+    "verbose",
+    is_flag=True,
+    help="Console log level DEBUG (mutually exclusive with --quiet).",
+)
+@click.option(
+    "--quiet",
+    "-q",
+    "quiet",
+    is_flag=True,
+    help="Console log level WARNING (mutually exclusive with --verbose).",
+)
+@click.option(
+    "--log-format",
+    "log_format",
+    type=click.Choice([m.value for m in LogFormat], case_sensitive=False),
+    default=None,
+    help=(
+        "Line shape for log records on the console. Defaults to "
+        "'pretty' on a TTY, 'plain' otherwise. 'json' emits one JSON "
+        "object per line."
+    ),
+)
+@click.pass_context
+def cli(ctx: click.Context, verbose: bool, quiet: bool, log_format: str | None) -> None:
     """Universal LLM Tool-Use Benchmarking Harness (ULB-H)"""
-    pass
+    if verbose and quiet:
+        raise click.UsageError("--verbose and --quiet are mutually exclusive")
+
+    if quiet:
+        level = logging.WARNING
+    elif verbose:
+        level = logging.DEBUG
+    else:
+        level = logging.INFO
+
+    resolved_format = LogFormat(log_format.lower()) if log_format is not None else None
+    configure_root_logging(level=level, log_format=resolved_format)
+
+    ctx.ensure_object(dict)
+    ctx.obj["root_verbose"] = verbose
+    ctx.obj["root_quiet"] = quiet
+    ctx.obj["log_format"] = resolved_format
+
+
+def _bump_console_debug_if_allowed(ctx: click.Context) -> None:
+    """Raise the root handler to DEBUG for subcommand `--verbose`, unless
+    the root callback saw `-q`.
+
+    Root `-q` is an explicit request to silence the console; the subcommand
+    flag still drives the per-trial `logs.yaml` level via
+    `Orchestrator(verbose=True)`, but must not override the operator's
+    console-quiet decision.
+    """
+    root_obj = ctx.find_root().obj or {}
+    if root_obj.get("root_quiet"):
+        return
+    configure_root_logging(level=logging.DEBUG, log_format=root_obj.get("log_format"))
 
 
 # Register docker subcommand group (lazy import to avoid docker dep at registration)
@@ -201,7 +260,9 @@ def _activate_presets_overlay(
         "in the run config. Must be a positive integer. See docs/CONFIG.md."
     ),
 )
+@click.pass_context
 def run(
+    ctx: click.Context,
     config: str,
     resume: bool,
     verbose: bool,
@@ -213,6 +274,9 @@ def run(
     workers: int | None,
 ):
     """Run benchmark with specified configuration"""
+    if verbose:
+        _bump_console_debug_if_allowed(ctx)
+
     console.print(f"[bold blue]Loading configuration from {config}...[/bold blue]")
 
     # Load config with the enclosing project's run_defaults layered under
@@ -338,7 +402,9 @@ def run(
         "engine.presets_file."
     ),
 )
+@click.pass_context
 def prepare(
+    ctx: click.Context,
     config: str,
     run_dir: str,
     reset_queue: bool,
@@ -347,6 +413,9 @@ def prepare(
     presets_file: str | None,
 ):
     """Prepare a queue-backed run directory for distributed workers."""
+    if verbose:
+        _bump_console_debug_if_allowed(ctx)
+
     console.print(f"[bold blue]Preparing run from config {config}...[/bold blue]")
     config_data, project = load_effective_run_config(Path(config))
     run_config = RunConfig(**config_data)
@@ -395,7 +464,9 @@ def prepare(
         "falls back to engine.presets_file."
     ),
 )
+@click.pass_context
 def worker(
+    ctx: click.Context,
     config: str,
     run_dir: str,
     max_attempts: int | None,
@@ -404,6 +475,9 @@ def worker(
     presets_file: str | None,
 ):
     """Run a queue worker process (distributed execution mode)."""
+    if verbose:
+        _bump_console_debug_if_allowed(ctx)
+
     console.print(f"[bold blue]Loading worker config from {config}...[/bold blue]")
     config_data, project = load_effective_run_config(Path(config))
     run_config = RunConfig(**config_data)

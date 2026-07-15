@@ -75,3 +75,43 @@ Defaults: `refresh_per_second=4.0`, `transient=False`, `screen=False`, `vertical
 - **Persistent status region that repaints in place** (multi-line dashboard, live cost tracker): `make_live()`.
 
 Nested progress inside a Live region is supported by Rich — pass the same `console` (the default) and Rich cooperates automatically.
+
+## Structured logging
+
+Three flags on the top-level `tolokaforge` group control every log line the CLI emits. `configure_root_logging` runs from the group callback before any subcommand executes, installs a single `StructuredFormatter` handler on the root logger, and writes to `sys.stderr`.
+
+| Flag | Effect |
+|------|--------|
+| `--verbose` / `-v` | Root level → `DEBUG`. |
+| `--quiet` / `-q` | Root level → `WARNING`. |
+| `--log-format={pretty,plain,json}` | Line shape. Default: `pretty` when `stderr.isatty()`, `plain` otherwise. |
+
+`-v` and `-q` are mutually exclusive — passing both exits with `UsageError`. Auto-selection considers only `stderr`; `stdout` piping does not switch the mode.
+
+### Line shape
+
+Every line — `pretty` or `plain` — has the shape:
+
+```
+HH:MM:SS.mmm | LEVEL | k=v k=v | message
+```
+
+Scope pairs come from `LogRecord.__dict__` (typically populated via `logger.info(msg, extra={...})` or `StructuredLogger.info(msg, key=val)`). Keys are alphabetically sorted for deterministic output; values that contain whitespace or `|` render via `repr` (`k='hello world'`). Empty scope preserves the double-space middle (`... | INFO |  | message`) so column grep stays trivial.
+
+`pretty` wraps the whole line in an ANSI level colour matching `_display.THEME` — `INFO`=cyan, `WARNING`=yellow, `ERROR`=bold red, `DEBUG`=dim. `plain` emits no ANSI escapes. `json` emits one JSON object per line with keys `{"ts", "level", "logger", "message", "extra"}`; the schema is locked by `tests/canonical/golden/logging/json__*.log`.
+
+### Precedence with subcommand `--verbose`
+
+`run`, `prepare`, `worker`, and `adapter convert` each carry their own `--verbose` flag. It drives the per-trial `logs.yaml` level (via `Orchestrator(verbose=True)` → `StructuredLogger(level=DEBUG)`) and additionally bumps the root console handler to `DEBUG` unless the root `-q` flag is set. Root `-q` always wins on the console; subcommand `--verbose` still records `DEBUG` in `logs.yaml`.
+
+| Root | Subcommand `--verbose` | Console level | `logs.yaml` level |
+|------|------------------------|---------------|-------------------|
+| (none) | (none) | INFO | INFO |
+| `-v` | (none) | DEBUG | INFO |
+| `-q` | (none) | WARNING | INFO |
+| (none) | `--verbose` | DEBUG | DEBUG |
+| `-v` | `--verbose` | DEBUG | DEBUG |
+| `-q` | `--verbose` | WARNING | DEBUG |
+| `-v -q` | (any) | `UsageError` — exit 2 | — |
+
+See [`docs/LOGGING.md`](LOGGING.md) for the full API of `StructuredLogger`, `get_logger`, and `init_trial_logger`, and for the `logs.yaml` on-disk shape.

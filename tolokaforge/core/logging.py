@@ -2,19 +2,212 @@
 
 This module provides structured logging with YAML output, context support,
 and optional strict mode that raises errors on ERROR level.
+
+It also provides the process-wide log formatter (`StructuredFormatter`,
+`LogFormat`) and root-handler bootstrap (`configure_root_logging`) used
+by the CLI to render every `logging.getLogger(...)` record with a
+consistent `HH:MM:SS.mmm | LEVEL | k=v | message` shape on stderr.
 """
 
+from __future__ import annotations
+
+import json
 import logging
 import sys
+from collections.abc import Callable
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 import yaml
 
 
+class LogFormat(str, Enum):
+    """Line shape emitted by `StructuredFormatter`."""
+
+    PRETTY = "pretty"
+    PLAIN = "plain"
+    JSON = "json"
+
+
+_LOG_RECORD_RESERVED: frozenset[str] = frozenset(
+    {
+        "args",
+        "asctime",
+        "created",
+        "exc_info",
+        "exc_text",
+        "filename",
+        "funcName",
+        "levelname",
+        "levelno",
+        "lineno",
+        "message",
+        "module",
+        "msecs",
+        "msg",
+        "name",
+        "pathname",
+        "process",
+        "processName",
+        "relativeCreated",
+        "stack_info",
+        "taskName",
+        "thread",
+        "threadName",
+    }
+)
+
+_ANSI_RESET = "\x1b[0m"
+_LEVEL_ANSI: dict[str, str] = {
+    "DEBUG": "\x1b[2m",
+    "INFO": "\x1b[36m",
+    "WARNING": "\x1b[33m",
+    "ERROR": "\x1b[1;31m",
+    "CRITICAL": "\x1b[1;31m",
+}
+
+_TOLOKAFORGE_ROOT_HANDLER_SENTINEL = "_tolokaforge_root_handler"
+
+
+def _render_scalar(key: str, value: Any) -> str:
+    text = str(value)
+    if any(ch.isspace() for ch in text) or "|" in text:
+        return f"{key}={value!r}"
+    return f"{key}={text}"
+
+
+def _to_jsonable(value: Any) -> Any:
+    try:
+        json.dumps(value)
+    except (TypeError, ValueError):
+        return repr(value)
+    return value
+
+
+class StructuredFormatter(logging.Formatter):
+    """Render a `LogRecord` in one of the three `LogFormat` modes.
+
+    Layout (pretty & plain):
+
+        HH:MM:SS.mmm | LEVEL | k1=v1 k2=v2 | message
+
+    - Timestamp is millisecond-resolution local time. `clock` may inject a
+      deterministic `datetime` factory for tests (default: `datetime.now`).
+    - Scope pairs are every `LogRecord.__dict__` key not in
+      `_LOG_RECORD_RESERVED` and not starting with `_`. Keys are sorted
+      alphabetically for deterministic goldens.
+    - Values render bare (`k=v`) unless `str(v)` contains whitespace or
+      `|`, in which case the value renders via `repr` (`k='hello world'`).
+    - Empty scope renders as an empty middle segment — the two spaces
+      between the surrounding `|` delimiters are preserved (`... | LEVEL
+      |  | message`).
+
+    JSON mode emits one JSON object per line with keys
+    `{"ts", "level", "logger", "message", "extra"}`. Non-JSONable
+    extra values fall back to `repr`.
+
+    Pretty mode wraps the entire line with the ANSI escape sequence for
+    the record's level (INFO=cyan, WARNING=yellow, ERROR=bold red,
+    DEBUG=dim) — matching the semantics of
+    `tolokaforge.cli._display.THEME`.
+    """
+
+    def __init__(
+        self,
+        mode: LogFormat,
+        *,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
+        super().__init__()
+        self.mode = mode
+        self._clock = clock or datetime.now
+
+    def format(self, record: logging.LogRecord) -> str:
+        timestamp = self._render_timestamp()
+        scope = self._scope_pairs(record)
+        message = record.getMessage()
+        if self.mode is LogFormat.JSON:
+            return self._render_json(timestamp, record, scope, message)
+        scope_segment = " ".join(_render_scalar(k, v) for k, v in scope.items())
+        line = f"{timestamp} | {record.levelname} | {scope_segment} | {message}"
+        if self.mode is LogFormat.PRETTY:
+            color = _LEVEL_ANSI.get(record.levelname)
+            if color is not None:
+                line = f"{color}{line}{_ANSI_RESET}"
+        return line
+
+    def _render_timestamp(self) -> str:
+        now = self._clock()
+        return f"{now:%H:%M:%S}.{now.microsecond // 1000:03d}"
+
+    @staticmethod
+    def _scope_pairs(record: logging.LogRecord) -> dict[str, Any]:
+        return {
+            key: record.__dict__[key]
+            for key in sorted(record.__dict__)
+            if key not in _LOG_RECORD_RESERVED and not key.startswith("_")
+        }
+
+    @staticmethod
+    def _render_json(
+        timestamp: str,
+        record: logging.LogRecord,
+        scope: dict[str, Any],
+        message: str,
+    ) -> str:
+        payload = {
+            "ts": timestamp,
+            "level": record.levelname,
+            "logger": record.name,
+            "message": message,
+            "extra": {k: _to_jsonable(v) for k, v in scope.items()},
+        }
+        return json.dumps(payload, ensure_ascii=False)
+
+
+def configure_root_logging(
+    *,
+    level: int = logging.INFO,
+    log_format: LogFormat | None = None,
+    stream: TextIO | None = None,
+) -> None:
+    """Install (or replace) the tolokaforge root log handler.
+
+    Idempotent: a previously installed tolokaforge root handler (tagged
+    via the `_tolokaforge_root_handler` sentinel attribute) is removed
+    before the new one is added. Foreign handlers on `logging.root`
+    (e.g. pytest's `caplog`) are left untouched.
+
+    Both the root logger and the tolokaforge handler are set to `level`
+    — the handler level is authoritative so a child logger that raises
+    its own effective level (e.g. `Orchestrator.__init__` calling
+    `logging.getLogger("tolokaforge.docker").setLevel(INFO)`) still gets
+    filtered when root `-q` requests WARNING+ on console.
+
+    `log_format=None` auto-selects `PRETTY` if `stream.isatty()` returns
+    truthy, otherwise `PLAIN`. `stream=None` defaults to `sys.stderr`.
+    """
+    target_stream = stream if stream is not None else sys.stderr
+    if log_format is None:
+        log_format = LogFormat.PRETTY if target_stream.isatty() else LogFormat.PLAIN
+
+    root = logging.getLogger()
+    for handler in list(root.handlers):
+        if getattr(handler, _TOLOKAFORGE_ROOT_HANDLER_SENTINEL, False):
+            root.removeHandler(handler)
+
+    handler = logging.StreamHandler(target_stream)
+    handler.setFormatter(StructuredFormatter(log_format))
+    handler.setLevel(level)
+    setattr(handler, _TOLOKAFORGE_ROOT_HANDLER_SENTINEL, True)
+    root.addHandler(handler)
+    root.setLevel(level)
+
+
 class StructuredLogger:
-    """Thread-safe structured logger with JSON output and strict mode
+    """Thread-safe structured logger with in-memory list + YAML output.
 
     Attributes:
         name: Logger name (typically module or trial ID)
@@ -22,6 +215,11 @@ class StructuredLogger:
         log_file: Optional file path for log output
         strict: If True, raise RuntimeError on ERROR level
         logs: Collected structured log entries
+
+    Records are routed through the stdlib logger with `propagate=True` so
+    the root handler installed by `configure_root_logging` owns rendering.
+    The in-memory `logs` list and `save_to_file` YAML shape are separate
+    from the console rendering.
     """
 
     def __init__(
@@ -37,26 +235,26 @@ class StructuredLogger:
         self.strict = strict
         self.logs: list[dict[str, Any]] = []
 
-        # Create standard logger for console output
         self.logger = logging.getLogger(name)
         self.logger.setLevel(level)
-
-        # Remove existing handlers to avoid duplicates
         self.logger.handlers.clear()
+        self.logger.propagate = True
 
-        # Add console handler
-        console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setLevel(level)
+    @staticmethod
+    def _sanitize_extra(context: dict[str, Any]) -> dict[str, Any]:
+        """Rename keys that would collide with `LogRecord` attributes.
 
-        # Format: timestamp - name - level - message
-        formatter = logging.Formatter(
-            "%(asctime)s - %(name)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
-        )
-        console_handler.setFormatter(formatter)
-        self.logger.addHandler(console_handler)
-
-        # Prevent propagation to root logger
-        self.logger.propagate = False
+        `logging.Logger.log(..., extra=...)` copies each key straight onto
+        `LogRecord.__dict__`; a key like `module` or `name` would raise
+        `KeyError` at `LogRecord.__init__`. Prefix such collisions with
+        `ctx_` so the record survives — the `StructuredFormatter` reads the
+        renamed keys via the same scope-pair rule.
+        """
+        sanitized: dict[str, Any] = {}
+        for key, value in context.items():
+            safe_key = f"ctx_{key}" if key in _LOG_RECORD_RESERVED else key
+            sanitized[safe_key] = value
+        return sanitized
 
     def _log(self, level: str, message: str, context: dict[str, Any] | None = None, **kwargs):
         """Internal logging method
@@ -67,20 +265,16 @@ class StructuredLogger:
             context: Optional context dictionary
             **kwargs: Additional context as keyword arguments
         """
-        # Get numeric log level
         log_level = getattr(logging, level)
 
-        # Skip if below threshold (filter based on logger level)
         if log_level < self.level:
             return
 
         # Defensive handling for non-dict context (e.g., exception passed as positional arg)
         if context is not None and not isinstance(context, dict):
             context = {"context": str(context)}
-        # Merge context and kwargs
         full_context = {**(context or {}), **kwargs}
 
-        # Create structured log entry
         log_entry = {
             "timestamp": datetime.now(tz=timezone.utc).isoformat(),
             "level": level,
@@ -90,20 +284,11 @@ class StructuredLogger:
         }
         self.logs.append(log_entry)
 
-        # Format context for display
-        if full_context:
-            context_str = ", ".join(f"{k}={v}" for k, v in full_context.items())
-            display_message = f"{message} ({context_str})"
-        else:
-            display_message = message
+        self.logger.log(log_level, message, extra=self._sanitize_extra(full_context))
 
-        self.logger.log(log_level, display_message)
-
-        # Raise exception in strict mode for ERROR level
         if self.strict and level == "ERROR":
             error_msg = f"[STRICT MODE] {message}"
             if full_context:
-                # Format context in a way that matches test expectations
                 context_parts = [f"{k}={v}" for k, v in full_context.items()]
                 error_msg += f" ({', '.join(context_parts)})"
             raise RuntimeError(error_msg)
