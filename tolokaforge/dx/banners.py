@@ -7,9 +7,9 @@ the end banner announces outcome + duration + the same URL + the follow-up
 ``[link=URL]…[/link]`` markup, so OSC 8-capable terminals render them
 clickable.
 
-Both helpers accept the shared ``console`` from :mod:`tolokaforge.cli._display`
+Both helpers accept the shared ``console`` from :mod:`tolokaforge.dx._display`
 as an argument — they never construct their own ``Console``. Under
-``--display=none``, :func:`tolokaforge.cli._display.silence_console` has
+``--display=none``, :func:`tolokaforge.dx._display.silence_console` has
 already set ``console.quiet = True`` and the writes short-circuit; the
 stdout artifact-path emission is unaffected.
 """
@@ -20,7 +20,7 @@ from pathlib import Path
 
 from rich.console import Console
 
-from tolokaforge.cli._display import format_duration
+from tolokaforge.dx._display import format_duration
 
 
 def _report_url(run_dir: Path) -> str:

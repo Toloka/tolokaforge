@@ -2,18 +2,20 @@
 
 This document describes the tolokaforge CLI's shared building blocks. Per-command usage lives in `--help` output.
 
+The CLI is the reference implementation of the `RunDisplayEvents` seam (see [ADR-0019](architecture/adr/0019-front-end-plugin-namespace.md)); it ships under the `tolokaforge.dx` namespace and installs via `pip install 'tolokaforge[dx]'`.
+
 ## Display layer
 
-Every module under `tolokaforge/cli/` renders human-facing output through `tolokaforge.cli._display`. The module owns four public names — `console`, `THEME`, `make_progress`, and `make_live` — and no CLI file may construct its own `rich.Console`. A canonical test (`tests/canonical/test_cli_display_invariants.py`) fails CI if a new module slips in an ad-hoc `Console(...)`.
+Every module under `tolokaforge/dx/` renders human-facing output through `tolokaforge.dx._display`. The module owns four public names — `console`, `THEME`, `make_progress`, and `make_live` — and no CLI file may construct its own `rich.Console`. A canonical test (`tests/canonical/test_cli_display_invariants.py`) fails CI if a new module slips in an ad-hoc `Console(...)`.
 
 ### Why a shared surface
 
-The CLI splits into five modules (`main.py`, `adapter_commands.py`, `assets_commands.py`, `config_commands.py`, `docker_commands.py`). Routing them all through one `Console` guarantees a single theme, a single stream posture (stderr, soft-wrapped), and one place for the `--display` toggle to mutate progress and Live-panel plumbing (see [§ Display modes](#display-modes)).
+The Click command tree splits across `tolokaforge/dx/cli/main.py` plus per-verb modules `adapter.py`, `assets.py`, `config.py`, `docker.py`. Routing them all through one `Console` guarantees a single theme, a single stream posture (stderr, soft-wrapped), and one place for the `--display` toggle to mutate progress and Live-panel plumbing (see [§ Display modes](#display-modes)).
 
 ### `console`
 
 ```python
-from tolokaforge.cli._display import console
+from tolokaforge.dx._display import console
 
 console.print("[success]✓ done[/success]")
 ```
@@ -43,7 +45,7 @@ All styles use Rich standard names (no truecolor hex) so terminals without full-
 Factory returning a `rich.progress.Progress` bound to the shared console with the CLI's default column set: `SpinnerColumn`, description, `BarColumn`, `MofNCompleteColumn`, `TaskProgressColumn`, `TimeElapsedColumn`, `TimeRemainingColumn`.
 
 ```python
-from tolokaforge.cli._display import make_progress
+from tolokaforge.dx._display import make_progress
 
 with make_progress() as progress:
     task = progress.add_task("Grading trials", total=42)
@@ -60,7 +62,7 @@ Factory returning a `rich.live.Live` bound to the shared console. Use it when a 
 
 ```python
 from rich.text import Text
-from tolokaforge.cli._display import make_live
+from tolokaforge.dx._display import make_live
 
 with make_live(Text("Starting…")) as live:
     live.update(Text("Working…"))
@@ -73,7 +75,7 @@ Defaults: `refresh_per_second=4.0`, `transient=False`, `screen=False`, `vertical
 - **One-shot line** (banner, error, single result): `console.print(...)`.
 - **Iteration with a known total** (per-trial grading, batch uploads): `make_progress()`.
 - **Persistent status region that repaints in place** (multi-line dashboard, live cost tracker): `make_live()`.
-- **Run-scoped multi-region panel** (per-trial list + summary + status bar during `tolokaforge run`): `LiveRunDisplay` in `tolokaforge.cli._run_display`. Wraps `make_live` and consumes a `RunDisplayEvents` Protocol threaded through `OrchestratorDeps.events` — see [§ Display modes](#display-modes).
+- **Run-scoped multi-region panel** (per-trial list + summary + status bar during `tolokaforge run`): `LiveRunDisplay` in `tolokaforge.dx.live_panel`. Wraps `make_live` and consumes a `RunDisplayEvents` Protocol threaded through `OrchestratorDeps.events` — see [§ Display modes](#display-modes).
 
 Nested progress inside a Live region is supported by Rich — pass the same `console` (the default) and Rich cooperates automatically.
 
@@ -123,7 +125,7 @@ The root flag `--display={full,rich,plain,log,none}` and the equivalent env var 
 
 | Value    | Behaviour                                                                                                 |
 |----------|-----------------------------------------------------------------------------------------------------------|
-| `full`   | Textual TUI. Falls back to `rich` when textual is not installed (a WARNING log line notes the fallback).  |
+| `full`   | Textual TUI (see [§ Full TUI](#full-tui---displayfull)). Falls back to `rich` when textual is not installed (a WARNING log line notes the fallback).  |
 | `rich`   | Rich Live panel during `tolokaforge run` — left-pane trial list (status glyphs), right-pane structured summary of the focused trial (`turn N · in Xk / out Y tok · $Z.ZZ · last: <event_kind>`), bottom bar `{completed}/{total} · {running} running · ${cost} · in {prompt} / out {completion} tok · fail {failed} · eta {eta}`. Log lines from `configure_root_logging` interleave above the panel. Every other subcommand renders through the shared `console.print(...)` calls. |
 | `plain`  | Human-readable log-line stream. Default on non-TTY / when `CI` is set.                                    |
 | `log`    | Pure log stream — no banners, no progress bars.                                                           |
@@ -131,10 +133,12 @@ The root flag `--display={full,rich,plain,log,none}` and the equivalent env var 
 
 ### Live run panel (`--display=rich` during `tolokaforge run`)
 
-`tolokaforge run` under `--display=rich` renders inside a `rich.Live` region owned by `tolokaforge.cli._run_display.LiveRunDisplay`. The panel has three regions:
+`tolokaforge run` under `--display=rich` renders inside a `rich.Live` region owned by `tolokaforge.dx.live_panel.LiveRunDisplay`. The panel has three regions, plus two conditional ones:
 
-- **Left pane — trial list.** One line per trial: `<glyph> task_id · trial_index` where `<glyph>` is `⏳` for running, `✓` for completed, `✗` for failed. Running trials always render; completed and failed trials scroll off in `last_update_ts` order once the window (default 20 rows) fills.
-- **Right pane — focused trial.** Structured summary of the trial that most recently transitioned state: `turn N · in Xk / out Y tok · $Z.ZZ · last: <event_kind>`. Focus follows lifecycle transitions only (`trial_started`, `trial_completed`, `trial_failed`, `judgment_scored`) — per-turn `trial_progress` events mutate counters but leave focus stable, so the pane does not alternate on high-frequency ticks.
+- **Optional banner (top).** Populated on the first auth-shaped `trial_failed` so a bad API key doesn't hide as one row of `fail N` in the bottom bar.
+- **Optional services widget (below the banner).** Only visible during the startup window (before the first `run_started`) when `phase_changed(services=…)` has fired. One row per built-in `EngineStack` service: name, lifecycle status, health glyph (`✓` healthy, `⋯` starting/created, `✗` unhealthy, `~` no probe), port summary (`container_port→host_port`). Disappears once trials dispatch.
+- **Left pane — trial list.** One line per trial: `<glyph> [N/M] task_id · trial_index` where `<glyph>` is `⏳` for running, `✓` for completed, `✗` for failed and `[N/M]` is the run-wide 1-indexed position, zero-padded to the width of `M`. Running trials always render; completed and failed trials scroll off in `last_update_ts` order once the window (default 20 rows) fills. The main region is height-adaptive — three trials in a tall terminal give a short pane instead of filling the screen.
+- **Right pane — focused trial.** Structured summary of the trial that most recently transitioned state: `turn N · in Xk / out Y tok · $Z.ZZ · last: <event_kind>`. Focus follows lifecycle transitions only (`trial_started`, `trial_completed`, `trial_failed`, `judgment_scored`) — per-turn `trial_progress` events mutate counters but leave focus stable, so the pane does not alternate on high-frequency ticks. Once `trial_provisioned` has fired for the focused trial, a compact "Infrastructure" sub-panel appears under the summary listing the per-container health glyphs and published ports for the trial's compose stack.
 - **Bottom bar.** One line, format:
 
   ```
@@ -143,13 +147,45 @@ The root flag `--display={full,rich,plain,log,none}` and the equivalent env var 
 
   Concrete example: `142/500 · 12 running · $0.87 · in 41.2k / out 6.8k tok · fail 3 · eta 03:14`. `cost` renders `$<0.01` below one cent and `$0.00` at zero. `prompt` / `completion` render with a `k` suffix at ≥ 5 000 tokens. `eta` is `MM:SS` under one hour, `HH:MM:SS` above, and `n/a` before the first in-run completion. The pinned literal shape lives in `tests/canonical/golden/run_display/panel_{80,120}.svg`.
 
-The orchestrator, conductor, and runner emit lifecycle events into a `RunDisplayEvents` Protocol (`run_started`, `trial_started`, `trial_progress`, `trial_completed`, `trial_failed`, `judgment_scored`, `run_finished`). `LiveRunDisplay` subscribes and repaints at 4 Hz. `_NULL_EVENTS` is the default sink under any non-active mode — the orchestrator / conductor / runner never branch on `events is None`, they just call every method.
+The orchestrator, conductor, and runner emit lifecycle events into a `RunDisplayEvents` Protocol (`run_started`, `trial_started`, `trial_progress`, `trial_provisioned`, `trial_completed`, `trial_failed`, `judgment_scored`, `run_finished`, `phase_changed`). `LiveRunDisplay` subscribes and repaints at 4 Hz. `_NULL_EVENTS` is the default sink under any non-active mode — the orchestrator / conductor / runner never branch on `events is None`, they just call every method.
 
-Log lines from `configure_root_logging` interleave above the panel: on `__enter__`, `LiveRunDisplay` re-points the sentinel-tagged root handler's `.stream` attribute to the Rich-wrapped `sys.stderr` so the handler shares the Live region's cooperative rendering; `__exit__` restores the snapshotted stream.
-
-`--display=full` today collapses to `--display=rich` because `textual` is not a dependency; when the Textual TUI (C3) lands, `--display=full` will render a Textual class that consumes the same `RunDisplayEvents` Protocol.
+Log records from `configure_root_logging` — and from any child logger whose `StreamHandler` would otherwise write straight to `sys.stderr` / `sys.stdout` / `sys.__stderr__` / `sys.__stdout__` — route through a `_LogSink` for the lifetime of the Live context. INFO / DEBUG records land in a bounded 500-record ring buffer inside the panel (available via `LiveRunDisplay.log_records()` for the future Textual log pane) and are otherwise swallowed so the Docker-boot log wall no longer scrolls the panel off-screen; WARNING and above are printed above the panel via `Live.console.print`, so real problems surface without disrupting Rich Live's cursor coordination. `__enter__` sweeps every non-root logger in `logging.root.manager.loggerDict` — skipping `PlaceHolder` entries — and, for each handler whose stream identity matches one of the captured pre-Live terminal streams, removes the handler; loggers with `propagate=False` additionally receive a fresh `_LogSink` so their records still surface. This is what prevents chatty libraries (litellm's `LiteLLM` / `LiteLLM Router` / `LiteLLM Proxy` loggers) from stacking the panel with duplicate copies during trial execution. `__exit__` restores every removed handler and drops any child-logger `_LogSink` it installed.
 
 Under `--display={plain,log,none}` and on non-TTY streams, `LiveRunDisplay.for_mode(...)` returns a no-op context manager and the existing log-line stream is what the operator sees.
+
+### Full TUI (`--display=full`)
+
+Under `--display=full`, `tolokaforge run` enters a Textual `App` (`tolokaforge.dx.tui.TextualRunApp`) that consumes the same `RunDisplayEvents` seam the Rich Live panel does. Prerequisites: `pip install 'tolokaforge[dx]'` — `textual>=0.85.0` ships in the `[dx]` extras. When textual is not importable, `--display=full` falls back to `--display=rich` (a WARNING log line notes the fallback).
+
+Layout, top to bottom:
+
+- **Header** — `tolokaforge run` title band.
+- **Status bar** — one line: `{completed}/{total} · {running} running · ${cost} · fail {failed} · eta {eta}`. The `$cost` segment turns yellow at ≥ 80 % of the run's cost budget (from `--cost-limit` / `compute.max_budget_usd`) and bold-red at ≥ 100 %.
+- **Trial list** (left) — scrollable list, one row per trial (`⏳` / `✓` / `✗` glyph + `[N/M]` global index + `task_id · trial_index`). The cursor auto-follows the newest lifecycle transition; the operator can move it independently with `j`/`k` or `↑`/`↓`.
+- **Focused trial pane** (right) — `task_id · trial_index (status)`, cumulative counters (`turn N · in Xk / out Y tok · $Z.ZZ`), judge score if judged, error tail if failed, and a compact `Infrastructure` sub-list of the trial's containers (name + health glyph + published ports) once `trial_provisioned` has fired.
+- **Tabs** — `TabbedContent` with five panes:
+  - **Overview** — auth-failure banner (if any), current phase line, services summary, trial counters.
+  - **Logs** — `RichLog` fed by the same ring buffer the Rich `_LogSink` installs. INFO/DEBUG scroll here; WARNING and above are duplicated to the Errors tab.
+  - **Services** — `DataTable` of engine-stack services with name / status / health glyph / port summary (from `phase_changed(services=…)`).
+  - **Infra** — `DataTable` of the focused trial's containers.
+  - **Errors** — WARNING+ log records only, most recent last.
+- **Footer** — key binding legend.
+
+Key bindings:
+
+| Key            | Action                                                     |
+|----------------|------------------------------------------------------------|
+| `j` / `↓`      | Move selection down in the trial list.                     |
+| `k` / `↑`      | Move selection up.                                          |
+| `PgDn` / `PgUp`| Jump ~20 rows.                                              |
+| `Home` / `End` | First / last trial.                                         |
+| `1` – `5`      | Switch to Overview / Logs / Services / Infra / Errors.     |
+| `l`            | Jump to the Logs tab.                                       |
+| `?`            | Toggle the modal help screen (same table).                  |
+| `/`            | Reserved for per-tab search (footer legend; no-op today).   |
+| `q`            | Exit the UI. **Ctrl-C** is what kills the run itself.      |
+
+Event handlers on `TextualRunApp` are called from the orchestrator's worker threads. Every method routes work onto Textual's asyncio loop via `App.call_from_thread` (or buffers into a pending queue before the app has mounted). Handlers never raise — a bad payload is logged at WARNING and dropped, so an event error never corrupts the runner.
 
 ### Precedence
 
@@ -169,10 +205,10 @@ Explicit flag beats env var; env var beats `CI`; `CI` beats isatty. An operator 
 
 Silencing applies to two knobs, both mutated by the group callback when the resolved mode is `none`:
 
-- `console.quiet = True` on the shared Rich console (`tolokaforge.cli._display.console`). Every `.print(...)` / `.rule(...)` / `.status(...)` short-circuits at buffer-check time — no bytes reach stderr.
+- `console.quiet = True` on the shared Rich console (`tolokaforge.dx._display.console`). Every `.print(...)` / `.rule(...)` / `.status(...)` short-circuits at buffer-check time — no bytes reach stderr.
 - `handler.level = logging.CRITICAL + 1` on the tolokaforge sentinel-tagged root log handler. Every stdlib log record and every `StructuredLogger` record drops at the handler before formatting.
 
-The single stdout write (`emit_artifact_path` in `tolokaforge.cli._display`) is untouched — `--display=none` silences stderr but preserves the `RUN_DIR=$(tolokaforge run --display=none --config …)` shell idiom.
+The single stdout write (`emit_artifact_path` in `tolokaforge.dx._display`) is untouched — `--display=none` silences stderr but preserves the `RUN_DIR=$(tolokaforge run --display=none --config …)` shell idiom.
 
 ### Failure paths under `--display=none`
 
@@ -189,6 +225,43 @@ The group callback validates `TOLOKAFORGE_DISPLAY` on every invocation, includin
 ### `ctx.obj["display_mode"]`
 
 The group callback stashes the resolved `DisplayMode` on `ctx.obj["display_mode"]` after applying the precedence rules and Textual fallback. The value is a `DisplayMode` enum (not the raw string) so consumers get `if mode is DisplayMode.FULL:` type-safety. Consumer commands read the resolved mode from this single source rather than re-parsing the flag / env var.
+
+## Interactive shell
+
+Running `tolokaforge` with no subcommand drops into an interactive Click REPL. Every top-level verb is available as a free-form command inside the session — the same argument parsing, the same `--help`, the same subcommands. The explicit form `tolokaforge repl` also enters the shell and is listed under the `Interactive` heading in root `--help`.
+
+```
+$ tolokaforge
+tolokaforge interactive shell. Type `help` for commands, `exit` to quit.
+tolokaforge> run --config examples/native/tool_use/run_config.yaml --dry-run
+…
+tolokaforge> exit
+$
+```
+
+Implemented in `tolokaforge.dx.repl.enter_repl` — a thin wrapper around [`click-repl`](https://github.com/click-contrib/click-repl) using `prompt_toolkit` for line editing.
+
+### Session-scoped root flags
+
+Root flags supplied at REPL entry (`-v`, `-q`, `--display`, `--log-format`) apply to every command entered in the session until it exits. The `cli()` group callback runs once at entry, mutates the shared logging + console state (via `configure_root_logging`, `select_display_mode`, `silence_console`), and those mutations stay in effect across REPL invocations.
+
+Subcommand-level `--verbose` inside the REPL still bumps the root console handler to `DEBUG` via `_bump_console_debug_if_allowed` (subject to the root `-q` carveout documented in [§ Precedence with subcommand `--verbose`](#precedence-with-subcommand---verbose)). The bump is not reset when the subcommand returns — a subsequent `run --help` in the same session inherits the elevated level. This matches the operator's explicit request to raise verbosity and mirrors the non-REPL invocation's process-wide semantics.
+
+### Command discovery and completion
+
+Type `--help` inside the REPL for the same grouped listing produced by `tolokaforge --help` outside it, and `<command> --help` for any subcommand's full flag reference. `click-repl` also registers its own `:help` internal command. Tab-completion resolves subcommand names, flag names, and any argument declared as `click.Path` — file paths under the working directory.
+
+### Command history
+
+Line history persists to `~/.tolokaforge_history` via `prompt_toolkit`'s `FileHistory`. Arrow-up / Ctrl-R searches previous invocations across sessions.
+
+### Exit
+
+`exit`, `quit`, or Ctrl-D return the terminal to the parent shell.
+
+### Extras dependency
+
+The REPL lives in the `[dx]` extras alongside Rich panels and banners (see [ADR-0019](architecture/adr/0019-front-end-plugin-namespace.md)). A headless-server install (`pip install tolokaforge`) does not pull `click-repl` or `prompt-toolkit` in; running the `tolokaforge` console script without the extras prints the install hint from the stdlib-only shim at `tolokaforge._entry:main`.
 
 ## Dry run
 
@@ -500,6 +573,6 @@ tolokaforge status --run-dir "$RUN_DIR"
 
 Adding `2>/dev/null` (or `2>run.log`) drops progress without breaking the capture — the artifact-path emission is independent of `--verbose` / `--quiet` / `--log-format`, which shape stderr only.
 
-The single stdout write goes through `emit_artifact_path` in `tolokaforge.cli._display`; a canonical test (`tests/canonical/test_cli_display_invariants.py::test_no_bare_stdout_write_in_cli`) forbids any other `print(` or `sys.stdout.write(` in `tolokaforge/cli/**/*.py`.
+The single stdout write goes through `emit_artifact_path` in `tolokaforge.dx._display`; a canonical test (`tests/canonical/test_cli_display_invariants.py::test_no_bare_stdout_write_in_cli`) forbids any other `print(` or `sys.stdout.write(` in `tolokaforge/dx/**/*.py`.
 
 `--display=none` silences the shared console and the tolokaforge log handler on success; the stdout artifact-path emission is unaffected — see [§ Display modes](#display-modes).

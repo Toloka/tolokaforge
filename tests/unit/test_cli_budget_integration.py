@@ -20,9 +20,9 @@ import pytest
 import yaml
 from click.testing import CliRunner
 
-import tolokaforge.cli.main as cli_main
-from tolokaforge.cli._display import console as _shared_console
-from tolokaforge.cli.main import cli
+import tolokaforge.dx.cli.main as cli_main
+from tolokaforge.dx._display import console as _shared_console
+from tolokaforge.dx.cli.main import cli
 
 pytestmark = pytest.mark.unit
 

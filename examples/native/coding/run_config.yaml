@@ -13,7 +13,7 @@ models:
     temperature: 0.2
 
 orchestrator:
-  workers: 1
+  workers: 2
   repeats: 1
   max_turns: 8
   queue_backend: sqlite

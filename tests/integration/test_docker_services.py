@@ -118,7 +118,7 @@ orchestrator:
             env["EXECUTOR_ADDRESS"] = executor_address
 
             result = subprocess.run(
-                ["python", "-m", "tolokaforge.cli.main", "run", "--config", config_path],
+                ["python", "-m", "tolokaforge.dx.cli.main", "run", "--config", config_path],
                 capture_output=True,
                 text=True,
                 timeout=180,

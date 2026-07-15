@@ -1,6 +1,6 @@
 """Unit tests for CLI command modules.
 
-Covers: tolokaforge/cli/main.py, adapter_commands.py,
+Covers: tolokaforge/dx/cli/main.py, adapter_commands.py,
 config_commands.py, docker_commands.py.
 """
 
@@ -12,7 +12,7 @@ import pytest
 import yaml
 from click.testing import CliRunner
 
-from tolokaforge.cli.main import (
+from tolokaforge.dx.cli.main import (
     _extract_log_errors,
     _extract_tool_failures,
     _format_eta,
@@ -477,7 +477,7 @@ class TestResolvePaths:
     """Tests for path resolution in config commands."""
 
     def test_single_file(self, tmp_path: Path) -> None:
-        from tolokaforge.cli.config_commands import _resolve_paths
+        from tolokaforge.dx.cli.config import _resolve_paths
 
         f = tmp_path / "test.yaml"
         f.write_text("key: value")
@@ -486,7 +486,7 @@ class TestResolvePaths:
         assert paths[0] == f
 
     def test_directory_finds_yaml_files(self, tmp_path: Path) -> None:
-        from tolokaforge.cli.config_commands import _resolve_paths
+        from tolokaforge.dx.cli.config import _resolve_paths
 
         (tmp_path / "a.yaml").write_text("key: 1")
         (tmp_path / "b.yml").write_text("key: 2")
@@ -498,14 +498,14 @@ class TestResolvePaths:
         assert "c.txt" not in names
 
     def test_glob_pattern(self, tmp_path: Path) -> None:
-        from tolokaforge.cli.config_commands import _resolve_paths
+        from tolokaforge.dx.cli.config import _resolve_paths
 
         (tmp_path / "x.yaml").write_text("a: 1")
         paths = _resolve_paths(str(tmp_path / "*.yaml"))
         assert len(paths) == 1
 
     def test_nonexistent_returns_empty(self) -> None:
-        from tolokaforge.cli.config_commands import _resolve_paths
+        from tolokaforge.dx.cli.config import _resolve_paths
 
         paths = _resolve_paths("/nonexistent/path/to/nothing")
         assert paths == []

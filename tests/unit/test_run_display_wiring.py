@@ -60,6 +60,12 @@ class _RecordingEvents:
     def run_finished(self, **kwargs: Any) -> None:
         self.calls.append(("run_finished", kwargs))
 
+    def phase_changed(self, **kwargs: Any) -> None:
+        self.calls.append(("phase_changed", kwargs))
+
+    def trial_provisioned(self, **kwargs: Any) -> None:
+        self.calls.append(("trial_provisioned", kwargs))
+
     def kinds(self) -> list[str]:
         return [name for name, _ in self.calls]
 
@@ -401,9 +407,11 @@ def test_orchestrator_run_emits_run_started_and_run_finished(tmp_path: Path) -> 
 
     output_dir = orch.run()
 
-    kinds = events.kinds()
-    assert kinds[0] == "run_started"
-    assert kinds[-1] == "run_finished"
+    # phase_changed events legitimately fire before run_started (Docker
+    # startup visibility). Ordering assertions are on lifecycle events only.
+    lifecycle = [k for k in events.kinds() if k != "phase_changed"]
+    assert lifecycle[0] == "run_started"
+    assert lifecycle[-1] == "run_finished"
 
     (start_kwargs,) = events.kwargs_for("run_started")
     assert start_kwargs == {"total_trials": 1, "initial_completed": 0}
@@ -506,9 +514,11 @@ def test_orchestrator_run_events_are_ordered_run_started_first_run_finished_last
 
     orch.run()
 
-    kinds = events.kinds()
-    assert kinds[0] == "run_started"
-    assert kinds[-1] == "run_finished"
+    # phase_changed events legitimately fire before run_started (Docker
+    # startup visibility). Ordering assertions are on lifecycle events only.
+    lifecycle = [k for k in events.kinds() if k != "phase_changed"]
+    assert lifecycle[0] == "run_started"
+    assert lifecycle[-1] == "run_finished"
     # trial_started + trial_completed for each trial land between the two.
-    assert kinds.count("trial_started") == 2
-    assert kinds.count("trial_completed") == 2
+    assert lifecycle.count("trial_started") == 2
+    assert lifecycle.count("trial_completed") == 2

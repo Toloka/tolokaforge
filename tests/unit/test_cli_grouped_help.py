@@ -19,7 +19,7 @@ import click
 import pytest
 from click.testing import CliRunner
 
-from tolokaforge.cli.main import _GroupedCommandsGroup, cli
+from tolokaforge.dx.cli.main import _GroupedCommandsGroup, cli
 
 pytestmark = pytest.mark.unit
 

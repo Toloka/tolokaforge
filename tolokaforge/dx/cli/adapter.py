@@ -12,7 +12,7 @@ from pathlib import Path
 
 import click
 
-from tolokaforge.cli._display import console
+from tolokaforge.dx._display import console
 
 
 @click.group()
@@ -43,7 +43,7 @@ def convert(
 ) -> None:
     """Convert external tasks to native TolokaForge format."""
     if verbose:
-        from tolokaforge.cli.main import _bump_console_debug_if_allowed
+        from tolokaforge.dx.cli.main import _bump_console_debug_if_allowed
 
         _bump_console_debug_if_allowed(ctx)
 

@@ -70,8 +70,8 @@ def test_bundle_writer_ships_in_the_built_wheel(tmp_path: Path) -> None:
         "tolokaforge/adapters/base.py",
         "tolokaforge/adapters/native.py",
         "tolokaforge/adapters/__init__.py",
-        "tolokaforge/cli/adapter_commands.py",
-        "tolokaforge/cli/main.py",
+        "tolokaforge/dx/cli/adapter.py",
+        "tolokaforge/dx/cli/main.py",
     }
     missing = required - members
     assert not missing, (
@@ -85,7 +85,7 @@ def test_bundle_writer_ships_in_the_built_wheel(tmp_path: Path) -> None:
 def test_adapter_convert_cli_help_runs_via_subprocess() -> None:
     """``uv run tolokaforge adapter convert --help`` exits 0 and prints usage.
 
-    Proves the installed console script wires, ``tolokaforge.cli.main``
+    Proves the installed console script wires, ``tolokaforge.dx.cli.main``
     imports cleanly, the ``adapter`` subgroup is registered, and every
     module the CLI reaches at import time (including
     ``tolokaforge.adapters.bundle_writer``) resolves under the real

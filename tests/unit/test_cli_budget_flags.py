@@ -17,14 +17,14 @@ import pytest
 import yaml
 from click.testing import CliRunner
 
-import tolokaforge.cli.main as cli_main
-from tolokaforge.cli.main import cli
+import tolokaforge.dx.cli.main as cli_main
 from tolokaforge.core.budgets import (
     CompositeBudget,
     CostBudget,
     SampleBudget,
     TimeBudget,
 )
+from tolokaforge.dx.cli.main import cli
 
 pytestmark = pytest.mark.unit
 

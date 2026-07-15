@@ -35,12 +35,17 @@ from tolokaforge.core.models import (
     Trajectory,
     TrialStatus,
 )
+from tolokaforge.core.run_display_events import (
+    _NULL_EVENTS,
+    RunDisplayEvents,
+)
 from tolokaforge.core.runtime import EnvHandle, ProvisionError, RuntimeBackend
 from tolokaforge.core.trial import TrialResult, TrialSpec
 
 if TYPE_CHECKING:
     from tolokaforge.core.conductor import Conductor
     from tolokaforge.core.logging import StructuredLogger
+    from tolokaforge.core.trial import EnvEndpoints
 
 __all__ = [
     "ProvisioningTrialExecutor",
@@ -85,10 +90,12 @@ class ProvisioningTrialExecutor:
         runtime_backend: RuntimeBackend,
         conductor: Conductor,
         logger: StructuredLogger,
+        events: RunDisplayEvents = _NULL_EVENTS,
     ) -> None:
         self.runtime_backend = runtime_backend
         self.conductor = conductor
         self.logger = logger
+        self.events = events
 
     def execute(self, spec: TrialSpec, task_config: TaskConfig) -> TrialResult:
         task_id, trial_idx = _split_trial_id(spec.trial_id)
@@ -125,6 +132,12 @@ class ProvisioningTrialExecutor:
 
         try:
             real_endpoints = self.runtime_backend.endpoints(handle)
+            containers = self.runtime_backend.get_infrastructure_snapshot(handle)
+            self.events.trial_provisioned(
+                trial_id=spec.trial_id,
+                containers=containers,
+                endpoints=_endpoints_to_map(real_endpoints),
+            )
             final_spec = spec.model_copy(update={"env_endpoints": real_endpoints})
             self.logger.info(
                 "Trial env provisioned",
@@ -165,6 +178,20 @@ def _split_trial_id(trial_id: str) -> tuple[str, int]:
     """Return ``(task_id, trial_index)`` from a canonical ``"{task_id}:{idx}"`` id."""
     task_id, idx_s = trial_id.rsplit(":", 1)
     return task_id, int(idx_s)
+
+
+def _endpoints_to_map(endpoints: EnvEndpoints) -> dict[str, str]:
+    """Reshape :class:`EnvEndpoints` into the ``{role → url}`` map the
+    display carries in ``trial_provisioned``. ``None`` values are skipped
+    so the panel doesn't render half-populated rows."""
+    mapping: dict[str, str] = {}
+    if endpoints.runner_url:
+        mapping["runner"] = endpoints.runner_url
+    if endpoints.db_url:
+        mapping["db"] = endpoints.db_url
+    if endpoints.rag_url:
+        mapping["rag"] = endpoints.rag_url
+    return mapping
 
 
 def _synthesize_provision_failure_result(spec: TrialSpec, error: ProvisionError) -> TrialResult:

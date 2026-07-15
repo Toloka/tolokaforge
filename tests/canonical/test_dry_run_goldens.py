@@ -36,12 +36,12 @@ import pytest
 from rich.console import Console
 from rich.terminal_theme import DEFAULT_TERMINAL_THEME
 
-from tolokaforge.cli._display import THEME
-from tolokaforge.cli._dry_run_render import (
+from tolokaforge.core.dry_run import DryRunSample
+from tolokaforge.dx._display import THEME
+from tolokaforge.dx.dry_run_render import (
     render_dry_run_preamble,
     render_dry_run_sample,
 )
-from tolokaforge.core.dry_run import DryRunSample
 
 pytestmark = pytest.mark.canonical
 
@@ -142,12 +142,12 @@ def test_dry_run_render_module_exports_public_surface() -> None:
     """The three render helpers stay importable from :mod:`_dry_run_render`.
 
     ``render_dry_run``, ``render_dry_run_sample``, and
-    ``render_dry_run_preamble`` are the names ``tolokaforge.cli.main``
+    ``render_dry_run_preamble`` are the names ``tolokaforge.dx.cli.main``
     wires into the ``run --dry-run`` branch — a silent rename would break
     the CLI. Pin the surface here so the failure surfaces at canonical
     time rather than at the runtime call site.
     """
-    from tolokaforge.cli._dry_run_render import (
+    from tolokaforge.dx.dry_run_render import (
         render_dry_run,
         render_dry_run_preamble,
         render_dry_run_sample,

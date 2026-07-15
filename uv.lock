@@ -530,6 +530,19 @@ wheels = [
 ]
 
 [[package]]
+name = "click-repl"
+version = "0.3.0"
+source = { registry = "https://pypi.org/simple/" }
+dependencies = [
+    { name = "click" },
+    { name = "prompt-toolkit" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/cb/a2/57f4ac79838cfae6912f997b4d1a64a858fb0c86d7fcaae6f7b58d267fca/click-repl-0.3.0.tar.gz", hash = "sha256:17849c23dba3d667247dc4defe1757fff98694e90fe37474f3feebb69ced26a9", size = 10449, upload-time = "2023-06-15T12:43:51.141Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/52/40/9d857001228658f0d59e97ebd4c346fe73e138c6de1bce61dc568a57c7f8/click_repl-0.3.0-py3-none-any.whl", hash = "sha256:fb7e06deb8da8de86180a33a9da97ac316751c094c6899382da7feeeeb51b812", size = 10289, upload-time = "2023-06-15T12:43:48.626Z" },
+]
+
+[[package]]
 name = "colorama"
 version = "0.4.6"
 source = { registry = "https://pypi.org/simple/" }
@@ -1667,6 +1680,18 @@ wheels = [
 ]
 
 [[package]]
+name = "linkify-it-py"
+version = "2.1.0"
+source = { registry = "https://pypi.org/simple/" }
+dependencies = [
+    { name = "uc-micro-py" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/2e/c9/06ea13676ef354f0af6169587ae292d3e2406e212876a413bf9eece4eb23/linkify_it_py-2.1.0.tar.gz", hash = "sha256:43360231720999c10e9328dc3691160e27a718e280673d444c38d7d3aaa3b98b", size = 29158, upload-time = "2026-03-01T07:48:47.683Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b4/de/88b3be5c31b22333b3ca2f6ff1de4e863d8fe45aaea7485f591970ec1d3e/linkify_it_py-2.1.0-py3-none-any.whl", hash = "sha256:0d252c1594ecba2ecedc444053db5d3a9b7ec1b0dd929c8f1d74dce89f86c05e", size = 19878, upload-time = "2026-03-01T07:48:46.098Z" },
+]
+
+[[package]]
 name = "litellm"
 version = "1.87.0"
 source = { registry = "https://pypi.org/simple/" }
@@ -1832,6 +1857,11 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/94/54/e7d793b573f298e1c9013b8c4dade17d481164aa517d1d7148619c2cedbf/markdown_it_py-4.0.0-py3-none-any.whl", hash = "sha256:87327c59b172c5011896038353a81343b6754500a08cd7a4973bb48c6d578147", size = 87321, upload-time = "2025-08-11T12:57:51.923Z" },
 ]
 
+[package.optional-dependencies]
+linkify = [
+    { name = "linkify-it-py" },
+]
+
 [[package]]
 name = "markupsafe"
 version = "3.0.3"
@@ -1940,6 +1970,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/8b/eb/c0cfc62075dc6e1ec1c64d352ae09ac051d9334311ed226f1f425312848a/mcp-1.27.0.tar.gz", hash = "sha256:d3dc35a7eec0d458c1da4976a48f982097ddaab87e278c5511d5a4a56e852b83", size = 607509, upload-time = "2026-04-02T14:48:08.88Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/9c/46/f6b4ad632c67ef35209a66127e4bddc95759649dd595f71f13fba11bdf9a/mcp-1.27.0-py3-none-any.whl", hash = "sha256:5ce1fa81614958e267b21fb2aa34e0aea8e2c6ede60d52aba45fd47246b4d741", size = 215967, upload-time = "2026-04-02T14:48:07.24Z" },
+]
+
+[[package]]
+name = "mdit-py-plugins"
+version = "0.6.1"
+source = { registry = "https://pypi.org/simple/" }
+dependencies = [
+    { name = "markdown-it-py" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/59/fc/f8d0863f8862f25602c0404d75568e89fb6b4109804645e5cdfb1be5cf56/mdit_py_plugins-0.6.1.tar.gz", hash = "sha256:a2bca0f039f39dbd35fb74ae1b5f998608c437463371f0ff7f49a19a17a114d0", size = 56114, upload-time = "2026-05-13T09:03:38.91Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a5/69/6da5581c6a7fede7dc261bf4e67d6adca4196f176b43288b55b3db395b6e/mdit_py_plugins-0.6.1-py3-none-any.whl", hash = "sha256:214c82fb2ac524472ab6a5bcab1de80f73b50443e187f401bfd77efbc7c6481d", size = 66663, upload-time = "2026-05-13T09:03:37.76Z" },
 ]
 
 [[package]]
@@ -3802,6 +3844,23 @@ wheels = [
 ]
 
 [[package]]
+name = "textual"
+version = "8.2.8"
+source = { registry = "https://pypi.org/simple/" }
+dependencies = [
+    { name = "markdown-it-py", extra = ["linkify"] },
+    { name = "mdit-py-plugins" },
+    { name = "platformdirs" },
+    { name = "pygments" },
+    { name = "rich" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/00/21/39a76b01bd5eea82a04baaca7580e105d8c59450df03998345bb2cfb307b/textual-8.2.8.tar.gz", hash = "sha256:3f106a9fbc73e39dd266c9712432087de78a6d644084c7c241d6a25c3169115b", size = 1860502, upload-time = "2026-06-30T06:51:24.495Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fb/be/35261223d9416a0751cdff1c7b4a6f881387218a12d439fe22fefebc8c04/textual-8.2.8-py3-none-any.whl", hash = "sha256:267375fd402dc8d981457212efa71f0e3365fd17bba144ba9bb3ed7563cb374a", size = 731418, upload-time = "2026-06-30T06:51:26.364Z" },
+]
+
+[[package]]
 name = "tiktoken"
 version = "0.12.0"
 source = { registry = "https://pypi.org/simple/" }
@@ -3916,7 +3975,6 @@ dependencies = [
     { name = "pydantic", extra = ["email"] },
     { name = "python-dotenv" },
     { name = "pyyaml" },
-    { name = "rich" },
     { name = "sqlalchemy" },
     { name = "starlette" },
     { name = "structlog" },
@@ -3931,19 +3989,29 @@ adapters = [
     { name = "tolokaforge-adapter-terminal-bench" },
 ]
 all = [
+    { name = "click-repl" },
     { name = "fastapi" },
     { name = "openpyxl" },
     { name = "pillow" },
     { name = "playwright" },
+    { name = "prompt-toolkit" },
     { name = "python-docx" },
     { name = "python-pptx" },
     { name = "rank-bm25" },
+    { name = "rich" },
+    { name = "textual" },
     { name = "tolokaforge-adapter-terminal-bench" },
     { name = "uvicorn" },
 ]
 browser = [
     { name = "pillow" },
     { name = "playwright" },
+]
+dx = [
+    { name = "click-repl" },
+    { name = "prompt-toolkit" },
+    { name = "rich" },
+    { name = "textual" },
 ]
 office = [
     { name = "openpyxl" },
@@ -3965,6 +4033,7 @@ terminal-bench = [
 dev = [
     { name = "black" },
     { name = "build" },
+    { name = "click-repl" },
     { name = "commitizen" },
     { name = "dev-mcp" },
     { name = "docker" },
@@ -3977,6 +4046,7 @@ dev = [
     { name = "pillow" },
     { name = "playwright" },
     { name = "pre-commit" },
+    { name = "prompt-toolkit" },
     { name = "psutil" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pytest" },
@@ -3984,7 +4054,9 @@ dev = [
     { name = "pytest-cov" },
     { name = "pytest-docker" },
     { name = "rank-bm25" },
+    { name = "rich" },
     { name = "ruff" },
+    { name = "textual" },
     { name = "tolokaforge-adapter-terminal-bench" },
     { name = "uvicorn" },
 ]
@@ -3992,7 +4064,8 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "addict", specifier = ">=2.4.0" },
-    { name = "click", specifier = ">=8.1.0" },
+    { name = "click", specifier = ">=8.1.0,<8.2" },
+    { name = "click-repl", marker = "extra == 'dx'", specifier = ">=0.3.0" },
     { name = "deepdiff", specifier = ">=6.0.0" },
     { name = "docker", specifier = ">=7.0.0" },
     { name = "docstring-parser", specifier = ">=0.16" },
@@ -4011,6 +4084,7 @@ requires-dist = [
     { name = "openpyxl", marker = "extra == 'office'", specifier = ">=3.1.0" },
     { name = "pillow", marker = "extra == 'browser'", specifier = ">=12.1.0" },
     { name = "playwright", marker = "extra == 'browser'", specifier = ">=1.40.0" },
+    { name = "prompt-toolkit", marker = "extra == 'dx'", specifier = ">=3.0.51" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pydantic", extras = ["email"], specifier = ">=2.0.0" },
     { name = "python-docx", marker = "extra == 'office'", specifier = ">=1.0.0" },
@@ -4018,25 +4092,27 @@ requires-dist = [
     { name = "python-pptx", marker = "extra == 'office'", specifier = ">=0.6.21" },
     { name = "pyyaml", specifier = ">=6.0.1" },
     { name = "rank-bm25", marker = "extra == 'rag'", specifier = ">=0.2.2" },
-    { name = "rich", specifier = ">=13.0.0" },
+    { name = "rich", marker = "extra == 'dx'", specifier = ">=13.0.0" },
     { name = "sqlalchemy", specifier = ">=2.0.48" },
     { name = "starlette", specifier = ">=0.52.1" },
     { name = "structlog", specifier = ">=24.0.0" },
     { name = "tenacity", specifier = ">=8.2.0" },
     { name = "testcontainers", specifier = ">=4.14.2,<5" },
-    { name = "tolokaforge", extras = ["browser", "server", "rag", "office", "adapters"], marker = "extra == 'all'", editable = "." },
+    { name = "textual", marker = "extra == 'dx'", specifier = ">=0.85.0" },
+    { name = "tolokaforge", extras = ["dx", "browser", "server", "rag", "office", "adapters"], marker = "extra == 'all'", editable = "." },
     { name = "tolokaforge", extras = ["terminal-bench"], marker = "extra == 'adapters'", editable = "." },
     { name = "tolokaforge-adapter-terminal-bench", marker = "extra == 'terminal-bench'", editable = "external_adapters/tolokaforge-adapter-terminal-bench" },
     { name = "toml", specifier = ">=0.10.0" },
     { name = "typesense", specifier = ">=2.0.0" },
     { name = "uvicorn", marker = "extra == 'server'", specifier = ">=0.25.0" },
 ]
-provides-extras = ["browser", "server", "rag", "office", "terminal-bench", "adapters", "all"]
+provides-extras = ["dx", "browser", "server", "rag", "office", "terminal-bench", "adapters", "all"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "black", specifier = "==26.3.1" },
     { name = "build", specifier = ">=1.0.0" },
+    { name = "click-repl", specifier = ">=0.3.0" },
     { name = "commitizen", specifier = ">=4.0.0" },
     { name = "dev-mcp", editable = "tools/dev-mcp" },
     { name = "docker", specifier = ">=7.0.0" },
@@ -4049,6 +4125,7 @@ dev = [
     { name = "pillow", specifier = ">=12.1.0" },
     { name = "playwright", specifier = ">=1.40.0" },
     { name = "pre-commit", specifier = ">=3.6.0" },
+    { name = "prompt-toolkit", specifier = ">=3.0.51" },
     { name = "psutil", specifier = ">=5.9.0" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2.0" },
     { name = "pytest", specifier = ">=7.4.0" },
@@ -4056,7 +4133,9 @@ dev = [
     { name = "pytest-cov", specifier = ">=4.0.0" },
     { name = "pytest-docker", specifier = ">=2.0.0" },
     { name = "rank-bm25", specifier = ">=0.2.2" },
+    { name = "rich", specifier = ">=13.0.0" },
     { name = "ruff", specifier = "==0.14.4" },
+    { name = "textual", specifier = ">=0.85.0" },
     { name = "tolokaforge-adapter-terminal-bench", editable = "external_adapters/tolokaforge-adapter-terminal-bench" },
     { name = "uvicorn", specifier = ">=0.25.0" },
 ]
@@ -4216,6 +4295,15 @@ source = { registry = "https://pypi.org/simple/" }
 sdist = { url = "https://files.pythonhosted.org/packages/ba/19/1b9b0e29f30c6d35cb345486df41110984ea67ae69dddbc0e8a100999493/tzdata-2026.2.tar.gz", hash = "sha256:9173fde7d80d9018e02a662e168e5a2d04f87c41ea174b139fbef642eda62d10", size = 198254, upload-time = "2026-04-24T15:22:08.651Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ce/e4/dccd7f47c4b64213ac01ef921a1337ee6e30e8c6466046018326977efd95/tzdata-2026.2-py2.py3-none-any.whl", hash = "sha256:bbe9af844f658da81a5f95019480da3a89415801f6cc966806612cc7169bffe7", size = 349321, upload-time = "2026-04-24T15:22:05.876Z" },
+]
+
+[[package]]
+name = "uc-micro-py"
+version = "2.0.0"
+source = { registry = "https://pypi.org/simple/" }
+sdist = { url = "https://files.pythonhosted.org/packages/78/67/9a363818028526e2d4579334460df777115bdec1bb77c08f9db88f6389f2/uc_micro_py-2.0.0.tar.gz", hash = "sha256:c53691e495c8db60e16ffc4861a35469b0ba0821fe409a8a7a0a71864d33a811", size = 6611, upload-time = "2026-03-01T06:31:27.526Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/61/73/d21edf5b204d1467e06500080a50f79d49ef2b997c79123a536d4a17d97c/uc_micro_py-2.0.0-py3-none-any.whl", hash = "sha256:3603a3859af53e5a39bc7677713c78ea6589ff188d70f4fee165db88e22b242c", size = 6383, upload-time = "2026-03-01T06:31:26.257Z" },
 ]
 
 [[package]]

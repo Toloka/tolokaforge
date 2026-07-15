@@ -11,7 +11,7 @@ from __future__ import annotations
 import click
 from rich.table import Table
 
-from tolokaforge.cli._display import console
+from tolokaforge.dx._display import console
 
 
 @click.group()

@@ -22,10 +22,10 @@ import pytest
 import yaml
 from click.testing import CliRunner
 
-import tolokaforge.cli.main as cli_main
-from tolokaforge.cli.main import cli
+import tolokaforge.dx.cli.main as cli_main
 from tolokaforge.core.engine_run_state import write_engine_run_state
 from tolokaforge.core.resume import RunStateManager
+from tolokaforge.dx.cli.main import cli
 
 pytestmark = pytest.mark.unit
 

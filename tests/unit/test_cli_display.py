@@ -1,16 +1,14 @@
 """Unit tests locking the shared CLI display layer contract.
 
 Every assertion here maps to a documented invariant in
-``tolokaforge/cli/_display.py`` — if a test fails, the surface changed.
+``tolokaforge/dx/_display.py`` — if a test fails, the surface changed.
 """
 
 from __future__ import annotations
 
-import importlib.machinery
 import io
 import os
 import sys
-import types
 from pathlib import Path
 
 import pytest
@@ -26,7 +24,7 @@ from rich.progress import (
 from rich.style import Style
 from rich.text import Text
 
-from tolokaforge.cli._display import (
+from tolokaforge.dx._display import (
     THEME,
     DisplayMode,
     _textual_available,
@@ -329,16 +327,27 @@ class TestSelectDisplayMode:
 
 
 class TestTextualAvailable:
-    def test_no_textual_returns_false(self) -> None:
-        # Textual is not a dependency today; find_spec returns None.
-        assert _textual_available() is False
-
-    def test_with_fake_textual_returns_true(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Install a fake `textual` module WITH a spec so find_spec resolves it.
-        fake = types.ModuleType("textual")
-        fake.__spec__ = importlib.machinery.ModuleSpec("textual", loader=None)
-        monkeypatch.setitem(sys.modules, "textual", fake)
+    def test_textual_returns_true_when_installed(self) -> None:
+        # `textual` ships in the `[dx]` extras — always importable in the
+        # test env.
         assert _textual_available() is True
+
+    def test_returns_false_when_find_spec_reports_absence(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Simulate a headless-server install by making
+        :func:`importlib.util.find_spec` return ``None`` for ``textual``."""
+        import importlib.util
+
+        real_find_spec = importlib.util.find_spec
+
+        def _fake_find_spec(name: str, package: str | None = None):  # type: ignore[no-untyped-def]
+            if name == "textual":
+                return None
+            return real_find_spec(name, package)
+
+        monkeypatch.setattr(importlib.util, "find_spec", _fake_find_spec)
+        assert _textual_available() is False
 
 
 class TestSilenceConsole:

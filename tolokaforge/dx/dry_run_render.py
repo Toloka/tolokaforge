@@ -8,7 +8,7 @@ how many tasks the run config declared.
 The module never constructs its own :class:`rich.console.Console` — every
 call takes the shared console as a keyword-only argument. Under
 ``console.quiet = True`` (Rich's short-circuit contract, wired to
-``--display=none`` via :func:`tolokaforge.cli._display.silence_console`)
+``--display=none`` via :func:`tolokaforge.dx._display.silence_console`)
 every write is a no-op.
 """
 
