@@ -1852,3 +1852,90 @@ class TestPresetLoading:
         )
         assert isinstance(caps.schema_sanitizer, StrictSchema)
         assert isinstance(caps.prompt_policy, DictMapHints)
+
+
+# ===================================================================
+# api_call_wall_timeout_s — configurable hard wall-clock ceiling
+# ===================================================================
+
+
+@pytest.mark.unit
+class TestApiCallWallTimeout:
+    """Resolution + enforcement of the configurable per-call wall-clock timeout."""
+
+    def test_defaults_to_none(self) -> None:
+        """Disabled by default — no wall-clock abort unless opted in."""
+        client = _make_client()
+        assert client._api_call_wall_timeout_s is None
+
+    def test_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TOLOKAFORGE_LLM_API_CALL_WALL_TIMEOUT_S", "300")
+        client = _make_client()
+        assert client._api_call_wall_timeout_s == 300.0
+
+    def test_preset_used_when_no_env(self) -> None:
+        from dataclasses import replace
+
+        client = _make_client()
+        # ModelCapabilities is frozen — swap in a copy carrying the preset value.
+        client.capabilities = replace(client.capabilities, api_call_wall_timeout_s=180.0)
+        assert client._load_api_wall_timeout() == 180.0
+
+    def test_env_beats_preset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from dataclasses import replace
+
+        monkeypatch.setenv("TOLOKAFORGE_LLM_API_CALL_WALL_TIMEOUT_S", "60")
+        client = _make_client()
+        client.capabilities = replace(client.capabilities, api_call_wall_timeout_s=999.0)
+        assert client._load_api_wall_timeout() == 60.0
+
+    def test_disabled_calls_completion_directly(self) -> None:
+        """With no wall timeout the call runs inline, not on a worker thread."""
+        client = _make_client()
+        client._api_call_wall_timeout_s = None
+        sentinel = object()
+        with patch(
+            "tolokaforge.core.llm.client.completion", return_value=sentinel
+        ) as mock_completion:
+            result = client._call_completion_with_timeout_retry({"model": "x"})
+        assert result is sentinel
+        mock_completion.assert_called_once()
+
+    def test_aborts_runaway_call_and_is_terminal(self) -> None:
+        """A call over the wall budget is aborted at ~wall and NOT retried.
+
+        Runs with the default retry budget: had the wall-timeout been routed
+        back into the per-call retry it would take several backoff-separated
+        re-attempts (>=5 s); a terminal abort returns in ~the wall budget.
+        """
+        import time as _time
+
+        from tolokaforge.core.llm.client import LLMApiTimeoutError
+
+        client = _make_client()
+        client._api_call_wall_timeout_s = 0.1
+
+        def _runaway(**kwargs: Any) -> Any:
+            _time.sleep(2.0)  # far longer than the 0.1s wall budget
+            return "never returned"
+
+        started = _time.monotonic()
+        with patch("tolokaforge.core.llm.client.completion", side_effect=_runaway):
+            with pytest.raises(LLMApiTimeoutError):
+                client._call_completion_with_timeout_retry({"model": "x"})
+        elapsed = _time.monotonic() - started
+        # Aborted at ~0.1s and not retried (a retry would add >=5s of backoff).
+        assert elapsed < 1.5
+
+    def test_preserves_nontimeout_exception(self) -> None:
+        """A non-timeout error from the call propagates unchanged with the wall
+        wrapper active, so upstream key-rotation / error handling still fires."""
+        client = _make_client()
+        client._api_call_wall_timeout_s = 5.0
+
+        with patch(
+            "tolokaforge.core.llm.client.completion",
+            side_effect=RuntimeError("Key limit exceeded"),
+        ):
+            with pytest.raises(RuntimeError, match="Key limit exceeded"):
+                client._call_completion_with_timeout_retry({"model": "x"})

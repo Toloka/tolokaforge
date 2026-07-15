@@ -63,6 +63,21 @@ class ModelCapabilities:
     need a longer budget than other models in the same harness run.
     """
 
+    api_call_wall_timeout_s: float | None = None
+    """Hard wall-clock ceiling for a single upstream call, in seconds.
+
+    Unlike :attr:`api_call_timeout_s` (a per-read/connect timeout that a
+    slowly-streamed or runaway response can keep resetting, so it never
+    bounds total elapsed time), this caps the total wall-clock duration of
+    one ``completion`` call and aborts it outright once exceeded, surfacing a
+    :class:`TimeoutError` into the bounded retry.
+
+    ``None`` (the default) disables the wall-clock abort and falls back to the
+    env var ``TOLOKAFORGE_LLM_API_CALL_WALL_TIMEOUT_S``. Set it for providers
+    that occasionally ignore ``max_tokens`` and stream a runaway response for
+    tens of minutes.
+    """
+
     api_call_retries: int | None = None
     """Bounded retries on transport-level timeouts.
 
