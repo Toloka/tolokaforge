@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from tolokaforge.adapters import BaseAdapter, ensure_registered_adapter, get_adapter
+from tolokaforge.cli._run_display import RunDisplayEvents, _NullRunDisplayEvents
 from tolokaforge.core.conductor import (
     Conductor,
     ConductorContext,
@@ -215,6 +216,7 @@ class OrchestratorDeps:
     run_aggregate_writer: RunAggregateWriter = field(default_factory=FileAggregateWriter)
     runtime_backend: RuntimeBackend | None = None
     conductor_factory: ConductorFactory | None = None
+    events: RunDisplayEvents = field(default_factory=_NullRunDisplayEvents)
 
 
 class Orchestrator:
@@ -262,6 +264,7 @@ class Orchestrator:
         self._run_aggregate_writer: RunAggregateWriter = resolved_deps.run_aggregate_writer
         self._injected_runtime_backend: RuntimeBackend | None = resolved_deps.runtime_backend
         self._conductor_factory: ConductorFactory | None = resolved_deps.conductor_factory
+        self._events: RunDisplayEvents = resolved_deps.events
         # Per-run cache of resolved ``TaskDescription`` objects keyed by
         # task_id. ``adapter.to_task_description()`` reads the system
         # prompt, tool schemas, fixtures, and base64-bundles the task_dir
@@ -415,6 +418,7 @@ class Orchestrator:
             trial_grader=trial_grader,
             output_dir=output_dir,
             request_limiter=request_limiter,
+            events=self._events,
         )
         if self._conductor_factory is not None:
             return self._conductor_factory(ctx)
@@ -1265,6 +1269,11 @@ class Orchestrator:
         lease_seconds = max(300, self.config.orchestrator.timeouts.episode_s * 2)
         lease_owner = f"orchestrator:{os.getpid()}"
 
+        self._events.run_started(
+            total_trials=run_state.total_trials,
+            initial_completed=run_state.completed_trials,
+        )
+
         # Run tasks with parallel workers using the durable queue.
         with ThreadPoolExecutor(max_workers=self.config.effective_workers) as executor:
             active_futures: dict[Any, AttemptLease] = {}
@@ -1292,6 +1301,12 @@ class Orchestrator:
                 run_state.mark_running(lease.task_id, lease.trial_index)
                 self.state_manager.save_state(run_state)
 
+                self._events.trial_started(
+                    trial_id=f"{lease.task_id}:{lease.trial_index}",
+                    task_id=lease.task_id,
+                    trial_index=lease.trial_index,
+                )
+
                 try:
                     spec = self._build_trial_spec(
                         task=task,
@@ -1314,6 +1329,11 @@ class Orchestrator:
                     run_queue.mark_failed(lease.id, f"Spec build failed: {e}", retryable=False)
                     run_state.mark_failed(lease.task_id, lease.trial_index, str(e))
                     self.state_manager.save_state(run_state)
+                    self._events.trial_failed(
+                        trial_id=f"{lease.task_id}:{lease.trial_index}",
+                        error=str(e),
+                        retryable=False,
+                    )
                     return True
                 future = executor.submit(trial_executor.execute, spec, task)
                 active_futures[future] = lease
@@ -1366,6 +1386,11 @@ class Orchestrator:
                                     f"Retry limit reached after transient failure: {reason}",
                                 )
                                 self.state_manager.save_state(run_state)
+                                self._events.trial_failed(
+                                    trial_id=f"{task_id}:{trial_idx}",
+                                    error=f"Retry limit reached after transient failure: {reason}",
+                                    retryable=True,
+                                )
                             self.logger.info(
                                 "Trial failed (transient)",
                                 task_id=task_id,
@@ -1386,6 +1411,14 @@ class Orchestrator:
                             else:
                                 run_state.mark_completed(task_id, trial_idx, False, 0.0)
                             self.state_manager.save_state(run_state)
+
+                            self._events.trial_completed(
+                                trial_id=f"{task_id}:{trial_idx}",
+                                binary_pass=(
+                                    trajectory.grade.binary_pass if trajectory.grade else False
+                                ),
+                                score=trajectory.grade.score if trajectory.grade else None,
+                            )
 
                             self.logger.info(
                                 "Trial completed",
@@ -1413,6 +1446,11 @@ class Orchestrator:
                             # Mark as failed only when retries are exhausted.
                             run_state.mark_failed(task_id, trial_idx, str(e))
                             self.state_manager.save_state(run_state)
+                            self._events.trial_failed(
+                                trial_id=f"{task_id}:{trial_idx}",
+                                error=str(e),
+                                retryable=True,
+                            )
 
                     # Stop scheduling new work once budget cap is reached.
                     if budget_limit is not None and total_cost_usd >= budget_limit:
@@ -1470,7 +1508,9 @@ class Orchestrator:
         # Generate reports
         self._generate_reports(output_dir)
 
-        return output_dir.resolve()
+        resolved_output_dir = output_dir.resolve()
+        self._events.run_finished(output_dir=resolved_output_dir)
+        return resolved_output_dir
 
     def run_worker(self, output_dir: Path, max_attempts: int | None = None) -> dict[str, Any]:
         """Run as a worker consuming attempts from the durable queue.

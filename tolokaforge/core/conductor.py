@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from tolokaforge.adapters import BaseAdapter
 from tolokaforge.adapters.native import NativeAdapter
+from tolokaforge.cli._run_display import _NULL_EVENTS, RunDisplayEvents, _NullRunDisplayEvents
 from tolokaforge.core.docker_adapter import DockerRunnerAdapter
 from tolokaforge.core.env_state import EnvironmentState
 from tolokaforge.core.llm import LLMClient, UserSimulator, build_capabilities
@@ -94,6 +95,7 @@ class ConductorContext:
     trial_grader: TrialGrader
     output_dir: Path
     request_limiter: GlobalRateLimiter | None
+    events: RunDisplayEvents = field(default_factory=_NullRunDisplayEvents)
 
 
 # ---------------------------------------------------------------------------
@@ -288,6 +290,7 @@ class InProcessConductor:
         trial_grader: TrialGrader,
         output_dir: Path,
         request_limiter: GlobalRateLimiter | None = None,
+        events: RunDisplayEvents = _NULL_EVENTS,
     ) -> None:
         self.adapter = adapter
         self._artifact_writer = artifact_writer
@@ -300,6 +303,7 @@ class InProcessConductor:
         self.trial_grader = trial_grader
         self.output_dir = output_dir
         self.request_limiter = request_limiter
+        self.events = events
 
     def run(
         self,
@@ -588,6 +592,7 @@ class InProcessConductor:
             request_limiter=self.request_limiter,
             verbose=self.verbose,
             strict=self.strict,
+            events=self.events,
         )
 
         # Use initial_user_message if provided (e.g., tool-use style tasks).
@@ -670,6 +675,11 @@ class InProcessConductor:
         """
         agent_system_prompt = runner.effective_system_prompt or system_prompt
         trajectory.grade = self.trial_grader.grade(spec, trajectory, agent_system_prompt)
+        self.events.judgment_scored(
+            trial_id=setup.trial_id,
+            score=trajectory.grade.score,
+            binary_pass=trajectory.grade.binary_pass,
+        )
         self.logger.info(
             "Trial graded",
             task_id=task_config.task_id,
