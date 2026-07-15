@@ -259,3 +259,40 @@ class TestResolveEffectiveRunConfig:
         run_config = {"orchestrator": {"workers": 4}}
         merged = resolve_effective_run_config_data(project, run_config)
         assert merged is not run_config
+
+    def test_preserves_storage_discriminator_when_type_matches_default(self) -> None:
+        # Regression: dumping run_defaults with exclude_defaults=True dropped
+        # the `type: "local"` discriminator on storage.artifacts/logs (matches
+        # LocalStorageConfig.type default), then RunConfig(**merged) failed
+        # to reconstruct the discriminated union with union_tag_not_found.
+        # The example-microservices-pack is the shipped repro.
+        from tolokaforge.core.models import RunConfig
+
+        project = ProjectConfig(
+            name="p",
+            run_defaults=RunDefaults.model_validate(
+                {
+                    "compute": {"workers": 1},
+                    "storage": {
+                        "artifacts": {"type": "local", "path": "./results"},
+                        "logs": {"type": "local", "path": "./results/logs"},
+                    },
+                }
+            ),
+        )
+        run_config = {
+            "models": {"agent": {"provider": "openrouter", "name": "moonshotai/kimi-k2.6"}},
+            "orchestrator": {"repeats": 1, "max_turns": 4},
+            "evaluation": {
+                "projects": ["examples/native/tool_use/dataset"],
+                "tasks_glob": "**/task.yaml",
+                "output_dir": "results/regression",
+            },
+        }
+        merged = resolve_effective_run_config_data(project, run_config)
+        # Discriminator tag survives the dump.
+        assert merged["storage"]["artifacts"]["type"] == "local"
+        assert merged["storage"]["logs"]["type"] == "local"
+        # And the merged dict reconstructs into a RunConfig without
+        # union_tag_not_found on the discriminated storage backends.
+        RunConfig(**merged)

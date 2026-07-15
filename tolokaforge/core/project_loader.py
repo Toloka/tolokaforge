@@ -327,11 +327,16 @@ def resolve_effective_run_config_data(
     """
     if project is None or project.run_defaults is None:
         return dict(run_config_data)
-    # ``exclude_defaults`` drops fields whose value equals the schema
-    # default (None for optionals, {} / [] for containers). Every
-    # dropped key therefore adds no information — merging them in
-    # would just repeat the schema default at merge time.
-    base = project.run_defaults.model_dump(exclude_defaults=True)
+    # ``exclude_unset`` drops fields the author never touched, keeping the
+    # ones they explicitly wrote — including fields whose value equals the
+    # schema default. ``exclude_defaults`` would drop those too, and that
+    # silently strips the ``type`` discriminator from
+    # ``storage.artifacts`` / ``storage.logs`` (``type: "local"`` matches
+    # the ``LocalStorageConfig.type`` default), which then makes
+    # ``RunConfig(**merged)`` fail to reconstruct the discriminated union
+    # with ``union_tag_not_found``. Any run_config's own fields still win
+    # on conflict via ``deep_merge`` below.
+    base = project.run_defaults.model_dump(exclude_unset=True)
     return deep_merge(base, run_config_data)
 
 
