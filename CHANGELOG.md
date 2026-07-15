@@ -6,6 +6,7 @@ All notable changes to this project are documented in this file.
 
 ### Feat
 
+- **cli**: root flag `--display={full,rich,plain,log,none}` and env var `TOLOKAFORGE_DISPLAY=…` pick the overall stderr UI. Auto-selects `plain` when `CI` is set or when `sys.stderr` is not a TTY; auto-selects `rich` on a TTY. `--display=none` silences stderr on success while preserving the stdout artifact-path emission. `--display=full` falls back to `rich` when textual is not installed. Orthogonal to `--log-format`. See [docs/CLI.md](docs/CLI.md) § Display modes. (#282)
 - **cli**: `tolokaforge run` and `tolokaforge prepare` emit the absolute run-dir path as a single line on `sys.stdout` on success. Read-only commands (`status`, `validate`, `config validate`, `assets stamp`, `worker`, `adapter convert`, `analyze`, `docker *`) leave `sys.stdout` empty. Idiom: `RUN_DIR=$(tolokaforge run --config …)`. See [docs/CLI.md](docs/CLI.md) § stdout / stderr contract. (#280)
 - **logging**: structured console format `HH:MM:SS.mmm | LEVEL | k=v | message` with root `--verbose` / `--quiet` / `--log-format={pretty,plain,json}` flags; auto-select `pretty` on TTY / `plain` on pipe; ANSI palette matches `_display.THEME`. See [docs/CLI.md](docs/CLI.md) § Structured logging. (#279)
 
