@@ -394,6 +394,9 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.ARENA_AUTOMATION_OPENROUTER_API_KEY }}
+          # Empty GH_TOKEN: the --dangerously-skip-permissions compose agent (and the reprobe)
+          # in this step never call GitHub, so deny them `gh` (no PR merge/comment/label/API).
+          GH_TOKEN: ""
           TF_PROVIDER: ${{ steps.parse.outputs.provider }}
           TF_NAME: ${{ steps.parse.outputs.name }}
           MODEL_ID: ${{ steps.slug.outputs.model_id }}
@@ -468,16 +471,17 @@ jobs:
           done
           echo "converged=$CONVERGED" >> "$GITHUB_OUTPUT"
 
-      - name: Finalize integration (fold preset + cert, verify, commit, report)
-        id: finalize
+      - name: Finalize - compose the integration (agent writes preset + cert)
+        # AGENT step, scoped: empty GH_TOKEN so the --dangerously-skip-permissions agent cannot
+        # use `gh`; it only reads findings + writes files. All commit/push/label/merge happen in
+        # the SEPARATE step below - the only place that holds a real GH_TOKEN.
         if: steps.gate.outputs.clean == 'yes' && steps.loop.outputs.converged == 'yes'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ""
           TF_PROVIDER: ${{ steps.parse.outputs.provider }}
           TF_NAME: ${{ steps.parse.outputs.name }}
           MODEL_ID: ${{ steps.slug.outputs.model_id }}
-          AUTO_MERGE_ENABLED: ${{ vars.ARENA_AUTOMATION_AUTO_MERGE_ENABLED }}
-          HEAD_REF: ${{ github.event.pull_request.head.ref || inputs.head_ref }}
         run: |
           set -euo pipefail
           P=tools/automation/src/automation/prompts
@@ -486,11 +490,24 @@ jobs:
               -e "s|{{NAME}}|${TF_NAME}|g" -e "s|{{MODEL_ID}}|${MODEL_ID}|g" -e "s|{{PR}}|${PR}|g" "$1"
           }
           fill "$P/resolve_finalize.md" > /tmp/finalize.md
-          # `|| true`: if the agent hits --max-turns it exits non-zero; do not abort before the
-          # deterministic commit check below, which decides success by whether files changed.
+          # `|| true`: if the agent hits --max-turns it exits non-zero; do not abort - the commit
+          # step below decides success by whether files changed.
           claude -p "$(cat /tmp/finalize.md)" --model "$AGENT_MODEL" \
             --allowedTools "Bash,Read,Edit,Write" --dangerously-skip-permissions \
             --max-turns "${RESOLVE_MAX_TURNS}" --verbose || true
+
+      - name: Finalize - verify + commit + report (holds GH_TOKEN; no agent)
+        id: finalize
+        if: steps.gate.outputs.clean == 'yes' && steps.loop.outputs.converged == 'yes'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TF_PROVIDER: ${{ steps.parse.outputs.provider }}
+          TF_NAME: ${{ steps.parse.outputs.name }}
+          MODEL_ID: ${{ steps.slug.outputs.model_id }}
+          AUTO_MERGE_ENABLED: ${{ vars.ARENA_AUTOMATION_AUTO_MERGE_ENABLED }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref || inputs.head_ref }}
+        run: |
+          set -euo pipefail
           # Deterministic commit + report (the agent only wrote files). Stage the WHOLE engine
           # LLM package, not a fixed file list: a code-CREATE can write a new adapter class in ANY
           # module (reasoning_codec / schema_sanitizer / prompt_policy / content_policy /
