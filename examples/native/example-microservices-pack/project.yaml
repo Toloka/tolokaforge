@@ -31,7 +31,7 @@ assets:
     app_baseline:
       path: "./shared/seeds/app_baseline.sql"
       kind: "sql_dump"             # bound to a service by the reset recipe below
-      digest: "sha256:ea8649942763d29c3b5ae79f3af98e3df5dfa607173c58bd98c03e95431bf729"
+      digest: "sha256:ed1e9ab5ccf4f940d9860885b3b79458acecc562eb0b3e56b811d03c876504bd"
 
 # ── Default environment ─────────────────────────────────────────
 # Every task inherits this unless it declares its own
