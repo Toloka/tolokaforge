@@ -75,13 +75,18 @@ docker-compose stack — extra services beyond the engine's built-in
 stack (extended to include mock-web / rag-service if the task uses their
 tools).
 
-The manifest points at a compose file that lives next to `task.yaml`:
+The manifest points at a compose file that lives next to `task.yaml`, plus a per-service `services:` map that declares each service's isolation posture:
 
 ```yaml
 environment_manifest:
   compose_file: "./environment.compose.yaml"
   runner_service: "runner"
-  isolation: "shared_ok"          # or "per_trial" (default)
+  services:
+    app-db:
+      isolation: "reset"
+      reset:
+        seed: "postgres_baseline"   # name from project-level assets.seeds
+    # any service not listed here defaults to `ephemeral`
 ```
 
 Field reference:
@@ -90,7 +95,8 @@ Field reference:
 | --- | --- | --- | --- |
 | `compose_file` | yes | — | Path to the docker-compose YAML. Relative paths resolve against `task.yaml`. This file is the sole source of truth for services, images, ports, volumes, healthchecks, and `depends_on`. |
 | `runner_service` | no | `"default"` | Which compose service is the tolokaforge runner. Must be a service declared in the compose file. |
-| `isolation` | no | `"per_trial"` | `"per_trial"` (fresh stack per trial) or `"shared_ok"` (all trials share the run's stack). See [multi-container guide](guides/multi_container_tasks.md#choosing-isolation) for how to pick. |
+| `services.<name>.isolation` | no | `"ephemeral"` | Per-service posture: `"shared"` (long-lived across trials), `"reset"` (fresh container per trial + `reset.seed` recipe reapplied at each provision), `"ephemeral"` (fresh container per trial, no seed). Backend selection is task-driven — any `reset`/`ephemeral` service routes the run to `PerTrialRuntimeBackend` automatically. See the [multi-container guide](guides/multi_container_tasks.md#choosing-isolation) for how to pick. |
+| `services.<name>.reset.seed` | when `isolation: reset` | — | Name of the seed to apply on each provision. Must exist in the project's `assets.seeds` registry. See [`docs/architecture/RESET_RECIPES.md`](architecture/RESET_RECIPES.md) for the four seed kinds (`sql_dump` / `filesystem_dir` / `redis_dump` / `bare`). |
 | `network_policy` | no | `"no_internet"` | Public-egress posture for the task's application services. `no_internet` (default) attaches every task service to an `internal` docker network so no service can reach the public internet; `full_internet` runs the compose file unchanged. `limited_internet` is refused at materialisation (needs an egress-allowlist proxy — #323). See below. |
 
 `network_policy` enforcement (docker backends):

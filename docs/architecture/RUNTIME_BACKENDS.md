@@ -52,7 +52,7 @@ Selection is a run-level choice with two knobs and a safety enforcement:
 
 - **Config**: `orchestrator.runtime: shared | per_trial` in the run config YAML. Default `shared`.
 - **CLI override**: `tolokaforge run --runtime {shared,per_trial}` overrides the config for a single invocation. The banner printed at run start names the backend and the source (`cli-flag` vs `config` vs `default`) so operators can see what actually got chosen.
-- **Task-side enforcement**: every task's `environment_manifest.isolation` declares its requirement (`per_trial` default, `shared_ok` opt-out). The orchestrator refuses to start the run if any task requires `per_trial` and the selected backend is `SharedStackRuntimeBackend` — silent cross-trial state contamination is what this guard prevents. See "Isolation enforcement" below.
+- **Task-side enforcement**: every task's `environment_manifest.services.<name>.isolation` declares its per-service posture (`shared` / `reset` / `ephemeral`; unlabelled services default to `ephemeral`). Backend selection is task-driven: any `reset` or `ephemeral` service routes the run to `PerTrialRuntimeBackend` automatically. An explicit `orchestrator.runtime` override is refused at startup if it contradicts per-service semantics — silent cross-trial state contamination is what this guard prevents. See "Isolation enforcement" below.
 
 Legacy `orchestrator.runtime: docker` is accepted as a deprecated alias for `shared` with a `DeprecationWarning` at config load.
 
@@ -270,27 +270,30 @@ A second `teardown(handle)` call finds nothing in the cache, exits quickly. Fore
 
 ## Isolation enforcement
 
-Every `EnvironmentManifest` declares a `TaskIsolation` (default `per_trial`, opt-out `shared_ok`). The orchestrator reads this immediately after backend selection and refuses the run if the combination is unsafe.
+Isolation is declared **per service** on the resolved `EnvironmentManifest` via `services.<name>.isolation`. Three values (per ADR-0018 amendment):
+
+- **`shared`** — the service is long-lived across trials; all trials in the run see the same container instance.
+- **`reset`** — a fresh container per trial, plus the recipe named by `reset.seed` runs at each provision to reapply the seed state.
+- **`ephemeral`** — a fresh container per trial, no seed applied. This is the default for any service declared in the compose file without an explicit `isolation` entry.
+
+Backend selection is **task-driven**, not operator-driven: if any service on any task in the run has `isolation: reset` or `ephemeral`, the orchestrator routes to `PerTrialRuntimeBackend` automatically. A run with every service labelled `shared` (or a task with no `services:` map at all — the pre-Project-layer shape) stays on `SharedStackRuntimeBackend`. An explicit `orchestrator.runtime` override in the run config wins, but is refused at startup if it violates a task's declared per-service semantics (silent cross-trial state contamination is what this guard prevents).
 
 ```mermaid
 flowchart TD
-    Start[Orchestrator.run] --> Backend[Construct RuntimeBackend<br/>per config / CLI override]
-    Backend --> Check{{"For each task in the run:<br/>manifest.isolation ?"}}
-    Check -->|None or shared_ok| OK[Compatible]
-    Check -->|per_trial + PerTrialRuntimeBackend| OK
-    Check -->|per_trial + SharedStackRuntimeBackend| Refuse["Refuse run<br/>RuntimeError names offending tasks<br/>+ two concrete fixes"]
-    OK --> Trials[Run trials]
+    Start[Orchestrator.run] --> Select{{"For each task:<br/>any service `reset` / `ephemeral` ?"}}
+    Select -->|No — all `shared`| Shared[SharedStackRuntimeBackend]
+    Select -->|Yes| PerTrial[PerTrialRuntimeBackend]
+    Override[Explicit orchestrator.runtime override] -.->|Compatible?| Shared
+    Override -.->|Compatible?| PerTrial
+    Override -.->|Incompatible| Refuse["Refuse run<br/>RuntimeError names offending tasks<br/>+ concrete fix"]
+    Shared --> Trials[Run trials]
+    PerTrial --> Trials
     Refuse --> Stop[Zero trials executed]
 ```
 
-Fail-loud fix message names both remedies:
-
-- Switch the runtime: pass `--runtime per_trial` or set `orchestrator.runtime: per_trial` in the config.
-- Opt the task out: set `environment_manifest.isolation: shared_ok` (only appropriate for genuinely stateless tasks).
-
-Enforcement lives at the orchestrator layer, not on `SharedStackRuntimeBackend.provision()`. Refusing the run BEFORE any trial starts (rather than trial-by-trial) means the operator sees the whole failure at once instead of watching trials time out or produce garbage verdicts.
-
 `PerTrialRuntimeBackend` accepts every task — per-trial isolation is a superset of shared-stack semantics for correctness purposes. Cost of per-trial provisioning for genuinely stateless tasks is a separate concern (the loud-defaults banner surfaces the cost/benefit trade so operators can pick the right backend for their workload).
+
+See [`RESET_RECIPES.md`](RESET_RECIPES.md) for the four seed kinds (`sql_dump`, `filesystem_dir`, `redis_dump`, `bare`) that `isolation: reset` binds to via `services.<name>.reset.seed`.
 
 ## Failure modes
 
