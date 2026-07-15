@@ -12,6 +12,10 @@ All notable changes to this project are documented in this file.
 - **runtime**: on a trial-body failure (`ERROR` / `TIMEOUT`) the trial executor captures per-service logs before teardown, emits a `trial.service_logs_captured` summary line, and amends the trial's `metrics.yaml` with a `captured_service_logs` byte-count map (#302)
 - **examples**: `multi_service_slow_start` pack + `test_startup_order_stress.py` stress-cover the `depends_on` + healthcheck + `--wait` start-order chain against a `pg_sleep`-driven ≥20 s slow dependency, proving the per-trial backend blocks on the full chain before the trial's first RPC (#303)
 
+### Fix
+
+- **runtime**: `SharedStackRuntimeBackend` no longer advertises `reset_recipes:*` capabilities — a shared stack cannot honour them (reset tasks route to `PerTrialRuntimeBackend`, which still advertises them). A shared-selected run that requested a `reset_recipes:*` capability was admitting a capability it could not deliver; it is now refused at run start with the standard admission error (#310)
+
 ## v0.8.4 (2026-07-15)
 
 ### Feat

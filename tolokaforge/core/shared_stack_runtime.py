@@ -691,14 +691,7 @@ class SharedStackRuntimeBackend:
     require per-trial substrate materialisation."""
 
     advertised_capabilities: frozenset[str] = frozenset(
-        {
-            "shared_stack",
-            "reset_recipes:sql_dump",
-            "reset_recipes:filesystem_dir",
-            "reset_recipes:redis_dump",
-            "reset_recipes:bare",
-            "network_isolation:no_internet",
-        }
+        {"shared_stack", "network_isolation:no_internet"}
     )
     """Local-docker shared-stack capability advertisement. Read by
     :func:`tolokaforge.core.backend_capabilities.check_admission`."""
