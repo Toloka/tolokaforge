@@ -613,7 +613,7 @@ def test_enter_exit_without_sentinel_handler_is_a_noop(
 
 
 # ---------------------------------------------------------------------------
-# __enter__ / __exit__ — child-logger stderr-bypass sweep (issue #392)
+# __enter__ / __exit__ — child-logger stderr-bypass sweep
 # ---------------------------------------------------------------------------
 
 
@@ -702,9 +702,9 @@ def test_child_logger_shaped_like_litellm_emits_zero_raw_stderr_writes(
     _clean_root_handlers: object,
     _isolate_child_logger: Callable[..., logging.Logger],
 ) -> None:
-    """Regression guard for the confirmed #392 channel: a ``propagate=True``
-    child logger with a ``StreamHandler`` bound to the captured ``sys.stderr``
-    object emits zero *bypass* writes during the Live lifetime.
+    """A ``propagate=True`` child logger with a ``StreamHandler`` bound to
+    the captured ``sys.stderr`` object emits zero *bypass* writes during
+    the Live lifetime.
 
     INFO-level records are used to isolate the bypass channel — WARNING+ would
     additionally flow through ``_LogSink → print_above → Rich`` which writes
@@ -732,7 +732,7 @@ def test_child_logger_with_propagate_false_gets_log_sink_installed(
 ) -> None:
     """A non-propagating child logger's bypassing handler is removed AND a
     fresh ``_LogSink`` is installed on it so records still surface through
-    the panel (AGENTS.md Core Rule 1 — never silently drop). Both mutations
+    the panel (records must not be silently dropped). Both mutations
     are reversed on ``__exit__``.
 
     INFO is emitted (not WARNING) so the check that no write hits the fake

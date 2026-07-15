@@ -131,9 +131,7 @@ _STDERR_PROBE_ENV_VAR = "TOLOKAFORGE_STDERR_PROBE"
 
 Set to a file path to activate the diagnostic tap in
 :meth:`LiveRunDisplay.__enter__`; unset (the default) means the probe is
-never installed and there is zero production overhead. The value is a
-filesystem path, not a credential — the SecretManager grep-guard in
-``tests/unit/secrets/test_no_raw_secret_access.py`` does not match it.
+never installed and there is zero production overhead.
 """
 
 
