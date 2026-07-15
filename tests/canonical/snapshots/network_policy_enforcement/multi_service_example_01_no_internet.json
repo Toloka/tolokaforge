@@ -1,0 +1,89 @@
+{
+  "networks": {
+    "tolokaforge_netpolicy_edge": {},
+    "tolokaforge_netpolicy_internal": {
+      "internal": true
+    }
+  },
+  "services": {
+    "app-service": {
+      "healthcheck": {
+        "interval": "2s",
+        "retries": 30,
+        "start_period": "3s",
+        "test": [
+          "CMD",
+          "wget",
+          "-q",
+          "-O-",
+          "http://localhost/products.json"
+        ],
+        "timeout": "3s"
+      },
+      "image": "nginx:1.27-alpine",
+      "networks": [
+        "tolokaforge_netpolicy_internal"
+      ],
+      "ports": [
+        "80"
+      ],
+      "volumes": [
+        "./fixtures/products.json:/usr/share/nginx/html/products.json:ro"
+      ]
+    },
+    "db-service": {
+      "healthcheck": {
+        "interval": "2s",
+        "retries": 30,
+        "start_period": "3s",
+        "test": [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"
+        ],
+        "timeout": "3s"
+      },
+      "image": "tolokaforge-db-service:local",
+      "networks": [
+        "tolokaforge_netpolicy_internal"
+      ],
+      "ports": [
+        "8000"
+      ]
+    },
+    "runner": {
+      "depends_on": {
+        "app-service": {
+          "condition": "service_healthy"
+        },
+        "db-service": {
+          "condition": "service_healthy"
+        }
+      },
+      "environment": {
+        "DB_SERVICE_URL": "http://db-service:8000"
+      },
+      "healthcheck": {
+        "interval": "2s",
+        "retries": 30,
+        "start_period": "5s",
+        "test": [
+          "CMD",
+          "python",
+          "-c",
+          "import grpc; grpc.channel_ready_future(grpc.insecure_channel('localhost:50051')).result(timeout=2)"
+        ],
+        "timeout": "3s"
+      },
+      "image": "tolokaforge-runner:local",
+      "networks": [
+        "tolokaforge_netpolicy_internal",
+        "tolokaforge_netpolicy_edge"
+      ],
+      "ports": [
+        "50051"
+      ]
+    }
+  }
+}

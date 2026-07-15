@@ -28,12 +28,14 @@ from testcontainers.compose import DockerCompose
 
 from tolokaforge.core.compose_materialisation import (
     RUNNER_PORT_DEFAULT,
+    apply_network_policy_to_compose_file,
     cleanup_partial_materialisation,
     copy_compose_context,
     make_project_temp_dir,
     resolve_env_endpoints,
     resolve_runner_endpoint,
     shutdown_compose,
+    verify_network_policy_supported,
 )
 from tolokaforge.core.models import SeedRef
 from tolokaforge.core.runtime import IsolationMode, ProvisionError
@@ -829,10 +831,16 @@ class SharedStackRuntimeBackend:
         assert self._env_manifest is not None  # narrowed by caller
         manifest = self._env_manifest
 
+        verify_network_policy_supported(manifest.network_policy)
         temp_dir = make_project_temp_dir(self._run_id)
         compose: DockerCompose | None = None
         try:
             copy_compose_context(manifest.compose_file, temp_dir)
+            apply_network_policy_to_compose_file(
+                temp_dir / manifest.compose_file.name,
+                manifest.network_policy,
+                manifest.runner_service,
+            )
             compose = DockerCompose(
                 context=str(temp_dir),
                 compose_file_name=manifest.compose_file.name,

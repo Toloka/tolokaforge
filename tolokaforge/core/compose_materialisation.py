@@ -20,15 +20,17 @@ handles). The backends layer those on top.
 
 from __future__ import annotations
 
+import copy
 import logging
 import shutil
 import tempfile
 from pathlib import Path
 from typing import Any
 
+import yaml
 from testcontainers.compose import DockerCompose
 
-from tolokaforge.core.trial import EnvEndpoints
+from tolokaforge.core.trial import EnvEndpoints, NetworkPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +58,124 @@ core stack exposes and the port task compose files publish for the
 RAG_SERVICE_CANDIDATES = ("rag", "rag-service")
 """Compose service names checked when resolving the RAG endpoint.
 First match wins; ``None`` returned if no match is exposed."""
+
+
+# ---------------------------------------------------------------------------
+# Network-policy enforcement
+# ---------------------------------------------------------------------------
+
+
+NETPOLICY_INTERNAL_NETWORK = "tolokaforge_netpolicy_internal"
+"""Injected ``internal: true`` network every task service joins under
+``no_internet``. No public egress; inter-service DNS stays intact because
+every service shares it. Compose prefixes it with the per-run/per-trial
+project name, so the fully-qualified network is unique on the daemon and
+cannot collide with a task-declared network of the same base name."""
+
+NETPOLICY_EDGE_NETWORK = "tolokaforge_netpolicy_edge"
+"""Injected non-internal network the runner service *additionally* joins
+under ``no_internet``, so its published gRPC port stays host-reachable and
+it retains egress for in-container LLM-as-judge grading."""
+
+
+class NetworkPolicyError(ValueError):
+    """A declared ``network_policy`` has no docker enforcement available."""
+
+
+def verify_network_policy_supported(policy: NetworkPolicy) -> None:
+    """Raise :class:`NetworkPolicyError` if ``policy`` cannot be enforced by
+    the docker provisioner. ``limited_internet`` needs an egress-allowlist
+    proxy sidecar (#323); refusing to run is the only honest option —
+    silently granting full or no internet would under/over-enforce a
+    declared security posture. ``no_internet`` and ``full_internet`` return
+    cleanly. Reads only ``policy`` — no compose I/O — so callers can hoist it
+    before any temp-dir creation or docker work."""
+    if policy is NetworkPolicy.LIMITED_INTERNET:
+        raise NetworkPolicyError(
+            "network_policy 'limited_internet' is not enforceable yet: it needs an "
+            "egress-allowlist proxy sidecar (#323). Declare 'no_internet' or "
+            "'full_internet' explicitly."
+        )
+
+
+def enforce_network_policy(
+    compose_doc: dict[str, Any],
+    policy: NetworkPolicy,
+    runner_service: str,
+) -> dict[str, Any]:
+    """Return a compose doc rewritten to enforce ``policy``.
+
+    ``full_internet`` returns ``compose_doc`` unchanged (same object).
+    ``no_internet`` returns a deep copy in which (1) every service joins the
+    injected :data:`NETPOLICY_INTERNAL_NETWORK` (``internal: true`` — no
+    egress), any network the task already declared is forced ``internal:
+    true`` too, and (2) ``runner_service`` additionally joins the non-internal
+    :data:`NETPOLICY_EDGE_NETWORK`. ``limited_internet`` raises
+    :class:`NetworkPolicyError` (belt-and-suspenders — the enforcement point
+    is :func:`verify_network_policy_supported`; reaching here with it is a
+    wiring bug and must fail loud rather than return an egress-capable doc).
+
+    ``runner_service`` is guaranteed present in ``services`` by
+    :class:`EnvironmentManifest` validation.
+    """
+    if policy is NetworkPolicy.FULL_INTERNET:
+        return compose_doc
+    if policy is NetworkPolicy.LIMITED_INTERNET:
+        raise NetworkPolicyError(
+            "enforce_network_policy reached with 'limited_internet'; this value has no "
+            "docker enforcement (#323) and must be refused by verify_network_policy_supported "
+            "before any compose rewrite."
+        )
+
+    doc = copy.deepcopy(compose_doc)
+    networks: dict[str, Any] = doc.setdefault("networks", {})
+    for name, config in networks.items():
+        merged = dict(config) if isinstance(config, dict) else {}
+        merged["internal"] = True
+        networks[name] = merged
+    networks[NETPOLICY_INTERNAL_NETWORK] = {"internal": True}
+    networks[NETPOLICY_EDGE_NETWORK] = {}
+
+    services: dict[str, Any] = doc["services"]
+    for service_name, service in services.items():
+        attachments = [NETPOLICY_INTERNAL_NETWORK]
+        if service_name == runner_service:
+            attachments.append(NETPOLICY_EDGE_NETWORK)
+        service["networks"] = _merge_service_networks(service.get("networks"), attachments)
+    return doc
+
+
+def _merge_service_networks(existing: Any, additions: list[str]) -> Any:
+    """Add each name in ``additions`` to a service-level ``networks:`` value,
+    preserving its declared shape (list or mapping) and any per-network config
+    (aliases, static IPs). Absent ``existing`` yields a plain list. Idempotent:
+    a name already present is left untouched."""
+    if isinstance(existing, dict):
+        merged = dict(existing)
+        for name in additions:
+            if name not in merged:
+                merged[name] = None
+        return merged
+    current = list(existing) if isinstance(existing, list) else []
+    for name in additions:
+        if name not in current:
+            current.append(name)
+    return current
+
+
+def apply_network_policy_to_compose_file(
+    compose_file: Path, policy: NetworkPolicy, runner_service: str
+) -> None:
+    """Read ``compose_file``, apply :func:`enforce_network_policy`, and write
+    the result back in place. ``full_internet`` leaves the file byte-identical
+    (the transform is identity), so its comments and formatting survive."""
+    with compose_file.open() as f:
+        doc = yaml.safe_load(f)
+    transformed = enforce_network_policy(doc, policy, runner_service)
+    if transformed is doc:
+        return
+    with compose_file.open("w") as f:
+        yaml.safe_dump(transformed, f, sort_keys=False)
 
 
 # ---------------------------------------------------------------------------
