@@ -10,8 +10,10 @@ name: Model auto-integration
 #   integrate: <openrouter-model-slug>    e.g. "integrate: anthropic/claude-opus-4.8"
 # The provider is always openrouter (the arena routing); the slug is the exact OpenRouter id.
 #
-# Auth split: the AGENT (Claude) runs on ANTHROPIC_API_KEY; the CANDIDATE model that the
-# probes / reprobe drive runs on ARENA_AUTOMATION_OPENROUTER_API_KEY (.env).
+# Auth: BOTH the AGENT (Claude Code CLI) and the CANDIDATE model run on the OpenRouter budget
+# (ARENA_AUTOMATION_OPENROUTER_API_KEY). The candidate is probed directly via OpenRouter (.env); the
+# agent speaks the Anthropic Messages API, so a LiteLLM gateway bridges Anthropic /v1/messages ->
+# openrouter/<model>. Nothing uses a first-party ANTHROPIC_API_KEY (avoids its workspace usage cap).
 
 on:
   pull_request:
@@ -76,6 +78,10 @@ jobs:
       # Resolve fix-loop config.
       MAX_ITER: ${{ vars.RESOLVE_MAX_ITER || '8' }}
       AGENT_MODEL: ${{ vars.RESOLVE_AGENT_MODEL || 'claude-opus-4-8' }}
+      # The agent runs on the OpenRouter budget via a LiteLLM gateway (see the "Start LiteLLM
+      # gateway" step), NOT the capped first-party ANTHROPIC_API_KEY workspace. AGENT_MODEL is the
+      # alias shared by the CLI + gateway; RESOLVE_AGENT_OR_MODEL is the OpenRouter backing model.
+      RESOLVE_AGENT_OR_MODEL: ${{ vars.RESOLVE_AGENT_OR_MODEL || 'openrouter/anthropic/claude-opus-4.8' }}
       RESOLVE_MAX_TURNS: ${{ vars.RESOLVE_MAX_TURNS || '80' }}
       RESOLVE_CAPABILITY_K: ${{ vars.RESOLVE_CAPABILITY_K || '5' }}
       RESOLVE_WIRE_K: ${{ vars.RESOLVE_WIRE_K || '10' }}
@@ -388,11 +394,47 @@ jobs:
         if: steps.gate.outputs.clean == 'yes'
         run: npm install -g @anthropic-ai/claude-code
 
+      - name: Start LiteLLM gateway (Anthropic /v1/messages -> OpenRouter; agent on the OpenRouter budget)
+        # The resolve + finalize agent is the Claude Code CLI, which speaks the Anthropic Messages
+        # API. OpenRouter has no /v1/messages endpoint, so this LiteLLM proxy bridges it to
+        # openrouter/<model> - moving the agent OFF the capped ANTHROPIC_API_KEY workspace and onto
+        # the ARENA_AUTOMATION_OPENROUTER_API_KEY budget. Backgrounded; it persists for the two
+        # agent steps that follow in this job.
+        if: steps.gate.outputs.clean == 'yes'
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.ARENA_AUTOMATION_OPENROUTER_API_KEY }}
+        run: |
+          set -euo pipefail
+          printf 'model_list:\n  - model_name: %s\n    litellm_params:\n      model: %s\n      api_key: os.environ/OPENROUTER_API_KEY\nlitellm_settings:\n  drop_params: true\n' \
+            "$AGENT_MODEL" "$RESOLVE_AGENT_OR_MODEL" > /tmp/litellm.config.yaml
+          echo "--- gateway config ---"; cat /tmp/litellm.config.yaml
+          nohup uvx --from 'litellm[proxy]' litellm \
+            --config /tmp/litellm.config.yaml --host 127.0.0.1 --port 4000 \
+            > /tmp/litellm.log 2>&1 &
+          echo $! > /tmp/litellm.pid
+          # Wait for readiness (the first uvx run downloads litellm, so allow generous time).
+          ready=no
+          for _ in $(seq 1 90); do
+            if curl -fsS http://127.0.0.1:4000/health/readiness >/dev/null 2>&1; then ready=yes; break; fi
+            if ! kill -0 "$(cat /tmp/litellm.pid)" 2>/dev/null; then
+              echo "::error::LiteLLM gateway process exited during startup"; tail -80 /tmp/litellm.log; exit 1
+            fi
+            sleep 2
+          done
+          if [ "$ready" != "yes" ]; then
+            echo "::error::LiteLLM gateway did not become ready in time"; tail -80 /tmp/litellm.log; exit 1
+          fi
+          echo "LiteLLM gateway ready on http://127.0.0.1:4000"
+
       - name: Resolve fix-loop (deterministic; short Opus agent per iteration)
         id: loop
         if: steps.gate.outputs.clean == 'yes'
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Agent -> LiteLLM gateway -> OpenRouter (NOT the capped first-party ANTHROPIC_API_KEY).
+          # The dummy key only satisfies the CLI's x-api-key header; the localhost gateway is unauthenticated.
+          ANTHROPIC_BASE_URL: "http://127.0.0.1:4000"
+          ANTHROPIC_API_KEY: "sk-litellm-local"
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
           OPENROUTER_API_KEY: ${{ secrets.ARENA_AUTOMATION_OPENROUTER_API_KEY }}
           # Empty GH_TOKEN: the --dangerously-skip-permissions compose agent (and the reprobe)
           # in this step never call GitHub, so deny them `gh` (no PR merge/comment/label/API).
@@ -488,7 +530,11 @@ jobs:
         # the SEPARATE step below - the only place that holds a real GH_TOKEN.
         if: steps.gate.outputs.clean == 'yes' && steps.loop.outputs.converged == 'yes'
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Agent -> LiteLLM gateway -> OpenRouter (see the resolve step + job env). GH_TOKEN stays
+          # empty: this --dangerously-skip-permissions agent only writes files; git/gh live below.
+          ANTHROPIC_BASE_URL: "http://127.0.0.1:4000"
+          ANTHROPIC_API_KEY: "sk-litellm-local"
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
           GH_TOKEN: ""
           TF_PROVIDER: ${{ steps.parse.outputs.provider }}
           TF_NAME: ${{ steps.parse.outputs.name }}
