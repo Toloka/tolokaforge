@@ -29,6 +29,12 @@ This architecture provides:
 
 See `tolokaforge/docker/stacks/` for the predefined service stack definitions.
 
+When a task declares its own `environment_manifest`, its services inherit
+the same isolation posture: `network_policy` defaults to `no_internet`
+(task services get no public egress while the runner keeps its LLM-API
+access), and each service is torn down and re-provisioned per trial unless
+marked `shared`. See [architecture/PROJECTS.md](architecture/PROJECTS.md).
+
 ## Tool-Level Security
 
 ### Tool Allowlisting
