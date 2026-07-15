@@ -7,6 +7,7 @@ All notable changes to this project are documented in this file.
 ### Feat
 
 - **runtime**: `compute.log_tail` + `compute.capture_logs_on_success` config knobs and a per-service compose-log capture primitive for trial-failure diagnostics (#302)
+- **runtime**: `PerTrialRuntimeBackend` captures per-service logs on provision-stage failure (compose-up / reset-recipe) before teardown, writing `services/<service>.log` + a `services/_capture.yaml` manifest; `RuntimeBackend` gains `capture_service_logs` (per-trial writes `.log` files; shared-stack is a documented no-op) (#302)
 
 ## v0.8.4 (2026-07-15)
 

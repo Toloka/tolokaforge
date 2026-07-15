@@ -943,6 +943,19 @@ class SharedStackRuntimeBackend:
         """No-op: the shared stack lives for the whole run and is torn
         down at :meth:`close`, not per-trial. Idempotent by construction."""
 
+    def capture_service_logs(  # noqa: ARG002 — Protocol conformance
+        self, handle: EnvHandle, *, failed: bool
+    ) -> dict[str, int]:
+        """Documented no-op returning ``{}``.
+
+        The shared stack is run-wide, not trial-scoped, and per-trial
+        :meth:`teardown` is a no-op — so per-trial log capture has no
+        stack to read and would capture the same run-wide containers on
+        every trial. Run-level capture on a shared-stack materialise
+        failure is a separate surface (see
+        ``docs/architecture/RUNTIME_BACKENDS.md``)."""
+        return {}
+
     def reset_services_for_next_trial(self, manifest: EnvironmentManifest) -> None:
         """Dispatch reset recipes for every ``isolation="reset"`` service
         against the shared compose stack.

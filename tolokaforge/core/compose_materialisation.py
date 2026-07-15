@@ -25,7 +25,7 @@ import logging
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -456,3 +456,36 @@ def _fetch_service_logs(
         logger.debug("compose_materialisation: logs fetch for service %r failed: %s", service, exc)
         return None
     return result.stdout
+
+
+def trial_services_dir(output_root: Path, trial_id: str) -> Path:
+    """Return the per-trial ``services/`` capture dir for ``trial_id``.
+
+    ``trial_id`` is the canonical ``"{task_id}:{trial_index}"`` id; the tail
+    ``:index`` becomes the trial subdir, matching the conductor's
+    ``output_root/trials/<task_id>/<index>/`` bundle layout.
+    """
+    task_id, trial_index = trial_id.rsplit(":", 1)
+    return output_root / "trials" / task_id / trial_index / "services"
+
+
+def write_capture_manifest(
+    dest_dir: Path,
+    tail: int,
+    captured: Mapping[str, int],
+    capture_reason: str = "provision_error",
+) -> None:
+    """Write ``dest_dir/_capture.yaml`` recording captured per-service byte counts.
+
+    The durable record for the provision-failure path, where no ``metrics.yaml``
+    exists to amend. Shape:
+    ``{"tail": int, "capture_reason": str, "services": {"<name>": {"bytes": int}}}``.
+    ``dest_dir`` must already exist (the ``.log`` writer creates it).
+    """
+    manifest = {
+        "tail": tail,
+        "capture_reason": capture_reason,
+        "services": {name: {"bytes": count} for name, count in captured.items()},
+    }
+    with (dest_dir / "_capture.yaml").open("w") as f:
+        yaml.safe_dump(manifest, f, sort_keys=False)

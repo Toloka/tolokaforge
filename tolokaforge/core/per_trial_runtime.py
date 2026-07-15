@@ -38,14 +38,18 @@ from testcontainers.compose import DockerCompose
 
 from tolokaforge.core.compose_materialisation import (
     RUNNER_PORT_DEFAULT,
+    LogCaptureConfig,
     apply_network_policy_to_compose_file,
+    capture_compose_service_logs,
     cleanup_partial_materialisation,
     copy_compose_context,
     make_project_temp_dir,
     resolve_env_endpoints,
     resolve_runner_endpoint,
     shutdown_compose,
+    trial_services_dir,
     verify_network_policy_supported,
+    write_capture_manifest,
 )
 from tolokaforge.core.models import SeedRef
 from tolokaforge.core.runtime import EnvHandle, IsolationMode, ProvisionError
@@ -80,6 +84,11 @@ class _LocalEnvHandle:
     runner_port: int
     temp_dir: Path
     endpoints: EnvEndpoints
+    service_names: tuple[str, ...]
+    """Compose stack's declared service names, snapshot at provision time.
+    Read by :meth:`PerTrialRuntimeBackend.capture_service_logs` so the
+    trial-body-failure path captures every service without re-parsing the
+    (already torn-down) manifest."""
 
 
 @dataclass
@@ -134,6 +143,12 @@ class PerTrialRuntimeBackend:
     from ``project.assets.seeds``. Consumed by :meth:`_apply_reset_recipes`
     to resolve ``services.<name>.reset.seed`` references at reset time.
     Empty dict means no reset recipes will fire."""
+
+    log_capture: LogCaptureConfig | None = None
+    """Per-service log-capture policy. ``None`` disables capture (tests, or
+    construction with no run output root). When set, provision-stage failures
+    and :meth:`capture_service_logs` write ``docker compose logs`` output under
+    ``log_capture.output_root/trials/<task>/<idx>/services/`` before teardown."""
 
     _clients: dict[str, RunnerClient] = field(default_factory=dict)
     _connected_trials: set[str] = field(default_factory=set)
@@ -196,6 +211,7 @@ class PerTrialRuntimeBackend:
             )
 
         verify_network_policy_supported(manifest.network_policy)
+        service_names = tuple(manifest.load_compose()["services"])
         temp_dir = make_project_temp_dir(spec.trial_id)
         compose: DockerCompose | None = None
         try:
@@ -214,6 +230,7 @@ class PerTrialRuntimeBackend:
             )
             compose.start()
         except Exception as exc:  # noqa: BLE001 — surface as typed ProvisionError
+            self._capture_provision_failure_logs(spec.trial_id, service_names, compose)
             cleanup_partial_materialisation(compose, temp_dir)
             raise ProvisionError(
                 trial_id=spec.trial_id,
@@ -232,6 +249,7 @@ class PerTrialRuntimeBackend:
         try:
             self._apply_reset_recipes(manifest, compose, spec)
         except Exception:
+            self._capture_provision_failure_logs(spec.trial_id, service_names, compose)
             cleanup_partial_materialisation(compose, temp_dir)
             raise
 
@@ -268,6 +286,7 @@ class PerTrialRuntimeBackend:
             runner_port=runner_port,
             temp_dir=temp_dir,
             endpoints=endpoints,
+            service_names=service_names,
         )
 
     def await_ready(self, handle: EnvHandle) -> None:
@@ -307,6 +326,27 @@ class PerTrialRuntimeBackend:
                 )
         shutdown_compose(handle.compose)
         shutil.rmtree(handle.temp_dir, ignore_errors=True)
+
+    def capture_service_logs(self, handle: EnvHandle, *, failed: bool) -> dict[str, int]:
+        """Capture per-service logs for the trial-body-failure path.
+
+        No-op ``{}`` when capture is disabled, the gate (``failed`` or the
+        on-success policy) is not met, or ``handle`` is foreign. Otherwise
+        writes ``docker compose logs`` output for the handle's snapshot
+        services into the trial ``services/`` dir and returns the byte map.
+        Writes only the ``.log`` files — the durable ``metrics.yaml``
+        amendment on this path is the executor's responsibility. Never raises.
+        """
+        if self.log_capture is None:
+            return {}
+        if not (failed or self.log_capture.on_success):
+            return {}
+        if not isinstance(handle, _LocalEnvHandle):
+            return {}
+        dest_dir = trial_services_dir(self.log_capture.output_root, handle.trial_id)
+        return capture_compose_service_logs(
+            handle.compose, handle.service_names, dest_dir, self.log_capture.tail
+        )
 
     # ---- Per-trial RPC operations (ADR-0013) ----
 
@@ -429,6 +469,29 @@ class PerTrialRuntimeBackend:
                 ) from exc
 
     # ---- Internal helpers ----
+
+    def _capture_provision_failure_logs(
+        self,
+        trial_id: str,
+        service_names: tuple[str, ...],
+        compose: DockerCompose | None,
+    ) -> None:
+        """Best-effort per-service log capture on a provision-stage failure,
+        before the partial stack is torn down.
+
+        No-op when capture is disabled or nothing materialised (``compose is
+        None``). Writes the ``.log`` files plus a ``services/_capture.yaml``
+        durable record — the provision path never reaches
+        ``conductor.run``, so no ``metrics.yaml`` exists to amend. Never
+        raises (the underlying helpers swallow their own errors)."""
+        if self.log_capture is None:
+            return
+        dest_dir = trial_services_dir(self.log_capture.output_root, trial_id)
+        captured = capture_compose_service_logs(
+            compose, service_names, dest_dir, self.log_capture.tail
+        )
+        if captured:
+            write_capture_manifest(dest_dir, self.log_capture.tail, captured)
 
     def _client_for(self, trial_id: str) -> RunnerClient:
         client = self._clients.get(trial_id)
