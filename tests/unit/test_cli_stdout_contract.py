@@ -351,3 +351,66 @@ class TestReadOnlyCommandsStdoutIsEmpty:
 
         assert result.exit_code == 0, result.stderr
         assert result.stdout == ""
+
+    def test_adapter_convert_stdout_is_empty(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`adapter convert` writes native bundles to disk; console output on stderr."""
+        import tolokaforge.adapters as adapters_pkg
+        from tolokaforge.adapters.base import NativeTaskBundle
+        from tolokaforge.adapters.native import NativeAdapter
+
+        class _Stub(NativeAdapter):
+            def __init__(self, params: dict | None = None) -> None:
+                super().__init__({"tasks_glob": "unused/**", **(params or {})})
+
+            def get_task_ids(self) -> list[str]:
+                return ["t1"]
+
+            def convert_to_native(self, task_id: str) -> NativeTaskBundle:
+                return NativeTaskBundle(
+                    task_config={"name": f"Task {task_id}", "category": "tool_use"},
+                    grading_config={"combine": {"method": "weighted", "pass_threshold": 1.0}},
+                    fixtures={},
+                    metadata={"source_adapter": "stub"},
+                )
+
+        monkeypatch.setattr(adapters_pkg, "get_adapter", lambda name, params: _Stub())
+        out = tmp_path / "out"
+        result = runner.invoke(
+            cli,
+            ["adapter", "convert", "--name", "stub", "--tasks-glob", "x/**", "--output", str(out)],
+        )
+
+        assert result.exit_code == 0, result.stderr
+        assert result.stdout == ""
+
+    def test_docker_status_no_sdk_stdout_is_empty(
+        self,
+        runner: CliRunner,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`docker status` with no docker SDK exits 1 via stderr; stdout stays empty."""
+        import sys as _sys
+
+        # Force ImportError inside the command's `import docker as docker_sdk` call.
+        monkeypatch.setitem(_sys.modules, "docker", None)
+
+        result = runner.invoke(cli, ["docker", "status"])
+
+        assert result.exit_code != 0
+        assert result.stdout == ""
+
+    def test_analyze_missing_trajectory_stdout_is_empty(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+    ) -> None:
+        """`analyze` on a missing trajectory exits non-zero via stderr; stdout empty."""
+        result = runner.invoke(cli, ["analyze", str(tmp_path / "nonexistent.json")])
+
+        assert result.exit_code != 0
+        assert result.stdout == ""

@@ -186,13 +186,30 @@ class TestEmitArtifactPath:
         assert Path(emitted).is_absolute()
         assert Path(emitted) == (tmp_path / "results" / "run").resolve()
 
-    def test_emit_artifact_path_is_flushed(
-        self, tmp_path: Path, capfd: pytest.CaptureFixture[str]
+    def test_emit_artifact_path_calls_flush(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # ``capfd`` captures at the file-descriptor level, so anything not
-        # flushed to fd 1 by the time ``readouterr`` runs would come back
-        # empty. Reading the emitted path here proves the helper flushed.
+        """Lock the ``flush=True`` contract by spying on ``.flush()`` directly.
+
+        The shell-composition idiom depends on the artifact path reaching the
+        pipe before the process exits — Python's line buffering usually does
+        this, but ``flush=True`` guarantees it. A capture-based test would
+        pass even without the flush (line-buffered stdout flushes on newline
+        before ``readouterr``), so lock the invariant by intercepting the
+        stream directly.
+        """
+        import sys as _sys
+
+        calls: list[str] = []
+
+        class _Spy:
+            def write(self, data: str) -> int:
+                calls.append("write")
+                return len(data)
+
+            def flush(self) -> None:
+                calls.append("flush")
+
+        monkeypatch.setattr(_sys, "stdout", _Spy())
         emit_artifact_path(tmp_path)
-        captured = capfd.readouterr()
-        assert captured.out.endswith("\n")
-        assert captured.out.strip() == str(tmp_path.resolve())
+        assert "flush" in calls, f"emit_artifact_path did not call flush(); saw {calls}"
