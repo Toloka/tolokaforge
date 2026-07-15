@@ -4056,6 +4056,7 @@ dev = [
     { name = "rank-bm25" },
     { name = "rich" },
     { name = "ruff" },
+    { name = "textual" },
     { name = "tolokaforge-adapter-terminal-bench" },
     { name = "uvicorn" },
 ]
@@ -4134,6 +4135,7 @@ dev = [
     { name = "rank-bm25", specifier = ">=0.2.2" },
     { name = "rich", specifier = ">=13.0.0" },
     { name = "ruff", specifier = "==0.14.4" },
+    { name = "textual", specifier = ">=0.85.0" },
     { name = "tolokaforge-adapter-terminal-bench", editable = "external_adapters/tolokaforge-adapter-terminal-bench" },
     { name = "uvicorn", specifier = ">=0.25.0" },
 ]
