@@ -62,6 +62,12 @@ def test_provision_error_classification():
     assert attribution["deterministic"] is True
     assert any(e["kind"] == "termination_reason" for e in attribution["evidence"])
 
+    # A provision failure (which a reset-recipe failure surfaces as) counts
+    # toward the run's failed attempts in the summary rollup.
+    summary = summarize_failure_attributions([attribution])
+    assert summary["total_failed_attempts"] == 1
+    assert summary["by_failure_class"]["provision_failure"] == 1
+
 
 def test_tool_argument_classification():
     traj = _base_trajectory()

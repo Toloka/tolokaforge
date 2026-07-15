@@ -85,7 +85,7 @@ class EnvHandle(Protocol):
 # ---------------------------------------------------------------------------
 
 
-ProvisionStage = Literal["provision", "await_ready"]
+ProvisionStage = Literal["provision", "await_ready", "reset_recipe"]
 
 
 class ProvisionError(Exception):
