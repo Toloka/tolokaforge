@@ -3916,7 +3916,6 @@ dependencies = [
     { name = "pydantic", extra = ["email"] },
     { name = "python-dotenv" },
     { name = "pyyaml" },
-    { name = "rich" },
     { name = "sqlalchemy" },
     { name = "starlette" },
     { name = "structlog" },
@@ -3938,12 +3937,16 @@ all = [
     { name = "python-docx" },
     { name = "python-pptx" },
     { name = "rank-bm25" },
+    { name = "rich" },
     { name = "tolokaforge-adapter-terminal-bench" },
     { name = "uvicorn" },
 ]
 browser = [
     { name = "pillow" },
     { name = "playwright" },
+]
+dx = [
+    { name = "rich" },
 ]
 office = [
     { name = "openpyxl" },
@@ -3984,6 +3987,7 @@ dev = [
     { name = "pytest-cov" },
     { name = "pytest-docker" },
     { name = "rank-bm25" },
+    { name = "rich" },
     { name = "ruff" },
     { name = "tolokaforge-adapter-terminal-bench" },
     { name = "uvicorn" },
@@ -4018,20 +4022,20 @@ requires-dist = [
     { name = "python-pptx", marker = "extra == 'office'", specifier = ">=0.6.21" },
     { name = "pyyaml", specifier = ">=6.0.1" },
     { name = "rank-bm25", marker = "extra == 'rag'", specifier = ">=0.2.2" },
-    { name = "rich", specifier = ">=13.0.0" },
+    { name = "rich", marker = "extra == 'dx'", specifier = ">=13.0.0" },
     { name = "sqlalchemy", specifier = ">=2.0.48" },
     { name = "starlette", specifier = ">=0.52.1" },
     { name = "structlog", specifier = ">=24.0.0" },
     { name = "tenacity", specifier = ">=8.2.0" },
     { name = "testcontainers", specifier = ">=4.14.2,<5" },
-    { name = "tolokaforge", extras = ["browser", "server", "rag", "office", "adapters"], marker = "extra == 'all'", editable = "." },
+    { name = "tolokaforge", extras = ["dx", "browser", "server", "rag", "office", "adapters"], marker = "extra == 'all'", editable = "." },
     { name = "tolokaforge", extras = ["terminal-bench"], marker = "extra == 'adapters'", editable = "." },
     { name = "tolokaforge-adapter-terminal-bench", marker = "extra == 'terminal-bench'", editable = "external_adapters/tolokaforge-adapter-terminal-bench" },
     { name = "toml", specifier = ">=0.10.0" },
     { name = "typesense", specifier = ">=2.0.0" },
     { name = "uvicorn", marker = "extra == 'server'", specifier = ">=0.25.0" },
 ]
-provides-extras = ["browser", "server", "rag", "office", "terminal-bench", "adapters", "all"]
+provides-extras = ["dx", "browser", "server", "rag", "office", "terminal-bench", "adapters", "all"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -4056,6 +4060,7 @@ dev = [
     { name = "pytest-cov", specifier = ">=4.0.0" },
     { name = "pytest-docker", specifier = ">=2.0.0" },
     { name = "rank-bm25", specifier = ">=0.2.2" },
+    { name = "rich", specifier = ">=13.0.0" },
     { name = "ruff", specifier = "==0.14.4" },
     { name = "tolokaforge-adapter-terminal-bench", editable = "external_adapters/tolokaforge-adapter-terminal-bench" },
     { name = "uvicorn", specifier = ">=0.25.0" },

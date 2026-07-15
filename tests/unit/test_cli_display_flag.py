@@ -29,14 +29,14 @@ import pytest
 import yaml
 from click.testing import CliRunner
 
-import tolokaforge.cli.main as cli_main
+import tolokaforge.dx.cli.main as cli_main
 from tests.unit.test_cli_stdout_contract import _make_stub_orchestrator
-from tolokaforge.cli._display import DisplayMode
-from tolokaforge.cli.main import cli
 from tolokaforge.core.logging import (
     _TOLOKAFORGE_ROOT_HANDLER_SENTINEL,
     LogFormat,
 )
+from tolokaforge.dx._display import DisplayMode
+from tolokaforge.dx.cli.main import cli
 
 pytestmark = pytest.mark.unit
 
@@ -94,7 +94,7 @@ def restore_console_quiet():
     Reset between tests so state doesn't leak into ``test_cli_display``
     baselines that assert ``console.quiet is False``."""
 
-    from tolokaforge.cli._display import console as _console
+    from tolokaforge.dx._display import console as _console
 
     saved = _console.quiet
     yield

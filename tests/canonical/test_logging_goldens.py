@@ -9,7 +9,7 @@ that ``StructuredLogger._sanitize_extra`` performs when an extra key
 collides with a reserved ``LogRecord`` attribute.
 
 **Golden regeneration.** Bytes are locked byte-for-byte. When the palette
-in ``tolokaforge.cli._display.THEME`` shifts or the layout changes, the
+in ``tolokaforge.dx._display.THEME`` shifts or the layout changes, the
 goldens must be regenerated in the *same* commit as the code change:
 
     uv run pytest tests/canonical/test_logging_goldens.py --update-canon

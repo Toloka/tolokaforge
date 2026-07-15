@@ -27,15 +27,15 @@ import pytest
 import yaml
 from click.testing import CliRunner
 
-from tolokaforge.cli.main import cli
 from tolokaforge.core.logging import _TOLOKAFORGE_ROOT_HANDLER_SENTINEL
+from tolokaforge.dx.cli.main import cli
 
 pytestmark = pytest.mark.unit
 
 
 @pytest.fixture(autouse=True)
 def _restore_console_quiet():
-    from tolokaforge.cli._display import console as _console
+    from tolokaforge.dx._display import console as _console
 
     saved = _console.quiet
     yield

@@ -16,8 +16,8 @@ import pytest
 import yaml
 from click.testing import CliRunner
 
-from tolokaforge.cli.main import cli
 from tolokaforge.core.assets import compute_seed_digest
+from tolokaforge.dx.cli.main import cli
 
 pytestmark = pytest.mark.unit
 

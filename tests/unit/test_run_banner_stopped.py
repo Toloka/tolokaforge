@@ -1,6 +1,6 @@
 """Stage-3 tests for the ``stopped_reason`` variant of the run-end banner.
 
-Locks :func:`tolokaforge.cli._run_banner.print_run_end_banner`'s new
+Locks :func:`tolokaforge.dx.banners.print_run_end_banner`'s new
 optional kwarg (default ``None``, preserving A5's signature).
 
 Three variants — success, failure, stopped:
@@ -21,8 +21,8 @@ from pathlib import Path
 import pytest
 from rich.console import Console
 
-from tolokaforge.cli._display import THEME
-from tolokaforge.cli._run_banner import print_run_end_banner
+from tolokaforge.dx._display import THEME
+from tolokaforge.dx.banners import print_run_end_banner
 
 pytestmark = pytest.mark.unit
 

@@ -17,7 +17,7 @@ from click.testing import CliRunner
 import tolokaforge.adapters as adapters_pkg
 from tolokaforge.adapters.base import BaseAdapter, NativeTaskBundle
 from tolokaforge.adapters.native import NativeAdapter
-from tolokaforge.cli.main import cli
+from tolokaforge.dx.cli.main import cli
 
 pytestmark = pytest.mark.unit
 

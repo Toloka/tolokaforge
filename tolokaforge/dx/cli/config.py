@@ -11,13 +11,13 @@ from pathlib import Path
 
 import click
 
-from tolokaforge.cli._display import console
 from tolokaforge.core.config_validator import Severity, validate_run_config
 from tolokaforge.core.llm.presets import (
     resolve_overlay_path,
     validate_overlay_file,
 )
 from tolokaforge.core.project_loader import load_effective_run_config
+from tolokaforge.dx._display import console
 
 
 @click.group()

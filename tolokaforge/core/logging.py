@@ -111,7 +111,7 @@ class StructuredFormatter(logging.Formatter):
     Pretty mode wraps the entire line with the ANSI escape sequence for
     the record's level (INFO=cyan, WARNING=yellow, ERROR=bold red,
     DEBUG=dim) — matching the semantics of
-    `tolokaforge.cli._display.THEME`.
+    `tolokaforge.dx._display.THEME`.
     """
 
     def __init__(

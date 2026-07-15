@@ -34,7 +34,7 @@ _RESOLVER_SCRIPT = textwrap.dedent(
     """
     import json, sys
     from pathlib import Path
-    from tolokaforge.cli.main import _activate_presets_overlay
+    from tolokaforge.dx.cli.main import _activate_presets_overlay
     from tolokaforge.core.llm.presets import get_overlay_path
     from tolokaforge.core.models import EngineConfig, RunConfig
 

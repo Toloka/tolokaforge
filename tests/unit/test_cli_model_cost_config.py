@@ -1,6 +1,6 @@
 """Stage-3 ``--model-cost-config`` overlay wiring.
 
-Locks the surface in ``tolokaforge/cli/main.py``:
+Locks the surface in ``tolokaforge/dx/cli/main.py``:
 
 * ``--model-cost-config <path>`` calls
   :func:`pricing.reload_pricing` with the overlay path BEFORE the
@@ -24,9 +24,9 @@ import pytest
 import yaml
 from click.testing import CliRunner
 
-import tolokaforge.cli.main as cli_main
-from tolokaforge.cli.main import cli
+import tolokaforge.dx.cli.main as cli_main
 from tolokaforge.core import pricing
+from tolokaforge.dx.cli.main import cli
 
 pytestmark = pytest.mark.unit
 

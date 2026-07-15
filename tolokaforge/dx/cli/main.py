@@ -12,20 +12,6 @@ import click
 import yaml
 from rich.console import Console
 
-from tolokaforge.cli._display import (
-    DisplayMode,
-    _textual_available,
-    console,
-    emit_artifact_path,
-    select_display_mode,
-    silence_console,
-)
-from tolokaforge.cli._dry_run_render import render_dry_run
-from tolokaforge.cli._run_banner import (
-    print_run_end_banner,
-    print_run_start_banner,
-)
-from tolokaforge.cli._run_display import LiveRunDisplay
 from tolokaforge.core import pricing
 from tolokaforge.core.budgets import LimitHitMarker, make_budget
 from tolokaforge.core.dry_run import load_tasks_for_dry_run, materialize_dry_run_sample
@@ -48,6 +34,20 @@ from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps, resolv
 from tolokaforge.core.project_loader import load_effective_run_config
 from tolokaforge.core.resume import RunStateManager, resolve_resume_run_directory
 from tolokaforge.core.run_queue import create_run_queue
+from tolokaforge.dx._display import (
+    DisplayMode,
+    _textual_available,
+    console,
+    emit_artifact_path,
+    select_display_mode,
+    silence_console,
+)
+from tolokaforge.dx.banners import (
+    print_run_end_banner,
+    print_run_start_banner,
+)
+from tolokaforge.dx.dry_run_render import render_dry_run
+from tolokaforge.dx.live_panel import LiveRunDisplay
 from tolokaforge.secrets import init_default, install_global_redactor
 
 # Initialize SecretManager singleton — reads .env via DotEnvProvider, then
@@ -120,7 +120,7 @@ def _resolve_display_mode(
         raise click.UsageError(str(exc)) from exc
 
     if mode is DisplayMode.FULL and not _textual_available():
-        logging.getLogger("tolokaforge.cli").warning(
+        logging.getLogger("tolokaforge.dx").warning(
             "textual is not installed; falling back from --display=full to --display=rich"
         )
         return DisplayMode.RICH
@@ -273,22 +273,22 @@ def _bump_console_debug_if_allowed(ctx: click.Context) -> None:
 
 
 # Register docker subcommand group (lazy import to avoid docker dep at registration)
-from tolokaforge.cli.docker_commands import docker  # noqa: E402
+from tolokaforge.dx.cli.docker import docker  # noqa: E402
 
 cli.add_command(docker)
 
 # Register adapter subcommand group
-from tolokaforge.cli.adapter_commands import adapter  # noqa: E402
+from tolokaforge.dx.cli.adapter import adapter  # noqa: E402
 
 cli.add_command(adapter)
 
 # Register config subcommand group
-from tolokaforge.cli.config_commands import config  # noqa: E402
+from tolokaforge.dx.cli.config import config  # noqa: E402
 
 cli.add_command(config)
 
 # Register assets subcommand group (`tolokaforge assets stamp` verb).
-from tolokaforge.cli.assets_commands import assets  # noqa: E402
+from tolokaforge.dx.cli.assets import assets  # noqa: E402
 
 cli.add_command(assets)
 

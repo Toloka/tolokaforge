@@ -16,7 +16,7 @@ import pytest
 from click.testing import CliRunner
 
 from tolokaforge.adapters._task_loader import validate_grading_yaml
-from tolokaforge.cli.main import cli
+from tolokaforge.dx.cli.main import cli
 
 pytestmark = pytest.mark.unit
 

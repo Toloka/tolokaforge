@@ -35,8 +35,8 @@ import pytest
 from rich.console import Console
 from rich.terminal_theme import DEFAULT_TERMINAL_THEME
 
-from tolokaforge.cli._display import THEME
-from tolokaforge.cli._run_banner import (
+from tolokaforge.dx._display import THEME
+from tolokaforge.dx.banners import (
     print_run_end_banner,
     print_run_start_banner,
 )

@@ -1,6 +1,6 @@
 # 0011. Seam-definition and data-declaration conventions for new components
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-07-01
 - **Deciders:** @CiroGamboa
 - **Supersedes:** —
@@ -126,6 +126,10 @@ Some components in the codebase pre-date this ADR and did not follow Pattern A. 
 - **`TrialRunner` → `AgentLoop` Protocol** (not yet filed). File when a second loop shape (deep-research, agent-debate, multi-agent) becomes realistic.
 - **User simulator → Protocol** (not yet filed). File when a second simulator shape (scripted, adversarial replay) becomes realistic.
 
+### Post-ADR components that follow Pattern A by construction
+
+- **`RunDisplayEvents` — front-end seam.** Established in milestone 11 (B1) and recorded in [ADR-0019](0019-front-end-plugin-namespace.md). The first post-ADR component that follows Pattern A by construction: Protocol in `tolokaforge/core/run_display_events.py`, deterministic `_NullRunDisplayEvents` fixture wired as the orchestrator's default sink, reference terminal front-end in `tolokaforge.dx.live_panel.LiveRunDisplay`, canonical contract test at `tests/canonical/test_cli_display_invariants.py`.
+
 ## Consequences
 
 ### Positive
@@ -146,7 +150,6 @@ Some components in the codebase pre-date this ADR and did not follow Pattern A. 
 - **Judge Protocol lift** — the first real test of Pattern A generalisability. Tracked in [GH #131](https://github.com/Toloka/tolokaforge/issues/131).
 - **`TrialRunner` / `UserSimulator` lifts** — file when a second variant becomes realistic.
 - **CI / lint enforcement** — deferred. Introduce only if drift returns after this ADR lands and future components still ignore the patterns.
-- **Flip this ADR's status to `Accepted`** once the first post-ADR component follows the pattern by construction (rather than being retrofit into it).
 
 ## Rejected alternatives
 

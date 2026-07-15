@@ -191,7 +191,7 @@ uv run pytest -v 2>&1 | tee /tmp/test-output.log
 
 | Directory | Purpose |
 |---|---|
-| `tolokaforge/cli` | Command entrypoints |
+| `tolokaforge/dx` | Terminal front-end (reference implementation of the `RunDisplayEvents` seam — see ADR-0019). Rich panels, banners, dry-run rendering, and the Click command tree under `tolokaforge/dx/cli/`. Optional dep, installed via `pip install 'tolokaforge[dx]'`. |
 | `tolokaforge/core` | Orchestration, grading, metrics, models, search |
 | `tolokaforge/core/llm` | LLM abstractions — reasoning, schema, cache, usage, client |
 | `tolokaforge/runner` | gRPC runner service (DB client, tool factory, LLM judge) |
@@ -203,7 +203,7 @@ uv run pytest -v 2>&1 | tee /tmp/test-output.log
 
 ### Key Subsystems
 
-- **CLI** (`tolokaforge/cli`): Entry point for all commands — `run`, `validate`, `docker`, etc.
+- **Terminal front-end** (`tolokaforge/dx`): Reference implementation of the `RunDisplayEvents` seam (ADR-0019). Owns the Click command tree (`tolokaforge/dx/cli/`) for `run`, `validate`, `docker`, etc., plus Rich panels, banners, and the dry-run renderer. Rich lives in the `[dx]` extras — headless-server installs do not pull it in.
 - **Core** (`tolokaforge/core`): Orchestration engine, grading pipeline, metrics collection, model interfaces, model capability policies, and task search.
 - **Runner** (`tolokaforge/runner`): gRPC service managing benchmark execution, database clients, tool instantiation, and LLM-as-judge evaluation (when `grading.yaml` configures `llm_judge`).
 - **Adapters** (`tolokaforge/adapters`): Translate between task formats — native (built-in), tau-bench, and tlk_mcp_core.

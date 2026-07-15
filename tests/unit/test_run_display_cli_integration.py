@@ -27,11 +27,11 @@ import pytest
 import yaml
 from click.testing import CliRunner
 
-import tolokaforge.cli.main as cli_main
-from tolokaforge.cli._display import DisplayMode
-from tolokaforge.cli.main import cli
+import tolokaforge.dx.cli.main as cli_main
 from tolokaforge.core.logging import _TOLOKAFORGE_ROOT_HANDLER_SENTINEL
 from tolokaforge.core.run_display_events import _NULL_EVENTS
+from tolokaforge.dx._display import DisplayMode
+from tolokaforge.dx.cli.main import cli
 
 pytestmark = pytest.mark.unit
 
@@ -42,7 +42,7 @@ def _restore_console_quiet():
     :func:`silence_console`; restore it so subsequent tests in the shared
     session see the same starting state (mirrors the fixture in
     ``test_cli_display_flag`` — B2 mutates module-level state)."""
-    from tolokaforge.cli._display import console as _console
+    from tolokaforge.dx._display import console as _console
 
     saved = _console.quiet
     yield

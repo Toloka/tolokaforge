@@ -1,8 +1,8 @@
-"""Unit tests locking :mod:`tolokaforge.cli._run_banner` and the shared
-:func:`format_duration` helper on :mod:`tolokaforge.cli._display`.
+"""Unit tests locking :mod:`tolokaforge.dx.banners` and the shared
+:func:`format_duration` helper on :mod:`tolokaforge.dx._display`.
 
 Every assertion here maps to a documented contract line in
-``tolokaforge/cli/_run_banner.py`` or in the run-banner plan under
+``tolokaforge/dx/banners.py`` or in the run-banner plan under
 ``docs/plans/``.
 """
 
@@ -14,8 +14,8 @@ from pathlib import Path
 import pytest
 from rich.console import Console
 
-from tolokaforge.cli._display import THEME, format_duration
-from tolokaforge.cli._run_banner import (
+from tolokaforge.dx._display import THEME, format_duration
+from tolokaforge.dx.banners import (
     print_run_end_banner,
     print_run_start_banner,
 )

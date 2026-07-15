@@ -6,8 +6,8 @@ import pytest
 import yaml
 from click.testing import CliRunner
 
-from tolokaforge.cli.main import cli
 from tolokaforge.core.run_queue import create_run_queue
+from tolokaforge.dx.cli.main import cli
 
 pytestmark = pytest.mark.unit
 
@@ -82,7 +82,7 @@ def test_status_reads_postgres_queue_from_config_when_sqlite_missing(
         called["postgres_dsn"] = str(postgres_dsn)
         return _FakeQueue()
 
-    monkeypatch.setattr("tolokaforge.cli.main.create_run_queue", _fake_create_run_queue)
+    monkeypatch.setattr("tolokaforge.dx.cli.main.create_run_queue", _fake_create_run_queue)
 
     runner = CliRunner()
     result = runner.invoke(

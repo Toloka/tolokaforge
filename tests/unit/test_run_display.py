@@ -2,7 +2,7 @@
 
 Every assertion here maps to a documented decision (D1–D11) in the plan
 ``docs/plans/2026-07-15-issue-285-b1-rich-live-progress-panel.md`` or to
-the contract laid out in ``tolokaforge/cli/_run_display.py``.
+the contract laid out in ``tolokaforge/dx/live_panel.py``.
 """
 
 from __future__ import annotations
@@ -17,18 +17,18 @@ from pathlib import Path
 
 import pytest
 
-from tolokaforge.cli._display import DisplayMode
-from tolokaforge.cli._run_display import (
-    LiveRunDisplay,
-    _BottomBarStats,
-    _format_bottom_bar,
-    _NoopDisplayCtx,
-)
 from tolokaforge.core.logging import _TOLOKAFORGE_ROOT_HANDLER_SENTINEL
 from tolokaforge.core.run_display_events import (
     _NULL_EVENTS,
     RunDisplayEvents,
     _NullRunDisplayEvents,
+)
+from tolokaforge.dx._display import DisplayMode
+from tolokaforge.dx.live_panel import (
+    LiveRunDisplay,
+    _BottomBarStats,
+    _format_bottom_bar,
+    _NoopDisplayCtx,
 )
 
 pytestmark = pytest.mark.unit
@@ -261,7 +261,7 @@ def _install_incrementing_now(
     def fake_now() -> datetime:
         return base + timedelta(microseconds=next(counter))
 
-    monkeypatch.setattr("tolokaforge.cli._run_display._now", fake_now)
+    monkeypatch.setattr("tolokaforge.dx.live_panel._now", fake_now)
 
 
 def test_focus_does_not_alternate_under_interleaved_progress(

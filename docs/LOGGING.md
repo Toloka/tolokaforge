@@ -167,7 +167,7 @@ For a machine consumer, prefer `--log-format=json` — each line is a single JSO
 
 Every root-formatter line has the shape `HH:MM:SS.mmm | LEVEL | k=v k=v | message` with alphabetically sorted scope pairs and millisecond-resolution local time. The three modes selected by `--log-format` differ only in the wrapper:
 
-- **`pretty`** (default on a TTY) — the whole line is wrapped in an ANSI level colour: `INFO`=cyan, `WARNING`=yellow, `ERROR`=bold red, `DEBUG`=dim. Colours match `tolokaforge.cli._display.THEME`.
+- **`pretty`** (default on a TTY) — the whole line is wrapped in an ANSI level colour: `INFO`=cyan, `WARNING`=yellow, `ERROR`=bold red, `DEBUG`=dim. Colours match `tolokaforge.dx._display.THEME`.
 - **`plain`** (default on a pipe) — identical layout, no ANSI escape codes. Safe for `grep -F`.
 - **`json`** — one JSON object per line, keys `{"ts", "level", "logger", "message", "extra"}`.
 

@@ -39,9 +39,10 @@ dependencies = [
     # Configuration
     "pyyaml>=6.0.1",
     "python-dotenv>=1.0.0",
-    # CLI
+    # CLI — plain-text argument parsing. Rich and other terminal-UI deps
+    # live in [project.optional-dependencies].dx so headless-server
+    # installs don't pull them in.
     "click>=8.1.0",
-    "rich>=13.0.0",
     # JSON processing
     "jsonpath-ng>=1.6.0",
     # HTTP client
@@ -77,6 +78,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Terminal front-end (see ADR-0019). Users install with
+# `pip install 'tolokaforge[dx]'`. Library-only installs
+# (`pip install tolokaforge`) omit these — the `tolokaforge` console
+# script's shim (`tolokaforge._entry:main`) prints an install hint if
+# invoked without the extras present.
+dx = [
+    "rich>=13.0.0",
+]
 browser = [
     "playwright>=1.40.0",
     "pillow>=12.1.0",
@@ -100,7 +109,7 @@ adapters = [
     "tolokaforge[terminal_bench]",
 ]
 all = [
-    "tolokaforge[browser,server,rag,office,adapters]",
+    "tolokaforge[dx,browser,server,rag,office,adapters]",
 ]
 
 [project.urls]
@@ -110,7 +119,7 @@ Documentation = "https://github.com/Toloka/tolokaforge/tree/main/docs"
 Issues = "https://github.com/Toloka/tolokaforge/issues"
 
 [project.scripts]
-tolokaforge = "tolokaforge.cli.main:cli"
+tolokaforge = "tolokaforge._entry:main"
 
 [tool.hatch.build]
 exclude = [
@@ -331,6 +340,10 @@ dev = [
     "psycopg[binary]>=3.2.0",
     "tolokaforge-adapter-terminal-bench",
     "dev-mcp",
+    # Terminal front-end deps live in [project.optional-dependencies].dx.
+    # Dev tooling exercises the terminal front-end tests, so pull them in
+    # here explicitly rather than relying on `[dx]` being installed.
+    "rich>=13.0.0",
 ]
 
 # =============================================================================

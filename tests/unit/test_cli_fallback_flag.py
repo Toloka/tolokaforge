@@ -1,6 +1,6 @@
 """Stage-3 ``--fallback-models`` CLI flag parsing + wiring.
 
-Locks the surface in ``tolokaforge/cli/main.py``:
+Locks the surface in ``tolokaforge/dx/cli/main.py``:
 
 * :func:`_parse_fallback_models` produces the correct ordered
   ``list[ModelConfig]`` — ``<provider>/<name>`` splits on the first
@@ -19,10 +19,10 @@ import pytest
 import yaml
 from click.testing import CliRunner
 
-import tolokaforge.cli.main as cli_main
-from tolokaforge.cli.main import _parse_fallback_models, cli
+import tolokaforge.dx.cli.main as cli_main
 from tolokaforge.core.llm.fallback_client import FallbackLLMClient
 from tolokaforge.core.models import ModelConfig
+from tolokaforge.dx.cli.main import _parse_fallback_models, cli
 
 pytestmark = pytest.mark.unit
 

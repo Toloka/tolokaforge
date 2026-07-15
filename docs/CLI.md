@@ -2,18 +2,20 @@
 
 This document describes the tolokaforge CLI's shared building blocks. Per-command usage lives in `--help` output.
 
+The CLI is the reference implementation of the `RunDisplayEvents` seam (see [ADR-0019](architecture/adr/0019-front-end-plugin-namespace.md)); it ships under the `tolokaforge.dx` namespace and installs via `pip install 'tolokaforge[dx]'`.
+
 ## Display layer
 
-Every module under `tolokaforge/cli/` renders human-facing output through `tolokaforge.cli._display`. The module owns four public names — `console`, `THEME`, `make_progress`, and `make_live` — and no CLI file may construct its own `rich.Console`. A canonical test (`tests/canonical/test_cli_display_invariants.py`) fails CI if a new module slips in an ad-hoc `Console(...)`.
+Every module under `tolokaforge/dx/` renders human-facing output through `tolokaforge.dx._display`. The module owns four public names — `console`, `THEME`, `make_progress`, and `make_live` — and no CLI file may construct its own `rich.Console`. A canonical test (`tests/canonical/test_cli_display_invariants.py`) fails CI if a new module slips in an ad-hoc `Console(...)`.
 
 ### Why a shared surface
 
-The CLI splits into five modules (`main.py`, `adapter_commands.py`, `assets_commands.py`, `config_commands.py`, `docker_commands.py`). Routing them all through one `Console` guarantees a single theme, a single stream posture (stderr, soft-wrapped), and one place for the `--display` toggle to mutate progress and Live-panel plumbing (see [§ Display modes](#display-modes)).
+The Click command tree splits across `tolokaforge/dx/cli/main.py` plus per-verb modules `adapter.py`, `assets.py`, `config.py`, `docker.py`. Routing them all through one `Console` guarantees a single theme, a single stream posture (stderr, soft-wrapped), and one place for the `--display` toggle to mutate progress and Live-panel plumbing (see [§ Display modes](#display-modes)).
 
 ### `console`
 
 ```python
-from tolokaforge.cli._display import console
+from tolokaforge.dx._display import console
 
 console.print("[success]✓ done[/success]")
 ```
@@ -43,7 +45,7 @@ All styles use Rich standard names (no truecolor hex) so terminals without full-
 Factory returning a `rich.progress.Progress` bound to the shared console with the CLI's default column set: `SpinnerColumn`, description, `BarColumn`, `MofNCompleteColumn`, `TaskProgressColumn`, `TimeElapsedColumn`, `TimeRemainingColumn`.
 
 ```python
-from tolokaforge.cli._display import make_progress
+from tolokaforge.dx._display import make_progress
 
 with make_progress() as progress:
     task = progress.add_task("Grading trials", total=42)
@@ -60,7 +62,7 @@ Factory returning a `rich.live.Live` bound to the shared console. Use it when a 
 
 ```python
 from rich.text import Text
-from tolokaforge.cli._display import make_live
+from tolokaforge.dx._display import make_live
 
 with make_live(Text("Starting…")) as live:
     live.update(Text("Working…"))
@@ -73,7 +75,7 @@ Defaults: `refresh_per_second=4.0`, `transient=False`, `screen=False`, `vertical
 - **One-shot line** (banner, error, single result): `console.print(...)`.
 - **Iteration with a known total** (per-trial grading, batch uploads): `make_progress()`.
 - **Persistent status region that repaints in place** (multi-line dashboard, live cost tracker): `make_live()`.
-- **Run-scoped multi-region panel** (per-trial list + summary + status bar during `tolokaforge run`): `LiveRunDisplay` in `tolokaforge.cli._run_display`. Wraps `make_live` and consumes a `RunDisplayEvents` Protocol threaded through `OrchestratorDeps.events` — see [§ Display modes](#display-modes).
+- **Run-scoped multi-region panel** (per-trial list + summary + status bar during `tolokaforge run`): `LiveRunDisplay` in `tolokaforge.dx.live_panel`. Wraps `make_live` and consumes a `RunDisplayEvents` Protocol threaded through `OrchestratorDeps.events` — see [§ Display modes](#display-modes).
 
 Nested progress inside a Live region is supported by Rich — pass the same `console` (the default) and Rich cooperates automatically.
 
@@ -131,7 +133,7 @@ The root flag `--display={full,rich,plain,log,none}` and the equivalent env var 
 
 ### Live run panel (`--display=rich` during `tolokaforge run`)
 
-`tolokaforge run` under `--display=rich` renders inside a `rich.Live` region owned by `tolokaforge.cli._run_display.LiveRunDisplay`. The panel has three regions:
+`tolokaforge run` under `--display=rich` renders inside a `rich.Live` region owned by `tolokaforge.dx.live_panel.LiveRunDisplay`. The panel has three regions:
 
 - **Left pane — trial list.** One line per trial: `<glyph> task_id · trial_index` where `<glyph>` is `⏳` for running, `✓` for completed, `✗` for failed. Running trials always render; completed and failed trials scroll off in `last_update_ts` order once the window (default 20 rows) fills.
 - **Right pane — focused trial.** Structured summary of the trial that most recently transitioned state: `turn N · in Xk / out Y tok · $Z.ZZ · last: <event_kind>`. Focus follows lifecycle transitions only (`trial_started`, `trial_completed`, `trial_failed`, `judgment_scored`) — per-turn `trial_progress` events mutate counters but leave focus stable, so the pane does not alternate on high-frequency ticks.
@@ -169,10 +171,10 @@ Explicit flag beats env var; env var beats `CI`; `CI` beats isatty. An operator 
 
 Silencing applies to two knobs, both mutated by the group callback when the resolved mode is `none`:
 
-- `console.quiet = True` on the shared Rich console (`tolokaforge.cli._display.console`). Every `.print(...)` / `.rule(...)` / `.status(...)` short-circuits at buffer-check time — no bytes reach stderr.
+- `console.quiet = True` on the shared Rich console (`tolokaforge.dx._display.console`). Every `.print(...)` / `.rule(...)` / `.status(...)` short-circuits at buffer-check time — no bytes reach stderr.
 - `handler.level = logging.CRITICAL + 1` on the tolokaforge sentinel-tagged root log handler. Every stdlib log record and every `StructuredLogger` record drops at the handler before formatting.
 
-The single stdout write (`emit_artifact_path` in `tolokaforge.cli._display`) is untouched — `--display=none` silences stderr but preserves the `RUN_DIR=$(tolokaforge run --display=none --config …)` shell idiom.
+The single stdout write (`emit_artifact_path` in `tolokaforge.dx._display`) is untouched — `--display=none` silences stderr but preserves the `RUN_DIR=$(tolokaforge run --display=none --config …)` shell idiom.
 
 ### Failure paths under `--display=none`
 
@@ -500,6 +502,6 @@ tolokaforge status --run-dir "$RUN_DIR"
 
 Adding `2>/dev/null` (or `2>run.log`) drops progress without breaking the capture — the artifact-path emission is independent of `--verbose` / `--quiet` / `--log-format`, which shape stderr only.
 
-The single stdout write goes through `emit_artifact_path` in `tolokaforge.cli._display`; a canonical test (`tests/canonical/test_cli_display_invariants.py::test_no_bare_stdout_write_in_cli`) forbids any other `print(` or `sys.stdout.write(` in `tolokaforge/cli/**/*.py`.
+The single stdout write goes through `emit_artifact_path` in `tolokaforge.dx._display`; a canonical test (`tests/canonical/test_cli_display_invariants.py::test_no_bare_stdout_write_in_cli`) forbids any other `print(` or `sys.stdout.write(` in `tolokaforge/dx/**/*.py`.
 
 `--display=none` silences the shared console and the tolokaforge log handler on success; the stdout artifact-path emission is unaffected — see [§ Display modes](#display-modes).

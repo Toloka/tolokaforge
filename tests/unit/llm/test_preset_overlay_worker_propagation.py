@@ -16,7 +16,6 @@ from pathlib import Path
 
 import pytest
 
-from tolokaforge.cli.main import _activate_presets_overlay
 from tolokaforge.core.engine_run_state import (
     read_engine_run_state,
     read_persisted_presets_file,
@@ -25,6 +24,7 @@ from tolokaforge.core.engine_run_state import (
 )
 from tolokaforge.core.llm.presets import get_overlay_path
 from tolokaforge.core.models import EngineConfig, RunConfig
+from tolokaforge.dx.cli.main import _activate_presets_overlay
 
 pytestmark = pytest.mark.unit
 

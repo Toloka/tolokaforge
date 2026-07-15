@@ -20,9 +20,8 @@ import pytest
 import yaml
 from click.testing import CliRunner
 
-import tolokaforge.cli.main as cli_main
 import tolokaforge.core.orchestrator as orchestrator_module
-from tolokaforge.cli.main import cli
+import tolokaforge.dx.cli.main as cli_main
 from tolokaforge.core.logging import (
     _TOLOKAFORGE_ROOT_HANDLER_SENTINEL,
     LogFormat,
@@ -34,6 +33,7 @@ from tolokaforge.core.models import (
     OrchestratorConfig,
     RunConfig,
 )
+from tolokaforge.dx.cli.main import cli
 
 pytestmark = pytest.mark.unit
 

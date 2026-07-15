@@ -1,7 +1,7 @@
 """Unit tests locking the shared CLI display layer contract.
 
 Every assertion here maps to a documented invariant in
-``tolokaforge/cli/_display.py`` — if a test fails, the surface changed.
+``tolokaforge/dx/_display.py`` — if a test fails, the surface changed.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from rich.progress import (
 from rich.style import Style
 from rich.text import Text
 
-from tolokaforge.cli._display import (
+from tolokaforge.dx._display import (
     THEME,
     DisplayMode,
     _textual_available,

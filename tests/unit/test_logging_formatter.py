@@ -166,8 +166,8 @@ def test_pretty_ansi_codes_match_display_theme():
     """
     from rich.console import Console
 
-    from tolokaforge.cli._display import THEME
     from tolokaforge.core.logging import _ANSI_RESET, _LEVEL_ANSI
+    from tolokaforge.dx._display import THEME
 
     console = Console(force_terminal=True, theme=THEME, color_system="truecolor")
     for level_name, theme_style in (

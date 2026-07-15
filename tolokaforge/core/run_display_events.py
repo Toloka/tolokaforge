@@ -1,12 +1,13 @@
 """Per-trial lifecycle event Protocol emitted by the runner into a display.
 
-Lives in ``tolokaforge.core`` (not ``tolokaforge.cli``) so the orchestrator,
-conductor, and trial runner import the Protocol without dragging the CLI
-+ Rich dependency graph into engine-side code paths (worker container,
-gRPC runner, cloud-runtime trial-plane).
+Lives in ``tolokaforge.core`` (not ``tolokaforge.dx``) so the orchestrator,
+conductor, and trial runner import the Protocol without dragging the
+terminal front-end + Rich dependency graph into engine-side code paths
+(worker container, gRPC runner, cloud-runtime trial-plane).
 
-The concrete Rich-bound consumer is :class:`tolokaforge.cli._run_display.LiveRunDisplay`.
-The Protocol has a no-op default (:data:`_NULL_EVENTS`), so callers that
+The reference Rich-bound consumer is :class:`tolokaforge.dx.live_panel.LiveRunDisplay`;
+future front-ends (see ADR-0019) implement the same Protocol. The
+Protocol has a no-op default (:data:`_NULL_EVENTS`), so callers that
 never build a display can still thread ``events`` through without
 conditional branches.
 """

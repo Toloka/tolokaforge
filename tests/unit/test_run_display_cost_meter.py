@@ -1,6 +1,6 @@
 """Amber@80 % / red@100 % cost-meter styling on :class:`LiveRunDisplay`.
 
-Locks the Stage-3 contract in ``tolokaforge/cli/_run_display.py``:
+Locks the Stage-3 contract in ``tolokaforge/dx/live_panel.py``:
 
 * :class:`LiveRunDisplay(*, cost_budget_usd=None)` — additive kwarg,
   default ``None`` (existing callers unaffected).
@@ -20,8 +20,8 @@ from __future__ import annotations
 import pytest
 from rich.console import Console
 
-from tolokaforge.cli._display import THEME
-from tolokaforge.cli._run_display import (
+from tolokaforge.dx._display import THEME
+from tolokaforge.dx.live_panel import (
     LiveRunDisplay,
     _BottomBarStats,
     _cost_bar_style,
@@ -196,14 +196,14 @@ class TestLiveRunDisplayCostMeter:
         assert "[error]" not in node.plain
 
     def test_for_mode_threads_cost_budget_through(self) -> None:
-        from tolokaforge.cli._display import DisplayMode
+        from tolokaforge.dx._display import DisplayMode
 
         with LiveRunDisplay.for_mode(DisplayMode.RICH, cost_budget_usd=2.5) as display:
             assert isinstance(display, LiveRunDisplay)
             assert display._cost_budget_usd == 2.5
 
     def test_for_mode_default_leaves_budget_none(self) -> None:
-        from tolokaforge.cli._display import DisplayMode
+        from tolokaforge.dx._display import DisplayMode
 
         with LiveRunDisplay.for_mode(DisplayMode.RICH) as display:
             assert isinstance(display, LiveRunDisplay)

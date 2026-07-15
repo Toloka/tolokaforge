@@ -90,7 +90,7 @@ class TestComputeWorkersAlias:
 
     def test_cli_workers_write_to_compute_no_warning(self) -> None:
         # The `--workers` CLI flag writes to canonical `compute.workers`
-        # (see tolokaforge.cli.main:run). Pin that writing there does
+        # (see tolokaforge.dx.cli.main:run). Pin that writing there does
         # NOT fire the dual-home DeprecationWarning — the alias-lift
         # only warns when `orchestrator.workers` is set. A regression
         # here would silently ship the warning on every CLI-driven run.

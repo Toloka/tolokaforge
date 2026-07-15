@@ -1,7 +1,7 @@
 """Rich ``Live`` progress panel for ``tolokaforge run`` under ``--display=rich``.
 
 Under :attr:`DisplayMode.RICH` (and today :attr:`DisplayMode.FULL`, which
-:mod:`tolokaforge.cli._display` collapses to ``RICH`` at the callback
+:mod:`tolokaforge.dx._display` collapses to ``RICH`` at the callback
 boundary), :class:`LiveRunDisplay` renders a three-region panel: left-pane
 trial list, right-pane structured summary of the focused trial (turn count
 / tokens / cost / last-event kind), bottom status bar with cost / tokens
@@ -33,14 +33,14 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.text import Text
 
-from tolokaforge.cli._display import DisplayMode, format_duration, make_live
 from tolokaforge.core.logging import _TOLOKAFORGE_ROOT_HANDLER_SENTINEL
 from tolokaforge.core.run_display_events import (
     _NULL_EVENTS,
     RunDisplayEvents,
 )
+from tolokaforge.dx._display import DisplayMode, format_duration, make_live
 
-_LOGGER = logging.getLogger("tolokaforge.cli.run_display")
+_LOGGER = logging.getLogger("tolokaforge.dx.live_panel")
 
 
 def _now() -> datetime:

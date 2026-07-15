@@ -17,7 +17,7 @@ from pathlib import Path
 
 import click
 
-from tolokaforge.cli._display import console
+from tolokaforge.dx._display import console
 
 _COMMENT_LINE_PATTERN = re.compile(r"(?:^|\s)#")
 """Match ``#`` at the start of a line OR preceded by whitespace.
