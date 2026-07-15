@@ -9,6 +9,8 @@ Public surface:
   ``success``, ``muted``, ``cost``, ``link``).
 - :data:`console` — shared ``rich.Console`` writing to stderr with soft wrap
   and :data:`THEME` installed.
+- :func:`emit_artifact_path` — the one sanctioned ``sys.stdout`` write in the
+  CLI; every human/progress/log line goes through :data:`console` (stderr).
 - :func:`make_progress` — factory for ``rich.progress.Progress`` bound to
   :data:`console` with the CLI's default column set.
 - :func:`make_live` — factory for ``rich.live.Live`` bound to :data:`console`.
@@ -16,7 +18,9 @@ Public surface:
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Sequence
+from pathlib import Path
 
 from rich.console import Console, RenderableType
 from rich.live import Live
@@ -47,6 +51,21 @@ THEME = Theme(
 
 _SHARED_CONSOLE = Console(stderr=True, soft_wrap=True, theme=THEME)
 console = _SHARED_CONSOLE
+
+
+def emit_artifact_path(path: Path | str) -> None:
+    """Write the resolved absolute path to ``sys.stdout`` with a trailing
+    newline, flushed.
+
+    This is the ONE stdout write the CLI is allowed. Every human, progress,
+    and log line goes through the shared :data:`console` (stderr) or
+    ``configure_root_logging`` (stderr). The whole emitted line is the
+    resolved absolute path — no prefix, no colour, no markup — so shell
+    idioms like ``RUN_DIR=$(tolokaforge run --config …)`` capture the
+    artifact cleanly. ``Path(..).resolve()`` canonicalises symlinks and
+    guarantees an absolute path regardless of caller cwd.
+    """
+    print(str(Path(path).resolve()), file=sys.stdout, flush=True)
 
 
 def _default_progress_columns() -> list[ProgressColumn]:
@@ -130,4 +149,4 @@ def make_live(
     )
 
 
-__all__ = ["THEME", "console", "make_live", "make_progress"]
+__all__ = ["THEME", "console", "emit_artifact_path", "make_live", "make_progress"]

@@ -10,7 +10,7 @@ import click
 import yaml
 from rich.console import Console
 
-from tolokaforge.cli._display import console
+from tolokaforge.cli._display import console, emit_artifact_path
 from tolokaforge.core.engine_run_state import read_persisted_presets_file
 from tolokaforge.core.llm.presets import (
     resolve_overlay_path,
@@ -334,7 +334,7 @@ def run(
         source="cli-flag" if runtime is not None else "config",
     )
 
-    console.print(f"[green]Output directory: {run_config.evaluation.output_dir}[/green]")
+    console.print(f"[green]Output base: {run_config.evaluation.output_dir}[/green]")
 
     if verbose:
         console.print("[yellow]Verbose mode enabled (DEBUG logging)[/yellow]")
@@ -360,7 +360,7 @@ def run(
 
     if not orchestrator.tasks:
         console.print("[red]No tasks found![/red]")
-        return
+        raise SystemExit(1)
 
     console.print(f"[green]Found {len(orchestrator.tasks)} tasks[/green]")
 
@@ -372,10 +372,11 @@ def run(
             f"[bold blue]Running {run_config.orchestrator.repeats} trials per task...[/bold blue]"
         )
 
-    orchestrator.run()
+    output_dir = orchestrator.run()
 
     console.print("[bold green]✓ Run complete![/bold green]")
-    console.print(f"Results saved to: {run_config.evaluation.output_dir}")
+    console.print(f"Results saved to: {output_dir}")
+    emit_artifact_path(output_dir)
 
 
 @cli.command(name="prepare")

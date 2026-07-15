@@ -7,6 +7,7 @@ Every assertion here maps to a documented invariant in
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 import pytest
 from rich.progress import (
@@ -21,7 +22,13 @@ from rich.progress import (
 from rich.style import Style
 from rich.text import Text
 
-from tolokaforge.cli._display import THEME, console, make_live, make_progress
+from tolokaforge.cli._display import (
+    THEME,
+    console,
+    emit_artifact_path,
+    make_live,
+    make_progress,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -144,3 +151,48 @@ def test_make_live_accepts_renderable() -> None:
     renderable = Text("hello")
     live = make_live(renderable)
     assert live.renderable is renderable
+
+
+class TestEmitArtifactPath:
+    """``emit_artifact_path`` is the ONE sanctioned stdout write in the
+    CLI — it emits a resolved absolute path with a trailing newline,
+    flushed, and never colours or prefixes the line."""
+
+    def test_emit_artifact_path_prints_resolved_absolute(
+        self, tmp_path: Path, capfd: pytest.CaptureFixture[str]
+    ) -> None:
+        emit_artifact_path(tmp_path)
+        captured = capfd.readouterr()
+        assert captured.out == str(tmp_path.resolve()) + "\n"
+        assert captured.err == ""
+
+    def test_emit_artifact_path_accepts_string(
+        self, tmp_path: Path, capfd: pytest.CaptureFixture[str]
+    ) -> None:
+        emit_artifact_path(str(tmp_path))
+        captured = capfd.readouterr()
+        assert captured.out == str(tmp_path.resolve()) + "\n"
+
+    def test_emit_artifact_path_resolves_relative_input(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        emit_artifact_path("results/run")
+        captured = capfd.readouterr()
+        emitted = captured.out.strip()
+        assert Path(emitted).is_absolute()
+        assert Path(emitted) == (tmp_path / "results" / "run").resolve()
+
+    def test_emit_artifact_path_is_flushed(
+        self, tmp_path: Path, capfd: pytest.CaptureFixture[str]
+    ) -> None:
+        # ``capfd`` captures at the file-descriptor level, so anything not
+        # flushed to fd 1 by the time ``readouterr`` runs would come back
+        # empty. Reading the emitted path here proves the helper flushed.
+        emit_artifact_path(tmp_path)
+        captured = capfd.readouterr()
+        assert captured.out.endswith("\n")
+        assert captured.out.strip() == str(tmp_path.resolve())
