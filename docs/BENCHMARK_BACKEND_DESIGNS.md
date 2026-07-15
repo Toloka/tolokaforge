@@ -2,6 +2,11 @@
 
 This document captures backend/runtime design sketches per benchmark type.
 
+When a benchmark needs services beyond the engine's built-ins (a real
+database, a custom API, a bespoke topology) — the Case B/C path — a task
+can declare its own docker-compose stack via an `environment_manifest`.
+See the [multi-container tasks guide](guides/multi_container_tasks.md).
+
 ## Coding
 
 1. Runtime: sandboxed filesystem + shell tools.
