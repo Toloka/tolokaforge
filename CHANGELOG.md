@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Feat
+
+- **runtime**: `compute.log_tail` + `compute.capture_logs_on_success` config knobs and a per-service compose-log capture primitive for trial-failure diagnostics (#302)
+
 ## v0.8.4 (2026-07-15)
 
 ### Feat

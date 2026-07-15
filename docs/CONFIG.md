@@ -77,6 +77,8 @@ Notes:
 - `max_budget_usd` pauses scheduling new trials when cumulative spend reaches the budget.
 - `max_requests_per_second` applies a global limiter across worker threads.
 - `max_attempt_retries` retries transient failures (`rate_limit`, `api_error`, `timeout`) before marking a trial failed.
+- `compute.log_tail` (default `500`, must be `>= 1`) bounds the `docker compose logs --tail` line count captured per service when a multi-service trial fails on the per-trial backend.
+- `compute.capture_logs_on_success` (default `false`) is a debug escape hatch: when `true`, per-service logs are captured for successful trials too, not only failures.
 - `queue_backend: postgres` enables distributed queue/state using Postgres; set `queue_postgres_dsn`.
 - If `evaluation.task_packs` is empty, `tasks_glob` is resolved relative to the working directory.
 - If `evaluation.task_packs` is set, relative `tasks_glob` patterns are resolved under each task-pack root and merged.
