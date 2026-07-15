@@ -241,17 +241,18 @@ class TestProjectConfigAssets:
 
 class TestTaskConfigMinimal:
     def test_task_id_plus_description_is_enough(self) -> None:
-        t = TaskConfig(
-            task_id="x",
-            description="y",
-            initial_state=InitialStateConfig(),
-            tools=ToolsConfig(),
-            user_simulator=UserSimulatorConfig(),
-            grading="grading.yaml",
-        )
+        t = TaskConfig(task_id="x", description="y")
         assert t.task_id == "x"
         assert t.name is None
         assert t.category is None
+        # The four relaxed fields default to model instances (not None) so the
+        # unguarded live consumers in conductor.py / native.py keep working.
+        assert isinstance(t.initial_state, InitialStateConfig)
+        assert isinstance(t.tools, ToolsConfig)
+        assert isinstance(t.user_simulator, UserSimulatorConfig)
+        assert t.user_simulator.mode == "llm"
+        assert t.user_simulator.persona == "cooperative"
+        assert t.grading is None
 
     def test_name_still_set_when_provided(self) -> None:
         t = TaskConfig(
@@ -266,6 +267,23 @@ class TestTaskConfigMinimal:
         )
         assert t.name == "Nice Name"
         assert t.category == "cat"
+
+
+class TestGradingNoneGuard:
+    def test_get_grading_config_fails_loud_when_grading_none(self, tmp_path: Path) -> None:
+        # A minimal task with no `grading:` and no sibling grading.yaml loads
+        # with grading=None; get_grading_config must fail loud naming the task
+        # rather than let `task_dir / None` raise a bare TypeError.
+        from tolokaforge.adapters.native import NativeAdapter
+
+        task_dir = tmp_path / "tasks" / "minimal"
+        task_dir.mkdir(parents=True)
+        (task_dir / "task.yaml").write_text("task_id: minimal\ndescription: does nothing\n")
+
+        adapter = NativeAdapter({"base_dir": str(tmp_path), "tasks_glob": "tasks/**/task.yaml"})
+        assert adapter.get_task("minimal").grading is None
+        with pytest.raises(ValueError, match="minimal"):
+            adapter.get_grading_config("minimal")
 
 
 # ── SecurityContext type widening ───────────────────────────────
