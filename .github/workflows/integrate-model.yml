@@ -278,7 +278,9 @@ jobs:
             tasks_glob: "**/task.yaml"
             output_dir: "observation/wire_probes"
           YAML
-          uv run tolokaforge run --config observation/candidate_run.yaml --verbose || true
+          # INFO-level (no --verbose): drops the DEBUG per-turn request/response spam for a readable
+          # observe log; trial results come from the output files, not the log verbosity.
+          uv run tolokaforge run --config observation/candidate_run.yaml || true
 
       - name: Assemble handoff manifest
         env:

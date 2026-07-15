@@ -169,7 +169,8 @@ def run_wire_task(
     import yaml
 
     cfg_path.write_text(yaml.safe_dump(cfg, sort_keys=False))
-    subprocess.run([*RUN_CMD, "run", "--config", str(cfg_path), "--verbose"], check=False)
+    # No --verbose: INFO-level keeps the reprobe log readable (results come from findings.json).
+    subprocess.run([*RUN_CMD, "run", "--config", str(cfg_path)], check=False)
 
 
 def run(
