@@ -315,6 +315,12 @@ class NativeAdapter(BaseAdapter):
         task = self.get_task(task_id)
         task_dir = self.get_task_dir(task_id)
 
+        if task.grading is None:
+            raise ValueError(
+                f"task {task_id!r} has no grading configured "
+                "(no `grading:` field and no sibling grading.yaml)"
+            )
+
         grading_path = task_dir / task.grading
         if grading_path.exists():
             with open(grading_path) as f:

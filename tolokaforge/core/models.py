@@ -1171,9 +1171,9 @@ class TaskConfig(BaseModel):
     adapter_type: str = "native"  # Adapter runtime type (native, tlk_mcp_core, tau, …)
     max_turns: int | None = None  # Optional per-task turn cap override
     initial_user_message: str | None = None  # If provided, sent directly as first user message
-    initial_state: InitialStateConfig
-    tools: ToolsConfig
-    user_simulator: UserSimulatorConfig
+    initial_state: InitialStateConfig = Field(default_factory=InitialStateConfig)
+    tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    user_simulator: UserSimulatorConfig = Field(default_factory=UserSimulatorConfig)
     actors: dict[str, ActorSpec] | None = None
     """Task-level actor overrides. Reserved at the parse layer; runtime
     binding lands with the canonical rename. Reserved actor names
@@ -1183,7 +1183,7 @@ class TaskConfig(BaseModel):
     policies: dict[str, Any] = Field(
         default_factory=dict
     )  # Can contain guidance list or agent_system_prompt string
-    grading: str  # Path to grading.yaml
+    grading: str | None = None  # Path to grading.yaml; sibling grading.yaml auto-picked when unset
     system_prompt: str | None = None  # Path to system prompt file (e.g., wiki.md)
     adapter_settings: dict[str, Any] | None = None  # Opaque dict parsed by each adapter type
 

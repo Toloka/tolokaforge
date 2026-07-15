@@ -60,6 +60,25 @@ user_simulator:
 grading: "grading.yaml"
 ```
 
+### Minimal task
+
+The only required fields are `task_id` and `description`. Everything above is
+optional and defaults to a sane value:
+
+| Field | Default when omitted |
+| --- | --- |
+| `initial_state` | empty state (no JSON DB, filesystem, mock-web, or RAG) |
+| `tools` | no tools enabled for agent or user |
+| `user_simulator` | cooperative LLM user (`mode: llm`, `persona: cooperative`) |
+| `grading` | a `grading.yaml` sitting next to `task.yaml` is picked up automatically; if there is none, the task has no grading configured |
+
+So a task that inherits everything from its Project needs only:
+
+```yaml
+task_id: "api_endpoint_add"
+description: "Add a POST /orders endpoint backed by the orders table."
+```
+
 ## Initial State
 
 - `json_db`: JSON file loaded into the JSON DB service. Use this for any task state that needs to be verified by grading.

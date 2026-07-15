@@ -163,6 +163,15 @@ def load_task_yaml(
         base = deep_merge(base, project_task_defaults)
     task_data = deep_merge(base, task_data)
 
+    # Auto-pick a sibling ``grading.yaml`` when no layer set ``grading``. An
+    # explicit ``grading:`` from any layer always wins. The absolute path is
+    # layout-independent and survives ``task_dir / task.grading`` joins
+    # downstream unchanged, so it needs no ``_PATH_FIELD_REWRITERS`` entry.
+    if not task_data.get("grading"):
+        sibling_grading = task_path.parent / "grading.yaml"
+        if sibling_grading.exists():
+            task_data["grading"] = str(sibling_grading.resolve())
+
     # Resolve environment_manifest.compose_file to an absolute path
     # against the task root so ``EnvironmentManifest``'s file-existence
     # validator can locate the file regardless of the CWD at load time.

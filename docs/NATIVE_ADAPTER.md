@@ -51,7 +51,7 @@ tool registry.
 ```
 tasks/<category>/<task_id>/
 ├── task.yaml                    # required — task config
-├── grading.yaml                 # required — grading config
+├── grading.yaml                 # optional — grading config; auto-picked up when present
 ├── system_prompt.md             # optional — agent system prompt / wiki
 ├── initial_state.json           # optional — seed data for JSON DB
 ├── mcp_server.py                # required if agent uses tools
