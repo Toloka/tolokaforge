@@ -29,10 +29,13 @@ flowchart LR
 | Three of the four defaults are model instances (`Field(default_factory=…)`), not `None`. | The live trial path (conductor + native adapter) has ~15 unguarded derefs of `task.user_simulator.mode`, `task.tools.agent`, `task.initial_state.json_db`. Model-instance defaults keep every consumer working with zero consumer changes — cheaper than a guard sweep, and the default `UserSimulatorConfig()` is already the cooperative LLM user the Project contract asks for. |
 | `grading` is `str \| None` (path, not model) with a fail-loud `ValueError` guard on `NativeAdapter.get_grading_config`. | `grading` is a path to a sibling file, not a nested config — the model shape doesn't fit. A dereferenced `None` would `TypeError` inside `task_dir / None`; the guard converts that into a clear "task X has no grading configured" error, matching Core Rule 1 (fail-loud on real errors). |
 | Sibling `grading.yaml` next to `task.yaml` is auto-picked; explicit `grading:` from any merge layer wins. | Matches the pack convention — every pack task ships its own `grading.yaml` next to `task.yaml`. Explicit-wins preserves per-task overrides. Absolute-path materialisation (via `.resolve()`) survives all downstream `task_dir / task.grading` joins layout-independently. |
+| Delete `SharedStackRuntimeBackend.reset_services_for_next_trial` rather than wire it in. | The method has no run-loop caller and cannot be reached from the CLI (any `reset` service routes to `PerTrialRuntimeBackend`; forced-shared override is refused by the isolation-compat gate). Its four seed-kind semantics are incoherent under a shared stack — sql_dump requires idempotent seeds, filesystem_dir is a partial/leaky wipe, redis_dump implies a container restart that blurs "long-lived shared", bare is a genuine no-op. No shipped example asks for it. ADR-0018's own guidance is defer-and-re-add-cleanly-when-real. |
+| Drop the four `reset_recipes:*` entries from `SharedStackRuntimeBackend.advertised_capabilities`. | Direct consequence of the deletion — a false capability claim (Core Rule 1). `PerTrialRuntimeBackend` still advertises them; `CAPABILITY_REGISTRY` vocabulary unchanged. Shared-selected runs that requested these were being admitted for a capability the backend could never deliver. |
 
 ## Concepts introduced
 
 - **Minimal task shape**: `task_id` + `description` alone loads a valid `TaskConfig` with cooperative-LLM defaults and auto-picked sibling grading.
+- **Backend capability advertisements reflect what a backend can actually honour** — the shared backend no longer advertises reset-recipe capabilities it cannot deliver via the (now-deleted) unreachable seam.
 
 ## Industry precedents
 
