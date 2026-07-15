@@ -61,7 +61,7 @@ _LOCAL_DOCKER_BASELINE: tuple[CapabilitySpec, ...] = (
     ),
     CapabilitySpec(
         name="network_isolation:no_internet",
-        description="Backend enforces per-trial network isolation with no public egress.",
+        description="Backend attaches task application services to an internal network with no public egress; the runner keeps egress for grading.",
     ),
 )
 

@@ -91,14 +91,29 @@ Field reference:
 | `compose_file` | yes | — | Path to the docker-compose YAML. Relative paths resolve against `task.yaml`. This file is the sole source of truth for services, images, ports, volumes, healthchecks, and `depends_on`. |
 | `runner_service` | no | `"default"` | Which compose service is the tolokaforge runner. Must be a service declared in the compose file. |
 | `isolation` | no | `"per_trial"` | `"per_trial"` (fresh stack per trial) or `"shared_ok"` (all trials share the run's stack). See [multi-container guide](guides/multi_container_tasks.md#choosing-isolation) for how to pick. |
+| `network_policy` | no | `"no_internet"` | Public-egress posture for the task's application services. `no_internet` (default) attaches every task service to an `internal` docker network so no service can reach the public internet; `full_internet` runs the compose file unchanged. `limited_internet` is refused at materialisation (needs an egress-allowlist proxy — #323). See below. |
+
+`network_policy` enforcement (docker backends):
+
+- `no_internet` (default) — every task service joins an injected `internal:
+  true` network, so no application service reaches the public internet;
+  inter-service DNS still works. The `runner_service` additionally joins a
+  non-internal edge network so its published gRPC port stays host-reachable
+  and it retains egress for in-container LLM-as-judge grading. The contract
+  is scoped to application services — egress of tools the agent executes
+  *inside* the runner is not blocked (#325).
+- `full_internet` — the compose file runs verbatim; every service keeps
+  whatever egress its networks allow.
+- `limited_internet` — refused before any container starts (raises
+  `NetworkPolicyError`). A per-host allowlist needs an egress-proxy sidecar,
+  tracked in #323; refusing is the only honest option since docker's
+  `internal` flag is binary. Declare `no_internet` or `full_internet`
+  explicitly.
 
 Fields declared on the model but **not yet enforced by the provisioner** —
 declaring them is accepted for forward-compatibility but has no runtime
 effect today:
 
-- `network_policy` — reserved. Default `no_internet` is documented but not
-  yet enforced. Compose-file `network_mode: host` is still rejected by the
-  manifest validator regardless.
 - `security_context_defaults` — reserved. No provisioner consumer yet.
 - `initial_state` (on the manifest itself, not the task-level
   `initial_state`) — reserved for per-service fixture copy operations. Use
