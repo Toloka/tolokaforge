@@ -6,7 +6,11 @@ Every assertion here maps to a documented invariant in
 
 from __future__ import annotations
 
+import importlib.machinery
+import io
+import os
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -24,13 +28,36 @@ from rich.text import Text
 
 from tolokaforge.cli._display import (
     THEME,
+    DisplayMode,
+    _textual_available,
     console,
     emit_artifact_path,
     make_live,
     make_progress,
+    select_display_mode,
+    silence_console,
 )
 
 pytestmark = pytest.mark.unit
+
+
+class _FakeStream(io.StringIO):
+    """StringIO with a controllable ``isatty()`` result."""
+
+    def __init__(self, *, is_tty: bool) -> None:
+        super().__init__()
+        self._is_tty = is_tty
+
+    def isatty(self) -> bool:  # noqa: D401 — simple accessor
+        return self._is_tty
+
+
+def _fake_tty() -> _FakeStream:
+    return _FakeStream(is_tty=True)
+
+
+def _fake_pipe() -> _FakeStream:
+    return _FakeStream(is_tty=False)
 
 
 def test_console_writes_to_stderr() -> None:
@@ -213,3 +240,122 @@ class TestEmitArtifactPath:
         monkeypatch.setattr(_sys, "stdout", _Spy())
         emit_artifact_path(tmp_path)
         assert "flush" in calls, f"emit_artifact_path did not call flush(); saw {calls}"
+
+
+class TestDisplayModeEnum:
+    def test_members_and_order(self) -> None:
+        assert list(DisplayMode.__members__) == ["FULL", "RICH", "PLAIN", "LOG", "NONE"]
+
+    def test_values_match_cli_literals(self) -> None:
+        assert DisplayMode.FULL.value == "full"
+        assert DisplayMode.RICH.value == "rich"
+        assert DisplayMode.PLAIN.value == "plain"
+        assert DisplayMode.LOG.value == "log"
+        assert DisplayMode.NONE.value == "none"
+
+    def test_is_str_enum(self) -> None:
+        # (str, Enum) lets click.Choice accept `.value` literals natively.
+        assert isinstance(DisplayMode.RICH, str)
+        assert DisplayMode.RICH == "rich"
+
+
+class TestSelectDisplayMode:
+    def test_explicit_wins_over_env_and_ci(self) -> None:
+        result = select_display_mode(
+            explicit="none",
+            env={"CI": "1", "TOLOKAFORGE_DISPLAY": "rich"},
+            stream=_fake_tty(),
+        )
+        assert result is DisplayMode.NONE
+
+    def test_explicit_accepts_display_mode_instance(self) -> None:
+        result = select_display_mode(explicit=DisplayMode.LOG, env={"CI": "1"})
+        assert result is DisplayMode.LOG
+
+    def test_env_var_wins_over_ci(self) -> None:
+        result = select_display_mode(
+            explicit=None,
+            env={"TOLOKAFORGE_DISPLAY": "log", "CI": "1"},
+            stream=_fake_tty(),
+        )
+        assert result is DisplayMode.LOG
+
+    @pytest.mark.parametrize("ci_value", ["1", "true", "yes", "on", "TRUE"])
+    def test_ci_truthy_yields_plain(self, ci_value: str) -> None:
+        result = select_display_mode(explicit=None, env={"CI": ci_value}, stream=_fake_tty())
+        assert result is DisplayMode.PLAIN
+
+    @pytest.mark.parametrize("ci_value", ["0", "false", "False", "FALSE", "no", "off", ""])
+    def test_ci_falsy_falls_through(self, ci_value: str) -> None:
+        # With CI falsy and a TTY stream, isatty branch selects RICH.
+        result = select_display_mode(explicit=None, env={"CI": ci_value}, stream=_fake_tty())
+        assert result is DisplayMode.RICH
+
+    def test_ci_zero_on_tty_resolves_rich(self) -> None:
+        # Explicit round-1 critic row: CI=0 is not truthy, falls through to isatty.
+        assert (
+            select_display_mode(explicit=None, env={"CI": "0"}, stream=_fake_tty())
+            is DisplayMode.RICH
+        )
+
+    def test_isatty_true_selects_rich(self) -> None:
+        assert select_display_mode(explicit=None, env={}, stream=_fake_tty()) is DisplayMode.RICH
+
+    def test_isatty_false_selects_plain(self) -> None:
+        assert select_display_mode(explicit=None, env={}, stream=_fake_pipe()) is DisplayMode.PLAIN
+
+    def test_env_var_no_flag_no_ci_no_tty_yields_plain(self) -> None:
+        assert select_display_mode(explicit=None, env={}, stream=_fake_pipe()) is DisplayMode.PLAIN
+
+    @pytest.mark.parametrize("mode", ["full", "rich", "plain", "log", "none"])
+    def test_env_var_selects_when_no_explicit(self, mode: str) -> None:
+        result = select_display_mode(
+            explicit=None, env={"TOLOKAFORGE_DISPLAY": mode}, stream=_fake_tty()
+        )
+        assert result is DisplayMode(mode)
+
+    def test_invalid_explicit_raises_valueerror(self) -> None:
+        with pytest.raises(ValueError, match="invalid --display value"):
+            select_display_mode(explicit="wombat", env={})
+
+    def test_invalid_env_raises_valueerror(self) -> None:
+        with pytest.raises(ValueError, match="invalid TOLOKAFORGE_DISPLAY"):
+            select_display_mode(explicit=None, env={"TOLOKAFORGE_DISPLAY": "wombat"})
+
+    def test_defaults_read_process_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # env=None → os.environ; CI=1 in the process env should yield PLAIN.
+        monkeypatch.setattr(os, "environ", {"CI": "1"})
+        assert select_display_mode() is DisplayMode.PLAIN
+
+
+class TestTextualAvailable:
+    def test_no_textual_returns_false(self) -> None:
+        # Textual is not a dependency today; find_spec returns None.
+        assert _textual_available() is False
+
+    def test_with_fake_textual_returns_true(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Install a fake `textual` module WITH a spec so find_spec resolves it.
+        fake = types.ModuleType("textual")
+        fake.__spec__ = importlib.machinery.ModuleSpec("textual", loader=None)
+        monkeypatch.setitem(sys.modules, "textual", fake)
+        assert _textual_available() is True
+
+
+class TestSilenceConsole:
+    def test_silence_console_sets_quiet(self) -> None:
+        original = console.quiet
+        try:
+            assert console.quiet is False, "baseline drift: console.quiet started True"
+            silence_console()
+            assert console.quiet is True
+        finally:
+            console.quiet = original
+
+    def test_silence_console_is_idempotent(self) -> None:
+        original = console.quiet
+        try:
+            silence_console()
+            silence_console()
+            assert console.quiet is True
+        finally:
+            console.quiet = original

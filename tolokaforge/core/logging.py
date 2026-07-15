@@ -206,6 +206,23 @@ def configure_root_logging(
     root.setLevel(level)
 
 
+def silence_root_logging() -> None:
+    """Raise the tolokaforge root log handler above ``CRITICAL``.
+
+    Locates the handler tagged with :data:`_TOLOKAFORGE_ROOT_HANDLER_SENTINEL`
+    and sets ``handler.level = logging.CRITICAL + 1`` so no log record
+    emits through it. Foreign handlers (e.g. pytest's ``caplog``) and any
+    embedder-installed handlers are left untouched — silencing is
+    handler-local by design.
+
+    No-op when :func:`configure_root_logging` has not been called yet
+    (the sentinel handler is absent). Idempotent.
+    """
+    for handler in logging.getLogger().handlers:
+        if getattr(handler, _TOLOKAFORGE_ROOT_HANDLER_SENTINEL, False):
+            handler.setLevel(logging.CRITICAL + 1)
+
+
 class StructuredLogger:
     """Thread-safe structured logger with in-memory list + YAML output.
 

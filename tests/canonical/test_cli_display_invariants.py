@@ -1,6 +1,6 @@
 """Canonical invariants for the shared CLI display layer.
 
-Four guards keep future contributors on the shared path:
+Guards keeping future contributors on the shared path:
 
 * ``test_no_ad_hoc_console_in_cli`` walks ``tolokaforge/cli/**/*.py`` and
   asserts that no module outside :mod:`tolokaforge.cli._display` constructs
@@ -15,6 +15,15 @@ Four guards keep future contributors on the shared path:
   keeping the stdout=artifact contract intact.
 * ``test_emit_artifact_path_is_exported`` pins ``emit_artifact_path`` on the
   ``_display`` public surface alongside ``console`` / ``THEME`` / ``make_*``.
+* ``test_display_mode_enum_surface`` pins the :class:`DisplayMode` member
+  order and CLI-literal values — a silent rename or reorder fails here
+  before it can drift the ``--display`` choice set or the operator
+  ``TOLOKAFORGE_DISPLAY`` protocol.
+* ``test_select_display_mode_is_exported`` and
+  ``test_silence_root_logging_is_exported`` pin the display-mode selector
+  and silencing helpers on their respective modules.
+* ``test_display_env_var_literal_is_TOLOKAFORGE_DISPLAY`` locks the
+  ``TOLOKAFORGE_DISPLAY`` operator env-var literal.
 """
 
 from __future__ import annotations
@@ -102,3 +111,67 @@ def test_emit_artifact_path_is_exported() -> None:
     from tolokaforge.cli._display import emit_artifact_path
 
     assert callable(emit_artifact_path), "`emit_artifact_path` not callable"
+
+
+def test_display_mode_enum_surface() -> None:
+    """``DisplayMode`` member order and CLI-literal values are locked.
+
+    Order matters — ``click.Choice([m.value for m in DisplayMode])`` renders
+    the modes in enum order in ``--help``, and consumers grep the operator
+    surface (`TOLOKAFORGE_DISPLAY=full/rich/plain/log/none`) against the
+    literals below. Reordering or renaming a member without a CHANGELOG
+    entry fails here.
+    """
+
+    from tolokaforge.cli._display import DisplayMode
+
+    assert list(DisplayMode.__members__) == ["FULL", "RICH", "PLAIN", "LOG", "NONE"]
+    assert DisplayMode.FULL.value == "full"
+    assert DisplayMode.RICH.value == "rich"
+    assert DisplayMode.PLAIN.value == "plain"
+    assert DisplayMode.LOG.value == "log"
+    assert DisplayMode.NONE.value == "none"
+
+
+def test_select_display_mode_is_exported() -> None:
+    """``select_display_mode`` and ``silence_console`` live in ``_display``.
+
+    B1 (Rich Live panel, #285) and C3 (Textual TUI, #289) both import
+    ``select_display_mode`` to derive a fresh mode from an explicit
+    override in library-mode entry points; ``silence_console`` is the
+    ``--display=none`` knob. Pinning both here fails a silent module move.
+    """
+
+    from tolokaforge.cli._display import select_display_mode, silence_console
+
+    assert callable(select_display_mode), "`select_display_mode` not callable"
+    assert callable(silence_console), "`silence_console` not callable"
+
+
+def test_silence_root_logging_is_exported() -> None:
+    """``silence_root_logging`` lives in :mod:`tolokaforge.core.logging`.
+
+    Paired with :func:`silence_console` under ``--display=none`` — one
+    silences the shared Rich console, the other raises the tolokaforge
+    root log handler above ``CRITICAL``. Pinning the module location here
+    fails a silent move to ``tolokaforge.cli`` or ``tolokaforge.cli._display``.
+    """
+
+    from tolokaforge.core.logging import silence_root_logging
+
+    assert callable(silence_root_logging), "`silence_root_logging` not callable"
+
+
+def test_display_env_var_literal_is_TOLOKAFORGE_DISPLAY() -> None:
+    """``TOLOKAFORGE_DISPLAY`` is the operator env-var literal.
+
+    A silent rename to ``TOLOKAFORGE_DISPLAY_MODE`` (or similar) would
+    break every wrapper script and CI pipeline that exports the current
+    name. The selector is called with an explicit ``env`` dict so the
+    assertion is deterministic and independent of the ambient shell.
+    """
+
+    from tolokaforge.cli._display import DisplayMode, select_display_mode
+
+    resolved = select_display_mode(explicit=None, env={"TOLOKAFORGE_DISPLAY": "log"})
+    assert resolved is DisplayMode.LOG

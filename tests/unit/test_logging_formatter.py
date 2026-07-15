@@ -16,6 +16,7 @@ from tolokaforge.core.logging import (
     LogFormat,
     StructuredFormatter,
     configure_root_logging,
+    silence_root_logging,
 )
 
 pytestmark = pytest.mark.unit
@@ -399,3 +400,78 @@ def test_redaction_scrubs_secret_before_formatter_renders(isolated_root):
         manager_module._default_manager = saved_manager
         log_filter_module._cached_manager = saved_cached_manager
         log_filter_module._cached_values = saved_cached_values
+
+
+# ---------------------------------------------------------------------------
+# silence_root_logging (B2 --display=none plumbing)
+# ---------------------------------------------------------------------------
+
+
+def test_silence_root_logging_bumps_handler_above_critical(isolated_root):
+    """After configure_root_logging + silence_root_logging, the tolokaforge
+    sentinel handler is at CRITICAL+1 — even CRITICAL records are filtered."""
+    configure_root_logging(log_format=LogFormat.PLAIN, stream=_FakeStream(is_tty=False))
+    silence_root_logging()
+
+    handler = next(
+        h
+        for h in logging.getLogger().handlers
+        if getattr(h, _TOLOKAFORGE_ROOT_HANDLER_SENTINEL, False)
+    )
+    assert handler.level == logging.CRITICAL + 1
+
+
+def test_silence_root_logging_actually_silences_records(isolated_root):
+    """End-to-end: with silencing applied, an emitted record produces no bytes
+    on the sentinel handler's stream. Locks the observable behaviour, not just
+    the handler.level attribute."""
+    stream = _FakeStream(is_tty=False)
+    configure_root_logging(log_format=LogFormat.PLAIN, stream=stream)
+    silence_root_logging()
+
+    logging.getLogger("tolokaforge.probe").critical("should be swallowed")
+
+    assert stream.getvalue() == ""
+
+
+def test_silence_root_logging_no_op_before_configure(isolated_root):
+    """Called before configure_root_logging: no sentinel handler installed,
+    so no exception raised and no side effects."""
+    # No configure call — bare root state (fixture cleared handlers).
+    silence_root_logging()  # Must not raise.
+
+    tolokaforge_handlers = [
+        h
+        for h in logging.getLogger().handlers
+        if getattr(h, _TOLOKAFORGE_ROOT_HANDLER_SENTINEL, False)
+    ]
+    assert tolokaforge_handlers == []
+
+
+def test_silence_root_logging_leaves_foreign_handlers_alone(isolated_root):
+    """A foreign handler (e.g. pytest caplog) is NOT bumped."""
+    foreign = logging.Handler()
+    foreign.setLevel(logging.INFO)
+    root = logging.getLogger()
+    root.addHandler(foreign)
+    try:
+        configure_root_logging(log_format=LogFormat.PLAIN, stream=_FakeStream(is_tty=False))
+        silence_root_logging()
+
+        assert foreign.level == logging.INFO
+    finally:
+        root.removeHandler(foreign)
+
+
+def test_silence_root_logging_is_idempotent(isolated_root):
+    configure_root_logging(log_format=LogFormat.PLAIN, stream=_FakeStream(is_tty=False))
+    silence_root_logging()
+    silence_root_logging()
+
+    handlers = [
+        h
+        for h in logging.getLogger().handlers
+        if getattr(h, _TOLOKAFORGE_ROOT_HANDLER_SENTINEL, False)
+    ]
+    assert len(handlers) == 1
+    assert handlers[0].level == logging.CRITICAL + 1
