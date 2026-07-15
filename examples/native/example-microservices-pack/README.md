@@ -11,9 +11,13 @@ inheritance and override patterns. Read alongside
 > **Status.** Reference project for the Project schema — full
 > inheritance/override matrix across 5 tasks. See
 > [`docs/architecture/PROJECTS.md`](../../../docs/architecture/PROJECTS.md).
-> Note: the `backend-api` image (`myrepo/example-backend:v1.4.0`) is a
-> placeholder; the pack currently loads and resolves, but end-to-end
-> `tolokaforge run` needs a real backend image (separate follow-up).
+> `backend-api` runs [PostgREST](https://postgrest.org), which
+> auto-generates a REST API from the postgres schema — the pack ships
+> no application code. The compose stack materialises and serves the
+> seeded schema; the loader and per-task manifest resolution work
+> end-to-end. Running individual tasks via `tolokaforge run` needs
+> task-schema relaxation (#366) to land first, since these tasks use
+> the minimal `task_id` + `description` shape PROJECTS.md documents.
 
 ## Layout
 

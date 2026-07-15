@@ -19,7 +19,7 @@ services:
       db-service:
         condition: service_healthy
       backend-api:
-        condition: service_healthy
+        condition: service_started
     healthcheck:
       test:
         - CMD
@@ -57,6 +57,11 @@ services:
       POSTGRES_USER: "postgres"
       POSTGRES_PASSWORD: "example"
       POSTGRES_DB: "app"
+    volumes:
+      # Seed the schema at first-init so backend-api (PostgREST)
+      # introspects a populated database on startup. The reset recipe
+      # re-applies the same seed at each trial boundary (idempotent).
+      - "./seeds/app_baseline.sql:/docker-entrypoint-initdb.d/app_baseline.sql:ro"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d app"]
       interval: 2s
@@ -65,17 +70,22 @@ services:
       start_period: 5s
 
   backend-api:
-    image: "myrepo/example-backend:v1.4.0"     # pinned; never `latest`
+    # PostgREST auto-generates a REST API from the postgres schema, so
+    # this project ships no application code — the seed defines the
+    # tables and PostgREST exposes them. Listens on 8080 (PGRST_SERVER_PORT)
+    # so the service is reachable at `backend-api:8080` on the shared
+    # network. No healthcheck: the image ships no HTTP client, so
+    # dependents wait on `service_started` (same pattern as the other
+    # postgres examples).
+    image: "postgrest/postgrest:v12.2.0"
     environment:
-      DATABASE_URL: "postgresql://postgres:example@postgres/app"
+      PGRST_DB_URI: "postgres://postgres:example@postgres:5432/app"
+      PGRST_DB_ANON_ROLE: "postgres"
+      PGRST_DB_SCHEMAS: "public"
+      PGRST_SERVER_PORT: "8080"
+      PGRST_OPENAPI_SERVER_PROXY_URI: "http://backend-api:8080"
     ports:
       - "8080"
     depends_on:
       postgres:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "-q", "-O-", "http://localhost:8080/health"]
-      interval: 2s
-      timeout: 3s
-      retries: 30
-      start_period: 5s

@@ -6,6 +6,11 @@
 -- orders domain. Kept intentionally tiny; tasks that need volume
 -- (db_query_tuning) generate additional load in-trial.
 
+-- Idempotent: the reset recipe re-applies this seed at every trial
+-- boundary, so start from a clean slate on each application.
+DROP TABLE IF EXISTS orders CASCADE;
+DROP TABLE IF EXISTS customers CASCADE;
+
 CREATE TABLE customers (
     id         SERIAL PRIMARY KEY,
     tenant     TEXT        NOT NULL,
