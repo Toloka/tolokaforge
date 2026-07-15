@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 
@@ -10,14 +11,25 @@ import click
 import yaml
 from rich.console import Console
 
-from tolokaforge.cli._display import console, emit_artifact_path
+from tolokaforge.cli._display import (
+    DisplayMode,
+    _textual_available,
+    console,
+    emit_artifact_path,
+    select_display_mode,
+    silence_console,
+)
 from tolokaforge.core.engine_run_state import read_persisted_presets_file
 from tolokaforge.core.llm.presets import (
     resolve_overlay_path,
     set_overlay_path,
     validate_overlay_file,
 )
-from tolokaforge.core.logging import LogFormat, configure_root_logging
+from tolokaforge.core.logging import (
+    LogFormat,
+    configure_root_logging,
+    silence_root_logging,
+)
 from tolokaforge.core.models import RunConfig
 from tolokaforge.core.orchestrator import Orchestrator
 from tolokaforge.core.project_loader import load_effective_run_config
@@ -78,6 +90,31 @@ def _print_runtime_banner(*, console: Console, runtime_choice: str, source: str)
     console.print(f"[cyan]  → {isolation_line}[/cyan]")
 
 
+def _resolve_display_mode(
+    *,
+    explicit: str | None,
+    env: Mapping[str, str],
+) -> DisplayMode:
+    """Wrap ``select_display_mode`` with the Textual fallback and
+    ``click.UsageError`` re-raising.
+
+    Runs at CLI-callback time so the fallback WARNING log line renders
+    under the already-configured root handler / ``--log-format``.
+    """
+    try:
+        mode = select_display_mode(explicit=explicit, env=env)
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
+
+    if mode is DisplayMode.FULL and not _textual_available():
+        logging.getLogger("tolokaforge.cli").warning(
+            "textual is not installed; falling back from --display=full to --display=rich"
+        )
+        return DisplayMode.RICH
+
+    return mode
+
+
 @click.group()
 @click.option(
     "--verbose",
@@ -104,8 +141,28 @@ def _print_runtime_banner(*, console: Console, runtime_choice: str, source: str)
         "object per line."
     ),
 )
+@click.option(
+    "--display",
+    "display",
+    type=click.Choice([m.value for m in DisplayMode], case_sensitive=False),
+    default=None,
+    help=(
+        "Overall stderr UI. 'full' = Textual TUI (falls back to 'rich' "
+        "if textual is not installed); 'rich' = Rich Live panel; "
+        "'plain' = log-line stream (default on non-TTY / CI); 'log' = "
+        "pure log stream, no banners; 'none' = silent on stderr, only "
+        "the artifact path on stdout. Env override: TOLOKAFORGE_DISPLAY. "
+        "Orthogonal to --log-format."
+    ),
+)
 @click.pass_context
-def cli(ctx: click.Context, verbose: bool, quiet: bool, log_format: str | None) -> None:
+def cli(
+    ctx: click.Context,
+    verbose: bool,
+    quiet: bool,
+    log_format: str | None,
+    display: str | None,
+) -> None:
     """Universal LLM Tool-Use Benchmarking Harness (ULB-H)"""
     if verbose and quiet:
         raise click.UsageError("--verbose and --quiet are mutually exclusive")
@@ -120,10 +177,17 @@ def cli(ctx: click.Context, verbose: bool, quiet: bool, log_format: str | None) 
     resolved_format = LogFormat(log_format.lower()) if log_format is not None else None
     configure_root_logging(level=level, log_format=resolved_format)
 
+    display_mode = _resolve_display_mode(explicit=display, env=os.environ)
+
     ctx.ensure_object(dict)
     ctx.obj["root_verbose"] = verbose
     ctx.obj["root_quiet"] = quiet
     ctx.obj["log_format"] = resolved_format
+    ctx.obj["display_mode"] = display_mode
+
+    if display_mode is DisplayMode.NONE:
+        silence_console()
+        silence_root_logging()
 
 
 def _bump_console_debug_if_allowed(ctx: click.Context) -> None:
