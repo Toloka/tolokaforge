@@ -462,6 +462,42 @@ class TestResetRecipeFailureAttribution:
         assert exc.value.stage == "reset_recipe"
         assert spec.trial_id not in patched_backend._clients
 
+    def test_non_provision_error_from_reset_seam_still_tears_down(
+        self,
+        patched_backend: PerTrialRuntimeBackend,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # A non-ProvisionError out of the reset seam (e.g. an unregistered
+        # SeedKind surfacing as KeyError from dispatch) must still tear the
+        # partial stack down, then propagate fail-fast. Locks the broad
+        # ``except`` in provision — a re-narrowing to ProvisionError leaks.
+        spec = _make_trial_spec(
+            compose_file=_FIXTURES / "safe_two_service.yaml",
+            services={"db": ServiceSpec(isolation="reset", reset=ResetSpec(seed="baseline"))},
+        )
+
+        def _raise_key_error(*_args: Any, **_kwargs: Any) -> None:
+            raise KeyError("no such kind")
+
+        monkeypatch.setattr(patched_backend, "_apply_reset_recipes", _raise_key_error)
+
+        cleanup_calls: list[tuple[Any, Any]] = []
+        real_cleanup = per_trial_runtime_module.cleanup_partial_materialisation
+
+        def _recording_cleanup(compose: Any, temp_dir: Any) -> None:
+            cleanup_calls.append((compose, temp_dir))
+            real_cleanup(compose, temp_dir)
+
+        monkeypatch.setattr(
+            per_trial_runtime_module, "cleanup_partial_materialisation", _recording_cleanup
+        )
+
+        with pytest.raises(KeyError, match="no such kind"):
+            patched_backend.provision(spec)
+
+        assert len(cleanup_calls) == 1
+        assert spec.trial_id not in patched_backend._clients
+
 
 # ---------------------------------------------------------------------------
 # await_ready — no-op contract

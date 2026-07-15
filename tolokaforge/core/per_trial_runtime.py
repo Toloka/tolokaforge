@@ -217,9 +217,13 @@ class PerTrialRuntimeBackend:
         # distinct from a compose-up failure (the stack came up fine), so
         # _apply_reset_recipes owns the reset_recipe stage. Teardown is the
         # same either way — the partially materialised stack must come down.
+        # The catch is broad on purpose: a typed ProvisionError and a
+        # programming error (e.g. an unregistered SeedKind surfacing as
+        # KeyError from dispatch) both require the stack torn down. The
+        # non-ProvisionError re-raise still propagates fail-fast.
         try:
             self._apply_reset_recipes(manifest, compose, spec)
-        except ProvisionError:
+        except Exception:
             cleanup_partial_materialisation(compose, temp_dir)
             raise
 
