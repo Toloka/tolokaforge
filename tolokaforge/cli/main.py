@@ -439,6 +439,7 @@ def prepare(
         f"total={queue_counts.get('total', 0)} "
         f"backend={summary['queue_backend']}"
     )
+    emit_artifact_path(run_dir)
 
 
 @cli.command()
