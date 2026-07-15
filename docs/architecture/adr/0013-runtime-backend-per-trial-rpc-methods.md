@@ -1,6 +1,6 @@
 # 0013. `RuntimeBackend` owns per-trial RPC methods — collapse `DockerRunnerAdapter`
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-07-02
 - **Deciders:** @CiroGamboa
 - **Supersedes:** —
@@ -81,7 +81,7 @@ The `ToolExecutor` surface is already established (`tolokaforge.tools.registry`,
 ## Status transition
 
 - **Proposed** on 2026-07-02 alongside the implementation PR that widens `RuntimeBackend` and shrinks `DockerRunnerAdapter`.
-- **Accepted** once the implementation ships and one release cycle passes without a fresh test breakage traceable to the new Protocol surface.
+- **Accepted** on 2026-07-15 — the implementation shipped in #141 (the five per-trial RPC methods moved onto `RuntimeBackend`) and #148 (`PerTrialRuntimeBackend`), and a release cycle passed with no fresh test breakage traceable to the new Protocol surface.
 
 ## Links
 
