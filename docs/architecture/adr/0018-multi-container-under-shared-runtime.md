@@ -311,6 +311,51 @@ Key differences from Case B:
 
 Shipped in v0.7.0 (`PerTrialRuntimeBackend` + `--runtime` CLI).
 
+## Network policy enforcement
+
+`EnvironmentManifest.network_policy` parameterises how the docker backends
+materialise a task-declared stack (Case B and Case C). It is a closed enum
+with three values; the default is `no_internet`.
+
+Both backends materialise the same way: `copy_compose_context` copies the
+task's compose file into an isolated project directory, the copy is rewritten
+in place by `enforce_network_policy` (`compose_materialisation.py`), then
+`DockerCompose` brings the rewritten file up.
+
+| Value | Enforcement |
+|---|---|
+| `no_internet` (default) | Every task service is attached to an injected `internal: true` network (`tolokaforge_netpolicy_internal`), and any network the task already declared is forced `internal: true`. No application service can reach the public internet; inter-service DNS is intact because every service shares the internal network. The `runner_service` is *additionally* attached to a non-internal edge network (`tolokaforge_netpolicy_edge`). |
+| `full_internet` | The compose file is run unchanged; the transform is identity. |
+| `limited_internet` | Refused before any container starts. `verify_network_policy_supported` raises `NetworkPolicyError` ahead of the compose-up. |
+
+The injected network names are prefixed by compose with the per-run /
+per-trial project name, so they are unique on the daemon and cannot collide
+with a task-declared network of the same base name.
+
+**Why the runner keeps egress under `no_internet`.** The engine runner runs
+LLM-as-judge grading in-container and must reach the LLM provider to grade;
+its published gRPC port must also stay host-reachable so the backend can
+resolve and connect to it. The edge-network attachment gives the runner both.
+The honest `no_internet` contract is therefore scoped: **task-declared
+application services have zero public egress; the runner retains its
+control-plane and grading egress.**
+
+**Scope boundary.** `no_internet` blocks egress at the container-network
+level, so it does not block egress of tools the agent executes *inside* the
+runner (those share the runner's edge access). Blocking runner-executed tool
+egress is tracked separately in #325.
+
+**`limited_internet` is refused, not approximated.** Docker's `internal` flag
+is binary — a network either has egress or it does not. A real per-host
+allowlist needs an egress-proxy sidecar, tracked in #323. Silently granting
+full or no internet would under- or over-enforce a declared security posture,
+so materialisation fails loud until #323 lands. Task authors declare
+`no_internet` or `full_internet` explicitly.
+
+The `network_isolation:no_internet` backend capability (advertised by both
+docker backends, admitted by the capability gate at run start) reflects this
+enforcement.
+
 ## Choosing a case — decision flow
 
 ```mermaid

@@ -148,9 +148,9 @@ A `RuntimeBackend` implementation is contractually obligated to honour every dec
 
 | Declared where | Provisioner obligation |
 |---|---|
-| `EnvironmentManifest.network_policy` = `no_internet` | No egress to the public internet; no reachability across per-trial projects. Enforce via substrate-native network isolation. |
-| `EnvironmentManifest.network_policy` = `limited_internet` | Egress permitted for the provisioner-defined allowlist; no cross-trial reachability. |
-| `EnvironmentManifest.network_policy` = `full_internet` | Unrestricted egress; still no cross-trial reachability. |
+| `EnvironmentManifest.network_policy` = `no_internet` | No public egress for the task's application services; no reachability across per-trial projects. The docker backends enforce it by attaching every task service to an injected `internal: true` network and additionally attaching `runner_service` to a non-internal edge network (so its published port stays host-reachable and it keeps judge egress). Scoped to application services — runner-executed tool egress is not blocked (#325). |
+| `EnvironmentManifest.network_policy` = `limited_internet` | Egress permitted for the provisioner-defined allowlist; no cross-trial reachability. The docker backends refuse this at materialisation (`NetworkPolicyError`) — a per-host allowlist needs an egress-proxy sidecar (#323). |
+| `EnvironmentManifest.network_policy` = `full_internet` | Unrestricted egress; still no cross-trial reachability. The docker backends run the compose file unchanged. |
 | `EnvironmentManifest.security_context_defaults` | Every declared field applied to each compose service that does not set the equivalent explicitly (`run_as_user`, `read_only_root_filesystem`, `no_new_privileges`, capability drops / adds). Fail `ProvisionError` if the substrate cannot enforce a declared field. |
 | `EnvironmentManifest.initial_state` | Fixture applied per its `kind` (`sql` / `copy` / `script`) to the named compose service before `await_ready` returns. |
 | Compose service `deploy.resources` / `mem_limit` / `cpus` | Container-level CPU / memory caps enforced as declared. |
