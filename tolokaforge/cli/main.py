@@ -20,6 +20,7 @@ from tolokaforge.cli._display import (
     select_display_mode,
     silence_console,
 )
+from tolokaforge.cli._dry_run_render import render_dry_run
 from tolokaforge.cli._run_banner import (
     print_run_end_banner,
     print_run_start_banner,
@@ -27,6 +28,7 @@ from tolokaforge.cli._run_banner import (
 from tolokaforge.cli._run_display import LiveRunDisplay
 from tolokaforge.core import pricing
 from tolokaforge.core.budgets import LimitHitMarker, make_budget
+from tolokaforge.core.dry_run import load_tasks_for_dry_run, materialize_dry_run_sample
 from tolokaforge.core.duration import parse_duration
 from tolokaforge.core.engine_run_state import read_persisted_presets_file
 from tolokaforge.core.llm.client import LLMClient
@@ -41,7 +43,7 @@ from tolokaforge.core.logging import (
     configure_root_logging,
     silence_root_logging,
 )
-from tolokaforge.core.models import ModelConfig, RunConfig
+from tolokaforge.core.models import ModelConfig, ProjectConfig, RunConfig
 from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps, resolve_run_directory
 from tolokaforge.core.project_loader import load_effective_run_config
 from tolokaforge.core.resume import RunStateManager
@@ -393,6 +395,47 @@ def _activate_presets_overlay(
     return resolved
 
 
+def _run_dry_run(
+    *,
+    run_config: RunConfig,
+    project: ProjectConfig | None,
+    dry_run_samples: int,
+) -> None:
+    """Render the first-turn samples for *run_config* on the shared console.
+
+    Bypasses run-directory creation, orchestrator setup, live display,
+    and start / end banners — dry-run's contract is "no run dir, no
+    HTTP, no artifact emit". Every stderr write flows through the
+    shared :data:`console` so ``--display=none`` silences the panels
+    via ``console.quiet``. Exits 1 (via :class:`SystemExit`) when the
+    adapter resolves zero tasks — matches the "No tasks found" surface
+    the real run has at the same point in its flow.
+    """
+    adapter, tasks = load_tasks_for_dry_run(run_config=run_config, project=project)
+    if not tasks:
+        console.print("[red]No tasks found![/red]")
+        raise SystemExit(1)
+
+    agent_config = run_config.models.get("agent")
+    if agent_config is None:
+        raise click.UsageError("Agent model configuration required (models.agent)")
+    judge_config = run_config.models.get("judge")
+    runtime_choice = run_config.orchestrator.runtime
+
+    n_rendered = min(dry_run_samples, len(tasks))
+    samples = [
+        materialize_dry_run_sample(
+            task=task,
+            adapter=adapter,
+            agent_config=agent_config,
+            judge_config=judge_config,
+            runtime_choice=runtime_choice,
+        )
+        for task in tasks[:n_rendered]
+    ]
+    render_dry_run(samples, console=console, n_available=len(tasks))
+
+
 @cli.command()
 @click.option(
     "--config", required=True, type=click.Path(exists=True), help="Path to run config YAML"
@@ -499,6 +542,29 @@ def _activate_presets_overlay(
         "Same schema as tolokaforge/core/data/pricing.json. See docs/CLI.md."
     ),
 )
+@click.option(
+    "--dry-run",
+    "dry_run",
+    is_flag=True,
+    default=False,
+    help=(
+        "Resolve the run config and tasks, render the first-turn wire "
+        "request (system prompt, user prompt, sanitized tool spec) for "
+        "up to --dry-run-samples tasks, and exit 0 without any HTTP "
+        "call to a provider. See docs/CLI.md § Dry run."
+    ),
+)
+@click.option(
+    "--dry-run-samples",
+    "dry_run_samples",
+    type=click.IntRange(min=1),
+    default=3,
+    show_default=True,
+    help=(
+        "Max number of tasks to render under --dry-run. Requires "
+        "--dry-run; using it without raises a UsageError."
+    ),
+)
 @click.pass_context
 def run(
     ctx: click.Context,
@@ -516,10 +582,20 @@ def run(
     sample_limit: int | None,
     fallback_models: str | None,
     model_cost_config: str | None,
+    dry_run: bool,
+    dry_run_samples: int,
 ):
     """Run benchmark with specified configuration"""
     if verbose:
         _bump_console_debug_if_allowed(ctx)
+
+    if dry_run and resume:
+        raise click.UsageError(
+            "--dry-run and --resume are mutually exclusive; --dry-run does not consult run state"
+        )
+    samples_source = ctx.get_parameter_source("dry_run_samples")
+    if not dry_run and samples_source is not click.core.ParameterSource.DEFAULT:
+        raise click.UsageError("--dry-run-samples requires --dry-run")
 
     console.print(f"[bold blue]Loading configuration from {config}...[/bold blue]")
 
@@ -612,6 +688,31 @@ def run(
     if overlay_path:
         console.print(f"[cyan]Preset overlay: {overlay_path}[/cyan]")
 
+    # --fallback-models parses and validates before the dry-run branch so a
+    # malformed chain fails identically on both paths (parity with
+    # --time-limit / --cost-limit / --sample-limit, which are validated
+    # above). The parsed chain is only threaded into the orchestrator on
+    # the real-run path.
+    fallback_chain: list[ModelConfig] | None = None
+    if fallback_models is not None:
+        agent_cfg = run_config.models.get("agent")
+        if agent_cfg is None:
+            raise click.UsageError(
+                "--fallback-models requires an agent model in the run config "
+                "(models.agent). Add one, or drop the flag."
+            )
+        fallback_chain = _parse_fallback_models(
+            fallback_models, default_provider=agent_cfg.provider
+        )
+
+    if dry_run:
+        _run_dry_run(
+            run_config=run_config,
+            project=project,
+            dry_run_samples=dry_run_samples,
+        )
+        return
+
     display_mode = ctx.find_root().obj.get("display_mode", DisplayMode.PLAIN)
 
     run_id, run_dir = resolve_run_directory(run_config.evaluation.output_dir)
@@ -633,16 +734,7 @@ def run(
     # :class:`FallbackLLMClient`. When the flag is unset the seam stays
     # ``None`` and the orchestrator constructs a bare :class:`LLMClient`.
     agent_client_factory: Callable[[ModelConfig], LLMClient] | None = None
-    if fallback_models is not None:
-        agent_cfg = run_config.models.get("agent")
-        if agent_cfg is None:
-            raise click.UsageError(
-                "--fallback-models requires an agent model in the run config "
-                "(models.agent). Add one, or drop the flag."
-            )
-        fallback_chain = _parse_fallback_models(
-            fallback_models, default_provider=agent_cfg.provider
-        )
+    if fallback_chain is not None:
 
         def _fallback_factory(primary: ModelConfig) -> LLMClient:
             return FallbackLLMClient(primary=primary, fallbacks=fallback_chain)  # type: ignore[return-value]

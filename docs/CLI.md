@@ -190,6 +190,12 @@ The group callback validates `TOLOKAFORGE_DISPLAY` on every invocation, includin
 
 The group callback stashes the resolved `DisplayMode` on `ctx.obj["display_mode"]` after applying the precedence rules and Textual fallback. The value is a `DisplayMode` enum (not the raw string) so consumers get `if mode is DisplayMode.FULL:` type-safety. Consumer commands read the resolved mode from this single source rather than re-parsing the flag / env var.
 
+## Dry run
+
+`tolokaforge run --dry-run [--dry-run-samples N]` resolves the run config (applying every override flag identically to a real run), loads the declared tasks via the adapter, and renders one `rich.panel.Panel` per task on stderr describing the first-turn wire request: system prompt, first user message (literal or a placeholder naming the user-simulator persona), sanitized OpenAI-shape tool spec, and the resolved agent model / judge model / runtime backend. Exits 0 without creating a run directory, opening a `LiveRunDisplay`, or issuing a single HTTP call to a provider.
+
+`--dry-run-samples` defaults to 3 and caps how many tasks are rendered; when a run config declares fewer tasks the cap is silently reduced to the declared count. `--dry-run-samples` without `--dry-run` and `--dry-run --resume` both fail with `click.UsageError`. Under `--display=none` the shared console is quieted and no panels reach stderr — exit code still 0.
+
 ## Root help layout
 
 `tolokaforge --help` groups every top-level command under a fixed-order section heading: **Runs**, **Tasks**, **Docker**, **Config**, **Assets**, **Adapters**. Commands appear alphabetically within each section, and empty sections are omitted. Per-command help (`tolokaforge run --help`, `tolokaforge docker up --help`, …) renders through Click's default formatter — the grouped layout applies to the root `Commands:` block only.
