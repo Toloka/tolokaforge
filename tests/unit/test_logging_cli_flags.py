@@ -90,21 +90,22 @@ class _RecordingOrchestrator:
 
     The composition-matrix asserts that ``verbose=True`` propagates into
     ``Orchestrator`` for subcommand ``--verbose`` cases, without actually
-    running a trial. `load_tasks` returns nothing so the CLI takes the
-    empty-tasks early-return branch.
+    running a trial. ``load_tasks`` populates a single sentinel task so the
+    CLI clears the fail-loud "No tasks found" gate; ``run()`` returns a
+    dummy path matching the widened return-type contract.
     """
 
     calls: list[dict[str, Any]] = []
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         self.__class__.calls.append(kwargs)
-        self.tasks: list = []
+        self.tasks: list = [object()]
 
     def load_tasks(self) -> None:
         return None
 
-    def run(self) -> None:
-        return None
+    def run(self) -> Path:
+        return Path("/tmp/tolokaforge-stub-run").resolve()
 
     def prepare_run(self, run_dir: Path, reset_queue: bool = False) -> dict:
         return {

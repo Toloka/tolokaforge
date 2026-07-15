@@ -18,7 +18,7 @@ from tolokaforge.cli._display import console
 console.print("[success]✓ done[/success]")
 ```
 
-`console` writes to **stderr** with `soft_wrap=True` and the semantic palette installed. Stderr is the default because the CLI reserves stdout for the machine-parseable artifact path a later stage will introduce; today no CLI command writes to stdout via Rich. Soft-wrapping preserves long paths and digests in narrow CI terminals.
+`console` writes to **stderr** with `soft_wrap=True` and the semantic palette installed. Stderr is the default because stdout is reserved for machine-parseable artifact paths — see [§ stdout / stderr contract](#stdout--stderr-contract). Soft-wrapping preserves long paths and digests in narrow CI terminals.
 
 Use `console.print(...)` for one-shot lines. Use the factories below when you need progress bars or a persistent Live region.
 
@@ -115,3 +115,36 @@ Scope pairs come from `LogRecord.__dict__` (typically populated via `logger.info
 | `-v -q` | (any) | `UsageError` — exit 2 | — |
 
 See [`docs/LOGGING.md`](LOGGING.md) for the full API of `StructuredLogger`, `get_logger`, and `init_trial_logger`, and for the `logs.yaml` on-disk shape.
+
+## stdout / stderr contract
+
+`tolokaforge` splits streams by purpose: **stdout** carries the machine-parseable artifact identifier; **stderr** carries everything a human reads (progress, banners, log records, error text).
+
+| Command                                      | stdout on success                     | stderr                                                       |
+|----------------------------------------------|---------------------------------------|--------------------------------------------------------------|
+| `tolokaforge run`                            | Absolute run-dir path (single line).  | Progress, log records, "Run complete" banner, "Results saved to" line. |
+| `tolokaforge prepare`                        | Absolute run-dir path (single line).  | Queue summary, log records.                                  |
+| `tolokaforge worker`                         | (empty)                               | "Worker complete" summary, log records.                      |
+| `tolokaforge status`                         | (empty)                               | Run summary, queue ETA, cost totals.                         |
+| `tolokaforge validate`                       | (empty)                               | Per-task validity lines, `N valid, M invalid` summary.       |
+| `tolokaforge config validate`                | (empty)                               | Per-config validity lines, error / warning counts.           |
+| `tolokaforge assets stamp`                   | (empty)                               | Digest-check summary or `--check` diff output.               |
+| `tolokaforge adapter convert`                | (empty)                               | Per-task conversion lines, `Converted N tasks` summary.      |
+| `tolokaforge analyze`                        | (empty)                               | Trajectory summary, tool-failure / log-error breakdown.      |
+| `tolokaforge docker build` / `up` / `down` / `status` | (empty)                      | Build progress, stack status, error text.                    |
+
+On any failure — bad config, orchestrator raise, zero tasks — stdout stays **empty** and the process exits non-zero. The `tolokaforge run` "no tasks" branch exits with code `1`; other failures propagate whatever exit code the underlying error raises (click `UsageError` → 2, `SystemExit(N)` → N).
+
+The emitted path is `Path.resolve()`'d: symlinks are canonicalised and the line is always absolute, regardless of the caller's cwd or how the config expressed `evaluation.output_dir`.
+
+The shell idiom captures the artifact:
+
+```bash
+RUN_DIR=$(tolokaforge run --config path/to/run.yaml)
+# stderr still shows progress; RUN_DIR is the absolute run-dir path.
+tolokaforge status --run-dir "$RUN_DIR"
+```
+
+Adding `2>/dev/null` (or `2>run.log`) drops progress without breaking the capture — the artifact-path emission is independent of `--verbose` / `--quiet` / `--log-format`, which shape stderr only.
+
+The single stdout write goes through `emit_artifact_path` in `tolokaforge.cli._display`; a canonical test (`tests/canonical/test_cli_display_invariants.py::test_no_bare_stdout_write_in_cli`) forbids any other `print(` or `sys.stdout.write(` in `tolokaforge/cli/**/*.py`.

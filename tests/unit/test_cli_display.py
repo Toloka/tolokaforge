@@ -7,6 +7,7 @@ Every assertion here maps to a documented invariant in
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 import pytest
 from rich.progress import (
@@ -21,7 +22,13 @@ from rich.progress import (
 from rich.style import Style
 from rich.text import Text
 
-from tolokaforge.cli._display import THEME, console, make_live, make_progress
+from tolokaforge.cli._display import (
+    THEME,
+    console,
+    emit_artifact_path,
+    make_live,
+    make_progress,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -144,3 +151,65 @@ def test_make_live_accepts_renderable() -> None:
     renderable = Text("hello")
     live = make_live(renderable)
     assert live.renderable is renderable
+
+
+class TestEmitArtifactPath:
+    """``emit_artifact_path`` is the ONE sanctioned stdout write in the
+    CLI — it emits a resolved absolute path with a trailing newline,
+    flushed, and never colours or prefixes the line."""
+
+    def test_emit_artifact_path_prints_resolved_absolute(
+        self, tmp_path: Path, capfd: pytest.CaptureFixture[str]
+    ) -> None:
+        emit_artifact_path(tmp_path)
+        captured = capfd.readouterr()
+        assert captured.out == str(tmp_path.resolve()) + "\n"
+        assert captured.err == ""
+
+    def test_emit_artifact_path_accepts_string(
+        self, tmp_path: Path, capfd: pytest.CaptureFixture[str]
+    ) -> None:
+        emit_artifact_path(str(tmp_path))
+        captured = capfd.readouterr()
+        assert captured.out == str(tmp_path.resolve()) + "\n"
+
+    def test_emit_artifact_path_resolves_relative_input(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        emit_artifact_path("results/run")
+        captured = capfd.readouterr()
+        emitted = captured.out.strip()
+        assert Path(emitted).is_absolute()
+        assert Path(emitted) == (tmp_path / "results" / "run").resolve()
+
+    def test_emit_artifact_path_calls_flush(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Lock the ``flush=True`` contract by spying on ``.flush()`` directly.
+
+        The shell-composition idiom depends on the artifact path reaching the
+        pipe before the process exits — Python's line buffering usually does
+        this, but ``flush=True`` guarantees it. A capture-based test would
+        pass even without the flush (line-buffered stdout flushes on newline
+        before ``readouterr``), so lock the invariant by intercepting the
+        stream directly.
+        """
+        import sys as _sys
+
+        calls: list[str] = []
+
+        class _Spy:
+            def write(self, data: str) -> int:
+                calls.append("write")
+                return len(data)
+
+            def flush(self) -> None:
+                calls.append("flush")
+
+        monkeypatch.setattr(_sys, "stdout", _Spy())
+        emit_artifact_path(tmp_path)
+        assert "flush" in calls, f"emit_artifact_path did not call flush(); saw {calls}"

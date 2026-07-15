@@ -959,8 +959,14 @@ class Orchestrator:
             )
         return None
 
-    def run(self) -> None:
-        """Execute all tasks with configured trials"""
+    def run(self) -> Path:
+        """Execute all tasks with configured trials.
+
+        Returns the resolved absolute path of the timestamped run directory
+        created by this invocation. The path is the same directory the
+        orchestrator wrote every trial artifact, report, and run-state file
+        into; callers publish or open it after the run completes.
+        """
         # The canonical ``run_id`` is computed here once and threaded
         # through the run state, the engine run-state file (so workers
         # read the same value), and every ``TrialSpec`` via
@@ -1463,6 +1469,8 @@ class Orchestrator:
 
         # Generate reports
         self._generate_reports(output_dir)
+
+        return output_dir.resolve()
 
     def run_worker(self, output_dir: Path, max_attempts: int | None = None) -> dict[str, Any]:
         """Run as a worker consuming attempts from the durable queue.

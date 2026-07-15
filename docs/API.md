@@ -8,7 +8,7 @@ Key classes and entry points for programmatic usage.
 from tolokaforge.core.orchestrator import Orchestrator
 
 orchestrator = Orchestrator(config, output_dir="results")
-results = orchestrator.run()
+run_dir = orchestrator.run()  # returns the resolved Path of the timestamped run dir
 ```
 
 ## TrialRunner
