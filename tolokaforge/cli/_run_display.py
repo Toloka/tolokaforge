@@ -83,6 +83,11 @@ class _BottomBarStats:
 
     Test fixtures instantiate this directly; :meth:`LiveRunDisplay._render_bottom_bar`
     populates it from ``self`` under the lock.
+
+    ``cost_style`` names the theme token wrapping the ``$X.YY`` cost
+    segment: ``"default"`` (unwrapped, existing shape), ``"warn"``
+    (yellow — cumulative cost ≥ 80 % of the run's cost budget), or
+    ``"error"`` (bold red — ≥ 100 %). Derived by :func:`_cost_bar_style`.
     """
 
     completed: int
@@ -93,6 +98,7 @@ class _BottomBarStats:
     completion_tokens: int
     failed: int
     eta_seconds: float | None
+    cost_style: str = "default"
 
 
 def _format_tokens(n: int) -> str:
@@ -121,11 +127,41 @@ def _format_eta(eta_seconds: float | None) -> str:
     return format_duration(eta_seconds)
 
 
+def _cost_bar_style(cost_usd: float, budget_usd: float | None) -> str:
+    """Return the theme token wrapping the bottom-bar's cost segment.
+
+    ``"default"`` — no budget context or below the amber threshold.
+    ``"warn"`` — cumulative cost ≥ 80 % of ``budget_usd``.
+    ``"error"`` — cumulative cost ≥ 100 % of ``budget_usd``.
+
+    Defensive on ``budget_usd <= 0.0`` (would divide by zero); returns
+    ``"default"`` so a mis-configured cap doesn't paint the panel red.
+    """
+    if budget_usd is None or budget_usd <= 0.0:
+        return "default"
+    ratio = cost_usd / budget_usd
+    if ratio >= 1.0:
+        return "error"
+    if ratio >= 0.8:
+        return "warn"
+    return "default"
+
+
 def _format_bottom_bar(stats: _BottomBarStats) -> str:
-    """Render the bottom status bar — locked literal shape."""
+    """Render the bottom status bar — locked literal shape.
+
+    When ``stats.cost_style`` is ``"warn"`` or ``"error"`` the ``$X.YY``
+    segment is wrapped in ``[warn]…[/warn]`` / ``[error]…[/error]`` Rich
+    markup; the rest of the bar is unchanged. Below 80 % of the budget
+    (``cost_style == "default"``) the segment is unwrapped and the
+    returned line is byte-identical to the pre-B3 shape.
+    """
+    cost_segment = _format_cost(stats.cost_usd)
+    if stats.cost_style != "default":
+        cost_segment = f"[{stats.cost_style}]{cost_segment}[/{stats.cost_style}]"
     return (
         f"{stats.completed}/{stats.total} · {stats.running} running · "
-        f"{_format_cost(stats.cost_usd)} · "
+        f"{cost_segment} · "
         f"in {_format_tokens(stats.prompt_tokens)} / "
         f"out {_format_tokens(stats.completion_tokens)} tok · "
         f"fail {stats.failed} · eta {_format_eta(stats.eta_seconds)}"
@@ -157,7 +193,13 @@ class LiveRunDisplay:
     windows, and concurrent updates would silently lose data without a lock.
     """
 
-    def __init__(self, *, refresh_per_second: float = 4.0, max_trial_rows: int = 20) -> None:
+    def __init__(
+        self,
+        *,
+        refresh_per_second: float = 4.0,
+        max_trial_rows: int = 20,
+        cost_budget_usd: float | None = None,
+    ) -> None:
         # Reentrant — _refresh_live_locked (called inside every event handler
         # while holding the lock) invokes _build_layout, whose render helpers
         # (_visible_cards, _render_right_pane, _render_bottom_bar) re-acquire
@@ -178,22 +220,31 @@ class LiveRunDisplay:
         self._finished: bool = False
         self._max_trial_rows: int = max_trial_rows
         self._refresh_per_second: float = refresh_per_second
+        # ``None`` disables the amber / red styling; ``0.0`` is treated as
+        # "no budget" by :func:`_cost_bar_style` (defensive against a
+        # zero-cap misconfiguration).
+        self._cost_budget_usd: float | None = cost_budget_usd
         self._saved_log_streams: list[tuple[logging.Handler, object]] = []
         self._layout: Layout = self._build_layout()
 
     @classmethod
     def for_mode(
-        cls, mode: DisplayMode
+        cls,
+        mode: DisplayMode,
+        *,
+        cost_budget_usd: float | None = None,
     ) -> AbstractContextManager[LiveRunDisplay | _NoopDisplayCtx]:
         """Return a fresh :class:`LiveRunDisplay` under ``RICH`` / ``FULL``,
         a :class:`_NoopDisplayCtx` under any other mode.
 
         The caller passes ``mode = ctx.obj["display_mode"]`` (a resolved
         :class:`DisplayMode` enum) so this method never re-parses the flag
-        or env var.
+        or env var. ``cost_budget_usd`` — when the CLI resolved a cost
+        cap — enables the amber@80 % / red@100 % styling on the bottom-bar
+        cost segment.
         """
         if mode in (DisplayMode.RICH, DisplayMode.FULL):
-            return cls()
+            return cls(cost_budget_usd=cost_budget_usd)
         return _NoopDisplayCtx()
 
     @property
@@ -448,6 +499,7 @@ class LiveRunDisplay:
 
     def _render_bottom_bar(self) -> Text:
         with self._lock:
+            cost_style = _cost_bar_style(self._total_cost_usd, self._cost_budget_usd)
             stats = _BottomBarStats(
                 completed=self._completed,
                 total=self._total_trials,
@@ -457,8 +509,15 @@ class LiveRunDisplay:
                 completion_tokens=self._completion_tokens,
                 failed=self._failed,
                 eta_seconds=self._estimate_eta_seconds(),
+                cost_style=cost_style,
             )
-        return Text(_format_bottom_bar(stats))
+        line = _format_bottom_bar(stats)
+        # ``Text.from_markup`` interprets ``[warn]…[/warn]`` / ``[error]…[/error]``
+        # against the shared theme. The "default" path stays on ``Text(...)``
+        # so the pre-B3 goldens (unset-budget baseline) remain byte-identical.
+        if cost_style == "default":
+            return Text(line)
+        return Text.from_markup(line)
 
 
 __all__ = [

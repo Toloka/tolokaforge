@@ -48,24 +48,35 @@ def print_run_end_banner(
     duration_seconds: float,
     success: bool,
     console: Console,
+    stopped_reason: str | None = None,
 ) -> None:
     """Emit the three-line end banner on ``console``.
 
-    Layout on success:
+    Layout on success (``stopped_reason=None`` and ``success=True``):
 
         ✓ Run complete in <duration>
         → Report: file:///<abs-path>/<run-dir>/
         → Browse: tolokaforge browse <run-id>
 
-    Layout on failure (any exception propagated to the caller):
+    Layout on failure (``stopped_reason=None`` and ``success=False``):
 
         ✗ Run failed in <duration>
+        → Report: file:///<abs-path>/<run-dir>/
+        → Browse: tolokaforge browse <run-id>
+
+    Layout when a budget cut the run short (``stopped_reason`` set —
+    e.g. ``"cost limit"``, ``"time limit"``, ``"sample limit"``);
+    supersedes the success/failure axis:
+
+        ⏸ Run stopped (<reason>) in <duration>
         → Report: file:///<abs-path>/<run-dir>/
         → Browse: tolokaforge browse <run-id>
     """
     url = _report_url(run_dir)
     duration = format_duration(duration_seconds)
-    if success:
+    if stopped_reason is not None:
+        console.print(f"[warn]⏸[/warn] Run stopped ({stopped_reason}) in {duration}")
+    elif success:
         console.print(f"[success]✓[/success] Run complete in {duration}")
     else:
         console.print(f"[error]✗[/error] Run failed in {duration}")

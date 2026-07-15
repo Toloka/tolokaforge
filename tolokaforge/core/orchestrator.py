@@ -12,6 +12,12 @@ from pathlib import Path
 from typing import Any
 
 from tolokaforge.adapters import BaseAdapter, ensure_registered_adapter, get_adapter
+from tolokaforge.core.budgets import (
+    BudgetHit,
+    CompositeBudget,
+    CostBudget,
+    write_limit_hit_marker,
+)
 from tolokaforge.core.conductor import (
     Conductor,
     ConductorContext,
@@ -227,14 +233,19 @@ def _build_env_endpoints(runner_address: str) -> EnvEndpoints:
 class OrchestratorDeps:
     """Pluggable seams the :class:`Orchestrator` delegates to.
 
-    Packs the four independent injection points (per-trial artifact
-    writer, run-level aggregate writer, execution runtime, per-trial
-    executor factory) into a single frozen record so the constructor
-    doesn't grow a kwarg per seam. Default construction preserves the
-    legacy behaviour: fresh :class:`FileArtifactWriter` /
-    :class:`FileAggregateWriter` defaults, no runtime backend override
-    (``run()`` builds :class:`DockerRuntime`), no factory override
-    (``_build_conductor`` builds :class:`InProcessConductor`).
+    Packs the injection points into a single frozen record so the
+    constructor doesn't grow a kwarg per seam. Default construction
+    preserves the legacy behaviour: fresh :class:`FileArtifactWriter`
+    / :class:`FileAggregateWriter` defaults, no runtime backend override,
+    no conductor factory override, no budget, no agent-client factory
+    (``run()`` constructs a bare :class:`LLMClient` for the agent).
+
+    ``agent_client_factory`` — when set, called with the resolved agent
+    :class:`ModelConfig` to produce the wire client. The CLI wires
+    :class:`FallbackLLMClient` through this seam when
+    ``--fallback-models`` is passed. The returned object must
+    duck-type :class:`LLMClient` (``config``, ``capabilities``,
+    ``generate``) — the conductor reads all three.
     """
 
     artifact_writer: TrialArtifactWriter = field(default_factory=FileArtifactWriter)
@@ -242,6 +253,8 @@ class OrchestratorDeps:
     runtime_backend: RuntimeBackend | None = None
     conductor_factory: ConductorFactory | None = None
     events: RunDisplayEvents = field(default_factory=_NullRunDisplayEvents)
+    budget: CompositeBudget | None = None
+    agent_client_factory: Callable[[ModelConfig], LLMClient] | None = None
 
 
 class Orchestrator:
@@ -290,6 +303,22 @@ class Orchestrator:
         self._injected_runtime_backend: RuntimeBackend | None = resolved_deps.runtime_backend
         self._conductor_factory: ConductorFactory | None = resolved_deps.conductor_factory
         self._events: RunDisplayEvents = resolved_deps.events
+        # Budget composite driving the graceful-shutdown path. ``None``
+        # means "no CLI budget flag AND no legacy ``compute.max_budget_usd``";
+        # ``run()`` promotes the legacy field to a :class:`CostBudget`
+        # composite when it fires so both entry points share the same
+        # code path.
+        self._injected_budget: CompositeBudget | None = resolved_deps.budget
+        # Factory the CLI wires when ``--fallback-models`` is passed;
+        # produces the agent-side wire client at ``run()`` / ``run_worker()``
+        # time. ``None`` means "build a bare :class:`LLMClient`".
+        self._agent_client_factory: Callable[[ModelConfig], LLMClient] | None = (
+            resolved_deps.agent_client_factory
+        )
+        # Set to ``"<cost|time|sample> limit"`` on the first budget hit
+        # and read by the CLI to shape the run-end banner. ``None`` for
+        # runs that reached natural completion.
+        self._stopped_reason: str | None = None
         # Per-run cache of resolved ``TaskDescription`` objects keyed by
         # task_id. ``adapter.to_task_description()`` reads the system
         # prompt, tool schemas, fixtures, and base64-bundles the task_dir
@@ -354,6 +383,35 @@ class Orchestrator:
 
         self.logger.info("Creating adapter", type=adapter_type, params=params)
         return get_adapter(adapter_type, params)
+
+    def _resolve_budget(self, *, initial_cost_usd: float) -> CompositeBudget | None:
+        """Return the budget composite driving graceful shutdown.
+
+        Preference order:
+
+        1. ``deps.budget`` — a composite the CLI or a test built with all
+           active limits and its own cost seed.
+        2. Legacy ``compute.max_budget_usd`` — promoted to a single
+           :class:`CostBudget` seeded with ``initial_cost_usd`` (spend
+           already recorded under the run directory), so resumed runs
+           re-enter with prior cost counted.
+
+        Returns ``None`` when neither is set — the wait loop skips the
+        budget branch entirely.
+        """
+        if self._injected_budget is not None:
+            return self._injected_budget
+        legacy_cost_limit = self.config.effective_max_budget_usd
+        if legacy_cost_limit is None:
+            return None
+        return CompositeBudget(
+            [
+                CostBudget(
+                    limit_usd=legacy_cost_limit,
+                    initial_cost_usd=initial_cost_usd,
+                )
+            ]
+        )
 
     @staticmethod
     def _collect_existing_cost(output_dir: Path) -> float:
@@ -1096,8 +1154,14 @@ class Orchestrator:
             judge_model=(f"{judge_config.provider}/{judge_config.name}" if judge_config else None),
         )
 
-        # Instantiate agent client in orchestrator process
-        agent_client = LLMClient(agent_config)
+        # Instantiate agent client in orchestrator process. The factory
+        # seam routes through :class:`FallbackLLMClient` when the CLI
+        # wired ``--fallback-models``; otherwise the bare client ships.
+        agent_client = (
+            self._agent_client_factory(agent_config)
+            if self._agent_client_factory is not None
+            else LLMClient(agent_config)
+        )
         request_limiter: GlobalRateLimiter | None = None
         if self.config.effective_max_requests_per_second is not None:
             request_limiter = GlobalRateLimiter(self.config.effective_max_requests_per_second)
@@ -1279,19 +1343,26 @@ class Orchestrator:
         if recovered > 0:
             self.logger.warning("Recovered stale in-flight attempts", recovered=recovered)
 
-        budget_limit = self.config.effective_max_budget_usd
         total_cost_usd = self._collect_existing_cost(output_dir)
-        budget_exhausted = False
         total_trials_scheduled = len(pending_trials)
         if total_cost_usd > 0:
             self.logger.info("Loaded existing run spend", total_cost_usd=round(total_cost_usd, 6))
-        if budget_limit is not None and total_cost_usd >= budget_limit:
-            budget_exhausted = True
-            self.logger.warning(
-                "Budget already exhausted at run start; no trials will be scheduled",
-                budget_limit_usd=budget_limit,
-                total_cost_usd=round(total_cost_usd, 6),
-            )
+        budget = self._resolve_budget(initial_cost_usd=total_cost_usd)
+        budget_exhausted = False
+        last_hit: BudgetHit | None = None
+        if budget is not None:
+            hit = budget.poll()
+            if hit is not None:
+                budget_exhausted = True
+                last_hit = hit
+                self._stopped_reason = f"{hit.which} limit"
+                write_limit_hit_marker(output_dir, hit)
+                self.logger.warning(
+                    "Budget already exhausted at run start; no trials will be scheduled",
+                    limit_kind=hit.which,
+                    threshold=hit.threshold,
+                    value_at_hit=round(hit.value_at_hit, 6),
+                )
 
         lease_seconds = max(300, self.config.orchestrator.timeouts.episode_s * 2)
         lease_owner = f"orchestrator:{os.getpid()}"
@@ -1381,6 +1452,8 @@ class Orchestrator:
                         self.results.append(trajectory)
                         trial_cost = trajectory.metrics.cost_usd or 0.0
                         total_cost_usd += trial_cost
+                        if budget is not None:
+                            budget.record_generation_cost(trial_cost)
 
                         # Retry transient infra failures based on queue retry policy.
                         if self._is_retryable_trajectory(trajectory):
@@ -1418,6 +1491,8 @@ class Orchestrator:
                                     error=f"Retry limit reached after transient failure: {reason}",
                                     retryable=True,
                                 )
+                                if budget is not None:
+                                    budget.record_trial_terminated()
                             self.logger.info(
                                 "Trial failed (transient)",
                                 task_id=task_id,
@@ -1446,6 +1521,8 @@ class Orchestrator:
                                 ),
                                 score=trajectory.grade.score if trajectory.grade else None,
                             )
+                            if budget is not None:
+                                budget.record_trial_terminated()
 
                             self.logger.info(
                                 "Trial completed",
@@ -1478,17 +1555,26 @@ class Orchestrator:
                                 error=str(e),
                                 retryable=True,
                             )
+                            if budget is not None:
+                                budget.record_trial_terminated()
 
-                    # Stop scheduling new work once budget cap is reached.
-                    if budget_limit is not None and total_cost_usd >= budget_limit:
-                        if not budget_exhausted:
+                    # Stop scheduling new work once any active budget cap is reached.
+                    if budget is not None and not budget_exhausted:
+                        hit = budget.poll()
+                        if hit is not None:
                             budget_exhausted = True
+                            last_hit = hit
+                            self._stopped_reason = f"{hit.which} limit"
+                            write_limit_hit_marker(output_dir, hit)
                             self.logger.warning(
                                 "Budget limit reached; no new trials will be scheduled",
-                                budget_limit_usd=budget_limit,
+                                limit_kind=hit.which,
+                                threshold=hit.threshold,
+                                value_at_hit=round(hit.value_at_hit, 6),
                                 total_cost_usd=round(total_cost_usd, 6),
                                 remaining_trials=run_queue.get_counts().get("pending", 0),
                             )
+                    if budget_exhausted:
                         continue
 
                     while len(active_futures) < self.config.effective_workers and submit_one():
@@ -1502,7 +1588,8 @@ class Orchestrator:
                 "Run paused due to budget cap",
                 pending_trials=remaining,
                 total_scheduled_trials=total_trials_scheduled - remaining,
-                budget_limit_usd=budget_limit,
+                limit_kind=last_hit.which if last_hit is not None else None,
+                threshold=last_hit.threshold if last_hit is not None else None,
                 total_cost_usd=round(total_cost_usd, 6),
             )
         else:
@@ -1593,7 +1680,11 @@ class Orchestrator:
             judge_model=(f"{judge_config.provider}/{judge_config.name}" if judge_config else None),
         )
 
-        agent_client = LLMClient(agent_config)
+        agent_client = (
+            self._agent_client_factory(agent_config)
+            if self._agent_client_factory is not None
+            else LLMClient(agent_config)
+        )
         request_limiter: GlobalRateLimiter | None = None
         if self.config.effective_max_requests_per_second is not None:
             request_limiter = GlobalRateLimiter(self.config.effective_max_requests_per_second)
