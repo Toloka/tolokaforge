@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.8.4 (2026-07-15)
+
+### Feat
+
+- **llm**: configurable hard wall-clock timeout for upstream calls (#327)
+- **runtime**: enforce network_policy in docker provisioner + tests (#301) (#336)
+- **examples**: runnable reset-recipe pack + end-to-end integration test (#299) (#314)
+- **runtime**: Project layer runtime — isolation, reset recipes, capabilities, env identity (#298)
+- **dev**: add cbm-onboard / cbm-offboard for codebase-memory-mcp (#266)
+- **cli**: tolokaforge assets stamp verb (#263)
+- **loader**: ${VAR} interpolation in run configs + --workers CLI flag (#262)
+- **schema**: dual-home compute/storage.queue resolution (#241)
+- **schema**: actor/seed/capability reservations + task-schema relaxation (#240)
+- **schema**: EnvironmentPatch + resolve() + stack sub-object (#232)
+
 ## v0.8.3 (2026-07-13)
 
 ### Feat
