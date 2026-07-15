@@ -42,7 +42,11 @@ dependencies = [
     # CLI — plain-text argument parsing. Rich and other terminal-UI deps
     # live in [project.optional-dependencies].dx so headless-server
     # installs don't pull them in.
-    "click>=8.1.0",
+    # NB: capped at <8.2 while click-repl 0.3.0 (the latest) references
+    # `ctx.protected_args` as a settable property. Click 8.2 removed that
+    # setter, so click-repl blows up at REPL entry. Lift the cap when a
+    # click-repl release (or a maintained fork) restores compatibility.
+    "click>=8.1.0,<8.2",
     # JSON processing
     "jsonpath-ng>=1.6.0",
     # HTTP client
