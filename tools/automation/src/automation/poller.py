@@ -124,8 +124,13 @@ def demote_unsafe_slug(resolution: model_resolver.Resolution) -> model_resolver.
     but is not a plain OpenRouter id (a ':free' / ':nitro' variant - ``_SAFE_SLUG_RE`` rejects the
     ':') would be confirmed to the requester and then silently dropped by ``resolved_slugs``,
     leaving the request un-run AND un-retryable (the reply is the dedup marker). Demote it to a
-    clarify-with-the-base-slug reply BEFORE it is confirmed, so the requester re-requests the base."""
-    if resolution.status != "resolved" or not resolution.slug or _SAFE_SLUG_RE.match(resolution.slug):
+    clarify-with-the-base-slug reply BEFORE it is confirmed, so the requester re-requests the base.
+    """
+    if (
+        resolution.status != "resolved"
+        or not resolution.slug
+        or _SAFE_SLUG_RE.match(resolution.slug)
+    ):
         return resolution
     base = resolution.slug.split(":", 1)[0]
     return dataclasses.replace(resolution, status="ambiguous", slug=None, candidates=(base,))

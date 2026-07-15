@@ -120,7 +120,9 @@ def run(resolve_dir: str, max_iter: int) -> int:
 
 
 def cli(
-    resolve_dir: str = typer.Option("observation/resolve", "--dir", help="the resolve artifact dir"),
+    resolve_dir: str = typer.Option(
+        "observation/resolve", "--dir", help="the resolve artifact dir"
+    ),
     max_iter: int = typer.Option(8, "--max-iter", help="the configured MAX_ITER (for the header)"),
 ) -> None:
     """Print a markdown 'why it did not converge' report for the needs-human PR comment."""
