@@ -33,7 +33,7 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.text import Text
 
-from tolokaforge.cli._display import DisplayMode, make_live
+from tolokaforge.cli._display import DisplayMode, format_duration, make_live
 from tolokaforge.core.logging import _TOLOKAFORGE_ROOT_HANDLER_SENTINEL
 from tolokaforge.core.run_display_events import (
     _NULL_EVENTS,
@@ -118,12 +118,7 @@ def _format_eta(eta_seconds: float | None) -> str:
     """Render ETA as ``MM:SS`` under 1h, ``HH:MM:SS`` above, ``n/a`` when unknown."""
     if eta_seconds is None:
         return "n/a"
-    total = int(eta_seconds)
-    hours, rem = divmod(total, 3600)
-    minutes, seconds = divmod(rem, 60)
-    if hours:
-        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-    return f"{minutes:02d}:{seconds:02d}"
+    return format_duration(eta_seconds)
 
 
 def _format_bottom_bar(stats: _BottomBarStats) -> str:

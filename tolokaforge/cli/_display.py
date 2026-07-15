@@ -11,6 +11,9 @@ Public surface:
   and :data:`THEME` installed.
 - :func:`emit_artifact_path` — the one sanctioned ``sys.stdout`` write in the
   CLI; every human/progress/log line goes through :data:`console` (stderr).
+- :func:`format_duration` — shared ``MM:SS`` / ``HH:MM:SS`` formatter for
+  wall-clock spans (run-end banner, live-panel ETA, and anything else that
+  needs a uniform duration shape).
 - :func:`make_progress` — factory for ``rich.progress.Progress`` bound to
   :data:`console` with the CLI's default column set.
 - :func:`make_live` — factory for ``rich.live.Live`` bound to :data:`console`.
@@ -76,6 +79,21 @@ def emit_artifact_path(path: Path | str) -> None:
     guarantees an absolute path regardless of caller cwd.
     """
     print(str(Path(path).resolve()), file=sys.stdout, flush=True)
+
+
+def format_duration(seconds: float) -> str:
+    """Render a wall-clock span as ``MM:SS`` under one hour, ``HH:MM:SS`` above.
+
+    Truncates to whole seconds via ``int(seconds)`` — no rounding, no
+    fractional display. Zero-padded fields. Callers compose the "unknown"
+    case themselves (this helper never returns ``"n/a"``).
+    """
+    total = int(seconds)
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
 
 
 def _default_progress_columns() -> list[ProgressColumn]:
@@ -249,6 +267,7 @@ __all__ = [
     "THEME",
     "console",
     "emit_artifact_path",
+    "format_duration",
     "make_live",
     "make_progress",
     "select_display_mode",

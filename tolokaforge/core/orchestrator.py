@@ -157,6 +157,31 @@ def _run_needs_full_stack(tasks: list[Any], stack_requirements: Any) -> bool:
     return _tasks_need_full_stack(tasks)
 
 
+def resolve_run_directory(base_output_dir: str | Path) -> tuple[str, Path]:
+    """Return ``(run_id, output_dir)`` for a run rooted at ``base_output_dir``.
+
+    ``base_output_dir`` is treated as a base name — the returned
+    ``output_dir`` is a sibling under ``Path(base_output_dir).parent``
+    named ``<basename>_<YYYYMMDD_HHMMSS>``. The timestamp is sourced from
+    :func:`datetime.now` at call time, so successive invocations produce
+    distinct paths (within one-second resolution). The returned
+    ``output_dir`` is NOT ``.resolve()``d — banner rendering and disk I/O
+    apply their own resolution.
+
+    Raises :class:`ValueError` with a message naming ``evaluation.output_dir``
+    when the basename is empty (``.``, ``/``, ``""``).
+    """
+    base_name = Path(base_output_dir).name
+    if not base_name:
+        raise ValueError(
+            f"run requires evaluation.output_dir with a non-empty basename; got {base_output_dir!r}"
+        )
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_id = f"{base_name}_{timestamp}"
+    output_dir = Path(base_output_dir).parent / run_id
+    return run_id, output_dir
+
+
 _DEFAULT_DB_SERVICE_URL = "http://tolokaforge-db-service:8000"
 """Runner-perspective DB service URL the docker stack injects into the runner
 container at start (`tolokaforge/docker/stacks/core.py`). The orchestrator
