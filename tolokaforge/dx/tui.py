@@ -911,12 +911,17 @@ class TextualRunApp(App[None]):
             _LOGGER.warning("TextualRunApp thread crashed", exc_info=True)
 
     def _install_log_sink(self) -> None:
+        # Textual takes over the terminal via its own screen; log records
+        # never need to reach stderr while the TUI is active — the Logs /
+        # Errors tabs read the buffered records directly. `print_above` is
+        # a no-op so WARNING+ records still populate the buffer without
+        # scrolling anything out under the app.
         root = logging.getLogger()
         for handler in list(root.handlers):
             if not getattr(handler, _TOLOKAFORGE_ROOT_HANDLER_SENTINEL, False):
                 continue
             sink = _LogSink(
-                wrapped_stream=handler.stream,
+                print_above=lambda _line: None,
                 formatter=handler.formatter,
                 buffer=self._log_buffer,
             )

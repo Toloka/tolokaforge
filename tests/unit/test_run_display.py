@@ -684,9 +684,9 @@ def test_log_sink_swallows_info_records() -> None:
     from tolokaforge.dx.live_panel import _LogSink
 
     buffer: deque[logging.LogRecord] = deque(maxlen=500)
-    stream = io.StringIO()
+    printed: list[str] = []
     sink = _LogSink(
-        wrapped_stream=stream,
+        print_above=printed.append,
         formatter=logging.Formatter("%(levelname)s %(message)s"),
         buffer=buffer,
     )
@@ -694,19 +694,19 @@ def test_log_sink_swallows_info_records() -> None:
     sink.emit(_make_log_record(logging.INFO, "hello"))
     sink.emit(_make_log_record(logging.DEBUG, "quiet"))
 
-    assert stream.getvalue() == ""
+    assert printed == []
     assert [r.getMessage() for r in buffer] == ["hello", "quiet"]
 
 
-def test_log_sink_forwards_warning_and_above_to_wrapped_stream() -> None:
+def test_log_sink_forwards_warning_and_above_via_print_above() -> None:
     from collections import deque
 
     from tolokaforge.dx.live_panel import _LogSink
 
     buffer: deque[logging.LogRecord] = deque(maxlen=500)
-    stream = io.StringIO()
+    printed: list[str] = []
     sink = _LogSink(
-        wrapped_stream=stream,
+        print_above=printed.append,
         formatter=logging.Formatter("%(levelname)s %(message)s"),
         buffer=buffer,
     )
@@ -714,7 +714,7 @@ def test_log_sink_forwards_warning_and_above_to_wrapped_stream() -> None:
     sink.emit(_make_log_record(logging.WARNING, "warn me"))
     sink.emit(_make_log_record(logging.ERROR, "oh no"))
 
-    assert stream.getvalue() == "WARNING warn me\nERROR oh no\n"
+    assert printed == ["WARNING warn me", "ERROR oh no"]
     assert [r.getMessage() for r in buffer] == ["warn me", "oh no"]
 
 
@@ -724,7 +724,7 @@ def test_log_sink_buffer_is_bounded() -> None:
     from tolokaforge.dx.live_panel import _LogSink
 
     buffer: deque[logging.LogRecord] = deque(maxlen=3)
-    sink = _LogSink(wrapped_stream=io.StringIO(), formatter=None, buffer=buffer)
+    sink = _LogSink(print_above=lambda _line: None, formatter=None, buffer=buffer)
 
     for i in range(10):
         sink.emit(_make_log_record(logging.INFO, f"msg-{i}"))

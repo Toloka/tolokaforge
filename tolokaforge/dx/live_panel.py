@@ -23,11 +23,11 @@ from __future__ import annotations
 import logging
 import threading
 from collections import deque
+from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import TextIO
 
 from rich.console import Group, RenderableType
 from rich.layout import Layout
@@ -68,23 +68,30 @@ class _LogSink(logging.Handler):
     """Root-logger handler installed for the lifetime of :class:`LiveRunDisplay`.
 
     Every record is appended to :attr:`buffer` (a bounded ring); records
-    at ``WARNING`` or above are also formatted and written to the wrapped
-    stream — the stream the sentinel handler was writing to *before*
-    Rich patched ``sys.stderr`` — so real problems still land above the
-    panel. INFO/DEBUG records are swallowed for on-panel display,
-    preventing the Docker-boot log wall from scrolling the Live region
-    off-screen.
+    at ``WARNING`` or above are additionally routed to the caller's
+    ``print_above`` callback so Rich Live can render them above the panel
+    without destabilising its cursor math. INFO/DEBUG records are
+    swallowed for on-panel display, preventing the Docker-boot log wall
+    from scrolling the Live region off-screen.
+
+    Historical note: an earlier version wrote WARNING+ directly to the
+    stream captured before Rich patched ``sys.stderr``. That bypasses
+    Live's coordination — Live decrements its cursor by its own last
+    render height, so raw writes to stderr between refreshes cause the
+    panel to re-append below the log line instead of overwriting in
+    place (visible bug: stacks of duplicate panels). Routing WARNING+
+    through the Live-owned console fixes it.
     """
 
     def __init__(
         self,
         *,
-        wrapped_stream: TextIO,
+        print_above: Callable[[str], None],
         formatter: logging.Formatter | None,
         buffer: deque[logging.LogRecord],
     ) -> None:
         super().__init__()
-        self._wrapped_stream = wrapped_stream
+        self._print_above = print_above
         if formatter is not None:
             self.setFormatter(formatter)
         self.buffer = buffer
@@ -94,9 +101,7 @@ class _LogSink(logging.Handler):
         if record.levelno < logging.WARNING:
             return
         try:
-            line = self.format(record)
-            self._wrapped_stream.write(line + "\n")
-            self._wrapped_stream.flush()
+            self._print_above(self.format(record))
         except Exception:  # noqa: BLE001 — handlers must never raise past logging
             self.handleError(record)
 
@@ -495,6 +500,16 @@ class LiveRunDisplay:
     def __enter__(self) -> LiveRunDisplay:
         self._live = make_live(self._layout, refresh_per_second=self._refresh_per_second)
         self._live.__enter__()
+        # Route WARNING+ log records through Live's own console. Rich Live
+        # intercepts prints on the console it owns, temporarily lifts the
+        # cursor above the live region, prints, then re-renders — so the
+        # panel stays anchored. Writing to the raw stderr stream instead
+        # bypasses that coordination and causes duplicate-panel stacking.
+        live_console = self._live.console
+
+        def _print_above(line: str) -> None:
+            live_console.print(line, markup=False, highlight=False)
+
         root = logging.getLogger()
         # In production, ``configure_root_logging`` guarantees at most one
         # sentinel-tagged handler at any time; iterating defensively keeps
@@ -504,7 +519,7 @@ class LiveRunDisplay:
             if not getattr(handler, _TOLOKAFORGE_ROOT_HANDLER_SENTINEL, False):
                 continue
             sink = _LogSink(
-                wrapped_stream=handler.stream,
+                print_above=_print_above,
                 formatter=handler.formatter,
                 buffer=self._log_buffer,
             )
