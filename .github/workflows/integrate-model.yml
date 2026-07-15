@@ -415,6 +415,9 @@ jobs:
               -e "s|{{INFRA_THRESHOLD}}|0.05|g" -e "s|{{GO_BOUNDARY}}|observe mode|g" "$1"
           }
           CONVERGED=no
+          # Per-iteration outcome log; the needs-human step turns it into a "why it did not
+          # converge" PR comment via `automation resolve-report`.
+          : > observation/resolve/loop_summary.md
           for i in $(seq 1 "$MAX_ITER"); do
             echo "::group::Resolve iteration $i"
             rm -f observation/resolve/overlay.yaml observation/resolve/decision.json
@@ -441,6 +444,7 @@ jobs:
             fi
             if [ ! -f observation/resolve/overlay.yaml ] || [ ! -f observation/resolve/decision.json ]; then
               echo "::warning::iteration $i produced no overlay/decision (agent stalled or hit max-turns)"
+              printf -- '- Iter %s: no overlay produced (agent stalled or hit its turn limit / throttled)\n' "$i" >> observation/resolve/loop_summary.md
               echo "::endgroup::"
               # Back off before the next attempt: a no-overlay iteration is almost always the
               # agent exhausting its turns because its Anthropic calls were throttled (429/529).
@@ -470,6 +474,7 @@ jobs:
               VERDICT="$(uv run automation greencheck observation/resolve/decision.json observation/resolve/last_reprobe.json 2>/dev/null || echo PARSE_FAIL)"
             fi
             echo "iteration $i verdict: $VERDICT"
+            printf -- '- Iter %s: fix produced, reprobe verdict = %s\n' "$i" "$VERDICT" >> observation/resolve/loop_summary.md
             echo "::endgroup::"
             # Converge when every fix-target is green, OR the agent proved there is nothing
             # to fix (all failures are genuine ceilings -> finalize writes them as unsupported).
@@ -648,7 +653,9 @@ jobs:
             BODY="The resolve agent requested human review: ${NEEDS_HUMAN_REASON}. It judged it cannot produce a correct policy from the observe data alone (a data-bound quirk) and did not fabricate a fix. Marked \`automation:integrate-needs-human\`. Latest artifacts are on the run. Run: ${RUN_URL}"
             SLACK=":raising_hand: Needs human (agent-requested): ${NEEDS_HUMAN_REASON}"
           else
-            BODY="Resolve did not converge within ${MAX_ITER} iterations, or converged but finalize failed (agent hit max-turns, wrote no changes, a broken/divergent policy failed the staged verification, or the push failed). Marked \`automation:integrate-needs-human\`. Latest overlay + reprobe are in the run artifacts. Run: ${RUN_URL}"
+            REPORT="$(uv run automation resolve-report --dir observation/resolve --max-iter "${MAX_ITER}" 2>/dev/null || true)"
+            [ -n "$REPORT" ] || REPORT="Resolve did not converge within ${MAX_ITER} iterations, or converged but finalize failed (agent hit max-turns, wrote no changes, a broken/divergent policy failed the staged verification, or the push failed)."
+            BODY="$(printf '%s\n\nMarked automation:integrate-needs-human. Latest overlay + reprobe are in the run artifacts. Run: %s' "$REPORT" "${RUN_URL}")"
             SLACK=":warning: Needs human: resolve did not converge within ${MAX_ITER} iterations (or finalize failed)"
           fi
           CURL="$(gh pr comment "$PR" -R "$REPO" --body "$BODY" || true)"

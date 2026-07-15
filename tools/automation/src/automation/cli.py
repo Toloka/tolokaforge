@@ -18,6 +18,7 @@ from automation import (
     pricing,
     probes,
     reprobe,
+    resolve_report,
     slack,
 )
 
@@ -32,6 +33,9 @@ app.add_typer(slack.app, name="slack")
 
 # The Slack-triggered integration poller (`automation slack-poll ...`).
 app.command("slack-poll")(poller.cli)
+
+# The needs-human "why it did not converge" report composer.
+app.command("resolve-report")(resolve_report.cli)
 
 
 @app.command("reconcile-cert")
