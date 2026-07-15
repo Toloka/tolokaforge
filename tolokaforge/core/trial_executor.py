@@ -26,6 +26,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+import yaml
+
 from tolokaforge.core.models import (
     Grade,
     GradeComponents,
@@ -39,6 +41,7 @@ from tolokaforge.core.runtime import EnvHandle, ProvisionError, RuntimeBackend
 from tolokaforge.core.trial import TrialResult, TrialSpec
 
 if TYPE_CHECKING:
+    from tolokaforge.core.compose_materialisation import LogCaptureConfig
     from tolokaforge.core.conductor import Conductor
     from tolokaforge.core.logging import StructuredLogger
 
@@ -75,6 +78,11 @@ class ProvisioningTrialExecutor:
     ``conductor`` for the trial body, and ``logger`` for per-branch
     structured observability at the substrate seam.
 
+    On a failed trial body it captures per-service logs via
+    ``runtime_backend.capture_service_logs`` before teardown, then records the
+    captured byte counts on the trial's ``metrics.yaml`` (path derived from
+    ``log_capture.output_root``; ``None`` disables the amendment).
+
     Instantiated once per run by the orchestrator's
     ``_build_trial_executor`` helper and submitted to the worker pool
     per trial. Provisioning parallelism = worker count.
@@ -85,10 +93,12 @@ class ProvisioningTrialExecutor:
         runtime_backend: RuntimeBackend,
         conductor: Conductor,
         logger: StructuredLogger,
+        log_capture: LogCaptureConfig | None = None,
     ) -> None:
         self.runtime_backend = runtime_backend
         self.conductor = conductor
         self.logger = logger
+        self.log_capture = log_capture
 
     def execute(self, spec: TrialSpec, task_config: TaskConfig) -> TrialResult:
         task_id, trial_idx = _split_trial_id(spec.trial_id)
@@ -132,9 +142,68 @@ class ProvisioningTrialExecutor:
                 trial_index=trial_idx,
                 runner_url=real_endpoints.runner_url,
             )
-            return self.conductor.run(final_spec, task_config)
+            result = self.conductor.run(final_spec, task_config)
+            self._capture_service_logs(handle, result, task_id, trial_idx)
+            return result
         finally:
             self._safe_teardown(handle, task_id, trial_idx)
+
+    def _capture_service_logs(
+        self, handle: EnvHandle, result: TrialResult, task_id: str, trial_idx: int
+    ) -> None:
+        """Capture per-service logs for a failed trial body, before teardown.
+
+        Failure here means execution failure (``ERROR`` / ``TIMEOUT``), not a
+        clean run that merely failed grading — the backend gates the actual
+        write on this ``failed`` flag plus its on-success policy. When the
+        backend returns a non-empty byte map, emit the aggregate summary line
+        and amend the trial's ``metrics.yaml`` with ``captured_service_logs``.
+        Best-effort diagnostics captured *because* a failure is already
+        decided: never changes control flow.
+        """
+        failed = result.trajectory.status in (TrialStatus.ERROR, TrialStatus.TIMEOUT)
+        byte_map = self.runtime_backend.capture_service_logs(handle, failed=failed)
+        if not byte_map:
+            return
+        self.logger.info(
+            "trial.service_logs_captured",
+            task_id=task_id,
+            trial_index=trial_idx,
+            services=byte_map,
+        )
+        self._amend_metrics_with_captured_logs(task_id, trial_idx, byte_map)
+
+    def _amend_metrics_with_captured_logs(
+        self, task_id: str, trial_idx: int, byte_map: dict[str, int]
+    ) -> None:
+        """Add a top-level ``captured_service_logs`` mapping to the trial's
+        ``metrics.yaml`` — the durable record for the trial-body path.
+
+        Read-add-write of the plain YAML mapping the conductor already wrote.
+        No-op when no ``log_capture`` output root is configured or the file is
+        absent. Logs and continues on I/O failure so a diagnostic write never
+        masks the trial result.
+        """
+        if self.log_capture is None:
+            return
+        metrics_path = (
+            self.log_capture.output_root / "trials" / task_id / str(trial_idx) / "metrics.yaml"
+        )
+        if not metrics_path.exists():
+            return
+        try:
+            with metrics_path.open() as f:
+                metrics = yaml.safe_load(f) or {}
+            metrics["captured_service_logs"] = dict(byte_map)
+            with metrics_path.open("w") as f:
+                yaml.safe_dump(metrics, f, sort_keys=False)
+        except Exception as amend_err:  # noqa: BLE001 — best-effort diagnostic amendment
+            self.logger.warning(
+                "Amending metrics.yaml with captured_service_logs failed; continuing",
+                task_id=task_id,
+                trial_index=trial_idx,
+                error=str(amend_err),
+            )
 
     def _safe_teardown(self, handle: EnvHandle, task_id: str, trial_idx: int) -> None:
         """Best-effort teardown that logs failures instead of swallowing them.

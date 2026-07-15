@@ -822,7 +822,10 @@ class Orchestrator:
                 continue
 
     def _build_trial_executor(
-        self, runtime_backend: RuntimeBackend, conductor: Conductor
+        self,
+        runtime_backend: RuntimeBackend,
+        conductor: Conductor,
+        log_capture: LogCaptureConfig | None = None,
     ) -> TrialExecutor:
         """Compose the per-run :class:`TrialExecutor` (ADR-0015).
 
@@ -832,6 +835,10 @@ class Orchestrator:
         ``trial_executor.execute`` to the worker pool in place of
         ``conductor.run``; the bracket runs on the worker thread so
         provisioning parallelism equals worker count.
+
+        ``log_capture`` is the same instance the runtime backend was built
+        with, threaded so the executor can amend a failed trial's
+        ``metrics.yaml`` with the captured per-service byte counts.
         """
         from tolokaforge.core.trial_executor import ProvisioningTrialExecutor
 
@@ -839,6 +846,7 @@ class Orchestrator:
             runtime_backend=runtime_backend,
             conductor=conductor,
             logger=self.logger,
+            log_capture=log_capture,
         )
 
     def _verify_isolation_compatibility(self, runtime_backend: RuntimeBackend) -> None:
@@ -1376,7 +1384,9 @@ class Orchestrator:
             output_dir=output_dir,
             request_limiter=request_limiter,
         )
-        trial_executor = self._build_trial_executor(runtime_backend, conductor)
+        trial_executor = self._build_trial_executor(
+            runtime_backend, conductor, log_capture=log_capture
+        )
 
         executor_healthy = runtime_backend.health_check()
         self.logger.info("Docker runtime health check", executor_healthy=executor_healthy)
@@ -1729,7 +1739,9 @@ class Orchestrator:
             output_dir=output_dir,
             request_limiter=request_limiter,
         )
-        trial_executor = self._build_trial_executor(runtime_backend, conductor)
+        trial_executor = self._build_trial_executor(
+            runtime_backend, conductor, log_capture=log_capture
+        )
 
         task_by_id = {task.task_id: task for task in self.tasks}
         run_queue = create_run_queue(

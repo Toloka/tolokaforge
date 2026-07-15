@@ -43,14 +43,15 @@ _FIXTURE = (
 )
 
 
-def _make_trial_spec(trial_id: str) -> TrialSpec:
+def _make_trial_spec(trial_id: str, *, manifest: EnvironmentManifest | None = None) -> TrialSpec:
     # 'db' is labelled reset with a seed the backend registry will not carry,
     # so provision brings the healthy stack up and then fails in the
     # reset_recipe stage — the branch that captures logs before teardown.
-    manifest = EnvironmentManifest(
-        compose_file=_FIXTURE,
-        services={"db": ServiceSpec(isolation="reset", reset=ResetSpec(seed="absent-seed"))},
-    )
+    if manifest is None:
+        manifest = EnvironmentManifest(
+            compose_file=_FIXTURE,
+            services={"db": ServiceSpec(isolation="reset", reset=ResetSpec(seed="absent-seed"))},
+        )
     return TrialSpec(
         trial_id=trial_id,
         run_id="log-capture-integration",
@@ -101,3 +102,44 @@ class TestProvisionFailureLogCapture:
         # Recorded byte counts match the files actually written.
         for service, entry in manifest["services"].items():
             assert entry["bytes"] == (services_dir / f"{service}.log").stat().st_size
+
+
+@pytest.mark.skipif(not is_docker_daemon_available(), reason="Docker not available")
+class TestSuccessPathCapture:
+    """After a *successful* provision, ``capture_service_logs(handle,
+    failed=False)`` writes per-service ``.log`` files only when the on-success
+    debug policy is set — the default keeps the output dir bounded."""
+
+    @staticmethod
+    def _success_spec(trial_id: str) -> TrialSpec:
+        # No reset service: the healthy stack comes up and provision succeeds.
+        return _make_trial_spec(trial_id, manifest=EnvironmentManifest(compose_file=_FIXTURE))
+
+    def test_on_success_false_captures_nothing(self, tmp_path: Path) -> None:
+        backend = PerTrialRuntimeBackend(
+            log_capture=LogCaptureConfig(output_root=tmp_path, tail=200, on_success=False)
+        )
+        handle = backend.provision(self._success_spec("task-1:0"))
+        try:
+            assert backend.capture_service_logs(handle, failed=False) == {}
+        finally:
+            backend.teardown(handle)
+
+        assert not (tmp_path / "trials" / "task-1" / "0" / "services").exists()
+
+    def test_on_success_true_captures_logs(self, tmp_path: Path) -> None:
+        backend = PerTrialRuntimeBackend(
+            log_capture=LogCaptureConfig(output_root=tmp_path, tail=200, on_success=True)
+        )
+        handle = backend.provision(self._success_spec("task-1:0"))
+        try:
+            captured = backend.capture_service_logs(handle, failed=False)
+        finally:
+            backend.teardown(handle)
+
+        services_dir = tmp_path / "trials" / "task-1" / "0" / "services"
+        assert services_dir.is_dir()
+        for service in captured:
+            log_file = services_dir / f"{service}.log"
+            assert log_file.is_file()
+            assert log_file.stat().st_size > 0

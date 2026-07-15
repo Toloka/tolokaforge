@@ -336,12 +336,16 @@ captures on success too.
   (the conductor never ran), so the durable record is a `services/_capture.yaml`
   manifest written alongside the `.log` files:
   `{"tail": int, "capture_reason": "provision_error", "services": {"<name>": {"bytes": int}}}`.
-- **Trial-body-failure path** — `capture_service_logs(handle, *, failed)` is the
-  Protocol hook that writes the per-service `.log` files for a still-live trial
-  stack (the `service_names` snapshot taken at provision time), returning a
-  `{service: bytes_written}` map. It writes only the `.log` files; the durable
-  record on this path is a `captured_service_logs` amendment on the trial's
-  existing `metrics.yaml`.
+- **Trial-body-failure path** — the [`TrialExecutor`](#per-trial-substrate-bracket-trialexecutor)
+  drives this surface: after `conductor.run` returns and before teardown it
+  calls `capture_service_logs(handle, *, failed)`, the Protocol hook that writes
+  the per-service `.log` files for a still-live trial stack (the `service_names`
+  snapshot taken at provision time) and returns a `{service: bytes_written}`
+  map. On a non-empty map the executor emits the `trial.service_logs_captured`
+  summary log line and amends the trial's existing `metrics.yaml` with a
+  top-level `captured_service_logs` mapping — the durable record on this path
+  (the hook writes only the `.log` files). See
+  [`docs/OUTPUT_FORMAT.md`](../OUTPUT_FORMAT.md:1) § `captured_service_logs`.
 
 Both surfaces are best-effort: capture runs *because* a failure was already
 decided, so a per-service fetch error is logged at debug and that service is
