@@ -245,8 +245,10 @@ class TestTaskConfigMinimal:
         assert t.task_id == "x"
         assert t.name is None
         assert t.category is None
-        # The four relaxed fields default to model instances (not None) so the
-        # unguarded live consumers in conductor.py / native.py keep working.
+        # Three of the four relaxed fields default to model instances (not
+        # None) so the unguarded live consumers in conductor.py / native.py
+        # keep working; grading defaults to None (path field, guarded fail-
+        # loud where dereferenced).
         assert isinstance(t.initial_state, InitialStateConfig)
         assert isinstance(t.tools, ToolsConfig)
         assert isinstance(t.user_simulator, UserSimulatorConfig)
