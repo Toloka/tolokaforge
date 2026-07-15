@@ -831,23 +831,20 @@ def run(
                 ),
             )
 
-            console.print("[bold blue]Loading tasks...[/bold blue]")
+            # NB: no `console.print` calls between LiveRunDisplay.__enter__ and
+            # __exit__. Every out-of-band write to the shared console while
+            # Rich Live is active destabilises its cursor math and causes
+            # panel copies to stack (visible bug). The panel is authoritative
+            # during a run — status flows through phase_changed / run_started
+            # already. Error paths use `logger.error` so `_LogSink` forwards
+            # the WARNING+ to the wrapped stream above the panel.
             orchestrator.load_tasks()
 
             if not orchestrator.tasks:
-                console.print("[red]No tasks found![/red]")
+                logging.getLogger("tolokaforge.dx").error(
+                    "No tasks found — check tasks_glob in the run config"
+                )
                 raise SystemExit(1)
-
-            console.print(f"[green]Found {len(orchestrator.tasks)} tasks[/green]")
-
-            if resume:
-                console.print(
-                    "[bold yellow]Resuming run (skipping completed trials)...[/bold yellow]"
-                )
-            else:
-                console.print(
-                    f"[bold blue]Running {run_config.orchestrator.repeats} trials per task...[/bold blue]"
-                )
 
             output_dir = orchestrator.run(run_id=run_id, output_dir=run_dir)
         success = True
