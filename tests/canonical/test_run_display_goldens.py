@@ -123,15 +123,39 @@ def _replay_events(display: LiveRunDisplay) -> None:
     display.trial_completed(trial_id="task_b:0", binary_pass=True, score=0.72)
 
 
-def _render_svg(width: int) -> str:
+def _render_svg(
+    width: int,
+    *,
+    cost_budget_usd: float | None = None,
+    extra_cost_delta_usd: float = 0.0,
+) -> str:
+    """Render the panel to SVG.
+
+    ``cost_budget_usd`` — when set, wires the amber@80 % / red@100 % cost
+    meter and the bottom-bar cost segment renders in the ``warn`` or
+    ``error`` theme token. ``extra_cost_delta_usd`` — extra cumulative
+    cost injected via one final ``trial_progress`` after the base event
+    sequence so the SVG captures a specific budget-utilisation regime.
+    """
     recorder = Console(
         record=True,
         width=width,
         force_terminal=True,
         color_system="truecolor",
     )
-    display = LiveRunDisplay(refresh_per_second=1000, max_trial_rows=20)
+    display = LiveRunDisplay(
+        refresh_per_second=1000,
+        max_trial_rows=20,
+        cost_budget_usd=cost_budget_usd,
+    )
     _replay_events(display)
+    if extra_cost_delta_usd:
+        display.trial_progress(
+            trial_id="task_b:0",
+            prompt_tokens_delta=0,
+            completion_tokens_delta=0,
+            cost_delta_usd=extra_cost_delta_usd,
+        )
     recorder.print(display._build_layout())
     return recorder.export_svg(
         title="tolokaforge run",
@@ -166,6 +190,53 @@ def test_run_display_panel_svg(
             f"SVG golden drift for panel_{width}.svg — re-run with "
             "`--update-canon` if the change is intentional, then review the "
             "diff before committing."
+        )
+
+
+# Base cumulative cost after `_replay_events`: 0.008 (task_a) + 0.87
+# (task_b) + 0.002 (task_d) + 0.14 (task_e) = 1.02. To land inside the
+# amber band (>= 80 %, < 100 %) at ``cost_budget_usd = 1.5``, aim for
+# ~1.30 total → extra 0.28. For the red band (>= 100 %) at the same
+# budget, aim for ~1.65 → extra 0.63.
+_BASE_TOTAL_COST = 0.008 + 0.87 + 0.002 + 0.14
+
+
+@pytest.mark.parametrize(
+    ("style_label", "extra_cost"),
+    [
+        ("amber", 1.30 - _BASE_TOTAL_COST),
+        ("red", 1.65 - _BASE_TOTAL_COST),
+    ],
+)
+def test_run_display_panel_svg_with_budget(
+    request: pytest.FixtureRequest,
+    frozen_clock: None,
+    style_label: str,
+    extra_cost: float,
+) -> None:
+    """The panel renders the cost segment in ``warn`` / ``error`` when the
+    cumulative cost crosses 80 % / 100 % of the budget."""
+
+    width = 80
+    cost_budget_usd = 1.5
+    actual = _render_svg(width, cost_budget_usd=cost_budget_usd, extra_cost_delta_usd=extra_cost)
+    golden_path = GOLDEN_DIR / f"panel_{width}_budget_{style_label}.svg"
+
+    if request.config.getoption("--update-canon"):
+        golden_path.parent.mkdir(parents=True, exist_ok=True)
+        golden_path.write_text(actual, encoding="utf-8")
+        return
+
+    assert golden_path.exists(), (
+        f"Golden missing: {golden_path.relative_to(GOLDEN_DIR.parent.parent.parent)}. "
+        "Run `uv run pytest tests/canonical/test_run_display_goldens.py --update-canon`."
+    )
+    expected = golden_path.read_text(encoding="utf-8")
+    if actual != expected:
+        pytest.fail(
+            f"SVG golden drift for panel_{width}_budget_{style_label}.svg — "
+            "re-run with `--update-canon` if the change is intentional, "
+            "then review the diff before committing."
         )
 
 

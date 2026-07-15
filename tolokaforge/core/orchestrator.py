@@ -233,14 +233,19 @@ def _build_env_endpoints(runner_address: str) -> EnvEndpoints:
 class OrchestratorDeps:
     """Pluggable seams the :class:`Orchestrator` delegates to.
 
-    Packs the four independent injection points (per-trial artifact
-    writer, run-level aggregate writer, execution runtime, per-trial
-    executor factory) into a single frozen record so the constructor
-    doesn't grow a kwarg per seam. Default construction preserves the
-    legacy behaviour: fresh :class:`FileArtifactWriter` /
-    :class:`FileAggregateWriter` defaults, no runtime backend override
-    (``run()`` builds :class:`DockerRuntime`), no factory override
-    (``_build_conductor`` builds :class:`InProcessConductor`).
+    Packs the injection points into a single frozen record so the
+    constructor doesn't grow a kwarg per seam. Default construction
+    preserves the legacy behaviour: fresh :class:`FileArtifactWriter`
+    / :class:`FileAggregateWriter` defaults, no runtime backend override,
+    no conductor factory override, no budget, no agent-client factory
+    (``run()`` constructs a bare :class:`LLMClient` for the agent).
+
+    ``agent_client_factory`` — when set, called with the resolved agent
+    :class:`ModelConfig` to produce the wire client. The CLI wires
+    :class:`FallbackLLMClient` through this seam when
+    ``--fallback-models`` is passed. The returned object must
+    duck-type :class:`LLMClient` (``config``, ``capabilities``,
+    ``generate``) — the conductor reads all three.
     """
 
     artifact_writer: TrialArtifactWriter = field(default_factory=FileArtifactWriter)
@@ -249,6 +254,7 @@ class OrchestratorDeps:
     conductor_factory: ConductorFactory | None = None
     events: RunDisplayEvents = field(default_factory=_NullRunDisplayEvents)
     budget: CompositeBudget | None = None
+    agent_client_factory: Callable[[ModelConfig], LLMClient] | None = None
 
 
 class Orchestrator:
@@ -303,6 +309,12 @@ class Orchestrator:
         # composite when it fires so both entry points share the same
         # code path.
         self._injected_budget: CompositeBudget | None = resolved_deps.budget
+        # Factory the CLI wires when ``--fallback-models`` is passed;
+        # produces the agent-side wire client at ``run()`` / ``run_worker()``
+        # time. ``None`` means "build a bare :class:`LLMClient`".
+        self._agent_client_factory: Callable[[ModelConfig], LLMClient] | None = (
+            resolved_deps.agent_client_factory
+        )
         # Set to ``"<cost|time|sample> limit"`` on the first budget hit
         # and read by the CLI to shape the run-end banner. ``None`` for
         # runs that reached natural completion.
@@ -1142,8 +1154,14 @@ class Orchestrator:
             judge_model=(f"{judge_config.provider}/{judge_config.name}" if judge_config else None),
         )
 
-        # Instantiate agent client in orchestrator process
-        agent_client = LLMClient(agent_config)
+        # Instantiate agent client in orchestrator process. The factory
+        # seam routes through :class:`FallbackLLMClient` when the CLI
+        # wired ``--fallback-models``; otherwise the bare client ships.
+        agent_client = (
+            self._agent_client_factory(agent_config)
+            if self._agent_client_factory is not None
+            else LLMClient(agent_config)
+        )
         request_limiter: GlobalRateLimiter | None = None
         if self.config.effective_max_requests_per_second is not None:
             request_limiter = GlobalRateLimiter(self.config.effective_max_requests_per_second)
@@ -1662,7 +1680,11 @@ class Orchestrator:
             judge_model=(f"{judge_config.provider}/{judge_config.name}" if judge_config else None),
         )
 
-        agent_client = LLMClient(agent_config)
+        agent_client = (
+            self._agent_client_factory(agent_config)
+            if self._agent_client_factory is not None
+            else LLMClient(agent_config)
+        )
         request_limiter: GlobalRateLimiter | None = None
         if self.config.effective_max_requests_per_second is not None:
             request_limiter = GlobalRateLimiter(self.config.effective_max_requests_per_second)

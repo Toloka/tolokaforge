@@ -202,9 +202,9 @@ class TestDisplayRichActivatesLiveRunDisplay:
 
         real_for_mode = cli_main.LiveRunDisplay.for_mode
 
-        def spying_for_mode(mode: DisplayMode):
+        def spying_for_mode(mode: DisplayMode, **kwargs: Any):
             seen_modes.append(mode)
-            return real_for_mode(mode)
+            return real_for_mode(mode, **kwargs)
 
         monkeypatch.setattr(cli_main.LiveRunDisplay, "for_mode", spying_for_mode)
 
@@ -237,7 +237,7 @@ class TestDisplayRichActivatesLiveRunDisplay:
         fake_ordering: list[str] = []
         fake_events = _FakeEvents()
 
-        def fake_for_mode(mode: DisplayMode) -> _FakeDisplay:
+        def fake_for_mode(mode: DisplayMode, **_: Any) -> _FakeDisplay:
             return _FakeDisplay(fake_ordering, fake_events)
 
         monkeypatch.setattr(cli_main.LiveRunDisplay, "for_mode", fake_for_mode)
@@ -277,7 +277,7 @@ class TestDisplayRichActivatesLiveRunDisplay:
 
         shared_ordering = ordering  # display and emit push into the same list
 
-        def fake_for_mode(mode: DisplayMode) -> _FakeDisplay:
+        def fake_for_mode(mode: DisplayMode, **_: Any) -> _FakeDisplay:
             return _FakeDisplay(shared_ordering, _FakeEvents())
 
         monkeypatch.setattr(cli_main.LiveRunDisplay, "for_mode", fake_for_mode)
@@ -349,7 +349,7 @@ class TestFailurePathHandling:
         fake_ordering: list[str] = []
         fake_display = _FakeDisplay(fake_ordering, _FakeEvents())
 
-        def fake_for_mode(mode: DisplayMode) -> _FakeDisplay:
+        def fake_for_mode(mode: DisplayMode, **_: Any) -> _FakeDisplay:
             return fake_display
 
         monkeypatch.setattr(cli_main.LiveRunDisplay, "for_mode", fake_for_mode)
@@ -384,7 +384,7 @@ class TestCompositionWithOtherFlags:
 
         fake_events = _FakeEvents()
 
-        def fake_for_mode(mode: DisplayMode) -> _FakeDisplay:
+        def fake_for_mode(mode: DisplayMode, **_: Any) -> _FakeDisplay:
             return _FakeDisplay([], fake_events)
 
         monkeypatch.setattr(cli_main.LiveRunDisplay, "for_mode", fake_for_mode)
@@ -418,7 +418,7 @@ class TestCompositionWithOtherFlags:
 
         fake_events = _FakeEvents()
 
-        def fake_for_mode(mode: DisplayMode) -> _FakeDisplay:
+        def fake_for_mode(mode: DisplayMode, **_: Any) -> _FakeDisplay:
             return _FakeDisplay([], fake_events)
 
         monkeypatch.setattr(cli_main.LiveRunDisplay, "for_mode", fake_for_mode)
@@ -443,7 +443,7 @@ class TestCompositionWithOtherFlags:
 
         fake_events = _FakeEvents()
 
-        def fake_for_mode(mode: DisplayMode) -> _FakeDisplay:
+        def fake_for_mode(mode: DisplayMode, **_: Any) -> _FakeDisplay:
             return _FakeDisplay([], fake_events)
 
         monkeypatch.setattr(cli_main.LiveRunDisplay, "for_mode", fake_for_mode)
@@ -515,7 +515,7 @@ class TestEventsFlowEndToEnd:
 
         recording_events = _RecordingFakeEvents()
 
-        def fake_for_mode(mode: DisplayMode) -> _FakeDisplay:
+        def fake_for_mode(mode: DisplayMode, **_: Any) -> _FakeDisplay:
             return _FakeDisplay([], recording_events)
 
         monkeypatch.setattr(cli_main.LiveRunDisplay, "for_mode", fake_for_mode)

@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import Path
 
@@ -25,7 +25,12 @@ from tolokaforge.cli._run_banner import (
     print_run_start_banner,
 )
 from tolokaforge.cli._run_display import LiveRunDisplay
+from tolokaforge.core import pricing
+from tolokaforge.core.budgets import LimitHitMarker, make_budget
+from tolokaforge.core.duration import parse_duration
 from tolokaforge.core.engine_run_state import read_persisted_presets_file
+from tolokaforge.core.llm.client import LLMClient
+from tolokaforge.core.llm.fallback_client import FallbackLLMClient
 from tolokaforge.core.llm.presets import (
     resolve_overlay_path,
     set_overlay_path,
@@ -36,7 +41,7 @@ from tolokaforge.core.logging import (
     configure_root_logging,
     silence_root_logging,
 )
-from tolokaforge.core.models import RunConfig
+from tolokaforge.core.models import ModelConfig, RunConfig
 from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps, resolve_run_directory
 from tolokaforge.core.project_loader import load_effective_run_config
 from tolokaforge.core.resume import RunStateManager
@@ -292,6 +297,61 @@ DEFAULT_USER_MODEL_PROVIDER = "openrouter"
 DEFAULT_USER_MODEL_TEMPERATURE = 0.2
 
 
+def _parse_fallback_models(spec: str, *, default_provider: str) -> list[ModelConfig]:
+    """Parse ``--fallback-models`` into an ordered chain of :class:`ModelConfig`.
+
+    Tokens separated by commas; whitespace inside a token stripped. Each
+    token is either ``<provider>/<name>`` (partition on the FIRST ``/``,
+    so ``openrouter/anthropic/claude-sonnet-4.6`` yields
+    ``provider="openrouter"`` and ``name="anthropic/claude-sonnet-4.6"``)
+    or a bare name — in which case ``default_provider`` (the primary
+    agent's provider) fills in.
+
+    Empty spec, whitespace-only spec, or a token that resolves to an
+    empty name raises :class:`click.BadParameter` naming the offender.
+    """
+    if not spec or not spec.strip():
+        raise click.BadParameter(
+            "--fallback-models is empty; pass a comma-separated list of model ids"
+        )
+    tokens = [tok.strip() for tok in spec.split(",")]
+    result: list[ModelConfig] = []
+    for token in tokens:
+        if not token:
+            raise click.BadParameter(
+                f"--fallback-models contains an empty token in {spec!r}; check for stray commas"
+            )
+        provider_head, sep, name_tail = token.partition("/")
+        if sep:
+            provider = provider_head
+            name = name_tail
+        else:
+            provider = default_provider
+            name = token
+        if not name:
+            raise click.BadParameter(
+                f"--fallback-models token {token!r} resolved to an empty model name"
+            )
+        result.append(ModelConfig(provider=provider, name=name))
+    return result
+
+
+def _read_limit_hit_reason(run_dir: Path) -> str | None:
+    """Return ``"<which> limit"`` when ``run_dir/LIMIT_HIT.json`` exists.
+
+    Orchestrator writes the marker on the first budget hit; this helper
+    lets the CLI shape the end banner without leaking orchestrator
+    internals. Missing file → ``None`` (natural completion). Malformed
+    marker → :class:`ValueError` propagates — a corrupt marker is a
+    fail-loud condition, not something the banner should silently hide.
+    """
+    marker_path = run_dir / "LIMIT_HIT.json"
+    if not marker_path.exists():
+        return None
+    marker = LimitHitMarker.model_validate_json(marker_path.read_text())
+    return f"{marker.which} limit"
+
+
 def _activate_presets_overlay(
     cli_presets_file: str | None,
     run_config: RunConfig,
@@ -384,6 +444,61 @@ def _activate_presets_overlay(
         "in the run config. Must be a positive integer. See docs/CONFIG.md."
     ),
 )
+@click.option(
+    "--cost-limit",
+    "cost_limit",
+    type=float,
+    default=None,
+    help=(
+        "Hard cap on cumulative agent cost in USD. Stops enqueuing new "
+        "trials on hit; in-flight trials finish. Writes LIMIT_HIT.json "
+        "under the run directory. Overrides compute.max_budget_usd."
+    ),
+)
+@click.option(
+    "--time-limit",
+    "time_limit",
+    type=str,
+    default=None,
+    help=(
+        "Hard cap on wall-clock execution time. Accepts compound units "
+        "(e.g. '30m', '2h', '1h30m', '90s', '1d12h'). Clock starts on "
+        "the first trial event, not at task-loading time."
+    ),
+)
+@click.option(
+    "--sample-limit",
+    "sample_limit",
+    type=int,
+    default=None,
+    help=(
+        "Hard cap on terminated trials (completed or retry-exhausted). "
+        "In-flight trials finish gracefully."
+    ),
+)
+@click.option(
+    "--fallback-models",
+    "fallback_models",
+    type=str,
+    default=None,
+    help=(
+        "Comma-separated ordered chain of fallback agent models "
+        "(e.g. 'openrouter/anthropic/claude-sonnet-4.6,openai/gpt-4o'). "
+        "On a hard failure of the primary agent model, subsequent turns "
+        "for that trial use the next model in the chain. Tokens without "
+        "a '/' inherit the primary agent's provider."
+    ),
+)
+@click.option(
+    "--model-cost-config",
+    "model_cost_config",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help=(
+        "JSON or YAML overlay merged onto the shipped pricing table. "
+        "Same schema as tolokaforge/core/data/pricing.json. See docs/CLI.md."
+    ),
+)
 @click.pass_context
 def run(
     ctx: click.Context,
@@ -396,6 +511,11 @@ def run(
     presets_file: str | None,
     runtime: str | None,
     workers: int | None,
+    cost_limit: float | None,
+    time_limit: str | None,
+    sample_limit: int | None,
+    fallback_models: str | None,
+    model_cost_config: str | None,
 ):
     """Run benchmark with specified configuration"""
     if verbose:
@@ -450,6 +570,26 @@ def run(
     if workers is not None:
         config_data.setdefault("compute", {})["workers"] = workers
 
+    # --cost-limit mutates compute.max_budget_usd (its existing home);
+    # the CLI value beats any value in the run config, mirroring --workers.
+    if cost_limit is not None:
+        config_data.setdefault("compute", {})["max_budget_usd"] = cost_limit
+
+    # --time-limit accepts compound-unit spec strings; ValueError from the
+    # parser surfaces as click.BadParameter with a diagnostic message.
+    time_limit_seconds: float | None = None
+    if time_limit is not None:
+        try:
+            time_limit_seconds = parse_duration(time_limit)
+        except ValueError as exc:
+            raise click.BadParameter(f"--time-limit: {exc}") from exc
+
+    # --model-cost-config overlays the shipped pricing table BEFORE the
+    # orchestrator is constructed so every downstream cost computation
+    # (including litellm's fallback path) sees the merged rates.
+    if model_cost_config is not None:
+        pricing.reload_pricing(overlay_path=Path(model_cost_config))
+
     run_config = RunConfig(**config_data)
 
     _print_runtime_banner(
@@ -477,10 +617,46 @@ def run(
     run_id, run_dir = resolve_run_directory(run_config.evaluation.output_dir)
     print_run_start_banner(run_id=run_id, run_dir=run_dir, console=console)
 
+    # Resolve the cost budget once — feeds both the composite budget the
+    # orchestrator drives and the live panel's amber/red threshold logic.
+    # ``effective_max_budget_usd`` folds --cost-limit (via
+    # ``compute.max_budget_usd``) and the pre-existing config field.
+    cost_budget_usd = run_config.effective_max_budget_usd
+    budget = make_budget(
+        cost_limit_usd=cost_budget_usd,
+        time_limit_seconds=time_limit_seconds,
+        sample_limit=sample_limit,
+    )
+
+    # --fallback-models is realised as a per-invocation
+    # ``agent_client_factory`` that wraps the primary agent model in a
+    # :class:`FallbackLLMClient`. When the flag is unset the seam stays
+    # ``None`` and the orchestrator constructs a bare :class:`LLMClient`.
+    agent_client_factory: Callable[[ModelConfig], LLMClient] | None = None
+    if fallback_models is not None:
+        agent_cfg = run_config.models.get("agent")
+        if agent_cfg is None:
+            raise click.UsageError(
+                "--fallback-models requires an agent model in the run config "
+                "(models.agent). Add one, or drop the flag."
+            )
+        fallback_chain = _parse_fallback_models(
+            fallback_models, default_provider=agent_cfg.provider
+        )
+
+        def _fallback_factory(primary: ModelConfig) -> LLMClient:
+            return FallbackLLMClient(primary=primary, fallbacks=fallback_chain)  # type: ignore[return-value]
+
+        agent_client_factory = _fallback_factory
+        console.print(
+            f"[cyan]Fallback chain: {', '.join(f'{m.provider}/{m.name}' for m in fallback_chain)}[/cyan]"
+        )
+
     start_ts = time.monotonic()
     success = False
+    output_dir: Path | None = None
     try:
-        with LiveRunDisplay.for_mode(display_mode) as display:
+        with LiveRunDisplay.for_mode(display_mode, cost_budget_usd=cost_budget_usd) as display:
             # Create orchestrator with flags. Pass the resolved project so
             # the adapter picks up project.task_defaults on task load. The
             # display's event sink threads through OrchestratorDeps down to
@@ -491,7 +667,11 @@ def run(
                 verbose=verbose,
                 strict=strict,
                 project=project,
-                deps=OrchestratorDeps(events=display.events),
+                deps=OrchestratorDeps(
+                    events=display.events,
+                    budget=budget,
+                    agent_client_factory=agent_client_factory,
+                ),
             )
 
             console.print("[bold blue]Loading tasks...[/bold blue]")
@@ -515,12 +695,14 @@ def run(
             output_dir = orchestrator.run(run_id=run_id, output_dir=run_dir)
         success = True
     finally:
+        stopped_reason = _read_limit_hit_reason(output_dir if output_dir is not None else run_dir)
         print_run_end_banner(
             run_id=run_id,
             run_dir=run_dir,
             duration_seconds=time.monotonic() - start_ts,
             success=success,
             console=console,
+            stopped_reason=stopped_reason,
         )
     emit_artifact_path(output_dir)
 

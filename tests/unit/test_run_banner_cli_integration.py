@@ -296,8 +296,8 @@ class TestOrdering:
                 ordering.append("__exit__")
                 return res
 
-        def wrapping_for_mode(mode: DisplayMode) -> _WrappedCtx:
-            return _WrappedCtx(real_for_mode(mode))
+        def wrapping_for_mode(mode: DisplayMode, **kwargs: Any) -> _WrappedCtx:
+            return _WrappedCtx(real_for_mode(mode, **kwargs))
 
         monkeypatch.setattr(cli_main.LiveRunDisplay, "for_mode", wrapping_for_mode)
 
