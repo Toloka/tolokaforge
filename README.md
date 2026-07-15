@@ -125,11 +125,16 @@ materialises that stack instead. Real databases, real APIs, custom
 services, whatever the compose file names.
 
 ```yaml
-# task.yaml
-environment_manifest:
-  compose_file: "./environment.compose.yaml"
-  runner_service: "runner"
-  isolation: "shared_ok"        # or "per_trial"
+# project.yaml
+default_environment:
+  stack:
+    compose_file: "./environment.compose.yaml"
+    runner_service: "runner"
+  services:
+    app-db:                     # per-service isolation: shared | reset | ephemeral
+      isolation: "reset"
+      reset: { seed: "postgres_baseline" }
+  network_policy: "no_internet"
 ```
 
 The [`multi_service`](examples/native/multi_service/) example is the
