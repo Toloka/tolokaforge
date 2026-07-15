@@ -151,6 +151,27 @@ presets:
     prompt_policy: dict_map_hints
     reasoning_codec: openai
 
+  # z-ai/glm-5.2 (Zhipu / Z.AI via OpenRouter). Dedicated entry rather than
+  # joining ``openrouter_dict_stringify_recovery`` above (whose globs do NOT
+  # match glm-5.2). Same failure mechanism and composition, though: glm-5.2
+  # serialises TOP-LEVEL object / dict-valued tool-call arguments as
+  # JSON-encoded STRINGS instead of native dicts on the default route —
+  # ``{"item": "{\"kind\":...}"}`` / ``{"message": "{...}"}`` /
+  # ``{"order": "{...}"}`` / ``{"envelope": "{...}"}`` — the exact quirk
+  # ``JsonCoerceResponse`` (``json_coerce``) recovers on Qwen / mimo / kimi.
+  # ``passthrough`` schema keeps hints / schema / task-docs dict-shaped,
+  # ``dict_map_hints`` mitigates the shared ``Dict[str, T]`` blind spot, and
+  # the ``openai`` reasoning codec lands its reasoning_content summary in the
+  # trajectory logs. Live-certified 2026-07-15 (auto-resolve, PR #362).
+  openrouter_glm_5_2_dict_stringify:
+    match:
+      - "z-ai/glm-5.2"
+      - "*glm-5.2"
+    schema_sanitizer: passthrough
+    response_policy: json_coerce
+    prompt_policy: dict_map_hints
+    reasoning_codec: openai
+
   # DeepSeek V3.2-Exp experimental V3.2 reasoning route.
   # Unlike the V4 line (openrouter_dict_stringify_recovery, above) it
   # round-trips dict-map and discriminated-union tool calls cleanly on

@@ -1514,6 +1514,76 @@ _ALL: list[MC] = [
             }
         ),
     ),
+    # GLM-5.2 (Zhipu / Z.AI via OpenRouter). Successor to glm-5.1. Routes
+    # through its OWN preset ``openrouter_glm_5_2_dict_stringify`` (passthrough
+    # schema + dict_map_hints + json_coerce response + openai reasoning codec)
+    # — same composition as the shared ``openrouter_dict_stringify_recovery``
+    # sibling, but a dedicated entry because that preset's globs do not match
+    # glm-5.2. Auto-resolve integration 2026-07-15 (PR #362): the default route
+    # stringified the top-level object tool-args on all five fix-target probes
+    # (discriminated_union bare/explicit, heterogeneous_array nested_in_object,
+    # dict_map nested_in_object, discriminated_union nested_union); json_coerce
+    # decodes them and the final reprobe went 5/5 on every one. 18 required /
+    # 5 known_unsupported.
+    #
+    # The known_unsupported set is NOT copied from glm-5.1: it diverges in two
+    # ways confirmed on the observe baseline. RECURSIVE_REF_TOOL_CALL is a
+    # genuine structural collapse json_coerce cannot fix — deep_chain / wide_tree
+    # flatten to a single ``{"label": "A"}`` node (the model drops the tree, not
+    # a wire-shape issue), so it stays a ceiling (glm-5.1 held it required).
+    # THINKING_EMITS_BLOCKS is demoted to known_unsupported: the observe baseline
+    # showed "StructuredReasoning should be surfaced" failing 15/15, so the
+    # openai codec did not surface reasoning reliably on this route (glm-5.1
+    # held it required).
+    MC(
+        model_id="openrouter__z-ai_glm-5.2",
+        provider="openrouter",
+        name="z-ai/glm-5.2",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.DICT_MAP_TOOL_CALL,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.IMPLICIT_PROMPT_CACHING,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # Genuine structural collapse: deep_chain / wide_tree recursive
+                # trees flatten to a single ``{"label": "A"}`` node on the
+                # observe baseline (the model drops the nested children, not a
+                # stringification json_coerce can recover). Ceiling.
+                C.RECURSIVE_REF_TOOL_CALL,
+                # No Anthropic-style ephemeral cache markers on this route
+                # (cache_policy: none on the preset). IMPLICIT_PROMPT_CACHING
+                # (auto-cache surface) IS required above.
+                C.PROMPT_CACHING,
+                # Observe baseline: "StructuredReasoning should be surfaced"
+                # failed 15/15 — the openai codec did not surface structured
+                # reasoning reliably on this route, so emit is not a reliable
+                # gate. Replay is a no-op on the openai codec (no signed blocks,
+                # empty encode_for_replay), same posture as the glm-5.1 sibling.
+                C.THINKING_EMITS_BLOCKS,
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.UNSIGNED_THINKING_REPLAY,
+            }
+        ),
+    ),
     # Mistral-Medium-3.5 (Mistral AI via OpenRouter). Clean tool-caller on
     # the default route — dict-map, discriminated-union, decimal all
     # round-trip natively, so no preset is needed. It is a NON-reasoning
