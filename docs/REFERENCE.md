@@ -187,18 +187,46 @@ fail-loud ERRORED status.
 #### Orchestrator
 
 ```python
-from tolokaforge.core.orchestrator import Orchestrator
-
-orchestrator = Orchestrator(
-    config: Dict[str, Any],     # Run configuration
-    output_dir: str = "output",
-    workers: int = 1,
+from pathlib import Path
+from tolokaforge.core.orchestrator import (
+    Orchestrator,
+    OrchestratorDeps,
+    resolve_run_directory,
 )
 
-results = orchestrator.run()                    # Execute evaluation
-results = orchestrator.resume(run_id="...")     # Resume partial run
-errors = orchestrator.validate_tasks("glob")    # Validate without running
+orchestrator = Orchestrator(
+    config,                         # RunConfig — validated run configuration
+    resume=False,                   # True re-runs only pending / infra-failed trials
+    verbose=False,                  # DEBUG level on the orchestrator's structured logger
+    strict=False,                   # Raise on any ERROR log record
+    deps=OrchestratorDeps(...),     # Optional injection seams (writers, backend, events, budget)
+    project=None,                   # Optional ProjectConfig (project.yaml layered defaults)
+)
+
+run_id, run_dir = resolve_run_directory(config.evaluation.output_dir)
+run_dir = orchestrator.run(run_id=run_id, output_dir=run_dir)
+# Returns the absolute run-dir path. When run_id and output_dir are both None,
+# run() calls resolve_run_directory() itself.
 ```
+
+Resume-in-place uses the same entry point with `resume=True` and an existing run directory:
+
+```python
+from tolokaforge.core.resume import resolve_resume_run_directory
+
+run_id, run_dir = resolve_resume_run_directory(Path("results/prior_run_20260714_193042"))
+orchestrator = Orchestrator(config, resume=True)
+orchestrator.run(run_id=run_id, output_dir=run_dir)
+```
+
+The queue-worker path uses two symmetric entry points:
+
+```python
+orchestrator.prepare_run(Path("results/queue_run"), reset_queue=False)
+orchestrator.run_worker(Path("results/queue_run"), max_attempts=None)
+```
+
+`prepare_run` seeds the durable queue from the loaded tasks; `run_worker` leases and executes only `pending` attempts, so restarting a worker against a populated queue is inherent resume (an INFO log line names the reattach counts).
 
 #### TrialRunner
 

@@ -251,6 +251,50 @@ Stdout stays strictly empty — dry-run produces no artifact, so `emit_artifact_
 
 `load_tasks_for_dry_run` builds the adapter directly and enumerates tasks without the TypeSense preflight `Orchestrator.load_tasks()` runs. A run config that declares `orchestrator.typesense.enabled=true` renders panels showing the search config as authored — `port="auto"` / `api_key=null` fields stay unresolved because no container starts. Operators wanting resolved TypeSense values run a real trial or `tolokaforge prepare`.
 
+## Resume
+
+`tolokaforge run --resume --run-dir <path>` re-runs only the trials that aren't already `completed` (or behavioural-failed) in `<path>/run_state.json`. The two flags are paired — passing either alone is a `click.UsageError`. `--run-dir` must point at an existing directory that carries a `run_state.json` (or an `engine_run_state.json` for the queue-worker path); the CLI reads the canonical `run_id` from those files and reuses `<path>` verbatim, so no fresh timestamped sibling is allocated.
+
+```bash
+tolokaforge run --config path/to/run.yaml --resume --run-dir results/coding_20260714_193042
+```
+
+Before Docker starts, the CLI opens the run state and prints a one-line summary on stderr:
+
+```
+Resuming: 42/50 completed, 8 to retry
+```
+
+`completed` counts trials with `status == "completed"` regardless of `binary_pass`. `to_retry` counts trials that are `pending`, `running`, or infrastructure-failed (retryable). Behavioural-failed trials (the agent finished but failed grading) count as already-done and are not retried.
+
+When every trial is already `completed`, the CLI short-circuits before touching Docker or the runtime backend:
+
+```
+→ Nothing to do; run already complete (50/50 completed)
+```
+
+stdout still carries the absolute run-dir path (`emit_artifact_path`), so the shell-capture idiom `RUN_DIR=$(tolokaforge run --resume --run-dir …)` continues to work on a completed run. Exit code is `0`.
+
+### Resume start banner
+
+On the resume path the [start banner](#start-banner) first line changes from `→ Run: <run-id>` to `→ Resume: <run-id>`; the `→ Report:` line is unchanged. The end banner is identical to a non-resume run — success, failure, and `⏸ Run stopped (<reason>)` variants all apply. The 80- and 120-column resume banner shape is pinned by `tests/canonical/golden/run_banner/banner_start_resume.svg`.
+
+### Composition with other flags
+
+- **`--dry-run`** — mutually exclusive. Passing both fails with `click.UsageError("--dry-run and --resume are mutually exclusive; --dry-run does not consult run state")`.
+- **`--cost-limit` / `--time-limit` / `--sample-limit`** — budgets are per-invocation. The cost budget seeds from prior-invocation spend recorded under the run directory, so dollars already burned still count; the time and sample counters restart on each `tolokaforge run --resume` invocation. Cumulative budgets across resumes are tracked in [#352](https://github.com/Toloka/tolokaforge/issues/352). See [§ Cost, time, and sample limits](#cost-time-and-sample-limits).
+- **`--presets-file` / `--user-model` / `--judge-model` / `--runtime`** — applied identically to a first-time run.
+
+### `--run-dir` flag
+
+| Flag | Argument | Default | Behaviour |
+|------|----------|---------|-----------|
+| `--run-dir` | existing directory | `None` | Path to an existing run directory. Requires `--resume` — passing it alone is a `click.UsageError`. The path must exist at flag-parse time (Click validates via `click.Path(exists=True, file_okay=False)`), and must contain either `engine_run_state.json` or `run_state.json`. |
+
+### Queue-worker resume
+
+`tolokaforge prepare` + `tolokaforge worker` are inherently resumable via the durable queue — see [`docs/RUNNER.md` § Resuming a queue-worker run](RUNNER.md#resuming-a-queue-worker-run). No `--resume` flag: restart `worker --run-dir <existing>` and the durable queue delivers the pending attempts. `tolokaforge prepare --reset-queue` explicitly wipes the queue before re-enqueue when the operator wants to start over.
+
 ## Root help layout
 
 `tolokaforge --help` groups every top-level command under a fixed-order section heading: **Runs**, **Tasks**, **Docker**, **Config**, **Assets**, **Adapters**. Commands appear alphabetically within each section, and empty sections are omitted. Per-command help (`tolokaforge run --help`, `tolokaforge docker up --help`, …) renders through Click's default formatter — the grouped layout applies to the root `Commands:` block only.

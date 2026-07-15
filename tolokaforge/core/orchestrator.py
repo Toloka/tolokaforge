@@ -1744,6 +1744,20 @@ class Orchestrator:
         if recovered > 0:
             self.logger.warning("Worker recovered stale in-flight attempts", recovered=recovered)
 
+        # Silent on fresh queues (no completions yet) — the reattach line is
+        # for operators joining an in-progress run, not for cold starts.
+        queue_counts = run_queue.get_counts()
+        if queue_counts.get("completed", 0) > 0:
+            self.logger.info(
+                f"Reattaching to run dir {run_id}: "
+                f"{queue_counts['completed']}/{queue_counts['total']} completed, "
+                f"{queue_counts['pending']} pending in queue.",
+                run_id=run_id,
+                completed=queue_counts["completed"],
+                total=queue_counts["total"],
+                pending=queue_counts["pending"],
+            )
+
         budget_limit = self.config.effective_max_budget_usd
         total_cost_usd = self._collect_existing_cost(output_dir)
         lease_owner = f"worker:{socket.gethostname()}:{os.getpid()}"
