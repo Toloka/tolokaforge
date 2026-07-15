@@ -110,6 +110,22 @@ class _LogSink(logging.Handler):
             self.handleError(record)
 
 
+def _capture_dangerous_streams() -> tuple[TextIO, ...]:
+    """Snapshot the four terminal streams whose ``StreamHandler`` binding
+    bypasses Rich Live's cursor coordination.
+
+    Must be called before ``Live.__enter__``: Rich installs a redirect proxy
+    that re-binds the ``sys.stderr`` and ``sys.stdout`` *names* for the Live
+    lifetime, but chatty libraries (e.g. litellm) captured the raw stream
+    *objects* at import time. The sweep in
+    :meth:`LiveRunDisplay._sweep_child_bypass_handlers` needs those raw
+    references — comparing against the post-Live proxy would miss the leak.
+    ``sys.__stderr__`` / ``sys.__stdout__`` are included for completeness so
+    a handler bound to the interpreter's original streams is also caught.
+    """
+    return (sys.stderr, sys.stdout, sys.__stderr__, sys.__stdout__)
+
+
 _STDERR_PROBE_ENV_VAR = "TOLOKAFORGE_STDERR_PROBE"
 """Env var pointing at a log file for :class:`_StderrProbe`.
 
@@ -519,6 +535,14 @@ class LiveRunDisplay:
         # Sentinel handlers we removed on ``__enter__`` and re-install on
         # ``__exit__``, paired with the ``_LogSink`` that replaced each.
         self._replaced_log_handlers: list[tuple[logging.Handler, _LogSink]] = []
+        # Child-logger handlers pointing at a captured terminal stream: removed
+        # for the Live lifetime by the ``__enter__`` sweep, restored on
+        # ``__exit__``. See :meth:`_sweep_child_bypass_handlers` for why.
+        self._removed_child_handlers: list[tuple[logging.Logger, logging.Handler]] = []
+        # ``_LogSink`` instances installed on ``propagate=False`` child loggers
+        # so their records surface through the panel instead of being silently
+        # dropped once their bypass handler is removed. Removed on ``__exit__``.
+        self._added_child_sinks: list[tuple[logging.Logger, _LogSink]] = []
         # Env-gated diagnostic tap on the real stderr stream, populated
         # in ``__enter__`` when ``TOLOKAFORGE_STDERR_PROBE`` is set.
         self._stderr_probe: _StderrProbe | None = None
@@ -579,6 +603,12 @@ class LiveRunDisplay:
         if probe_path is not None:
             self._stderr_probe = _StderrProbe(Path(probe_path))
             self._stderr_probe.__enter__()
+        # Snapshot the four terminal stream objects BEFORE Rich Live installs
+        # its redirect proxy: chatty libraries (litellm) captured the raw
+        # stream at import time into their ``StreamHandler`` instances, so the
+        # sweep below compares handler stream identity against these captured
+        # references — not against the post-Live ``sys.stderr`` proxy name.
+        dangerous_streams = _capture_dangerous_streams()
         self._live = make_live(self._layout, refresh_per_second=self._refresh_per_second)
         self._live.__enter__()
         # Route WARNING+ log records through Live's own console. Rich Live
@@ -609,9 +639,16 @@ class LiveRunDisplay:
             root.removeHandler(handler)
             root.addHandler(sink)
             self._replaced_log_handlers.append((handler, sink))
+        self._sweep_child_bypass_handlers(dangerous_streams, _print_above)
         return self
 
     def __exit__(self, *exc_info: object) -> None:
+        for logger_obj, sink in self._added_child_sinks:
+            logger_obj.removeHandler(sink)
+        self._added_child_sinks = []
+        for logger_obj, handler in self._removed_child_handlers:
+            logger_obj.addHandler(handler)
+        self._removed_child_handlers = []
         root = logging.getLogger()
         for original, sink in self._replaced_log_handlers:
             root.removeHandler(sink)
@@ -623,6 +660,46 @@ class LiveRunDisplay:
         if self._stderr_probe is not None:
             self._stderr_probe.__exit__(*exc_info)
             self._stderr_probe = None
+
+    def _sweep_child_bypass_handlers(
+        self,
+        dangerous_streams: tuple[TextIO, ...],
+        print_above: Callable[[str], None],
+    ) -> None:
+        """Remove every non-root logger handler that would bypass Rich Live.
+
+        Iterates ``logging.root.manager.loggerDict``, skipping ``PlaceHolder``
+        entries (which lack ``.handlers``), and removes each handler that is a
+        ``logging.StreamHandler`` whose ``.stream`` is one of the four captured
+        terminal streams. Propagating loggers rely on the root ``_LogSink`` to
+        surface their records; non-propagating loggers additionally receive a
+        fresh ``_LogSink`` so their records are not silently dropped once the
+        bypass handler is gone.
+        """
+        manager = logging.root.manager
+        for logger_obj in list(manager.loggerDict.values()):
+            if not isinstance(logger_obj, logging.Logger):
+                continue
+            bypass_handlers = [
+                h
+                for h in list(logger_obj.handlers)
+                if isinstance(h, logging.StreamHandler)
+                and any(getattr(h, "stream", None) is s for s in dangerous_streams)
+            ]
+            if not bypass_handlers:
+                continue
+            for handler in bypass_handlers:
+                logger_obj.removeHandler(handler)
+                self._removed_child_handlers.append((logger_obj, handler))
+            if logger_obj.propagate:
+                continue
+            sink = _LogSink(
+                print_above=print_above,
+                formatter=None,
+                buffer=self._log_buffer,
+            )
+            logger_obj.addHandler(sink)
+            self._added_child_sinks.append((logger_obj, sink))
 
     # RunDisplayEvents implementation ---------------------------------
 

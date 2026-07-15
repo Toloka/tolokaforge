@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### Fix
+
+- **dx**: `--display=rich` no longer stacks duplicate copies of the `LiveRunDisplay` panel during trial execution. `LiveRunDisplay.__enter__` now sweeps every non-root logger in `logging.root.manager.loggerDict` (skipping `PlaceHolder` entries) and removes any `StreamHandler` bound to the captured pre-Live terminal streams; loggers with `propagate=False` additionally receive a `_LogSink` so their records still surface. This closes the channel through which litellm's private `LiteLLM` / `LiteLLM Router` / `LiteLLM Proxy` `StreamHandler`s bypassed Rich Live's cursor coordination. `__exit__` restores every removed handler. See [docs/CLI.md](docs/CLI.md) § Live run panel. (#392)
+
 ### Feat
 
 - **dx**: Full TUI mode (`tolokaforge run --display=full`) — a Textual `App` (`tolokaforge.dx.tui.TextualRunApp`) that consumes the same `RunDisplayEvents` seam the Rich Live panel does and renders a keyboard-navigable, tabbed run view. Header + one-line status bar, left-pane scrollable trial list (`j`/`k` or `↑`/`↓`; `PgUp`/`PgDn` for ~20-row jumps; `Home`/`End` for first/last), right-pane focused-trial summary with per-trial infrastructure. Bottom `TabbedContent` — **Overview** (banner, phase, services summary), **Logs** (`RichLog` fed by the shared ring buffer), **Services** (`DataTable` of engine-stack services), **Infra** (per-focused-trial containers), **Errors** (WARNING+ filtered). Tab keys `1`–`5`; `l` jumps to Logs; `?` toggles a modal help screen; `q` exits the UI (Ctrl-C still kills the run). Requires `pip install 'tolokaforge[dx]'` — `textual>=0.85.0` is now in the `[dx]` extras. `LiveRunDisplay.for_mode(DisplayMode.FULL)` returns the Textual app when textual is importable and falls back to the Rich `LiveRunDisplay` with a WARNING log line otherwise. See [docs/CLI.md](docs/CLI.md) § Full TUI and [ADR-0019](docs/architecture/adr/0019-front-end-plugin-namespace.md).

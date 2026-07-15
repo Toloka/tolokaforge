@@ -612,6 +612,173 @@ def test_enter_exit_without_sentinel_handler_is_a_noop(
         assert display._replaced_log_handlers == []
 
 
+# ---------------------------------------------------------------------------
+# __enter__ / __exit__ — child-logger stderr-bypass sweep (issue #392)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def _isolate_child_logger() -> object:
+    """Yield a factory that creates a named child logger and restores its
+    handlers / propagate / level on teardown.
+
+    ``logging.getLogger`` returns the same singleton across a test session,
+    so mutations on child loggers leak across tests unless explicitly rewound.
+    """
+    saved: list[tuple[logging.Logger, list[logging.Handler], bool, int]] = []
+
+    def factory(name: str, *, propagate: bool = True, level: int = logging.DEBUG) -> logging.Logger:
+        lg = logging.getLogger(name)
+        saved.append((lg, list(lg.handlers), lg.propagate, lg.level))
+        lg.handlers = []
+        lg.propagate = propagate
+        lg.setLevel(level)
+        return lg
+
+    yield factory
+    for lg, handlers, propagate, level in reversed(saved):
+        lg.handlers = list(handlers)
+        lg.propagate = propagate
+        lg.setLevel(level)
+
+
+def test_child_logger_bypassing_handler_removed_and_restored(
+    monkeypatch: pytest.MonkeyPatch,
+    _clean_root_handlers: object,
+    _isolate_child_logger: Callable[..., logging.Logger],
+) -> None:
+    """Child logger's ``StreamHandler(sys.stderr)`` is removed during the Live
+    lifetime, its INFO records propagate to the root ``_LogSink`` (bypass
+    channel gone → no raw write reaches the fake stream), and the handler is
+    restored on ``__exit__``.
+
+    INFO — not WARNING — is emitted because ``_LogSink`` routes WARNING+
+    through ``print_above → live.console.print``, which itself writes to
+    ``sys.stderr`` (the fake). INFO records only land in the buffer, so any
+    write of the message text to the fake stream must have come from the
+    bypass handler.
+    """
+    fake_stderr = _FakeStderr()
+    monkeypatch.setattr(sys, "stderr", fake_stderr)
+    root_sentinel = logging.StreamHandler(io.StringIO())
+    setattr(root_sentinel, _TOLOKAFORGE_ROOT_HANDLER_SENTINEL, True)
+    logging.getLogger().addHandler(root_sentinel)
+
+    child = _isolate_child_logger("chatty", propagate=True)
+    child_handler = logging.StreamHandler(sys.stderr)
+    child.addHandler(child_handler)
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    marker = "chatty-info-marker-abc123"
+    with display:
+        assert child_handler not in child.handlers
+        child.info(marker)
+        assert marker not in "".join(fake_stderr.buf)
+        assert any(r.getMessage() == marker for r in display.log_records())
+    assert child_handler in child.handlers
+
+
+def test_child_logger_with_non_dangerous_handler_left_untouched(
+    _clean_root_handlers: object,
+    _isolate_child_logger: Callable[..., logging.Logger],
+) -> None:
+    """A handler bound to a stream that is NOT one of the captured terminal
+    streams stays installed for the Live lifetime and continues to receive
+    records."""
+    unrelated_stream = io.StringIO()
+    child = _isolate_child_logger("well_behaved", propagate=True)
+    child_handler = logging.StreamHandler(unrelated_stream)
+    child.addHandler(child_handler)
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    with display:
+        assert child_handler in child.handlers
+        child.warning("still writes")
+    assert "still writes" in unrelated_stream.getvalue()
+
+
+def test_child_logger_shaped_like_litellm_emits_zero_raw_stderr_writes(
+    monkeypatch: pytest.MonkeyPatch,
+    _clean_root_handlers: object,
+    _isolate_child_logger: Callable[..., logging.Logger],
+) -> None:
+    """Regression guard for the confirmed #392 channel: a ``propagate=True``
+    child logger with a ``StreamHandler`` bound to the captured ``sys.stderr``
+    object emits zero *bypass* writes during the Live lifetime.
+
+    INFO-level records are used to isolate the bypass channel — WARNING+ would
+    additionally flow through ``_LogSink → print_above → Rich`` which writes
+    to the same underlying stream via a Rich-coordinated path.
+    """
+    fake_stderr = _FakeStderr()
+    monkeypatch.setattr(sys, "stderr", fake_stderr)
+    like_litellm = _isolate_child_logger("like_litellm", propagate=True)
+    like_litellm.addHandler(logging.StreamHandler(sys.stderr))
+
+    marker = "like-litellm-info-marker-xyz789"
+    with LiveRunDisplay(refresh_per_second=1000):
+        like_litellm.info(marker)
+        like_litellm.debug(marker + "-debug")
+
+    written = "".join(fake_stderr.buf)
+    assert marker not in written
+    assert (marker + "-debug") not in written
+
+
+def test_child_logger_with_propagate_false_gets_log_sink_installed(
+    monkeypatch: pytest.MonkeyPatch,
+    _clean_root_handlers: object,
+    _isolate_child_logger: Callable[..., logging.Logger],
+) -> None:
+    """A non-propagating child logger's bypassing handler is removed AND a
+    fresh ``_LogSink`` is installed on it so records still surface through
+    the panel (AGENTS.md Core Rule 1 — never silently drop). Both mutations
+    are reversed on ``__exit__``.
+
+    INFO is emitted (not WARNING) so the check that no write hits the fake
+    stream isolates the bypass channel from the ``print_above`` route.
+    """
+    from tolokaforge.dx.live_panel import _LogSink
+
+    fake_stderr = _FakeStderr()
+    monkeypatch.setattr(sys, "stderr", fake_stderr)
+    private = _isolate_child_logger("private_regression", propagate=False)
+    original_handler = logging.StreamHandler(sys.stderr)
+    private.addHandler(original_handler)
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    marker = "private-info-marker-def456"
+    with display:
+        assert original_handler not in private.handlers
+        installed_sinks = [h for h in private.handlers if isinstance(h, _LogSink)]
+        assert len(installed_sinks) == 1
+        private.info(marker)
+        assert marker not in "".join(fake_stderr.buf)
+        assert any(r.getMessage() == marker for r in display.log_records())
+    assert original_handler in private.handlers
+    assert not [h for h in private.handlers if isinstance(h, _LogSink)]
+
+
+def test_placeholder_in_logger_dict_does_not_crash_enter_exit(
+    _clean_root_handlers: object,
+) -> None:
+    """Sweep iterates ``logging.root.manager.loggerDict`` values, which are
+    ``Logger`` OR ``PlaceHolder``. ``PlaceHolder`` has no ``.handlers`` —
+    a naive iteration would raise ``AttributeError`` inside ``__enter__``,
+    crashing the exact display the fix targets. This test seeds a
+    ``PlaceHolder`` and locks the ``isinstance(v, logging.Logger)`` guard."""
+    # Unique names so a prior test run has not turned intermediates into
+    # real Loggers.
+    leaf_name = "stage2_ph_regression_x.stage2_ph_regression_y.leaf"
+    intermediate = "stage2_ph_regression_x.stage2_ph_regression_y"
+    logging.getLogger(leaf_name)
+    assert isinstance(logging.root.manager.loggerDict.get(intermediate), logging.PlaceHolder)
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    with display:
+        display.run_started(total_trials=1, initial_completed=0)
+
+
 def test_events_push_updated_layout_to_live() -> None:
     """Regression lock — events must re-render the panel, not freeze at startup.
 
