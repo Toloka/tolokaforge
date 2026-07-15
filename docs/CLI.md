@@ -125,7 +125,7 @@ The root flag `--display={full,rich,plain,log,none}` and the equivalent env var 
 
 | Value    | Behaviour                                                                                                 |
 |----------|-----------------------------------------------------------------------------------------------------------|
-| `full`   | Textual TUI. Falls back to `rich` when textual is not installed (a WARNING log line notes the fallback).  |
+| `full`   | Textual TUI (see [§ Full TUI](#full-tui---displayfull)). Falls back to `rich` when textual is not installed (a WARNING log line notes the fallback).  |
 | `rich`   | Rich Live panel during `tolokaforge run` — left-pane trial list (status glyphs), right-pane structured summary of the focused trial (`turn N · in Xk / out Y tok · $Z.ZZ · last: <event_kind>`), bottom bar `{completed}/{total} · {running} running · ${cost} · in {prompt} / out {completion} tok · fail {failed} · eta {eta}`. Log lines from `configure_root_logging` interleave above the panel. Every other subcommand renders through the shared `console.print(...)` calls. |
 | `plain`  | Human-readable log-line stream. Default on non-TTY / when `CI` is set.                                    |
 | `log`    | Pure log stream — no banners, no progress bars.                                                           |
@@ -151,9 +151,41 @@ The orchestrator, conductor, and runner emit lifecycle events into a `RunDisplay
 
 Log lines from `configure_root_logging` route through a `_LogSink` installed for the lifetime of the Live context. INFO / DEBUG records land in a bounded 500-record ring buffer inside the panel (available via `LiveRunDisplay.log_records()` for the future Textual log pane) and are otherwise swallowed so the Docker-boot log wall no longer scrolls the panel off-screen; WARNING and above still write to the original stderr the sentinel handler was wired to, so real problems surface above the panel. `__exit__` reinstalls the original sentinel handler.
 
-`--display=full` today collapses to `--display=rich` because `textual` is not a dependency; when the Textual TUI (C3) lands, `--display=full` will render a Textual class that consumes the same `RunDisplayEvents` Protocol.
-
 Under `--display={plain,log,none}` and on non-TTY streams, `LiveRunDisplay.for_mode(...)` returns a no-op context manager and the existing log-line stream is what the operator sees.
+
+### Full TUI (`--display=full`)
+
+Under `--display=full`, `tolokaforge run` enters a Textual `App` (`tolokaforge.dx.tui.TextualRunApp`) that consumes the same `RunDisplayEvents` seam the Rich Live panel does. Prerequisites: `pip install 'tolokaforge[dx]'` — `textual>=0.85.0` ships in the `[dx]` extras. When textual is not importable, `--display=full` falls back to `--display=rich` (a WARNING log line notes the fallback).
+
+Layout, top to bottom:
+
+- **Header** — `tolokaforge run` title band.
+- **Status bar** — one line: `{completed}/{total} · {running} running · ${cost} · fail {failed} · eta {eta}`. The `$cost` segment turns yellow at ≥ 80 % of the run's cost budget (from `--cost-limit` / `compute.max_budget_usd`) and bold-red at ≥ 100 %.
+- **Trial list** (left) — scrollable list, one row per trial (`⏳` / `✓` / `✗` glyph + `[N/M]` global index + `task_id · trial_index`). The cursor auto-follows the newest lifecycle transition; the operator can move it independently with `j`/`k` or `↑`/`↓`.
+- **Focused trial pane** (right) — `task_id · trial_index (status)`, cumulative counters (`turn N · in Xk / out Y tok · $Z.ZZ`), judge score if judged, error tail if failed, and a compact `Infrastructure` sub-list of the trial's containers (name + health glyph + published ports) once `trial_provisioned` has fired.
+- **Tabs** — `TabbedContent` with five panes:
+  - **Overview** — auth-failure banner (if any), current phase line, services summary, trial counters.
+  - **Logs** — `RichLog` fed by the same ring buffer the Rich `_LogSink` installs. INFO/DEBUG scroll here; WARNING and above are duplicated to the Errors tab.
+  - **Services** — `DataTable` of engine-stack services with name / status / health glyph / port summary (from `phase_changed(services=…)`).
+  - **Infra** — `DataTable` of the focused trial's containers.
+  - **Errors** — WARNING+ log records only, most recent last.
+- **Footer** — key binding legend.
+
+Key bindings:
+
+| Key            | Action                                                     |
+|----------------|------------------------------------------------------------|
+| `j` / `↓`      | Move selection down in the trial list.                     |
+| `k` / `↑`      | Move selection up.                                          |
+| `PgDn` / `PgUp`| Jump ~20 rows.                                              |
+| `Home` / `End` | First / last trial.                                         |
+| `1` – `5`      | Switch to Overview / Logs / Services / Infra / Errors.     |
+| `l`            | Jump to the Logs tab.                                       |
+| `?`            | Toggle the modal help screen (same table).                  |
+| `/`            | Reserved for per-tab search (footer legend; no-op today).   |
+| `q`            | Exit the UI. **Ctrl-C** is what kills the run itself.      |
+
+Event handlers on `TextualRunApp` are called from the orchestrator's worker threads. Every method routes work onto Textual's asyncio loop via `App.call_from_thread` (or buffers into a pending queue before the app has mounted). Handlers never raise — a bad payload is logged at WARNING and dropped, so an event error never corrupts the runner.
 
 ### Precedence
 

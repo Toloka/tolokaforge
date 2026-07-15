@@ -77,10 +77,16 @@ def test_null_events_is_a_null_run_display_events_instance() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("mode", [DisplayMode.RICH, DisplayMode.FULL])
-def test_for_mode_returns_live_display_for_active_modes(mode: DisplayMode) -> None:
-    ctx = LiveRunDisplay.for_mode(mode)
+def test_for_mode_rich_returns_live_display() -> None:
+    ctx = LiveRunDisplay.for_mode(DisplayMode.RICH)
     assert isinstance(ctx, LiveRunDisplay)
+
+
+def test_for_mode_full_returns_textual_app_when_available() -> None:
+    from tolokaforge.dx.tui import TextualRunApp
+
+    ctx = LiveRunDisplay.for_mode(DisplayMode.FULL)
+    assert isinstance(ctx, TextualRunApp)
 
 
 @pytest.mark.parametrize("mode", [DisplayMode.PLAIN, DisplayMode.LOG, DisplayMode.NONE])

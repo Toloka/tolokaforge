@@ -18,10 +18,7 @@ Docker surfaces. The assertions cover:
 
 from __future__ import annotations
 
-import importlib.machinery
 import logging
-import sys
-import types
 from pathlib import Path
 from typing import Any
 
@@ -203,23 +200,43 @@ class TestCtxObjPropagation:
         assert captured["display_mode"] is expected
 
     def test_explicit_full_without_textual_stashes_rich(
-        self, runner: CliRunner, captured: dict[str, Any]
-    ) -> None:
-        result = runner.invoke(cli, ["--display", "full", "_display_probe"])
-        assert result.exit_code == 0, result.stderr
-        assert captured["display_mode"] is DisplayMode.RICH
-        assert "textual is not installed" in result.stderr
-
-    def test_explicit_full_with_fake_textual_keeps_full(
         self,
         runner: CliRunner,
         captured: dict[str, Any],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        fake = types.ModuleType("textual")
-        fake.__spec__ = importlib.machinery.ModuleSpec("textual", loader=None)
-        monkeypatch.setitem(sys.modules, "textual", fake)
+        """`textual` ships in the `[dx]` extras, so simulate its absence by
+        forcing :func:`importlib.util.find_spec` to return ``None`` for the
+        `textual` module. The CLI's ``_resolve_display_mode`` reads that
+        signal via :func:`tolokaforge.dx._display._textual_available` and
+        rewrites ``--display=full`` to ``--display=rich`` with a WARNING.
+        """
+        import importlib.util
 
+        real_find_spec = importlib.util.find_spec
+
+        def _fake_find_spec(name: str, package: str | None = None):  # type: ignore[no-untyped-def]
+            if name == "textual":
+                return None
+            return real_find_spec(name, package)
+
+        monkeypatch.setattr(importlib.util, "find_spec", _fake_find_spec)
+
+        result = runner.invoke(cli, ["--display", "full", "_display_probe"])
+        assert result.exit_code == 0, result.stderr
+        assert captured["display_mode"] is DisplayMode.RICH
+        assert "textual is not installed" in result.stderr
+
+    def test_explicit_full_with_textual_installed_keeps_full(
+        self,
+        runner: CliRunner,
+        captured: dict[str, Any],
+    ) -> None:
+        """`textual` is a `[dx]` extra and always importable in the test env.
+
+        No monkey-patch required — the CLI must pass ``FULL`` through
+        untouched and never emit the fallback WARNING line.
+        """
         result = runner.invoke(cli, ["--display", "full", "_display_probe"])
         assert result.exit_code == 0, result.stderr
         assert captured["display_mode"] is DisplayMode.FULL

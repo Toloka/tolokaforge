@@ -446,9 +446,15 @@ class LiveRunDisplay:
         mode: DisplayMode,
         *,
         cost_budget_usd: float | None = None,
-    ) -> AbstractContextManager[LiveRunDisplay | _NoopDisplayCtx]:
-        """Return a fresh :class:`LiveRunDisplay` under ``RICH`` / ``FULL``,
-        a :class:`_NoopDisplayCtx` under any other mode.
+    ) -> AbstractContextManager[object]:
+        """Return a display context manager matched to ``mode``.
+
+        - :attr:`DisplayMode.FULL` — a :class:`tolokaforge.dx.tui.TextualRunApp`
+          when :mod:`textual` is importable; falls back to a Rich
+          :class:`LiveRunDisplay` with a WARNING log line when it is not.
+        - :attr:`DisplayMode.RICH` — a fresh :class:`LiveRunDisplay`.
+        - :attr:`DisplayMode.PLAIN` / :attr:`DisplayMode.LOG` /
+          :attr:`DisplayMode.NONE` — a :class:`_NoopDisplayCtx`.
 
         The caller passes ``mode = ctx.obj["display_mode"]`` (a resolved
         :class:`DisplayMode` enum) so this method never re-parses the flag
@@ -456,7 +462,16 @@ class LiveRunDisplay:
         cap — enables the amber@80 % / red@100 % styling on the bottom-bar
         cost segment.
         """
-        if mode in (DisplayMode.RICH, DisplayMode.FULL):
+        if mode is DisplayMode.FULL:
+            try:
+                from tolokaforge.dx.tui import TextualRunApp
+            except ImportError:
+                _LOGGER.warning(
+                    "textual not installed; falling back from --display=full to --display=rich"
+                )
+                return cls(cost_budget_usd=cost_budget_usd)
+            return TextualRunApp(cost_budget_usd=cost_budget_usd)
+        if mode is DisplayMode.RICH:
             return cls(cost_budget_usd=cost_budget_usd)
         return _NoopDisplayCtx()
 
