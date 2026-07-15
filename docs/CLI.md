@@ -192,9 +192,64 @@ The group callback stashes the resolved `DisplayMode` on `ctx.obj["display_mode"
 
 ## Dry run
 
-`tolokaforge run --dry-run [--dry-run-samples N]` resolves the run config (applying every override flag identically to a real run), loads the declared tasks via the adapter, and renders one `rich.panel.Panel` per task on stderr describing the first-turn wire request: system prompt, first user message (literal or a placeholder naming the user-simulator persona), sanitized OpenAI-shape tool spec, and the resolved agent model / judge model / runtime backend. Exits 0 without creating a run directory, opening a `LiveRunDisplay`, or issuing a single HTTP call to a provider.
+`tolokaforge run --dry-run [--dry-run-samples N]` resolves the run config with full parity to a real run, loads the declared tasks via the adapter, renders the first N samples' first-turn wire requests as Rich panels on stderr, and exits `0` without creating a run directory or issuing a single HTTP call to any provider.
 
-`--dry-run-samples` defaults to 3 and caps how many tasks are rendered; when a run config declares fewer tasks the cap is silently reduced to the declared count. `--dry-run-samples` without `--dry-run` and `--dry-run --resume` both fail with `click.UsageError`. Under `--display=none` the shared console is quieted and no panels reach stderr — exit code still 0.
+```bash
+tolokaforge run --config examples/native/tool_use/run_config.yaml --dry-run
+```
+
+### What it does
+
+1. Loads the run config (same `load_effective_run_config` path a real run takes) and applies every CLI override — `--user-model`, `--judge-model`, `--runtime`, `--workers`, `--cost-limit`, `--time-limit`, `--sample-limit`, `--fallback-models`, `--model-cost-config`, `--presets-file` — identically to a real invocation. A malformed `--time-limit=30xyz` fails with the same `click.BadParameter` diagnostic under `--dry-run` as under a real run.
+2. Constructs the adapter and enumerates every declared task. **Skips the TypeSense preflight** `Orchestrator.load_tasks()` performs — dry-run never starts Docker.
+3. For each of the first N tasks (default N=3), materialises the first-turn wire request: system prompt, first user message, sanitized OpenAI-shape tool spec, and resolved model / judge / runtime identifiers.
+4. Renders one `rich.panel.Panel` per sample on stderr through the shared `console`.
+5. Returns exit `0`. No run directory is created, no `emit_artifact_path` fires (stdout stays empty), no [start/end banner](#run-banner) renders, and no [Live run panel](#live-run-panel---display-rich-during-tolokaforge-run) opens.
+
+### Flags
+
+| Flag | Argument | Default | Behaviour |
+|------|----------|---------|-----------|
+| `--dry-run` | boolean | `False` | Activate the dry-run branch. Mutually exclusive with `--resume` — passing both fails with `click.UsageError`. |
+| `--dry-run-samples` | `int >= 1` | `3` | Cap on the number of rendered samples. When the cap exceeds the declared task count, every task renders and the preamble line reads `rendering first {N} sample(s) (of {N} task(s) available)`. Requires `--dry-run` — passing `--dry-run-samples` without `--dry-run` fails with `click.UsageError`. |
+
+### Panel shape
+
+Each sample renders a single `rich.panel.Panel` titled `Task <task_id> · Trial 0`. Body order, top to bottom:
+
+1. `System prompt:` label followed by the literal task-scope system prompt the agent's `LLMClient` would receive on turn one.
+2. `User prompt:` label followed by either the literal `task.initial_user_message` or, when that field is unset, a placeholder line `<generated at runtime by user simulator — mode={mode}, persona={persona}, backstory={backstory[:120]}…>` naming the user-simulator configuration.
+3. `Tools ({count}):` label followed by the sanitized OpenAI-shape tool spec rendered as JSON via `rich.syntax.Syntax`. When the task declares no agent tools, the line becomes `(no agent tools declared)`.
+4. `Model:` line — `<agent.provider>/<agent.name> · preset: <effective_preset>` (via `resolve_effective_preset`, the same call `_write_artifacts` uses to persist `task.yaml.model_config.agent.resolved.effective_preset` for a real trial).
+5. `Judge:` line — same shape for `models.judge`, or `(none)` when the run config declares no judge.
+6. `Runtime:` line — `shared` or `per_trial`, from `orchestrator.runtime`.
+
+A single preamble line renders once before the first panel: `Dry run: rendering first {n_rendered} sample(s) (of {n_available} task(s) available)`. The 80- and 120-column layouts are pinned by `tests/canonical/golden/dry_run/panel_{80,120}.svg`.
+
+### Sample selection
+
+One sample is one `(task_id, trial_index=0)` pair. Every trial of the same task starts from the identical first-turn wire request (prompt assembly is deterministic per task), so trial 0 is representative — rendering additional trials of the same task would repeat the panel with no new information.
+
+### Zero-HTTP guarantee
+
+`materialize_dry_run_sample` reaches the sanitized tool spec by calling `build_capabilities(agent.name, agent.provider, overrides=agent.capabilities).schema_sanitizer.sanitize(...)` directly. No `LLMClient` is constructed, no API key is loaded, no `SecretManager` state is touched, and no socket is opened. The unit test `tests/unit/test_dry_run.py::test_materialize_no_http_via_respx` and the CLI test `tests/unit/test_dry_run_cli.py::test_dry_run_makes_no_http_via_respx_or_monkeypatch` patch both `httpx.Client.send` and `litellm.completion` with raise-on-call sentinels to guard the invariant.
+
+### Composition with other flags
+
+- **`--resume`** — mutually exclusive. Dry-run has no run directory to consult for state; passing both fails with `click.UsageError("--dry-run and --resume are mutually exclusive; --dry-run does not consult run state")`.
+- **`--display=none`** — the shared `console` is quieted (`console.quiet = True`); no preamble and no panels reach stderr. Exit code is still `0`.
+- **`--display={full,rich,plain,log}`** — panels render through the shared `console` (stderr). No `LiveRunDisplay` opens under any display mode — dry-run is a one-shot render, not an animated region.
+- **`--presets-file`** — the overlay is activated identically to a real run; the `preset:` field on the rendered panel reflects the overlay-resolved preset name.
+- **`--user-model` / `--judge-model` / `--runtime`** — reflected in the `Model:` / `Judge:` / `Runtime:` lines.
+- **`--cost-limit` / `--time-limit` / `--sample-limit` / `--fallback-models`** — parsed and validated identically to a real run; a bad token surfaces the same `click.BadParameter` diagnostic. Not applied, because no trials execute.
+
+### Streams
+
+Stdout stays strictly empty — dry-run produces no artifact, so `emit_artifact_path` is not called (see [§ stdout / stderr contract](#stdout--stderr-contract)). Stderr carries the preamble line and the rendered panels; any log lines from `configure_root_logging` interleave above them under the resolved `--log-format`.
+
+### Typesense / Docker side effects
+
+`load_tasks_for_dry_run` builds the adapter directly and enumerates tasks without the TypeSense preflight `Orchestrator.load_tasks()` runs. A run config that declares `orchestrator.typesense.enabled=true` renders panels showing the search config as authored — `port="auto"` / `api_key=null` fields stay unresolved because no container starts. Operators wanting resolved TypeSense values run a real trial or `tolokaforge prepare`.
 
 ## Root help layout
 
@@ -376,7 +431,7 @@ tolokaforge run --config run.yaml --model-cost-config prices.yaml
 
 | Command                                      | stdout on success                     | stderr                                                       |
 |----------------------------------------------|---------------------------------------|--------------------------------------------------------------|
-| `tolokaforge run`                            | Absolute run-dir path (single line).  | Start banner (run-id + `file://` report URL), progress, log records, end banner (outcome + duration + `file://` report URL + browse invocation). See [§ Run banner](#run-banner). |
+| `tolokaforge run`                            | Absolute run-dir path (single line).  | Start banner (run-id + `file://` report URL), progress, log records, end banner (outcome + duration + `file://` report URL + browse invocation). See [§ Run banner](#run-banner). Under `--dry-run` stdout stays empty (no run directory is created) and stderr carries the rendered panels instead of the start/end banner + progress log lines — see [§ Dry run](#dry-run). |
 | `tolokaforge prepare`                        | Absolute run-dir path (single line).  | Queue summary, log records.                                  |
 | `tolokaforge worker`                         | (empty)                               | "Worker complete" summary, log records.                      |
 | `tolokaforge status`                         | (empty)                               | Run summary, queue ETA, cost totals.                         |
