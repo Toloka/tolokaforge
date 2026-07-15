@@ -1,0 +1,497 @@
+"""Rich ``Live`` progress panel for ``tolokaforge run`` under ``--display=rich``.
+
+Under :attr:`DisplayMode.RICH` (and today :attr:`DisplayMode.FULL`, which
+:mod:`tolokaforge.cli._display` collapses to ``RICH`` at the callback
+boundary), :class:`LiveRunDisplay` renders a three-region panel: left-pane
+trial list, right-pane structured summary of the focused trial (turn count
+/ tokens / cost / last-event kind), bottom status bar with cost / tokens
+/ ETA / failure counts.
+
+Under any other mode (:attr:`DisplayMode.PLAIN` / :attr:`DisplayMode.LOG`
+/ :attr:`DisplayMode.NONE`), :meth:`LiveRunDisplay.for_mode` returns a
+no-op context manager and the existing log-line stream is what the user
+sees.
+
+The panel subscribes to :class:`RunDisplayEvents` — a small Protocol the
+orchestrator, conductor, and runner emit into. The Protocol has a no-op
+default (:data:`_NULL_EVENTS`), so callers that never build a display can
+still thread ``events`` through without conditional branches.
+"""
+
+from __future__ import annotations
+
+import logging
+import sys
+import threading
+from contextlib import AbstractContextManager
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Protocol, runtime_checkable
+
+from rich.layout import Layout
+from rich.live import Live
+from rich.panel import Panel
+from rich.text import Text
+
+from tolokaforge.cli._display import DisplayMode, make_live
+from tolokaforge.core.logging import _TOLOKAFORGE_ROOT_HANDLER_SENTINEL
+
+_LOGGER = logging.getLogger("tolokaforge.cli.run_display")
+
+
+def _now() -> datetime:
+    """Wall-clock accessor used for all timestamp assignment inside the display.
+
+    Extracted so tests can monkey-patch it to a deterministic factory when
+    they need a strictly-ordered sequence of ``last_update_ts`` values."""
+    return datetime.now()
+
+
+@runtime_checkable
+class RunDisplayEvents(Protocol):
+    """Per-trial lifecycle events the runner emits into a display.
+
+    Every method is kwarg-only so a future field addition does not break
+    positional callers. Implementations must not raise — a raise would
+    corrupt the runner loop. :data:`_NULL_EVENTS` is the default sink.
+    """
+
+    def run_started(self, *, total_trials: int, initial_completed: int) -> None:
+        """Fired once when the orchestrator has primed its trial queue."""
+
+    def trial_started(self, *, trial_id: str, task_id: str, trial_index: int) -> None:
+        """Fired when a worker leases a trial and enters provisioning."""
+
+    def trial_progress(
+        self,
+        *,
+        trial_id: str,
+        prompt_tokens_delta: int,
+        completion_tokens_delta: int,
+        cost_delta_usd: float,
+    ) -> None:
+        """Fired after each LLM generation inside the trial's agent loop."""
+
+    def trial_completed(self, *, trial_id: str, binary_pass: bool, score: float | None) -> None:
+        """Fired on a terminal, non-retryable success."""
+
+    def trial_failed(self, *, trial_id: str, error: str, retryable: bool) -> None:
+        """Fired on terminal failure (retryable-exhausted or hard raise)."""
+
+    def judgment_scored(self, *, trial_id: str, score: float, binary_pass: bool) -> None:
+        """Fired after the rubric judge populates ``trajectory.grade``."""
+
+    def run_finished(self, *, output_dir: Path) -> None:
+        """Fired at the very end of ``Orchestrator.run()``."""
+
+
+class _NullRunDisplayEvents:
+    """No-op :class:`RunDisplayEvents`.
+
+    Wired as the default on ``OrchestratorDeps.events`` so the orchestrator,
+    conductor, and runner never branch on ``events is None`` — they just
+    call every method.
+    """
+
+    def run_started(self, **_: object) -> None: ...
+    def trial_started(self, **_: object) -> None: ...
+    def trial_progress(self, **_: object) -> None: ...
+    def trial_completed(self, **_: object) -> None: ...
+    def trial_failed(self, **_: object) -> None: ...
+    def judgment_scored(self, **_: object) -> None: ...
+    def run_finished(self, **_: object) -> None: ...
+
+
+_NULL_EVENTS: RunDisplayEvents = _NullRunDisplayEvents()
+
+
+@dataclass
+class _TrialCard:
+    """Per-trial state feeding the left pane and right pane.
+
+    Only lifecycle events (``trial_started`` / ``trial_completed`` /
+    ``trial_failed`` / ``judgment_scored``) bump :attr:`last_update_ts`.
+    ``trial_progress`` mutates ``turn_count`` + ``last_event_kind`` +
+    counters but leaves ``last_update_ts`` untouched, so focus does not
+    alternate on per-turn ticks.
+    """
+
+    trial_id: str
+    task_id: str
+    trial_index: int
+    status: str  # "running" | "completed" | "failed"
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cost_usd: float = 0.0
+    score: float | None = None
+    binary_pass: bool | None = None
+    error: str | None = None
+    last_update_ts: datetime = field(default_factory=_now)
+    turn_count: int = 0
+    last_event_kind: str = "started"
+
+
+@dataclass
+class _BottomBarStats:
+    """Pure inputs for :func:`_format_bottom_bar` — no display state.
+
+    Test fixtures instantiate this directly; :meth:`LiveRunDisplay._render_bottom_bar`
+    populates it from ``self`` under the lock.
+    """
+
+    completed: int
+    total: int
+    running: int
+    cost_usd: float
+    prompt_tokens: int
+    completion_tokens: int
+    failed: int
+    eta_seconds: float | None
+
+
+def _format_tokens(n: int) -> str:
+    """Render token counts: ``6.8k`` for large counts, raw integer below.
+
+    Threshold is 5_000: ``6800 → "6.8k"``, ``41200 → "41.2k"``, ``1234 → "1234"``.
+    """
+    if n >= 5_000:
+        return f"{n / 1000:.1f}k"
+    return str(n)
+
+
+def _format_cost(cost: float) -> str:
+    """Render cumulative cost: ``$0.00`` at zero, ``$<0.01`` for tiny amounts."""
+    if cost <= 0.0:
+        return "$0.00"
+    if cost < 0.01:
+        return "$<0.01"
+    return f"${cost:.2f}"
+
+
+def _format_eta(eta_seconds: float | None) -> str:
+    """Render ETA as ``MM:SS`` under 1h, ``HH:MM:SS`` above, ``n/a`` when unknown."""
+    if eta_seconds is None:
+        return "n/a"
+    total = int(eta_seconds)
+    hours, rem = divmod(total, 3600)
+    minutes, seconds = divmod(rem, 60)
+    if hours:
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes:02d}:{seconds:02d}"
+
+
+def _format_bottom_bar(stats: _BottomBarStats) -> str:
+    """Render the bottom status bar — locked literal shape."""
+    return (
+        f"{stats.completed}/{stats.total} · {stats.running} running · "
+        f"{_format_cost(stats.cost_usd)} · "
+        f"in {_format_tokens(stats.prompt_tokens)} / "
+        f"out {_format_tokens(stats.completion_tokens)} tok · "
+        f"fail {stats.failed} · eta {_format_eta(stats.eta_seconds)}"
+    )
+
+
+class _NoopDisplayCtx:
+    """Context manager returned by :meth:`LiveRunDisplay.for_mode` under
+    ``PLAIN`` / ``LOG`` / ``NONE``. Enter and exit are pass-through; ``events``
+    is :data:`_NULL_EVENTS`, so the caller wires ``deps=OrchestratorDeps(events=ctx.events)``
+    without branching on the mode.
+    """
+
+    events: RunDisplayEvents = _NULL_EVENTS
+
+    def __enter__(self) -> _NoopDisplayCtx:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+
+class LiveRunDisplay:
+    """Rich Live panel for ``tolokaforge run`` under ``--display=rich``.
+
+    Every public event-handler method acquires :attr:`_lock` at the top of
+    its body — with 12 concurrent workers each firing ``trial_progress`` from
+    its own thread, ``x += n`` compiles to three bytecodes with GIL-release
+    windows, and concurrent updates would silently lose data without a lock.
+    """
+
+    def __init__(self, *, refresh_per_second: float = 4.0, max_trial_rows: int = 20) -> None:
+        self._lock: threading.Lock = threading.Lock()
+        self._live: Live | None = None
+        self._trials: dict[str, _TrialCard] = {}
+        self._focused_trial_id: str | None = None
+        self._total_trials: int = 0
+        self._initial_completed: int = 0
+        self._completed: int = 0
+        self._failed: int = 0
+        self._running: int = 0
+        self._prompt_tokens: int = 0
+        self._completion_tokens: int = 0
+        self._total_cost_usd: float = 0.0
+        self._run_start_ts: datetime | None = None
+        self._finished: bool = False
+        self._max_trial_rows: int = max_trial_rows
+        self._refresh_per_second: float = refresh_per_second
+        self._saved_log_streams: list[tuple[logging.Handler, object]] = []
+        self._layout: Layout = self._build_layout()
+
+    @classmethod
+    def for_mode(
+        cls, mode: DisplayMode
+    ) -> AbstractContextManager[LiveRunDisplay | _NoopDisplayCtx]:
+        """Return a fresh :class:`LiveRunDisplay` under ``RICH`` / ``FULL``,
+        a :class:`_NoopDisplayCtx` under any other mode.
+
+        The caller passes ``mode = ctx.obj["display_mode"]`` (a resolved
+        :class:`DisplayMode` enum) so this method never re-parses the flag
+        or env var.
+        """
+        if mode in (DisplayMode.RICH, DisplayMode.FULL):
+            return cls()
+        return _NoopDisplayCtx()
+
+    @property
+    def events(self) -> RunDisplayEvents:
+        """The event sink the caller threads into the orchestrator."""
+        return self
+
+    def __enter__(self) -> LiveRunDisplay:
+        self._live = make_live(self._layout, refresh_per_second=self._refresh_per_second)
+        self._live.__enter__()
+        # In production, ``configure_root_logging`` guarantees at most one
+        # sentinel-tagged handler at any time; iterating defensively keeps
+        # the re-point correct if an embedder or test suite has installed
+        # additional sentinel handlers.
+        for handler in logging.getLogger().handlers:
+            if getattr(handler, _TOLOKAFORGE_ROOT_HANDLER_SENTINEL, False):
+                self._saved_log_streams.append((handler, handler.stream))
+                handler.stream = sys.stderr
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        for handler, stream in self._saved_log_streams:
+            handler.stream = stream
+        self._saved_log_streams = []
+        if self._live is not None:
+            self._live.__exit__(*exc_info)
+            self._live = None
+
+    # RunDisplayEvents implementation ---------------------------------
+
+    def run_started(self, *, total_trials: int, initial_completed: int) -> None:
+        with self._lock:
+            self._total_trials = total_trials
+            self._initial_completed = initial_completed
+            self._completed = initial_completed
+            self._run_start_ts = _now()
+
+    def trial_started(self, *, trial_id: str, task_id: str, trial_index: int) -> None:
+        with self._lock:
+            card = _TrialCard(
+                trial_id=trial_id,
+                task_id=task_id,
+                trial_index=trial_index,
+                status="running",
+                last_update_ts=_now(),
+                last_event_kind="started",
+            )
+            self._trials[trial_id] = card
+            self._running += 1
+            self._focused_trial_id = trial_id
+
+    def trial_progress(
+        self,
+        *,
+        trial_id: str,
+        prompt_tokens_delta: int,
+        completion_tokens_delta: int,
+        cost_delta_usd: float,
+    ) -> None:
+        with self._lock:
+            card = self._trials.get(trial_id) or self._lazy_card_locked(trial_id)
+            card.prompt_tokens += prompt_tokens_delta
+            card.completion_tokens += completion_tokens_delta
+            card.cost_usd += cost_delta_usd
+            card.turn_count += 1
+            card.last_event_kind = "progress"
+            # last_update_ts intentionally NOT bumped — focus is stable across
+            # per-turn ticks (D7).
+            self._prompt_tokens += prompt_tokens_delta
+            self._completion_tokens += completion_tokens_delta
+            self._total_cost_usd += cost_delta_usd
+
+    def trial_completed(self, *, trial_id: str, binary_pass: bool, score: float | None) -> None:
+        with self._lock:
+            card = self._trials.get(trial_id) or self._lazy_card_locked(trial_id)
+            was_running = card.status == "running"
+            card.status = "completed"
+            card.binary_pass = binary_pass
+            card.score = score
+            card.last_event_kind = "completed"
+            card.last_update_ts = _now()
+            if was_running and self._running > 0:
+                self._running -= 1
+            self._completed += 1
+            self._focused_trial_id = trial_id
+
+    def trial_failed(self, *, trial_id: str, error: str, retryable: bool) -> None:
+        with self._lock:
+            card = self._trials.get(trial_id) or self._lazy_card_locked(trial_id)
+            was_running = card.status == "running"
+            card.status = "failed"
+            card.error = error
+            card.last_event_kind = "failed"
+            card.last_update_ts = _now()
+            if was_running and self._running > 0:
+                self._running -= 1
+            self._failed += 1
+            self._focused_trial_id = trial_id
+
+    def judgment_scored(self, *, trial_id: str, score: float, binary_pass: bool) -> None:
+        with self._lock:
+            card = self._trials.get(trial_id) or self._lazy_card_locked(trial_id)
+            card.score = score
+            card.binary_pass = binary_pass
+            card.last_event_kind = "judged"
+            card.last_update_ts = _now()
+            self._focused_trial_id = trial_id
+
+    def run_finished(self, *, output_dir: Path) -> None:
+        with self._lock:
+            self._finished = True
+
+    # Internal helpers -----------------------------------------------
+
+    def _lazy_card_locked(self, trial_id: str) -> _TrialCard:
+        """Create a placeholder card for a trial that never emitted ``trial_started``.
+
+        Guards against ordering drift in the orchestrator (which we control);
+        raising would corrupt the runner loop per the Protocol contract. Caller
+        MUST already hold :attr:`_lock`.
+        """
+        _LOGGER.debug("Creating lazy card for unknown trial_id=%s", trial_id)
+        task_id, _, idx = trial_id.partition(":")
+        try:
+            trial_index = int(idx) if idx else 0
+        except ValueError:
+            trial_index = 0
+        card = _TrialCard(
+            trial_id=trial_id,
+            task_id=task_id or trial_id,
+            trial_index=trial_index,
+            status="running",
+            last_update_ts=_now(),
+            last_event_kind="started",
+        )
+        self._trials[trial_id] = card
+        return card
+
+    def _visible_cards(self) -> list[_TrialCard]:
+        """Return the trimmed set of cards the left pane should render.
+
+        Every running trial is always shown; completed / failed trials scroll
+        off in ``last_update_ts`` order once :attr:`_max_trial_rows` fills.
+        """
+        with self._lock:
+            all_cards = list(self._trials.values())
+        if len(all_cards) <= self._max_trial_rows:
+            return sorted(all_cards, key=lambda c: c.last_update_ts, reverse=True)
+        running = [c for c in all_cards if c.status == "running"]
+        terminal = sorted(
+            (c for c in all_cards if c.status != "running"),
+            key=lambda c: c.last_update_ts,
+            reverse=True,
+        )
+        running_sorted = sorted(running, key=lambda c: c.last_update_ts, reverse=True)
+        remaining = self._max_trial_rows - len(running_sorted)
+        if remaining <= 0:
+            return running_sorted[: self._max_trial_rows]
+        return running_sorted + terminal[:remaining]
+
+    def _estimate_eta_seconds(self) -> float | None:
+        """Linear extrapolation from run-elapsed wall-time × remaining/completed.
+
+        Returns ``None`` before the first in-run completion. Caller MUST hold
+        :attr:`_lock` (reads shared counters directly).
+        """
+        if self._run_start_ts is None:
+            return None
+        completed_this_run = self._completed - self._initial_completed
+        remaining = self._total_trials - self._completed
+        if completed_this_run <= 0 or remaining <= 0:
+            return None
+        elapsed = (_now() - self._run_start_ts).total_seconds()
+        return elapsed / completed_this_run * remaining
+
+    def _build_layout(self) -> Layout:
+        layout = Layout()
+        layout.split_column(
+            Layout(name="main", ratio=1),
+            Layout(name="bottom", size=1),
+        )
+        layout["main"].split_row(
+            Layout(name="trials", ratio=2),
+            Layout(name="focused", ratio=3),
+        )
+        layout["trials"].update(self._render_left_pane())
+        layout["focused"].update(self._render_right_pane())
+        layout["bottom"].update(self._render_bottom_bar())
+        return layout
+
+    def _render_left_pane(self) -> Panel:
+        glyphs = {"running": "⏳", "completed": "✓", "failed": "✗"}
+        lines = [
+            f"{glyphs.get(card.status, '•')} {card.task_id} · {card.trial_index}"
+            for card in self._visible_cards()
+        ]
+        body = Text("\n".join(lines) if lines else "(no trials yet)")
+        return Panel(body, title="Trials")
+
+    def _render_right_pane(self) -> Panel:
+        with self._lock:
+            trial_id = self._focused_trial_id
+            card = self._trials.get(trial_id) if trial_id is not None else None
+            snapshot = (
+                (
+                    card.turn_count,
+                    card.prompt_tokens,
+                    card.completion_tokens,
+                    card.cost_usd,
+                    card.last_event_kind,
+                )
+                if card is not None
+                else None
+            )
+        if snapshot is None:
+            body = Text("(waiting for first trial)")
+        else:
+            turn, prompt, completion, cost, last_kind = snapshot
+            body = Text(
+                f"turn {turn} · "
+                f"in {_format_tokens(prompt)} / out {_format_tokens(completion)} tok · "
+                f"{_format_cost(cost)} · "
+                f"last: {last_kind}"
+            )
+        return Panel(body, title="Focused trial")
+
+    def _render_bottom_bar(self) -> Text:
+        with self._lock:
+            stats = _BottomBarStats(
+                completed=self._completed,
+                total=self._total_trials,
+                running=self._running,
+                cost_usd=self._total_cost_usd,
+                prompt_tokens=self._prompt_tokens,
+                completion_tokens=self._completion_tokens,
+                failed=self._failed,
+                eta_seconds=self._estimate_eta_seconds(),
+            )
+        return Text(_format_bottom_bar(stats))
+
+
+__all__ = [
+    "LiveRunDisplay",
+    "RunDisplayEvents",
+]
