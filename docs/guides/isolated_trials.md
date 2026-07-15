@@ -88,7 +88,9 @@ cannot tolerate shared state declares its requirement in
 environment_manifest:
   compose_file: "./environment.compose.yaml"
   runner_service: "runner"
-  isolation: "per_trial"
+  services:
+    db:
+      isolation: ephemeral
 ```
 
 This is a **hard requirement**: if the run's backend can't satisfy it,
@@ -97,13 +99,13 @@ the orchestrator refuses to start. You'll see a startup-time
 
 ```
 Runtime backend SharedStackRuntimeBackend shares state across every
-trial in the run, but 2 task(s) declare
-`environment_manifest.isolation: per_trial`: ['support_triage_01',
-'orders_customers_join_01']. These tasks would silently produce wrong
+trial in the run, but 2 task(s) require per-trial materialisation via
+their `services.<name>.isolation` labels: ['orders_customers_join_01',
+'support_triage_01']. These tasks would silently produce wrong
 verdicts on a shared-stack backend.
-  Fix: select a per-trial runtime backend in the run config (e.g.
-  PerTrialRuntimeBackend), or set `isolation: shared_ok` on the task(s)
-  that genuinely tolerate shared state across trials.
+  Fix: drop the deprecated `orchestrator.runtime` override so backend
+  selection is task-driven, or label every service `isolation: shared`
+  on the task(s) that genuinely tolerate shared state across trials.
 ```
 
 The refusal is deliberate — silent cross-trial contamination is a
@@ -196,5 +198,5 @@ for the full case analysis.
 - [ADR-0016](../architecture/adr/0016-runtime-backend-comparison.md)
   — shared vs per-trial tradeoff analysis.
 - [`docs/TASKS.md`](../TASKS.md#multi-container-environments-environment_manifest)
-  — reference schema for `environment_manifest.isolation` and the other
+  — reference schema for `services.<name>.isolation` and the other
   manifest fields.
