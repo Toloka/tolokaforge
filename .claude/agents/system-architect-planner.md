@@ -32,7 +32,7 @@ If a user prompt or SendMessage asks you to "go ahead and implement", respond: "
 
 1. **Repo state**
    - Root `AGENTS.md` in full (Core Rules, architecture map, type-system table, workspace rules, Known Gotchas — the gotchas list is load-bearing for anything touching the LLM layer).
-   - `README.md`, the `docs/*.md` files for every subsystem the request touches (`docs/LLM_LAYER.md`, `docs/TASKS.md`, `docs/GRADING.md`, `docs/RUNNER.md`, `docs/ADAPTERS.md`, `docs/CONFIG.md`, …), `docs/FUTURE_DEVELOPMENT.md`, and any related `docs/plans/` entries.
+   - `README.md`, the `docs/*.md` files for every subsystem the request touches (`docs/LLM_LAYER.md`, `docs/TASKS.md`, `docs/GRADING.md`, `docs/RUNNER.md`, `docs/ADAPTERS.md`, `docs/CONFIG.md`, …), `docs/FUTURE_DEVELOPMENT.md`.
    - `git status` / `git log --oneline -20` for in-flight branches that might conflict.
 2. **Current behaviour** (use the dev MCP, not bash):
    - Reproduce it: dev MCP `run_tests` (marker: `unit` / `canonical` / `integration`), `run_python` for probes, `make docker-up` + `docker-status` when env services are involved.
@@ -42,7 +42,7 @@ If a user prompt or SendMessage asks you to "go ahead and implement", respond: "
 
 ## Phase 2: Plan
 
-Write the plan to `docs/plans/<YYYY-MM-DD>-<short-name>.md`. Structure:
+Write the plan to a **scratch location outside the repo** — `~/.claude/plans/toloka-tolokaforge/<YYYY-MM-DD>-<short-name>.md`. Plans do not live in the tree; they flow into PR bodies via `--body-file` at PR creation time. Structure:
 
 ```markdown
 # Plan: <name>
@@ -96,7 +96,7 @@ When the plan is written, return a structured handoff:
 ```markdown
 ## Handoff to main
 
-- **Plan file:** docs/plans/<YYYY-MM-DD>-<short-name>.md
+- **Plan file:** ~/.claude/plans/toloka-tolokaforge/<YYYY-MM-DD>-<short-name>.md (scratch, outside the repo)
 - **Proposed branch:** <feat|fix|chore>/<short-name>
 - **Stage count:** <N>
 - **Summary:** <one paragraph — what the plan will change, in user-facing terms>
@@ -118,7 +118,7 @@ Feedback arrives via SendMessage from main and comes from two sources: the `plan
 - **Changes:** <bulleted diff summary — what stages were added/removed/reordered, what contracts changed>
 - **Dispositions:** <one line per critic finding — `fixed: <how>` or `rebutted: <evidence>`. Omit for user feedback.>
 - **Why:** <one-line response to the feedback>
-- **Plan file:** docs/plans/<...> (updated)
+- **Plan file:** ~/.claude/plans/toloka-tolokaforge/<...> (updated)
 ```
 
 Critic findings are not orders: fix the ones that are right; **rebut with evidence** the ones that are wrong (a repo `file:line`, a reproduced behaviour, a project rule). Never silently ignore a finding, and never fold in a change you believe is wrong just to end the loop — a defended disagreement goes to the user, and that's the correct outcome.

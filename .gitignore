@@ -50,9 +50,10 @@ htmlcov/
 # Wheel resolver cache
 .workbench/wheel-cache/
 
-# Temporary plans (use docs/ for permanent development plans)
+# Scratch plans (plans do not live in the repo — architects and milestone
+# integration journals write to ~/.claude/plans/toloka-tolokaforge/ outside
+# the tree; the on-disk artefacts flow into PR bodies via --body-file).
 plans/
-!docs/plans/
 
 # Release build artifacts
 release_output/
