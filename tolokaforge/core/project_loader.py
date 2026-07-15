@@ -42,6 +42,7 @@ import yaml
 from tolokaforge.core.models import (
     EnvironmentManifest,
     EnvironmentPatch,
+    GradingCombineConfig,
     ProjectConfig,
     ServiceSpec,
     TaskDefaults,
@@ -338,6 +339,27 @@ def resolve_effective_run_config_data(
     # on conflict via ``deep_merge`` below.
     base = project.run_defaults.model_dump(exclude_unset=True)
     return deep_merge(base, run_config_data)
+
+
+def resolve_effective_grading_combine(
+    project_combine: dict[str, Any] | None,
+    task_combine: dict[str, Any] | None,
+) -> GradingCombineConfig:
+    """Resolve a task's effective ``combine`` from the project defaults
+    layered under the task's own ``grading.yaml.combine``.
+
+    ``task_combine`` wins over ``project_combine`` field-by-field;
+    ``weights`` merges key-by-key (task key wins, project-only keys
+    survive) per the documented config algebra. Any field neither layer
+    sets falls through to :class:`GradingCombineConfig`'s own defaults
+    (``method="weighted"``, ``weights={}``, ``pass_threshold=0.8``).
+
+    Both inputs are raw dicts — the project defaults arrive as a
+    ``model_dump`` view and the task combine as parsed ``grading.yaml`` —
+    so neither side needs a model instance.
+    """
+    merged = deep_merge(project_combine or {}, task_combine or {})
+    return GradingCombineConfig(**merged)
 
 
 # ── High-level loader entry point ──────────────────────────────────────
