@@ -239,13 +239,60 @@ Adapters:
 
 The root group is wired as `@click.group(cls=_GroupedCommandsGroup)`, and `_GroupedCommandsGroup.COMMAND_GROUPS` maps every command name to its section heading. Registering a new top-level command requires adding an entry to that map; a command with no mapping raises `RuntimeError("_GroupedCommandsGroup: no group heading for command '<name>'; add it to COMMAND_GROUPS")` the first time the root `--help` renders. The unit test `tests/unit/test_cli_help_grouping.py::test_every_registered_command_has_a_group` enforces the same invariant at CI time so drift is caught before `--help` is ever invoked.
 
+## Run banner
+
+`tolokaforge run` frames every invocation with two banners on stderr. Both banners write through the shared `console`, so the semantic palette, soft-wrapping, and stream posture from [§ Display layer](#display-layer) apply.
+
+### Start banner
+
+Rendered after the run-id resolves, before the display region opens:
+
+```
+→ Run: <run-id>
+→ Report: file:///<abs-path>/results/<run-dir>/
+```
+
+### End banner
+
+Rendered after the display region closes, on both success and failure, before the stdout artifact-path emission:
+
+```
+✓ Run complete in <duration>
+→ Report: file:///<abs-path>/results/<run-dir>/
+→ Browse: tolokaforge browse <run-id>
+```
+
+On failure the outcome line becomes `✗ Run failed in <duration>` (bold red glyph); the underlying exception continues to propagate to Click, which renders its own traceback and exit code. The banner is complementary — it does not swallow the failure.
+
+`<duration>` is `MM:SS` under one hour, `HH:MM:SS` above — the same shape the Live run panel's bottom bar uses. It is measured with `time.monotonic()` bracketing the run.
+
+### `file://` URLs
+
+The `→ Report:` URL is canonicalised via `Path.resolve().as_uri() + "/"`: always absolute, always trailing-slashed to mark a directory. Rich wraps it in OSC 8 hyperlink markup (`[link=URL]…[/link]`), so terminals that support OSC 8 render it clickable. Terminals without OSC 8 support show the URL as plain underlined-cyan text (the `link` theme token — see [§ THEME](#theme--semantic-token-palette)) and remain copyable.
+
+### `tolokaforge browse <run-id>`
+
+The `→ Browse:` line is a suggested follow-up command. `tolokaforge browse` is landed by #289; until then the string is copy-paste friendly text but not yet an installed subcommand.
+
+### Display-mode behaviour
+
+| `--display` | Banners on stderr                                                                                                                                                                    |
+|-------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `full`      | Visible.                                                                                                                                                                             |
+| `rich`      | Visible.                                                                                                                                                                             |
+| `plain`     | Visible.                                                                                                                                                                             |
+| `log`       | Visible.                                                                                                                                                                             |
+| `none`      | Silenced — `silence_console()` sets `console.quiet = True` and every `.print(...)` short-circuits at buffer-check time. The stdout artifact-path emission (on success) still fires. |
+
+`--display=log` shapes the log-line stream only; it does not silence the shared `console`, so the banner still renders under it.
+
 ## stdout / stderr contract
 
 `tolokaforge` splits streams by purpose: **stdout** carries the machine-parseable artifact identifier; **stderr** carries everything a human reads (progress, banners, log records, error text).
 
 | Command                                      | stdout on success                     | stderr                                                       |
 |----------------------------------------------|---------------------------------------|--------------------------------------------------------------|
-| `tolokaforge run`                            | Absolute run-dir path (single line).  | Progress, log records, "Run complete" banner, "Results saved to" line. |
+| `tolokaforge run`                            | Absolute run-dir path (single line).  | Start banner (run-id + `file://` report URL), progress, log records, end banner (outcome + duration + `file://` report URL + browse invocation). See [§ Run banner](#run-banner). |
 | `tolokaforge prepare`                        | Absolute run-dir path (single line).  | Queue summary, log records.                                  |
 | `tolokaforge worker`                         | (empty)                               | "Worker complete" summary, log records.                      |
 | `tolokaforge status`                         | (empty)                               | Run summary, queue ETA, cost totals.                         |
