@@ -14,13 +14,23 @@ Public surface:
 - :func:`make_progress` — factory for ``rich.progress.Progress`` bound to
   :data:`console` with the CLI's default column set.
 - :func:`make_live` — factory for ``rich.live.Live`` bound to :data:`console`.
+- :class:`DisplayMode` — the overall stderr UI selection enum
+  (``full``/``rich``/``plain``/``log``/``none``).
+- :func:`select_display_mode` — pure resolver that applies the precedence
+  chain (explicit flag > env var > ``CI`` > isatty > plain).
+- :func:`silence_console` — sets ``console.quiet = True`` for
+  ``--display=none``.
 """
 
 from __future__ import annotations
 
+import importlib.util
+import os
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from enum import Enum
 from pathlib import Path
+from typing import TextIO
 
 from rich.console import Console, RenderableType
 from rich.live import Live
@@ -149,4 +159,98 @@ def make_live(
     )
 
 
-__all__ = ["THEME", "console", "emit_artifact_path", "make_live", "make_progress"]
+class DisplayMode(str, Enum):
+    """Overall stderr UI selection for a tolokaforge invocation.
+
+    Values match the CLI flag literals; ``(str, Enum)`` inheritance means
+    ``click.Choice([m.value for m in DisplayMode])`` accepts them without a
+    coercion adapter.
+    """
+
+    FULL = "full"
+    RICH = "rich"
+    PLAIN = "plain"
+    LOG = "log"
+    NONE = "none"
+
+
+_CI_FALSY: frozenset[str] = frozenset({"0", "false", "False", "FALSE", "no", "off", ""})
+
+
+def _resolve_mode(value: str, *, source: str) -> DisplayMode:
+    accepted = ", ".join(m.value for m in DisplayMode)
+    try:
+        return DisplayMode(value.lower())
+    except ValueError:
+        raise ValueError(f"invalid {source} value {value!r}; expected one of: {accepted}") from None
+
+
+def select_display_mode(
+    *,
+    explicit: str | DisplayMode | None = None,
+    env: Mapping[str, str] | None = None,
+    stream: TextIO | None = None,
+) -> DisplayMode:
+    """Resolve the effective display mode.
+
+    Precedence (highest first): ``explicit`` > ``env["TOLOKAFORGE_DISPLAY"]``
+    > ``env["CI"]`` truthy → ``PLAIN`` > ``stream.isatty()`` → ``RICH`` > ``PLAIN``.
+
+    ``env`` defaults to :data:`os.environ`; ``stream`` defaults to
+    :data:`sys.stderr`. Unrecognised values in ``explicit`` or the env var
+    raise :class:`ValueError` naming the accepted set. Does NOT apply the
+    Textual fallback — that lives at the CLI callback so the fallback log
+    line can render under the active ``--log-format``.
+    """
+    if explicit is not None:
+        if isinstance(explicit, DisplayMode):
+            return explicit
+        return _resolve_mode(explicit, source="--display")
+
+    env_map = env if env is not None else os.environ
+
+    env_display = env_map.get("TOLOKAFORGE_DISPLAY", "")
+    if env_display:
+        return _resolve_mode(env_display, source="TOLOKAFORGE_DISPLAY")
+
+    if env_map.get("CI", "") not in _CI_FALSY:
+        return DisplayMode.PLAIN
+
+    target_stream = stream if stream is not None else sys.stderr
+    if target_stream.isatty():
+        return DisplayMode.RICH
+    return DisplayMode.PLAIN
+
+
+def silence_console() -> None:
+    """Set ``console.quiet = True`` on the shared console.
+
+    Rich's ``Console.quiet`` short-circuits every write at buffer-check
+    time — no bytes reach the wrapped stream. Idempotent.
+    """
+    console.quiet = True
+
+
+def _textual_available() -> bool:
+    """Return ``True`` iff :mod:`textual` is importable.
+
+    Uses :func:`importlib.util.find_spec` so the module is not actually
+    imported — the CLI callback only needs to know whether ``--display=full``
+    should fall back to ``--display=rich``.
+    """
+    try:
+        return importlib.util.find_spec("textual") is not None
+    except (ImportError, ValueError):
+        return False
+
+
+__all__ = [
+    "DisplayMode",
+    "THEME",
+    "console",
+    "emit_artifact_path",
+    "make_live",
+    "make_progress",
+    "select_display_mode",
+    "silence_console",
+]
