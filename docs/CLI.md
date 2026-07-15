@@ -128,7 +128,7 @@ The root flag `--display={full,rich,plain,log,none}` and the equivalent env var 
 | `log`    | Pure log stream — no banners, no progress bars.                                                           |
 | `none`   | Silent on stderr on success. `emit_artifact_path` still writes the artifact path to stdout.               |
 
-The Rich Live panel lands with B1 (#285); the Textual TUI lands with C3 (#289). Today `--display=rich` renders through the existing per-command `console.print(...)` calls, and `--display=full` always falls back to `rich` because textual is not a dependency.
+`--display=rich` renders through the existing per-command `console.print(...)` calls; `--display=full` always falls back to `rich` because textual is not a dependency.
 
 ### Precedence
 
@@ -167,7 +167,7 @@ The group callback validates `TOLOKAFORGE_DISPLAY` on every invocation, includin
 
 ### `ctx.obj["display_mode"]`
 
-The group callback stashes the resolved `DisplayMode` on `ctx.obj["display_mode"]` after applying the precedence rules and Textual fallback. The value is a `DisplayMode` enum (not the raw string) so consumers get `if mode is DisplayMode.FULL:` type-safety. Consumer commands (`run`, `prepare`, and — in later milestone work — B1's Rich Live panel and C3's Textual TUI) read from this single source rather than re-parsing the flag / env var.
+The group callback stashes the resolved `DisplayMode` on `ctx.obj["display_mode"]` after applying the precedence rules and Textual fallback. The value is a `DisplayMode` enum (not the raw string) so consumers get `if mode is DisplayMode.FULL:` type-safety. Consumer commands read the resolved mode from this single source rather than re-parsing the flag / env var.
 
 ## stdout / stderr contract
 
