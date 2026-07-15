@@ -218,7 +218,11 @@ class LiveRunDisplay:
     """
 
     def __init__(self, *, refresh_per_second: float = 4.0, max_trial_rows: int = 20) -> None:
-        self._lock: threading.Lock = threading.Lock()
+        # Reentrant — _refresh_live_locked (called inside every event handler
+        # while holding the lock) invokes _build_layout, whose render helpers
+        # (_visible_cards, _render_right_pane, _render_bottom_bar) re-acquire
+        # the same lock. Non-reentrant Lock deadlocks here.
+        self._lock: threading.RLock = threading.RLock()
         self._live: Live | None = None
         self._trials: dict[str, _TrialCard] = {}
         self._focused_trial_id: str | None = None
@@ -286,6 +290,7 @@ class LiveRunDisplay:
             self._initial_completed = initial_completed
             self._completed = initial_completed
             self._run_start_ts = _now()
+            self._refresh_live_locked()
 
     def trial_started(self, *, trial_id: str, task_id: str, trial_index: int) -> None:
         with self._lock:
@@ -300,6 +305,7 @@ class LiveRunDisplay:
             self._trials[trial_id] = card
             self._running += 1
             self._focused_trial_id = trial_id
+            self._refresh_live_locked()
 
     def trial_progress(
         self,
@@ -321,6 +327,7 @@ class LiveRunDisplay:
             self._prompt_tokens += prompt_tokens_delta
             self._completion_tokens += completion_tokens_delta
             self._total_cost_usd += cost_delta_usd
+            self._refresh_live_locked()
 
     def trial_completed(self, *, trial_id: str, binary_pass: bool, score: float | None) -> None:
         with self._lock:
@@ -335,6 +342,7 @@ class LiveRunDisplay:
                 self._running -= 1
             self._completed += 1
             self._focused_trial_id = trial_id
+            self._refresh_live_locked()
 
     def trial_failed(self, *, trial_id: str, error: str, retryable: bool) -> None:
         with self._lock:
@@ -348,6 +356,7 @@ class LiveRunDisplay:
                 self._running -= 1
             self._failed += 1
             self._focused_trial_id = trial_id
+            self._refresh_live_locked()
 
     def judgment_scored(self, *, trial_id: str, score: float, binary_pass: bool) -> None:
         with self._lock:
@@ -357,10 +366,29 @@ class LiveRunDisplay:
             card.last_event_kind = "judged"
             card.last_update_ts = _now()
             self._focused_trial_id = trial_id
+            self._refresh_live_locked()
 
     def run_finished(self, *, output_dir: Path) -> None:
         with self._lock:
             self._finished = True
+            self._refresh_live_locked()
+
+    def _refresh_live_locked(self) -> None:
+        """Rebuild the layout and push it to Rich's Live if active.
+
+        Rich's ``Layout.__init__`` binds child renderables into a tree once;
+        state changes to ``self._trials`` / counters do not propagate back
+        into those bound children. We rebuild the layout from scratch and
+        call ``Live.update(...)`` on every event so the auto-refresh thread
+        renders the CURRENT state, not the "empty startup" snapshot.
+
+        ``refresh=False`` — auto-refresh at ``refresh_per_second`` handles
+        the visible repaint; we just swap the source of truth. Caller MUST
+        already hold :attr:`_lock`.
+        """
+        if self._live is None:
+            return
+        self._live.update(self._build_layout(), refresh=False)
 
     # Internal helpers -----------------------------------------------
 

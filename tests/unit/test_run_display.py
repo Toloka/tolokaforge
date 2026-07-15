@@ -585,3 +585,50 @@ def test_enter_exit_without_sentinel_handler_is_a_noop(
 ) -> None:
     with LiveRunDisplay(refresh_per_second=1000) as display:
         assert display._saved_log_streams == []
+
+
+def test_events_push_updated_layout_to_live() -> None:
+    """Regression lock — events must re-render the panel, not freeze at startup.
+
+    Rich's Layout binds child renderables at construction; without an explicit
+    Live.update(...) after each event, the panel visually freezes at the
+    initial "empty" state. This test installs a stub Live on the display
+    (avoiding Rich's auto-refresh thread) and asserts each event handler
+    triggers exactly one Live.update call with a freshly-built layout.
+    """
+
+    class _StubLive:
+        def __init__(self) -> None:
+            self.updates: list[object] = []
+
+        def update(self, renderable: object, *, refresh: bool = False) -> None:
+            self.updates.append(renderable)
+
+    display = LiveRunDisplay()
+    stub = _StubLive()
+    display._live = stub  # type: ignore[assignment]
+
+    display.run_started(total_trials=3, initial_completed=0)
+    display.trial_started(trial_id="a:0", task_id="a", trial_index=0)
+    display.trial_progress(
+        trial_id="a:0",
+        prompt_tokens_delta=100,
+        completion_tokens_delta=50,
+        cost_delta_usd=0.01,
+    )
+    display.trial_completed(trial_id="a:0", binary_pass=True, score=1.0)
+    display.trial_failed(trial_id="b:0", error="boom", retryable=False)
+    display.judgment_scored(trial_id="a:0", score=0.9, binary_pass=True)
+    display.run_finished(output_dir=Path("/tmp/x"))
+
+    assert len(stub.updates) == 7, f"expected one Live.update per event; got {len(stub.updates)}"
+
+
+def test_refresh_live_locked_is_noop_when_live_is_none() -> None:
+    """When Live is not active (no _live instance), events must still update
+    internal state without raising."""
+    display = LiveRunDisplay()
+    assert display._live is None
+    # No events should raise; internal state should update.
+    display.trial_started(trial_id="a:0", task_id="a", trial_index=0)
+    assert display._trials["a:0"].status == "running"
