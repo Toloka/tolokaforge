@@ -241,13 +241,18 @@ def _make_one_service_manifest() -> EnvironmentManifest:
 class TestProvisioningProtocolConformance:
     def test_shared_stack_runtime_backend_has_provisioning_methods(self) -> None:
         backend = SharedStackRuntimeBackend(runner_address="sentinel:50051")
-        for method in ("provision", "await_ready", "endpoints", "teardown"):
+        for method in ("provision", "await_ready", "endpoints", "teardown", "capture_service_logs"):
             assert callable(getattr(backend, method))
 
     def test_in_memory_backend_has_provisioning_methods(self) -> None:
         backend = InMemoryRuntimeBackend()
-        for method in ("provision", "await_ready", "endpoints", "teardown"):
+        for method in ("provision", "await_ready", "endpoints", "teardown", "capture_service_logs"):
             assert callable(getattr(backend, method))
+
+    def test_per_trial_backend_has_capture_service_logs(self) -> None:
+        from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
+
+        assert callable(PerTrialRuntimeBackend().capture_service_logs)
 
 
 class TestEnvHandleShape:
@@ -423,3 +428,27 @@ class TestInMemoryProvisioningCallLog:
         backend = InMemoryRuntimeBackend(fail_provision_after_service="db")
         with pytest.raises(ProvisionError):
             backend.provision(_make_trial_spec(manifest=_make_two_service_manifest()))
+
+
+class TestCaptureServiceLogsContract:
+    """``capture_service_logs`` is a Protocol method on every backend. The
+    in-memory fixture records the ``(trial_id, failed)`` pair for tests to
+    assert against; the shared-stack backend is a documented no-op. Real
+    per-service ``.log`` capture on the per-trial backend is locked by the
+    Docker integration test."""
+
+    def test_in_memory_records_call_and_returns_empty(self) -> None:
+        backend = InMemoryRuntimeBackend()
+        handle = backend.provision(_make_trial_spec(trial_id="task-1:0"))
+        assert backend.capture_service_logs(handle, failed=True) == {}
+        assert backend.capture_service_logs(handle, failed=False) == {}
+        assert backend.call_log.capture_service_logs_calls == [
+            ("task-1:0", True),
+            ("task-1:0", False),
+        ]
+
+    def test_shared_stack_is_no_op(self) -> None:
+        backend = SharedStackRuntimeBackend(runner_address="localhost:50051")
+        handle = backend.provision(_make_trial_spec(trial_id="task-1:0"))
+        assert backend.capture_service_logs(handle, failed=True) == {}
+        assert backend.capture_service_logs(handle, failed=False) == {}

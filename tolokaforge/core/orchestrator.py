@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from tolokaforge.adapters import BaseAdapter, ensure_registered_adapter, get_adapter
+from tolokaforge.core.compose_materialisation import LogCaptureConfig
 from tolokaforge.core.conductor import (
     Conductor,
     ConductorContext,
@@ -38,6 +39,7 @@ from tolokaforge.core.metrics import (
     calculate_task_metrics,
 )
 from tolokaforge.core.models import (
+    ComputeConfig,
     ModelConfig,
     ProjectConfig,
     RunConfig,
@@ -674,11 +676,27 @@ class Orchestrator:
                 environment_identity=identity,
             )
 
+    def _build_log_capture(self, output_dir: Path) -> LogCaptureConfig:
+        """Build the run's per-service log-capture policy from ``compute``.
+
+        Reads ``compute.log_tail`` + ``compute.capture_logs_on_success``
+        (their schema defaults apply when no ``compute`` block is declared),
+        anchoring capture under ``output_dir``. One instance is shared by the
+        runtime backend and the trial executor so both write to the same tree.
+        """
+        compute = self.config.compute or ComputeConfig()
+        return LogCaptureConfig(
+            output_root=output_dir,
+            tail=compute.log_tail,
+            on_success=compute.capture_logs_on_success,
+        )
+
     def _construct_runtime_backend(
         self,
         runner_address: str,
         env_manifest: EnvironmentManifest | None = None,
         run_id: str = "run",
+        log_capture: LogCaptureConfig | None = None,
     ) -> RuntimeBackend:
         """Construct the runtime backend from the task-driven signal,
         with the deprecated ``config.orchestrator.runtime`` override
@@ -711,7 +729,7 @@ class Orchestrator:
                 backend="PerTrialRuntimeBackend",
                 source=source,
             )
-            return PerTrialRuntimeBackend(seeds=seeds)
+            return PerTrialRuntimeBackend(seeds=seeds, log_capture=log_capture)
         from tolokaforge.core.shared_stack_runtime import SharedStackRuntimeBackend
 
         self.logger.info(
@@ -804,7 +822,10 @@ class Orchestrator:
                 continue
 
     def _build_trial_executor(
-        self, runtime_backend: RuntimeBackend, conductor: Conductor
+        self,
+        runtime_backend: RuntimeBackend,
+        conductor: Conductor,
+        log_capture: LogCaptureConfig | None = None,
     ) -> TrialExecutor:
         """Compose the per-run :class:`TrialExecutor` (ADR-0015).
 
@@ -814,6 +835,10 @@ class Orchestrator:
         ``trial_executor.execute`` to the worker pool in place of
         ``conductor.run``; the bracket runs on the worker thread so
         provisioning parallelism equals worker count.
+
+        ``log_capture`` is the same instance the runtime backend was built
+        with, threaded so the executor can amend a failed trial's
+        ``metrics.yaml`` with the captured per-service byte counts.
         """
         from tolokaforge.core.trial_executor import ProvisioningTrialExecutor
 
@@ -821,6 +846,7 @@ class Orchestrator:
             runtime_backend=runtime_backend,
             conductor=conductor,
             logger=self.logger,
+            log_capture=log_capture,
         )
 
     def _verify_isolation_compatibility(self, runtime_backend: RuntimeBackend) -> None:
@@ -1316,6 +1342,7 @@ class Orchestrator:
         if runner_address is None:
             runner_address = os.environ.get("EXECUTOR_ADDRESS", "executor:50051")
 
+        log_capture = self._build_log_capture(output_dir)
         runtime_backend: RuntimeBackend
         if self._injected_runtime_backend is not None:
             runtime_backend = self._injected_runtime_backend
@@ -1324,6 +1351,7 @@ class Orchestrator:
                 runner_address,
                 env_manifest=run_env_manifest,
                 run_id=run_id,
+                log_capture=log_capture,
             )
         runtime_backend.connect()
         self.logger.info("Runtime backend connected")
@@ -1356,7 +1384,9 @@ class Orchestrator:
             output_dir=output_dir,
             request_limiter=request_limiter,
         )
-        trial_executor = self._build_trial_executor(runtime_backend, conductor)
+        trial_executor = self._build_trial_executor(
+            runtime_backend, conductor, log_capture=log_capture
+        )
 
         executor_healthy = runtime_backend.health_check()
         self.logger.info("Docker runtime health check", executor_healthy=executor_healthy)
@@ -1682,11 +1712,14 @@ class Orchestrator:
                 "runs, or drop the manifest and use the built-in shared stack."
             )
 
+        log_capture = self._build_log_capture(output_dir)
         runtime_backend: RuntimeBackend
         if self._injected_runtime_backend is not None:
             runtime_backend = self._injected_runtime_backend
         else:
-            runtime_backend = self._construct_runtime_backend(runner_address)
+            runtime_backend = self._construct_runtime_backend(
+                runner_address, log_capture=log_capture
+            )
         runtime_backend.connect()
         self._verify_isolation_compatibility(runtime_backend)
         self._admit_capabilities(runtime_backend)
@@ -1706,7 +1739,9 @@ class Orchestrator:
             output_dir=output_dir,
             request_limiter=request_limiter,
         )
-        trial_executor = self._build_trial_executor(runtime_backend, conductor)
+        trial_executor = self._build_trial_executor(
+            runtime_backend, conductor, log_capture=log_capture
+        )
 
         task_by_id = {task.task_id: task for task in self.tasks}
         run_queue = create_run_queue(

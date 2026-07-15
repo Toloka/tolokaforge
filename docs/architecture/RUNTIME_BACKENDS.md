@@ -13,15 +13,15 @@ wrapper over an external artifact).
 ## The seam
 
 `RuntimeBackend` is the orchestrator's execution surface. A single Protocol,
-nine methods, three concerns:
+ten methods, three concerns:
 
 | Group | Methods | Called when |
 |---|---|---|
 | Run-level lifecycle | `connect`, `close`, `health_check` | Once per orchestrator run |
-| Per-trial provisioning (ADR-0010) | `provision`, `await_ready`, `endpoints`, `teardown` | Around every trial body |
+| Per-trial provisioning (ADR-0010) | `provision`, `await_ready`, `endpoints`, `teardown`, `capture_service_logs` | Around every trial body |
 | Per-trial RPC (ADR-0013) | `register_trial`, `execute_tool`, `grade_trial`, `get_state`, `reset_trial`, `cleanup_trial` | Inside the trial body |
 
-Every implementation ships all nine. The orchestrator holds one backend
+Every implementation ships all ten. The orchestrator holds one backend
 instance for the whole run; the conductor calls it per-trial.
 
 ```mermaid
@@ -291,7 +291,8 @@ Enforcement lives at the orchestrator layer, not on `SharedStackRuntimeBackend.p
 | Where | What is raised | What is cleaned up before the raise |
 |---|---|---|
 | `provision` — no manifest | `ProvisionError(stage="provision")` | Nothing to clean |
-| `provision` — compose start fails | `ProvisionError(stage="provision")` wrapping the compose error | Per-trial temp dir removed |
+| `provision` — compose start fails | `ProvisionError(stage="provision")` wrapping the compose error | Per-service logs captured before teardown (see below); per-trial temp dir removed |
+| `provision` — reset recipe fails | `ProvisionError(stage="reset_recipe")` | Per-service logs captured before teardown (see below); compose stack torn down + temp dir removed |
 | `provision` — runner-client construction (host/port unresolvable) | `ProvisionError(stage="provision")` | Compose stack torn down + temp dir removed |
 | `provision` — endpoint resolution (missing `db-service`) | Not a failure — `EnvEndpoints.db_url` stays `None`; the runner reads `DB_SERVICE_URL` from its container env | — |
 | `await_ready` | Never raises today (`--wait` gates during provision); reserved for future backends | — |
@@ -306,6 +307,62 @@ The provisioning contract (ADR-0010) requires provisioners to make a
 best-effort teardown of anything partially materialised before raising.
 `PerTrialRuntimeBackend` honours that at every failure point above — no
 half-provisioned resources leaked to the daemon.
+
+## Per-service log capture on failure
+
+When a multi-service trial fails, the moment an operator needs to know *why*
+postgres / PostgREST went sideways is exactly the moment the containers are
+about to be torn down. `PerTrialRuntimeBackend` captures each declared
+service's `docker compose logs` output — one `<service>.log` per service —
+into the trial bundle **before** the stack comes down, under:
+
+```
+<output_dir>/trials/<task_id>/<trial_index>/services/<service>.log
+```
+
+**What counts as failure.** Capture fires on a `ProvisionError` (the
+provision-stage path) or an execution failure (`trajectory.status` in
+`{ERROR, TIMEOUT}`, the trial-body path). A `COMPLETED` trial that merely
+failed grading (`binary_pass=False`) is **not** a capture trigger — that
+would capture on most trials of a hard benchmark and blow the output-dir size
+budget. The `compute.capture_logs_on_success` debug flag overrides this and
+captures on success too.
+
+**Two capture surfaces.**
+
+- **Provision-failure path** — `provision()` captures before
+  `cleanup_partial_materialisation` in both failure branches (compose
+  `up --wait` failure and reset-recipe failure). No `metrics.yaml` exists yet
+  (the conductor never ran), so the durable record is a `services/_capture.yaml`
+  manifest written alongside the `.log` files:
+  `{"tail": int, "capture_reason": "provision_error", "services": {"<name>": {"bytes": int}}}`.
+- **Trial-body-failure path** — the [`TrialExecutor`](#per-trial-substrate-bracket-trialexecutor)
+  drives this surface: after `conductor.run` returns and before teardown it
+  calls `capture_service_logs(handle, *, failed)`, the Protocol hook that writes
+  the per-service `.log` files for a still-live trial stack (the `service_names`
+  snapshot taken at provision time) and returns a `{service: bytes_written}`
+  map. On a non-empty map the executor emits the `trial.service_logs_captured`
+  summary log line and amends the trial's existing `metrics.yaml` with a
+  top-level `captured_service_logs` mapping — the durable record on this path
+  (the hook writes only the `.log` files). See
+  [`docs/OUTPUT_FORMAT.md`](../OUTPUT_FORMAT.md:1) § `captured_service_logs`.
+
+Both surfaces are best-effort: capture runs *because* a failure was already
+decided, so a per-service fetch error is logged at debug and that service is
+omitted — capture never raises and never masks the original error.
+
+**`--tail` mechanism.** Testcontainers' `DockerCompose.get_logs` has no tail
+bound, so the helper drives the compose CLI directly
+(`docker compose … logs --no-color --no-log-prefix --tail=<N> <service>`),
+deriving the base command from the `DockerCompose` instance and running the
+subprocess with `cwd=<context>` so Compose resolves the per-trial project from
+the context-dir basename. `compute.log_tail` (default 500) sets `N`.
+
+**Shared-stack no-op.** `SharedStackRuntimeBackend.capture_service_logs` returns
+`{}` unconditionally. Its stack is run-wide, not trial-scoped, and its per-trial
+`teardown` is a no-op — there is no per-trial stack to read, and capturing the
+same run-wide containers on every trial would be meaningless. Run-level capture
+on a shared-stack materialise failure is a separate, future surface.
 
 ## `SharedStackRuntimeBackend` vs `PerTrialRuntimeBackend` side-by-side
 
@@ -351,7 +408,7 @@ The manifest is **substrate-neutral by design**: `EnvironmentManifest` points at
 
 Concretely, when the next substrate lands (e.g. Kubernetes):
 
-- Write a new class that satisfies the nine-method `RuntimeBackend` Protocol.
+- Write a new class that satisfies the ten-method `RuntimeBackend` Protocol.
 - Inside `provision`, translate `manifest.load_compose()` into that substrate's shape (a k8s backend would use `kompose` or a small owned translator to render Pod / Service specs, then `kubectl apply`; a Modal / E2B backend would render into its SDK's spec type).
 - Advertise the backend's isolation posture by setting the class-level `isolation_mode: IsolationMode` attribute — `SHARED_STACK` if trials share one materialisation, `PER_TRIAL_STACK` if each trial gets its own. The orchestrator's isolation-compatibility check reads this attribute, not the class name, so a `KubernetesPerTrialRuntimeBackend` (or whatever it's called) slots into the enforcement path with zero orchestrator changes.
 - Wire the backend into config: extend the `orchestrator.runtime` selector so operators can pick between the shipped backends.

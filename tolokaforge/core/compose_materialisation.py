@@ -23,7 +23,10 @@ from __future__ import annotations
 import copy
 import logging
 import shutil
+import subprocess
 import tempfile
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -371,3 +374,118 @@ def cleanup_partial_materialisation(compose: DockerCompose | None, temp_dir: Pat
     if compose is not None:
         shutdown_compose(compose)
     shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Per-service log capture on failure
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class LogCaptureConfig:
+    """Per-run policy for capturing per-service compose logs on trial failure.
+
+    ``output_root`` is the run's ``output_dir``; capture writes under
+    ``output_root/trials/<task>/<idx>/services/``. ``tail`` is the
+    ``docker compose logs --tail`` bound. ``on_success`` is the debug escape
+    hatch that captures logs for successful trials too.
+    """
+
+    output_root: Path
+    tail: int
+    on_success: bool
+
+
+def capture_compose_service_logs(
+    compose: DockerCompose | None,
+    service_names: Iterable[str],
+    dest_dir: Path,
+    tail: int,
+) -> dict[str, int]:
+    """Write ``docker compose logs`` output per service to ``dest_dir``.
+
+    Returns ``{service_name: bytes_written}`` for the services that produced
+    output. Best-effort diagnostics captured *because* a trial already failed:
+    a per-service fetch error is ``logger.debug``-logged and that service is
+    omitted from the map — this function never raises.
+
+    The compose CLI is driven directly (testcontainers' ``get_logs`` has no
+    tail bound): the base command comes from ``compose.compose_command_property``
+    (``docker compose -f <file>``), and the subprocess runs with
+    ``cwd=str(compose.context)`` so Docker Compose derives the project name from
+    the context-dir basename — the same basename the per-trial temp dir encodes.
+    A wrong cwd silently targets no project and returns empty logs.
+
+    ``compose is None`` (nothing materialised) or an empty ``service_names``
+    returns ``{}`` without creating ``dest_dir``. ``dest_dir`` is created
+    (parents included) only when there is at least one service to attempt.
+    """
+    if compose is None:
+        return {}
+    names = list(service_names)
+    if not names:
+        return {}
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    base_command = list(compose.compose_command_property)
+    context = str(compose.context)
+    captured: dict[str, int] = {}
+    for name in names:
+        output = _fetch_service_logs(base_command, context, name, tail)
+        if not output:
+            continue
+        (dest_dir / f"{name}.log").write_bytes(output)
+        captured[name] = len(output)
+    return captured
+
+
+def _fetch_service_logs(
+    base_command: list[str], context: str, service: str, tail: int
+) -> bytes | None:
+    """Run ``docker compose logs`` for one service, returning its raw bytes.
+
+    ``None`` on any subprocess failure (logged at debug) — the caller omits the
+    service. Empty output is returned as-is and the caller skips it.
+    """
+    command = [*base_command, "logs", "--no-color", "--no-log-prefix", "--tail", str(tail), service]
+    try:
+        result = subprocess.run(command, cwd=context, capture_output=True, check=True)
+    except (
+        Exception
+    ) as exc:  # noqa: BLE001 — best-effort diagnostics; subprocess raises varied types
+        logger.debug("compose_materialisation: logs fetch for service %r failed: %s", service, exc)
+        return None
+    return result.stdout
+
+
+def trial_services_dir(output_root: Path, trial_id: str) -> Path:
+    """Return the per-trial ``services/`` capture dir for ``trial_id``.
+
+    ``trial_id`` is the canonical ``"{task_id}:{trial_index}"`` id; the tail
+    ``:index`` becomes the trial subdir, matching the conductor's
+    ``output_root/trials/<task_id>/<index>/`` bundle layout.
+    """
+    task_id, trial_index = trial_id.rsplit(":", 1)
+    return output_root / "trials" / task_id / trial_index / "services"
+
+
+def write_capture_manifest(
+    dest_dir: Path,
+    tail: int,
+    captured: Mapping[str, int],
+    capture_reason: str = "provision_error",
+) -> None:
+    """Write ``dest_dir/_capture.yaml`` recording captured per-service byte counts.
+
+    The durable record for the provision-failure path, where no ``metrics.yaml``
+    exists to amend. Shape:
+    ``{"tail": int, "capture_reason": str, "services": {"<name>": {"bytes": int}}}``.
+    ``dest_dir`` must already exist (the ``.log`` writer creates it).
+    """
+    manifest = {
+        "tail": tail,
+        "capture_reason": capture_reason,
+        "services": {name: {"bytes": count} for name, count in captured.items()},
+    }
+    with (dest_dir / "_capture.yaml").open("w") as f:
+        yaml.safe_dump(manifest, f, sort_keys=False)

@@ -683,6 +683,8 @@ class ComputeConfig(BaseModel):
     max_budget_usd: float | None = Field(default=None, ge=0.0)
     max_requests_per_second: float | None = Field(default=None, gt=0.0)
     max_attempt_retries: int = Field(default=0, ge=0)
+    log_tail: int = Field(default=500, ge=1)
+    capture_logs_on_success: bool = False
     local_docker: LocalDockerComputeConfig | None = None
 
     capabilities: list[Any] = Field(default_factory=list)

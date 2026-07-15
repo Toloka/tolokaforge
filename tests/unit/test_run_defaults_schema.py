@@ -35,6 +35,8 @@ class TestComputeConfig:
         assert c.max_budget_usd is None
         assert c.max_requests_per_second is None
         assert c.max_attempt_retries == 0
+        assert c.log_tail == 500
+        assert c.capture_logs_on_success is False
         assert c.local_docker is None
 
     def test_rejects_unknown_provider(self) -> None:
@@ -58,6 +60,17 @@ class TestComputeConfig:
         with pytest.raises(ValidationError):
             ComputeConfig(max_attempt_retries=-1)
         ComputeConfig(max_attempt_retries=0)  # zero is allowed
+
+    def test_log_tail_must_be_positive(self) -> None:
+        with pytest.raises(ValidationError):
+            ComputeConfig(log_tail=0)
+        with pytest.raises(ValidationError):
+            ComputeConfig(log_tail=-1)
+        assert ComputeConfig(log_tail=1).log_tail == 1
+
+    def test_capture_logs_on_success_defaults_false(self) -> None:
+        assert ComputeConfig().capture_logs_on_success is False
+        assert ComputeConfig(capture_logs_on_success=True).capture_logs_on_success is True
 
     def test_provider_sub_block_binds(self) -> None:
         c = ComputeConfig(local_docker=LocalDockerComputeConfig())

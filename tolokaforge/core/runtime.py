@@ -322,6 +322,20 @@ class RuntimeBackend(Protocol):
         """
         ...
 
+    def capture_service_logs(self, handle: EnvHandle, *, failed: bool) -> dict[str, int]:
+        """Capture per-service logs for ``handle``'s stack; return a
+        ``{service_name: bytes_written}`` map.
+
+        Writes ``docker compose logs`` output to the handle's trial
+        ``services/`` dir when the backend has a live per-trial stack and
+        (``failed`` or the backend's on-success policy), then returns the
+        byte map for the services that produced output; returns ``{}``
+        otherwise. Never raises — best-effort diagnostics captured *because*
+        a failure is already decided. Backends without a trial-scoped stack
+        (the shared-stack backend) are documented no-ops returning ``{}``.
+        """
+        ...
+
 
 # ---------------------------------------------------------------------------
 # InMemoryRuntimeBackend — non-gRPC, test fixture
@@ -344,6 +358,7 @@ class RuntimeBackendCallLog:
     await_ready_calls: list[str] = field(default_factory=list)
     endpoints_calls: list[str] = field(default_factory=list)
     torn_down_trials: list[str] = field(default_factory=list)
+    capture_service_logs_calls: list[tuple[str, bool]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -476,6 +491,10 @@ class InMemoryRuntimeBackend:
 
     def teardown(self, handle: EnvHandle) -> None:
         self.call_log.torn_down_trials.append(handle.trial_id)
+
+    def capture_service_logs(self, handle: EnvHandle, *, failed: bool) -> dict[str, int]:
+        self.call_log.capture_service_logs_calls.append((handle.trial_id, failed))
+        return {}
 
     # ---- Per-trial RPC operations (ADR-0013) ----
     # The in-memory backend has no runner service to talk to; every RPC
