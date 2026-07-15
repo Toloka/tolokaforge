@@ -1,9 +1,10 @@
 # Isolated trials
 
 This guide explains what per-trial isolation buys you, when to use it,
-and how to opt in. It covers the CLI, the run config, and the task-level
-declaration, plus a worked example you can run against an unchanged
-example task pack.
+and how it is decided. It covers the per-service declaration in the task
+manifest that drives backend selection, the deprecated CLI/config
+overrides, and a worked example you can run against an unchanged example
+task pack.
 
 For the underlying protocol and materialisation lifecycle see
 [`docs/architecture/RUNTIME_BACKENDS.md`](../architecture/RUNTIME_BACKENDS.md).
@@ -32,7 +33,8 @@ without polluting any other trial's grading.
 
 ## When to use it
 
-Choose `per_trial` when **any** of the following is true:
+Label a task's services `reset`/`ephemeral` — so the run materialises a
+fresh stack per trial — when **any** of the following is true:
 
 - The task's grading depends on state the trial itself created (a row
   the agent wrote, a file it edited, a message it posted).
@@ -43,7 +45,8 @@ Choose `per_trial` when **any** of the following is true:
 - You measure `pass@k` and need every retry to be genuinely
   independent.
 
-Choose `shared` when **all** of the following are true:
+Leave a task's services `shared` — so the run stays on the shared stack
+— when **all** of the following are true:
 
 - Grading only inspects the agent's output (a written file, a returned
   string).
@@ -52,37 +55,25 @@ Choose `shared` when **all** of the following are true:
 - The trials do not race on any shared state that could cause
   non-determinism.
 
-Default is `shared` because the cold-start cost is real: every trial in
+The shared stack is where the task-driven selector lands when no service
+requires isolation, because the cold-start cost is real: every trial in
 a per-trial run pays the cost of `docker compose up` again. On a task
 whose stack takes 30s to reach healthy, a 100-trial run costs an extra
 ~50 minutes of wall clock in materialisation alone. See [Cost](#cost)
 below.
 
-## How to opt in
+## How isolation is decided
 
-Three surfaces, in ascending order of precedence:
+Isolation is decided by the *task*, not opted into by the operator.
+Every compose service in a task's manifest carries an isolation label
+via `services.<name>.isolation` — `shared`, `reset`, or `ephemeral` (a
+service with no manifest entry defaults to `ephemeral`). Backend
+selection is task-driven and automatic: any `reset`/`ephemeral` service
+on any task in the run routes the whole run onto per-trial
+materialisation, and a run whose services are all `shared` (or whose
+tasks carry no manifest at all) stays on the shared stack.
 
-**1. Config file (per-run default).** Set `orchestrator.runtime` in the
-run config YAML:
-
-```yaml
-orchestrator:
-  runtime: per_trial          # or "shared"
-```
-
-**2. CLI flag (override for this invocation).** `--runtime` overrides
-whatever is in the config, so you can flip an existing config without
-editing it:
-
-```bash
-uv run tolokaforge run \
-  --config examples/native/coding/run_config.yaml \
-  --runtime per_trial
-```
-
-**3. Task-level declaration (mandatory requirement).** A task that
-cannot tolerate shared state declares its requirement in
-`task.yaml`:
+A task declares its per-service labels in `task.yaml`:
 
 ```yaml
 environment_manifest:
@@ -93,9 +84,39 @@ environment_manifest:
       isolation: ephemeral
 ```
 
-This is a **hard requirement**: if the run's backend can't satisfy it,
-the orchestrator refuses to start. You'll see a startup-time
-`RuntimeError` naming the offending task(s):
+That declaration is the whole mechanism. There is nothing to switch on
+at run time — the orchestrator reads every task's manifest, and if any
+service needs a fresh substrate it selects the per-trial backend that
+satisfies it. The normal path never refuses to start; it auto-selects
+the satisfying backend.
+
+### Deprecated overrides
+
+Two surfaces force a backend regardless of the task-driven signal, each
+emitting a `DeprecationWarning`. They exist for edge cases —
+backwards-compatibility, forcing a shared stack while profile-testing,
+or forcing per-trial on a manifest-less pack to observe isolation
+behaviour (exactly what the worked example below does).
+
+**Config file.** Set `orchestrator.runtime` in the run config YAML:
+
+```yaml
+orchestrator:
+  runtime: per_trial          # or "shared"
+```
+
+**CLI flag.** `--runtime` overrides whatever is in the config:
+
+```bash
+uv run tolokaforge run \
+  --config examples/native/coding/run_config.yaml \
+  --runtime per_trial
+```
+
+Forcing a *shared* backend against a task set that requires per-trial
+materialisation is the one path that refuses to start. The orchestrator
+rejects the conflict at startup with a `RuntimeError` naming the
+offending task(s):
 
 ```
 Runtime backend SharedStackRuntimeBackend shares state across every
@@ -110,14 +131,18 @@ verdicts on a shared-stack backend.
 
 The refusal is deliberate — silent cross-trial contamination is a
 failure mode where the grader believes it, so making it a startup error
-rather than a subtle grading bug is the safer default.
+rather than a subtle grading bug is the safer default. Drop the override
+and the task-driven selector picks the satisfying backend on its own.
 
 ## Worked example
 
-`--runtime per_trial` works on any task pack, with or without a
-task-declared manifest. When the task has no manifest, the engine's
-built-in stack (`runner` + `db-service`) is what gets materialised per
-trial.
+This example forces the backend with the deprecated `--runtime`
+override (see [Deprecated overrides](#deprecated-overrides)) precisely
+to observe isolation behaviour on a manifest-less pack — it is not the
+normal selection path. `--runtime per_trial` works on any task pack,
+with or without a task-declared manifest. When the task has no manifest,
+the engine's built-in stack (`runner` + `db-service`) is what gets
+materialised per trial.
 
 Take the smallest existing example (`examples/native/coding`, no
 manifest) and run it under each backend:
@@ -171,8 +196,10 @@ does, budget for the wall-clock cost.
 
 ## Interaction with multi-container tasks
 
-Isolation and multi-container are orthogonal — you choose them
-independently. All four combinations exist:
+Isolation and multi-container are orthogonal properties of the task, not
+operator choices: isolation follows the task's per-service labels, and
+multi-container follows whether the task declares extra services. All
+four combinations exist:
 
 | Task | Runtime | Behaviour |
 | --- | --- | --- |
