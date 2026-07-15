@@ -1,0 +1,95 @@
+# Compose stack for the `multi_service_slow_start` example.
+#
+# Four services on the same docker-compose network:
+#   - `runner`      — tolokaforge-runner, the gRPC server the conductor talks to.
+#   - `db-service`  — tolokaforge-db-service (in-memory sqlite), the engine's
+#                     state / grading backend.
+#   - `app-service` — PostgREST auto-generating REST endpoints from the `api`
+#                     schema in `app-db`. Reachable from the runner container as
+#                     `http://app-service:3000/`.
+#   - `app-db`      — real postgres:16 backing the task's application. Its
+#                     `./app-db/init.sql` seeds the schema + data and then blocks
+#                     on `SELECT pg_sleep(25)`, so the real TCP listener does not
+#                     start for ~25 s (postgres runs init scripts on a temporary
+#                     socket-only server before opening TCP).
+#
+# The chain `app-service.depends_on.app-db (service_healthy)` +
+# `runner.depends_on.app-service (service_started)` + `up --wait` is exactly
+# what is under test: it must hold PostgREST — and the runner's first RPC —
+# back until `app-db` reports healthy on TCP. Real images only.
+services:
+  runner:
+    image: tolokaforge-runner:local
+    environment:
+      DB_SERVICE_URL: "http://db-service:8000"
+    ports:
+      - "50051"
+    depends_on:
+      db-service:
+        condition: service_healthy
+      app-service:
+        condition: service_started
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import grpc; grpc.channel_ready_future(grpc.insecure_channel('localhost:50051')).result(timeout=2)"
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 8s
+
+  db-service:
+    image: tolokaforge-db-service:local
+    ports:
+      - "8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 3s
+
+  app-service:
+    image: postgrest/postgrest:v12.2.0
+    environment:
+      PGRST_DB_URI: "postgres://authenticator:auth_pass@app-db:5432/appdb"
+      PGRST_DB_ANON_ROLE: "web_anon"
+      PGRST_DB_SCHEMAS: "api"
+      PGRST_SERVER_PORT: "3000"
+      PGRST_OPENAPI_SERVER_PROXY_URI: "http://app-service:3000"
+    ports:
+      - "3000"
+    depends_on:
+      app-db:
+        condition: service_healthy
+
+  app-db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: "appdb"
+      POSTGRES_USER: "authenticator"
+      POSTGRES_PASSWORD: "auth_pass"
+    ports:
+      - "5432"
+    volumes:
+      - ./app-db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    # TCP probe (`-h`), NOT the unix socket: the temporary init server
+    # answers the socket during init and would flap healthy mid-`pg_sleep`,
+    # defeating the slow start. The `-h 127.0.0.1` check fails while only
+    # the socket-only server is up and passes only once the real TCP
+    # listener opens (i.e. after init.sql incl. pg_sleep returns).
+    # `start_period` sits above the ~25 s slow-start window so failing
+    # probes during init keep the container `starting` (not `unhealthy`,
+    # which would fail `up --wait`).
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U authenticator -d appdb"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 45s

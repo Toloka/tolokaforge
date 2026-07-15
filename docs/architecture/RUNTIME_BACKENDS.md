@@ -168,6 +168,12 @@ Nine steps, in order. Failure at any step raises `ProvisionError(stage="provisio
 8. **Cache the client** — `self._clients[spec.trial_id] = client`. This is the map every per-trial RPC method reads from.
 9. **Return `_LocalEnvHandle`** carrying the trial_id (public), the compose stack, the runner service name + port, the temp dir, and the endpoints snapshot. All except `trial_id` are backend-private; callers treat the handle as an opaque token.
 
+### Slow-dependency start order
+
+Step 5's `--wait` is the whole start-order contract: it blocks until every service's compose `healthcheck:` reports healthy, and each service's `depends_on: {condition: service_healthy}` gates the start sequence. So `PerTrialRuntimeBackend` blocks on the full dependency chain before the trial's first RPC — a service never starts against a dependency that is not yet accepting connections.
+
+The `examples/native/multi_service_slow_start` pack stress-covers this against a deliberately slow dependency. Its `app-db` runs a trailing `SELECT pg_sleep(25)` in a `docker-entrypoint-initdb.d` init script (which postgres executes on a socket-only temp server, so TCP :5432 is genuinely refused for the window) and a TCP-probing healthcheck (`pg_isready -h`) with `start_period` sized above the sleep. `app-service` (PostgREST) declares `depends_on: {app-db: {condition: service_healthy}}`, so `--wait` holds it — and the trial's first tool call — until postgres is TCP-reachable. A passing grade proves the chain held: had it not, PostgREST would start against a refused connection and the first runner → app-service → postgres call would fail. `tests/integration/test_startup_order_stress.py` asserts the provision takes ≥20 s and the grade passes.
+
 ## Endpoint resolution
 
 `endpoints(handle)` is a **pure read** — it returns `handle.endpoints`, resolved once at provision time. This is a deliberate departure from an earlier design where `endpoints()` re-queried the compose stack every call: a method named `endpoints` mutating state on missing-service was surprising.
