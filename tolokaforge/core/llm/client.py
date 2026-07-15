@@ -1216,7 +1216,7 @@ class LLMClient:
             def _run() -> None:
                 try:
                     result_box["value"] = completion(**kwargs)
-                except Exception as exc:  # noqa: BLE001 - re-raised on the caller thread
+                except BaseException as exc:  # captured, re-raised on the caller thread
                     error_box.append(exc)
 
             worker = threading.Thread(target=_run, daemon=True, name="llm-wall-timeout-call")

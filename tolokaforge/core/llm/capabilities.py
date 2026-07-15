@@ -69,8 +69,10 @@ class ModelCapabilities:
     Unlike :attr:`api_call_timeout_s` (a per-read/connect timeout that a
     slowly-streamed or runaway response can keep resetting, so it never
     bounds total elapsed time), this caps the total wall-clock duration of
-    one ``completion`` call and aborts it outright once exceeded, surfacing a
-    :class:`TimeoutError` into the bounded retry.
+    one ``completion`` call. On overrun the call is abandoned and raised as
+    ``LLMApiTimeoutError`` terminally: it bypasses the per-call timeout retry
+    (retrying a runaway generation would only stack abandoned in-flight
+    calls).
 
     ``None`` (the default) disables the wall-clock abort and falls back to the
     env var ``TOLOKAFORGE_LLM_API_CALL_WALL_TIMEOUT_S``. Set it for providers

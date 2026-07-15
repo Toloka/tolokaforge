@@ -1863,8 +1863,9 @@ class TestPresetLoading:
 class TestApiCallWallTimeout:
     """Resolution + enforcement of the configurable per-call wall-clock timeout."""
 
-    def test_defaults_to_none(self) -> None:
+    def test_defaults_to_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Disabled by default — no wall-clock abort unless opted in."""
+        monkeypatch.delenv("TOLOKAFORGE_LLM_API_CALL_WALL_TIMEOUT_S", raising=False)
         client = _make_client()
         assert client._api_call_wall_timeout_s is None
 
@@ -1873,9 +1874,10 @@ class TestApiCallWallTimeout:
         client = _make_client()
         assert client._api_call_wall_timeout_s == 300.0
 
-    def test_preset_used_when_no_env(self) -> None:
+    def test_preset_used_when_no_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from dataclasses import replace
 
+        monkeypatch.delenv("TOLOKAFORGE_LLM_API_CALL_WALL_TIMEOUT_S", raising=False)
         client = _make_client()
         # ModelCapabilities is frozen — swap in a copy carrying the preset value.
         client.capabilities = replace(client.capabilities, api_call_wall_timeout_s=180.0)
@@ -1939,3 +1941,18 @@ class TestApiCallWallTimeout:
         ):
             with pytest.raises(RuntimeError, match="Key limit exceeded"):
                 client._call_completion_with_timeout_retry({"model": "x"})
+
+    def test_transient_timeout_inside_worker_still_retries(self) -> None:
+        """With the wall active, a transient timeout raised by the call itself
+        still flows into the per-call retry — only a wall overrun is terminal."""
+        client = _make_client()
+        client._api_call_wall_timeout_s = 5.0
+
+        ok = object()  # _call_completion_with_timeout_retry returns the raw response
+        with patch(
+            "tolokaforge.core.llm.client.completion",
+            side_effect=[TimeoutError("read timeout"), TimeoutError("read timeout"), ok],
+        ) as mock_completion:
+            result = client._call_completion_with_timeout_retry({"model": "x"})
+        assert result is ok
+        assert mock_completion.call_count == 3
