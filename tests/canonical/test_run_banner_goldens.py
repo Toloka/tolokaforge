@@ -2,10 +2,13 @@
 
 Each golden pins the exact ``Console.export_svg`` bytes Rich produces when
 :func:`print_run_start_banner` / :func:`print_run_end_banner` are called
-against a recording console at fixed 80-column width. Three goldens cover
-the three distinct visual shapes:
+against a recording console at fixed 80-column width. Four goldens cover
+the four distinct visual shapes:
 
 * ``banner_start.svg`` — two lines: ``→ Run: …`` + ``→ Report: …``.
+* ``banner_start_resume.svg`` — two lines: ``→ Resume: …`` +
+  ``→ Report: …`` (the ``resumed=True`` variant used by
+  ``tolokaforge run --resume``).
 * ``banner_end_success.svg`` — ``✓ Run complete in <duration>`` +
   ``→ Report`` + ``→ Browse`` (duration in ``MM:SS``).
 * ``banner_end_failure.svg`` — ``✗ Run failed in <duration>`` + same
@@ -69,12 +72,13 @@ def _export(recorder: Console) -> str:
     )
 
 
-def _render_start() -> str:
+def _render_start(*, resumed: bool = False) -> str:
     recorder = _make_recorder()
     print_run_start_banner(
         run_id=_FIXED_RUN_ID,
         run_dir=_FIXED_RUN_DIR,
         console=recorder,
+        resumed=resumed,
     )
     return _export(recorder)
 
@@ -93,6 +97,7 @@ def _render_end(*, success: bool, duration_seconds: float) -> str:
 
 _CASES: tuple[tuple[str, str], ...] = (
     ("banner_start.svg", "start"),
+    ("banner_start_resume.svg", "start_resume"),
     ("banner_end_success.svg", "end_success"),
     ("banner_end_failure.svg", "end_failure"),
 )
@@ -101,6 +106,8 @@ _CASES: tuple[tuple[str, str], ...] = (
 def _render_case(case: str) -> str:
     if case == "start":
         return _render_start()
+    if case == "start_resume":
+        return _render_start(resumed=True)
     if case == "end_success":
         # 125.4s → 02:05 (MM:SS branch).
         return _render_end(success=True, duration_seconds=125.4)

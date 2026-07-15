@@ -28,16 +28,28 @@ def _report_url(run_dir: Path) -> str:
     return Path(run_dir).resolve().as_uri() + "/"
 
 
-def print_run_start_banner(*, run_id: str, run_dir: Path, console: Console) -> None:
+def print_run_start_banner(
+    *,
+    run_id: str,
+    run_dir: Path,
+    console: Console,
+    resumed: bool = False,
+) -> None:
     """Emit the two-line start banner on ``console``.
 
-    Layout:
+    Layout (``resumed=False``):
 
         → Run: <run-id>
         → Report: file:///<abs-path>/<run-dir>/
+
+    Layout (``resumed=True``, first line changes only):
+
+        → Resume: <run-id>
+        → Report: file:///<abs-path>/<run-dir>/
     """
     url = _report_url(run_dir)
-    console.print(f"[muted]→[/muted] Run: {run_id}")
+    label = "Resume" if resumed else "Run"
+    console.print(f"[muted]→[/muted] {label}: {run_id}")
     console.print(f"[muted]→[/muted] Report: [link={url}]{url}[/link]")
 
 
