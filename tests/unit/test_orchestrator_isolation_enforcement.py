@@ -106,6 +106,9 @@ class TestSharedStackRuntimePath:
         orch = _make_orchestrator(tasks, task_descs)
         orch._verify_isolation_compatibility(_shared_stack_backend())
 
+    def test_no_reset_services_for_next_trial_seam(self) -> None:
+        assert not hasattr(SharedStackRuntimeBackend, "reset_services_for_next_trial")
+
     def test_reset_service_raises(self) -> None:
         from tolokaforge.core.models import ResetSpec
 

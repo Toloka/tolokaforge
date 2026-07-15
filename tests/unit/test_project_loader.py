@@ -8,7 +8,12 @@ from pathlib import Path
 import pytest
 import yaml
 
-from tolokaforge.core.models import ProjectConfig, RunDefaults, TaskDefaults
+from tolokaforge.core.models import (
+    GradingCombineConfig,
+    ProjectConfig,
+    RunDefaults,
+    TaskDefaults,
+)
 from tolokaforge.core.project_loader import (
     CANONICAL_RUN_CONFIGS_DIR,
     LEGACY_RUN_CONFIG_DIR,
@@ -17,6 +22,7 @@ from tolokaforge.core.project_loader import (
     detect_project_layout,
     find_project_yaml,
     load_project_config,
+    resolve_effective_grading_combine,
     resolve_effective_run_config_data,
     synthesize_default_project,
     warn_legacy_run_config_dir,
@@ -296,3 +302,56 @@ class TestResolveEffectiveRunConfig:
         # And the merged dict reconstructs into a RunConfig without
         # union_tag_not_found on the discriminated storage backends.
         RunConfig(**merged)
+
+
+# ── resolve_effective_grading_combine ──────────────────────────────────
+
+
+class TestResolveEffectiveGradingCombine:
+    def test_both_none_yields_canonical_defaults(self) -> None:
+        combine = resolve_effective_grading_combine(None, None)
+        assert combine == GradingCombineConfig()
+        assert combine.method == "weighted"
+        assert combine.weights == {}
+        assert combine.pass_threshold == 0.8
+
+    def test_project_only_fills_canonical_defaults(self) -> None:
+        combine = resolve_effective_grading_combine({"weights": {"llm_judge": 1.0}}, None)
+        assert combine.weights == {"llm_judge": 1.0}
+        assert combine.pass_threshold == 0.8
+        assert combine.method == "weighted"
+
+    def test_task_only_wins_project_is_noop(self) -> None:
+        combine = resolve_effective_grading_combine(
+            None, {"weights": {"state_checks": 0.5}, "pass_threshold": 0.6}
+        )
+        assert combine.weights == {"state_checks": 0.5}
+        assert combine.pass_threshold == 0.6
+
+    def test_partial_task_delta_inherits_project_weights(self) -> None:
+        # The ``long_debugging_session`` shape: task ships only
+        # ``pass_threshold`` and inherits the project's whole ``weights``.
+        combine = resolve_effective_grading_combine(
+            {"weights": {"llm_judge": 1.0}}, {"pass_threshold": 0.7}
+        )
+        assert combine.method == "weighted"
+        assert combine.weights == {"llm_judge": 1.0}
+        assert combine.pass_threshold == 0.7
+
+    def test_task_scalar_shadows_project_scalar(self) -> None:
+        combine = resolve_effective_grading_combine(
+            {"pass_threshold": 0.8}, {"pass_threshold": 0.7}
+        )
+        assert combine.pass_threshold == 0.7
+
+    def test_weights_merge_key_by_key(self) -> None:
+        combine = resolve_effective_grading_combine(
+            {"weights": {"llm_judge": 1.0}}, {"weights": {"state_checks": 0.5}}
+        )
+        assert combine.weights == {"llm_judge": 1.0, "state_checks": 0.5}
+
+    def test_weights_task_overrides_shared_key(self) -> None:
+        combine = resolve_effective_grading_combine(
+            {"weights": {"llm_judge": 1.0}}, {"weights": {"llm_judge": 0.5}}
+        )
+        assert combine.weights == {"llm_judge": 0.5}

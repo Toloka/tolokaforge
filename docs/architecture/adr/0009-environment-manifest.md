@@ -4,7 +4,7 @@
 - **Date:** 2026-07-02
 - **Deciders:** @CiroGamboa
 - **Supersedes:** —
-- **Superseded by:** —
+- **Superseded by:** ADR-0018 (isolation surface only — 2026-07-14 amendment)
 
 ## Context and Problem Statement
 

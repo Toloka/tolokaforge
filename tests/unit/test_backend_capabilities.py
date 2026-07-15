@@ -46,6 +46,12 @@ class TestBackendAdvertisements:
         assert "shared_stack" in SharedStackRuntimeBackend.advertised_capabilities
         assert "per_trial_stack" not in SharedStackRuntimeBackend.advertised_capabilities
 
+    def test_shared_stack_does_not_advertise_reset_recipes(self) -> None:
+        assert "reset_recipes:sql_dump" not in SharedStackRuntimeBackend.advertised_capabilities
+
+    def test_per_trial_advertises_reset_recipes(self) -> None:
+        assert "reset_recipes:sql_dump" in PerTrialRuntimeBackend.advertised_capabilities
+
 
 class TestAdmissionGate:
     def test_empty_request_passes(self) -> None:

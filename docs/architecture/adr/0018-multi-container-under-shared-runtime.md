@@ -6,7 +6,7 @@
   backend selection is task-driven; `orchestrator.runtime` is a
   deprecated override.
 - **Deciders:** @CiroGamboa
-- **Supersedes:** —
+- **Supersedes:** ADR-0009 (isolation surface only)
 - **Superseded by:** —
 
 ## TL;DR

@@ -6,10 +6,16 @@ All notable changes to this project are documented in this file.
 
 ### Feat
 
+- **schema**: task.yaml minimal shape is task_id + description; initial_state / tools / user_simulator / grading now optional with sane defaults (#366)
 - **runtime**: `compute.log_tail` + `compute.capture_logs_on_success` config knobs and a per-service compose-log capture primitive for trial-failure diagnostics (#302)
 - **runtime**: `PerTrialRuntimeBackend` captures per-service logs on provision-stage failure (compose-up / reset-recipe) before teardown, writing `services/<service>.log` + a `services/_capture.yaml` manifest; `RuntimeBackend` gains `capture_service_logs` (per-trial writes `.log` files; shared-stack is a documented no-op) (#302)
 - **runtime**: on a trial-body failure (`ERROR` / `TIMEOUT`) the trial executor captures per-service logs before teardown, emits a `trial.service_logs_captured` summary line, and amends the trial's `metrics.yaml` with a `captured_service_logs` byte-count map (#302)
 - **examples**: `multi_service_slow_start` pack + `test_startup_order_stress.py` stress-cover the `depends_on` + healthcheck + `--wait` start-order chain against a `pg_sleep`-driven ≥20 s slow dependency, proving the per-trial backend blocks on the full chain before the trial's first RPC (#303)
+
+### Fix
+
+- **grading**: a project's `task_defaults.grading_defaults.combine` now deep-merges under each task's own `grading.yaml.combine` (task fields win, `weights` merge key-by-key); a task that omits `combine` inherits the project block instead of an arbitrary `{state_checks: 1.0}` / `pass_threshold: 1.0` fallback, and `get_grading_config` no longer raises on tasks that ship no `combine` block (#376)
+- **runtime**: `SharedStackRuntimeBackend` no longer advertises `reset_recipes:*` capabilities — a shared stack cannot honour them (reset tasks route to `PerTrialRuntimeBackend`, which still advertises them). A shared-selected run that requested a `reset_recipes:*` capability was admitting a capability it could not deliver; it is now refused at run start with the standard admission error (#310)
 
 ## v0.8.4 (2026-07-15)
 

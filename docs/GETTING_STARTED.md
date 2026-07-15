@@ -55,6 +55,10 @@ The engine auto-starts required services on `tolokaforge run`; you do
 not need to launch them manually. This step just pre-builds the images
 so the first run isn't slowed down by a cold docker build.
 
+For tasks that need extra services beyond the built-ins (a real
+database, a custom HTTP API), a task can ship its own docker-compose
+stack — see the [multi-container tasks guide](guides/multi_container_tasks.md).
+
 ## Set Up Tasks
 
 Task packs live outside the engine tree. Place your tasks in `tasks/` or use the `task_packs` configuration to point at any directory (see [Task Packs](TASK_PACKS.md)). See `examples/` for the expected layout.

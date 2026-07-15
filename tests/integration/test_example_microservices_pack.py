@@ -18,6 +18,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.env_identity import resolve_environment_identity
 from tolokaforge.core.models import (
     EvaluationConfig,
@@ -38,12 +39,51 @@ _PACK_ROOT = (
 )
 _PROJECT_YAML = _PACK_ROOT / "project.yaml"
 
+_EXPECTED_TASK_IDS = {
+    "api_endpoint_add",
+    "db_query_tuning",
+    "long_debugging_session",
+    "postgres_upgrade_test",
+    "schema_isolation_migration",
+}
+
+# Per-task compose file the resolved manifest must anchor to. Four tasks
+# inherit the project's shared stack; ``schema_isolation_migration`` ships a
+# full ``stack.compose_file`` override that replaces it.
+_SHARED_COMPOSE = _PACK_ROOT / "shared" / "environment.compose.yaml"
+_EXPECTED_COMPOSE_FILE = {
+    "api_endpoint_add": _SHARED_COMPOSE,
+    "db_query_tuning": _SHARED_COMPOSE,
+    "long_debugging_session": _SHARED_COMPOSE,
+    "postgres_upgrade_test": _SHARED_COMPOSE,
+    "schema_isolation_migration": (
+        _PACK_ROOT / "tasks" / "schema_isolation_migration" / "environment.compose.yaml"
+    ),
+}
+
 
 def _make_run_config() -> RunConfig:
     return RunConfig(
         models={"agent": ModelConfig(provider="openai", name="gpt-4")},
         orchestrator=OrchestratorConfig(workers=1, repeats=1, auto_start_services=False),
         evaluation=EvaluationConfig(output_dir="/tmp/pack_smoke"),
+    )
+
+
+def _make_pack_adapter() -> NativeAdapter:
+    """Build a ``NativeAdapter`` for the pack via the same wiring the
+    :class:`Orchestrator` uses: the project's discovery glob under the pack
+    root, with ``project.task_defaults`` and ``default_environment`` layered
+    in (see ``Orchestrator._create_adapter``)."""
+    project = load_project_config(_PROJECT_YAML)
+    defaults = project.task_defaults.model_dump(exclude_defaults=True)
+    return NativeAdapter(
+        {
+            "tasks_glob": project.tasks.discovery.glob,
+            "task_packs": [str(_PACK_ROOT)],
+            "project_task_defaults": defaults or None,
+            "project_default_environment": project.default_environment,
+        }
     )
 
 
@@ -122,3 +162,80 @@ def test_pack_manifest_has_stable_environment_identity() -> None:
     assert identity == again
     assert identity.startswith("sha256:")
     assert len(identity) == len("sha256:") + 64
+
+
+def test_adapter_discovers_all_five_pack_tasks() -> None:
+    """The native adapter, wired the orchestrator's way, discovers every
+    task in the pack — the minimal ``task_id`` + ``description`` shape loads
+    without the four formerly-required fields."""
+    adapter = _make_pack_adapter()
+    assert set(adapter.get_task_ids()) == _EXPECTED_TASK_IDS
+
+
+@pytest.mark.parametrize("task_id", sorted(_EXPECTED_TASK_IDS))
+def test_task_builds_description_with_judge_rubric_and_llm_user(task_id: str) -> None:
+    """Each minimal pack task builds a ``TaskDescription`` whose grading
+    carries the per-task ``llm_judge`` rubric (auto-picked from the sibling
+    ``grading.yaml``) and whose user simulator is the inherited cooperative
+    LLM default — the end-to-end proof that the schema relaxation and
+    sibling-grading pickup wire through ``NativeAdapter``."""
+    adapter = _make_pack_adapter()
+
+    task_desc = adapter.to_task_description(task_id)
+
+    assert task_desc.grading.llm_judge is not None
+    assert len(task_desc.grading.llm_judge.rubric.criteria) > 0
+    assert task_desc.user_simulator.mode == "llm"
+
+
+# ``pass_threshold`` inherited from the project default (0.8) unless the task
+# overrides it; ``long_debugging_session`` ships ``combine.pass_threshold: 0.7``.
+_EXPECTED_PASS_THRESHOLD = {
+    "api_endpoint_add": 0.8,
+    "db_query_tuning": 0.8,
+    "long_debugging_session": 0.7,
+    "postgres_upgrade_test": 0.8,
+    "schema_isolation_migration": 0.8,
+}
+
+
+@pytest.mark.parametrize("task_id", sorted(_EXPECTED_TASK_IDS))
+def test_task_combine_inherits_project_grading_defaults(task_id: str) -> None:
+    """Each task's resolved ``combine`` inherits the project's
+    ``grading_defaults.combine`` (``method="weighted"``,
+    ``weights={"llm_judge": 1.0}``) key-by-key; a task that ships its own
+    ``combine`` (``long_debugging_session``: ``pass_threshold: 0.7``)
+    overrides that field while still inheriting the project's ``weights``."""
+    adapter = _make_pack_adapter()
+
+    grading = adapter.to_task_description(task_id).grading
+
+    assert grading.combine_method == "weighted"
+    assert grading.weights == {"llm_judge": 1.0}
+    assert grading.pass_threshold == _EXPECTED_PASS_THRESHOLD[task_id]
+
+
+def test_get_grading_config_no_longer_crashes_on_no_combine_task() -> None:
+    """``get_grading_config`` on a task that ships no ``combine`` block
+    (``api_endpoint_add``) resolves the project default instead of raising
+    on core ``GradingConfig``'s required ``combine`` field."""
+    adapter = _make_pack_adapter()
+
+    grading = adapter.get_grading_config("api_endpoint_add")
+
+    assert grading.combine.method == "weighted"
+    assert grading.combine.weights == {"llm_judge": 1.0}
+    assert grading.combine.pass_threshold == 0.8
+
+
+@pytest.mark.parametrize("task_id", sorted(_EXPECTED_TASK_IDS))
+def test_task_manifest_resolves_expected_stack(task_id: str) -> None:
+    """``schema_isolation_migration`` resolves its task-local
+    ``stack.compose_file`` override; the other four resolve the project's
+    shared stack. Both anchor to an absolute compose path on disk."""
+    adapter = _make_pack_adapter()
+
+    manifest = adapter.to_task_description(task_id).environment_manifest
+
+    assert manifest is not None
+    assert manifest.compose_file == _EXPECTED_COMPOSE_FILE[task_id].resolve()
