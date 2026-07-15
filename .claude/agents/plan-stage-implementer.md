@@ -1,6 +1,6 @@
 ---
 name: "plan-stage-implementer"
-description: "Implements one stage of an architect-approved plan end-to-end (code + behaviour-locking test + docs) and returns a structured report to main. Launched by main (typically via /executing-development-tickets), one stage per launch in a fresh context. Does NOT orchestrate — no branch creation, no other-agent spawning, no PR. Example — user: 'Implement Stage 2 of docs/plans/2026-05-14-retry-policy.md.' assistant: 'Launching plan-stage-implementer via the Agent tool to execute Stage 2 in a fresh context and report back.'"
+description: "Implements one stage of an architect-approved plan end-to-end (code + behaviour-locking test + docs) and returns a structured report to main. Launched by main (typically via /executing-development-tickets), one stage per launch in a fresh context. Does NOT orchestrate — no branch creation, no other-agent spawning, no PR. Example — user: 'Implement Stage 2 of ~/.claude/plans/toloka-tolokaforge/2026-05-14-retry-policy.md.' assistant: 'Launching plan-stage-implementer via the Agent tool to execute Stage 2 in a fresh context and report back.'"
 color: green
 memory: user
 ---

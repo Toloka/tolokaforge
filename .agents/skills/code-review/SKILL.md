@@ -219,11 +219,10 @@ now*. There is no past tense, no "previously", no history.
   tool, moves a doc, or reshapes a workflow those files reference must
   update them in the same PR — same rule, same severity.
 
-**Exception:** `CHANGELOG.md` and `docs/plans/*.md` are journals — they
-record decisions as they were made and may be historical by nature.
-They are *not* sources of truth about current behaviour. If a plan
-describes how the system works today, that content also belongs in the
-relevant `docs/*.md` / `AGENTS.md`.
+**Exception:** `CHANGELOG.md` is a journal — it records decisions as
+they were made and may be historical by nature. It is *not* a source
+of truth about current behaviour. Anything describing how the system
+works today belongs in the relevant `docs/*.md` / `AGENTS.md`.
 
 ### 6. SCRIPT / SHELL STANDARDS
 

@@ -111,7 +111,7 @@ in `task.yaml` — the orchestrator refuses to run a `per_trial` task on the
 shared backend so cross-trial contamination is a startup-time error, not a
 silent grading bug.
 
-Read [docs/guides/isolated_trials.md](docs/guides/isolated_trials.md) for
+Read [docs/isolated_trials.md](docs/isolated_trials.md) for
 a walkthrough (when to use each mode, how to opt in, cost tradeoffs), or
 [docs/architecture/RUNTIME_BACKENDS.md](docs/architecture/RUNTIME_BACKENDS.md)
 for the full lifecycle deep-dive.
@@ -142,7 +142,7 @@ smallest working demonstration (runner + db-service + an nginx serving a
 product catalog); its two siblings scale up to a multi-endpoint join and a
 full PostgREST + postgres three-tier stack.
 
-Read [docs/guides/multi_container_tasks.md](docs/guides/multi_container_tasks.md)
+Read [docs/multi_container_tasks.md](docs/multi_container_tasks.md)
 for a walkthrough, or [ADR-0018](docs/architecture/adr/0018-multi-container-under-shared-runtime.md)
 for the case-matrix that decides which mode fits your task.
 
@@ -182,8 +182,8 @@ examples/             # Reference task layouts with runnable run_config.yaml
 | Runtime backends (shared vs per-trial) | [docs/architecture/RUNTIME_BACKENDS.md](docs/architecture/RUNTIME_BACKENDS.md) |
 | Projects — top-level abstraction | [docs/architecture/PROJECTS.md](docs/architecture/PROJECTS.md) |
 | Reset recipes (seed-backed per-trial reset) | [docs/architecture/RESET_RECIPES.md](docs/architecture/RESET_RECIPES.md) |
-| Isolated trials guide | [docs/guides/isolated_trials.md](docs/guides/isolated_trials.md) |
-| Multi-container task guide | [docs/guides/multi_container_tasks.md](docs/guides/multi_container_tasks.md) |
+| Isolated trials guide | [docs/isolated_trials.md](docs/isolated_trials.md) |
+| Multi-container task guide | [docs/multi_container_tasks.md](docs/multi_container_tasks.md) |
 | Adapter architecture | [docs/ADAPTER_ARCHITECTURE.md](docs/ADAPTER_ARCHITECTURE.md) |
 | Analytics & failure attribution | [docs/ANALYTICS.md](docs/ANALYTICS.md) |
 | Python package API | [docs/PYTHON_PACKAGE.md](docs/PYTHON_PACKAGE.md) |
@@ -208,7 +208,7 @@ services (db-service, mock-web, RAG on demand):
 | [`examples/terminal_bench/`](examples/terminal_bench/) | Docker-compose stacks with `terminal_bench` adapter |
 
 Multi-container tasks — the task ships its own compose file declaring
-additional services (see [multi_container_tasks.md](docs/guides/multi_container_tasks.md)):
+additional services (see [multi_container_tasks.md](docs/multi_container_tasks.md)):
 
 | Example | Description |
 | --- | --- |

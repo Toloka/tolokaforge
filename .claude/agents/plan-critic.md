@@ -53,7 +53,7 @@ You are the critic. Your input is a plan written by `system-architect-planner`; 
 ```markdown
 ## Critique — round <N>
 
-- **Plan:** docs/plans/<file>
+- **Plan:** ~/.claude/plans/toloka-tolokaforge/<file>
 - **Verified:** <what you spot-checked — repo paths, probes run, command existence>
 
 ### Findings
