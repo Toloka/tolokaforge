@@ -190,6 +190,55 @@ The group callback validates `TOLOKAFORGE_DISPLAY` on every invocation, includin
 
 The group callback stashes the resolved `DisplayMode` on `ctx.obj["display_mode"]` after applying the precedence rules and Textual fallback. The value is a `DisplayMode` enum (not the raw string) so consumers get `if mode is DisplayMode.FULL:` type-safety. Consumer commands read the resolved mode from this single source rather than re-parsing the flag / env var.
 
+## Root help layout
+
+`tolokaforge --help` groups every top-level command under a fixed-order section heading: **Runs**, **Tasks**, **Docker**, **Config**, **Assets**, **Adapters**. Commands appear alphabetically within each section, and empty sections are omitted. Per-command help (`tolokaforge run --help`, `tolokaforge docker up --help`, …) renders through Click's default formatter — the grouped layout applies to the root `Commands:` block only.
+
+Current mapping:
+
+| Section    | Commands                                     |
+|------------|----------------------------------------------|
+| Runs       | `analyze`, `prepare`, `run`, `status`, `worker` |
+| Tasks      | `validate`                                   |
+| Docker     | `docker`                                     |
+| Config     | `config`                                     |
+| Assets     | `assets`                                     |
+| Adapters   | `adapter`                                    |
+
+Abbreviated transcript of the `Commands:` region:
+
+```
+Runs:
+  analyze  Analyze a single trial trajectory.
+  prepare  Prepare a queue-backed run directory for distributed workers.
+  run      Run benchmark with specified configuration
+  status   Show live/status snapshot for a run directory.
+  worker   Run a queue worker process (distributed execution mode).
+
+Tasks:
+  validate  Validate task configurations
+
+Docker:
+  docker  Manage Docker images and service stacks.
+
+Config:
+  config  Configuration management commands.
+
+Assets:
+  assets  Manage project-level assets (seeds today).
+
+Adapters:
+  adapter  Adapter management commands.
+```
+
+### `tolokaforge --version`
+
+`tolokaforge --version` prints `tolokaforge, version <version>` and exits `0`. The version is sourced from installed package metadata via Click's `version_option(package_name="tolokaforge")`, which reads `importlib.metadata.version("tolokaforge")`. The string writes to stdout (Click's default channel for `--version`) and is unaffected by `--display` or `--log-format`.
+
+### Adding a new top-level command
+
+The root group is wired as `@click.group(cls=_GroupedCommandsGroup)`, and `_GroupedCommandsGroup.COMMAND_GROUPS` maps every command name to its section heading. Registering a new top-level command requires adding an entry to that map; a command with no mapping raises `RuntimeError("_GroupedCommandsGroup: no group heading for command '<name>'; add it to COMMAND_GROUPS")` the first time the root `--help` renders. The unit test `tests/unit/test_cli_help_grouping.py::test_every_registered_command_has_a_group` enforces the same invariant at CI time so drift is caught before `--help` is ever invoked.
+
 ## stdout / stderr contract
 
 `tolokaforge` splits streams by purpose: **stdout** carries the machine-parseable artifact identifier; **stderr** carries everything a human reads (progress, banners, log records, error text).
