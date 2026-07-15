@@ -23,6 +23,7 @@ from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend, _LocalEnvHandle
 from tolokaforge.core.runtime import EnvHandle, ProvisionError, RuntimeBackend
 from tolokaforge.core.trial import EnvEndpoints, EnvironmentManifest, TrialSpec
+from tolokaforge.runner.models import ResetSpec, ServiceSpec
 
 pytestmark = pytest.mark.canonical
 
@@ -215,8 +216,14 @@ def patched_backend(monkeypatch: pytest.MonkeyPatch) -> PerTrialRuntimeBackend:
 def _make_trial_spec(
     trial_id: str = "task-1:0",
     compose_file: Path | None = None,
+    services: dict[str, ServiceSpec] | None = None,
 ) -> TrialSpec:
-    manifest = EnvironmentManifest(compose_file=compose_file) if compose_file is not None else None
+    if compose_file is None:
+        manifest = None
+    elif services is None:
+        manifest = EnvironmentManifest(compose_file=compose_file)
+    else:
+        manifest = EnvironmentManifest(compose_file=compose_file, services=services)
     return TrialSpec(
         trial_id=trial_id,
         run_id="run_contract_test",
@@ -410,6 +417,50 @@ class TestProvision:
         assert isinstance(h_a, _LocalEnvHandle)
         assert isinstance(h_b, _LocalEnvHandle)
         assert h_a.temp_dir != h_b.temp_dir
+
+
+# ---------------------------------------------------------------------------
+# Reset-recipe failure attribution — the reset seam owns ``stage="reset_recipe"``
+# ---------------------------------------------------------------------------
+
+
+class TestResetRecipeFailureAttribution:
+    """A reset-recipe failure is distinct from a compose-up failure. The
+    compose stack came up fine, so ``provision`` must attribute the failure
+    to ``stage="reset_recipe"`` (never ``"provision"``) and never leave a
+    client cached."""
+
+    def test_missing_seed_raises_reset_recipe_stage(
+        self, patched_backend: PerTrialRuntimeBackend
+    ) -> None:
+        spec = _make_trial_spec(
+            compose_file=_FIXTURES / "safe_two_service.yaml",
+            services={"db": ServiceSpec(isolation="reset", reset=ResetSpec(seed="baseline"))},
+        )
+        # backend.seeds is empty — the named seed is absent from the registry.
+        with pytest.raises(ProvisionError) as exc:
+            patched_backend.provision(spec)
+        assert exc.value.stage == "reset_recipe"
+        assert "baseline" in exc.value.reason
+        assert "compose up failed" not in exc.value.reason
+        assert spec.trial_id not in patched_backend._clients
+
+    def test_reset_service_without_seed_pointer_raises_reset_recipe_stage(
+        self, patched_backend: PerTrialRuntimeBackend
+    ) -> None:
+        # The ServiceSpec invariant forbids isolation='reset' with reset=None,
+        # so reaching the backend's defensive guard means clearing the pointer
+        # after construction (schema validation would reject it upstream).
+        spec = _make_trial_spec(
+            compose_file=_FIXTURES / "safe_two_service.yaml",
+            services={"db": ServiceSpec(isolation="reset", reset=ResetSpec(seed="baseline"))},
+        )
+        assert spec.task.environment_manifest is not None
+        spec.task.environment_manifest.services["db"].reset = None
+        with pytest.raises(ProvisionError) as exc:
+            patched_backend.provision(spec)
+        assert exc.value.stage == "reset_recipe"
+        assert spec.trial_id not in patched_backend._clients
 
 
 # ---------------------------------------------------------------------------

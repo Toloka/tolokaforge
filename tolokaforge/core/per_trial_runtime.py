@@ -205,7 +205,6 @@ class PerTrialRuntimeBackend:
                 wait=True,
             )
             compose.start()
-            self._apply_reset_recipes(manifest, compose, spec)
         except Exception as exc:  # noqa: BLE001 — surface as typed ProvisionError
             cleanup_partial_materialisation(compose, temp_dir)
             raise ProvisionError(
@@ -213,6 +212,16 @@ class PerTrialRuntimeBackend:
                 stage="provision",
                 reason=f"docker compose up failed: {exc}",
             ) from exc
+
+        # Reset recipes run against the started stack; a recipe failure is
+        # distinct from a compose-up failure (the stack came up fine), so
+        # _apply_reset_recipes owns the reset_recipe stage. Teardown is the
+        # same either way — the partially materialised stack must come down.
+        try:
+            self._apply_reset_recipes(manifest, compose, spec)
+        except ProvisionError:
+            cleanup_partial_materialisation(compose, temp_dir)
+            raise
 
         runner_service = manifest.runner_service
         runner_port = RUNNER_PORT_DEFAULT
@@ -376,7 +385,7 @@ class PerTrialRuntimeBackend:
             if service_spec.reset is None:
                 raise ProvisionError(
                     trial_id=spec.trial_id,
-                    stage="provision",
+                    stage="reset_recipe",
                     reason=(
                         f"service {service_name!r} labelled 'reset' has no "
                         "'reset.seed' pointer — schema validation should have "
@@ -388,14 +397,24 @@ class PerTrialRuntimeBackend:
             if seed is None:
                 raise ProvisionError(
                     trial_id=spec.trial_id,
-                    stage="provision",
+                    stage="reset_recipe",
                     reason=(
                         f"service {service_name!r} names seed {seed_name!r} but "
                         f"the backend has no such seed in its registry "
                         f"(available: {sorted(self.seeds)!r})."
                     ),
                 )
-            dispatch(seed, service_name, compose)
+            try:
+                dispatch(seed, service_name, compose)
+            except RuntimeError as exc:
+                raise ProvisionError(
+                    trial_id=spec.trial_id,
+                    stage="reset_recipe",
+                    reason=(
+                        f"reset recipe for service {service_name!r} "
+                        f"(seed {seed_name!r}, kind {seed.kind!r}) failed: {exc}"
+                    ),
+                ) from exc
 
     # ---- Internal helpers ----
 
