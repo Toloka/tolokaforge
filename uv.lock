@@ -530,6 +530,19 @@ wheels = [
 ]
 
 [[package]]
+name = "click-repl"
+version = "0.3.0"
+source = { registry = "https://pypi.org/simple/" }
+dependencies = [
+    { name = "click" },
+    { name = "prompt-toolkit" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/cb/a2/57f4ac79838cfae6912f997b4d1a64a858fb0c86d7fcaae6f7b58d267fca/click-repl-0.3.0.tar.gz", hash = "sha256:17849c23dba3d667247dc4defe1757fff98694e90fe37474f3feebb69ced26a9", size = 10449, upload-time = "2023-06-15T12:43:51.141Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/52/40/9d857001228658f0d59e97ebd4c346fe73e138c6de1bce61dc568a57c7f8/click_repl-0.3.0-py3-none-any.whl", hash = "sha256:fb7e06deb8da8de86180a33a9da97ac316751c094c6899382da7feeeeb51b812", size = 10289, upload-time = "2023-06-15T12:43:48.626Z" },
+]
+
+[[package]]
 name = "colorama"
 version = "0.4.6"
 source = { registry = "https://pypi.org/simple/" }
@@ -3930,10 +3943,12 @@ adapters = [
     { name = "tolokaforge-adapter-terminal-bench" },
 ]
 all = [
+    { name = "click-repl" },
     { name = "fastapi" },
     { name = "openpyxl" },
     { name = "pillow" },
     { name = "playwright" },
+    { name = "prompt-toolkit" },
     { name = "python-docx" },
     { name = "python-pptx" },
     { name = "rank-bm25" },
@@ -3946,6 +3961,8 @@ browser = [
     { name = "playwright" },
 ]
 dx = [
+    { name = "click-repl" },
+    { name = "prompt-toolkit" },
     { name = "rich" },
 ]
 office = [
@@ -3968,6 +3985,7 @@ terminal-bench = [
 dev = [
     { name = "black" },
     { name = "build" },
+    { name = "click-repl" },
     { name = "commitizen" },
     { name = "dev-mcp" },
     { name = "docker" },
@@ -3980,6 +3998,7 @@ dev = [
     { name = "pillow" },
     { name = "playwright" },
     { name = "pre-commit" },
+    { name = "prompt-toolkit" },
     { name = "psutil" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pytest" },
@@ -3997,6 +4016,7 @@ dev = [
 requires-dist = [
     { name = "addict", specifier = ">=2.4.0" },
     { name = "click", specifier = ">=8.1.0" },
+    { name = "click-repl", marker = "extra == 'dx'", specifier = ">=0.3.0" },
     { name = "deepdiff", specifier = ">=6.0.0" },
     { name = "docker", specifier = ">=7.0.0" },
     { name = "docstring-parser", specifier = ">=0.16" },
@@ -4015,6 +4035,7 @@ requires-dist = [
     { name = "openpyxl", marker = "extra == 'office'", specifier = ">=3.1.0" },
     { name = "pillow", marker = "extra == 'browser'", specifier = ">=12.1.0" },
     { name = "playwright", marker = "extra == 'browser'", specifier = ">=1.40.0" },
+    { name = "prompt-toolkit", marker = "extra == 'dx'", specifier = ">=3.0.51" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pydantic", extras = ["email"], specifier = ">=2.0.0" },
     { name = "python-docx", marker = "extra == 'office'", specifier = ">=1.0.0" },
@@ -4041,6 +4062,7 @@ provides-extras = ["dx", "browser", "server", "rag", "office", "terminal-bench",
 dev = [
     { name = "black", specifier = "==26.3.1" },
     { name = "build", specifier = ">=1.0.0" },
+    { name = "click-repl", specifier = ">=0.3.0" },
     { name = "commitizen", specifier = ">=4.0.0" },
     { name = "dev-mcp", editable = "tools/dev-mcp" },
     { name = "docker", specifier = ">=7.0.0" },
@@ -4053,6 +4075,7 @@ dev = [
     { name = "pillow", specifier = ">=12.1.0" },
     { name = "playwright", specifier = ">=1.40.0" },
     { name = "pre-commit", specifier = ">=3.6.0" },
+    { name = "prompt-toolkit", specifier = ">=3.0.51" },
     { name = "psutil", specifier = ">=5.9.0" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2.0" },
     { name = "pytest", specifier = ">=7.4.0" },

@@ -85,6 +85,8 @@ dependencies = [
 # invoked without the extras present.
 dx = [
     "rich>=13.0.0",
+    "click-repl>=0.3.0",
+    "prompt-toolkit>=3.0.51",
 ]
 browser = [
     "playwright>=1.40.0",
@@ -344,6 +346,8 @@ dev = [
     # Dev tooling exercises the terminal front-end tests, so pull them in
     # here explicitly rather than relying on `[dx]` being installed.
     "rich>=13.0.0",
+    "click-repl>=0.3.0",
+    "prompt-toolkit>=3.0.51",
 ]
 
 # =============================================================================

@@ -49,6 +49,8 @@ tolokaforge status --run-dir results/coding_example
 tolokaforge analyze --trajectory results/coding_example/trials/<task_id>/0/trajectory.yaml
 ```
 
+Running `tolokaforge` with no subcommand drops into an interactive shell with tab-completion of every subcommand and flag — see [docs/CLI.md](docs/CLI.md) § Interactive shell.
+
 That's it. Docker services for browser / mobile / RAG tasks start automatically via
 [`auto_start_services`](tolokaforge/core/models.py) (default: `true`).
 

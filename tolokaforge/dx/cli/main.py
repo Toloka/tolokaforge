@@ -136,9 +136,18 @@ class _GroupedCommandsGroup(click.Group):
     so a new top-level verb never silently disappears from the help output.
     """
 
-    GROUP_ORDER: tuple[str, ...] = ("Runs", "Tasks", "Docker", "Config", "Assets", "Adapters")
+    GROUP_ORDER: tuple[str, ...] = (
+        "Interactive",
+        "Runs",
+        "Tasks",
+        "Docker",
+        "Config",
+        "Assets",
+        "Adapters",
+    )
 
     COMMAND_GROUPS: dict[str, str] = {
+        "repl": "Interactive",
         "run": "Runs",
         "prepare": "Runs",
         "worker": "Runs",
@@ -181,7 +190,7 @@ class _GroupedCommandsGroup(click.Group):
                 formatter.write_dl(rows)
 
 
-@click.group(cls=_GroupedCommandsGroup)
+@click.group(cls=_GroupedCommandsGroup, invoke_without_command=True)
 @click.version_option(package_name="tolokaforge")
 @click.option(
     "--verbose",
@@ -255,6 +264,20 @@ def cli(
     if display_mode is DisplayMode.NONE:
         silence_console()
         silence_root_logging()
+
+    if ctx.invoked_subcommand is None:
+        from tolokaforge.dx.repl import enter_repl
+
+        enter_repl(ctx)
+
+
+@cli.command()
+@click.pass_context
+def repl(ctx: click.Context) -> None:
+    """Enter the interactive tolokaforge shell."""
+    from tolokaforge.dx.repl import enter_repl
+
+    enter_repl(ctx)
 
 
 def _bump_console_debug_if_allowed(ctx: click.Context) -> None:

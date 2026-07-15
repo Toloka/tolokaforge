@@ -192,6 +192,43 @@ The group callback validates `TOLOKAFORGE_DISPLAY` on every invocation, includin
 
 The group callback stashes the resolved `DisplayMode` on `ctx.obj["display_mode"]` after applying the precedence rules and Textual fallback. The value is a `DisplayMode` enum (not the raw string) so consumers get `if mode is DisplayMode.FULL:` type-safety. Consumer commands read the resolved mode from this single source rather than re-parsing the flag / env var.
 
+## Interactive shell
+
+Running `tolokaforge` with no subcommand drops into an interactive Click REPL. Every top-level verb is available as a free-form command inside the session — the same argument parsing, the same `--help`, the same subcommands. The explicit form `tolokaforge repl` also enters the shell and is listed under the `Interactive` heading in root `--help`.
+
+```
+$ tolokaforge
+tolokaforge interactive shell. Type `help` for commands, `exit` to quit.
+tolokaforge> run --config examples/native/tool_use/run_config.yaml --dry-run
+…
+tolokaforge> exit
+$
+```
+
+Implemented in `tolokaforge.dx.repl.enter_repl` — a thin wrapper around [`click-repl`](https://github.com/click-contrib/click-repl) using `prompt_toolkit` for line editing.
+
+### Session-scoped root flags
+
+Root flags supplied at REPL entry (`-v`, `-q`, `--display`, `--log-format`) apply to every command entered in the session until it exits. The `cli()` group callback runs once at entry, mutates the shared logging + console state (via `configure_root_logging`, `select_display_mode`, `silence_console`), and those mutations stay in effect across REPL invocations.
+
+Subcommand-level `--verbose` inside the REPL still bumps the root console handler to `DEBUG` via `_bump_console_debug_if_allowed` (subject to the root `-q` carveout documented in [§ Precedence with subcommand `--verbose`](#precedence-with-subcommand---verbose)). The bump is not reset when the subcommand returns — a subsequent `run --help` in the same session inherits the elevated level. This matches the operator's explicit request to raise verbosity and mirrors the non-REPL invocation's process-wide semantics.
+
+### Command discovery and completion
+
+Type `--help` inside the REPL for the same grouped listing produced by `tolokaforge --help` outside it, and `<command> --help` for any subcommand's full flag reference. `click-repl` also registers its own `:help` internal command. Tab-completion resolves subcommand names, flag names, and any argument declared as `click.Path` — file paths under the working directory.
+
+### Command history
+
+Line history persists to `~/.tolokaforge_history` via `prompt_toolkit`'s `FileHistory`. Arrow-up / Ctrl-R searches previous invocations across sessions.
+
+### Exit
+
+`exit`, `quit`, or Ctrl-D return the terminal to the parent shell.
+
+### Extras dependency
+
+The REPL lives in the `[dx]` extras alongside Rich panels and banners (see [ADR-0019](architecture/adr/0019-front-end-plugin-namespace.md)). A headless-server install (`pip install tolokaforge`) does not pull `click-repl` or `prompt-toolkit` in; running the `tolokaforge` console script without the extras prints the install hint from the stdlib-only shim at `tolokaforge._entry:main`.
+
 ## Dry run
 
 `tolokaforge run --dry-run [--dry-run-samples N]` resolves the run config with full parity to a real run, loads the declared tasks via the adapter, renders the first N samples' first-turn wire requests as Rich panels on stderr, and exits `0` without creating a run directory or issuing a single HTTP call to any provider.

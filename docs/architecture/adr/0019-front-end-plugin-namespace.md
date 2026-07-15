@@ -30,7 +30,7 @@ The engine-side seam is already correct: `RunDisplayEvents` (`tolokaforge/core/r
 
 1. **Keep everything in `tolokaforge.cli` and ship the `[dx]` extras split only.** Isolates the dep graph but the package layout still communicates "the CLI" as a single monolith, not "one of possibly many front-ends".
 2. **Move to a separate distribution package `tolokaforge-terminal` (or similar) now.** Cleanest isolation. Rejected as premature — no second front-end has landed yet, and shipping a second distribution now adds release, versioning, and CI overhead disproportionate to the current benefit.
-3. **Rename `tolokaforge.cli` → `tolokaforge.dx` inside the existing distribution, and move Rich (and, in follow-up work, `click-repl` / `prompt-toolkit`) behind `[project.optional-dependencies].dx`.** Preserves one distribution, one release cadence, one lockfile, while renaming the namespace to signal the pluggability role and isolating the terminal-UI deps. **This ADR.**
+3. **Rename `tolokaforge.cli` → `tolokaforge.dx` inside the existing distribution, and move Rich, `click-repl`, and `prompt-toolkit` behind `[project.optional-dependencies].dx`.** Preserves one distribution, one release cadence, one lockfile, while renaming the namespace to signal the pluggability role and isolating the terminal-UI deps. **This ADR.**
 
 ## Decision
 
@@ -46,11 +46,12 @@ We adopt **Option 3**.
   - `tolokaforge.dx.banners` — start / end banners.
   - `tolokaforge.dx.dry_run_render` — dry-run panel renderer.
   - `tolokaforge.dx._display` — shared Rich console + theme + display-mode selector.
+  - `tolokaforge.dx.repl` — interactive shell built on `click-repl`.
 - Future front-ends: either add a sibling sub-package inside `tolokaforge.dx` (`tolokaforge.dx.web` when the web dashboard lands), or ship as a separate distribution package that registers itself as a `RunDisplayEvents` consumer. Both patterns are ADR-blessed; the choice depends on whether the front-end shares the dep graph with the terminal.
 
 ### Extras split
 
-- Rich (and, when Stage 6 lands, `click-repl` / `prompt-toolkit`) live in `[project.optional-dependencies].dx`.
+- Rich, `click-repl`, and `prompt-toolkit` live in `[project.optional-dependencies].dx`.
 - `click` stays in the base dependency set — the plain-text argument parser is useful in library-only installs (introspection, packaging tests) and has no terminal-UI dep graph.
 - The `tolokaforge` console script is served by a stdlib-only shim `tolokaforge._entry:main` that imports `tolokaforge.dx.cli.main.cli` on demand. Headless installs (`pip install tolokaforge`) get a working `tolokaforge` binary; invoking it prints an install hint pointing at `pip install 'tolokaforge[dx]'` and exits 1. The shim keeps zero Rich in the base install path.
 
@@ -70,7 +71,7 @@ Terminal-front-end code and only terminal-front-end code:
 
 - Rich panels, banners, dry-run renderer.
 - The Click command tree (`tolokaforge.dx.cli.*`), including subcommand modules (`docker`, `adapter`, `config`, `assets`).
-- Any future terminal-only UI concept (interactive REPL, terminal-based dashboards, keybinding managers).
+- Any future terminal-only UI concept (terminal-based dashboards, keybinding managers).
 
 ### What does NOT live in `tolokaforge.dx`
 
