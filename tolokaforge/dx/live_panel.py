@@ -21,13 +21,17 @@ still thread ``events`` through without conditional branches.
 from __future__ import annotations
 
 import logging
+import os
+import sys
 import threading
+import traceback
 from collections import deque
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, TextIO
 
 from rich.console import Group, RenderableType
 from rich.layout import Layout
@@ -104,6 +108,76 @@ class _LogSink(logging.Handler):
             self._print_above(self.format(record))
         except Exception:  # noqa: BLE001 — handlers must never raise past logging
             self.handleError(record)
+
+
+_STDERR_PROBE_ENV_VAR = "TOLOKAFORGE_STDERR_PROBE"
+"""Env var pointing at a log file for :class:`_StderrProbe`.
+
+Set to a file path to activate the diagnostic tap in
+:meth:`LiveRunDisplay.__enter__`; unset (the default) means the probe is
+never installed and there is zero production overhead. The value is a
+filesystem path, not a credential — the SecretManager grep-guard in
+``tests/unit/secrets/test_no_raw_secret_access.py`` does not match it.
+"""
+
+
+class _StderrProbe:
+    """Diagnostic tap on the underlying stderr stream's ``write`` method.
+
+    Wraps :data:`sys.stderr` — the stream object resolved *before* Rich
+    Live installs its redirect proxy — so every raw ``write(chunk)`` call
+    is recorded to ``path`` with an ISO-8601 timestamp, the caller's
+    ``file:line``, ``repr(chunk)[:200]``, and the top five stack frames.
+    The wrapped stream's original ``write`` still receives every chunk,
+    so terminal output is unaffected.
+
+    Wrapping the stream **object** — not re-binding the ``sys.stderr``
+    name — is load-bearing: libraries like litellm install
+    ``StreamHandler(sys.stderr)`` at import time, capturing the stream
+    object into their handler. A later re-bind of the ``sys.stderr``
+    name (e.g. by Rich Live's redirect proxy) would miss the leak this
+    probe exists to catch. Install this probe at the very top of
+    :meth:`LiveRunDisplay.__enter__`, before ``self._live.__enter__()``,
+    so ``sys.stderr`` still points at the process's real stream.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._stream: Any = None
+        self._original_write: Callable[[str], int] | None = None
+        self._log_fh: TextIO | None = None
+
+    def __enter__(self) -> _StderrProbe:
+        self._log_fh = self._path.open("a", encoding="utf-8")
+        stream = sys.stderr
+        original_write = stream.write
+        self._stream = stream
+        self._original_write = original_write
+        log_fh = self._log_fh
+
+        def tap(chunk: str) -> int:
+            frame = sys._getframe(1)
+            caller_loc = f"{frame.f_code.co_filename}:{frame.f_lineno}"
+            stack = traceback.extract_stack(frame, limit=5)
+            stack_lines = "".join(
+                f"    {frm.filename}:{frm.lineno} in {frm.name}\n" for frm in stack
+            )
+            timestamp = datetime.now(timezone.utc).isoformat()
+            log_fh.write(f"{timestamp} | {caller_loc} | {repr(chunk)[:200]}\n{stack_lines}")
+            log_fh.flush()
+            return original_write(chunk)
+
+        stream.write = tap  # type: ignore[method-assign]
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        if self._stream is not None and self._original_write is not None:
+            self._stream.write = self._original_write  # type: ignore[method-assign]
+            self._stream = None
+            self._original_write = None
+        if self._log_fh is not None:
+            self._log_fh.close()
+            self._log_fh = None
 
 
 @dataclass
@@ -445,6 +519,9 @@ class LiveRunDisplay:
         # Sentinel handlers we removed on ``__enter__`` and re-install on
         # ``__exit__``, paired with the ``_LogSink`` that replaced each.
         self._replaced_log_handlers: list[tuple[logging.Handler, _LogSink]] = []
+        # Env-gated diagnostic tap on the real stderr stream, populated
+        # in ``__enter__`` when ``TOLOKAFORGE_STDERR_PROBE`` is set.
+        self._stderr_probe: _StderrProbe | None = None
         self._layout: Layout = self._build_layout()
 
     @classmethod
@@ -498,6 +575,10 @@ class LiveRunDisplay:
             return tuple(self._log_buffer)
 
     def __enter__(self) -> LiveRunDisplay:
+        probe_path = os.environ.get(_STDERR_PROBE_ENV_VAR)
+        if probe_path is not None:
+            self._stderr_probe = _StderrProbe(Path(probe_path))
+            self._stderr_probe.__enter__()
         self._live = make_live(self._layout, refresh_per_second=self._refresh_per_second)
         self._live.__enter__()
         # Route WARNING+ log records through Live's own console. Rich Live
@@ -539,6 +620,9 @@ class LiveRunDisplay:
         if self._live is not None:
             self._live.__exit__(*exc_info)
             self._live = None
+        if self._stderr_probe is not None:
+            self._stderr_probe.__exit__(*exc_info)
+            self._stderr_probe = None
 
     # RunDisplayEvents implementation ---------------------------------
 

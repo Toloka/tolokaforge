@@ -10,7 +10,9 @@ from __future__ import annotations
 import io
 import itertools
 import logging
+import sys
 import threading
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -913,6 +915,107 @@ def test_main_region_size_caps_at_viewport_when_trials_overflow() -> None:
     size = display._main_region_size(reserved=0)
     # 12 - 0 - 1 = 11, capped to at least 3 by design.
     assert size == 11
+
+
+class _FakeStderr:
+    """Minimal ``sys.stderr`` stand-in with an instance-settable ``write``.
+
+    ``io.StringIO`` also satisfies this, but a dedicated fake keeps the
+    intent visible: the probe must patch ``.write`` on the stream object
+    (not rebind ``sys.stderr``) — see ``_StderrProbe`` docstring.
+    """
+
+    def __init__(self) -> None:
+        self.buf: list[str] = []
+
+    def write(self, chunk: str) -> int:
+        self.buf.append(chunk)
+        return len(chunk)
+
+    def flush(self) -> None:
+        return None
+
+
+def _stderr_probe_pentagon_frame(probe_write: Callable[[str], object]) -> None:
+    """Named helper so we can assert the probe records the calling frame."""
+    probe_write("noise")
+
+
+def test_stderr_probe_records_wrapped_write_and_delegates(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from tolokaforge.dx.live_panel import _StderrProbe
+
+    fake = _FakeStderr()
+    monkeypatch.setattr(sys, "stderr", fake)
+    log_path = tmp_path / "probe.log"
+
+    with _StderrProbe(log_path):
+        # Sanity: probe patched the write on the fake stream object.
+        assert sys.stderr.write is not _FakeStderr.write
+        _stderr_probe_pentagon_frame(sys.stderr.write)
+
+    # Delegation: the wrapped stream still received the chunk.
+    assert fake.buf == ["noise"]
+
+    # Log content: chunk repr and calling frame name.
+    log_text = log_path.read_text(encoding="utf-8")
+    assert "'noise'" in log_text
+    assert "_stderr_probe_pentagon_frame" in log_text
+    # Stack trace top-frame is the caller file.
+    assert __file__ in log_text
+
+
+def test_stderr_probe_restores_original_write_on_exit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from tolokaforge.dx.live_panel import _StderrProbe
+
+    fake = _FakeStderr()
+    monkeypatch.setattr(sys, "stderr", fake)
+    log_path = tmp_path / "probe.log"
+
+    with _StderrProbe(log_path):
+        tapped_write = sys.stderr.write
+        sys.stderr.write("inside")
+
+    # Post-exit: write is no longer the tap.
+    assert sys.stderr.write is not tapped_write
+    # Subsequent writes still reach the stream — but the log file is not
+    # appended to (a fresh record for "after" would grow the file).
+    log_size_after_exit = log_path.stat().st_size
+    sys.stderr.write("after")
+    assert fake.buf == ["inside", "after"]
+    assert log_path.stat().st_size == log_size_after_exit
+
+
+def test_stderr_probe_off_when_env_var_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When ``TOLOKAFORGE_STDERR_PROBE`` is unset, the tap is never installed."""
+    monkeypatch.delenv("TOLOKAFORGE_STDERR_PROBE", raising=False)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    with display:
+        assert display._stderr_probe is None
+
+
+def test_stderr_probe_installed_when_env_var_set(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """When set, ``LiveRunDisplay`` wraps the pre-Live stderr stream."""
+    from tolokaforge.dx.live_panel import _StderrProbe
+
+    fake = _FakeStderr()
+    monkeypatch.setattr(sys, "stderr", fake)
+    log_path = tmp_path / "live_probe.log"
+    monkeypatch.setenv("TOLOKAFORGE_STDERR_PROBE", str(log_path))
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    with display:
+        assert isinstance(display._stderr_probe, _StderrProbe)
+        tapped_write = sys.stderr.write
+    # After exit: probe cleared, write no longer the tap, log file exists.
+    assert display._stderr_probe is None
+    assert sys.stderr.write is not tapped_write
+    assert log_path.exists()
 
 
 def test_main_region_size_reserves_space_for_banner_and_services() -> None:
