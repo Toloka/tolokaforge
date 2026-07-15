@@ -78,9 +78,41 @@ no `reset.seed`, or a seed name absent from the registry, raises
 Because provision runs once per trial, `repeats: K` applies the seed `K`
 times, each onto a freshly-started container.
 
-Failure-mode behaviour (partial application, retries, per-service log
-capture on a failed seed) is out of scope for this document and tracked
-in #300.
+## Failure modes
+
+Every recipe is fail-loud: a dispatcher that cannot restore its baseline
+raises `RuntimeError` naming the service and carrying the failing command's
+diagnostic output. What triggers that raise differs by kind:
+
+| Kind | Failure trigger | Surfaced as |
+|---|---|---|
+| `sql_dump` | `psql` exits non-zero (e.g. a syntax error in the dump; `ON_ERROR_STOP=1`) | `RuntimeError` with the service name, seed path, `rc`, and `psql` stderr |
+| `filesystem_dir` | Seed path is not a directory (guard, before any container call); or copy/wipe exits non-zero | `RuntimeError` naming the path |
+| `redis_dump` | Corrupt RDB → Redis crash-loops on restart → `PING` never returns `PONG` | ping-stage `RuntimeError` naming the service |
+| `bare` | — | Cannot fail from the caller's side: no container action is taken |
+
+At the provision seam, `_apply_reset_recipes` catches that `RuntimeError`
+and re-raises it as `ProvisionError(stage="reset_recipe")` whose reason
+names the service, the seed, the kind, and the recipe's own error text. The
+same stage also covers the pre-dispatch guards — a `reset` service with no
+`reset.seed`, or a seed name absent from the registry. Before the
+`ProvisionError` propagates, the stack is torn down
+(`docker compose down --volumes`), so a failed seed leaves no leaked
+containers or networks.
+
+The trial is then marked failed with
+`termination_reason=PROVISION_ERROR`: the conductor never runs, the trial
+is **non-retryable** (the failure is deterministic), and it counts toward
+the run's `failed_attempts`.
+
+A task author sees this in `grade.yaml` as `binary_pass: false` with a
+`reasons` string of the form:
+
+```
+Provisioning failed at reset_recipe: reset recipe for service 'app-db' (seed 'postgres_baseline', kind 'sql_dump') failed: <recipe error text>
+```
+
+carrying the recipe's own diagnostic output at the end.
 
 ## Reference example
 
