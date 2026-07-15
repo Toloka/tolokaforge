@@ -67,13 +67,16 @@ Produce a staged plan only. Do NOT execute it — main will dispatch stages.
 
 Drive your standard planning workflow:
 1. Read root AGENTS.md, README.md, the docs/*.md for every subsystem touched,
-   docs/FUTURE_DEVELOPMENT.md, and any related docs/plans/ entries.
+   docs/FUTURE_DEVELOPMENT.md, and any related plans under
+   ~/.claude/plans/toloka-tolokaforge/.
 2. Reproduce the current behaviour by running it: dev MCP run_tests / run_python,
    `make docker-up` for env services, a targeted `tolokaforge run` if the behaviour
    only shows end-to-end. For a bugfix, capture the reproducing failure.
 3. File any out-of-scope "Discovered issues" via the GitHub MCP and reference the
    numbers in the plan.
-4. Write the plan to docs/plans/<YYYY-MM-DD>-issue-<N>-<short-name>.md.
+4. Write the plan to ~/.claude/plans/toloka-tolokaforge/issue-<N>-<short-name>.md
+   (a scratch path outside the repo — plans are never committed to the tree; the
+   plan's durable home is the per-issue PR body).
 5. Return the structured "Handoff to main" block per your spec. Stop there —
    do not create the branch, do not launch other agents, do not open a PR.
 
@@ -91,7 +94,7 @@ Otherwise, before the user sees the plan, pressure-test it:
 
 1. **Launch** `plan-critic` via the Agent tool with `name=critic` (so re-critique rounds go through `SendMessage` and keep its context). Prompt:
    ```
-   Critique the plan at <docs/plans/...> for issue #<N> in Toloka/tolokaforge (round 1).
+   Critique the plan at <~/.claude/plans/toloka-tolokaforge/...> for issue #<N> in Toloka/tolokaforge (round 1).
 
    Issue body:
    <verbatim issue body>
@@ -134,7 +137,7 @@ For each stage in the plan, serially (never in parallel — the working tree and
 
 1. **Launch** `plan-stage-implementer` via the Agent tool, fresh context per stage. Prompt:
    ```
-   Implement Stage <N> of <docs/plans/...>. Full plan path: <docs/plans/...>.
+   Implement Stage <N> of <~/.claude/plans/toloka-tolokaforge/...>. Full plan path: <~/.claude/plans/toloka-tolokaforge/...>.
    Stage block (verbatim):
 
    <paste stage block from plan>
@@ -162,7 +165,7 @@ When all stages are done, launch `branch-code-reviewer` via the Agent tool. Prom
 
 ```
 Review the current branch vs <base_branch> against AGENTS.md and the code-review
-skill rules. Plan: <docs/plans/...>. Cover branch + staged + unstaged. Return
+skill rules. Plan: <~/.claude/plans/toloka-tolokaforge/...>. Cover branch + staged + unstaged. Return
 findings in the standard format.
 ```
 
@@ -200,7 +203,7 @@ gh pr create --base <base_branch> --title "<concise title from plan>" --body "$(
 <One short paragraph naming any new abstraction, contract, policy slot, or vocabulary the reader will encounter. If none, write "None — mechanical change."  This is the section the milestone consolidation PR cites when explaining the whole to a future reader or agent.>
 
 ## Plan
-See docs/plans/<file>
+<the staged plan, pasted from ~/.claude/plans/toloka-tolokaforge/issue-<N>-<short-name>.md — plans have no in-repo home, so the PR body is the plan's durable record>
 
 ## Discovered issues
 - Filed: #<n>, #<m>

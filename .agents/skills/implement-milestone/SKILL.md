@@ -42,7 +42,7 @@ Invoking this skill **is** the user's explicit grant to, without re-asking:
 ## Step 1 — Intake
 
 1. Resolve the milestone: `gh api 'repos/Toloka/tolokaforge/milestones/<N>'` (the URL's trailing number is the milestone number). List its issues, open and closed: `gh api 'repos/Toloka/tolokaforge/issues?milestone=<N>&state=all&per_page=100'`.
-2. Read the **umbrella issue** in full — it is the SSOT for scope, sequencing constraints, and completion state. Read any design docs it links (`docs/*.md`, `docs/plans/*.md`). Read other issues only as needed for clarity.
+2. Read the **umbrella issue** in full — it is the SSOT for scope, sequencing constraints, and completion state. Read any design docs it links (`docs/*.md`). Read other issues only as needed for clarity.
 3. Build the execution queue. Ordering: hard dependencies first, then priority, then risk — pull the keystone / highest-uncertainty issue early so design problems surface while everything is still cheap to change.
 4. Derive `<milestone-slug>`: kebab-case of the milestone title, ≤ 30 chars, alnum + `-` only. Examples: milestone "Terminal DX" → `terminal-dx`; "Multi-container environments" → `multi-container`.
 5. Post the queue **and the chosen slug** to the user as a status message (ordering + anything that looks stale or mis-premised + the integration-branch name `feat/<slug>`) and **proceed** — this is informational, not an approval gate. The user interrupts if they disagree with the ordering or the slug.
@@ -53,15 +53,15 @@ Invoking this skill **is** the user's explicit grant to, without re-asking:
 2. If `origin/feat/<slug>` **exists**:
    - Adopt it: `git checkout feat/<slug> && git pull --ff-only origin feat/<slug>`.
    - Compare it to `origin/main`: `git log --oneline origin/main..feat/<slug>` — the commits should look like prior per-issue merges of this milestone. If it looks like an unrelated branch, stop and ask.
-   - Look for `docs/plans/<date>-milestone-<N>-integration.md` — if present, adopt it as the running design journal. If missing, create it (Step 2.4) from the umbrella and existing squash-merge commit messages.
+   - Look for `~/.claude/plans/toloka-tolokaforge/milestone-<N>-integration.md` — if present, adopt it as the running design journal. If missing, create it (Step 2.4) from the umbrella and existing squash-merge commit messages.
 3. If `origin/feat/<slug>` **does not exist**:
    - `git checkout main && git pull origin main`.
    - `git checkout -b feat/<slug>`.
    - `git push -u origin feat/<slug>`.
-4. **Bootstrap the running design journal.** Create `docs/plans/<YYYY-MM-DD>-milestone-<N>-integration.md` with:
+4. **Bootstrap the running design journal.** Create `~/.claude/plans/toloka-tolokaforge/milestone-<N>-integration.md` (a scratch file outside the repo — never committed) with:
    - `# Milestone <N>: <title>` header + link to the milestone + link to the umbrella issue.
    - Empty stubs for the final-PR sections: `## TL;DR`, `## Impact on existing tasks`, `## Design walkthrough` (with a placeholder ```mermaid``` block), `## Key design choices` (empty Decision / Rationale table with header row), `## Industry precedents`, `## Suggested review order`, `## Verification`, `## What's next`.
-   - Commit this seed: `chore(milestone-<N>): bootstrap integration journal`, push to `feat/<slug>`. This is the ONLY commit main makes directly to the integration branch. All subsequent commits arrive via squash-merged per-issue PRs — with one exception: the final rebase against `main` in Step 4, which does not add commits, and the append-only journal updates below, which land as part of each per-issue PR's stage that touches `docs/plans/`.
+   - Write this seed to the scratch file — do NOT commit it. No commits land directly on the integration branch: every change arrives via a squash-merged per-issue PR, and the final rebase against `main` in Step 4 adds none.
 
 ## Step 3 — Per-issue loop
 
@@ -72,7 +72,7 @@ For each issue, serially (one branch / one PR in flight at a time — the workin
 3. **CI:** watch with `gh pr checks <PR#> --watch`. On failure, decide *branch-caused vs pre-existing*: check whether the same lane fails on `feat/<slug>` before grinding — and, if that lane also fails on `main`, it's genuinely upstream. Branch-caused → corrective `plan-stage-implementer` launch. Pre-existing → note it on the PR, file an issue if unfiled, and don't block on it if the branch's own lanes are green. (Known pre-existing formatting drift is documented in AGENTS.md gotchas #3/#4 — don't mistake it for branch damage.)
 4. **Merge when green:** confirm the PR body says `Closes #<issue>`, then `gh pr merge <PR#> --squash` (target: the integration branch). Verify the issue auto-closed; close it manually with a one-line evidence comment if not.
 5. **Bookkeeping:** tick the umbrella checklist; comment on the umbrella: `#<issue> → PR #<pr> → <merge-sha> — <one-line outcome; follow-ups filed: #a, #b>`. This comment is load-bearing (see Durable state).
-6. **Append to the design journal.** In `docs/plans/<date>-milestone-<N>-integration.md`, append: (a) a one-paragraph "what this issue delivered" note, (b) 1–3 rows for the Decision / Rationale table drawn from the per-issue PR's "Design choices" section, and (c) any new "Concepts introduced" one-liner. Commit as a follow-up on `feat/<slug>` directly — `chore(milestone-<N>): journal update for #<issue>` — and push. (This is the sanctioned exception to "no direct commits to the integration branch": the journal update is bookkeeping, not code, and never touches source or docs outside the plan file.)
+6. **Append to the design journal.** In `~/.claude/plans/toloka-tolokaforge/milestone-<N>-integration.md`, append: (a) a one-paragraph "what this issue delivered" note, (b) 1–3 rows for the Decision / Rationale table drawn from the per-issue PR's "Design choices" section, and (c) any new "Concepts introduced" one-liner. Write to the scratch file only — do not commit it anywhere. The umbrella comment (Step 3.5) is the durable per-issue record.
 7. **Post-merge validation** for anything runtime-affecting: `git checkout feat/<slug> && git pull`, then validate the shipped behaviour — dev MCP `run_tests` targeted at the affected markers/paths; for env-service changes `make docker-up` + `make docker-status`; for LLM-layer or model changes a targeted capability test, or a cheap `tolokaforge run` smoke against a bundled example (needs LLM keys in `.env`, costs real tokens — keep it minimal). A broken integration branch is never acceptable: fix it before starting the next issue.
 8. Next issue.
 
@@ -90,7 +90,7 @@ Everything in that skill applies except:
 Runs once the milestone has zero open issues (and every closed-as-completed issue has a `#<issue> →` line on the umbrella).
 
 1. **Rebase the integration branch on `main`.** `git checkout feat/<slug> && git fetch origin && git rebase origin/main`. Squash-merged per-issue commits stay individual on the integration branch — the rebase only shifts them onto the current `main` tip so the final PR presents as linear history. If the rebase conflicts, resolve inside `feat/<slug>` (never on `main`); push with `--force-with-lease` since only this skill writes to the integration branch. If conflicts are non-trivial, stop and ask.
-2. **Finalize the design journal.** Complete every stub in `docs/plans/<date>-milestone-<N>-integration.md`:
+2. **Finalize the design journal.** Complete every stub in `~/.claude/plans/toloka-tolokaforge/milestone-<N>-integration.md`:
    - **TL;DR** — one paragraph naming the compatibility impact (or lack thereof) and ending with the roll-up of every `Closes #<n>` in the milestone.
    - **Impact on existing tasks — read this first** — reviewer-safety framing: near-term / today / longer-term commitments, safety guards, follow-up ticket links.
    - **Design walkthrough** — required ```mermaid``` block. Pick the shape that fits (flowchart for architecture, sequence for interactions, state for lifecycles). The diagram is the picture of the change; do not omit it for architectural milestones.
@@ -99,7 +99,7 @@ Runs once the milestone has zero open issues (and every closed-as-completed issu
    - **Suggested review order** — numbered list of the per-issue PRs (with squash SHAs), ordered to make the story readable start-to-finish.
    - **Verification** — CI lane pass counts, post-merge validations that ran, and any lanes deliberately skipped with a reason.
    - **What's next** — one or two sentences of forward links to follow-up issues or the next milestone.
-   - Commit as `chore(milestone-<N>): finalize integration journal` and push.
+   - Finalize the scratch file in place — do not commit it.
 3. **Draft the PR body.** The consolidation PR body **is** the design journal — copy the file contents verbatim into the PR body (skipping only the file's `# Milestone <N>:` header line, since `gh pr create --title` supplies the PR title). Match PR-121-style discipline: flat outline (`##` / `###` only), no emoji-heavy section names, no AI attribution footer.
 4. **Open the PR.**
    ```bash
@@ -107,7 +107,7 @@ Runs once the milestone has zero open issues (and every closed-as-completed issu
      --base main \
      --head feat/<slug> \
      --title "feat(<scope>): <milestone title>" \
-     --body-file docs/plans/<date>-milestone-<N>-integration.md
+     --body-file ~/.claude/plans/toloka-tolokaforge/milestone-<N>-integration.md
    ```
    The `<scope>` follows the repo's conventional-commits convention — the subsystem the milestone predominantly touches (e.g. `runtime`, `cli`, `core`).
 5. **Hand off and stop.** Post to the user: PR URL, one-line summary, follow-ups filed with priorities (implemented vs deferred), post-merge validations run, and the reminder that human review is the gate here. **Do not merge.** **Do not close the milestone yet** — that happens after the user merges the PR, on the user's cue.
@@ -128,9 +128,9 @@ Never let discovered work die in a PR comment or the conversation — if it isn'
 A milestone run is long; the conversation will be compacted. The durable record lives in GitHub and on the integration branch, never in the conversation:
 
 - **Umbrella comments** are the run journal for merge events (Step 3.5) — one per merged issue.
-- **`docs/plans/<date>-milestone-<N>-integration.md`** on the integration branch is the running design journal (Step 2.4 and Step 3.6) — it accumulates as issues merge and *becomes* the consolidation PR body in Step 4.
+- **`~/.claude/plans/toloka-tolokaforge/milestone-<N>-integration.md`** — a scratch file outside the repo, persistent across sessions — is the running design journal (Step 2.4 and Step 3.6). It accumulates as issues merge and *becomes* the consolidation PR body in Step 4; it is never committed.
 - **Issue state** (open/closed/labels/milestone) is always current — stale bookkeeping is a bug, not cosmetics.
-- **Plan files** for each issue live in `docs/plans/` on the integration branch once merged, and land on `main` when the consolidation PR merges.
+- **Per-issue plans** live in `~/.claude/plans/toloka-tolokaforge/` (scratch, outside the repo); their durable record is the per-issue PR body that embeds them.
 
 After compaction or an interrupted session, rebuild state from: the milestone page + umbrella comments + `git log feat/<slug>` + the running design journal + `gh pr list --base feat/<slug>` — never from what you remember of the conversation.
 
@@ -166,13 +166,13 @@ Two phases:
 | Integration tests skip-green for missing keys | Check which keys the lane needs (AGENTS.md lists them); a skipped test is not a passed test when the skipped behaviour is what the issue shipped. |
 | Issue already has an open PR | Yours (this session / a prior run, targeting `feat/<slug>`): adopt and drive it to merge. Someone else's, or targeting `main`: escalate. |
 | Issue premise contradicted by evidence | Update or close it with the evidence, comment on the umbrella, continue. Escalate only on material scope change. |
-| Context compacted mid-issue | Rebuild from umbrella comments + `docs/plans/<date>-milestone-<N>-integration.md` on `feat/<slug>` + `git log feat/<slug>` + `gh pr list --base feat/<slug>`. |
+| Context compacted mid-issue | Rebuild from umbrella comments + `~/.claude/plans/toloka-tolokaforge/milestone-<N>-integration.md` + `git log feat/<slug>` + `gh pr list --base feat/<slug>`. |
 | `origin/feat/<slug>` exists but points to an unrelated branch | Ask the user before adopting or renaming — never overwrite unknown history. |
 | The design-journal file would leak internal names (private repo names, private adapter/lib names, internal ticket IDs) into the consolidation PR body | Blocker — strip those refs before opening the PR. Public repo hygiene applies. |
 
 ## Anti-patterns
 
-- **Don't implement issues inline on the integration branch.** Even a "one-liner" issue goes through the pipeline — inline fixes skip the critic, the reviewer, and the behaviour-locking test. The only direct commits allowed on `feat/<slug>` are the journal seed (Step 2.4), the per-issue journal appends (Step 3.6), and the journal finalization (Step 4.2).
+- **Don't implement issues inline on the integration branch.** Even a "one-liner" issue goes through the pipeline — inline fixes skip the critic, the reviewer, and the behaviour-locking test. No commits land directly on `feat/<slug>`: every change arrives via a squash-merged per-issue PR.
 - **Don't batch unrelated issues into one per-issue PR.** 1 issue = 1 PR. Bundle only true duplicates, recorded in both issues.
 - **Don't merge on red**, or on "probably flaky" without a `feat/<slug>` or `main` comparison.
 - **Don't skip post-merge validation because CI is green.** CI lanes don't cover everything (integration lanes auto-skip without keys).

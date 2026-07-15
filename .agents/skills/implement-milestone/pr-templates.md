@@ -28,7 +28,7 @@ Discipline shared by both templates (modelled on [Toloka/tolokaforge#121](https:
 <One short paragraph naming any new abstraction, contract, policy slot, or vocabulary the reader will encounter. Enough for a future agent scanning stacked PRs to say "ah, this is where FailureKind came from" without opening the diff. If the change is mechanical, write "None — mechanical change." and move on.>
 
 ## Plan
-See docs/plans/<YYYY-MM-DD>-issue-<N>-<short-name>.md
+<the staged plan, pasted from ~/.claude/plans/toloka-tolokaforge/issue-<N>-<short-name>.md — plans have no in-repo home, so the PR body is the plan's durable record>
 
 ## Discovered issues
 - Filed: #<n>, #<m>
@@ -49,7 +49,7 @@ Closes #<issue>
 
 ## 2. Consolidation PR body — for the single PR from `feat/<slug>` to `main`
 
-The consolidation PR body **is** the finalized running design journal (`docs/plans/<YYYY-MM-DD>-milestone-<N>-integration.md`). Copy the file contents verbatim, skipping only the file's own `# Milestone <N>: <title>` H1 — `gh pr create --title` supplies the PR title.
+The consolidation PR body **is** the finalized running design journal (`~/.claude/plans/toloka-tolokaforge/milestone-<N>-integration.md`, a scratch file outside the repo). Copy the file contents verbatim, skipping only the file's own `# Milestone <N>: <title>` H1 — `gh pr create --title` supplies the PR title.
 
 ```markdown
 ## TL;DR
