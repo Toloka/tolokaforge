@@ -29,9 +29,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import TextIO
 
+from rich.console import Group, RenderableType
 from rich.layout import Layout
 from rich.live import Live
 from rich.panel import Panel
+from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
 
@@ -271,26 +273,26 @@ def _summarise_ports(ports: dict[int, int]) -> str:
     return ", ".join(f"{container}→{host}" for container, host in sorted(ports.items()))
 
 
-def _render_services_table(services: list[ServiceSnapshot]) -> Table:
-    """Compact one-row-per-service table for the startup-window widget.
+def _render_services_table(services: list[ServiceSnapshot]) -> Text:
+    """Compact one-line-per-service renderable for the startup-window widget.
 
-    Columns: name / status / health glyph / port summary. Called by both
-    the mid-region renderer (when ``_total_trials == 0``) and the tests
-    covering the widget's shape.
+    Kept flat (no Rich ``Table``) because a Table inside a ``Panel`` inside a
+    fixed-height ``Layout`` region can silently drop data rows when Rich's
+    expand/ratio math clashes with a tight `size=` cap; a plain ``Text`` block
+    always renders every line it contains.
+
+    Format per row: ``  {glyph}  {name:<w}  {status:<12}  {ports}``.
     """
-    table = Table(show_header=True, header_style="bold", expand=True, pad_edge=False)
-    table.add_column("service", ratio=2, no_wrap=True)
-    table.add_column("status", ratio=2, no_wrap=True)
-    table.add_column("", width=1, no_wrap=True)
-    table.add_column("ports", ratio=3, no_wrap=True)
+    if not services:
+        return Text("(no services declared)", style="muted")
+    name_w = max((len(s["name"]) for s in services), default=8)
+    lines: list[str] = []
     for svc in services:
-        table.add_row(
-            svc["name"],
-            svc["status"],
-            _health_glyph(svc.get("status", "unknown")),
-            _summarise_ports(svc.get("ports", {})),
-        )
-    return table
+        glyph = _health_glyph(svc.get("status", "unknown"))
+        status = svc.get("status", "")
+        ports = _summarise_ports(svc.get("ports", {}))
+        lines.append(f"  {glyph}  {svc['name']:<{name_w}}  {status:<12}  {ports}".rstrip())
+    return Text("\n".join(lines))
 
 
 def _render_containers_table(containers: list[ContainerSnapshot]) -> Table:
@@ -769,42 +771,53 @@ class LiveRunDisplay:
         return 25
 
     def _build_layout(self) -> Layout:
-        """Build (or rebuild) the layout tree from current state.
+        """Build the layout tree with a viewport-locked total height.
 
-        Row composition:
+        Rich ``Live`` in inline (``screen=False``) mode redraws in place ONLY
+        when the total rendered height stays constant across refreshes; a
+        renderable that grows across the terminal boundary triggers a
+        re-anchor and stacks copies (visible bug: multiple panel snapshots
+        pile up as services region appears/disappears).
+
+        So: total = ``viewport - 1``. Optional regions (banner, services)
+        appear by *stealing* rows from ``main``, not by lengthening the
+        overall renderable. The invariant holds every refresh.
+
+        Row composition (top → bottom):
 
         - Optional ``banner`` (size 5) — first auth-shaped failure.
-        - Optional ``services`` (size = ``len(services) + 3`` for headers
-          and borders) — only during the startup window (``_total_trials
-          == 0`` and ``_services`` populated). Once trials dispatch the
-          services widget disappears; the built-in-stack summary shifts
-          to a one-liner inside the focused pane.
-        - ``main`` (fixed height driven by visible-trial count, capped at
-          viewport rows minus everything else) — the trials + focused
-          split.
-        - ``bottom`` (size 1) — the counters / phase line.
+        - Optional ``services`` (size ``len(services) + 2`` — one line per
+          service + 2 border rows). Only during the startup window
+          (``_total_trials == 0`` and ``_services`` populated). Trials
+          dispatch → widget disappears → ``main`` reclaims its rows.
+        - ``main`` (fills the leftover; min 5) — trials + focused split.
+        - ``bottom`` (size 1) — spinner + phase / counters.
         """
         layout = Layout()
         with self._lock:
             banner = self._banner
             services = self._services
-            in_startup = self._total_trials == 0 and services
+            in_startup = bool(self._total_trials == 0 and services)
+        viewport = self._viewport_rows()
+        total = max(12, viewport - 1)
+        banner_h = 5 if banner is not None else 0
+        services_h = (len(services) + 2) if in_startup and services else 0
+        bottom_h = 1
+        main_h = max(5, total - banner_h - services_h - bottom_h)
         row_defs: list[Layout] = []
         if banner is not None:
-            row_defs.append(Layout(name="banner", size=5))
-        if in_startup:
-            services_size = len(services) + 3
-            row_defs.append(Layout(name="services", size=services_size))
-        main_size = self._main_region_size(
-            reserved=(5 if banner is not None else 0) + ((len(services) + 3) if in_startup else 0)
-        )
-        row_defs.append(Layout(name="main", size=main_size))
-        row_defs.append(Layout(name="bottom", size=1))
+            row_defs.append(Layout(name="banner", size=banner_h))
+        if in_startup and services:
+            row_defs.append(Layout(name="services", size=services_h))
+        row_defs.append(Layout(name="main", size=main_h))
+        row_defs.append(Layout(name="bottom", size=bottom_h))
         layout.split_column(*row_defs)
         if banner is not None:
             layout["banner"].update(self._render_banner(banner))
-        if in_startup:
-            layout["services"].update(Panel(_render_services_table(services), title="Services"))
+        if in_startup and services:
+            layout["services"].update(
+                Panel(_render_services_table(services), title="Services", padding=(0, 1))
+            )
         layout["main"].split_row(
             Layout(name="trials", ratio=2),
             Layout(name="focused", ratio=3),
@@ -940,8 +953,6 @@ class LiveRunDisplay:
         # Focused trial has a compose stack: append a compact
         # "Infrastructure" sub-panel under the summary. Rich Group renders
         # both children in sequence within the outer Panel.
-        from rich.console import Group
-
         infra_panel = Panel(
             _render_containers_table(containers),
             title="Infrastructure",
@@ -949,13 +960,17 @@ class LiveRunDisplay:
         )
         return Panel(Group(summary, infra_panel), title="Focused trial")
 
-    def _render_bottom_bar(self) -> Text:
+    def _render_bottom_bar(self) -> RenderableType:
         with self._lock:
             # Startup window: no trials yet AND a phase event has fired.
-            # Renders "Starting services…" instead of the empty counters.
+            # Renders an animated spinner + "Starting services…" line so the
+            # user has a live indicator that work is progressing during the
+            # 10-30s Docker-boot / runtime-connect window. ``Spinner`` re-renders
+            # every Live tick (4 fps) — same cadence Claude Code's "thinking"
+            # indicator uses.
             if self._total_trials == 0 and self._current_phase is not None:
                 phase_line = _format_phase_line(self._current_phase, self._current_phase_detail)
-                return Text(phase_line, style="muted")
+                return Spinner("dots", text=Text(phase_line, style="muted"), style="cyan")
             cost_style = _cost_bar_style(self._total_cost_usd, self._cost_budget_usd)
             stats = _BottomBarStats(
                 completed=self._completed,
