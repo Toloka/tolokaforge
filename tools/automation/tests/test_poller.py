@@ -166,3 +166,20 @@ class TestResolvedSlugsPlan:
             mr.Resolution("c", "resolved", slug="also/`whoami`"),
         ]
         assert poller.resolved_slugs(res) == ["x-ai/grok-4.5"]
+
+    def test_demote_unsafe_slug_variant_becomes_clarify(self):
+        # A ':free' / ':nitro' variant resolves but ':' fails _SAFE_SLUG_RE. It must be demoted to
+        # a clarify-with-the-base-slug reply BEFORE it is confirmed - not confirmed-then-dropped
+        # (which would leave the request un-run and un-retryable behind its own dedup marker).
+        variant = mr.Resolution("deepseek free", "resolved", slug="deepseek/deepseek-v3.2:free")
+        out = poller.demote_unsafe_slug(variant)
+        assert out.status == "ambiguous"
+        assert out.slug is None
+        assert out.candidates == ("deepseek/deepseek-v3.2",)
+        # A plain resolved slug (and any non-resolved one) is returned untouched.
+        plain = mr.Resolution("grok", "resolved", slug="x-ai/grok-4.5")
+        assert poller.demote_unsafe_slug(plain) is plain
+        amb = mr.Resolution("gpt", "ambiguous", candidates=("a/b", "a/c"))
+        assert poller.demote_unsafe_slug(amb) is amb
+        # A demoted variant is excluded from the plan (status != resolved).
+        assert poller.resolved_slugs([out]) == []

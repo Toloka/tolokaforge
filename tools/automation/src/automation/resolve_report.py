@@ -6,7 +6,8 @@ an overlay, and what was the reprobe verdict). This reads that plus the agent's 
 explains WHY convergence failed - distinguishing the two very different causes:
 
   * the agent produced NO overlay in the iterations (it stalled / hit its per-iteration turn
-    budget - almost always an upstream Anthropic throttle, not a model or observe problem), vs
+    budget - usually an upstream throttle or error on the agent's model calls, which now route
+    through the LiteLLM -> OpenRouter gateway; not a model or observe problem), vs
   * the agent produced fixes but the reprobe stayed RED (the proposed policy did not make the
     fix-targets pass - a genuinely hard quirk or an over-narrow fix).
 
@@ -47,9 +48,11 @@ def diagnose(total: int, no_overlay: int, red: int, max_iter: int) -> str:
         return (
             f"The agent produced NO overlay in any of the {total} iteration(s): it stalled or "
             "exhausted its per-iteration turn budget every time. That is almost always an "
-            "UPSTREAM ANTHROPIC THROTTLE (HTTP 429 / overloaded), not a model or observe problem "
-            "- the observe stage itself was clean and there was never a candidate fix to verify. "
-            "Re-running when the API is less loaded usually converges."
+            "upstream THROTTLE or error on the agent's model calls, which now route through the "
+            "LiteLLM -> OpenRouter gateway (HTTP 429 / gateway down / bad model slug) - not a model "
+            "or observe problem, since observe was clean and there was never a candidate fix to "
+            "verify. Check the gateway startup + OpenRouter status in the run log; re-running when "
+            "load eases usually converges."
         )
     if red and no_overlay:
         return (

@@ -4,7 +4,9 @@ name: Model auto-integration
 # ONE run does OBSERVE (capability + shape-variant + wire probes on the DEFAULT preset) and,
 # if the observe is clean, chains STRAIGHT INTO RESOLVE (deterministic fix-loop + finalize) in
 # the SAME job - no cross-workflow label handoff, because a GITHUB_TOKEN label add cannot
-# trigger a second workflow. It NEVER merges: the draft PR is the human review gate.
+# trigger a second workflow. By default it does NOT merge (the PR is the human review gate);
+# optional auto-merge (ARENA_AUTOMATION_AUTO_MERGE_ENABLED=true) squash-merges on success, and
+# never a disposable test/* branch.
 #
 # PR title convention (the workflow reads the model from it):
 #   integrate: <openrouter-model-slug>    e.g. "integrate: anthropic/claude-opus-4.8"
@@ -126,6 +128,10 @@ jobs:
           ref: ${{ github.event.pull_request.head.ref || inputs.head_ref }}
           fetch-depth: 0
           lfs: true
+          # Do NOT leave the job token in .git/config: the --dangerously-skip-permissions resolve/
+          # finalize agents have unrestricted Bash and could otherwise read it and push/merge/comment.
+          # The finalize step re-supplies an explicit token only for its own git push.
+          persist-credentials: false
 
       - uses: astral-sh/setup-uv@v7
         with:
@@ -139,7 +145,10 @@ jobs:
         id: parse
         run: |
           set -euo pipefail
-          if [[ "$PR_TITLE" =~ ^integrate:[[:space:]]+([^[:space:]]+)[[:space:]]*$ ]]; then
+          # Restrict NAME to the OpenRouter slug charset (same set as the poller's _SAFE_SLUG_RE):
+          # it is spliced into sed programs + a YAML value downstream, so disallow characters that
+          # could break them. Variant slugs (containing ':') fall to the parse-fail needs-human path.
+          if [[ "$PR_TITLE" =~ ^integrate:[[:space:]]+([A-Za-z0-9._/-]+)[[:space:]]*$ ]]; then
             NAME="${BASH_REMATCH[1]}"
           else
             gh pr edit "$PR" -R "$REPO" \
@@ -408,7 +417,10 @@ jobs:
           printf 'model_list:\n  - model_name: %s\n    litellm_params:\n      model: %s\n      api_key: os.environ/OPENROUTER_API_KEY\nlitellm_settings:\n  drop_params: true\n' \
             "$AGENT_MODEL" "$RESOLVE_AGENT_OR_MODEL" > /tmp/litellm.config.yaml
           echo "--- gateway config ---"; cat /tmp/litellm.config.yaml
-          nohup uvx --from 'litellm[proxy]' litellm \
+          # Pinned to the litellm version in uv.lock (repro + supply-chain: an unpinned latest could
+          # ship a broken/hostile release that runs with secrets in env). Scrub the job's write-token
+          # and Slack token from the proxy's environment - it only needs OPENROUTER_API_KEY.
+          env -u GH_TOKEN -u SLACK_BOT_TOKEN nohup uvx --from 'litellm[proxy]==1.87.0' litellm \
             --config /tmp/litellm.config.yaml --host 127.0.0.1 --port 4000 \
             > /tmp/litellm.log 2>&1 &
           echo $! > /tmp/litellm.pid
@@ -424,7 +436,17 @@ jobs:
           if [ "$ready" != "yes" ]; then
             echo "::error::LiteLLM gateway did not become ready in time"; tail -80 /tmp/litellm.log; exit 1
           fi
-          echo "LiteLLM gateway ready on http://127.0.0.1:4000"
+          # Smoke the full path (gateway -> OpenRouter -> model) so a bad RESOLVE_AGENT_OR_MODEL slug
+          # or an OpenRouter routing problem fails fast HERE with a clear error, instead of silently
+          # making every resolve iteration produce no overlay (which would read as a false "throttle").
+          if ! curl -fsS -m 90 -X POST http://127.0.0.1:4000/v1/messages \
+               -H 'x-api-key: sk-litellm-local' -H 'anthropic-version: 2023-06-01' \
+               -H 'content-type: application/json' \
+               -d "{\"model\":\"${AGENT_MODEL}\",\"max_tokens\":4,\"messages\":[{\"role\":\"user\",\"content\":\"ok\"}]}" \
+               >/tmp/litellm.smoke 2>&1; then
+            echo "::error::gateway smoke request failed (bad model slug / OpenRouter routing / key)"; cat /tmp/litellm.smoke; tail -40 /tmp/litellm.log; exit 1
+          fi
+          echo "LiteLLM gateway ready + smoke OK on http://127.0.0.1:4000"
 
       - name: Resolve fix-loop (deterministic; short Opus agent per iteration)
         id: loop
@@ -434,6 +456,9 @@ jobs:
           # The dummy key only satisfies the CLI's x-api-key header; the localhost gateway is unauthenticated.
           ANTHROPIC_BASE_URL: "http://127.0.0.1:4000"
           ANTHROPIC_API_KEY: "sk-litellm-local"
+          # Any small-model call the CLI makes must also resolve to the gateway alias (the gateway
+          # only knows AGENT_MODEL), else it 400s. Nonessential traffic is disabled too.
+          ANTHROPIC_SMALL_FAST_MODEL: ${{ env.AGENT_MODEL }}
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
           OPENROUTER_API_KEY: ${{ secrets.ARENA_AUTOMATION_OPENROUTER_API_KEY }}
           # Empty GH_TOKEN: the --dangerously-skip-permissions compose agent (and the reprobe)
@@ -462,6 +487,9 @@ jobs:
           : > observation/resolve/loop_summary.md
           for i in $(seq 1 "$MAX_ITER"); do
             echo "::group::Resolve iteration $i"
+            # The agent's model calls go through the LiteLLM gateway; if it died mid-run, every
+            # iteration would silently produce no overlay - surface that rather than mask it.
+            kill -0 "$(cat /tmp/litellm.pid 2>/dev/null)" 2>/dev/null || echo "::warning::LiteLLM gateway process is not alive at iteration $i (agent calls will fail)"
             rm -f observation/resolve/overlay.yaml observation/resolve/decision.json
             { fill "$P/_shared_context.md"; echo; echo '---'; echo; fill "$P/resolve_agent.md" "$i"; } > /tmp/compose_$i.md
             # `|| true`: an agent that exhausts --max-turns (or errors) exits non-zero, and
@@ -486,12 +514,12 @@ jobs:
             fi
             if [ ! -f observation/resolve/overlay.yaml ] || [ ! -f observation/resolve/decision.json ]; then
               echo "::warning::iteration $i produced no overlay/decision (agent stalled or hit max-turns)"
-              printf -- '- Iter %s: no overlay produced (agent stalled or hit its turn limit / throttled)\n' "$i" >> observation/resolve/loop_summary.md
+              printf -- '- Iter %s: no overlay produced (agent stalled / hit its turn limit / an upstream error via the OpenRouter gateway)\n' "$i" >> observation/resolve/loop_summary.md
               echo "::endgroup::"
-              # Back off before the next attempt: a no-overlay iteration is almost always the
-              # agent exhausting its turns because its Anthropic calls were throttled (429/529).
-              # A short, growing sleep (capped 90s) lets a rate-limit window pass; it fires ONLY
-              # on this failure path, so a fast converging run is never slowed.
+              # Back off before the next attempt: a no-overlay iteration usually means the agent
+              # exhausted its turns, often because its calls through the LiteLLM -> OpenRouter gateway
+              # hit a transient error / rate limit. A short, growing sleep (capped 90s) lets that
+              # window pass; it fires ONLY on this failure path, so a converging run is never slowed.
               if [ "$i" -lt "$MAX_ITER" ]; then sleep $(( i * 15 > 90 ? 90 : i * 15 )); fi
               continue
             fi
@@ -513,7 +541,7 @@ jobs:
               cp "observation/resolve/reprobe_$i/findings.json" observation/resolve/last_reprobe.json 2>/dev/null || true
               # Are all fix-targets green under the overlay? (helper script, not inline
               # python, so YAML indentation cannot break it.)
-              VERDICT="$(uv run automation greencheck observation/resolve/decision.json observation/resolve/last_reprobe.json 2>/dev/null || echo PARSE_FAIL)"
+              VERDICT="$(uv run automation greencheck observation/resolve/decision.json observation/resolve/reprobe_$i/findings.json 2>/dev/null || echo PARSE_FAIL)"
             fi
             echo "iteration $i verdict: $VERDICT"
             printf -- '- Iter %s: fix produced, reprobe verdict = %s\n' "$i" "$VERDICT" >> observation/resolve/loop_summary.md
@@ -534,6 +562,7 @@ jobs:
           # empty: this --dangerously-skip-permissions agent only writes files; git/gh live below.
           ANTHROPIC_BASE_URL: "http://127.0.0.1:4000"
           ANTHROPIC_API_KEY: "sk-litellm-local"
+          ANTHROPIC_SMALL_FAST_MODEL: ${{ env.AGENT_MODEL }}
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
           GH_TOKEN: ""
           TF_PROVIDER: ${{ steps.parse.outputs.provider }}
@@ -571,7 +600,7 @@ jobs:
           # cache_policy), and a narrow list silently drops the new file while committing its
           # wiring -> a build-breaking dangling import. Plus the cert + preset.
           git add tolokaforge/core/llm tolokaforge/core/data/model_presets.yaml \
-            tolokaforge/core/data/pricing.json tests/integration/llm/registry.py 2>/dev/null || true
+            tolokaforge/core/data/pricing.json tests/integration/llm/ 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "::error::finalize produced no file changes"; exit 1
           fi
@@ -593,7 +622,8 @@ jobs:
           # oracle - per-model fixtures map the known corruption shapes to the exact expected
           # value. Any failure exits 1 -> needs-human, so a broken / divergent / over-reaching
           # fix never ships as integrate-done.
-          git stash push --keep-index --include-untracked -m resolve-verify >/dev/null 2>&1 || true
+          STASHED=no
+          git stash push --keep-index --include-untracked -m resolve-verify >/dev/null 2>&1 && STASHED=yes
           VERIFY_OK=yes
           uv run python -c "import tolokaforge.core.llm" || VERIFY_OK=no
           if [ "$VERIFY_OK" = "yes" ]; then
@@ -601,14 +631,20 @@ jobs:
               tests/unit/llm/test_policy_no_regression.py \
               tests/unit/llm/test_policy_array_recovery.py || VERIFY_OK=no
           fi
-          git stash pop >/dev/null 2>&1 || true
+          # Restore the resolve evidence (observation/, pr_comment.md, pr_body.md). A silently
+          # failed pop would drop the data-scope review gate + the PR comment, so make it fatal.
+          if [ "$STASHED" = "yes" ]; then
+            git stash pop >/dev/null 2>&1 || { echo "::error::stash pop failed - resolve evidence not restored"; exit 1; }
+          fi
           if [ "$VERIFY_OK" != "yes" ]; then
             echo "::error::staged integration failed verification (import / over-reach no-regression / recovery-oracle gate) - refusing to commit"
             exit 1
           fi
           git commit -m "integrate: ${TF_NAME} via auto-resolve (preset + cert)" \
             -m "Auto-resolve landed the proven policy. See the PR comment for the reprobe evidence and known_unsupported ceilings. Do not merge if this is a disposable test branch."
-          git push origin "HEAD:${HEAD_REF}"
+          # persist-credentials:false on checkout left no ambient token; supply one explicitly for
+          # this push only (github.token is masked in logs; git redacts it from URL errors).
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "HEAD:${HEAD_REF}"
           RECORD_URL=""
           if [ -f observation/resolve/pr_comment.md ]; then
             RECORD_URL="$(gh pr comment "$PR" -R "$REPO" --body-file observation/resolve/pr_comment.md || true)"
@@ -686,7 +722,7 @@ jobs:
         # Fires only on the clean-observe path when the loop never converged OR finalize failed
         # (agent hit max-turns / wrote nothing / broken-or-divergent policy / push failed). The
         # infra-dirty path already labelled needs-human in the gate step.
-        if: always() && steps.gate.outputs.clean == 'yes' && (steps.loop.outputs.converged != 'yes' || steps.finalize.outcome == 'failure')
+        if: always() && steps.gate.outputs.clean == 'yes' && (steps.loop.outputs.converged != 'yes' || steps.finalize.outcome != 'success')
         env:
           CANDIDATE_NAME: ${{ steps.parse.outputs.name }}
           NEEDS_HUMAN: ${{ steps.loop.outputs.needs_human }}

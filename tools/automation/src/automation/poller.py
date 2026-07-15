@@ -25,6 +25,7 @@ reply lets a request reprocess - acceptable, and it needs Slack delete perms.)
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import pathlib
@@ -118,6 +119,18 @@ def resolved_slugs(resolutions: list[model_resolver.Resolution]) -> list[str]:
     return out
 
 
+def demote_unsafe_slug(resolution: model_resolver.Resolution) -> model_resolver.Resolution:
+    """Guard the reply against confirming a slug the shell can never receive. A slug that resolved
+    but is not a plain OpenRouter id (a ':free' / ':nitro' variant - ``_SAFE_SLUG_RE`` rejects the
+    ':') would be confirmed to the requester and then silently dropped by ``resolved_slugs``,
+    leaving the request un-run AND un-retryable (the reply is the dedup marker). Demote it to a
+    clarify-with-the-base-slug reply BEFORE it is confirmed, so the requester re-requests the base."""
+    if resolution.status != "resolved" or not resolution.slug or _SAFE_SLUG_RE.match(resolution.slug):
+        return resolution
+    base = resolution.slug.split(":", 1)[0]
+    return dataclasses.replace(resolution, status="ambiguous", slug=None, candidates=(base,))
+
+
 # --- Slack transport not covered by slack.py (never raises out) ----------------
 
 
@@ -201,6 +214,9 @@ def run(channel: str, allowed_users: str | None, out_path: str, window_hours: fl
         resolutions = model_resolver.resolve_all(message.get("text", ""), catalog, ALIASES)
         if not resolutions:  # mention + "integrate" but no parseable model phrase
             continue
+        # Charset-guard BEFORE the reply: a resolved-but-unsafe slug (a ':variant') must become a
+        # clarify reply here, not be confirmed and then dropped by resolved_slugs() below.
+        resolutions = [demote_unsafe_slug(r) for r in resolutions]
         reply = model_resolver.format_resolution_reply(requester, resolutions)
         if not slack._post_message(channel, reply, token, thread_ts=ts):
             # No durable processed-marker landed => do NOT add to the plan; retry next poll.

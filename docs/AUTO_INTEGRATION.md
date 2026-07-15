@@ -88,10 +88,12 @@ DID produce and routes it for a post-hoc human scope-check.)
   reconcile) fails verification here and goes to `automation:integrate-needs-human`. NEVER merges.
 - Not converged within `MAX_ITER` (or staged verification failed) -> `automation:integrate-needs-human`.
 
-## Auth split
+## Auth
 
-- AGENT (Claude reasoning): `ANTHROPIC_API_KEY` (the same secret the hygiene review uses).
-- CANDIDATE (reprobe live calls): `ARENA_AUTOMATION_OPENROUTER_API_KEY` (written to `.env`).
+Both the AGENT and the CANDIDATE run on the OpenRouter budget (`ARENA_AUTOMATION_OPENROUTER_API_KEY`); no first-party `ANTHROPIC_API_KEY` is used (that avoids the key's workspace usage cap).
+
+- AGENT (Claude reasoning): the Claude Code CLI speaks the Anthropic Messages API, so a LiteLLM proxy sidecar (the "Start LiteLLM gateway" step) bridges Anthropic `/v1/messages` -> `openrouter/anthropic/claude-opus-4.8`. Both `claude -p` steps point `ANTHROPIC_BASE_URL` at the local gateway.
+- CANDIDATE (probe + reprobe live calls): `ARENA_AUTOMATION_OPENROUTER_API_KEY` directly (written to `.env`).
 
 ## Configuration (repo Actions variables)
 
@@ -103,7 +105,8 @@ DID produce and routes it for a post-hoc human scope-check.)
 | `OBSERVE_CAP_PARALLEL` | 10 | capability + variant flat (node x rep) pool width (raised from 4; the old per-rep pool was serial-within-rep and cost a slow reasoning model hours) |
 | `RESOLVE_MAX_ITER` | 8 | resolve fix-loop iterations (the agent can also escalate early, see below) |
 | `RESOLVE_MAX_TURNS` | 80 | per-iteration agent turn budget (headroom for code-CREATE; exhausting it degrades to needs-human, never hard-fails) |
-| `RESOLVE_AGENT_MODEL` | claude-opus-4-8 | resolve agent model |
+| `RESOLVE_AGENT_MODEL` | claude-opus-4-8 | resolve agent model alias (shared by the Claude Code CLI and the gateway; keep it a full model id, not a CLI shorthand like `opus`) |
+| `RESOLVE_AGENT_OR_MODEL` | openrouter/anthropic/claude-opus-4.8 | the OpenRouter model the LiteLLM gateway routes the agent to |
 | `RESOLVE_CAPABILITY_K` | 5 | resolve per-iteration capability reprobe (cheap inner loop) |
 | `RESOLVE_CAP_PARALLEL` | 10 | resolve reprobe width (flat probe x rep pool; keep >= `RESOLVE_CAPABILITY_K`, <= ~16 for the rate limit) |
 | `RESOLVE_WIRE_K` | 10 | reserved for the final wire-verification pass (not yet wired) |
