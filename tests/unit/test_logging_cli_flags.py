@@ -104,7 +104,7 @@ class _RecordingOrchestrator:
     def load_tasks(self) -> None:
         return None
 
-    def run(self) -> Path:
+    def run(self, **_: object) -> Path:
         return Path("/tmp/tolokaforge-stub-run").resolve()
 
     def prepare_run(self, run_dir: Path, reset_queue: bool = False) -> dict:
