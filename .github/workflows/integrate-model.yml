@@ -441,7 +441,13 @@ jobs:
             fi
             if [ ! -f observation/resolve/overlay.yaml ] || [ ! -f observation/resolve/decision.json ]; then
               echo "::warning::iteration $i produced no overlay/decision (agent stalled or hit max-turns)"
-              echo "::endgroup::"; continue
+              echo "::endgroup::"
+              # Back off before the next attempt: a no-overlay iteration is almost always the
+              # agent exhausting its turns because its Anthropic calls were throttled (429/529).
+              # A short, growing sleep (capped 90s) lets a rate-limit window pass; it fires ONLY
+              # on this failure path, so a fast converging run is never slowed.
+              if [ "$i" -lt "$MAX_ITER" ]; then sleep $(( i * 15 > 90 ? 90 : i * 15 )); fi
+              continue
             fi
             # Reprobe ONLY the agent's fix-targets (single-line python-c, no indentation
             # to break). All-ceiling decisions name none -> nothing to prove, skip reprobe.
