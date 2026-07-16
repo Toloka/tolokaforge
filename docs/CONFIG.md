@@ -248,6 +248,31 @@ automatically — you don't have to thread the flag through every
 `tolokaforge worker` invocation. A worker-side `--presets-file` flag still
 wins over the persisted value when both are set.
 
+### Open Agent Loop
+
+Turns on the mid-trial participant gate. Sealed batch behaviour is the
+default; setting `enabled: true` puts every trial in the run under open
+mode. See [`docs/OPEN_AGENT_LOOP.md`](OPEN_AGENT_LOOP.md) for the full
+guide.
+
+```yaml
+open_agent_loop:
+  enabled: true
+```
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `false` | When `true`, every trial in the run gets a live `InProcessTrialSession`. Events publish for the whole trial lifetime; interventions are dispatched by the intervention pump; every attempt is recorded in `trials/<task_id>/<trial_idx>/open_agent_loop.yaml` next to `trajectory.yaml`. |
+
+The block is optional — omitting it, or setting it to `null`, is the same
+as `enabled: false`. `extra="forbid"` is enforced; unknown fields fail
+validation. Future fields (transport selection, per-participant policy)
+will land here additively.
+
+The gate itself reads no secrets. Model API keys still come from the
+usual environment (`ANTHROPIC_API_KEY` and friends); only participants
+that call LLMs consume them.
+
 ## Task Specification (`task.yaml`)
 
 ```yaml

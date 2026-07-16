@@ -54,6 +54,12 @@ evaluation:
   tasks_glob: "**/task.yaml"
   output_dir: "results/run_001"
   metrics: [pass@1, pass@4, pass@8]
+
+# Optional. Turns on the Open Agent Loop mid-trial participant gate.
+# Absent or `enabled: false` (default) → sealed batch behaviour,
+# byte-identical to pre-OAL runs. See docs/OPEN_AGENT_LOOP.md.
+open_agent_loop:
+  enabled: false                    # default; set true to activate the gate
 ```
 
 ### task.yaml
@@ -446,3 +452,4 @@ tools:
 - [CUSTOM_CHECKS.md](CUSTOM_CHECKS.md) - Custom Python validation
 - [SECURITY.md](SECURITY.md) - Security model
 - [Multi-container tasks guide](guides/multi_container_tasks.md) - Declaring an `environment_manifest` so a task ships its own docker-compose stack
+- [OPEN_AGENT_LOOP.md](OPEN_AGENT_LOOP.md) - Mid-trial participant gate (events, interventions, participant contract)

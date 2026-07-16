@@ -31,10 +31,14 @@ is independently shippable and builds on the previous one.
   independently-distributable Docker image with a documented, versioned
   gRPC contract. External harnesses can pull the runner, connect their
   own agent, and drive trials without depending on the orchestrator.
-- **Open agent loop.** Extends the `Conductor` Protocol with streaming
-  event emission as a baseline. Opt-in `ConductorControl` companion
-  Protocol adds pause/resume checkpoints and external-message injection
-  for interactive or live-observability use cases.
+- **Open agent loop.** Adds a decoupled per-trial `TrialSession` bus and
+  two loop-level Protocol seams — `LoopObserver` for outbound events,
+  `InterventionHandler` for inbound interventions — with a run-scoped
+  `OpenAgentLoopManager` coordinating both. Off by default; sealed
+  benchmark behaviour is byte-identical. Enables LLM copilots, human
+  operators, safety monitors, and cross-trial orchestrators through the
+  same participant contract. See [ADR-0019](adr/0019-open-agent-loop-sessions.md)
+  and [`docs/OPEN_AGENT_LOOP.md`](../OPEN_AGENT_LOOP.md).
 - **Extension-point documentation.** Every entry point in the
   plugin-first architecture (runtime backend, conductor, grader,
   adapter, tool, artifact writer, state store, secret provider,
@@ -65,7 +69,7 @@ it, and additional runtime backends (microVM, Modal, EC2).
 | 0.13.0    | Middle-ground isolation — mechanisms for sharing selected resources across runs (warm image caches, template DB clones, read-only data volumes, container pools) while keeping trial-mutable state isolated; content-addressed stack dedup at the `RuntimeBackend` layer; cross-task stack persistence for task sequences (currently explicitly out of scope — see PROJECTS.md § "Explicitly future"). Design informed by the per-service vocabulary shipped in 0.11.0.                                                                                                                                                                       | Planned    | tbd                        |
 | 1.0.0+    | Control plane API + state store; backend-agnostic scheduler.                                                                                                                                                                                                                                                                                                                                                                                        | Planned    | tbd                        |
 | tbd       | Runner as an independently-usable component — expose existing Protocols (`RuntimeBackend`, `TrialGrader`, `Conductor`) as entry-point extension groups; slim the runner Docker image so it installs a runner-only subset; ship a `tolokaforge agent` CLI mode with a stable subprocess contract so external harnesses can drive the runtime as an agent. Same package, same wheel; no multi-package split.                                          | Planned    | tbd                        |
-| tbd       | Open agent loop — streaming event emission on `Conductor`; opt-in `ConductorControl` Protocol for pause/resume + external-message injection. Composes on top of the runner-as-independent-component work above.                                                                                                                                                                                                                                     | Planned    | tbd (ADR-0017 will land first) |
+| tbd       | Open agent loop — mid-trial participant gate via `TrialSession` Protocols and two loop-level seams (`LoopObserver`, `InterventionHandler`). Off by default; sealed benchmarks unchanged. Design lands ahead of release on the `feat/open-agent-loop` branch; see [`docs/OPEN_AGENT_LOOP.md`](../OPEN_AGENT_LOOP.md).                                                                                                                                     | Planned (design shipped on feature branch) | [0019](adr/0019-open-agent-loop-sessions.md) |
 | tbd       | Extension-point documentation — a "how to plug in" guide per entry point in the plugin-first architecture.                                                                                                                                                                                                                                                                                                                                          | Planned    | —                          |
 
 Versions past the current release are **targets, not commitments** —

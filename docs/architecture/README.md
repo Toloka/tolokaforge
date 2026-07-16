@@ -129,6 +129,7 @@ Component-level detail (CLI commands, the run-queue client, SecretManager, indiv
 | **rag-service / mock-web** | Optional support services for RAG tasks and browser-style tasks. | `tolokaforge/env/rag_service`, `tolokaforge/env/mock_web_service` | [`docs/BROWSER_TOOLS.md`](../BROWSER_TOOLS.md) |
 | **SecretManager** | Single read path for every credential (API keys, DB URLs, OAuth, signing keys). Subprocess export is the only sanctioned `os.environ` mutation, scoped narrowly. | `tolokaforge/secrets` | [AGENTS.md § Secrets](../../AGENTS.md#secrets--single-abstraction) |
 | **Run-queue client** | Durable attempt queue. SQLite for single-host runs, Postgres for distributed worker pools. | `tolokaforge/core/run_queue.py` | — |
+| **Session bus (optional)** | Off by default. Activated by `open_agent_loop.enabled: true`. Wires a per-trial `InProcessTrialSession` between the loop's `LoopObserver` / `InterventionHandler` seams and any attached participants (LLM copilots, humans, safety monitors). Sealed benchmark behaviour is byte-identical when off. | `tolokaforge/session/` | [`docs/OPEN_AGENT_LOOP.md`](../OPEN_AGENT_LOOP.md) · [ADR-0019](adr/0019-open-agent-loop-sessions.md) |
 
 ### Adapter plugin shape (zoom on the Adapter Layer)
 
@@ -220,6 +221,7 @@ The orchestrator process and the Docker stack live on the same host. There is no
 | **Telemetry & metrics** | [`docs/LOGGING.md`](../LOGGING.md) · [`docs/ANALYTICS.md`](../ANALYTICS.md) |
 | **Result artifact layout** | [`docs/OUTPUT_FORMAT.md`](../OUTPUT_FORMAT.md) |
 | **Configuration reference** | [`docs/CONFIG.md`](../CONFIG.md) · [`docs/REFERENCE.md`](../REFERENCE.md) |
+| **Mid-trial participation** | [`docs/OPEN_AGENT_LOOP.md`](../OPEN_AGENT_LOOP.md) · [ADR-0019](adr/0019-open-agent-loop-sessions.md) · [`tools/intervener/README.md`](../../tools/intervener/README.md) |
 
 ---
 
@@ -256,3 +258,6 @@ For the phase ladder and which release delivers which phase, see [`ROADMAP.md`](
 | **Preset** | Per-provider capability bundle (schema sanitizer, reasoning codec, params policy, cache policy, tool-content policy). |
 | **Grading config** | Declarative spec of how a trajectory and final state are turned into a pass/fail verdict. |
 | **Attempt queue** | Durable record of pending and in-flight trial attempts (SQLite single-host or Postgres distributed); leased by workers. |
+| **Trial Session** | Optional per-trial bus (`InProcessTrialSession`) activated by `open_agent_loop.enabled: true`. Broadcasts typed events out and accepts typed interventions in. See [OPEN_AGENT_LOOP.md](../OPEN_AGENT_LOOP.md). |
+| **Participant** | Anything attached to a `TrialSession` — an LLM copilot, a human at a terminal, a safety monitor, a cross-trial orchestrator. All plug in through the same contract; role priority (`admin` > `participant` > `observer`) mediates conflicts. |
+| **Intervention** | A typed submission from a participant into a running trial (`InjectMessage`, `ApproveTool` / `RejectTool`, `Pause` / `Resume`, `Kill`, `EditState`). Recorded in `open_agent_loop.yaml` next to the trajectory. |
