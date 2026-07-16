@@ -7,6 +7,7 @@ from typing import Any
 from tolokaforge.core.llm import GenerationResult, LLMClient, UserSimulator
 from tolokaforge.core.logging import StructuredLogger, init_trial_logger
 from tolokaforge.core.loop import (
+    InterventionHandler,
     LoopConfig,
     LoopObserver,
     MetricsSink,
@@ -53,6 +54,7 @@ class TrialRunner:
         verbose: bool = False,
         strict: bool = False,
         loop_observer: LoopObserver | None = None,
+        intervention_handler: InterventionHandler | None = None,
     ):
         self.task_id = task_id
         self.trial_index = trial_index
@@ -69,6 +71,7 @@ class TrialRunner:
         self.verbose = verbose
         self.strict = strict
         self.loop_observer = loop_observer
+        self.intervention_handler = intervention_handler
 
         self.messages: list[Message] = []
         self.metrics = Metrics()
@@ -205,6 +208,8 @@ class TrialRunner:
             }
             if self.loop_observer is not None:
                 loop_kwargs["observer"] = self.loop_observer
+            if self.intervention_handler is not None:
+                loop_kwargs["intervention_handler"] = self.intervention_handler
             outcome = ToolCallingLoop(**loop_kwargs).run(
                 system_prompt, self.messages, self.start_time
             )

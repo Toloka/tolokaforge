@@ -65,6 +65,7 @@ from tolokaforge.core.trial_executor import TrialExecutor
 from tolokaforge.runner.models import AdapterType, TaskDescription
 from tolokaforge.session import (
     InProcessTrialSession,
+    SessionInterventionHandler,
     SessionLoopObserver,
     SessionRegistry,
 )
@@ -442,6 +443,7 @@ class Orchestrator:
             output_dir=output_dir,
             request_limiter=request_limiter,
             observer_provider=self._build_observer_provider(),
+            intervention_handler_provider=self._build_intervention_handler_provider(),
         )
         if self._conductor_factory is not None:
             return self._conductor_factory(ctx)
@@ -516,6 +518,26 @@ class Orchestrator:
         def _provider(trial_id: str) -> SessionLoopObserver | None:
             session: InProcessTrialSession = registry.get_or_create(trial_id)
             return SessionLoopObserver(session)
+
+        return _provider
+
+    def _build_intervention_handler_provider(
+        self,
+    ) -> Callable[[str], SessionInterventionHandler | None] | None:
+        """Return a per-trial intervention-handler factory for the current run,
+        or ``None`` in sealed mode.
+
+        Symmetric to :meth:`_build_observer_provider`. Same registry — the
+        observer and the handler bind to the same session per trial, so
+        events and interventions round-trip through one bus.
+        """
+        registry = self._session_registry
+        if registry is None:
+            return None
+
+        def _provider(trial_id: str) -> SessionInterventionHandler | None:
+            session: InProcessTrialSession = registry.get_or_create(trial_id)
+            return SessionInterventionHandler(session)
 
         return _provider
 

@@ -67,7 +67,7 @@ class QueuedIntervention:
     submitted_at: datetime
 
 
-@dataclass(frozen=True)
+@dataclass
 class _InterventionRecord:
     """Durable trace-side record of one submitted intervention.
 
@@ -75,7 +75,10 @@ class _InterventionRecord:
     volatile producer queue and gets drained by the pause pump) — this
     record persists for the trial's lifetime and lands in the
     ``open_agent_loop`` trajectory-trace section. Includes the ack outcome
-    that ``submit`` returned so the trace tells the full story.
+    that ``submit`` returned; the intervention pump updates
+    ``ack_outcome`` and ``ack_reason`` in-place via
+    :meth:`InProcessTrialSession.record_intervention_outcome` once it
+    processes the intervention (``queued`` → ``accepted`` / ``rejected``).
     """
 
     trial_id: str
@@ -305,6 +308,27 @@ class InProcessTrialSession:
             except queue.Empty:
                 break
         return drained
+
+    def record_intervention_outcome(
+        self,
+        intervention: TrialIntervention,
+        outcome: str,
+        reason: str | None = None,
+    ) -> None:
+        """Update the durable trace record for ``intervention`` with the
+        outcome the pump decided.
+
+        Matches records by object identity (the pump processes the same
+        ``TrialIntervention`` instance that was submitted, so ``is`` is
+        the correct comparison). No-op when the intervention isn't found —
+        the trace-side write path must never mask a live-trial result.
+        """
+        with self._lock:
+            for record in self._intervention_history:
+                if record.intervention is intervention:
+                    record.ack_outcome = outcome
+                    record.ack_reason = reason
+                    return
 
     def close(self) -> None:
         """Force-close the session even without a :class:`TerminalReached`.
