@@ -36,7 +36,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from tolokaforge.core.llm.client import GenerationResult, LLMApiTimeoutError
 from tolokaforge.core.logging import StructuredLogger
@@ -210,42 +210,90 @@ class _NullLoopObserver:
 _NULL_LOOP_OBSERVER: LoopObserver = _NullLoopObserver()
 
 
+@dataclass(frozen=True)
+class ToolCallDecision:
+    """Verdict returned by :meth:`InterventionHandler.intercept_tool_call`.
+
+    ``action="approve"`` lets the tool call dispatch normally.
+    ``action="reject"`` skips the executor and synthesizes a tool-result
+    message carrying ``reason`` as the tool's error output — the agent
+    sees the rejection as a normal tool error and can react in its next
+    turn.
+    """
+
+    action: Literal["approve", "reject"]
+    reason: str | None = None
+
+
 class InterventionHandler(Protocol):
     """Inbound seam — drains queued interventions at pause points and applies
     them to the running loop.
 
     Symmetric to :class:`LoopObserver` (outbound). Called by
-    :class:`ToolCallingLoop` before each turn; the handler owns dispatch on
-    intervention *kind* so the loop stays decoupled from session-specific
-    intervention types. Handlers mutate ``messages`` in place (e.g. append
-    a user-role :class:`Message` for an ``InjectMessage``) and record ack
-    outcomes back to whatever store the caller wired in.
+    :class:`ToolCallingLoop` at two pause points:
+
+    * :meth:`drain_and_apply` — at the top of each turn iteration, before
+      the LLM generate call. Handles transcript mutations (``InjectMessage``),
+      terminal interventions (``Kill``), and pause / resume flow.
+    * :meth:`intercept_tool_call` — inside ``_execute_tool_calls``, before
+      each tool is dispatched. Handles per-call approve / reject.
+
+    Handlers own dispatch on intervention *kind* so the loop stays
+    decoupled from session-specific intervention types.
 
     Default is :data:`_NULL_INTERVENTION_HANDLER` — sealed batch mode
-    incurs one no-op call per turn.
+    incurs one no-op call per turn plus one no-op call per tool call.
     """
 
-    def drain_and_apply(self, messages: list[Message]) -> TerminationDecision | None:
+    def drain_and_apply(
+        self,
+        messages: list[Message],
+        check_timeout: Callable[[], TerminationDecision | None] = lambda: None,
+    ) -> TerminationDecision | None:
         """Drain pending interventions and apply them to the running trial.
 
         Called at the top of each turn, before the LLM generate call. The
-        handler must return quickly (drain from a queue, apply to messages,
-        record outcomes) — the loop's producer thread is blocked while this
-        runs.
+        handler must return quickly under normal conditions (drain from a
+        queue, apply to messages, record outcomes). The exception is
+        ``Pause``: when a Pause intervention is drained, the handler enters
+        a poll loop until Resume arrives, an admin Kill supersedes, or
+        ``check_timeout`` returns a :class:`TerminationDecision` (episode
+        timeout hit while paused). The ``check_timeout`` callback lets the
+        pump respect wall-clock limits without owning the timer.
 
         Returns a :class:`TerminationDecision` when a drained intervention
-        (typically ``Kill``) should terminate the loop cleanly. Returning
-        ``None`` means "no terminal intervention; continue with the next turn".
-        The returned decision's ``system_message`` is appended to the transcript
-        by the loop and its ``reason`` becomes the trajectory's
-        ``termination_reason``.
+        should terminate the loop cleanly (``Kill``, or a timeout that hit
+        while paused). Returning ``None`` means "no terminal intervention;
+        continue with the next turn".
+        """
+
+    def intercept_tool_call(
+        self, call_id: str, tool_name: str, arguments: dict[str, Any]
+    ) -> ToolCallDecision | None:
+        """Consult the handler before dispatching a tool call.
+
+        Called inside ``_execute_tool_calls`` between the ``on_tool_call``
+        observer event and ``tool_executor.execute``. Returning ``None``
+        means "no intervention for this call; approve implicitly by
+        default." A :class:`ToolCallDecision` explicitly approves or
+        rejects — on reject, the loop synthesizes a tool-result message
+        with the decision's ``reason`` as the tool's error output.
         """
 
 
 class _NullInterventionHandler:
     """No-op :class:`InterventionHandler` — the default when no pump is wired."""
 
-    def drain_and_apply(self, messages: list[Message]) -> TerminationDecision | None:
+    def drain_and_apply(
+        self,
+        messages: list[Message],
+        check_timeout: Callable[[], TerminationDecision | None] = lambda: None,
+    ) -> TerminationDecision | None:
+        return None
+
+    def intercept_tool_call(
+        self, call_id: str, tool_name: str, arguments: dict[str, Any]
+    ) -> ToolCallDecision | None:
         return None
 
 
@@ -344,7 +392,10 @@ class ToolCallingLoop:
         termination_reason: TerminationReason | None = None
 
         for turn in range(self.config.max_turns):
-            kill_decision = self.intervention_handler.drain_and_apply(messages)
+            kill_decision = self.intervention_handler.drain_and_apply(
+                messages,
+                check_timeout=lambda: self._check_episode_timeout(start_time),
+            )
             if kill_decision is not None:
                 messages.append(self._system_message(kill_decision.system_message))
                 status = kill_decision.status or status
@@ -459,9 +510,41 @@ class ToolCallingLoop:
     def _execute_tool_calls(self, result: GenerationResult, messages: list[Message]) -> None:
         for tc in result.tool_calls:
             self._maybe_recover_arguments(tc, result.text)
-            self.observer.on_tool_call(
-                call_id=tc.id, tool_name=tc.name, arguments=dict(tc.arguments or {})
+            arguments_dict = dict(tc.arguments or {})
+            self.observer.on_tool_call(call_id=tc.id, tool_name=tc.name, arguments=arguments_dict)
+
+            # Tool-approval seam: participants can reject this specific call
+            # via a RejectTool intervention. RejectTool short-circuits the
+            # executor and synthesizes a tool-result carrying the reason as
+            # the tool's error output — the agent sees a normal tool error
+            # and can react in its next turn.
+            decision = self.intervention_handler.intercept_tool_call(
+                call_id=tc.id, tool_name=tc.name, arguments=arguments_dict
             )
+            if decision is not None and decision.action == "reject":
+                tool_output = (
+                    f"Tool call rejected by operator: {decision.reason}"
+                    if decision.reason
+                    else "Tool call rejected by operator."
+                )
+                self.observer.on_tool_result(
+                    call_id=tc.id,
+                    tool_name=tc.name,
+                    duration_ms=0,
+                    output=tool_output,
+                    success=False,
+                )
+                messages.append(
+                    Message(
+                        role=MessageRole.TOOL,
+                        content=tool_output,
+                        content_blocks=None,
+                        tool_call_id=tc.id,
+                        ts=_now(),
+                    )
+                )
+                continue
+
             tool_start = time.time()
             tool_result = self.tool_executor.execute(tc.name, tc.arguments)
             tool_duration = time.time() - tool_start
