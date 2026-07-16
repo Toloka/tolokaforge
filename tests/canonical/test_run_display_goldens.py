@@ -366,6 +366,98 @@ def test_run_display_boot_log_panel_svg(
         )
 
 
+# ---------------------------------------------------------------------------
+# In-flight retry golden — locks the "↻ retry N/5 after Ns (reason)" line
+# ---------------------------------------------------------------------------
+#
+# Elapsed seconds in the ``⏳ waiting on …`` variant are clock-dependent, so
+# only the retry frame (clock-free) can be pinned as a byte-level golden. The
+# waiting-with-elapsed variant is locked via unit test in
+# :file:`tests/unit/test_run_display.py` under a monkey-patched ``_now``.
+
+
+def _replay_inflight_retry(display: LiveRunDisplay) -> None:
+    """Drive ``display`` into an in-flight retry frame on a running trial.
+
+    Emits a minimal sequence ending with ``llm_retry_scheduled`` so the
+    focused pane renders the retry line and the model-identity header
+    (``agent_model`` is carried on ``trial_started``). The trial stays
+    ``running`` — no completion event fires — so the retry state
+    survives to render time.
+    """
+    display.run_started(total_trials=1, initial_completed=0)
+    display.trial_started(
+        trial_id="task_a:0",
+        task_id="task_a",
+        trial_index=0,
+        total_index=0,
+        agent_model="openrouter/anthropic/claude-sonnet-4-6",
+        user_model="openrouter/openai/gpt-5.4",
+    )
+    display.llm_call_started(
+        trial_id="task_a:0",
+        role="agent",
+        provider="openrouter",
+        model="anthropic/claude-sonnet-4-6",
+        attempt=1,
+    )
+    display.llm_retry_scheduled(
+        trial_id="task_a:0",
+        role="agent",
+        provider="openrouter",
+        model="anthropic/claude-sonnet-4-6",
+        attempt=2,
+        next_attempt_in_s=8.0,
+        reason="APIConnectionError",
+    )
+
+
+def _render_inflight_retry_svg(width: int) -> str:
+    recorder = Console(
+        record=True,
+        width=width,
+        force_terminal=True,
+        color_system="truecolor",
+    )
+    display = LiveRunDisplay(refresh_per_second=1000, max_trial_rows=20)
+    _replay_inflight_retry(display)
+    recorder.print(display._build_layout())
+    return recorder.export_svg(
+        title="tolokaforge run",
+        theme=DEFAULT_TERMINAL_THEME,
+        unique_id=SVG_UNIQUE_ID,
+    )
+
+
+@pytest.mark.parametrize("width", _WIDTHS, ids=[f"width{w}" for w in _WIDTHS])
+def test_run_display_inflight_retry_svg(
+    request: pytest.FixtureRequest,
+    frozen_clock: None,
+    width: int,
+) -> None:
+    """The in-flight-retry SVG matches ``panel_inflight_retry_{width}.svg`` byte-for-byte."""
+
+    actual = _render_inflight_retry_svg(width)
+    golden_path = GOLDEN_DIR / f"panel_inflight_retry_{width}.svg"
+
+    if request.config.getoption("--update-canon"):
+        golden_path.parent.mkdir(parents=True, exist_ok=True)
+        golden_path.write_text(actual, encoding="utf-8")
+        return
+
+    assert golden_path.exists(), (
+        f"Golden missing: {golden_path.relative_to(GOLDEN_DIR.parent.parent.parent)}. "
+        "Run `uv run pytest tests/canonical/test_run_display_goldens.py --update-canon`."
+    )
+    expected = golden_path.read_text(encoding="utf-8")
+    if actual != expected:
+        pytest.fail(
+            f"SVG golden drift for panel_inflight_retry_{width}.svg — re-run with "
+            "`--update-canon` if the change is intentional, then review the "
+            "diff before committing."
+        )
+
+
 def test_run_display_module_exports_public_surface() -> None:
     """The public surface of :mod:`tolokaforge.dx.live_panel` is stable.
 

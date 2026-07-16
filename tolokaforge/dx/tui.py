@@ -59,13 +59,16 @@ from textual.widgets import (
 from tolokaforge.core.logging import _TOLOKAFORGE_ROOT_HANDLER_SENTINEL
 from tolokaforge.core.run_display_events import (
     ContainerSnapshot,
+    LLMCallRole,
     RunDisplayEvents,
     ServiceSnapshot,
 )
 from tolokaforge.dx.live_panel import (
     _LOG_BUFFER_MAX,
+    _clear_llm_call_state,
     _cost_bar_style,
     _derive_hint,
+    _format_call_state_line,
     _format_cost,
     _format_eta,
     _format_tokens,
@@ -77,6 +80,13 @@ from tolokaforge.dx.live_panel import (
     _TrialCard,
     _truncate_error,
 )
+
+_LIVE_CALLS_MAX_ROWS = 10
+"""Row cap for the Overview tab's "Live calls" section. Under high
+concurrency (hundreds of parallel trials with retries), an uncapped list
+would push the phase / services / trial-counter lines off the Overview
+tab. Rows beyond the cap collapse into a `…and N more` tail so the
+section stays scannable at a glance."""
 
 _LOGGER = logging.getLogger("tolokaforge.dx.tui")
 
@@ -301,6 +311,8 @@ class TextualRunApp(App[None]):
         task_id: str,
         trial_index: int,
         total_index: int,
+        agent_model: str | None = None,
+        user_model: str | None = None,
     ) -> None:
         self._safe_dispatch(
             "trial_started",
@@ -309,6 +321,8 @@ class TextualRunApp(App[None]):
                 "task_id": task_id,
                 "trial_index": trial_index,
                 "total_index": total_index,
+                "agent_model": agent_model,
+                "user_model": user_model,
             },
         )
 
@@ -378,6 +392,74 @@ class TextualRunApp(App[None]):
         if services is not None:
             payload["services"] = list(services)
         self._safe_dispatch("phase_changed", payload)
+
+    def llm_call_started(
+        self,
+        *,
+        trial_id: str,
+        role: LLMCallRole,
+        provider: str,
+        model: str,
+        attempt: int,
+    ) -> None:
+        self._safe_dispatch(
+            "llm_call_started",
+            {
+                "trial_id": trial_id,
+                "role": role,
+                "provider": provider,
+                "model": model,
+                "attempt": attempt,
+            },
+        )
+
+    def llm_call_finished(
+        self,
+        *,
+        trial_id: str,
+        role: LLMCallRole,
+        provider: str,
+        model: str,
+        attempt: int,
+        duration_s: float,
+        error: str | None,
+    ) -> None:
+        self._safe_dispatch(
+            "llm_call_finished",
+            {
+                "trial_id": trial_id,
+                "role": role,
+                "provider": provider,
+                "model": model,
+                "attempt": attempt,
+                "duration_s": duration_s,
+                "error": error,
+            },
+        )
+
+    def llm_retry_scheduled(
+        self,
+        *,
+        trial_id: str,
+        role: LLMCallRole,
+        provider: str,
+        model: str,
+        attempt: int,
+        next_attempt_in_s: float,
+        reason: str,
+    ) -> None:
+        self._safe_dispatch(
+            "llm_retry_scheduled",
+            {
+                "trial_id": trial_id,
+                "role": role,
+                "provider": provider,
+                "model": model,
+                "attempt": attempt,
+                "next_attempt_in_s": next_attempt_in_s,
+                "reason": reason,
+            },
+        )
 
     # ------------------------------------------------------------------
     # Dispatch — route worker-thread events onto the Textual loop
@@ -455,7 +537,14 @@ class TextualRunApp(App[None]):
             self._services = list(services)
 
     def _state_trial_started(
-        self, *, trial_id: str, task_id: str, trial_index: int, total_index: int
+        self,
+        *,
+        trial_id: str,
+        task_id: str,
+        trial_index: int,
+        total_index: int,
+        agent_model: str | None = None,
+        user_model: str | None = None,
     ) -> None:
         card = _TrialCard(
             trial_id=trial_id,
@@ -465,6 +554,8 @@ class TextualRunApp(App[None]):
             status="running",
             last_update_ts=_now(),
             last_event_kind="started",
+            agent_model=agent_model,
+            user_model=user_model,
         )
         if trial_id not in self._trials:
             self._trial_order.append(trial_id)
@@ -510,6 +601,7 @@ class TextualRunApp(App[None]):
         card.score = score
         card.last_event_kind = "completed"
         card.last_update_ts = _now()
+        _clear_llm_call_state(card)
         if was_running and self._running > 0:
             self._running -= 1
         self._completed += 1
@@ -523,6 +615,7 @@ class TextualRunApp(App[None]):
         card.error = error
         card.last_event_kind = "failed"
         card.last_update_ts = _now()
+        _clear_llm_call_state(card)
         if was_running and self._running > 0:
             self._running -= 1
         self._failed += 1
@@ -530,6 +623,49 @@ class TextualRunApp(App[None]):
         if self._banner is None and _looks_like_auth_error(error):
             hint = _derive_hint(error) or "Verify the provider API key"
             self._banner = ("Auth failure", _truncate_error(error, width=120), hint)
+
+    def _state_llm_call_started(
+        self,
+        *,
+        trial_id: str,
+        role: LLMCallRole,
+        provider: str,
+        model: str,
+        attempt: int,  # noqa: ARG002 — reserved for future retry-attempt labelling
+    ) -> None:
+        card = self._trials.get(trial_id) or self._lazy_card(trial_id)
+        card.llm_role = role
+        card.llm_provider_model = f"{provider}/{model}"
+        card.llm_call_start_ts = _now()
+        card.llm_retry_state = None
+
+    def _state_llm_call_finished(
+        self,
+        *,
+        trial_id: str,
+        role: LLMCallRole,  # noqa: ARG002 — carried on the seam; the card holds the last-started role
+        provider: str,  # noqa: ARG002
+        model: str,  # noqa: ARG002
+        attempt: int,  # noqa: ARG002
+        duration_s: float,  # noqa: ARG002
+        error: str | None,  # noqa: ARG002 — terminal failures surface via ``trial_failed``
+    ) -> None:
+        card = self._trials.get(trial_id) or self._lazy_card(trial_id)
+        _clear_llm_call_state(card)
+
+    def _state_llm_retry_scheduled(
+        self,
+        *,
+        trial_id: str,
+        role: LLMCallRole,  # noqa: ARG002
+        provider: str,  # noqa: ARG002
+        model: str,  # noqa: ARG002
+        attempt: int,
+        next_attempt_in_s: float,
+        reason: str,
+    ) -> None:
+        card = self._trials.get(trial_id) or self._lazy_card(trial_id)
+        card.llm_retry_state = (attempt, next_attempt_in_s, reason)
 
     def _state_judgment_scored(self, *, trial_id: str, score: float, binary_pass: bool) -> None:
         card = self._trials.get(trial_id) or self._lazy_card(trial_id)
@@ -696,6 +832,11 @@ class TextualRunApp(App[None]):
                     card.score,
                     card.binary_pass,
                     list(card.containers) if card.containers is not None else None,
+                    card.agent_model,
+                    card.llm_role,
+                    card.llm_provider_model,
+                    card.llm_call_start_ts,
+                    card.llm_retry_state,
                 )
             )
         try:
@@ -717,14 +858,29 @@ class TextualRunApp(App[None]):
             score,
             binary_pass,
             containers,
+            agent_model,
+            llm_role,
+            llm_provider_model,
+            llm_call_start_ts,
+            llm_retry_state,
         ) = snapshot
         lines: list[str] = []
         header = f"[b]{task_id} · {trial_index}[/b]  ({status})"
         lines.append(header)
+        if agent_model is not None:
+            lines.append(f"model: {agent_model}")
         lines.append(
             f"turn {turn} · in {_format_tokens(prompt)} / out {_format_tokens(completion)} tok · "
             f"{_format_cost(cost)}"
         )
+        call_line = _format_call_state_line(
+            llm_role=llm_role,
+            llm_provider_model=llm_provider_model,
+            llm_call_start_ts=llm_call_start_ts,
+            llm_retry_state=llm_retry_state,
+        )
+        if call_line is not None:
+            lines.append(call_line)
         if binary_pass is not None or score is not None:
             score_txt = "n/a" if score is None else f"{score:.2f}"
             pass_txt = "n/a" if binary_pass is None else ("pass" if binary_pass else "fail")
@@ -754,6 +910,7 @@ class TextualRunApp(App[None]):
             total_trials = self._total_trials
             completed = self._completed
             failed = self._failed
+            live_calls = self._snapshot_live_calls_locked()
         try:
             body = self.query_one("#overview-body", Static)
         except Exception:  # noqa: BLE001
@@ -776,9 +933,47 @@ class TextualRunApp(App[None]):
         parts.append(
             f"[b]Trials:[/b] {completed}/{total_trials or '?'} completed · {failed} failed"
         )
+        visible, total = live_calls
+        if visible:
+            parts.append("")
+            parts.append("[b]Live calls[/b]")
+            for line in visible:
+                parts.append(line)
+            hidden = total - len(visible)
+            if hidden > 0:
+                parts.append(f"[dim]…and {hidden} more[/dim]")
         if not parts:
             parts.append("(waiting for run)")
         body.update(Text.from_markup("\n".join(parts)))
+
+    def _snapshot_live_calls_locked(self) -> tuple[list[str], int]:
+        """Under-lock render of the Overview "Live calls" list.
+
+        One line per running trial whose most recent LLM event set
+        ``llm_role``. Preserves ``_trial_order`` — older starts render
+        first so a caller scanning top-to-bottom sees the longest-waiting
+        attempts. Returns ``(visible, total)`` where ``visible`` is capped
+        at ``_LIVE_CALLS_MAX_ROWS`` and ``total`` counts every in-flight
+        call (used to compute the "…and N more" tail).
+        """
+        lines: list[str] = []
+        total = 0
+        for trial_id in self._trial_order:
+            card = self._trials.get(trial_id)
+            if card is None or card.llm_role is None:
+                continue
+            call_line = _format_call_state_line(
+                llm_role=card.llm_role,
+                llm_provider_model=card.llm_provider_model,
+                llm_call_start_ts=card.llm_call_start_ts,
+                llm_retry_state=card.llm_retry_state,
+            )
+            if call_line is None:
+                continue
+            total += 1
+            if len(lines) < _LIVE_CALLS_MAX_ROWS:
+                lines.append(f"{card.task_id} · {card.trial_index}: {call_line}")
+        return lines, total
 
     def _refresh_services_tab(self) -> None:
         with self._lock:
