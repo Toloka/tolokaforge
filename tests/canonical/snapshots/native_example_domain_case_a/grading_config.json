@@ -10,6 +10,7 @@
   "llm_judge": null,
   "state_checks": {
     "db_hash_check": false,
+    "db_probes": [],
     "env_assertions": [],
     "hash": null,
     "jsonpaths": [

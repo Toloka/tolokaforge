@@ -3,15 +3,15 @@
 This guide walks through authoring a project whose tasks ship their own
 docker-compose stack — extra services beyond the engine's built-in
 `runner` + `db-service`. It's anchored to a working example
-([`examples/native/multi_service_postgres_reset/`](../../examples/native/multi_service_postgres_reset/))
+([`examples/native/multi_service_postgres_reset/`](../examples/native/multi_service_postgres_reset/))
 that you can `tolokaforge run` unchanged before adapting it.
 
 For the design rationale + case matrix, see
-[ADR-0018](../architecture/adr/0018-multi-container-under-shared-runtime.md).
+[ADR-0018](architecture/adr/0018-multi-container-under-shared-runtime.md).
 For the full Project model, see
-[`docs/architecture/PROJECTS.md`](../architecture/PROJECTS.md); for the
+[`docs/architecture/PROJECTS.md`](architecture/PROJECTS.md); for the
 runtime backend lifecycle, see
-[`docs/architecture/RUNTIME_BACKENDS.md`](../architecture/RUNTIME_BACKENDS.md).
+[`docs/architecture/RUNTIME_BACKENDS.md`](architecture/RUNTIME_BACKENDS.md).
 
 ## When to declare a multi-container task
 
@@ -36,7 +36,7 @@ task.
 ## Walkthrough — `multi_service_postgres_reset`
 
 The smallest working demonstration of the shipped semantics lives at
-[`examples/native/multi_service_postgres_reset/`](../../examples/native/multi_service_postgres_reset/).
+[`examples/native/multi_service_postgres_reset/`](../examples/native/multi_service_postgres_reset/).
 It runs a real postgres behind a PostgREST API, reset to a known seed at
 the start of every trial. Three files carry the interesting content:
 `project.yaml`, `shared/environment.compose.yaml`, and the sibling
@@ -139,7 +139,7 @@ Things worth noting:
   aliases** the engine sets up at run start. Task compose files reference
   these stable names instead of the content-hash tags the engine actually
   builds. Details in
-  [`RUNTIME_BACKENDS.md`](../architecture/RUNTIME_BACKENDS.md).
+  [`RUNTIME_BACKENDS.md`](architecture/RUNTIME_BACKENDS.md).
 - **Services reach each other by service name.** All services in a compose
   file join the same auto-generated docker network, so the runner container
   reaches `app-service` as `http://app-service:3000/`. No manual network
@@ -188,7 +188,7 @@ fresh stack and applies the seed to the named service.
 Four seed kinds are supported — `sql_dump`, `filesystem_dir`,
 `redis_dump`, and `bare`. For the full authoring reference (how each kind
 is applied, extension inference, and failure modes), see
-[`docs/architecture/RESET_RECIPES.md`](../architecture/RESET_RECIPES.md).
+[`docs/architecture/RESET_RECIPES.md`](architecture/RESET_RECIPES.md).
 
 ## Network policy
 
@@ -252,27 +252,45 @@ compose file. Suppose you want to add a redis cache the agent mutates:
 Because `cache` is `reset` (and `app-db` already is), the run requires
 per-trial isolation and routes to `PerTrialRuntimeBackend` automatically.
 
+## Grading against substrate state
+
+When the agent *mutates* a service — writes a row, updates a record — grade
+the mutation against the substrate directly rather than trusting the agent's
+own written file. `state_checks.db_probes` connects to a task-declared postgres
+DSN, runs an author-written read-only `SELECT`, and applies the JSONPath
+assertion vocabulary to the returned rows. Point the DSN at a dedicated
+read-only role (`GRANT SELECT` only) so the probe is an **independent oracle**:
+it reads the database through a different role than the API the agent wrote
+through, and it can never mutate the substrate. The runner container joins the
+task's docker network, so it reaches the service (e.g. `app-db:5432`) at grade
+time. Full field reference in
+[`docs/GRADING.md`](GRADING.md) § Substrate Grading; the
+`multi_service_lot_ops` pack below is the worked example.
+
 ## Further reading
 
-- [`examples/native/multi_service_postgres_reset/README.md`](../../examples/native/multi_service_postgres_reset/README.md)
+- [`examples/native/multi_service_postgres_reset/README.md`](../examples/native/multi_service_postgres_reset/README.md)
   — the anchor example this guide walks through (per-service isolation +
   `sql_dump` reset seed)
-- [`examples/native/multi_service_slow_start/README.md`](../../examples/native/multi_service_slow_start/README.md)
+- [`examples/native/multi_service_slow_start/README.md`](../examples/native/multi_service_slow_start/README.md)
   — startup-order stress: a slow dependency that the orchestrator waits on
   via healthcheck before the runner fires
-- [`examples/native/multi_service/README.md`](../../examples/native/multi_service/README.md)
+- [`examples/native/multi_service/README.md`](../examples/native/multi_service/README.md)
   — the task-level shared multi-container pattern (nginx catalog)
-- [`examples/native/multi_service_postgres/README.md`](../../examples/native/multi_service_postgres/README.md)
+- [`examples/native/multi_service_postgres/README.md`](../examples/native/multi_service_postgres/README.md)
   — a realistic three-tier stack (PostgREST + postgres, shared runtime)
-- [`examples/native/example-microservices-pack/`](../../examples/native/example-microservices-pack/)
+- [`examples/native/multi_service_lot_ops/README.md`](../examples/native/multi_service_lot_ops/README.md)
+  — substrate-state grading: the agent mutates postgres over a FastAPI API and
+  `state_checks.db_probes` verifies the row directly via a read-only role
+- [`examples/native/example-microservices-pack/`](../examples/native/example-microservices-pack/)
   — the schema reference pack: full inheritance/override matrix across five
   tasks (reference only, see its README before running)
-- [`docs/architecture/PROJECTS.md`](../architecture/PROJECTS.md)
+- [`docs/architecture/PROJECTS.md`](architecture/PROJECTS.md)
   — the full Project model: assets, `default_environment`, per-service
   isolation, and the merge chains
-- [`docs/architecture/RESET_RECIPES.md`](../architecture/RESET_RECIPES.md)
+- [`docs/architecture/RESET_RECIPES.md`](architecture/RESET_RECIPES.md)
   — the four seed kinds and how a reset recipe is applied
-- [ADR-0018](../architecture/adr/0018-multi-container-under-shared-runtime.md)
+- [ADR-0018](architecture/adr/0018-multi-container-under-shared-runtime.md)
   — case matrix + sequence diagrams for each supported combination
-- [`docs/architecture/RUNTIME_BACKENDS.md`](../architecture/RUNTIME_BACKENDS.md)
+- [`docs/architecture/RUNTIME_BACKENDS.md`](architecture/RUNTIME_BACKENDS.md)
   — full lifecycle + materialisation deep-dive
