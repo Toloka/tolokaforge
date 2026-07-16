@@ -170,6 +170,19 @@ class TestBundleArtifacts:
         assert "testcases/case_a/task.yaml" in artifacts
         assert not any(key.startswith("testcases/case_b/") for key in artifacts)
 
+    def test_active_case_bundle_preserves_legacy_domain_shared_root(
+        self, domain_fixture: Path
+    ) -> None:
+        legacy_root = domain_fixture / "_domain"
+        legacy_root.mkdir()
+        (legacy_root / "legacy_server.py").write_text("# legacy shared root\n")
+        adapter = _adapter_over(domain_fixture)
+        task_path = domain_fixture / "testcases" / "case_a" / "task.yaml"
+
+        artifacts = adapter._bundle_task_artifacts(domain_fixture, task_path=task_path)
+
+        assert "_domain/legacy_server.py" in artifacts
+
 
 # ---------------------------------------------------------------------------
 # Flat-layout regression — domain support must not break the existing path.

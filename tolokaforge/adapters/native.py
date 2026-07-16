@@ -1019,7 +1019,12 @@ class NativeAdapter(BaseAdapter):
         if task_path is not None and task_path.parent.parent.name == "testcases":
             include_roots = tuple(
                 path
-                for path in (task_dir / "_shared", task_dir / "fixtures", task_path.parent)
+                for path in (
+                    task_dir / "_shared",
+                    task_dir / "_domain",
+                    task_dir / "fixtures",
+                    task_path.parent,
+                )
                 if path.exists()
             )
 
