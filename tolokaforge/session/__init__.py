@@ -17,7 +17,8 @@ recorded, Unix-socket, WebSocket) are separate concerns from the Protocols.
 M0 ships the Protocols, the event and intervention discriminated unions, and
 :class:`RecordedTrialSession` — a transport that replays a captured trajectory
 event-by-event so participants can be developed and tested without a live
-conductor.
+conductor. M1 adds :class:`InProcessTrialSession`, the live thread-safe
+transport driven by the :class:`GatedConductor`.
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ from tolokaforge.session.events import (
     TrialEventEnvelope,
     TurnStarted,
 )
+from tolokaforge.session.in_process import InProcessTrialSession, QueuedIntervention
 from tolokaforge.session.interventions import (
     ApproveTool,
     EditState,
@@ -59,6 +61,7 @@ __all__ = [
     "AssistantMessage",
     "BudgetUpdate",
     "EditState",
+    "InProcessTrialSession",
     "InjectMessage",
     "InterventionAck",
     "Kill",
@@ -66,6 +69,7 @@ __all__ = [
     "ParticipantRole",
     "Pause",
     "PauseAcknowledged",
+    "QueuedIntervention",
     "RecordedTrialSession",
     "RejectTool",
     "Resume",
