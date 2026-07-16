@@ -1482,6 +1482,7 @@ class LiveRunDisplay:
         if snapshot is None:
             body = Text("(waiting for first trial)")
             return Panel(body, title="Focused trial")
+        title = f"Focused trial · {snapshot.task_id} · {snapshot.trial_index}"
         if snapshot.status == "failed" and snapshot.error:
             hint = _derive_hint(snapshot.error)
             parts = [
@@ -1493,7 +1494,7 @@ class LiveRunDisplay:
                 parts.append("")
                 parts.append(f"[warn]Hint:[/warn] {hint}")
             body: Text | Table = Text.from_markup("\n".join(parts))
-            return Panel(body, title="Focused trial")
+            return Panel(body, title=title)
         summary_lines: list[str] = []
         if snapshot.agent_model is not None:
             summary_lines.append(f"model: {snapshot.agent_model}")
@@ -1514,7 +1515,7 @@ class LiveRunDisplay:
             summary_lines.append(call_line)
         summary = Text("\n".join(summary_lines))
         if not snapshot.containers:
-            return Panel(summary, title="Focused trial")
+            return Panel(summary, title=title)
         # Focused trial has a compose stack: append a compact
         # "Infrastructure" sub-panel under the summary. Rich Group renders
         # both children in sequence within the outer Panel.
@@ -1523,7 +1524,7 @@ class LiveRunDisplay:
             title="Infrastructure",
             border_style="muted",
         )
-        return Panel(Group(summary, infra_panel), title="Focused trial")
+        return Panel(Group(summary, infra_panel), title=title)
 
     def _render_bottom_bar(self) -> RenderableType:
         with self._lock:
