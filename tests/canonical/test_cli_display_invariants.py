@@ -118,15 +118,14 @@ def test_display_mode_enum_surface() -> None:
 
     Order matters — ``click.Choice([m.value for m in DisplayMode])`` renders
     the modes in enum order in ``--help``, and consumers grep the operator
-    surface (`TOLOKAFORGE_DISPLAY=full/rich/plain/log/none`) against the
+    surface (`TOLOKAFORGE_DISPLAY=rich/plain/log/none`) against the
     literals below. Reordering or renaming a member without a CHANGELOG
     entry fails here.
     """
 
     from tolokaforge.dx._display import DisplayMode
 
-    assert list(DisplayMode.__members__) == ["FULL", "RICH", "PLAIN", "LOG", "NONE"]
-    assert DisplayMode.FULL.value == "full"
+    assert list(DisplayMode.__members__) == ["RICH", "PLAIN", "LOG", "NONE"]
     assert DisplayMode.RICH.value == "rich"
     assert DisplayMode.PLAIN.value == "plain"
     assert DisplayMode.LOG.value == "log"
@@ -136,10 +135,10 @@ def test_display_mode_enum_surface() -> None:
 def test_select_display_mode_is_exported() -> None:
     """``select_display_mode`` and ``silence_console`` live in ``_display``.
 
-    B1 (Rich Live panel, #285) and C3 (Textual TUI, #289) both import
-    ``select_display_mode`` to derive a fresh mode from an explicit
-    override in library-mode entry points; ``silence_console`` is the
-    ``--display=none`` knob. Pinning both here fails a silent module move.
+    ``select_display_mode`` is imported by library-mode entry points to
+    derive a fresh mode from an explicit override; ``silence_console`` is
+    the ``--display=none`` knob. Pinning both here fails a silent module
+    move.
     """
 
     from tolokaforge.dx._display import select_display_mode, silence_console

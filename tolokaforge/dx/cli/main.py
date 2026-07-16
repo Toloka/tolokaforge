@@ -36,7 +36,6 @@ from tolokaforge.core.resume import RunStateManager, resolve_resume_run_director
 from tolokaforge.core.run_queue import create_run_queue
 from tolokaforge.dx._display import (
     DisplayMode,
-    _textual_available,
     console,
     emit_artifact_path,
     select_display_mode,
@@ -108,24 +107,14 @@ def _resolve_display_mode(
     explicit: str | None,
     env: Mapping[str, str],
 ) -> DisplayMode:
-    """Wrap ``select_display_mode`` with the Textual fallback and
-    ``click.UsageError`` re-raising.
-
-    Runs at CLI-callback time so the fallback WARNING log line renders
-    under the already-configured root handler / ``--log-format``.
+    """Wrap ``select_display_mode`` and re-raise its :class:`ValueError`
+    as :class:`click.UsageError` so bad flags / env-var values fail with
+    Click's usual exit-2 surface.
     """
     try:
-        mode = select_display_mode(explicit=explicit, env=env)
+        return select_display_mode(explicit=explicit, env=env)
     except ValueError as exc:
         raise click.UsageError(str(exc)) from exc
-
-    if mode is DisplayMode.FULL and not _textual_available():
-        logging.getLogger("tolokaforge.dx").warning(
-            "textual is not installed; falling back from --display=full to --display=rich"
-        )
-        return DisplayMode.RICH
-
-    return mode
 
 
 class _GroupedCommandsGroup(click.Group):
@@ -223,8 +212,7 @@ class _GroupedCommandsGroup(click.Group):
     type=click.Choice([m.value for m in DisplayMode], case_sensitive=False),
     default=None,
     help=(
-        "Overall stderr UI. 'full' = Textual TUI (falls back to 'rich' "
-        "if textual is not installed); 'rich' = Rich Live panel; "
+        "Overall stderr UI. 'rich' = Rich Live panel (default on TTY); "
         "'plain' = log-line stream (default on non-TTY / CI); 'log' = "
         "pure log stream, no banners; 'none' = silent on stderr, only "
         "the artifact path on stdout. Env override: TOLOKAFORGE_DISPLAY. "

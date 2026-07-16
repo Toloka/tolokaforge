@@ -5,12 +5,11 @@ Every test invokes ``tolokaforge`` under a stub :class:`Orchestrator` (from
 :mod:`tests.unit.dx.test_cli_stdout_contract`) so nothing hits real LLM /
 Docker surfaces. The assertions cover:
 
-- explicit ``--display`` flag surface (five modes + invalid values → exit 2),
+- explicit ``--display`` flag surface (four modes + invalid values → exit 2),
 - ``TOLOKAFORGE_DISPLAY`` env var propagation and its precedence rules
   (explicit > env > CI > isatty),
 - ``ctx.obj["display_mode"]`` propagation for every mode,
-- Textual fallback: ``--display=full`` rewrites to ``RICH`` with a
-  WARNING log line, unless a fake ``textual`` module is installed,
+- rejection of the retired ``full`` value from both the flag and env var,
 - ``--display=none`` silencing on success (empty stderr; single stdout line)
   and preserved traceback on failure paths,
 - composition with ``-v`` / ``-q`` and with ``--log-format``.
@@ -153,9 +152,9 @@ class TestDisplayFlagSurface:
 
 class TestCtxObjPropagation:
     """The group callback stashes the resolved ``DisplayMode`` on
-    ``ctx.obj["display_mode"]``. Every downstream consumer (B1 / C3) reads
-    from that key. Locked here across the five explicit-flag modes plus
-    the Textual fallback.
+    ``ctx.obj["display_mode"]``. Every downstream consumer reads from that
+    key. Locked here across the four explicit-flag modes plus the
+    now-rejected ``full`` value.
     """
 
     @pytest.fixture
@@ -199,48 +198,42 @@ class TestCtxObjPropagation:
         assert result.exit_code == 0, result.stderr
         assert captured["display_mode"] is expected
 
-    def test_explicit_full_without_textual_stashes_rich(
+    def test_explicit_full_flag_is_rejected_as_invalid_choice(self, runner: CliRunner) -> None:
+        """``full`` is not one of ``DisplayMode``'s four values. Click must
+        reject the flag with its standard ``invalid value`` exit code 2
+        — a script passing ``--display=full`` fails loudly.
+        """
+        result = runner.invoke(cli, ["--display", "full", "run", "--help"])
+        assert result.exit_code == 2
+        combined = (result.output or "") + (result.stderr or "")
+        assert "'full'" in combined
+        assert "invalid value for '--display'" in combined.lower()
+        # The error also lists the current valid choices, so a stale export
+        # (TOLOKAFORGE_DISPLAY=full) tells the operator what to switch to.
+        for accepted in ("'rich'", "'plain'", "'log'", "'none'"):
+            assert accepted in combined
+
+    def test_tolokaforge_display_full_env_var_is_rejected(
         self,
         runner: CliRunner,
-        captured: dict[str, Any],
+        valid_config: Path,
         monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
     ) -> None:
-        """`textual` ships in the `[dx]` extras, so simulate its absence by
-        forcing :func:`importlib.util.find_spec` to return ``None`` for the
-        `textual` module. The CLI's ``_resolve_display_mode`` reads that
-        signal via :func:`tolokaforge.dx._display._textual_available` and
-        rewrites ``--display=full`` to ``--display=rich`` with a WARNING.
+        """``TOLOKAFORGE_DISPLAY=full`` is rejected via ``_resolve_display_mode``.
+        ``select_display_mode`` raises :class:`ValueError` naming the env
+        var; the CLI wraps that as :class:`click.UsageError` — exit 2.
         """
-        import importlib.util
-
-        real_find_spec = importlib.util.find_spec
-
-        def _fake_find_spec(name: str, package: str | None = None):  # type: ignore[no-untyped-def]
-            if name == "textual":
-                return None
-            return real_find_spec(name, package)
-
-        monkeypatch.setattr(importlib.util, "find_spec", _fake_find_spec)
-
-        result = runner.invoke(cli, ["--display", "full", "_display_probe"])
-        assert result.exit_code == 0, result.stderr
-        assert captured["display_mode"] is DisplayMode.RICH
-        assert "textual is not installed" in result.stderr
-
-    def test_explicit_full_with_textual_installed_keeps_full(
-        self,
-        runner: CliRunner,
-        captured: dict[str, Any],
-    ) -> None:
-        """`textual` is a `[dx]` extra and always importable in the test env.
-
-        No monkey-patch required — the CLI must pass ``FULL`` through
-        untouched and never emit the fallback WARNING line.
-        """
-        result = runner.invoke(cli, ["--display", "full", "_display_probe"])
-        assert result.exit_code == 0, result.stderr
-        assert captured["display_mode"] is DisplayMode.FULL
-        assert "textual is not installed" not in result.stderr
+        _stub_run(monkeypatch, tmp_path)
+        result = runner.invoke(
+            cli,
+            ["run", "--config", str(valid_config)],
+            env={"TOLOKAFORGE_DISPLAY": "full"},
+        )
+        assert result.exit_code == 2
+        combined = (result.output or "") + (result.stderr or "")
+        assert "TOLOKAFORGE_DISPLAY" in combined
+        assert "'full'" in combined
 
 
 # ---------------------------------------------------------------------------

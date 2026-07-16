@@ -87,13 +87,6 @@ def test_for_mode_rich_returns_live_display() -> None:
     assert isinstance(ctx, LiveRunDisplay)
 
 
-def test_for_mode_full_returns_textual_app_when_available() -> None:
-    from tolokaforge.dx.tui import TextualRunApp
-
-    ctx = LiveRunDisplay.for_mode(DisplayMode.FULL)
-    assert isinstance(ctx, TextualRunApp)
-
-
 @pytest.mark.parametrize("mode", [DisplayMode.PLAIN, DisplayMode.LOG, DisplayMode.NONE])
 def test_for_mode_returns_noop_ctx_for_passive_modes(mode: DisplayMode) -> None:
     ctx = LiveRunDisplay.for_mode(mode)

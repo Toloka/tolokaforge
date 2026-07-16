@@ -11,7 +11,7 @@
 Tolokaforge's front-end — Rich panels, banners, dry-run renderer, and the Click command tree — used to live under `tolokaforge.cli`. Two forces made that layout wrong:
 
 - **The engine is also deployed as a headless server package.** Server installs run `tolokaforge.core.orchestrator.Orchestrator` and never render anything on a terminal. Pulling Rich into the core dependency set for those installs adds bytes, transitive deps, and an unused surface.
-- **Roadmap includes non-terminal front-ends.** A web dashboard (server-side UI) and a dedicated Textual TUI have been discussed. Both consume the same per-trial lifecycle stream the terminal panel consumes today (`RunDisplayEvents`); nothing about the CLI package name signals that this pluggability exists.
+- **Roadmap includes non-terminal front-ends.** A web dashboard (server-side UI) has been discussed. It would consume the same per-trial lifecycle stream the terminal panel consumes today (`RunDisplayEvents`); nothing about the CLI package name signals that this pluggability exists.
 
 The engine-side seam is already correct: `RunDisplayEvents` (`tolokaforge/core/run_display_events.py`) is a `@runtime_checkable` Protocol with a `_NullRunDisplayEvents` no-op fixture, and zero `tolokaforge.core.*` files import from `tolokaforge.cli.*`. What was missing:
 
@@ -40,16 +40,15 @@ We adopt **Option 3**.
 
 - `RunDisplayEvents` (`tolokaforge/core/run_display_events.py`) is *the* front-end seam. Every front-end consumes this Protocol.
 - `_NullRunDisplayEvents` is the deterministic no-op fixture wired as the orchestrator's default sink so callers never branch on `events is None`.
-- `tolokaforge.dx` is the namespace for the reference terminal front-end (Rich + Textual). Sub-packages inside `tolokaforge.dx` are named for the medium they render into:
+- `tolokaforge.dx` is the namespace for the reference terminal front-end. Sub-packages inside `tolokaforge.dx` are named for the medium they render into:
   - `tolokaforge.dx.cli` — Click command tree.
-  - `tolokaforge.dx.live_panel` — the Rich Live progress panel (`LiveRunDisplay`), returned by `LiveRunDisplay.for_mode(DisplayMode.RICH)`.
-  - `tolokaforge.dx.tui` — the Textual full TUI (`TextualRunApp`), returned by `LiveRunDisplay.for_mode(DisplayMode.FULL)` when `textual` is importable; falls back to the Rich panel with a WARNING log line otherwise. Both consumers implement the same `RunDisplayEvents` Protocol so orchestrator wiring is identical across `--display=rich` and `--display=full`.
+  - `tolokaforge.dx.live_panel` — the Rich Live progress panel (`LiveRunDisplay`), returned by `LiveRunDisplay.for_mode(DisplayMode.RICH)` and the reference `RunDisplayEvents` consumer.
   - `tolokaforge.dx.banners` — start / end banners.
   - `tolokaforge.dx.dry_run_render` — dry-run panel renderer.
   - `tolokaforge.dx._display` — shared Rich console + theme + display-mode selector.
   - `tolokaforge.dx.repl` — interactive shell built on `click-repl`.
 
-The two run-time modes (`rich` and `full`) split by input capability, not by data. `--display=rich` renders inside a Rich `Live` region that respects log-line interleaving above the panel; `--display=full` takes over the terminal with a Textual `App` that adds keyboard navigation (arrow-keys, tab hopping, modal help). A future web front-end (`tolokaforge.dx.web`) plugs into the same seam: implement `RunDisplayEvents`, register into `OrchestratorDeps.events`, and either live as a sibling sub-package here or ship as a separate distribution.
+A future web front-end (`tolokaforge.dx.web`) plugs into the same seam: implement `RunDisplayEvents`, register into `OrchestratorDeps.events`, and either live as a sibling sub-package here or ship as a separate distribution.
 - Future front-ends: either add a sibling sub-package inside `tolokaforge.dx` (`tolokaforge.dx.web` when the web dashboard lands), or ship as a separate distribution package that registers itself as a `RunDisplayEvents` consumer. Both patterns are ADR-blessed; the choice depends on whether the front-end shares the dep graph with the terminal.
 
 ### Extras split
@@ -63,7 +62,7 @@ The two run-time modes (`rich` and `full`) split by input capability, not by dat
 `RunDisplayEvents` meets every criterion in ADR-0011 § Pattern A:
 
 - **Protocol.** `@runtime_checkable class RunDisplayEvents(Protocol)` in `tolokaforge/core/run_display_events.py`.
-- **At least two implementations.** Reference production impls `LiveRunDisplay` (Rich Live) in `tolokaforge/dx/live_panel.py` and `TextualRunApp` (Textual TUI) in `tolokaforge/dx/tui.py`; deterministic fixture `_NullRunDisplayEvents` in `tolokaforge/core/run_display_events.py`.
+- **At least two implementations.** Reference production impl `LiveRunDisplay` (Rich Live) in `tolokaforge/dx/live_panel.py` and deterministic fixture `_NullRunDisplayEvents` in `tolokaforge/core/run_display_events.py`.
 - **Configurable failure knobs.** The fixture is a pure no-op; recording variants used by wiring tests (`_RecordingEvents` in `tests/unit/test_run_display_wiring.py`) extend the fixture pattern to capture call logs.
 - **Canonical contract test.** `tests/canonical/test_cli_display_invariants.py` walks the surface and pins the public names of the reference implementation; `tests/unit/test_run_display.py` locks the Protocol's method surface.
 - **ADR.** This document.

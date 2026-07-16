@@ -121,11 +121,10 @@ See [`docs/LOGGING.md`](LOGGING.md) for the full API of `StructuredLogger`, `get
 
 ## Display modes
 
-The root flag `--display={full,rich,plain,log,none}` and the equivalent env var `TOLOKAFORGE_DISPLAY=…` pick the overall stderr UI. Orthogonal to `--log-format`, which shapes individual log lines.
+The root flag `--display={rich,plain,log,none}` and the equivalent env var `TOLOKAFORGE_DISPLAY=…` pick the overall stderr UI. Orthogonal to `--log-format`, which shapes individual log lines.
 
 | Value    | Behaviour                                                                                                 |
 |----------|-----------------------------------------------------------------------------------------------------------|
-| `full`   | Textual TUI (see [§ Full TUI](#full-tui---displayfull)). Falls back to `rich` when textual is not installed (a WARNING log line notes the fallback).  |
 | `rich`   | Rich Live panel during `tolokaforge run` — left-pane trial list (status glyphs), right-pane structured summary of the focused trial (`turn N · in Xk / out Y tok · $Z.ZZ · last: <event_kind>`), bottom bar `{completed}/{total} · {running} running · ${cost} · in {prompt} / out {completion} tok · fail {failed} · eta {eta}`. Log lines from `configure_root_logging` interleave above the panel. Every other subcommand renders through the shared `console.print(...)` calls. |
 | `plain`  | Human-readable log-line stream. Default on non-TTY / when `CI` is set.                                    |
 | `log`    | Pure log stream — no banners, no progress bars.                                                           |
@@ -154,43 +153,9 @@ The root flag `--display={full,rich,plain,log,none}` and the equivalent env var 
 
 The orchestrator, conductor, and runner emit lifecycle events into a `RunDisplayEvents` Protocol: the run/trial boundary events (`run_started`, `trial_started`, `trial_progress`, `trial_provisioned`, `trial_completed`, `trial_failed`, `judgment_scored`, `run_finished`, `phase_changed`) plus the in-flight LLM-call trio (`llm_call_started`, `llm_call_finished`, `llm_retry_scheduled`) that surfaces provider activity during a generation so the panel can show progress while a slow attempt or outer-retry backoff is in flight. `LiveRunDisplay` subscribes and repaints at 4 Hz. `_NULL_EVENTS` is the default sink under any non-active mode — the orchestrator / conductor / runner never branch on `events is None`, they just call every method.
 
-Log records from `configure_root_logging` — and from any child logger whose `StreamHandler` would otherwise write straight to `sys.stderr` / `sys.stdout` / `sys.__stderr__` / `sys.__stdout__` — route through a `_LogSink` for the lifetime of the Live context. INFO / DEBUG records land in a bounded 500-record ring buffer inside the panel (available via `LiveRunDisplay.log_records()` for the future Textual log pane) and are otherwise swallowed so the Docker-boot log wall no longer scrolls the panel off-screen; WARNING and above are printed above the panel via `Live.console.print`, so real problems surface without disrupting Rich Live's cursor coordination. `__enter__` sweeps every non-root logger in `logging.root.manager.loggerDict` — skipping `PlaceHolder` entries — and, for each handler whose stream identity matches one of the captured pre-Live terminal streams, removes the handler; loggers with `propagate=False` additionally receive a fresh `_LogSink` so their records still surface. This is what prevents chatty libraries (litellm's `LiteLLM` / `LiteLLM Router` / `LiteLLM Proxy` loggers) from stacking the panel with duplicate copies during trial execution. `__exit__` restores every removed handler and drops any child-logger `_LogSink` it installed.
+Log records from `configure_root_logging` — and from any child logger whose `StreamHandler` would otherwise write straight to `sys.stderr` / `sys.stdout` / `sys.__stderr__` / `sys.__stdout__` — route through a `_LogSink` for the lifetime of the Live context. INFO / DEBUG records land in a bounded 500-record ring buffer inside the panel (available via `LiveRunDisplay.log_records()` for debug dumps) and are otherwise swallowed so the Docker-boot log wall no longer scrolls the panel off-screen; WARNING and above are printed above the panel via `Live.console.print`, so real problems surface without disrupting Rich Live's cursor coordination. `__enter__` sweeps every non-root logger in `logging.root.manager.loggerDict` — skipping `PlaceHolder` entries — and, for each handler whose stream identity matches one of the captured pre-Live terminal streams, removes the handler; loggers with `propagate=False` additionally receive a fresh `_LogSink` so their records still surface. This is what prevents chatty libraries (litellm's `LiteLLM` / `LiteLLM Router` / `LiteLLM Proxy` loggers) from stacking the panel with duplicate copies during trial execution. `__exit__` restores every removed handler and drops any child-logger `_LogSink` it installed.
 
 Under `--display={plain,log,none}` and on non-TTY streams, `LiveRunDisplay.for_mode(...)` returns a no-op context manager and the existing log-line stream is what the operator sees.
-
-### Full TUI (`--display=full`)
-
-Under `--display=full`, `tolokaforge run` enters a Textual `App` (`tolokaforge.dx.tui.TextualRunApp`) that consumes the same `RunDisplayEvents` seam the Rich Live panel does. Prerequisites: `pip install 'tolokaforge[dx]'` — `textual>=0.85.0` ships in the `[dx]` extras. When textual is not importable, `--display=full` falls back to `--display=rich` (a WARNING log line notes the fallback).
-
-Layout, top to bottom:
-
-- **Header** — `tolokaforge run` title band.
-- **Status bar** — one line: `{completed}/{total} · {running} running · ${cost} · fail {failed} · eta {eta}`. The `$cost` segment turns yellow at ≥ 80 % of the run's cost budget (from `--cost-limit` / `compute.max_budget_usd`) and bold-red at ≥ 100 %.
-- **Trial list** (left) — scrollable list, one row per trial (`⏳` / `✓` / `✗` glyph + `[N/M]` global index + `task_id · trial_index`). The cursor auto-follows the newest lifecycle transition; the operator can move it independently with `j`/`k` or `↑`/`↓`.
-- **Focused trial pane** (right) — `task_id · trial_index (status)`, a `model: <provider>/<name>` header when `trial_started` supplied `agent_model`, cumulative counters (`turn N · in Xk / out Y tok · $Z.ZZ`), an in-flight LLM status line while an attempt is on the wire (`⏳ waiting on {role}: {provider}/{model} — {elapsed:.1f}s`) or scheduled (`↻ retry {attempt}/5 after {next_in_s:.0f}s ({reason})`), judge score if judged, error tail if failed, and a compact `Infrastructure` sub-list of the trial's containers (name + health glyph + published ports) once `trial_provisioned` has fired. The in-flight line clears on `llm_call_finished` and on trial-terminal transitions.
-- **Tabs** — `TabbedContent` with five panes:
-  - **Overview** — auth-failure banner (if any), current phase line, services summary, trial counters, and a `Live calls` section listing every running trial with an in-flight LLM call (one row per trial: `{task_id} · {trial_index}: <waiting or retry line>`). The section is capped at 10 rows; further calls collapse into a `…and N more` tail so the tab stays scannable under high concurrency.
-  - **Logs** — `RichLog` fed by the same ring buffer the Rich `_LogSink` installs. INFO/DEBUG scroll here; WARNING and above are duplicated to the Errors tab.
-  - **Services** — `DataTable` of engine-stack services with name / status / health glyph / port summary (from `phase_changed(services=…)`).
-  - **Infra** — `DataTable` of the focused trial's containers.
-  - **Errors** — WARNING+ log records only, most recent last.
-- **Footer** — key binding legend.
-
-Key bindings:
-
-| Key            | Action                                                     |
-|----------------|------------------------------------------------------------|
-| `j` / `↓`      | Move selection down in the trial list.                     |
-| `k` / `↑`      | Move selection up.                                          |
-| `PgDn` / `PgUp`| Jump ~20 rows.                                              |
-| `Home` / `End` | First / last trial.                                         |
-| `1` – `5`      | Switch to Overview / Logs / Services / Infra / Errors.     |
-| `l`            | Jump to the Logs tab.                                       |
-| `?`            | Toggle the modal help screen (same table).                  |
-| `/`            | Reserved for per-tab search (footer legend; no-op today).   |
-| `q`            | Exit the UI. **Ctrl-C** is what kills the run itself.      |
-
-Event handlers on `TextualRunApp` are called from the orchestrator's worker threads. Every method routes work onto Textual's asyncio loop via `App.call_from_thread` (or buffers into a pending queue before the app has mounted). Handlers never raise — a bad payload is logged at WARNING and dropped, so an event error never corrupts the runner.
 
 ### Precedence
 
@@ -201,10 +166,6 @@ Event handlers on `TextualRunApp` are called from the orchestrator's worker thre
 5. Otherwise → `plain`.
 
 Explicit flag beats env var; env var beats `CI`; `CI` beats isatty.
-
-The TTY default is `rich`, not `full` — operators who want the TUI ask for it explicitly with `--display=full`.
-
-Under `--display=full`, Ctrl-Z suspend and mid-run terminal-resize reflow don't work — Textual's driver installs OS signal handlers (`SIGTSTP` / `SIGCONT` / `SIGWINCH`) at startup and we run Textual on a background thread where Python forbids that. The signal-handler installation is a documented no-op in this codepath; the trade-off is deliberate and preserves everything else about the TUI. See tolokaforge issue #470 for the rationale.
 
 ### Composition with `--log-format`
 
@@ -233,7 +194,7 @@ The group callback validates `TOLOKAFORGE_DISPLAY` on every invocation, includin
 
 ### `ctx.obj["display_mode"]`
 
-The group callback stashes the resolved `DisplayMode` on `ctx.obj["display_mode"]` after applying the precedence rules and Textual fallback. The value is a `DisplayMode` enum (not the raw string) so consumers get `if mode is DisplayMode.FULL:` type-safety. Consumer commands read the resolved mode from this single source rather than re-parsing the flag / env var.
+The group callback stashes the resolved `DisplayMode` on `ctx.obj["display_mode"]` after applying the precedence rules. The value is a `DisplayMode` enum (not the raw string) so consumers get `if mode is DisplayMode.RICH:` type-safety. Consumer commands read the resolved mode from this single source rather than re-parsing the flag / env var.
 
 ## Interactive shell
 
@@ -320,7 +281,7 @@ One sample is one `(task_id, trial_index=0)` pair. Every trial of the same task 
 
 - **`--resume`** — mutually exclusive. Dry-run has no run directory to consult for state; passing both fails with `click.UsageError("--dry-run and --resume are mutually exclusive; --dry-run does not consult run state")`.
 - **`--display=none`** — the shared `console` is quieted (`console.quiet = True`); no preamble and no panels reach stderr. Exit code is still `0`.
-- **`--display={full,rich,plain,log}`** — panels render through the shared `console` (stderr). No `LiveRunDisplay` opens under any display mode — dry-run is a one-shot render, not an animated region.
+- **`--display={rich,plain,log}`** — panels render through the shared `console` (stderr). No `LiveRunDisplay` opens under any display mode — dry-run is a one-shot render, not an animated region.
 - **`--presets-file`** — the overlay is activated identically to a real run; the `preset:` field on the rendered panel reflects the overlay-resolved preset name.
 - **`--user-model` / `--judge-model` / `--runtime`** — reflected in the `Model:` / `Judge:` / `Runtime:` lines.
 - **`--cost-limit` / `--time-limit` / `--sample-limit` / `--fallback-models`** — parsed and validated identically to a real run; a bad token surfaces the same `click.BadParameter` diagnostic. Not applied, because no trials execute.
@@ -467,7 +428,6 @@ The `→ Browse:` line is a suggested follow-up command. `tolokaforge browse` is
 
 | `--display` | Banners on stderr                                                                                                                                                                    |
 |-------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `full`      | Visible.                                                                                                                                                                             |
 | `rich`      | Visible.                                                                                                                                                                             |
 | `plain`     | Visible.                                                                                                                                                                             |
 | `log`       | Visible.                                                                                                                                                                             |

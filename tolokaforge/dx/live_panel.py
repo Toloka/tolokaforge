@@ -1,11 +1,9 @@
 """Rich ``Live`` progress panel for ``tolokaforge run`` under ``--display=rich``.
 
-Under :attr:`DisplayMode.RICH` (and today :attr:`DisplayMode.FULL`, which
-:mod:`tolokaforge.dx._display` collapses to ``RICH`` at the callback
-boundary), :class:`LiveRunDisplay` renders a three-region panel: left-pane
-trial list, right-pane structured summary of the focused trial (turn count
-/ tokens / cost / last-event kind), bottom status bar with cost / tokens
-/ ETA / failure counts.
+Under :attr:`DisplayMode.RICH`, :class:`LiveRunDisplay` renders a
+three-region panel: left-pane trial list, right-pane structured summary
+of the focused trial (turn count / tokens / cost / last-event kind),
+bottom status bar with cost / tokens / ETA / failure counts.
 
 Under any other mode (:attr:`DisplayMode.PLAIN` / :attr:`DisplayMode.LOG`
 / :attr:`DisplayMode.NONE`), :meth:`LiveRunDisplay.for_mode` returns a
@@ -284,10 +282,7 @@ def _format_call_state_line(
 
     Precedence: retry state wins over waiting state (a scheduled retry is
     strictly more informative — it names the failure reason and the
-    remaining backoff). Returns ``None`` when no call is in flight. Shared
-    between the Rich panel's right-pane summary and the Textual TUI's
-    focused pane / Overview "Live calls" section so both surfaces render
-    the same literal shape.
+    remaining backoff). Returns ``None`` when no call is in flight.
     """
     if llm_retry_state is not None:
         attempt, next_in_s, reason = llm_retry_state
@@ -689,9 +684,6 @@ class LiveRunDisplay:
     ) -> AbstractContextManager[object]:
         """Return a display context manager matched to ``mode``.
 
-        - :attr:`DisplayMode.FULL` — a :class:`tolokaforge.dx.tui.TextualRunApp`
-          when :mod:`textual` is importable; falls back to a Rich
-          :class:`LiveRunDisplay` with a WARNING log line when it is not.
         - :attr:`DisplayMode.RICH` — a fresh :class:`LiveRunDisplay`.
         - :attr:`DisplayMode.PLAIN` / :attr:`DisplayMode.LOG` /
           :attr:`DisplayMode.NONE` — a :class:`_NoopDisplayCtx`.
@@ -702,15 +694,6 @@ class LiveRunDisplay:
         cap — enables the amber@80 % / red@100 % styling on the bottom-bar
         cost segment.
         """
-        if mode is DisplayMode.FULL:
-            try:
-                from tolokaforge.dx.tui import TextualRunApp
-            except ImportError:
-                _LOGGER.warning(
-                    "textual not installed; falling back from --display=full to --display=rich"
-                )
-                return cls(cost_budget_usd=cost_budget_usd)
-            return TextualRunApp(cost_budget_usd=cost_budget_usd)
         if mode is DisplayMode.RICH:
             return cls(cost_budget_usd=cost_budget_usd)
         return _NoopDisplayCtx()
@@ -723,9 +706,8 @@ class LiveRunDisplay:
     def log_records(self) -> tuple[logging.LogRecord, ...]:
         """Return a snapshot of the panel-scoped log ring buffer.
 
-        Consumers (the future Textual log pane / debug dumps) get a
-        stable, immutable view — the underlying ``deque`` continues to
-        rotate as new records arrive.
+        Callers get a stable, immutable view — the underlying ``deque``
+        continues to rotate as new records arrive.
         """
         with self._lock:
             return tuple(self._log_buffer)

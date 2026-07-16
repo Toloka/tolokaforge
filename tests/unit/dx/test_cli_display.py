@@ -27,7 +27,6 @@ from rich.text import Text
 from tolokaforge.dx._display import (
     THEME,
     DisplayMode,
-    _textual_available,
     console,
     emit_artifact_path,
     make_live,
@@ -242,14 +241,16 @@ class TestEmitArtifactPath:
 
 class TestDisplayModeEnum:
     def test_members_and_order(self) -> None:
-        assert list(DisplayMode.__members__) == ["FULL", "RICH", "PLAIN", "LOG", "NONE"]
+        assert list(DisplayMode.__members__) == ["RICH", "PLAIN", "LOG", "NONE"]
 
     def test_values_match_cli_literals(self) -> None:
-        assert DisplayMode.FULL.value == "full"
         assert DisplayMode.RICH.value == "rich"
         assert DisplayMode.PLAIN.value == "plain"
         assert DisplayMode.LOG.value == "log"
         assert DisplayMode.NONE.value == "none"
+
+    def test_display_mode_enum_declares_four_values(self) -> None:
+        assert {m.value for m in DisplayMode} == {"rich", "plain", "log", "none"}
 
     def test_is_str_enum(self) -> None:
         # (str, Enum) lets click.Choice accept `.value` literals natively.
@@ -305,7 +306,7 @@ class TestSelectDisplayMode:
     def test_env_var_no_flag_no_ci_no_tty_yields_plain(self) -> None:
         assert select_display_mode(explicit=None, env={}, stream=_fake_pipe()) is DisplayMode.PLAIN
 
-    @pytest.mark.parametrize("mode", ["full", "rich", "plain", "log", "none"])
+    @pytest.mark.parametrize("mode", ["rich", "plain", "log", "none"])
     def test_env_var_selects_when_no_explicit(self, mode: str) -> None:
         result = select_display_mode(
             explicit=None, env={"TOLOKAFORGE_DISPLAY": mode}, stream=_fake_tty()
@@ -326,30 +327,6 @@ class TestSelectDisplayMode:
         assert select_display_mode() is DisplayMode.PLAIN
 
 
-class TestTextualAvailable:
-    def test_textual_returns_true_when_installed(self) -> None:
-        # `textual` ships in the `[dx]` extras — always importable in the
-        # test env.
-        assert _textual_available() is True
-
-    def test_returns_false_when_find_spec_reports_absence(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Simulate a headless-server install by making
-        :func:`importlib.util.find_spec` return ``None`` for ``textual``."""
-        import importlib.util
-
-        real_find_spec = importlib.util.find_spec
-
-        def _fake_find_spec(name: str, package: str | None = None):  # type: ignore[no-untyped-def]
-            if name == "textual":
-                return None
-            return real_find_spec(name, package)
-
-        monkeypatch.setattr(importlib.util, "find_spec", _fake_find_spec)
-        assert _textual_available() is False
-
-
 class TestSilenceConsole:
     def test_silence_console_sets_quiet(self) -> None:
         original = console.quiet
@@ -368,3 +345,22 @@ class TestSilenceConsole:
             assert console.quiet is True
         finally:
             console.quiet = original
+
+
+def test_no_textual_module_in_dx_extras() -> None:
+    """``textual`` is not a runtime dep of tolokaforge. The ``[dx]`` extras
+    must not carry it — a regression here would pull ~30 MB of terminal
+    library into every ``pip install 'tolokaforge[dx]'`` for no consumer.
+    """
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # Python 3.10 fallback
+        import tomli as tomllib  # type: ignore[import-not-found,no-redef]
+
+    pyproject = Path(__file__).resolve().parents[3] / "pyproject.toml"
+    with pyproject.open("rb") as handle:
+        parsed = tomllib.load(handle)
+
+    dx_extras = parsed["project"]["optional-dependencies"]["dx"]
+    offenders = [entry for entry in dx_extras if "textual" in entry.lower()]
+    assert not offenders, f"Textual reappeared in [project.optional-dependencies].dx: {offenders}"

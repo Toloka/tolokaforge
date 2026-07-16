@@ -18,7 +18,7 @@ Public surface:
   :data:`console` with the CLI's default column set.
 - :func:`make_live` — factory for ``rich.live.Live`` bound to :data:`console`.
 - :class:`DisplayMode` — the overall stderr UI selection enum
-  (``full``/``rich``/``plain``/``log``/``none``).
+  (``rich``/``plain``/``log``/``none``).
 - :func:`select_display_mode` — pure resolver that applies the precedence
   chain (explicit flag > env var > ``CI`` > isatty > plain).
 - :func:`silence_console` — sets ``console.quiet = True`` for
@@ -27,7 +27,6 @@ Public surface:
 
 from __future__ import annotations
 
-import importlib.util
 import os
 import sys
 from collections.abc import Mapping, Sequence
@@ -185,7 +184,6 @@ class DisplayMode(str, Enum):
     coercion adapter.
     """
 
-    FULL = "full"
     RICH = "rich"
     PLAIN = "plain"
     LOG = "log"
@@ -214,10 +212,11 @@ def select_display_mode(
     Precedence (highest first): ``explicit`` > ``env["TOLOKAFORGE_DISPLAY"]``
     > ``env["CI"]`` truthy → ``PLAIN`` > ``stream.isatty()`` → ``RICH`` > ``PLAIN``.
 
-    The TTY default is ``RICH``, not ``FULL`` — the Textual TUI is an
-    explicit opt-in via ``--display=full``. See ``docs/CLI.md`` § Full TUI
-    for the trade-offs (Ctrl-Z suspend and mid-run terminal-resize reflow
-    don't work under ``--display=full``).
+    Accepted values are :attr:`DisplayMode.RICH` (Rich Live panel, TTY
+    default), :attr:`DisplayMode.PLAIN` (log-line stream, non-TTY / CI
+    default), :attr:`DisplayMode.LOG` (pure log stream, no banners), and
+    :attr:`DisplayMode.NONE` (silent on stderr, only the artifact path on
+    stdout).
 
     ``env`` defaults to :data:`os.environ`; ``stream`` defaults to
     :data:`sys.stderr`. Unrecognised values in ``explicit`` or the env var
@@ -250,19 +249,6 @@ def silence_console() -> None:
     time — no bytes reach the wrapped stream. Idempotent.
     """
     console.quiet = True
-
-
-def _textual_available() -> bool:
-    """Return ``True`` iff :mod:`textual` is importable.
-
-    Uses :func:`importlib.util.find_spec` so the module is not actually
-    imported — the CLI callback only needs to know whether ``--display=full``
-    should fall back to ``--display=rich``.
-    """
-    try:
-        return importlib.util.find_spec("textual") is not None
-    except (ImportError, ValueError):
-        return False
 
 
 __all__ = [
