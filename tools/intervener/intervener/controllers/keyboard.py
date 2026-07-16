@@ -40,7 +40,7 @@ from typing import Any
 from rich.console import Console
 
 from intervener.binding import SessionBinding
-from intervener.tools.base import ToolContext
+from intervener.tools.base import LLMCallable, ToolContext
 from intervener.tools.registry import ToolRegistry
 from tolokaforge.session import (
     InjectMessage,
@@ -66,6 +66,7 @@ class KeyboardController:
         pause_wait_timeout: float = 60.0,
         tools: ToolRegistry | None = None,
         task_metadata: dict[str, Any] | None = None,
+        llm_call: LLMCallable | None = None,
         recent_events_maxlen: int = 200,
     ) -> None:
         if len(trigger_key) != 1:
@@ -81,6 +82,7 @@ class KeyboardController:
         self._pause_wait_timeout = pause_wait_timeout
         self._tools = tools
         self._task_metadata = task_metadata
+        self._llm_call = llm_call
 
         self._binding: SessionBinding | None = None
         self._terminal_flag: threading.Event | None = None
@@ -216,6 +218,7 @@ class KeyboardController:
             recent_events=list(self._recent_events),
             task_metadata=self._task_metadata,
             console=self._console,
+            llm_call=self._llm_call,
         )
         try:
             result = tool.run(tool_args, context)

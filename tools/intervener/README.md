@@ -159,10 +159,10 @@ package provides a small plug-in surface so tools are **written once and
 called from anywhere** — the tool doesn't know or care which consumer
 invoked it.
 
-### The three types
+### The four types
 
 ```python
-from intervener import InteractiveTool, ToolContext, ToolResult
+from intervener import InteractiveTool, LLMCallable, ToolContext, ToolResult
 
 class InteractiveTool(Protocol):
     name: str            # command / endpoint name, e.g. "context"
@@ -172,11 +172,40 @@ class InteractiveTool(Protocol):
 
 `ToolContext` is a dataclass with **every field optional** —
 `binding: SessionBinding | None`, `recent_events: list[TrialEvent]`,
-`task_metadata: dict | None`, `console: Console | None`, `extras: dict`.
-Tools handle missing pieces gracefully.
+`task_metadata: dict | None`, `console: Console | None`,
+`llm_call: LLMCallable | None`, `extras: dict`. Tools handle missing
+pieces gracefully.
 
 `ToolResult` carries the text output plus optional structured `data`
-(for JSON consumers) and an `submitted_interventions` counter.
+(for JSON consumers) and a `submitted_interventions` counter.
+
+**`LLMCallable`** — narrow `(system, user) → text` alias. Agentic tools
+call `context.llm_call(system, user)` if it's non-`None`; the tool
+never imports a specific LLM stack. **This decouples the intervener
+package from tolokaforge's LLM layer** — the caller wraps whatever
+provider it has credentials for (tolokaforge's `LLMClient`, direct
+Anthropic, an in-house HTTP client) into a two-line closure and passes
+it in.
+
+```python
+# Caller code (a driver or the scratchpad demo)
+from tolokaforge.core.llm import LLMClient
+from tolokaforge.core.models import Message, MessageRole, ModelConfig
+
+client = LLMClient(ModelConfig(provider="openrouter",
+                                name="anthropic/claude-sonnet-4.6"))
+
+def llm_call(system: str, user: str) -> str:
+    result = client.generate(
+        system=system,
+        messages=[Message(role=MessageRole.USER, content=user)],
+        max_tokens=400,
+    )
+    return result.text.strip()
+
+# Pass into KeyboardController — flows into every ToolContext.
+keyboard = KeyboardController(tools=registry, llm_call=llm_call)
+```
 
 ### Ship a tool as an installable package
 
@@ -198,9 +227,10 @@ Two ship in `intervener.tools.reference`:
 
 - **`ContextTool`** — prints `task_metadata` + counters (turns / tool calls
   / assistant messages) + last assistant preview. Non-agentic.
-- **`AnalyzeTool`** — LLM-drafts a brief of the last N turns. Uses
-  Anthropic if `ANTHROPIC_API_KEY` + the `anthropic` package are present;
-  heuristic-fallback otherwise. Accepts `args` as an int (default 5).
+- **`AnalyzeTool`** — LLM-drafts a brief of the last N turns via the
+  caller-supplied `ToolContext.llm_call`. Falls back to a deterministic
+  heuristic when `llm_call is None` or the call raises. Accepts `args`
+  as an int (default 5).
 
 Both are registered under `intervener.tools` in this package's
 `pyproject.toml`, so `ToolRegistry.with_discovered()` returns them

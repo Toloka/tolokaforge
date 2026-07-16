@@ -256,9 +256,25 @@ tool that calls `Kill` on demand is a valid design. `ToolResult.submitted_interv
 bookkeeps the count so callers can surface "the tool submitted N
 interventions" to a human.
 
+**Decoupling constraint (critical):** the intervener package must not
+import from `tolokaforge.core.llm` or any other stack-specific LLM
+client. The conductor/runner side owns credentials, provider selection,
+preset resolution, and secret loading for anything that runs *inside*
+the trial. Tools that need an LLM receive one through
+`ToolContext.llm_call`: a `Callable[[str, str], str]` supplied by the
+caller. Callers wrap `tolokaforge.core.llm.LLMClient` (or any other
+provider) into a two-line adapter and pass it in.
+
+This means the same tool code runs identically whether the caller has
+credentials from `SecretManager`, from an environment variable it
+loaded itself, from an HTTP proxy, or from a test stub. Tools that get
+`llm_call=None` fall back to a non-LLM path (heuristic summary, "not
+available" message — the tool's choice).
+
 No new architectural seam: tools reuse the same `SessionBinding` façade
-introduced by the compositional layer. This addendum documents an
-opt-in surface on top of what's already there.
+introduced by the compositional layer, plus a narrow `LLMCallable`
+type alias. This addendum documents an opt-in surface on top of what's
+already there.
 
 ## Links
 

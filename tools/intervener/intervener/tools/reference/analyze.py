@@ -1,15 +1,17 @@
 """``AnalyzeTool`` — LLM-drafted brief of what's happening in the last N turns.
 
-Agentic. Uses Anthropic when both ``ANTHROPIC_API_KEY`` and the
-``anthropic`` package are present; otherwise falls back to a deterministic
-heuristic summary. Same detection pattern as
-:mod:`intervener.pipeline.drafter`; shared via
-:mod:`intervener.tools._llm`.
+The tool has **no knowledge of any specific LLM stack**. It uses whatever
+:data:`~intervener.tools.base.LLMCallable` the caller supplied via
+:attr:`ToolContext.llm_call`. That contract is ``(system, user) → text``
+— narrow enough that a caller can wrap tolokaforge's ``LLMClient``, an
+in-house HTTP client, or a test stub with a two-line adapter.
+
+Falls back to a deterministic heuristic when ``llm_call is None`` or the
+call raises. The heuristic path still produces a useful brief.
 """
 
 from __future__ import annotations
 
-from intervener.tools._llm import llm_available
 from intervener.tools.base import InteractiveTool, ToolContext, ToolResult
 from tolokaforge.session import (
     AssistantMessage,
@@ -22,7 +24,6 @@ from tolokaforge.session import (
 __all__ = ["AnalyzeTool"]
 
 _DEFAULT_TURNS = 5
-_DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 
 _SYSTEM = """You summarise a live agent trial in three or four short sentences \
 for an operator watching over it. Focus on:
@@ -36,9 +37,6 @@ class AnalyzeTool(InteractiveTool):
     name = "analyze"
     description = "LLM-drafted brief of the last N turns (default 5)"
 
-    def __init__(self, model: str = _DEFAULT_MODEL) -> None:
-        self._model = model
-
     def run(self, args: str, context: ToolContext) -> ToolResult:
         n = _parse_n(args, default=_DEFAULT_TURNS)
         window = _last_n_turns(context.recent_events, n)
@@ -49,12 +47,7 @@ class AnalyzeTool(InteractiveTool):
             )
 
         transcript = _format_window(window)
-        if llm_available():
-            summary = _call_llm(transcript, model=self._model)
-            source = "llm"
-        else:
-            summary = _heuristic(window)
-            source = "heuristic"
+        summary, source = self._draft(transcript, context)
 
         return ToolResult(
             output=summary,
@@ -64,6 +57,24 @@ class AnalyzeTool(InteractiveTool):
                 "source": source,
             },
         )
+
+    def _draft(self, transcript: str, context: ToolContext) -> tuple[str, str]:
+        if context.llm_call is None:
+            return _heuristic_when_no_llm(context.recent_events), "heuristic"
+        try:
+            text = context.llm_call(_SYSTEM, transcript)
+        except Exception as exc:
+            return (
+                _heuristic_when_llm_fails(context.recent_events, exc),
+                "heuristic",
+            )
+        text = (text or "").strip()
+        if not text:
+            return _heuristic_when_llm_fails(context.recent_events, "empty"), "heuristic"
+        return text, "llm"
+
+
+# ── parsing helpers ─────────────────────────────────────────────────────
 
 
 def _parse_n(args: str, *, default: int) -> int:
@@ -78,7 +89,6 @@ def _parse_n(args: str, *, default: int) -> int:
 
 
 def _last_n_turns(events: list[TrialEvent], n: int) -> list[TrialEvent]:
-    """Slice back through events, collecting the last N turn boundaries + their content."""
     if not events:
         return []
     turn_boundaries: list[int] = []
@@ -118,21 +128,21 @@ def _event_line(event: TrialEvent) -> str | None:
     return None
 
 
-def _call_llm(transcript: str, model: str) -> str:
-    from anthropic import Anthropic
+# ── heuristic fallback ──────────────────────────────────────────────────
 
-    client = Anthropic()
-    response = client.messages.create(
-        model=model,
-        max_tokens=400,
-        system=_SYSTEM,
-        messages=[{"role": "user", "content": transcript}],
+
+def _heuristic_when_no_llm(events: list[TrialEvent]) -> str:
+    return _heuristic_brief(events) + (
+        " (no LLM callable supplied — caller can pass one via ToolContext.llm_call "
+        "to get an LLM-drafted brief)"
     )
-    text = "".join(block.text for block in response.content if block.type == "text")
-    return text.strip() or "(LLM returned empty response)"
 
 
-def _heuristic(window: list[TrialEvent]) -> str:
+def _heuristic_when_llm_fails(events: list[TrialEvent], reason: object) -> str:
+    return _heuristic_brief(events) + (f" (LLM call failed: {reason} — falling back to heuristic)")
+
+
+def _heuristic_brief(window: list[TrialEvent]) -> str:
     tool_calls = [e for e in window if isinstance(e, ToolCallEmitted)]
     tool_names = [tc.tool_name for tc in tool_calls]
     unique_tools = sorted(set(tool_names))
@@ -155,7 +165,4 @@ def _heuristic(window: list[TrialEvent]) -> str:
         if len(short) > 160:
             short = short[:157] + "…"
         parts.append(f"Last assistant note: {short}")
-    parts.append(
-        "(set ANTHROPIC_API_KEY and install the anthropic package for an LLM-drafted brief)"
-    )
     return " ".join(parts)

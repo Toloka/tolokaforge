@@ -160,27 +160,59 @@ class TestContextTool:
 
 
 class TestAnalyzeTool:
-    def test_heuristic_path_detects_loop(self, monkeypatch) -> None:
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    def test_heuristic_when_llm_call_absent(self) -> None:
         tool = AnalyzeTool()
-        ctx = ToolContext(recent_events=_sample_events())
+        ctx = ToolContext(recent_events=_sample_events(), llm_call=None)
         result = tool.run("3", ctx)
         assert result.data is not None
         assert result.data["source"] == "heuristic"
         # Three identical db_query calls in a row → loop detection message
         assert "loop" in result.output.lower() or "repeatedly" in result.output.lower()
 
-    def test_parses_args_default(self, monkeypatch) -> None:
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    def test_llm_path_used_when_call_supplied(self) -> None:
+        calls: list[tuple[str, str]] = []
+
+        def stub(system: str, user: str) -> str:
+            calls.append((system, user))
+            return "LLM says: agent is stuck in db_query loop; suggest read_file."
+
         tool = AnalyzeTool()
-        ctx = ToolContext(recent_events=_sample_events())
-        # Default N (5) with only 3 turns → analyses all
+        ctx = ToolContext(recent_events=_sample_events(), llm_call=stub)
+        result = tool.run("3", ctx)
+        assert result.data is not None
+        assert result.data["source"] == "llm"
+        assert "LLM says" in result.output
+        assert len(calls) == 1
+        system, user = calls[0]
+        assert "summarise" in system.lower()
+        assert "turn" in user.lower()  # transcript formatting
+
+    def test_llm_call_failure_falls_back_to_heuristic(self) -> None:
+        def stub_that_raises(system: str, user: str) -> str:
+            raise RuntimeError("network down")
+
+        tool = AnalyzeTool()
+        ctx = ToolContext(recent_events=_sample_events(), llm_call=stub_that_raises)
+        result = tool.run("", ctx)
+        assert result.data is not None
+        assert result.data["source"] == "heuristic"
+        assert "network down" in result.output
+
+    def test_llm_empty_response_falls_back_to_heuristic(self) -> None:
+        tool = AnalyzeTool()
+        ctx = ToolContext(recent_events=_sample_events(), llm_call=lambda s, u: "   ")
+        result = tool.run("", ctx)
+        assert result.data is not None
+        assert result.data["source"] == "heuristic"
+
+    def test_parses_args_default(self) -> None:
+        tool = AnalyzeTool()
+        ctx = ToolContext(recent_events=_sample_events())  # no llm_call
         result = tool.run("", ctx)
         assert result.data is not None
         assert result.data["turns_analyzed"] == 3
 
-    def test_parses_args_bogus_falls_back_to_default(self, monkeypatch) -> None:
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    def test_parses_args_bogus_falls_back_to_default(self) -> None:
         tool = AnalyzeTool()
         ctx = ToolContext(recent_events=_sample_events())
         result = tool.run("not-a-number", ctx)

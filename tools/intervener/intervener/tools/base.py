@@ -1,14 +1,19 @@
 """Core types for the tool plug-in surface.
 
-Three types:
+Four types:
 
 * :class:`InteractiveTool` — the Protocol every tool implements.
 * :class:`ToolContext` — everything a tool might need, all optional.
 * :class:`ToolResult` — the tool's response.
+* :class:`LLMCallable` — narrow ``(system, user) → text`` contract for
+  agentic tools. Callers construct one however they like (wrapping
+  tolokaforge's ``LLMClient``, an in-house HTTP client, a mock). Tools
+  never import a specific LLM stack.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
@@ -17,7 +22,14 @@ from rich.console import Console
 from intervener.binding import SessionBinding
 from tolokaforge.session import TrialEvent
 
-__all__ = ["InteractiveTool", "ToolContext", "ToolResult"]
+__all__ = ["InteractiveTool", "LLMCallable", "ToolContext", "ToolResult"]
+
+
+# ``LLMCallable(system, user) -> text``. Minimal by design — the intervener
+# package must not depend on any specific LLM stack (see ADR-0019). Callers
+# that have credentials + a client wire one up and pass it in; agentic tools
+# call it if it's non-None and fall back to a heuristic otherwise.
+LLMCallable = Callable[[str, str], str]
 
 
 @dataclass
@@ -40,6 +52,13 @@ class ToolContext:
     * ``console`` — a Rich :class:`Console` for rendering. Tools that
       need to draw panels/tables use this. Tools that only produce text
       can leave ``ToolResult.output`` for the caller to print.
+    * ``llm_call`` — a :data:`LLMCallable` supplied by the caller for
+      agentic tools. ``None`` (default) means "no LLM available" and
+      agentic tools should fall back to a non-LLM path. The intervener
+      package NEVER constructs one itself — that keeps the peer decoupled
+      from tolokaforge's LLM stack (see ADR-0019). Callers wrap
+      ``tolokaforge.core.llm.LLMClient`` (or any other provider) into a
+      simple ``(system, user) → text`` function and pass it in.
     * ``extras`` — future-proofing bag. Consumer-specific state (an HTTP
       request object, a user identity, …) that doesn't fit anywhere else.
     """
@@ -48,6 +67,7 @@ class ToolContext:
     recent_events: list[TrialEvent] = field(default_factory=list)
     task_metadata: dict[str, Any] | None = None
     console: Console | None = None
+    llm_call: LLMCallable | None = None
     extras: dict[str, Any] = field(default_factory=dict)
 
 

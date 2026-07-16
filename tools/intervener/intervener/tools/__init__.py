@@ -18,7 +18,12 @@ Third-party tools ship as installable packages that register under
 :meth:`ToolRegistry.with_discovered`.
 """
 
-from intervener.tools.base import InteractiveTool, ToolContext, ToolResult
+from intervener.tools.base import (
+    InteractiveTool,
+    LLMCallable,
+    ToolContext,
+    ToolResult,
+)
 from intervener.tools.reference import AnalyzeTool, ContextTool
 from intervener.tools.registry import ToolRegistry
 
@@ -26,6 +31,7 @@ __all__ = [
     "AnalyzeTool",
     "ContextTool",
     "InteractiveTool",
+    "LLMCallable",
     "ToolContext",
     "ToolRegistry",
     "ToolResult",
