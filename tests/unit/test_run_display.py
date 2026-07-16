@@ -48,7 +48,7 @@ def test_live_run_display_satisfies_protocol() -> None:
     assert isinstance(LiveRunDisplay(), RunDisplayEvents)
 
 
-def test_protocol_declares_nine_lifecycle_methods() -> None:
+def test_protocol_declares_twelve_lifecycle_methods() -> None:
     expected = {
         "run_started",
         "trial_started",
@@ -59,6 +59,9 @@ def test_protocol_declares_nine_lifecycle_methods() -> None:
         "run_finished",
         "phase_changed",
         "trial_provisioned",
+        "llm_call_started",
+        "llm_call_finished",
+        "llm_retry_scheduled",
     }
     declared = {
         name
@@ -66,7 +69,7 @@ def test_protocol_declares_nine_lifecycle_methods() -> None:
         if not name.startswith("_") and callable(vars(RunDisplayEvents)[name])
     }
     # `RunDisplayEvents` inherits from Protocol which contributes some dunders;
-    # the visible surface must equal the nine lifecycle methods.
+    # the visible surface must equal the twelve lifecycle methods.
     assert declared == expected
 
 
@@ -241,6 +244,278 @@ def test_trial_progress_before_trial_started_lazily_creates_card() -> None:
     card = display._trials["ghost:0"]
     assert card.status == "running"
     assert card.prompt_tokens == 10
+
+
+# ---------------------------------------------------------------------------
+# In-flight LLM state transitions (#391)
+# ---------------------------------------------------------------------------
+
+
+def test_trial_started_stores_agent_and_user_model_on_card() -> None:
+    display = LiveRunDisplay()
+    display.trial_started(
+        trial_id="a:0",
+        task_id="a",
+        trial_index=0,
+        total_index=0,
+        agent_model="openrouter/anthropic/claude-sonnet-4-6",
+        user_model="openrouter/openai/gpt-5.4",
+    )
+    card = display._trials["a:0"]
+    assert card.agent_model == "openrouter/anthropic/claude-sonnet-4-6"
+    assert card.user_model == "openrouter/openai/gpt-5.4"
+
+
+def test_llm_call_started_sets_role_provider_and_start_ts_and_clears_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay()
+    display.trial_started(trial_id="a:0", task_id="a", trial_index=0, total_index=0)
+    # Seed retry_state so we can assert it clears.
+    display._trials["a:0"].llm_retry_state = (2, 8.0, "seeded")
+    display.llm_call_started(
+        trial_id="a:0",
+        role="agent",
+        provider="openrouter",
+        model="anthropic/claude-sonnet-4-6",
+        attempt=1,
+    )
+    card = display._trials["a:0"]
+    assert card.llm_role == "agent"
+    assert card.llm_provider_model == "openrouter/anthropic/claude-sonnet-4-6"
+    assert card.llm_call_start_ts is not None
+    assert card.llm_retry_state is None
+
+
+def test_llm_retry_scheduled_sets_tuple_state() -> None:
+    display = LiveRunDisplay()
+    display.trial_started(trial_id="a:0", task_id="a", trial_index=0, total_index=0)
+    display.llm_retry_scheduled(
+        trial_id="a:0",
+        role="agent",
+        provider="openrouter",
+        model="anthropic/claude-sonnet-4-6",
+        attempt=2,
+        next_attempt_in_s=8.0,
+        reason="APIConnectionError: read timeout",
+    )
+    assert display._trials["a:0"].llm_retry_state == (
+        2,
+        8.0,
+        "APIConnectionError: read timeout",
+    )
+
+
+def test_llm_call_finished_clears_all_four_llm_fields() -> None:
+    display = LiveRunDisplay()
+    display.trial_started(trial_id="a:0", task_id="a", trial_index=0, total_index=0)
+    display.llm_call_started(
+        trial_id="a:0",
+        role="agent",
+        provider="openrouter",
+        model="anthropic/claude-sonnet-4-6",
+        attempt=1,
+    )
+    display.llm_retry_scheduled(
+        trial_id="a:0",
+        role="agent",
+        provider="openrouter",
+        model="anthropic/claude-sonnet-4-6",
+        attempt=1,
+        next_attempt_in_s=4.0,
+        reason="timeout",
+    )
+    display.llm_call_finished(
+        trial_id="a:0",
+        role="agent",
+        provider="openrouter",
+        model="anthropic/claude-sonnet-4-6",
+        attempt=2,
+        duration_s=1.2,
+        error=None,
+    )
+    card = display._trials["a:0"]
+    assert card.llm_role is None
+    assert card.llm_provider_model is None
+    assert card.llm_call_start_ts is None
+    assert card.llm_retry_state is None
+
+
+def test_trial_completed_clears_stale_in_flight_llm_state() -> None:
+    display = LiveRunDisplay()
+    display.trial_started(trial_id="a:0", task_id="a", trial_index=0, total_index=0)
+    display.llm_call_started(
+        trial_id="a:0",
+        role="agent",
+        provider="openrouter",
+        model="anthropic/claude-sonnet-4-6",
+        attempt=1,
+    )
+    display.trial_completed(trial_id="a:0", binary_pass=True, score=1.0)
+    card = display._trials["a:0"]
+    assert card.llm_role is None
+    assert card.llm_provider_model is None
+    assert card.llm_call_start_ts is None
+    assert card.llm_retry_state is None
+
+
+def test_trial_failed_clears_stale_in_flight_llm_state() -> None:
+    display = LiveRunDisplay()
+    display.trial_started(trial_id="a:0", task_id="a", trial_index=0, total_index=0)
+    display.llm_retry_scheduled(
+        trial_id="a:0",
+        role="agent",
+        provider="openrouter",
+        model="anthropic/claude-sonnet-4-6",
+        attempt=3,
+        next_attempt_in_s=32.0,
+        reason="APIConnectionError",
+    )
+    display.trial_failed(trial_id="a:0", error="LLMApiTimeoutError", retryable=False)
+    card = display._trials["a:0"]
+    assert card.llm_role is None
+    assert card.llm_provider_model is None
+    assert card.llm_call_start_ts is None
+    assert card.llm_retry_state is None
+
+
+def test_llm_call_started_lazy_creates_card_when_trial_unknown() -> None:
+    """Handler must not raise when the seam fires before ``trial_started``."""
+    display = LiveRunDisplay()
+    display.llm_call_started(
+        trial_id="ghost:0",
+        role="agent",
+        provider="openrouter",
+        model="anthropic/claude-sonnet-4-6",
+        attempt=1,
+    )
+    assert "ghost:0" in display._trials
+    assert display._trials["ghost:0"].llm_role == "agent"
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        "llm_call_started",
+        "llm_call_finished",
+        "llm_retry_scheduled",
+    ],
+)
+def test_llm_call_handlers_are_kwarg_only(method: str) -> None:
+    display = LiveRunDisplay()
+    with pytest.raises(TypeError):
+        getattr(display, method)("a:0")  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# Focused pane rendering — waiting / retry line + model identity header
+# ---------------------------------------------------------------------------
+
+
+def _render_right_pane_text(display: LiveRunDisplay, *, width: int = 120) -> str:
+    from rich.console import Console
+
+    console = Console(width=width, force_terminal=True, color_system="truecolor", record=True)
+    console.print(display._render_right_pane())
+    return console.export_text()
+
+
+def test_focused_pane_renders_waiting_line_with_elapsed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After ``llm_call_started``, the focused pane shows ``⏳ waiting on
+    {role}: {provider}/{model} — {elapsed:.1f}s`` using the delta between
+    the render-time clock and ``llm_call_start_ts``."""
+    display = LiveRunDisplay()
+    display.trial_started(trial_id="a:0", task_id="a", trial_index=0, total_index=0)
+    # Two-value clock installed AFTER trial_started so its default-factory
+    # `_now()` for `last_update_ts` isn't affected. First value seeds
+    # `llm_call_start_ts`; second is the render-time `_now()` used to
+    # compute elapsed. Delta is 3.2s.
+    ts_start = datetime(2026, 7, 16, 12, 0, 0)
+    values = iter([ts_start, ts_start + timedelta(seconds=3, milliseconds=200)])
+    monkeypatch.setattr("tolokaforge.dx.live_panel._now", lambda: next(values))
+    display.llm_call_started(
+        trial_id="a:0",
+        role="agent",
+        provider="openrouter",
+        model="anthropic/claude-sonnet-4-6",
+        attempt=1,
+    )
+    body = _render_right_pane_text(display)
+    assert "waiting on agent: openrouter/anthropic/claude-sonnet-4-6" in body
+    assert "3.2s" in body
+
+
+def test_focused_pane_renders_retry_line_and_hides_waiting() -> None:
+    display = LiveRunDisplay()
+    display.trial_started(trial_id="a:0", task_id="a", trial_index=0, total_index=0)
+    display.llm_call_started(
+        trial_id="a:0",
+        role="agent",
+        provider="openrouter",
+        model="anthropic/claude-sonnet-4-6",
+        attempt=1,
+    )
+    display.llm_retry_scheduled(
+        trial_id="a:0",
+        role="agent",
+        provider="openrouter",
+        model="anthropic/claude-sonnet-4-6",
+        attempt=2,
+        next_attempt_in_s=8.0,
+        reason="APIConnectionError",
+    )
+    body = _render_right_pane_text(display)
+    assert "retry 2/5 after 8s (APIConnectionError)" in body
+    assert "waiting on" not in body
+
+
+def test_focused_pane_omits_call_line_after_finished() -> None:
+    display = LiveRunDisplay()
+    display.trial_started(trial_id="a:0", task_id="a", trial_index=0, total_index=0)
+    display.llm_call_started(
+        trial_id="a:0",
+        role="agent",
+        provider="openrouter",
+        model="anthropic/claude-sonnet-4-6",
+        attempt=1,
+    )
+    display.llm_call_finished(
+        trial_id="a:0",
+        role="agent",
+        provider="openrouter",
+        model="anthropic/claude-sonnet-4-6",
+        attempt=1,
+        duration_s=0.4,
+        error=None,
+    )
+    body = _render_right_pane_text(display)
+    assert "waiting on" not in body
+    assert "retry" not in body
+
+
+def test_focused_pane_renders_agent_model_header_when_set() -> None:
+    display = LiveRunDisplay()
+    display.trial_started(
+        trial_id="a:0",
+        task_id="a",
+        trial_index=0,
+        total_index=0,
+        agent_model="openrouter/anthropic/claude-sonnet-4-6",
+    )
+    body = _render_right_pane_text(display)
+    assert "model: openrouter/anthropic/claude-sonnet-4-6" in body
+
+
+def test_focused_pane_absent_model_header_when_agent_model_unset() -> None:
+    """Steady-state frames without ``agent_model`` render no header — this
+    is the invariant that keeps the pre-#391 goldens byte-identical."""
+    display = LiveRunDisplay()
+    display.trial_started(trial_id="a:0", task_id="a", trial_index=0, total_index=0)
+    body = _render_right_pane_text(display)
+    assert "model:" not in body
 
 
 # ---------------------------------------------------------------------------

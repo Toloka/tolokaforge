@@ -45,6 +45,7 @@ from tolokaforge.core.logging import _TOLOKAFORGE_ROOT_HANDLER_SENTINEL
 from tolokaforge.core.run_display_events import (
     _NULL_EVENTS,
     ContainerSnapshot,
+    LLMCallRole,
     RunDisplayEvents,
     ServiceSnapshot,
 )
@@ -208,7 +209,12 @@ class _TrialCard:
     ``trial_failed`` / ``judgment_scored``) bump :attr:`last_update_ts`.
     ``trial_progress`` mutates ``turn_count`` + ``last_event_kind`` +
     counters but leaves ``last_update_ts`` untouched, so focus does not
-    alternate on per-turn ticks.
+    alternate on per-turn ticks. The in-flight LLM fields (``llm_role`` /
+    ``llm_provider_model`` / ``llm_call_start_ts`` / ``llm_retry_state``)
+    are set by :meth:`LiveRunDisplay.llm_call_started` /
+    :meth:`llm_retry_scheduled` and cleared by
+    :meth:`llm_call_finished` (also cleared on terminal transitions), so
+    the focused pane reflects the wire state of the current attempt only.
     """
 
     trial_id: str
@@ -226,6 +232,76 @@ class _TrialCard:
     turn_count: int = 0
     last_event_kind: str = "started"
     containers: list[ContainerSnapshot] | None = None
+    agent_model: str | None = None
+    user_model: str | None = None
+    llm_role: LLMCallRole | None = None
+    llm_provider_model: str | None = None
+    llm_call_start_ts: datetime | None = None
+    llm_retry_state: tuple[int, float, str] | None = None
+
+
+@dataclass(frozen=True)
+class _FocusedPaneSnapshot:
+    """Under-lock snapshot of the focused card for :meth:`LiveRunDisplay._render_right_pane`.
+
+    Extracted so the render helper can drop the lock before drawing —
+    Rich renderable construction is not lock-critical and holding the
+    lock across it would serialise every 4-Hz refresh against event
+    handlers. Frozen because the render path never mutates the snapshot.
+    """
+
+    turn_count: int
+    prompt_tokens: int
+    completion_tokens: int
+    cost_usd: float
+    last_event_kind: str
+    status: str
+    error: str | None
+    task_id: str
+    trial_index: int
+    containers: list[ContainerSnapshot] | None
+    agent_model: str | None
+    llm_role: LLMCallRole | None
+    llm_provider_model: str | None
+    llm_call_start_ts: datetime | None
+    llm_retry_state: tuple[int, float, str] | None
+
+
+_RETRY_MAX_ATTEMPTS = 5
+"""Static coupling to the engine's ``stop_after_attempt(5)`` — the seam
+does not carry ``max_attempts``, so the ``/5`` label in the retry line
+mirrors the runner's fixed cap. Change together with the runner constant."""
+
+
+def _format_call_state_line(snapshot: _FocusedPaneSnapshot) -> str | None:
+    """Render the in-flight LLM line for the focused pane.
+
+    Precedence: retry state wins over waiting state (a scheduled retry is
+    strictly more informative — it names the failure reason and the
+    remaining backoff). Returns ``None`` when no call is in flight.
+    """
+    if snapshot.llm_retry_state is not None:
+        attempt, next_in_s, reason = snapshot.llm_retry_state
+        return f"↻ retry {attempt}/{_RETRY_MAX_ATTEMPTS} after {next_in_s:.0f}s ({reason})"
+    if snapshot.llm_role is not None and snapshot.llm_call_start_ts is not None:
+        elapsed = (_now() - snapshot.llm_call_start_ts).total_seconds()
+        provider_model = snapshot.llm_provider_model or ""
+        return f"⏳ waiting on {snapshot.llm_role}: {provider_model} — {elapsed:.1f}s"
+    return None
+
+
+def _clear_llm_call_state(card: _TrialCard) -> None:
+    """Drop the four in-flight LLM fields on ``card``.
+
+    Fired at every terminal edge — ``llm_call_finished`` (attempt returned
+    or raised), ``trial_completed`` / ``trial_failed`` (trial finished
+    without a matching finish event) — so the focused pane never shows a
+    stale ``⏳ waiting on …`` line after the call is over.
+    """
+    card.llm_role = None
+    card.llm_provider_model = None
+    card.llm_call_start_ts = None
+    card.llm_retry_state = None
 
 
 @dataclass
@@ -792,6 +868,8 @@ class LiveRunDisplay:
         task_id: str,
         trial_index: int,
         total_index: int,
+        agent_model: str | None = None,
+        user_model: str | None = None,
     ) -> None:
         with self._lock:
             card = _TrialCard(
@@ -802,6 +880,8 @@ class LiveRunDisplay:
                 status="running",
                 last_update_ts=_now(),
                 last_event_kind="started",
+                agent_model=agent_model,
+                user_model=user_model,
             )
             self._trials[trial_id] = card
             self._running += 1
@@ -851,6 +931,7 @@ class LiveRunDisplay:
             card.score = score
             card.last_event_kind = "completed"
             card.last_update_ts = _now()
+            _clear_llm_call_state(card)
             if was_running and self._running > 0:
                 self._running -= 1
             self._completed += 1
@@ -865,6 +946,7 @@ class LiveRunDisplay:
             card.error = error
             card.last_event_kind = "failed"
             card.last_update_ts = _now()
+            _clear_llm_call_state(card)
             if was_running and self._running > 0:
                 self._running -= 1
             self._failed += 1
@@ -880,6 +962,55 @@ class LiveRunDisplay:
                     _truncate_error(error, width=120),
                     hint,
                 )
+            self._refresh_live_locked()
+
+    def llm_call_started(
+        self,
+        *,
+        trial_id: str,
+        role: LLMCallRole,
+        provider: str,
+        model: str,
+        attempt: int,  # noqa: ARG002 — reserved for future retry-attempt labelling
+    ) -> None:
+        with self._lock:
+            card = self._trials.get(trial_id) or self._lazy_card_locked(trial_id)
+            card.llm_role = role
+            card.llm_provider_model = f"{provider}/{model}"
+            card.llm_call_start_ts = _now()
+            card.llm_retry_state = None
+            self._refresh_live_locked()
+
+    def llm_call_finished(
+        self,
+        *,
+        trial_id: str,
+        role: LLMCallRole,  # noqa: ARG002 — carried on the seam; the card holds the last-started role
+        provider: str,  # noqa: ARG002
+        model: str,  # noqa: ARG002
+        attempt: int,  # noqa: ARG002
+        duration_s: float,  # noqa: ARG002
+        error: str | None,  # noqa: ARG002 — terminal failures surface via ``trial_failed``
+    ) -> None:
+        with self._lock:
+            card = self._trials.get(trial_id) or self._lazy_card_locked(trial_id)
+            _clear_llm_call_state(card)
+            self._refresh_live_locked()
+
+    def llm_retry_scheduled(
+        self,
+        *,
+        trial_id: str,
+        role: LLMCallRole,  # noqa: ARG002
+        provider: str,  # noqa: ARG002
+        model: str,  # noqa: ARG002
+        attempt: int,
+        next_attempt_in_s: float,
+        reason: str,
+    ) -> None:
+        with self._lock:
+            card = self._trials.get(trial_id) or self._lazy_card_locked(trial_id)
+            card.llm_retry_state = (attempt, next_attempt_in_s, reason)
             self._refresh_live_locked()
 
     def judgment_scored(self, *, trial_id: str, score: float, binary_pass: bool) -> None:
@@ -1140,32 +1271,23 @@ class LiveRunDisplay:
         with self._lock:
             trial_id = self._focused_trial_id
             card = self._trials.get(trial_id) if trial_id is not None else None
-            snapshot: (
-                tuple[
-                    int,  # turn_count
-                    int,  # prompt_tokens
-                    int,  # completion_tokens
-                    float,  # cost_usd
-                    str,  # last_event_kind
-                    str,  # status
-                    str | None,  # error
-                    str,  # task_id
-                    int,  # trial_index
-                    list[ContainerSnapshot] | None,  # containers
-                ]
-                | None
-            ) = (
-                (
-                    card.turn_count,
-                    card.prompt_tokens,
-                    card.completion_tokens,
-                    card.cost_usd,
-                    card.last_event_kind,
-                    card.status,
-                    card.error,
-                    card.task_id,
-                    card.trial_index,
-                    list(card.containers) if card.containers is not None else None,
+            snapshot: _FocusedPaneSnapshot | None = (
+                _FocusedPaneSnapshot(
+                    turn_count=card.turn_count,
+                    prompt_tokens=card.prompt_tokens,
+                    completion_tokens=card.completion_tokens,
+                    cost_usd=card.cost_usd,
+                    last_event_kind=card.last_event_kind,
+                    status=card.status,
+                    error=card.error,
+                    task_id=card.task_id,
+                    trial_index=card.trial_index,
+                    containers=(list(card.containers) if card.containers is not None else None),
+                    agent_model=card.agent_model,
+                    llm_role=card.llm_role,
+                    llm_provider_model=card.llm_provider_model,
+                    llm_call_start_ts=card.llm_call_start_ts,
+                    llm_retry_state=card.llm_retry_state,
                 )
                 if card is not None
                 else None
@@ -1173,43 +1295,39 @@ class LiveRunDisplay:
         if snapshot is None:
             body = Text("(waiting for first trial)")
             return Panel(body, title="Focused trial")
-        (
-            turn,
-            prompt,
-            completion,
-            cost,
-            last_kind,
-            status,
-            error,
-            task_id,
-            trial_index,
-            containers,
-        ) = snapshot
-        if status == "failed" and error:
-            hint = _derive_hint(error)
+        if snapshot.status == "failed" and snapshot.error:
+            hint = _derive_hint(snapshot.error)
             parts = [
-                f"[error]FAILED[/error]  {task_id} · {trial_index}",
+                f"[error]FAILED[/error]  {snapshot.task_id} · {snapshot.trial_index}",
                 "",
-                _truncate_error(error, width=200),
+                _truncate_error(snapshot.error, width=200),
             ]
             if hint:
                 parts.append("")
                 parts.append(f"[warn]Hint:[/warn] {hint}")
             body: Text | Table = Text.from_markup("\n".join(parts))
             return Panel(body, title="Focused trial")
-        summary = Text(
-            f"turn {turn} · "
-            f"in {_format_tokens(prompt)} / out {_format_tokens(completion)} tok · "
-            f"{_format_cost(cost)} · "
-            f"last: {last_kind}"
+        summary_lines: list[str] = []
+        if snapshot.agent_model is not None:
+            summary_lines.append(f"model: {snapshot.agent_model}")
+        summary_lines.append(
+            f"turn {snapshot.turn_count} · "
+            f"in {_format_tokens(snapshot.prompt_tokens)} / "
+            f"out {_format_tokens(snapshot.completion_tokens)} tok · "
+            f"{_format_cost(snapshot.cost_usd)} · "
+            f"last: {snapshot.last_event_kind}"
         )
-        if not containers:
+        call_line = _format_call_state_line(snapshot)
+        if call_line is not None:
+            summary_lines.append(call_line)
+        summary = Text("\n".join(summary_lines))
+        if not snapshot.containers:
             return Panel(summary, title="Focused trial")
         # Focused trial has a compose stack: append a compact
         # "Infrastructure" sub-panel under the summary. Rich Group renders
         # both children in sequence within the outer Panel.
         infra_panel = Panel(
-            _render_containers_table(containers),
+            _render_containers_table(snapshot.containers),
             title="Infrastructure",
             border_style="muted",
         )

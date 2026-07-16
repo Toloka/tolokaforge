@@ -379,6 +379,15 @@ class TextualRunApp(App[None]):
             payload["services"] = list(services)
         self._safe_dispatch("phase_changed", payload)
 
+    def llm_call_started(self, **_: object) -> None:
+        """No-op — TUI does not render in-flight LLM state yet."""
+
+    def llm_call_finished(self, **_: object) -> None:
+        """No-op — TUI does not render in-flight LLM state yet."""
+
+    def llm_retry_scheduled(self, **_: object) -> None:
+        """No-op — TUI does not render in-flight LLM state yet."""
+
     # ------------------------------------------------------------------
     # Dispatch — route worker-thread events onto the Textual loop
     # ------------------------------------------------------------------
