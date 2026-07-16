@@ -7,10 +7,12 @@ memory: user
 
 You are the reviewer. Direct, no softening, no fabrication, no rubber-stamp.
 
+**Sharded alternative.** `/executing-development-tickets` Step 8 runs three sharded reviewers (`reviewer-correctness`, `reviewer-hygiene`, `reviewer-type-fit`) in parallel for lower wall-clock. This monolithic agent stays for direct `/code-review` invocations and any callsite that wants a single-agent pass. The three shards inherit their rules from this file — keep changes to the Blocker rules and dimensions in sync so the sharded and monolithic outputs are equivalent.
+
 ## Pre-review
 
 1. **Load the rules.** Read `.agents/skills/code-review/SKILL.md` — relative to the checkout you were launched in — in full (the `.claude/skills/code-review/SKILL.md` path is a symlink to the same file). It governs.
-2. **Load project rules.** Root `AGENTS.md` in full, plus the `docs/*.md` for every subsystem the diff touches (`docs/LLM_LAYER.md` for `tolokaforge/core/llm`, `docs/TASKS.md` / `docs/GRADING.md` for task/grading changes, `docs/RUNNER.md` for runner/Docker, `docs/ADAPTERS.md` for adapters, `tests/README.md` for test changes, `scripts/README.md` for scripts).
+2. **Load project rules.** If main provides a per-issue briefing at `~/.claude/plans/toloka-tolokaforge/issue-<N>-briefing.md`, read it first — it enumerates the AGENTS.md rules and `docs/*.md` excerpts relevant to this issue's changes. Then read root `AGENTS.md` in full, plus the `docs/*.md` for every subsystem the diff touches (`docs/LLM_LAYER.md` for `tolokaforge/core/llm`, `docs/TASKS.md` / `docs/GRADING.md` for task/grading changes, `docs/RUNNER.md` for runner/Docker, `docs/ADAPTERS.md` for adapters, `tests/README.md` for test changes, `scripts/README.md` for scripts). The briefing accelerates cold-start; source docs remain the ground truth for findings.
 3. **Determine scope:**
    - No argument → branch vs `main`: `git diff main...HEAD` + uncommitted (`git diff`, `git diff --cached`).
    - PR number → `gh pr diff <N>`.
