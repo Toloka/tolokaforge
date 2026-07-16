@@ -2,7 +2,7 @@
 env-var wiring.
 
 Every test invokes ``tolokaforge`` under a stub :class:`Orchestrator` (from
-:mod:`tests.unit.test_cli_stdout_contract`) so nothing hits real LLM /
+:mod:`tests.unit.dx.test_cli_stdout_contract`) so nothing hits real LLM /
 Docker surfaces. The assertions cover:
 
 - explicit ``--display`` flag surface (five modes + invalid values → exit 2),

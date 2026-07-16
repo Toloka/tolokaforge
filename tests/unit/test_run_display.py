@@ -247,7 +247,7 @@ def test_trial_progress_before_trial_started_lazily_creates_card() -> None:
 
 
 # ---------------------------------------------------------------------------
-# In-flight LLM state transitions (#391)
+# In-flight LLM state transitions
 # ---------------------------------------------------------------------------
 
 
@@ -510,8 +510,9 @@ def test_focused_pane_renders_agent_model_header_when_set() -> None:
 
 
 def test_focused_pane_absent_model_header_when_agent_model_unset() -> None:
-    """Steady-state frames without ``agent_model`` render no header — this
-    is the invariant that keeps the pre-#391 goldens byte-identical."""
+    """When ``trial_started`` is called without ``agent_model``, the focused
+    pane omits the model header line — the invariant that keeps steady-state
+    goldens byte-identical."""
     display = LiveRunDisplay()
     display.trial_started(trial_id="a:0", task_id="a", trial_index=0, total_index=0)
     body = _render_right_pane_text(display)

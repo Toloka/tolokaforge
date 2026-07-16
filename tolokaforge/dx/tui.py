@@ -933,29 +933,31 @@ class TextualRunApp(App[None]):
         parts.append(
             f"[b]Trials:[/b] {completed}/{total_trials or '?'} completed · {failed} failed"
         )
-        if live_calls:
+        visible, total = live_calls
+        if visible:
             parts.append("")
             parts.append("[b]Live calls[/b]")
-            visible = live_calls[:_LIVE_CALLS_MAX_ROWS]
             for line in visible:
                 parts.append(line)
-            hidden = len(live_calls) - len(visible)
+            hidden = total - len(visible)
             if hidden > 0:
                 parts.append(f"[dim]…and {hidden} more[/dim]")
         if not parts:
             parts.append("(waiting for run)")
         body.update(Text.from_markup("\n".join(parts)))
 
-    def _snapshot_live_calls_locked(self) -> list[str]:
+    def _snapshot_live_calls_locked(self) -> tuple[list[str], int]:
         """Under-lock render of the Overview "Live calls" list.
 
         One line per running trial whose most recent LLM event set
         ``llm_role``. Preserves ``_trial_order`` — older starts render
         first so a caller scanning top-to-bottom sees the longest-waiting
-        attempts. Returns the full list uncapped; caller applies the row
-        cap.
+        attempts. Returns ``(visible, total)`` where ``visible`` is capped
+        at ``_LIVE_CALLS_MAX_ROWS`` and ``total`` counts every in-flight
+        call (used to compute the "…and N more" tail).
         """
         lines: list[str] = []
+        total = 0
         for trial_id in self._trial_order:
             card = self._trials.get(trial_id)
             if card is None or card.llm_role is None:
@@ -968,8 +970,10 @@ class TextualRunApp(App[None]):
             )
             if call_line is None:
                 continue
-            lines.append(f"{card.task_id} · {card.trial_index}: {call_line}")
-        return lines
+            total += 1
+            if len(lines) < _LIVE_CALLS_MAX_ROWS:
+                lines.append(f"{card.task_id} · {card.trial_index}: {call_line}")
+        return lines, total
 
     def _refresh_services_tab(self) -> None:
         with self._lock:
