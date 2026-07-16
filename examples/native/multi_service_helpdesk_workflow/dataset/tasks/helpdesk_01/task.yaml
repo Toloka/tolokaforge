@@ -1,0 +1,69 @@
+task_id: "helpdesk_01"
+name: "Resolve an After-Hours Cold-Chain Delivery"
+category: "multi_service"
+description: "A temperature-sensitive shipment will arrive after the receiving dock's staffed window closes. The agent must reconcile data across four business services plus an in-container policy corpus, derive the one policy-valid resolution, record it as a CRM case, and annotate the delivery."
+max_turns: 18
+initial_user_message: |
+  Hi — I'm chasing shipment DLV-4021 for us at Northwind. It's a
+  temperature-sensitive reagent kit and it got delayed, so now it's landing
+  around 20:00, which is after our receiving dock shuts for the day. I really
+  need to make sure the right thing happens with it so the reagent stays good
+  and someone qualified actually receives it.
+
+  Can you work out the correct way to handle this and get it recorded? The
+  systems you'll need are the delivery tracker at http://delivery-tracker:8000,
+  the product catalog at http://product-catalog:8000, our site info at
+  http://client-locations:8000, the policy search at http://policy-search:8000,
+  and the CRM at http://crm:8000. I don't know our after-hours policy myself —
+  I'm counting on you to figure out what we're actually allowed to do.
+adapter_type: "native"
+environment_manifest:
+  compose_file: "../../../shared/environment.compose.yaml"
+  runner_service: "runner"
+  services:
+    runner: {isolation: "shared"}
+    db-service: {isolation: "shared"}
+    delivery-tracker: {isolation: "shared"}
+    product-catalog: {isolation: "shared"}
+    client-locations: {isolation: "shared"}
+    crm: {isolation: "shared"}
+    policy-search: {isolation: "shared"}
+    app-db: {isolation: "ephemeral"}
+initial_state:
+  filesystem: {}
+tools:
+  agent:
+    enabled: ["http_request", "write_file"]
+    http_request:
+      allowed_hosts:
+        - "delivery-tracker:8000"
+        - "product-catalog:8000"
+        - "client-locations:8000"
+        - "crm:8000"
+        - "policy-search:8000"
+  user:
+    enabled: []
+user_simulator:
+  mode: llm
+  persona: "logistics coordinator"
+  backstory: |
+    You are Ana Reyes, operations coordinator at Northwind Biologics. You are
+    chasing a delayed temperature-sensitive shipment (DLV-4021) that will now
+    arrive around 20:00 — after your receiving dock closes at 17:00. You care
+    that the reagent stays viable and that someone qualified receives it. You do
+    NOT know the company's after-hours cold-chain policy and you rely on the
+    agent to work out the right resolution.
+    Rules:
+    - Open naturally, in your own words, with the problem — not a list of fields.
+    - Answer clarifying questions plainly and truthfully from what you know.
+    - If asked, confirm your site has no on-site cold storage and no receiving
+      specialist on the late shift — but do NOT volunteer this unprompted.
+    - Never name a resolution path or quote policy; that is the agent's job.
+    - Say ###STOP### once the agent confirms a resolution is recorded.
+policies:
+  guidance:
+    - "Reach each service by its base URL with the `http_request` tool: the delivery tracker, product catalog, and site info are read with GET; inspect DLV-4021 (delivery_id 4021), its product, and the Northwind site."
+    - "Search the policy corpus by POSTing your query to `http://policy-search:8000/search` with a JSON body `{\"q\": \"...\"}` — do not guess the after-hours rule, read it."
+    - "Derive the resolution path from the policy applied to the site's capabilities; do not assume it. Only one path is permitted for this site."
+    - "Record the outcome as a CRM case (`POST http://crm:8000/cases`) naming the customer, delivery, chosen path, and a short justification, then annotate the delivery (`PATCH http://delivery-tracker:8000/deliveries/4021`) with the same resolution path."
+grading: "grading.yaml"

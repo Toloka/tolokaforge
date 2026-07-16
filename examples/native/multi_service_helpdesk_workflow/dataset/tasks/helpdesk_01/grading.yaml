@@ -1,0 +1,49 @@
+# Three-way weighted grading for helpdesk_01.
+#
+#   state_checks.db_probes (0.6) — the substrate oracle. Reads postgres directly
+#     through the read-only `grader` role and encodes *policy correctness*: the
+#     CRM case and the delivery annotation must both carry `reschedule`, the one
+#     path the after-hours policy permits for a site with neither cold storage
+#     nor a specialist. This component alone is discriminating, so a wrong-path
+#     run fails even if the llm_judge errors and is dropped from the combine.
+#   transcript_rules      (0.15) — the agent searched policy, created the case,
+#     and annotated the delivery over http_request, within the turn budget.
+#   llm_judge             (0.25) — the CRM summary names the customer + delivery
+#     and justifies the reschedule from the site's lack of cold storage/specialist.
+combine:
+  method: weighted
+  weights: { state_checks: 0.6, transcript_rules: 0.15, llm_judge: 0.25 }
+  pass_threshold: 0.6
+state_checks:
+  db_probes:
+    - name: crm_case_policy_correct
+      dsn: "postgresql://grader:grader_pw@app-db:5432/helpdesk"
+      query: "SELECT customer_id, resolution_path FROM crm_cases WHERE delivery_id = 4021"
+      expect:
+        - { path: "$.rows[0].resolution_path", equals: "reschedule", description: "CRM case records the policy-correct path" }
+        - { path: "$.rows[0].customer_id", equals: "NORTHWIND", description: "correct customer linkage" }
+        - { path: "$.row_count", equals: 1, description: "exactly one CRM case for the delivery" }
+    - name: delivery_annotated
+      dsn: "postgresql://grader:grader_pw@app-db:5432/helpdesk"
+      query: "SELECT resolution_path FROM deliveries WHERE delivery_id = 4021"
+      expect:
+        - { path: "$.rows[0].resolution_path", equals: "reschedule", description: "delivery annotated with the handoff decision" }
+transcript_rules:
+  max_turns: 18
+  required_actions:
+    - { action_id: search_policy,  requestor: assistant, name: http_request, arguments: { url: "http://policy-search:8000/search", method: "POST" },  compare_args: [url, method] }
+    - { action_id: create_case,    requestor: assistant, name: http_request, arguments: { url: "http://crm:8000/cases", method: "POST" },              compare_args: [url, method] }
+    - { action_id: annotate_deliv, requestor: assistant, name: http_request, arguments: { url: "http://delivery-tracker:8000/deliveries/4021", method: "PATCH" }, compare_args: [url, method] }
+llm_judge:
+  rubric:
+    reference: |
+      The correct resolution is reschedule: the shipment is temperature-sensitive
+      and arrives after the site's staffed window, and the site has neither on-site
+      temperature-controlled storage nor a certified specialist, so policy forbids a
+      temp-controlled hold and a specialist handoff. A good CRM summary names the
+      customer and delivery, states the reschedule decision, and justifies it from the
+      site's lack of cold storage/specialist per policy.
+    criteria:
+      - { id: names_customer_delivery, description: "Names the customer (Northwind) and delivery (DLV-4021 / 4021).", kind: binary, required: true, weight: 1.0 }
+      - { id: policy_reasoning, description: "Justifies the chosen path from the site's lack of on-site cold storage and specialist per the after-hours policy.", kind: graded, weight: 1.0 }
+      - { id: tone_completeness, description: "Reads as a complete, professional, customer-facing case note, not a raw API dump.", kind: graded, weight: 0.5 }
