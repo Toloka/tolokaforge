@@ -8,6 +8,7 @@ from tolokaforge.core.llm import GenerationResult, LLMClient, UserSimulator
 from tolokaforge.core.logging import StructuredLogger, init_trial_logger
 from tolokaforge.core.loop import (
     LoopConfig,
+    LoopObserver,
     MetricsSink,
     TerminationDecision,
     ToolCallingLoop,
@@ -51,6 +52,7 @@ class TrialRunner:
         request_limiter: GlobalRateLimiter | None = None,
         verbose: bool = False,
         strict: bool = False,
+        loop_observer: LoopObserver | None = None,
     ):
         self.task_id = task_id
         self.trial_index = trial_index
@@ -66,6 +68,7 @@ class TrialRunner:
         self.request_limiter = request_limiter
         self.verbose = verbose
         self.strict = strict
+        self.loop_observer = loop_observer
 
         self.messages: list[Message] = []
         self.metrics = Metrics()
@@ -185,21 +188,26 @@ class TrialRunner:
         try:
             self._seed_first_user_message(initial_user_message)
 
-            outcome = ToolCallingLoop(
-                llm_client=self.agent_client,
-                tool_executor=self.tool_executor,
-                tool_schemas=self.tool_schemas,
-                config=LoopConfig(
+            loop_kwargs: dict[str, Any] = {
+                "llm_client": self.agent_client,
+                "tool_executor": self.tool_executor,
+                "tool_schemas": self.tool_schemas,
+                "config": LoopConfig(
                     max_turns=self.max_turns,
                     episode_timeout_s=self.episode_timeout_s,
                 ),
-                metrics=_AgentMetricsSink(self.metrics),
-                should_terminate=self._agent_termination,
-                user_turn=self._agent_user_turn,
-                request_limiter=self.request_limiter,
-                normalize_tool_arguments=self._normalize_tool_arguments,
-                logger=self.logger,
-            ).run(system_prompt, self.messages, self.start_time)
+                "metrics": _AgentMetricsSink(self.metrics),
+                "should_terminate": self._agent_termination,
+                "user_turn": self._agent_user_turn,
+                "request_limiter": self.request_limiter,
+                "normalize_tool_arguments": self._normalize_tool_arguments,
+                "logger": self.logger,
+            }
+            if self.loop_observer is not None:
+                loop_kwargs["observer"] = self.loop_observer
+            outcome = ToolCallingLoop(**loop_kwargs).run(
+                system_prompt, self.messages, self.start_time
+            )
 
             status = outcome.status
             termination_reason = outcome.termination_reason

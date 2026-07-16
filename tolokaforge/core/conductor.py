@@ -37,6 +37,7 @@ from tolokaforge.core.llm.presets import (
     resolve_effective_preset,
     resolve_policy_names,
 )
+from tolokaforge.core.loop import LoopObserver
 from tolokaforge.core.models import (
     Grade,
     GradeComponents,
@@ -94,6 +95,22 @@ class ConductorContext:
     trial_grader: TrialGrader
     output_dir: Path
     request_limiter: GlobalRateLimiter | None
+    observer_provider: Callable[[str], LoopObserver | None] | None = None
+    """Optional per-trial :class:`LoopObserver` factory.
+
+    Called with ``spec.trial_id`` at the top of each trial to produce an
+    optional observer that receives loop seams (turn start / assistant
+    message / tool call / tool result / terminal). ``None`` (or a provider
+    returning ``None``) keeps the trial in **sealed** batch mode — no
+    observer attached, existing behaviour unchanged.
+
+    The observer type is deliberately generic — the sealed conductor knows
+    nothing about sessions. Session-based observation (the Open Agent Loop
+    gate) is one specific caller-side wiring: pass a provider that returns
+    a :class:`~tolokaforge.session.SessionLoopObserver`. Other observers
+    (e.g. a metrics tap, a debug hook, a rule-based safety monitor) plug
+    in the same way without further changes to the conductor.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -288,6 +305,7 @@ class InProcessConductor:
         trial_grader: TrialGrader,
         output_dir: Path,
         request_limiter: GlobalRateLimiter | None = None,
+        observer_provider: Callable[[str], LoopObserver | None] | None = None,
     ) -> None:
         self.adapter = adapter
         self._artifact_writer = artifact_writer
@@ -300,6 +318,21 @@ class InProcessConductor:
         self.trial_grader = trial_grader
         self.output_dir = output_dir
         self.request_limiter = request_limiter
+        self.observer_provider = observer_provider
+
+    def _maybe_build_loop_observer(self, trial_id: str) -> LoopObserver | None:
+        """Consult the ``observer_provider`` for this trial's loop observer.
+
+        Returns ``None`` when no provider is set or the provider returns
+        ``None`` for this trial — the sealed default.
+
+        Kept as a single indirection so callers cannot accidentally construct
+        an observer without the ``None`` guard, and so subclasses that want
+        a different provider-lookup strategy have one seam to override.
+        """
+        if self.observer_provider is None:
+            return None
+        return self.observer_provider(trial_id)
 
     def run(
         self,
@@ -573,6 +606,8 @@ class InProcessConductor:
             turn_timeout_s = run_turn_s
             episode_timeout_s = run_episode_s
 
+        loop_observer = self._maybe_build_loop_observer(spec.trial_id)
+
         runner = TrialRunner(
             task_id=task.task_id,
             trial_index=setup.trial_idx,
@@ -588,6 +623,7 @@ class InProcessConductor:
             request_limiter=self.request_limiter,
             verbose=self.verbose,
             strict=self.strict,
+            loop_observer=loop_observer,
         )
 
         # Use initial_user_message if provided (e.g., tool-use style tasks).
