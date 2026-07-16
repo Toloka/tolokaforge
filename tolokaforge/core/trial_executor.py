@@ -78,7 +78,8 @@ class ProvisioningTrialExecutor:
     ``conductor`` for the trial body, and ``logger`` for per-branch
     structured observability at the substrate seam.
 
-    On a failed trial body it captures per-service logs via
+    On a diagnostics-worthy trial — one that fails execution or runs to
+    completion but grades red — it captures per-service logs via
     ``runtime_backend.capture_service_logs`` before teardown, then records the
     captured byte counts on the trial's ``metrics.yaml`` (path derived from
     ``log_capture.output_root``; ``None`` disables the amendment).
@@ -151,18 +152,25 @@ class ProvisioningTrialExecutor:
     def _capture_service_logs(
         self, handle: EnvHandle, result: TrialResult, task_id: str, trial_idx: int
     ) -> None:
-        """Capture per-service logs for a failed trial body, before teardown.
+        """Capture per-service logs for a diagnostics-worthy trial, before teardown.
 
-        Failure here means execution failure (``ERROR`` / ``TIMEOUT``), not a
-        clean run that merely failed grading — the backend gates the actual
-        write on this ``failed`` flag plus its on-success policy. When the
-        backend returns a non-empty byte map, emit the aggregate summary line
-        and amend the trial's ``metrics.yaml`` with ``captured_service_logs``.
-        Best-effort diagnostics captured *because* a failure is already
-        decided: never changes control flow.
+        A trial is capture-worthy when it either fails execution
+        (``ERROR`` / ``TIMEOUT``) or runs to completion but grades red
+        (``COMPLETED`` with ``grade.binary_pass is False``) — the case where a
+        task author needs service output to diagnose why the agent's mutations
+        did not land. A completed trial that passes, or one with no grade, is
+        not capture-worthy. The backend gates the actual write on this verdict
+        plus its on-success policy. When the backend returns a non-empty byte
+        map, emit the aggregate summary line and amend the trial's
+        ``metrics.yaml`` with ``captured_service_logs``. Best-effort
+        diagnostics captured *because* the outcome is already decided: never
+        changes control flow.
         """
-        failed = result.trajectory.status in (TrialStatus.ERROR, TrialStatus.TIMEOUT)
-        byte_map = self.runtime_backend.capture_service_logs(handle, failed=failed)
+        trajectory = result.trajectory
+        capture_worthy = trajectory.status in (TrialStatus.ERROR, TrialStatus.TIMEOUT) or (
+            trajectory.grade is not None and trajectory.grade.binary_pass is False
+        )
+        byte_map = self.runtime_backend.capture_service_logs(handle, capture_worthy=capture_worthy)
         if not byte_map:
             return
         self.logger.info(

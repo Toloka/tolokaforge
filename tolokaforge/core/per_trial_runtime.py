@@ -327,11 +327,11 @@ class PerTrialRuntimeBackend:
         shutdown_compose(handle.compose)
         shutil.rmtree(handle.temp_dir, ignore_errors=True)
 
-    def capture_service_logs(self, handle: EnvHandle, *, failed: bool) -> dict[str, int]:
-        """Capture per-service logs for the trial-body-failure path.
+    def capture_service_logs(self, handle: EnvHandle, *, capture_worthy: bool) -> dict[str, int]:
+        """Capture per-service logs for the trial-body diagnostics path.
 
-        No-op ``{}`` when capture is disabled, the gate (``failed`` or the
-        on-success policy) is not met, or ``handle`` is foreign. Otherwise
+        No-op ``{}`` when capture is disabled, the gate (``capture_worthy`` or
+        the on-success policy) is not met, or ``handle`` is foreign. Otherwise
         writes ``docker compose logs`` output for the handle's snapshot
         services into the trial ``services/`` dir and returns the byte map.
         Writes only the ``.log`` files — the durable ``metrics.yaml``
@@ -339,7 +339,7 @@ class PerTrialRuntimeBackend:
         """
         if self.log_capture is None:
             return {}
-        if not (failed or self.log_capture.on_success):
+        if not (capture_worthy or self.log_capture.on_success):
             return {}
         if not isinstance(handle, _LocalEnvHandle):
             return {}
