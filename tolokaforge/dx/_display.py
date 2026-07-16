@@ -212,13 +212,21 @@ def select_display_mode(
     """Resolve the effective display mode.
 
     Precedence (highest first): ``explicit`` > ``env["TOLOKAFORGE_DISPLAY"]``
-    > ``env["CI"]`` truthy → ``PLAIN`` > ``stream.isatty()`` → ``RICH`` > ``PLAIN``.
+    > ``env["CI"]`` truthy → ``PLAIN`` > ``stream.isatty()`` → ``FULL`` > ``PLAIN``.
+
+    On a TTY we default to ``FULL`` (the Textual TUI). The CLI callback
+    at :func:`tolokaforge.dx.cli.main._resolve_display_mode` transparently
+    falls back to :attr:`DisplayMode.RICH` with a WARNING when the
+    ``textual`` package is not installed — so headless installs
+    (``pip install tolokaforge`` without ``[dx]``) still land on ``PLAIN``
+    (they never reach the TTY branch anyway) and dev installs that skip
+    ``[dx]`` degrade gracefully. Operators who prefer the Rich Live panel
+    (keeps the run visible in terminal scrollback after exit) can force
+    it with ``--display=rich`` or ``TOLOKAFORGE_DISPLAY=rich``.
 
     ``env`` defaults to :data:`os.environ`; ``stream`` defaults to
     :data:`sys.stderr`. Unrecognised values in ``explicit`` or the env var
-    raise :class:`ValueError` naming the accepted set. Does NOT apply the
-    Textual fallback — that lives at the CLI callback so the fallback log
-    line can render under the active ``--log-format``.
+    raise :class:`ValueError` naming the accepted set.
     """
     if explicit is not None:
         if isinstance(explicit, DisplayMode):
@@ -236,7 +244,7 @@ def select_display_mode(
 
     target_stream = stream if stream is not None else sys.stderr
     if target_stream.isatty():
-        return DisplayMode.RICH
+        return DisplayMode.FULL
     return DisplayMode.PLAIN
 
 

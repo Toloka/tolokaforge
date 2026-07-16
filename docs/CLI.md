@@ -197,10 +197,15 @@ Event handlers on `TextualRunApp` are called from the orchestrator's worker thre
 1. Explicit `--display=…` flag.
 2. `TOLOKAFORGE_DISPLAY=…` env var.
 3. `CI` env var truthy → `plain`. Non-empty and not in `{"0", "false", "False", "FALSE", "no", "off", ""}` counts as truthy.
-4. `sys.stderr.isatty()` truthy → `rich`.
+4. `sys.stderr.isatty()` truthy → `full` (Textual TUI). When `textual` is not installed (headless install without `[dx]` extras), the CLI callback logs a WARNING and drops to `rich`.
 5. Otherwise → `plain`.
 
-Explicit flag beats env var; env var beats `CI`; `CI` beats isatty. An operator can force `rich` on a piped shell by exporting `TOLOKAFORGE_DISPLAY=rich`, and can force `plain` from a wrapper script by exporting `TOLOKAFORGE_DISPLAY=plain`.
+Explicit flag beats env var; env var beats `CI`; `CI` beats isatty.
+
+**Escape hatches:**
+- Force the Rich Live panel (keeps the run visible in terminal scrollback after exit — Textual's alt-screen buffer wipes it): `--display=rich` or `export TOLOKAFORGE_DISPLAY=rich`.
+- Force plain-text mode from a wrapper script: `export TOLOKAFORGE_DISPLAY=plain`.
+- Silence stderr entirely on success while preserving the stdout artifact-path emission: `--display=none`.
 
 ### Composition with `--log-format`
 
