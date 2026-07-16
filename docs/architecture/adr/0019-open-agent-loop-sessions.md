@@ -219,6 +219,47 @@ same role priority — they are interchangeable from the OAL gate's
 perspective. The choice is a callsite-ergonomics decision, not an
 architectural boundary.
 
+## Addendum — interactive tools plug-in surface (2026-07-17)
+
+Building the first live human-attach demo (the keyboard REPL) surfaced a
+recurring need: consumers attached to a session want to invoke shared
+utilities — inspect the trial's context, summarise the last N turns, run
+a retrieval query, call a safety monitor. Baking these into
+`KeyboardController` alone would repeat the same buttons in every future
+consumer (LLM controller, HTTP webhook, canned-scenario runner,
+post-hoc script).
+
+`intervener.tools` adds a **consumer-agnostic** plug-in surface:
+
+- `InteractiveTool` Protocol — `name`, `description`, `run(args, context)`.
+- `ToolContext` — every field optional; caller populates what it has.
+- `ToolResult` — text output + optional structured `data` + intervention
+  bookkeeping.
+- `ToolRegistry` — explicit registration or auto-discovery via
+  `importlib.metadata.entry_points(group="intervener.tools")`.
+
+`ToolRegistry.with_discovered()` picks up every tool any installed
+package registers under the `intervener.tools` entry-point group — the
+"install a tool" story is `pip install <package>`. Reference tools
+(`ContextTool`, `AnalyzeTool`) are registered in the intervener package's
+own `pyproject.toml`, so `with_discovered()` returns them by default.
+
+The keyboard REPL is one consumer; the design pattern is consumer-shape
+independent. `KeyboardController(tools=…)` dispatches slash-commands to
+the registry. Any other controller/participant/script that has (or can
+build) a `ToolContext` invokes tools the same way:
+`registry.get(name).run(args, ctx)`.
+
+Tools MAY submit interventions via `context.binding.submit(…)` — same
+authority as the participant that instantiated them. A safety-monitor
+tool that calls `Kill` on demand is a valid design. `ToolResult.submitted_interventions`
+bookkeeps the count so callers can surface "the tool submitted N
+interventions" to a human.
+
+No new architectural seam: tools reuse the same `SessionBinding` façade
+introduced by the compositional layer. This addendum documents an
+opt-in surface on top of what's already there.
+
 ## Links
 
 - Related ADRs: [ADR-0007 (RuntimeBackend)](0007-runtime-backend-protocol.md),

@@ -13,7 +13,6 @@ urgency head land.
 from __future__ import annotations
 
 import json
-import os
 import re
 from typing import Any
 
@@ -66,13 +65,9 @@ def draft_suggestion(
 
 
 def _llm_available() -> bool:
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        return False
-    try:
-        import anthropic  # noqa: F401
-    except ImportError:
-        return False
-    return True
+    from intervener.tools._llm import llm_available
+
+    return llm_available()
 
 
 def _call_llm(context: str, model: str) -> dict[str, Any]:

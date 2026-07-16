@@ -28,19 +28,31 @@ from intervener.sinks import (
     JsonlSink,
     PlainLineSink,
     RichConsoleSink,
+    RollingEventsSink,
     SilentSink,
+)
+from intervener.tools import (
+    AnalyzeTool,
+    ContextTool,
+    InteractiveTool,
+    ToolContext,
+    ToolRegistry,
+    ToolResult,
 )
 
 __version__ = "0.1.0"
 
 __all__ = [
+    "AnalyzeTool",
     "ComposedParticipant",
     "CompoundSink",
+    "ContextTool",
     "EventReaction",
     "EventReactiveController",
     "EventSink",
     "HumanIntervener",
     "InputController",
+    "InteractiveTool",
     "JsonlSink",
     "KeyboardController",
     "LLMIntervener",
@@ -48,9 +60,13 @@ __all__ = [
     "ParticipantLog",
     "PlainLineSink",
     "RichConsoleSink",
+    "RollingEventsSink",
     "ScriptedController",
     "SessionBinding",
     "SessionLogEntry",
     "SilentSink",
     "TimerController",
+    "ToolContext",
+    "ToolRegistry",
+    "ToolResult",
 ]

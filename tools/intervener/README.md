@@ -149,6 +149,107 @@ See ADR-0019 §5 for the multi-participant conflict rule.
 
 ---
 
+## Interactive tools — plug the gate open
+
+Consumers attached to a session (keyboard REPL, LLM controller, HTTP
+webhook, canned-scenario script, post-hoc script) often want to invoke
+**shared utilities** — inspect the trial's context, summarise the last N
+turns, run a retrieval query, call a safety monitor. The `intervener.tools`
+package provides a small plug-in surface so tools are **written once and
+called from anywhere** — the tool doesn't know or care which consumer
+invoked it.
+
+### The three types
+
+```python
+from intervener import InteractiveTool, ToolContext, ToolResult
+
+class InteractiveTool(Protocol):
+    name: str            # command / endpoint name, e.g. "context"
+    description: str     # one-liner for listings + help text
+    def run(self, args: str, context: ToolContext) -> ToolResult: ...
+```
+
+`ToolContext` is a dataclass with **every field optional** —
+`binding: SessionBinding | None`, `recent_events: list[TrialEvent]`,
+`task_metadata: dict | None`, `console: Console | None`, `extras: dict`.
+Tools handle missing pieces gracefully.
+
+`ToolResult` carries the text output plus optional structured `data`
+(for JSON consumers) and an `submitted_interventions` counter.
+
+### Ship a tool as an installable package
+
+Third-party integrators register their tools under Python entry-points:
+
+```toml
+# in the third-party package's pyproject.toml
+[project.entry-points."intervener.tools"]
+retrieval      = "my_pkg.tools:RetrievalTool"
+safety_monitor = "my_pkg.tools:SafetyMonitorTool"
+```
+
+`pip install my-pkg` → the next `ToolRegistry.with_discovered()` call
+picks them up. No intervener-core edit needed.
+
+### Reference tools
+
+Two ship in `intervener.tools.reference`:
+
+- **`ContextTool`** — prints `task_metadata` + counters (turns / tool calls
+  / assistant messages) + last assistant preview. Non-agentic.
+- **`AnalyzeTool`** — LLM-drafts a brief of the last N turns. Uses
+  Anthropic if `ANTHROPIC_API_KEY` + the `anthropic` package are present;
+  heuristic-fallback otherwise. Accepts `args` as an int (default 5).
+
+Both are registered under `intervener.tools` in this package's
+`pyproject.toml`, so `ToolRegistry.with_discovered()` returns them
+out of the box.
+
+### Wire tools into the keyboard REPL
+
+`KeyboardController(tools=<ToolRegistry>, task_metadata=<dict>)`. Any
+`/name args` typed at `intervene>` that matches a registered tool is
+dispatched; output prints to the console. `/help` lists all registered
+tools alongside the built-in commands. Name collisions with built-in
+commands (`quit`, `kill`, `help`, `?`) raise at construction time.
+
+```python
+from intervener import KeyboardController, ToolRegistry
+
+controller = KeyboardController(
+    tools=ToolRegistry.with_discovered(),   # picks up reference + third-party
+    task_metadata=my_task_dict,
+)
+```
+
+### Call tools programmatically
+
+Any consumer can invoke a tool without going through the keyboard:
+
+```python
+# Inside an LLM controller — add a brief to the drafter prompt
+ctx = ToolContext(binding=binding, recent_events=self._events)
+brief = registry.get("analyze").run("5", ctx)
+# feed brief.output into the LLM prompt
+
+# From a post-hoc script — no live session
+ctx = ToolContext(recent_events=events_from_yaml)
+print(registry.get("context").run("", ctx).output)
+```
+
+### `RollingEventsSink` — the events buffer for tools
+
+Tools need "the last N events". Different consumers get them differently:
+
+- **`KeyboardController`** has its own internal deque (default 200) — no
+  extra wiring required.
+- **Other consumers** — add a `RollingEventsSink` to your participant's
+  `sinks=[…]` list and read from `sink.events` when building a
+  `ToolContext`.
+
+---
+
 ## Writing your own event-reactive participant (old pattern)
 
 Subclass `Participant` and implement `handle_event`. The base handles:
