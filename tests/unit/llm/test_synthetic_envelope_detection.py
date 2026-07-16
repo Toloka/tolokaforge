@@ -33,9 +33,9 @@ Empirical scope (from ``output/collected_new/ots_19_airlines/``,
 Detection contract: any non-empty
 ``provider_specific_fields["native_finish_reason"]`` value in the
 "upstream-failed" set causes :meth:`LLMClient.generate` to raise
-:class:`RuntimeError`. Tenacity's ``@retry`` decorator on ``generate``
-re-attempts; if every attempt is synthetic the error surfaces to the
-caller honestly rather than being absorbed.
+:class:`RuntimeError`. The outer :class:`tenacity.Retrying` controller
+inside ``generate`` re-attempts; if every attempt is synthetic the error
+surfaces to the caller honestly rather than being absorbed.
 """
 
 from __future__ import annotations
@@ -190,15 +190,13 @@ class TestDetectSyntheticEnvelope:
 
 
 def _disable_tenacity_sleep(client: LLMClient) -> None:
-    """Make :meth:`LLMClient.generate`'s ``@retry`` instant for tests.
+    """Make :meth:`LLMClient.generate`'s outer :class:`Retrying` controller instant.
 
     Tenacity's exponential backoff would push a 5-attempt failure to ~60s
-    of real wall time. Replace the ``Retrying.sleep`` bound on the
-    decorator's instance with a no-op.
+    of real wall time. ``LLMClient._retry_sleep`` is the single hook the
+    per-call controller binds as its ``sleep`` — replace it with a no-op.
     """
-    # ``client.generate`` is a bound method; the underlying function carries
-    # the tenacity ``Retrying`` as the ``.retry`` attribute.
-    client.generate.retry.sleep = lambda *args, **kwargs: None  # type: ignore[attr-defined]
+    client._retry_sleep = lambda _s: None
 
 
 class TestGenerateRaisesAndRetries:
