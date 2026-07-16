@@ -1,18 +1,26 @@
 # intervener
 
-Reference **LLM** and **Human** participants for tolokaforge's Open Agent
-Loop gate, plus the shared `Participant` base other people can subclass to
-write their own.
+Reference sinks, controllers, and participants for tolokaforge's Open Agent
+Loop gate. Two composition shapes are supported side by side:
 
-Both reference implementations consume `tolokaforge.session.TrialEvent`s
-and produce `tolokaforge.session.TrialIntervention`s through the same
-contract — an LLM intervener drafts a next-turn message from a paused
-trajectory, a human intervener types one at a Rich console. They emit
-identical session-log shape (proven by a shape-invariant test) — the
-contract is genuinely shared.
+- **Event-reactive `Participant`** — subclass and implement one
+  `handle_event(event) → EventReaction` method. Best fit for LLM drafters
+  and rule-based agents where every action is triggered by an event.
+- **`ComposedParticipant` + sinks + controllers** — wire N reusable
+  `EventSink`s (display / persist events) and M reusable `InputController`s
+  (submit interventions) around one `SessionBinding`. Best fit for
+  independent-thread inputs like a keyboard REPL, an HTTP webhook, or a
+  chaos timer — anything where submissions aren't naturally per-event.
+
+Both shapes consume `tolokaforge.session.TrialEvent`s and produce
+`tolokaforge.session.TrialIntervention`s through the same session bus. The
+reference `HumanIntervener` and `LLMIntervener` use the event-reactive
+shape; the live-attach demo at
+`/private/tmp/.../scratchpad/run_with_human.py` uses the composed shape.
 
 For the design + wire types, see
-[`docs/OPEN_AGENT_LOOP.md`](../../docs/OPEN_AGENT_LOOP.md).
+[`docs/OPEN_AGENT_LOOP.md`](../../docs/OPEN_AGENT_LOOP.md) and
+[ADR-0019](../../docs/architecture/adr/0019-open-agent-loop-sessions.md).
 
 ---
 
@@ -21,10 +29,23 @@ For the design + wire types, see
 ```
 tools/intervener/
 ├── intervener/
+│   ├── binding.py        # SessionBinding — thin per-participant session façade
+│   ├── protocols.py      # EventSink + InputController Protocols
+│   ├── sinks/
+│   │   ├── rich_console.py  # RichConsoleSink — panels + rules
+│   │   ├── plain.py         # PlainLineSink — colored one-liners
+│   │   ├── jsonl.py         # JsonlSink — durable machine-readable log
+│   │   ├── silent.py        # SilentSink — /dev/null (metrics-only setups)
+│   │   └── compound.py      # CompoundSink — fan out to N sinks
+│   ├── controllers/
+│   │   ├── keyboard.py      # KeyboardController — raw `i` key + step REPL
+│   │   ├── scripted.py      # ScriptedController — timed script OR line-triggered
+│   │   ├── event_reactive.py # EventReactiveController — callback per event
+│   │   └── timer.py         # TimerController — fire every N seconds
 │   ├── participants/
-│   │   ├── base.py       # Participant ABC + EventReaction + ParticipantLog + SessionLogEntry
-│   │   ├── llm.py        # LLMIntervener — 4-stage pipeline drafter
-│   │   └── human.py      # HumanIntervener — Rich REPL
+│   │   ├── base.py       # Participant ABC + ComposedParticipant + log types
+│   │   ├── llm.py        # LLMIntervener — event-reactive drafter
+│   │   └── human.py      # HumanIntervener — event-reactive Rich REPL
 │   ├── pipeline/         # LLM drafter (+ retrieval/urgency stubs for M3)
 │   ├── schema.py         # InterventionSuggestion output model
 │   └── demo/attach_recorded.py   # driver — replays a trajectory into either participant
@@ -73,7 +94,62 @@ background threads.
 
 ---
 
-## Writing your own participant
+## Building a composed participant (new pattern)
+
+For inputs that aren't purely event-reactive (keyboard, HTTP, timer),
+compose an `EventSink` list and an `InputController` list around a
+`ComposedParticipant`:
+
+```python
+from intervener import (
+    ComposedParticipant,
+    CompoundSink, RichConsoleSink, JsonlSink,
+    KeyboardController,
+)
+from tolokaforge.session import ParticipantRole
+
+participant = ComposedParticipant(
+    participant_id="operator-1",
+    role=ParticipantRole.ADMIN,
+    sinks=[
+        RichConsoleSink(),                     # pretty terminal render
+        JsonlSink("/tmp/events.jsonl"),         # durable machine log
+    ],
+    controllers=[
+        KeyboardController(trigger_key="i"),    # press 'i' → pause + REPL
+    ],
+)
+log = participant.run(session)  # blocks until trial terminates
+```
+
+`ComposedParticipant.run` handles: attach, spawn each controller (some
+spawn threads, some run event-reactively via `on_event`), drain events,
+forward to every sink, tear down on `TerminalReached`, detach.
+
+Reference sinks and controllers, and when to pick each:
+
+| `EventSink` | Use case |
+| --- | --- |
+| `RichConsoleSink` | Interactive terminal — panels + rules |
+| `PlainLineSink` | Scripts, CI logs, tail -f monitoring |
+| `JsonlSink(path_or_stream)` | Durable machine-readable log |
+| `SilentSink` | Metrics-only participants (no display) |
+| `CompoundSink([...])` | Fan out to multiple sinks; child failures are isolated |
+
+| `InputController` | Use case |
+| --- | --- |
+| `KeyboardController(trigger_key="i")` | Human at TTY — raw key trigger + step REPL |
+| `ScriptedController(lines=…, line_parser=…, seam_predicate=…)` | Line-triggered scripted replay (used by `HumanIntervener`'s `non_interactive_script` back-compat path) |
+| `ScriptedController(timed_script=[(delay_s, intervention), …])` | Time-scheduled replay for deterministic demos |
+| `EventReactiveController(callback=(event, binding) → intervention?)` | Wrap any event → intervention function; the shape LLM drafters take |
+| `TimerController(interval_seconds, callback)` | Fire an intervention every N seconds — chaos testing |
+
+Roles work the same as the event-reactive path (`admin > participant > observer`).
+See ADR-0019 §5 for the multi-participant conflict rule.
+
+---
+
+## Writing your own event-reactive participant (old pattern)
 
 Subclass `Participant` and implement `handle_event`. The base handles:
 

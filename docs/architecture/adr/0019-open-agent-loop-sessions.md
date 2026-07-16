@@ -181,6 +181,44 @@ The session bus rules:
   (M4), `EditState` implementation once the runner exposes the mediation
   surface.
 
+## Addendum — `tools/intervener/` compositional layer (2026-07-16)
+
+The first shipped `Participant` shape (`intervener.participants.Participant`)
+is event-reactive — a single `handle_event(event) → EventReaction` hook
+that fits LLM drafters and rule-based agents. It does not fit inputs whose
+trigger is *not* an event: a human at a terminal pressing a key, an HTTP
+webhook, a chaos timer.
+
+To keep new input surfaces from bolting extra logic into `Participant`
+subclasses (or into demo scripts that never get tested), the intervener
+package adds a parallel compositional shape:
+
+- `intervener.binding.SessionBinding` — thin per-participant façade
+  around `TrialSession` (attach on init, submit, idempotent detach).
+- `intervener.protocols.EventSink` — pure read side. `on_event(event)`.
+- `intervener.protocols.InputController` — pure write side. `start(binding,
+  terminal)` / `stop()`. Independent controllers spawn their own thread;
+  event-reactive controllers additionally implement `EventSink` so the
+  drain loop calls them on every event.
+- `intervener.participants.ComposedParticipant` — wires N sinks + M
+  controllers around one `SessionBinding`, drains events, forwards to
+  every sink, sets a shared terminal event on `TerminalReached`, tears
+  down cleanly.
+
+Reference implementations that ship: sinks — `RichConsoleSink`,
+`PlainLineSink`, `JsonlSink`, `SilentSink`, `CompoundSink`; controllers —
+`KeyboardController`, `ScriptedController` (line-triggered *and* timed
+modes), `EventReactiveController`, `TimerController`.
+
+The existing `Participant`, `HumanIntervener`, and `LLMIntervener` are
+unchanged. Purely additive; existing callers keep working; the new layer
+is opt-in through `ComposedParticipant`.
+
+Both shapes participate in the same session bus, the same trace, and the
+same role priority — they are interchangeable from the OAL gate's
+perspective. The choice is a callsite-ergonomics decision, not an
+architectural boundary.
+
 ## Links
 
 - Related ADRs: [ADR-0007 (RuntimeBackend)](0007-runtime-backend-protocol.md),

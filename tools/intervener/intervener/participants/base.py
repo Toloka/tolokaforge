@@ -8,10 +8,17 @@ session log so both participant paths emit identical trace shape.
 The base drives the event loop. Subclasses only implement ``handle_event``
 which returns zero or one :class:`~tolokaforge.session.TrialIntervention` per
 event (plus a diagnostic ``note`` if it wants one on the log).
+
+For a compositional alternative (multiple sinks + independent-thread
+controllers like keyboard / timer / HTTP), see :class:`ComposedParticipant`
+in the same module. ``Participant`` is the event-reactive shape;
+``ComposedParticipant`` supports both event-reactive and independent
+input controllers.
 """
 
 from __future__ import annotations
 
+import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -19,16 +26,25 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
+from intervener.binding import SessionBinding
+from intervener.protocols import EventSink, InputController
 from tolokaforge.session import (
     InterventionAck,
     ParticipantHandle,
     ParticipantRole,
+    TerminalReached,
     TrialEvent,
     TrialIntervention,
     TrialSession,
 )
 
-__all__ = ["EventReaction", "Participant", "ParticipantLog", "SessionLogEntry"]
+__all__ = [
+    "ComposedParticipant",
+    "EventReaction",
+    "Participant",
+    "ParticipantLog",
+    "SessionLogEntry",
+]
 
 
 @dataclass(frozen=True)
@@ -150,6 +166,95 @@ class Participant(ABC):
                 intervention_kind=reaction.intervention.kind if reaction.intervention else None,
                 note=reaction.note,
                 payload=reaction.payload,
+                at=datetime.now(UTC),
+            )
+        )
+
+
+class ComposedParticipant:
+    """Compositional alternative to :class:`Participant`.
+
+    Wires N :class:`EventSink`\\ s and M :class:`InputController`\\ s around
+    a single :class:`SessionBinding`. On :meth:`run`:
+
+    1. Attach as a participant.
+    2. Start each controller (may spawn background threads).
+    3. Drain events on the calling thread; forward each to every sink and to
+       any controller that also implements :class:`EventSink` (event-reactive
+       controllers).
+    4. On :class:`~tolokaforge.session.TerminalReached`, set the shared
+       terminal event; controllers observe it to exit cleanly.
+    5. Stop controllers, call ``on_terminal`` on sinks, detach.
+
+    A :class:`ParticipantLog` is maintained with one entry per event drained.
+    Independent-thread submissions (keyboard, timer) are NOT added to
+    ``ParticipantLog`` — they are captured by the OAL session trace
+    (``open_agent_loop.yaml``) which is the authoritative record for
+    submissions.
+    """
+
+    def __init__(
+        self,
+        participant_id: str,
+        role: ParticipantRole = ParticipantRole.PARTICIPANT,
+        sinks: list[EventSink] | None = None,
+        controllers: list[InputController] | None = None,
+    ) -> None:
+        self.participant_id = participant_id
+        self.role = role
+        self.sinks: list[EventSink] = list(sinks or [])
+        self.controllers: list[InputController] = list(controllers or [])
+        self.log = ParticipantLog()
+
+    def run(self, session: TrialSession) -> ParticipantLog:
+        binding = SessionBinding(session, self.participant_id, self.role)
+        terminal = threading.Event()
+
+        listeners: list[EventSink] = list(self.sinks)
+        for ctrl in self.controllers:
+            if hasattr(ctrl, "on_event") and ctrl not in listeners:
+                listeners.append(ctrl)  # type: ignore[arg-type]
+
+        for ctrl in self.controllers:
+            ctrl.start(binding, terminal)
+
+        try:
+            for event in session.events().iter_events(binding.handle):
+                for listener in listeners:
+                    try:
+                        listener.on_event(event)
+                    except Exception:
+                        pass
+                self._log_event(binding.handle, event)
+                if isinstance(event, TerminalReached):
+                    terminal.set()
+                    break
+        finally:
+            for ctrl in self.controllers:
+                try:
+                    ctrl.stop()
+                except Exception:
+                    pass
+            for listener in listeners:
+                try:
+                    listener.on_terminal()
+                except Exception:
+                    pass
+            binding.detach()
+        return self.log
+
+    def _log_event(self, handle: ParticipantHandle, event: TrialEvent) -> None:
+        self.log.entries.append(
+            SessionLogEntry(
+                trial_id=handle.trial_id,
+                participant_id=handle.participant_id,
+                event_seq=event.seq,
+                event_kind=event.kind,
+                ack_outcome=None,
+                ack_reason=None,
+                intervention_kind=None,
+                note=None,
+                payload=None,
                 at=datetime.now(UTC),
             )
         )
