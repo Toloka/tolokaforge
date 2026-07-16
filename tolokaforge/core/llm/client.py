@@ -1609,13 +1609,23 @@ class UserSimulator:
         # this after the first user turn and thread it onto ``Trajectory``.
         self.last_system_prompt: str | None = None
 
-    def reply(self, context: list[Message]) -> GenerationResult:
-        """Generate user reply based on context."""
+    def reply(
+        self,
+        context: list[Message],
+        *,
+        observation: LLMCallObservation | None = None,
+    ) -> GenerationResult:
+        """Generate user reply based on context.
+
+        ``observation`` is forwarded to the inner :meth:`LLMClient.generate`
+        for LLM mode so the display can render user-role LLM-call events.
+        Scripted mode ignores it — scripted replies never touch the wire.
+        """
         if self.mode == "scripted":
             text = self._scripted_reply(context)
             return GenerationResult(text=text, tool_calls=[])
         elif self.mode == "llm":
-            return self._llm_reply(context)
+            return self._llm_reply(context, observation=observation)
         else:
             raise ValueError(f"Unknown user simulator mode: {self.mode}")
 
@@ -1705,12 +1715,18 @@ Rules:
 - Try to make the conversation as natural as possible, and stick to the personalities in the instruction.
 - Never mention that this is a simulation, test, benchmark, prompt, or that you are an AI/model.{tool_guidance}"""
 
-    def _llm_reply(self, context: list[Message]) -> GenerationResult:
+    def _llm_reply(
+        self,
+        context: list[Message],
+        *,
+        observation: LLMCallObservation | None = None,
+    ) -> GenerationResult:
         """Generate LLM-based user reply - tau-bench compatible with tool calling."""
         if not self.llm_client:
             raise RuntimeError("LLM client not initialized for LLM mode")
 
-        # Stage 7 (P5) — capture every system prompt for runner-side persistence.
+        # Capture every system prompt so the runner can persist it into
+        # ``prompts.yaml`` after ``run()`` returns.
         system_prompt = self._build_system_prompt()
         self.last_system_prompt = system_prompt
 
@@ -1732,6 +1748,7 @@ Rules:
             tools=self.tool_schemas if self.tool_schemas else None,
             tool_choice="auto" if self.tool_schemas else None,
             temperature=0.2,
+            observation=observation,
         )
 
         if result.tool_calls and not result.text.strip():

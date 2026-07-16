@@ -847,3 +847,285 @@ def test_run_with_default_null_events_completes_without_raising(tmp_path: Path) 
     orch.adapter = adapter
 
     orch.run()
+
+
+# ---------------------------------------------------------------------------
+# Stage 3 wiring — call-observation threading + trial_started model identity
+# ---------------------------------------------------------------------------
+
+
+class _ObservationCapturingClient:
+    """Loop-LLM double that records every ``generate`` kwargs dict.
+
+    Structurally satisfies :class:`~tolokaforge.core.loop.LoopLLMClient` at
+    runtime — the loop's ``_generate`` only calls it with kwargs the
+    Protocol declares plus the optional ``observation``.
+    """
+
+    def __init__(self, results: list[GenerationResult]) -> None:
+        self._results = list(results)
+        self.received: list[dict[str, Any]] = []
+
+    def generate(self, **kwargs: Any) -> GenerationResult:
+        self.received.append(kwargs)
+        return self._results.pop(0)
+
+
+def _run_agent_loop_with(events: _RecordingEvents, *, call_observation: Any) -> Any:
+    """Drive one ``ToolCallingLoop`` iteration and return the LLM client."""
+    from tolokaforge.core.logging import get_logger
+    from tolokaforge.core.loop import LoopConfig, ToolCallingLoop
+    from tolokaforge.core.models import Message
+    from tolokaforge.core.runner import _AgentMetricsSink
+    from tolokaforge.tools.registry import ToolResult
+
+    client = _ObservationCapturingClient(
+        [GenerationResult(text="done", usage=Usage(prompt_tokens=1))]
+    )
+
+    class _NoopExecutor:
+        def execute(self, tool_name: str, arguments: Any) -> ToolResult:
+            return ToolResult(success=True, output="")
+
+        def get_logs(self) -> list[dict[str, Any]]:
+            return []
+
+    def _stop_first_turn(result: Any, turn: int, messages: list[Message]) -> Any:
+        from tolokaforge.core.loop import TerminationDecision
+        from tolokaforge.core.models import TerminationReason
+
+        return TerminationDecision(reason=TerminationReason.AGENT_DONE, system_message="done")
+
+    import time as _time
+
+    ToolCallingLoop(
+        llm_client=client,
+        tool_executor=_NoopExecutor(),
+        tool_schemas=[],
+        config=LoopConfig(max_turns=1, episode_timeout_s=10_000),
+        metrics=_AgentMetricsSink(Metrics(), events=events, trial_id="taskA:0"),
+        should_terminate=_stop_first_turn,
+        logger=get_logger("test-wiring", strict=False),
+        call_observation=call_observation,
+    ).run("sys", [], _time.time())
+    return client
+
+
+def test_tool_calling_loop_forwards_call_observation_to_generate() -> None:
+    """Agent path: when ``call_observation`` is set on the loop, every
+    ``LLMClient.generate`` call receives it as the ``observation`` kwarg —
+    so the client's per-call retry controller can fire the LLM-call trio
+    against the correct trial + role."""
+    from tolokaforge.core.run_display_events import LLMCallObservation
+
+    events = _RecordingEvents()
+    observation = LLMCallObservation(events=events, trial_id="taskA:0", role="agent")
+
+    client = _run_agent_loop_with(events, call_observation=observation)
+
+    assert len(client.received) == 1
+    kwargs = client.received[0]
+    assert kwargs["observation"] is observation
+    assert kwargs["observation"].role == "agent"
+    assert kwargs["observation"].trial_id == "taskA:0"
+
+
+def test_tool_calling_loop_omits_observation_when_unset() -> None:
+    """Judge path (and any pre-Stage-3 caller): with ``call_observation``
+    unset, ``generate`` is called without an ``observation`` kwarg — keeps
+    the ``LoopLLMClient`` Protocol free of the extra parameter that the
+    judge's scripted doubles never learn."""
+    events = _RecordingEvents()
+
+    client = _run_agent_loop_with(events, call_observation=None)
+
+    assert len(client.received) == 1
+    assert "observation" not in client.received[0]
+
+
+def test_user_simulator_llm_reply_forwards_observation_to_generate() -> None:
+    """User path: :meth:`UserSimulator.reply` in llm mode forwards
+    ``observation`` verbatim to the inner ``LLMClient.generate`` — so the
+    user simulator surfaces as ``role="user"`` LLM-call events."""
+    from tolokaforge.core.llm import UserSimulator
+    from tolokaforge.core.models import Message, MessageRole, ModelConfig
+    from tolokaforge.core.run_display_events import LLMCallObservation
+
+    simulator = UserSimulator(
+        mode="llm",
+        llm_config=ModelConfig(provider="openai", name="gpt-4"),
+        backstory="do a thing",
+    )
+    fake_client = MagicMock()
+    fake_client.generate.return_value = GenerationResult(text="hi", tool_calls=[], usage=Usage())
+    simulator.llm_client = fake_client
+
+    events = _RecordingEvents()
+    observation = LLMCallObservation(events=events, trial_id="taskA:0", role="user")
+
+    simulator.reply(
+        [Message(role=MessageRole.ASSISTANT, content="hello?")], observation=observation
+    )
+
+    _, kwargs = fake_client.generate.call_args
+    assert kwargs["observation"] is observation
+    assert kwargs["observation"].role == "user"
+
+
+def test_user_simulator_scripted_reply_ignores_observation() -> None:
+    """Scripted mode never touches the wire — passing an observation is a
+    no-op, not a raise. Keeps the reply signature uniform between modes."""
+    from tolokaforge.core.llm import UserSimulator
+    from tolokaforge.core.models import Message, MessageRole
+    from tolokaforge.core.run_display_events import LLMCallObservation
+
+    simulator = UserSimulator(mode="scripted")
+    events = _RecordingEvents()
+    observation = LLMCallObservation(events=events, trial_id="taskA:0", role="user")
+
+    result = simulator.reply(
+        [Message(role=MessageRole.ASSISTANT, content="hello?")], observation=observation
+    )
+
+    assert result.text
+    assert events.calls == []
+
+
+def _assert_llm_pairing_invariants(events: _RecordingEvents) -> None:
+    """Every ``llm_call_started`` has a matching ``llm_call_finished`` with
+    identical ``(trial_id, role, provider, model, attempt)``; every
+    ``llm_retry_scheduled`` sits between two consecutive ``started`` calls
+    for the same ``(trial_id, role)`` pair. Locked as a helper so any test
+    that captures ``_RecordingEvents`` can call it directly."""
+    key_fields = ("trial_id", "role", "provider", "model", "attempt")
+    open_starts: dict[tuple[str, str], tuple[str, str, str, str, int]] = {}
+    for name, kwargs in events.calls:
+        if name == "llm_call_started":
+            tuple_key = tuple(kwargs[f] for f in key_fields)
+            open_starts[(kwargs["trial_id"], kwargs["role"])] = tuple_key
+        elif name == "llm_call_finished":
+            tuple_key = tuple(kwargs[f] for f in key_fields)
+            assert open_starts.pop((kwargs["trial_id"], kwargs["role"])) == tuple_key
+        elif name == "llm_retry_scheduled":
+            assert (
+                kwargs["trial_id"],
+                kwargs["role"],
+            ) not in open_starts, "llm_retry_scheduled fired while an attempt was still open"
+    assert open_starts == {}, f"unmatched llm_call_started: {open_starts}"
+
+
+def test_pairing_invariants_hold_on_a_clean_success_sequence() -> None:
+    events = _RecordingEvents()
+    events.llm_call_started(
+        trial_id="t:0", role="agent", provider="openai", model="gpt-4", attempt=1
+    )
+    events.llm_call_finished(
+        trial_id="t:0",
+        role="agent",
+        provider="openai",
+        model="gpt-4",
+        attempt=1,
+        duration_s=0.1,
+        error=None,
+    )
+    _assert_llm_pairing_invariants(events)
+
+
+def test_pairing_invariants_hold_on_a_retry_sequence() -> None:
+    events = _RecordingEvents()
+    events.llm_call_started(
+        trial_id="t:0", role="agent", provider="openai", model="gpt-4", attempt=1
+    )
+    events.llm_call_finished(
+        trial_id="t:0",
+        role="agent",
+        provider="openai",
+        model="gpt-4",
+        attempt=1,
+        duration_s=0.1,
+        error="boom",
+    )
+    events.llm_retry_scheduled(
+        trial_id="t:0",
+        role="agent",
+        provider="openai",
+        model="gpt-4",
+        attempt=1,
+        next_attempt_in_s=4.0,
+        reason="RuntimeError",
+    )
+    events.llm_call_started(
+        trial_id="t:0", role="agent", provider="openai", model="gpt-4", attempt=2
+    )
+    events.llm_call_finished(
+        trial_id="t:0",
+        role="agent",
+        provider="openai",
+        model="gpt-4",
+        attempt=2,
+        duration_s=0.1,
+        error=None,
+    )
+    _assert_llm_pairing_invariants(events)
+
+
+def _run_orch_with_two_role_models(tmp_path: Path, events: _RecordingEvents) -> None:
+    from tolokaforge.core.conductor import ConductorContext, InMemoryConductor
+    from tolokaforge.core.models import (
+        EvaluationConfig,
+        ModelConfig,
+        OrchestratorConfig,
+        RunConfig,
+    )
+    from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
+    from tolokaforge.core.runtime import InMemoryRuntimeBackend
+
+    run_root = tmp_path / "results" / "run_models"
+    run_root.parent.mkdir(parents=True, exist_ok=True)
+    config = RunConfig(
+        models={
+            "agent": ModelConfig(provider="openai", name="gpt-4o"),
+            "user": ModelConfig(provider="openrouter", name="anthropic/claude-sonnet-4.6"),
+        },
+        orchestrator=OrchestratorConfig(
+            workers=1,
+            repeats=1,
+            auto_start_services=False,
+            shuffle_trials=False,
+        ),
+        evaluation=EvaluationConfig(output_dir=str(run_root)),
+    )
+
+    def make_conductor(_ctx: ConductorContext) -> InMemoryConductor:
+        return InMemoryConductor()
+
+    orch = Orchestrator(
+        config,
+        deps=OrchestratorDeps(
+            events=events,
+            runtime_backend=InMemoryRuntimeBackend(),
+            conductor_factory=make_conductor,
+        ),
+    )
+    orch.tasks = [_make_task_for_run("TASK-A")]
+
+    adapter = MagicMock()
+    adapter.to_task_description.side_effect = _make_task_description_for_run
+    adapter.docker_stack_requirements.return_value = None
+    orch.adapter = adapter
+
+    orch.run()
+
+
+def test_trial_started_carries_agent_and_user_model_identity(tmp_path: Path) -> None:
+    """Locks the orchestrator's ``trial_started`` emission at the
+    :class:`Orchestrator.run` lease site: ``agent_model`` /
+    ``user_model`` are populated from the run config as
+    ``"{provider}/{name}"``, so a display can render per-role identity
+    without having to look the config up itself."""
+    events = _RecordingEvents()
+    _run_orch_with_two_role_models(tmp_path, events)
+
+    (trial_started,) = events.kwargs_for("trial_started")
+    assert trial_started["agent_model"] == "openai/gpt-4o"
+    assert trial_started["user_model"] == "openrouter/anthropic/claude-sonnet-4.6"

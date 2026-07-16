@@ -46,6 +46,7 @@ from tolokaforge.core.models import (
     TerminationReason,
     TrialStatus,
 )
+from tolokaforge.core.run_display_events import LLMCallObservation
 from tolokaforge.tools.registry import ToolExecutor
 
 
@@ -223,6 +224,7 @@ class ToolCallingLoop:
         None
     )
     classify_error: ErrorClassifier = classify_loop_error
+    call_observation: LLMCallObservation | None = None
 
     # Captured from the first generation's effective system prompt.
     _captured_effective_prompt: str | None = field(default=None, init=False)
@@ -310,6 +312,17 @@ class ToolCallingLoop:
         self.logger.debug("Requesting agent response", turn=turn)
         if self.request_limiter is not None:
             self.request_limiter.acquire()
+        # ``observation`` is forwarded only when the caller opted in — keeps
+        # the ``LoopLLMClient`` Protocol free of an observation kwarg the
+        # judge's scripted doubles do not need.
+        if self.call_observation is not None:
+            return self.llm_client.generate(
+                system=system_prompt,
+                messages=messages,
+                tools=self.tool_schemas,
+                tool_choice="auto",
+                observation=self.call_observation,
+            )
         return self.llm_client.generate(
             system=system_prompt,
             messages=messages,
