@@ -20,9 +20,12 @@ from __future__ import annotations
 
 import logging
 import os
+import select
 import sys
+import termios
 import threading
 import traceback
+import tty
 from collections import deque
 from collections.abc import Callable, Iterable
 from contextlib import AbstractContextManager
@@ -34,6 +37,7 @@ from typing import Any, TextIO
 from rich.console import Group, RenderableType
 from rich.layout import Layout
 from rich.live import Live
+from rich.markup import escape as _escape_markup
 from rich.panel import Panel
 from rich.spinner import Spinner
 from rich.table import Table
@@ -137,6 +141,16 @@ _STDERR_PROBE_ENV_VAR = "TOLOKAFORGE_STDERR_PROBE"
 Set to a file path to activate the diagnostic tap in
 :meth:`LiveRunDisplay.__enter__`; unset (the default) means the probe is
 never installed and there is zero production overhead.
+"""
+
+
+_INTERACTIVE_PANEL_ENV_VAR = "TOLOKAFORGE_INTERACTIVE_PANEL"
+"""Escape hatch for the interactive keyboard listener.
+
+Set to ``"0"`` to keep the panel in auto-follow-only mode even on a TTY —
+for terminal-compat issues or operators who prefer the pre-listener
+behaviour. Any other value (or unset) leaves the listener enabled when
+the other two TTY / platform guards pass.
 """
 
 
@@ -586,6 +600,103 @@ def _truncate_error(error_str: str, *, width: int = 60) -> str:
     return first_line[: width - 1] + "…"
 
 
+class _KeyboardListener:
+    """Daemon-thread keyboard listener for :class:`LiveRunDisplay`.
+
+    Reads single characters from ``stdin`` in POSIX cbreak mode and
+    dispatches them to callbacks on the owning display. Guarded off on
+    non-TTY stdin, on Windows (different terminal-input model), and when
+    :data:`_INTERACTIVE_PANEL_ENV_VAR` is ``"0"``; in every guarded-off
+    case ``__enter__`` is a no-op and the panel keeps its auto-follow-only
+    behaviour.
+
+    Cbreak (not raw) mode preserves ``Ctrl-C`` — killing the run still
+    works. ``select`` with a 100 ms timeout keeps the thread interruptible
+    so ``__exit__`` can join it within the 1 s bound.
+    """
+
+    def __init__(self, display: LiveRunDisplay, stdin: TextIO | None = None) -> None:
+        self._display = display
+        self._stdin: TextIO = stdin if stdin is not None else sys.stdin
+        self._thread: threading.Thread | None = None
+        self._stop_event = threading.Event()
+        self._original_termios: list[Any] | None = None
+        self._enabled: bool = False
+
+    def enabled(self) -> bool:
+        """True when :meth:`__enter__` actually started the input thread."""
+        return self._enabled
+
+    def _should_start(self) -> bool:
+        if os.environ.get(_INTERACTIVE_PANEL_ENV_VAR) == "0":
+            return False
+        if sys.platform == "win32":
+            return False
+        try:
+            if not self._stdin.isatty():
+                return False
+        except (ValueError, OSError):
+            return False
+        return True
+
+    def __enter__(self) -> _KeyboardListener:
+        if not self._should_start():
+            return self
+        fd = self._stdin.fileno()
+        self._original_termios = termios.tcgetattr(fd)
+        tty.setcbreak(fd)
+        self._enabled = True
+        self._thread = threading.Thread(
+            target=self._run, name="tolokaforge-panel-input", daemon=True
+        )
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self._stop_event.set()
+        thread = self._thread
+        self._thread = None
+        try:
+            if thread is not None:
+                thread.join(timeout=1.0)
+        finally:
+            if self._original_termios is not None:
+                fd = self._stdin.fileno()
+                termios.tcsetattr(fd, termios.TCSADRAIN, self._original_termios)
+                self._original_termios = None
+            self._enabled = False
+
+    def _run(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                ready, _, _ = select.select([self._stdin], [], [], 0.1)
+            except (ValueError, OSError):
+                # stdin closed or otherwise invalidated mid-run — exit
+                # the thread; termios restoration still runs in __exit__.
+                return
+            if not ready:
+                continue
+            try:
+                key = self._stdin.read(1)
+            except (ValueError, OSError):
+                return
+            if not key:
+                continue
+            self._dispatch(key)
+
+    def _dispatch(self, key: str) -> None:
+        if key == "j":
+            self._display._nav_next_trial()
+        elif key == "k":
+            self._display._nav_prev_trial()
+        elif key == "H":
+            self._display._nav_first_trial()
+        elif key == "L":
+            self._display._nav_last_trial()
+        elif key == "f":
+            self._display._toggle_auto_follow()
+
+
 class _NoopDisplayCtx:
     """Context manager returned by :meth:`LiveRunDisplay.for_mode` under
     ``PLAIN`` / ``LOG`` / ``NONE``. Enter and exit are pass-through; ``events``
@@ -626,6 +737,14 @@ class LiveRunDisplay:
         self._live: Live | None = None
         self._trials: dict[str, _TrialCard] = {}
         self._focused_trial_id: str | None = None
+        # ``True`` → focus tracks the most-recent lifecycle event (default,
+        # matches the pre-listener behaviour). Flipped to ``False`` by the
+        # nav callbacks; flipped back by :meth:`_toggle_auto_follow`.
+        self._auto_follow: bool = True
+        # POSIX keyboard listener; set in :meth:`__enter__` when the guards
+        # pass. ``None`` when stdin is not a TTY / on Windows / when the
+        # escape-hatch env var is set.
+        self._keyboard: _KeyboardListener | None = None
         self._total_trials: int = 0
         self._initial_completed: int = 0
         self._completed: int = 0
@@ -754,9 +873,14 @@ class LiveRunDisplay:
             root.addHandler(sink)
             self._replaced_log_handlers.append((handler, sink))
         self._sweep_child_bypass_handlers(dangerous_streams, _print_above)
+        self._keyboard = _KeyboardListener(self)
+        self._keyboard.__enter__()
         return self
 
     def __exit__(self, *exc_info: object) -> None:
+        if self._keyboard is not None:
+            self._keyboard.__exit__(*exc_info)
+            self._keyboard = None
         for logger_obj, sink in self._added_child_sinks:
             logger_obj.removeHandler(sink)
         self._added_child_sinks = []
@@ -876,7 +1000,8 @@ class LiveRunDisplay:
             )
             self._trials[trial_id] = card
             self._running += 1
-            self._focused_trial_id = trial_id
+            if self._auto_follow:
+                self._focused_trial_id = trial_id
             self._refresh_live_locked()
 
     def trial_progress(
@@ -926,7 +1051,8 @@ class LiveRunDisplay:
             if was_running and self._running > 0:
                 self._running -= 1
             self._completed += 1
-            self._focused_trial_id = trial_id
+            if self._auto_follow:
+                self._focused_trial_id = trial_id
             self._refresh_live_locked()
 
     def trial_failed(self, *, trial_id: str, error: str, retryable: bool) -> None:
@@ -941,7 +1067,8 @@ class LiveRunDisplay:
             if was_running and self._running > 0:
                 self._running -= 1
             self._failed += 1
-            self._focused_trial_id = trial_id
+            if self._auto_follow:
+                self._focused_trial_id = trial_id
             # Surface auth-shaped failures in a top-of-panel banner so
             # they don't hide as one row in ``fail N``. Fired on the
             # first auth-classified failure only — subsequent ones show
@@ -1011,7 +1138,8 @@ class LiveRunDisplay:
             card.binary_pass = binary_pass
             card.last_event_kind = "judged"
             card.last_update_ts = _now()
-            self._focused_trial_id = trial_id
+            if self._auto_follow:
+                self._focused_trial_id = trial_id
             self._refresh_live_locked()
 
     def run_finished(self, *, output_dir: Path) -> None:
@@ -1035,6 +1163,74 @@ class LiveRunDisplay:
         if self._live is None:
             return
         self._live.update(self._build_layout(), refresh=False)
+
+    # Keyboard-nav callbacks -----------------------------------------
+
+    def _nav_next_trial(self) -> None:
+        """Focus the next visible trial (in :meth:`_visible_cards` order)."""
+        with self._lock:
+            self._focus_at_offset_locked(1)
+
+    def _nav_prev_trial(self) -> None:
+        """Focus the previous visible trial (in :meth:`_visible_cards` order)."""
+        with self._lock:
+            self._focus_at_offset_locked(-1)
+
+    def _nav_first_trial(self) -> None:
+        """Focus the first visible trial in :meth:`_visible_cards` order."""
+        with self._lock:
+            visible = self._visible_cards()
+            if not visible:
+                return
+            self._auto_follow = False
+            self._focused_trial_id = visible[0].trial_id
+            self._refresh_live_locked()
+
+    def _nav_last_trial(self) -> None:
+        """Focus the last visible trial in :meth:`_visible_cards` order."""
+        with self._lock:
+            visible = self._visible_cards()
+            if not visible:
+                return
+            self._auto_follow = False
+            self._focused_trial_id = visible[-1].trial_id
+            self._refresh_live_locked()
+
+    def _toggle_auto_follow(self) -> None:
+        """Flip :attr:`_auto_follow`; when re-enabling, snap to newest event.
+
+        Re-enabling picks the card with the maximum ``last_update_ts`` (the
+        card auto-follow would have selected on the most-recent lifecycle
+        event) so ``f`` reads as "resume tracking" rather than "leave focus
+        parked on the manual pick".
+        """
+        with self._lock:
+            self._auto_follow = not self._auto_follow
+            if self._auto_follow and self._trials:
+                newest = max(self._trials.values(), key=lambda c: c.last_update_ts)
+                self._focused_trial_id = newest.trial_id
+            self._refresh_live_locked()
+
+    def _focus_at_offset_locked(self, delta: int) -> None:
+        """Move focus by ``delta`` positions in :meth:`_visible_cards` order.
+
+        ``delta = +1`` for ``j``, ``-1`` for ``k``. When the current focus
+        is not in the visible window (or unset), the offset is applied from
+        the first visible card so the first ``j`` press lands on the second
+        visible trial. Caller MUST already hold :attr:`_lock`.
+        """
+        visible = self._visible_cards()
+        if not visible:
+            return
+        self._auto_follow = False
+        current_ids = [card.trial_id for card in visible]
+        try:
+            current_index = current_ids.index(self._focused_trial_id or "")
+        except ValueError:
+            current_index = 0
+        new_index = max(0, min(len(visible) - 1, current_index + delta))
+        self._focused_trial_id = visible[new_index].trial_id
+        self._refresh_live_locked()
 
     # Internal helpers -----------------------------------------------
 
@@ -1352,13 +1548,19 @@ class LiveRunDisplay:
                 eta_seconds=self._estimate_eta_seconds(),
                 cost_style=cost_style,
             )
+            manual_nav_active = not self._auto_follow and self._total_trials > 0
         line = _format_bottom_bar(stats)
         # ``Text.from_markup`` interprets ``[warn]…[/warn]`` / ``[error]…[/error]``
         # against the shared theme. The "default" path stays on ``Text(...)``
         # so the pre-B3 goldens (unset-budget baseline) remain byte-identical.
-        if cost_style == "default":
-            return Text(line)
-        return Text.from_markup(line)
+        if not manual_nav_active:
+            if cost_style == "default":
+                return Text(line)
+            return Text.from_markup(line)
+        # Manual-nav hint prepends literal ``[j/k nav · f follow]`` — the
+        # bracketed prefix must be escape()'d so Rich does not consume it
+        # as an unknown style tag.
+        return Text.from_markup(_escape_markup("[j/k nav · f follow] ") + line)
 
 
 __all__ = [

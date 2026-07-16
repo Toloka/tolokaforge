@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 import itertools
 import logging
+import os
 import sys
 import threading
 from collections.abc import Callable
@@ -1835,3 +1836,199 @@ def test_main_region_size_reserves_space_for_banner_and_services() -> None:
     # Reserved 5 (banner) + 5 (services region) leaves 40 - 10 - 1 = 29
     # available; desired = 2 cards + 2 = 4; min wins.
     assert display._main_region_size(reserved=10) == 4
+
+
+# ---------------------------------------------------------------------------
+# Keyboard listener + manual focus mode
+# ---------------------------------------------------------------------------
+
+
+class _FakeStdin:
+    """StringIO-shaped stdin with a controllable ``isatty()`` result."""
+
+    def __init__(self, *, isatty: bool = True) -> None:
+        self._buffer = io.StringIO()
+        self._isatty = isatty
+
+    def isatty(self) -> bool:  # noqa: D401 — simple accessor
+        return self._isatty
+
+    def fileno(self) -> int:  # pragma: no cover — never called in these tests
+        raise io.UnsupportedOperation("fileno")
+
+    def read(self, size: int) -> str:
+        return self._buffer.read(size)
+
+
+def _seed_three_started_trials(display: LiveRunDisplay) -> None:
+    """Fire ``trial_started`` for a, b, c in order; focus lands on c."""
+    display.run_started(total_trials=10, initial_completed=0)
+    display.trial_started(trial_id="a:0", task_id="a", trial_index=0, total_index=0)
+    display.trial_started(trial_id="b:0", task_id="b", trial_index=0, total_index=1)
+    display.trial_started(trial_id="c:0", task_id="c", trial_index=0, total_index=2)
+
+
+def test_keyboard_listener_no_ops_when_stdin_not_a_tty() -> None:
+    from tolokaforge.dx.live_panel import _KeyboardListener
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    listener = _KeyboardListener(display, stdin=_FakeStdin(isatty=False))
+    with listener:
+        assert listener.enabled() is False
+    # Focus behaviour unchanged: auto-follow still tracks new events.
+    _seed_three_started_trials(display)
+    assert display._focused_trial_id == "c:0"
+    assert display._auto_follow is True
+
+
+def test_env_var_zero_disables_listener(monkeypatch: pytest.MonkeyPatch) -> None:
+    from tolokaforge.dx.live_panel import _INTERACTIVE_PANEL_ENV_VAR, _KeyboardListener
+
+    monkeypatch.setenv(_INTERACTIVE_PANEL_ENV_VAR, "0")
+    display = LiveRunDisplay(refresh_per_second=1000)
+    listener = _KeyboardListener(display, stdin=_FakeStdin(isatty=True))
+    with listener:
+        assert listener.enabled() is False
+
+
+def test_j_focuses_next_visible_trial_and_disables_auto_follow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    _seed_three_started_trials(display)
+    # Visible order is newest-first: [c, b, a]; initial focus on c (index 0).
+    assert [card.trial_id for card in display._visible_cards()] == ["c:0", "b:0", "a:0"]
+    assert display._focused_trial_id == "c:0"
+
+    display._nav_next_trial()
+
+    assert display._focused_trial_id == "b:0"
+    assert display._auto_follow is False
+
+
+def test_k_focuses_previous_visible_trial(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    _seed_three_started_trials(display)
+    # Move to visible-index 1 first so ``k`` has a previous to move back to.
+    display._nav_next_trial()
+    assert display._focused_trial_id == "b:0"
+
+    display._nav_prev_trial()
+
+    assert display._focused_trial_id == "c:0"
+    assert display._auto_follow is False
+
+
+@pytest.mark.parametrize(
+    ("key", "expected_trial_id"),
+    [("H", "c:0"), ("L", "a:0")],
+)
+def test_H_jumps_to_first_visible_and_L_to_last(
+    monkeypatch: pytest.MonkeyPatch, key: str, expected_trial_id: str
+) -> None:
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    _seed_three_started_trials(display)
+    # Visible order is [c, b, a]; H → first (c), L → last (a).
+    if key == "H":
+        display._nav_first_trial()
+    else:
+        display._nav_last_trial()
+
+    assert display._focused_trial_id == expected_trial_id
+    assert display._auto_follow is False
+
+
+def test_f_toggles_auto_follow_and_reasserts_current_leader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    _seed_three_started_trials(display)
+    # Move focus off the newest via j.
+    display._nav_next_trial()
+    assert display._focused_trial_id == "b:0"
+    assert display._auto_follow is False
+
+    display._toggle_auto_follow()
+
+    assert display._auto_follow is True
+    # Newest lifecycle event is c:0 (last trial_started) — focus snaps back.
+    assert display._focused_trial_id == "c:0"
+
+
+def test_manual_mode_suspends_auto_follow_on_new_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    _seed_three_started_trials(display)
+    display._nav_next_trial()
+    assert display._focused_trial_id == "b:0"
+    assert display._auto_follow is False
+
+    # trial_completed on a DIFFERENT trial must NOT steal focus while
+    # manual mode is active.
+    display.trial_completed(trial_id="a:0", binary_pass=True, score=1.0)
+
+    assert display._focused_trial_id == "b:0"
+
+
+def test_listener_restores_termios_on_exit_even_after_exception() -> None:
+    if sys.platform == "win32":
+        pytest.skip("termios not available on Windows")
+    import pty
+    import termios
+
+    from tolokaforge.dx.live_panel import _KeyboardListener
+
+    master_fd, slave_fd = pty.openpty()
+    try:
+        slave = os.fdopen(slave_fd, "r", buffering=1)
+        before = termios.tcgetattr(slave.fileno())
+        display = LiveRunDisplay(refresh_per_second=1000)
+        listener = _KeyboardListener(display, stdin=slave)
+        with pytest.raises(RuntimeError, match="boom"):
+            with listener:
+                assert listener.enabled() is True
+                # Verify cbreak actually disabled ICANON (canonical-line
+                # buffering) — that's the flag cbreak flips off.
+                mid = termios.tcgetattr(slave.fileno())
+                assert mid[3] & termios.ICANON == 0
+                raise RuntimeError("boom")
+        # After the exception + __exit__, ICANON is set again and every
+        # non-driver-managed flag matches the pre-cbreak snapshot. The
+        # driver reserves bit 0x20000000 (EXTPROC) on macOS PTYs, so mask
+        # it out of the comparison to keep the assertion portable.
+        after = termios.tcgetattr(slave.fileno())
+        assert after[3] & termios.ICANON, "ICANON must be restored"
+        _EXTPROC_MASK = 0x20000000
+        assert (after[3] & ~_EXTPROC_MASK) == (before[3] & ~_EXTPROC_MASK)
+        # Every non-c_lflag field must be byte-identical.
+        assert after[:3] == before[:3]
+        assert after[4:] == before[4:]
+        # Listener also cleared its saved settings on exit.
+        assert listener._original_termios is None
+    finally:
+        os.close(master_fd)
+
+
+def test_bottom_bar_hint_appears_in_manual_mode_and_hides_in_auto_follow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    display.run_started(total_trials=5, initial_completed=0)
+    display.trial_started(trial_id="a:0", task_id="a", trial_index=0, total_index=0)
+
+    # Auto-follow ON → hint absent, output byte-identical to pre-Stage-B.
+    display._auto_follow = True
+    auto = display._render_bottom_bar()
+    assert "[j/k nav · f follow]" not in auto.plain
+
+    # Auto-follow OFF while trials have started → hint present.
+    display._auto_follow = False
+    manual = display._render_bottom_bar()
+    assert "[j/k nav · f follow]" in manual.plain

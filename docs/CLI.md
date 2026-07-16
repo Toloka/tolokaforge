@@ -157,6 +157,23 @@ Log records from `configure_root_logging` — and from any child logger whose `S
 
 Under `--display={plain,log,none}` and on non-TTY streams, `LiveRunDisplay.for_mode(...)` returns a no-op context manager and the existing log-line stream is what the operator sees.
 
+### Keyboard navigation
+
+On a TTY, the panel opens a daemon-thread keyboard listener in POSIX `termios` cbreak mode. `_focused_trial_id` starts in **auto-follow** mode — focus tracks the most-recent lifecycle event, byte-identical to the pre-listener behaviour. Pressing any nav key flips the panel into **manual** mode; new lifecycle events still re-order `_visible_cards()` but focus stays where the operator put it. When manual mode is active and at least one trial has started, the bottom bar prepends `[j/k nav · f follow]` as a subtle hint.
+
+| Key | Action |
+|---|---|
+| `j` | Focus next visible trial (in `_visible_cards()` order — the same order the left pane shows) |
+| `k` | Focus previous visible trial |
+| `H` (capital) | Focus first visible trial |
+| `L` (capital) | Focus last visible trial |
+| `f` | Toggle auto-follow — when flipped back on, focus snaps to the trial with the newest `last_update_ts` |
+| any other | Ignored |
+
+Cbreak (not raw) mode preserves `Ctrl-C`, so killing the run still works.
+
+The listener short-circuits and leaves the panel in auto-follow-only mode when `sys.stdin.isatty()` is False (piped stdin, CI), when `sys.platform == "win32"` (different terminal-input model), or when `TOLOKAFORGE_INTERACTIVE_PANEL=0` is set (explicit escape hatch for terminal-compat issues or operators who prefer the pre-listener behaviour). Termios settings are captured on `LiveRunDisplay.__enter__` and restored under a `try / finally` on `__exit__`, so an in-run exception still leaves the terminal usable.
+
 ### Precedence
 
 1. Explicit `--display=…` flag.
