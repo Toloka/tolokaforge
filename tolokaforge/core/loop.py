@@ -210,6 +210,41 @@ class _NullLoopObserver:
 _NULL_LOOP_OBSERVER: LoopObserver = _NullLoopObserver()
 
 
+class InterventionHandler(Protocol):
+    """Inbound seam — drains queued interventions at pause points and applies
+    them to the running loop.
+
+    Symmetric to :class:`LoopObserver` (outbound). Called by
+    :class:`ToolCallingLoop` before each turn; the handler owns dispatch on
+    intervention *kind* so the loop stays decoupled from session-specific
+    intervention types. Handlers mutate ``messages`` in place (e.g. append
+    a user-role :class:`Message` for an ``InjectMessage``) and record ack
+    outcomes back to whatever store the caller wired in.
+
+    Default is :data:`_NULL_INTERVENTION_HANDLER` — sealed batch mode
+    incurs one no-op call per turn.
+    """
+
+    def drain_and_apply(self, messages: list[Message]) -> None:
+        """Drain pending interventions and apply them to the running trial.
+
+        Called at the top of each turn, before the LLM generate call. The
+        handler must return quickly (drain from a queue, apply to messages,
+        record outcomes) — the loop's producer thread is blocked while this
+        runs.
+        """
+
+
+class _NullInterventionHandler:
+    """No-op :class:`InterventionHandler` — the default when no pump is wired."""
+
+    def drain_and_apply(self, messages: list[Message]) -> None:
+        return None
+
+
+_NULL_INTERVENTION_HANDLER: InterventionHandler = _NullInterventionHandler()
+
+
 ErrorClassifier = Callable[[Exception], TerminationDecision]
 
 
@@ -285,6 +320,7 @@ class ToolCallingLoop:
     )
     classify_error: ErrorClassifier = classify_loop_error
     observer: LoopObserver = _NULL_LOOP_OBSERVER
+    intervention_handler: InterventionHandler = _NULL_INTERVENTION_HANDLER
 
     # Captured from the first generation's effective system prompt.
     _captured_effective_prompt: str | None = field(default=None, init=False)
@@ -301,6 +337,7 @@ class ToolCallingLoop:
         termination_reason: TerminationReason | None = None
 
         for turn in range(self.config.max_turns):
+            self.intervention_handler.drain_and_apply(messages)
             self.observer.on_turn_start(turn)
             timeout_decision = self._check_episode_timeout(start_time)
             if timeout_decision is not None:

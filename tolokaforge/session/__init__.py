@@ -36,6 +36,7 @@ from tolokaforge.session.events import (
     TurnStarted,
 )
 from tolokaforge.session.in_process import InProcessTrialSession, QueuedIntervention
+from tolokaforge.session.intervention_pump import SessionInterventionHandler
 from tolokaforge.session.interventions import (
     ApproveTool,
     EditState,
@@ -76,6 +77,7 @@ __all__ = [
     "RejectTool",
     "Resume",
     "ResumeAcknowledged",
+    "SessionInterventionHandler",
     "SessionLoopObserver",
     "SessionRegistry",
     "TerminalReached",

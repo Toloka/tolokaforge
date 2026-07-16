@@ -37,7 +37,7 @@ from tolokaforge.core.llm.presets import (
     resolve_effective_preset,
     resolve_policy_names,
 )
-from tolokaforge.core.loop import LoopObserver
+from tolokaforge.core.loop import InterventionHandler, LoopObserver
 from tolokaforge.core.models import (
     Grade,
     GradeComponents,
@@ -110,6 +110,22 @@ class ConductorContext:
     a :class:`~tolokaforge.session.SessionLoopObserver`. Other observers
     (e.g. a metrics tap, a debug hook, a rule-based safety monitor) plug
     in the same way without further changes to the conductor.
+    """
+    intervention_handler_provider: Callable[[str], InterventionHandler | None] | None = None
+    """Optional per-trial :class:`InterventionHandler` factory — the inbound
+    counterpart to :attr:`observer_provider`.
+
+    Called with ``spec.trial_id`` at the top of each trial to produce an
+    optional handler that drains + applies interventions at every turn
+    boundary. ``None`` (or a provider returning ``None``) keeps the trial
+    sealed on the inbound side too — no pump call at pause points.
+
+    Generic like ``observer_provider``. Session-based intervention
+    application (the Open Agent Loop pump) is one specific caller-side
+    wiring: pass a provider that returns a
+    :class:`~tolokaforge.session.SessionInterventionHandler`. Alternate
+    handlers (rule-based safety enforcer, batch-scripted operator, etc.)
+    plug in the same way without conductor changes.
     """
 
 
@@ -306,6 +322,7 @@ class InProcessConductor:
         output_dir: Path,
         request_limiter: GlobalRateLimiter | None = None,
         observer_provider: Callable[[str], LoopObserver | None] | None = None,
+        intervention_handler_provider: Callable[[str], InterventionHandler | None] | None = None,
     ) -> None:
         self.adapter = adapter
         self._artifact_writer = artifact_writer
@@ -319,6 +336,18 @@ class InProcessConductor:
         self.output_dir = output_dir
         self.request_limiter = request_limiter
         self.observer_provider = observer_provider
+        self.intervention_handler_provider = intervention_handler_provider
+
+    def _maybe_build_intervention_handler(self, trial_id: str) -> InterventionHandler | None:
+        """Consult the ``intervention_handler_provider`` for this trial's pump.
+
+        Symmetric to :meth:`_maybe_build_loop_observer`. Returns ``None`` when
+        no provider is set or the provider returns ``None`` for this trial —
+        the sealed default.
+        """
+        if self.intervention_handler_provider is None:
+            return None
+        return self.intervention_handler_provider(trial_id)
 
     def _maybe_build_loop_observer(self, trial_id: str) -> LoopObserver | None:
         """Consult the ``observer_provider`` for this trial's loop observer.
@@ -607,6 +636,7 @@ class InProcessConductor:
             episode_timeout_s = run_episode_s
 
         loop_observer = self._maybe_build_loop_observer(spec.trial_id)
+        intervention_handler = self._maybe_build_intervention_handler(spec.trial_id)
 
         runner = TrialRunner(
             task_id=task.task_id,
@@ -624,6 +654,7 @@ class InProcessConductor:
             verbose=self.verbose,
             strict=self.strict,
             loop_observer=loop_observer,
+            intervention_handler=intervention_handler,
         )
 
         # Use initial_user_message if provided (e.g., tool-use style tasks).
