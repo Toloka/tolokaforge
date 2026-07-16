@@ -6,6 +6,8 @@ All notable changes to this project are documented in this file.
 
 ### Feat
 
+- **examples**: multi_service_endpoint_add — the runnable filesystem_dir reset-recipe reference: source-directory isolation:reset seeded from a pristine tree, an in-container test-runner service whose real unittest exit code is the grading floor, and an auto-dev scenario where the agent reads existing code + writes a missing endpoint + verifies via the test-runner (#403).
+- **assets**: filesystem_dir directory-tree seed digest support in compute_seed_digest, project-loader verification, and `tolokaforge assets stamp` — unblocks any pack declaring a filesystem_dir seed (#403).
 - **examples**: multi_service_cache_debug — the runnable redis_dump reset-recipe reference: redis isolation:reset seeded with poisoned cache state, a FastAPI cache-invalidation bug the agent diagnoses over http_request across the app + cache layers, three-way note grading, and a failure path that exercises #418 per-service log capture (#402)
 - **examples**: multi_service_helpdesk_workflow flagship pack — four FastAPI services + in-container postgres-FTS policy search, adversarial three-path resolution graded on policy correctness, explicit ephemeral substrate, and the first documented LLM user-simulator persona pattern (#401)
 - **runtime**: per-service log capture now also fires on a completed-but-red grade (`status: completed`, `binary_pass: false`), not only execution failures — writes `services/<service>.log` + amends `metrics.yaml.captured_service_logs` before teardown (#418)

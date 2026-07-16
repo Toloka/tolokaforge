@@ -16,9 +16,10 @@ runtime backend lifecycle, see
 ## Running the examples
 
 If you want to see the machinery work before authoring your own stack, the
-repo ships five multi-container packs that run end-to-end with one command
+repo ships six multi-container packs that run end-to-end with one command
 each. The first four form a ladder — start at the top for the simplest shape,
-drop to the flagship; the last is a debugging scenario on a different axis.
+drop to the flagship; the last two are scenarios on different axes — a
+debugging investigation and an auto-dev build-and-verify loop.
 
 | Pack | What makes it different |
 | --- | --- |
@@ -27,6 +28,7 @@ drop to the flagship; the last is a debugging scenario on a different axis.
 | [`multi_service_lot_ops`](../examples/native/multi_service_lot_ops/README.md) | The first pack to grade the substrate. The agent mutates postgres over a FastAPI API; `state_checks.db_probes` verifies the row directly through a read-only `grader` role — an independent oracle, not the API the agent wrote through. |
 | [`multi_service_helpdesk_workflow`](../examples/native/multi_service_helpdesk_workflow/README.md) | The flagship. Five FastAPI services + an in-container postgres-FTS policy corpus. The agent must reconcile customer, product, site, and policy data to pick the one policy-valid resolution of three plausible paths; a wrong path grades down even with a well-formed CRM row. Declares its postgres substrate `ephemeral` explicitly and formalises the LLM user-simulator persona pattern. |
 | [`multi_service_cache_debug`](../examples/native/multi_service_cache_debug/README.md) | The debugging scenario, and the `redis_dump` reset reference. A `redis` service `isolation: reset` is re-seeded each trial from an RDB carrying poisoned cache state; the agent diagnoses why the orders API serves stale reads across the app + cache layers and writes a root-cause note, graded three ways (`state_checks` + `transcript_rules` + `llm_judge`). A grade-fail exercises the #418 per-service log capture. |
+| [`multi_service_endpoint_add`](../examples/native/multi_service_endpoint_add/README.md) | The auto-dev scenario, and the `filesystem_dir` reset reference. A source-directory `testrunner` service `isolation: reset` is re-seeded each trial from a pristine FastAPI source tree over a volume shared with the agent's `/work`; the agent reads the code, writes a missing `GET /orders/{id}/summary` endpoint, and runs the real suite over `http_request` to the test-runner, whose actual `unittest` exit code is the decisive grading floor. |
 
 ### The command
 
@@ -38,6 +40,7 @@ scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_servic
 scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_lot_ops/run_config.yaml
 scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_helpdesk_workflow/run_config.yaml
 scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_cache_debug/run_config.yaml
+scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_endpoint_add/run_config.yaml
 ```
 
 `scripts/with_env.sh` loads `.env` (so `OPENROUTER_API_KEY` reaches the run)
@@ -60,6 +63,7 @@ pack's `run_config.yaml` for the exact models):
 | `multi_service_lot_ops` | Haiku agent + user, Sonnet judge | ~$0.30–1.00 |
 | `multi_service_helpdesk_workflow` | Haiku agent + user, Sonnet judge, 18 turns | ~$0.50–1.50 |
 | `multi_service_cache_debug` | Haiku agent + user, Sonnet judge, 20 turns | ~$0.50–1.50 |
+| `multi_service_endpoint_add` | Haiku agent + user, Sonnet judge, 25 turns, `repeats: 2` | ~$1–3 |
 
 ### What to look at in the output
 
@@ -425,6 +429,12 @@ reference.
   re-seeded from a poisoned-cache RDB each trial, a cache-invalidation bug the
   agent diagnoses across the app + cache layers, three-way note grading, and a
   grade-fail that exercises #418 per-service log capture
+- [`examples/native/multi_service_endpoint_add/README.md`](../examples/native/multi_service_endpoint_add/README.md)
+  — the runnable `filesystem_dir` reset reference: a `reset` source-directory
+  `testrunner` service re-seeded from a pristine FastAPI source tree over a
+  volume shared with the agent's `/work`, an auto-dev loop where the agent adds
+  a missing endpoint and runs the real suite over HTTP, and test-execution
+  grading whose decisive floor is the suite's actual exit code
 - [`examples/native/example-microservices-pack/`](../examples/native/example-microservices-pack/)
   — the schema reference pack: full inheritance/override matrix across five
   tasks (reference only, see its README before running)

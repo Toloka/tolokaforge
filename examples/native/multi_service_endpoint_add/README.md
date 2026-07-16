@@ -118,10 +118,9 @@ examples/native/multi_service_endpoint_add/
 │       └── tests/
 │           ├── test_existing.py        # regression guard for the 3 existing endpoints
 │           └── test_summary.py         # the failing target: GET /orders/{id}/summary
-├── testrunner/
-│   └── main.py                         # infra (bind-mounted RO): GET /health + POST /run-tests
 ├── shared/
 │   ├── environment.compose.yaml        # 4-service compose (testrunner reset, rest ephemeral); shared `source` volume
+│   ├── testrunner/main.py              # infra (bind-mounted RO): GET /health + POST /run-tests
 │   └── app-db/init.sql                 # orders + customers substrate
 └── dataset/tasks/endpoint_add/
     ├── task.yaml                       # inherits the project default_environment whole; no environment_manifest

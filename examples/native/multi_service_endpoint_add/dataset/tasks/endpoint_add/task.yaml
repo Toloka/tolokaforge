@@ -20,7 +20,7 @@ initial_state:
   filesystem: {}
 tools:
   agent:
-    enabled: ["read_file", "list_dir", "grep_workspace", "write_file", "http_request"]
+    enabled: ["read_file", "list_dir", "write_file", "http_request"]
     http_request:
       allowed_hosts:
         - "testrunner:8000"
@@ -42,7 +42,7 @@ user_simulator:
       passes.
 policies:
   guidance:
-    - "The codebase is in `/work`: `app.py` is the FastAPI service, `tests/` holds the suite. Read it with `read_file` / `list_dir` / `grep_workspace` and edit with `write_file`. Follow the patterns already in `app.py` (asyncpg pool, the `_fetch_one` helper, path-parameter routes)."
+    - "The codebase is in `/work`: `app.py` is the FastAPI service, `tests/` holds the suite. Read it with `read_file` / `list_dir` and edit with `write_file`. Follow the patterns already in `app.py` (asyncpg pool, the `_fetch_one` helper, path-parameter routes)."
     - "Add `GET /orders/{order_id}/summary`: return the order joined with its customer. `tests/test_summary.py` encodes the exact response shape and status codes — treat it as the contract; do not weaken or edit the test."
     - "Verify by calling `POST http://testrunner:8000/run-tests` with the `http_request` tool — it runs the full suite against your edited source and returns pass/fail plus output. Re-run it after your final edit so the recorded result reflects the finished code."
 grading: "grading.yaml"
