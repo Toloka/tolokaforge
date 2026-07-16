@@ -47,6 +47,7 @@ from tolokaforge.session.interventions import (
     Resume,
     TrialIntervention,
 )
+from tolokaforge.session.loop_observer import SessionLoopObserver
 from tolokaforge.session.protocols import (
     ParticipantHandle,
     ParticipantRole,
@@ -74,6 +75,7 @@ __all__ = [
     "RejectTool",
     "Resume",
     "ResumeAcknowledged",
+    "SessionLoopObserver",
     "TerminalReached",
     "ToolCallEmitted",
     "ToolResultObserved",
