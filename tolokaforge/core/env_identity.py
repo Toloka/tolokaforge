@@ -21,7 +21,7 @@ import hashlib
 import json
 import re
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import yaml
 from pydantic import BaseModel, Field
@@ -201,16 +201,35 @@ def _looks_like_dsn(value: str) -> bool:
     return bool(parsed.scheme and parsed.netloc)
 
 
+_PASSWORD_QUERY_KEYS = frozenset({"password", "sslpassword", "pgpassword"})
+
+
 def _redact_dsn(value: str) -> str:
-    """Replace an embedded netloc password with ``***``, preserving every
-    other component. A value without a password is returned unchanged."""
+    """Replace an embedded password with ``***`` wherever it lives — the
+    netloc userinfo password and any password-bearing query parameter
+    (``password``, ``sslpassword``, ``pgpassword``, matched case-insensitively).
+    Every other component is preserved; a value carrying no password anywhere
+    is returned unchanged."""
     parsed = urlsplit(value)
-    if parsed.password is None:
+    redacted_query = _redact_query_passwords(parsed.query)
+    if parsed.password is None and redacted_query == parsed.query:
         return value
-    userinfo, _, hostport = parsed.netloc.rpartition("@")
-    user = userinfo.partition(":")[0]
-    redacted_netloc = f"{user}:***@{hostport}"
-    return urlunsplit((parsed.scheme, redacted_netloc, parsed.path, parsed.query, parsed.fragment))
+    netloc = parsed.netloc
+    if parsed.password is not None:
+        userinfo, _, hostport = netloc.rpartition("@")
+        user = userinfo.partition(":")[0]
+        netloc = f"{user}:***@{hostport}"
+    return urlunsplit((parsed.scheme, netloc, parsed.path, redacted_query, parsed.fragment))
+
+
+def _redact_query_passwords(query: str) -> str:
+    if not query:
+        return query
+    pairs = parse_qsl(query, keep_blank_values=True)
+    redacted = [
+        (key, "***" if key.lower() in _PASSWORD_QUERY_KEYS else value) for key, value in pairs
+    ]
+    return urlencode(redacted, safe="*")
 
 
 def _service_mounts(body: dict[str, Any]) -> list[str]:
