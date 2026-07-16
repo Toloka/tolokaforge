@@ -21,10 +21,12 @@ from typing import Any
 
 import litellm
 import openai
+import tenacity.nap
 import yaml
 from litellm import completion
 from tenacity import (
     RetryCallState,
+    Retrying,
     before_sleep_log,
     retry,
     retry_if_exception,
@@ -40,6 +42,7 @@ from tolokaforge.core.llm.usage import CostSource, Usage, UsageExtractor
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import Message, MessageRole, ModelConfig, ToolCall
 from tolokaforge.core.pricing import estimate_cost
+from tolokaforge.core.run_display_events import LLMCallObservation
 
 # Silence litellm's stdout banners ("Provider List: https://docs.litellm.ai/docs/providers",
 # "LiteLLM completion() model= ...") - pure noise in probe/eval logs; no effect on behavior/results.
@@ -63,8 +66,8 @@ class LLMApiTimeoutError(RuntimeError):
     """Raised when an LLM API call exceeds the configured timeout budget.
 
     Carries through ``_call_with_key_rotation`` un‑wrapped so the outer
-    ``@retry`` on :meth:`LLMClient.generate` can decline to re‑attempt
-    (see :func:`_should_retry_exception`).
+    :class:`tenacity.Retrying` controller in :meth:`LLMClient.generate` can
+    decline to re‑attempt (see :func:`_should_retry_exception`).
     """
 
 
@@ -197,7 +200,7 @@ def _is_dict_map_array_shape(schema: dict[str, Any]) -> bool:
 
 
 def _should_retry_exception(exc: BaseException) -> bool:
-    """Determine if an exception should drive the outer ``@retry`` loop.
+    """Predicate for the outer :class:`tenacity.Retrying` controller in ``generate``.
 
     Returns ``True`` for all transient errors **except**
     :class:`LLMApiTimeoutError` — which is already the result of an
@@ -271,8 +274,8 @@ def _detect_synthetic_envelope(response: Any) -> str | None:
     and (because the placeholder reasoning block is echoed back by
     :class:`GeminiReasoningCodec.encode_for_replay`) poisons every
     subsequent turn. :meth:`LLMClient.generate` raises
-    :class:`RuntimeError` on a non-``None`` return so tenacity's
-    ``@retry`` re-attempts the call.
+    :class:`RuntimeError` on a non-``None`` return so its
+    :class:`tenacity.Retrying` controller re-attempts the call.
 
     Returns
     -------
@@ -400,6 +403,11 @@ class LLMClient:
         self._api_call_timeout_s = self._load_api_timeout()
         self._api_timeout_retries = self._load_api_timeout_retries()
         self._api_call_wall_timeout_s = self._load_api_wall_timeout()
+
+        # Sleep hook the outer-retry ``Retrying`` controller in ``generate``
+        # binds per call. Tests replace it with a no-op to make the 5-attempt
+        # ``wait_exponential(multiplier=2, min=4, max=60)`` backoff instant.
+        self._retry_sleep: Callable[[float], None] = tenacity.nap.sleep
 
     # ------------------------------------------------------------------
     # Model capabilities — preserved entry point for tests that reassign it
@@ -927,13 +935,6 @@ class LLMClient:
     # generate()
     # ------------------------------------------------------------------
 
-    @retry(
-        stop=stop_after_attempt(5),
-        wait=wait_exponential(multiplier=2, min=4, max=60),
-        retry=retry_if_exception(_should_retry_exception),
-        before_sleep=before_sleep_log(get_logger("llm_retry").logger, logging.WARNING),
-        reraise=True,
-    )
     def generate(
         self,
         system: str | None = None,
@@ -945,14 +946,30 @@ class LLMClient:
         seed: int | None = None,
         reasoning: ReasoningConfig | None = None,
         top_p: float | None = None,
+        observation: LLMCallObservation | None = None,
     ) -> GenerationResult:
         """Generate completion from LLM.
 
-        Orchestrator for the four-phase request pipeline:
-        :meth:`_prepare_prompt_and_tools` -> :meth:`_build_kwargs` ->
-        :meth:`_call_with_key_rotation` -> :meth:`_assemble_result`. Every
-        provider-specific transform lives in one of the ``ModelCapabilities``
-        policies; the orchestrator itself never branches on provider.
+        Drives up to five attempts through a per-call
+        :class:`tenacity.Retrying` controller with
+        ``stop_after_attempt(5)`` / ``wait_exponential(multiplier=2, min=4,
+        max=60)`` and :func:`_should_retry_exception` — the outer semantic
+        retry that bounds cascading provider failures (rate limits, 5xx,
+        synthetic-envelope re-raises). Each attempt runs the four-phase
+        request pipeline via :meth:`_generate_once`
+        (:meth:`_prepare_prompt_and_tools` -> :meth:`_build_kwargs` ->
+        :meth:`_call_with_key_rotation` -> :meth:`_assemble_result`);
+        every provider-specific transform lives in a ``ModelCapabilities``
+        policy so this orchestrator never branches on provider.
+
+        When ``observation`` is supplied, the controller fires the
+        LLM-call trio into ``observation.events`` — ``llm_call_started``
+        before each attempt, ``llm_call_finished`` after (with
+        ``duration_s`` and ``error`` set on exception), and
+        ``llm_retry_scheduled`` in the ``before_sleep`` hook BEFORE the
+        backoff so a display can render "next attempt in Xs" while the
+        pause is still in flight. ``observation=None`` fires nothing and
+        keeps output byte-identical.
 
         Returns a :class:`GenerationResult` with text, tool-calls, full
         :class:`Usage` counters, latency, cost, and structured reasoning.
@@ -962,6 +979,118 @@ class LLMClient:
         if self.provider == "mock":
             return self._mock_generate(messages, tools)
 
+        retrying = self._build_retrying(observation)
+        for attempt in retrying:
+            with attempt:
+                attempt_num = attempt.retry_state.attempt_number
+                self._fire_call_started(observation, attempt_num)
+                start = time.monotonic()
+                try:
+                    result = self._generate_once(
+                        system=system,
+                        messages=messages,
+                        tools=tools,
+                        tool_choice=tool_choice,
+                        temperature=temperature,
+                        seed=seed,
+                        reasoning=reasoning,
+                        top_p=top_p,
+                        max_tokens=max_tokens,
+                    )
+                except BaseException as exc:
+                    self._fire_call_finished(
+                        observation, attempt_num, time.monotonic() - start, exc
+                    )
+                    raise
+                self._fire_call_finished(observation, attempt_num, time.monotonic() - start, None)
+                return result
+        raise RuntimeError("Retrying controller exited without a result")
+
+    def _build_retrying(self, observation: LLMCallObservation | None) -> Retrying:
+        """Build the per-call outer :class:`Retrying` controller.
+
+        Fresh per call so ``self._retry_sleep`` is read at call time (tests
+        stub it after construction) and the ``before_sleep`` closure captures
+        the observation of *this* call — the client instance is shared across
+        concurrent trials.
+        """
+        log_hook = before_sleep_log(get_logger("llm_retry").logger, logging.WARNING)
+
+        def _before_sleep(retry_state: RetryCallState) -> None:
+            log_hook(retry_state)
+            if observation is None:
+                return
+            next_action = retry_state.next_action
+            outcome = retry_state.outcome
+            exc = outcome.exception() if outcome is not None else None
+            observation.events.llm_retry_scheduled(
+                trial_id=observation.trial_id,
+                role=observation.role,
+                provider=self.provider,
+                model=self.model_name,
+                attempt=retry_state.attempt_number,
+                next_attempt_in_s=float(next_action.sleep) if next_action else 0.0,
+                reason=exc.__class__.__name__ if exc is not None else "",
+            )
+
+        return Retrying(
+            stop=stop_after_attempt(5),
+            wait=wait_exponential(multiplier=2, min=4, max=60),
+            retry=retry_if_exception(_should_retry_exception),
+            before_sleep=_before_sleep,
+            sleep=self._retry_sleep,
+            reraise=True,
+        )
+
+    def _fire_call_started(self, observation: LLMCallObservation | None, attempt: int) -> None:
+        if observation is None:
+            return
+        observation.events.llm_call_started(
+            trial_id=observation.trial_id,
+            role=observation.role,
+            provider=self.provider,
+            model=self.model_name,
+            attempt=attempt,
+        )
+
+    def _fire_call_finished(
+        self,
+        observation: LLMCallObservation | None,
+        attempt: int,
+        duration_s: float,
+        exc: BaseException | None,
+    ) -> None:
+        if observation is None:
+            return
+        observation.events.llm_call_finished(
+            trial_id=observation.trial_id,
+            role=observation.role,
+            provider=self.provider,
+            model=self.model_name,
+            attempt=attempt,
+            duration_s=duration_s,
+            error=None if exc is None else f"{type(exc).__name__}: {exc}",
+        )
+
+    def _generate_once(
+        self,
+        *,
+        system: str | None,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None,
+        tool_choice: str | None,
+        temperature: float | None,
+        seed: int | None,
+        reasoning: ReasoningConfig | None,
+        top_p: float | None,
+        max_tokens: int | None,
+    ) -> GenerationResult:
+        """One outer-retry attempt: prepare → build → call → detect → assemble.
+
+        A synthetic-envelope detection raises :class:`RuntimeError` so the
+        outer :class:`Retrying` controller re-attempts the call — see
+        :func:`_detect_synthetic_envelope`.
+        """
         wire_system, sanitized_tools, effective_system_prompt = self._prepare_prompt_and_tools(
             system, tools
         )
@@ -981,9 +1110,6 @@ class LLMClient:
         latency = time.time() - start_time
         synthetic = _detect_synthetic_envelope(response)
         if synthetic is not None:
-            # Raise so tenacity's ``@retry`` decorator re-attempts the
-            # call. Consuming the stub here would silently corrupt the
-            # trajectory — see ``_detect_synthetic_envelope`` docstring.
             self.logger.warning(
                 "Discarding synthetic-error envelope from upstream provider",
                 native_finish_reason=synthetic,
@@ -1299,9 +1425,9 @@ class LLMClient:
                 return self._call_completion_with_timeout_retry(kwargs)
             except LLMApiTimeoutError:
                 # Pass through unchanged so ``_should_retry_exception`` can
-                # opt the outer ``@retry`` out of re-attempting the call.
-                # Wrapping it in a generic ``RuntimeError`` here would
-                # destroy the subtype and let the outer retry blow the
+                # opt the outer ``Retrying`` controller out of re-attempting
+                # the call. Wrapping it in a generic ``RuntimeError`` here
+                # would destroy the subtype and let the outer retry blow the
                 # bounded budget up by ``stop_after_attempt(5)``×.
                 raise
             except Exception as e:
