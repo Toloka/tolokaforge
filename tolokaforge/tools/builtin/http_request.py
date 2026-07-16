@@ -40,7 +40,7 @@ class HTTPRequestTool(Tool):
                     "properties": {
                         "method": {
                             "type": "string",
-                            "enum": ["GET", "POST", "PUT", "DELETE"],
+                            "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"],
                             "description": "HTTP method",
                         },
                         "url": {
