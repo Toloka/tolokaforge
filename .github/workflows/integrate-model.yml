@@ -1,0 +1,767 @@
+name: Model auto-integration
+
+# Single-stage auto-integration. A maintainer adds the trigger label to an onboarding PR and
+# ONE run does OBSERVE (capability + shape-variant + wire probes on the DEFAULT preset) and,
+# if the observe is clean, chains STRAIGHT INTO RESOLVE (deterministic fix-loop + finalize) in
+# the SAME job - no cross-workflow label handoff, because a GITHUB_TOKEN label add cannot
+# trigger a second workflow. By default it does NOT merge (the PR is the human review gate);
+# optional auto-merge (ARENA_AUTOMATION_AUTO_MERGE_ENABLED=true) squash-merges on success, and
+# never a disposable test/* branch.
+#
+# PR title convention (the workflow reads the model from it):
+#   integrate: <openrouter-model-slug>    e.g. "integrate: anthropic/claude-opus-4.8"
+# The provider is always openrouter (the arena routing); the slug is the exact OpenRouter id.
+#
+# Auth: BOTH the AGENT (Claude Code CLI) and the CANDIDATE model run on the OpenRouter budget
+# (ARENA_AUTOMATION_OPENROUTER_API_KEY). The candidate is probed directly via OpenRouter (.env); the
+# agent speaks the Anthropic Messages API, so a LiteLLM gateway bridges Anthropic /v1/messages ->
+# openrouter/<model>. Nothing uses a first-party ANTHROPIC_API_KEY (avoids its workspace usage cap).
+
+on:
+  pull_request:
+    types: [labeled]
+  # The Slack poller (slack-integrate.yml) dispatches this once per resolved model. A label or
+  # PR created with GITHUB_TOKEN cannot trigger the labeled event (the Actions recursion guard),
+  # and workflow_dispatch is one of its two exceptions - so the poller opens the PR and then
+  # dispatches here with its number + head branch. Every value the labeled path reads from the
+  # PR event has a `|| inputs.*` fallback below, so the pipeline body is identical either way.
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "PR number the poller opened for this model"
+        required: true
+      head_ref:
+        description: "PR head branch to check out and commit the integration back to"
+        required: true
+      model:
+        description: "OpenRouter model slug, e.g. x-ai/grok-4.5"
+        required: true
+      source:
+        description: "what triggered it (e.g. slack); informational only"
+        required: false
+        default: manual
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  # One run per PR at a time. A re-label while a run is in flight queues a second run that
+  # starts after the first finishes (cancel-in-progress: false), so re-labelling serializes.
+  group: integrate-${{ github.event.pull_request.number || inputs.pr }}
+  cancel-in-progress: false
+
+jobs:
+  integrate:
+    # Start on the trigger label (human onboarding PR) OR a poller dispatch. Any other label
+    # is a no-op.
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'automation:integrate-model'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number || inputs.pr }}
+      # Untrusted input: only ever referenced as "$PR_TITLE" inside a shell, never
+      # interpolated into a script body. On a dispatch there is no PR-event title, so synthesize
+      # the same `integrate: <slug>` convention the parser expects from the model input.
+      PR_TITLE: "${{ github.event.pull_request.title || format('integrate: {0}', inputs.model) }}"
+      # Only a real pull_request event can be a fork; a dispatch is always same-repo (guard the
+      # null so `null != repo` does not read as a fork and reject the run).
+      IS_FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+      # Observe repeat counts + parallelism (repo Actions variables; defaults 15/10/10/4).
+      CAPABILITY_K: ${{ vars.OBSERVE_CAPABILITY_K || '15' }}
+      WIRE_K: ${{ vars.OBSERVE_WIRE_K || '10' }}
+      WORKERS: ${{ vars.OBSERVE_WORKERS || '10' }}
+      # Flat (node x rep) pool width for the capability + variant steps. The candidate key does
+      # not rotate, so it is bounded by the OpenRouter rate limit (~10-16 safe). Raised from the
+      # old per-rep width of 4 now that nodes AND repeats share the pool.
+      CAP_PARALLEL: ${{ vars.OBSERVE_CAP_PARALLEL || '10' }}
+      # Resolve fix-loop config.
+      MAX_ITER: ${{ vars.RESOLVE_MAX_ITER || '8' }}
+      AGENT_MODEL: ${{ vars.RESOLVE_AGENT_MODEL || 'claude-opus-4-8' }}
+      # The agent runs on the OpenRouter budget via a LiteLLM gateway (see the "Start LiteLLM
+      # gateway" step), NOT the capped first-party ANTHROPIC_API_KEY workspace. AGENT_MODEL is the
+      # alias shared by the CLI + gateway; RESOLVE_AGENT_OR_MODEL is the OpenRouter backing model.
+      RESOLVE_AGENT_OR_MODEL: ${{ vars.RESOLVE_AGENT_OR_MODEL || 'openrouter/anthropic/claude-opus-4.8' }}
+      RESOLVE_MAX_TURNS: ${{ vars.RESOLVE_MAX_TURNS || '80' }}
+      RESOLVE_CAPABILITY_K: ${{ vars.RESOLVE_CAPABILITY_K || '5' }}
+      RESOLVE_WIRE_K: ${{ vars.RESOLVE_WIRE_K || '10' }}
+      RESOLVE_CAP_PARALLEL: ${{ vars.RESOLVE_CAP_PARALLEL || '10' }}
+      # Slack thread notifications (all optional; empty -> automation slack
+      # no-ops). One thread per PR: a root plus milestone replies (observe/resolve started,
+      # clean, integrated, needs-human). SLACK_MENTIONS is a comma-separated Slack user-id list
+      # pinged ONLY on terminal / needs-human / error notifications.
+      SLACK_BOT_TOKEN: ${{ secrets.ARENA_AUTOMATION_SLACK_BOT_TOKEN }}
+      SLACK_CHANNEL: ${{ vars.ARENA_AUTOMATION_SLACK_CHANNEL }}
+      SLACK_MENTIONS: ${{ vars.ARENA_AUTOMATION_SLACK_MENTIONS }}
+      # Run + PR permalinks, passed to the Slack notifier as <url|label> links.
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      PR_URL: ${{ github.server_url }}/${{ github.repository }}/pull/${{ github.event.pull_request.number || inputs.pr }}
+    steps:
+      - name: Reject fork PRs (no secrets on the pull_request event)
+        if: env.IS_FORK == 'true'
+        run: |
+          gh pr edit "$PR" -R "$REPO" \
+            --remove-label 'automation:integrate-model' \
+            --add-label 'automation:integrate-needs-human'
+          gh pr comment "$PR" -R "$REPO" --body \
+            "Auto-integration does not run on fork PRs (secrets are unavailable on the \`pull_request\` event). A maintainer must re-open this from a branch in this repo. Marked \`automation:integrate-needs-human\`."
+          echo "::error::Fork PR - refusing to run with secrets. Marked needs-human."
+          exit 1
+
+      - name: Label-once guard (drop trigger, mark running)
+        # Split + tolerant so both paths work: the labeled path has the trigger label to drop;
+        # the workflow_dispatch path (poller-opened PR) never carries it, so the remove is a
+        # no-op there and must not block adding the running label.
+        run: |
+          gh pr edit "$PR" -R "$REPO" --add-label 'automation:integrate-running' || true
+          gh pr edit "$PR" -R "$REPO" --remove-label 'automation:integrate-model' || true
+
+      # Checkout + uv setup BEFORE parse so the auto-integration tool (which posts every Slack
+      # notification, including the parse-fail and the failure() catch-all) is installed and
+      # runnable via `uv run` from the first notifying step. Safe: fork PRs are already rejected
+      # above, so this only checks out trusted same-repo branch code.
+      - uses: actions/checkout@v4
+        with:
+          # head ref + full history so the finalize step can commit the integration back.
+          ref: ${{ github.event.pull_request.head.ref || inputs.head_ref }}
+          fetch-depth: 0
+          lfs: true
+          # Do NOT leave the job token in .git/config: the --dangerously-skip-permissions resolve/
+          # finalize agents have unrestricted Bash and could otherwise read it and push/merge/comment.
+          # The finalize step re-supplies an explicit token only for its own git push.
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.9.5"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv python install 3.12
+      - run: uv sync --dev --locked
+
+      - name: Parse candidate model from PR title
+        id: parse
+        run: |
+          set -euo pipefail
+          # Restrict NAME to the OpenRouter slug charset (same set as the poller's _SAFE_SLUG_RE):
+          # it is spliced into sed programs + a YAML value downstream, so disallow characters that
+          # could break them. Variant slugs (containing ':') fall to the parse-fail needs-human path.
+          if [[ "$PR_TITLE" =~ ^integrate:[[:space:]]+([A-Za-z0-9._/-]+)[[:space:]]*$ ]]; then
+            NAME="${BASH_REMATCH[1]}"
+          else
+            gh pr edit "$PR" -R "$REPO" \
+              --remove-label 'automation:integrate-running' \
+              --add-label 'automation:integrate-needs-human'
+            CURL="$(gh pr comment "$PR" -R "$REPO" --body \
+              "Could not parse the candidate model from the PR title. Expected the convention \`integrate: <openrouter-model-slug>\` (e.g. \`integrate: anthropic/claude-opus-4.8\`). Marked \`automation:integrate-needs-human\`." || true)"
+            uv run automation slack reply \
+              --channel "$SLACK_CHANNEL" --pr "$PR" --mention \
+              --text ':warning: Needs human: PR title did not match `integrate: <slug>` (could not parse model)' \
+              --pr-comment "$CURL" --pr-url "$PR_URL" --run-url "$RUN_URL" || true
+            touch "$RUNNER_TEMP/slack_terminal_sent" || true
+            echo "::error::PR title does not match 'integrate: <slug>'."
+            exit 1
+          fi
+          {
+            echo "provider=openrouter"
+            echo "name=$NAME"
+          } >> "$GITHUB_OUTPUT"
+          echo "Parsed candidate: openrouter / $NAME"
+
+      - name: Slack notify - open thread + observe started
+        # Default success() gate: only announces "started" once we are past parse (model known);
+        # a parse-fail already posted its own needs-human notification above.
+        env:
+          CANDIDATE_NAME: ${{ steps.parse.outputs.name }}
+        run: |
+          uv run automation slack ensure-root \
+            --channel "$SLACK_CHANNEL" --model "$CANDIDATE_NAME" --pr "$PR" || true
+          uv run automation slack reply \
+            --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" \
+            --text ':arrow_forward: Observe started' --run-url "$RUN_URL" || true
+
+      - name: Create .env (candidate model + user-sim run on the pipeline key)
+        # printf from an env var, not echo-interpolation, so a value containing shell
+        # metacharacters can never be command-substituted.
+        env:
+          ARENA_KEY: ${{ secrets.ARENA_AUTOMATION_OPENROUTER_API_KEY }}
+        run: printf '%s\n' "OPENROUTER_API_KEY=$ARENA_KEY" > .env
+
+      - name: Resolve candidate model_id slug
+        id: slug
+        env:
+          TF_PROVIDER: ${{ steps.parse.outputs.provider }}
+          TF_NAME: ${{ steps.parse.outputs.name }}
+        run: |
+          set -euo pipefail
+          MODEL_ID="$(uv run python -c 'import os; from tolokaforge.core.output.artifacts import model_id_slug; print(model_id_slug(os.environ["TF_PROVIDER"], os.environ["TF_NAME"]))')"
+          echo "model_id=$MODEL_ID" >> "$GITHUB_OUTPUT"
+          echo "Candidate model_id: $MODEL_ID"
+
+      - name: Ensure candidate pricing (best-effort; fills pricing.json before COST_USD is probed)
+        # A model litellm does not know natively needs a pricing.json entry, or COST_USD_POPULATED
+        # (a CORE capability) fails in observe. Fetches OpenRouter pricing for the candidate and
+        # inserts one key (minimal diff); best-effort - a miss is not fatal (the finalize agent
+        # tops it up, and the auto-merge price gate is the backstop).
+        env:
+          TF_NAME: ${{ steps.parse.outputs.name }}
+        run: |
+          uv run automation ensure-pricing --name "$TF_NAME" || true
+
+      # ---------------------------------------------------------------- OBSERVE
+      - name: Capability integration probes (report-only, CAPABILITY_K repeats)
+        # All capabilities run against the candidate (ephemeral all-required cert injected via
+        # TF_CANDIDATE_*); a miss is data for resolve, not a gate, so failures do not fail the
+        # job. The -k match is anchored on the parametrize-id boundary ("<id>]" or "<id>-") so a
+        # slug that prefixes another model (grok-4 vs grok-4.3) does not select the sibling.
+        env:
+          TF_CANDIDATE_PROVIDER: ${{ steps.parse.outputs.provider }}
+          TF_CANDIDATE_NAME: ${{ steps.parse.outputs.name }}
+          MODEL_ID: ${{ steps.slug.outputs.model_id }}
+          OPENROUTER_API_KEY: ${{ secrets.ARENA_AUTOMATION_OPENROUTER_API_KEY }}
+        run: |
+          # Flat (node x rep) pool: collect the candidate's capability nodes once, then run
+          # each node x rep as its own single-node pytest at CAP_PARALLEL width - so nodes AND
+          # repeats parallelize, instead of CAP_PARALLEL long serial reps (the old per-rep pool
+          # cost a slow reasoning model hours).
+          uv run automation run-probes \
+            --k-expr "(${MODEL_ID}] or ${MODEL_ID}-) and not test_variant" \
+            --out observation/capability --reps "$CAPABILITY_K" --workers "$CAP_PARALLEL"
+
+      - name: Shape-variant probes (report-only, CAPABILITY_K repeats)
+        # Observe-only structural variants of the LEGACY shape-sensitive capabilities
+        # (test_variant_*.py). Gated by TF_RUN_VARIANTS so normal CI skips them.
+        env:
+          TF_CANDIDATE_PROVIDER: ${{ steps.parse.outputs.provider }}
+          TF_CANDIDATE_NAME: ${{ steps.parse.outputs.name }}
+          MODEL_ID: ${{ steps.slug.outputs.model_id }}
+          TF_RUN_VARIANTS: "1"
+          OPENROUTER_API_KEY: ${{ secrets.ARENA_AUTOMATION_OPENROUTER_API_KEY }}
+        run: |
+          # Same flat (node x rep) pool as the capability step. The variant cases are the
+          # slowest for a reasoning model (heavy thinking on the shape-sensitive shapes), so
+          # this is where the flat pool matters most (deepseek: ~5h -> a fraction at width 10).
+          uv run automation run-probes \
+            --k-expr "(${MODEL_ID}] or ${MODEL_ID}-) and test_variant" \
+            --out observation/variants --reps "$CAPABILITY_K" --workers "$CAP_PARALLEL"
+
+      - name: Build core runner image (for the wire probes)
+        run: uv run tolokaforge docker build --core
+
+      - name: Wire-probe task-pack on the default preset (report-only)
+        env:
+          TF_PROVIDER: ${{ steps.parse.outputs.provider }}
+          TF_NAME: ${{ steps.parse.outputs.name }}
+        run: |
+          set -euo pipefail
+          cat > observation/candidate_run.yaml <<YAML
+          models:
+            agent:
+              provider: "${TF_PROVIDER}"
+              name: "${TF_NAME}"
+              temperature: 0.0
+              max_tokens: 4096
+            user:
+              provider: "openrouter"
+              name: "anthropic/claude-sonnet-4.6"
+              temperature: 0.2
+          orchestrator:
+            workers: ${WORKERS}
+            repeats: ${WIRE_K}
+            max_turns: 10
+            queue_backend: sqlite
+          evaluation:
+            task_packs:
+              - "tests/data/tasks/wire_probes/dataset"
+            tasks_glob: "**/task.yaml"
+            output_dir: "observation/wire_probes"
+          YAML
+          # INFO-level (no --verbose): drops the DEBUG per-turn request/response spam for a readable
+          # observe log; trial results come from the output files, not the log verbosity.
+          uv run tolokaforge run --config observation/candidate_run.yaml || true
+
+      - name: Assemble handoff manifest
+        env:
+          TF_PROVIDER: ${{ steps.parse.outputs.provider }}
+          TF_NAME: ${{ steps.parse.outputs.name }}
+          MODEL_ID: ${{ steps.slug.outputs.model_id }}
+        run: |
+          uv run python - <<'PY'
+          import glob, json, os, pathlib
+
+          runs = sorted(glob.glob("observation/wire_probes_*"))
+          wire_dir = runs[-1] if runs else None
+          manifest = {
+              "schema_version": 1,
+              "stage": "observe",
+              "candidate": {
+                  "provider": os.environ["TF_PROVIDER"],
+                  "name": os.environ["TF_NAME"],
+                  "model_id": os.environ["MODEL_ID"],
+              },
+              "preset": "default",
+              "engine_ref": os.environ.get("GITHUB_SHA", ""),
+              "pr": int(os.environ.get("PR", "0")),
+              "capability_dir": "capability",
+              "wire_probe_dir": (
+                  os.path.relpath(wire_dir, "observation") if wire_dir else None
+              ),
+          }
+          pathlib.Path("observation/manifest.json").write_text(
+              json.dumps(manifest, indent=2) + "\n"
+          )
+          print(json.dumps(manifest, indent=2))
+          PY
+
+      - name: Aggregate deterministic findings (report-only)
+        run: |
+          uv run automation observe-findings observation \
+            --out observation/findings.json \
+            --summary-out observation/summary.md \
+            --run-url "$RUN_URL"
+
+      - name: Upload observation bundle (artifact for debugging / re-runs)
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: integration-observation-pr${{ github.event.pull_request.number || inputs.pr }}
+          path: observation/
+          retention-days: 30
+
+      - name: Post observation summary on the PR
+        if: always()
+        # CANDIDATE_NAME is PR-title-derived (attacker-controllable); reference only via env.
+        env:
+          CANDIDATE_NAME: ${{ steps.parse.outputs.name }}
+        run: |
+          if [ -f observation/summary.md ]; then
+            gh pr comment "$PR" -R "$REPO" --body-file observation/summary.md
+          else
+            gh pr comment "$PR" -R "$REPO" --body \
+              "Observation stage ran for \`$CANDIDATE_NAME\` but no findings summary was produced (a step failed before aggregation). Run: ${RUN_URL}"
+          fi
+
+      # -------------------------------------------------------------- GATE
+      - name: Cleanliness gate (clean observe chains to resolve)
+        id: gate
+        if: always()
+        # A clean observe (capability suite actually ran AND no infra contamination) proceeds to
+        # the in-job resolve steps below. Infra-dirty / did-not-run goes to a human (re-run),
+        # never resolve. Sets a step output the resolve steps gate on (no cross-workflow label).
+        env:
+          CANDIDATE_NAME: ${{ steps.parse.outputs.name }}
+        run: |
+          if [ ! -f observation/findings.json ]; then
+            gh pr edit "$PR" -R "$REPO" --remove-label 'automation:integrate-running' \
+              --add-label 'automation:integrate-needs-human' || true
+            echo "clean=no" >> "$GITHUB_OUTPUT"
+            uv run automation slack reply \
+              --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" --mention \
+              --text ':warning: Needs human: observe did not run to completion (no findings.json - infra failure or crash before aggregation)' \
+              --pr-url "$PR_URL" --run-url "$RUN_URL" || true
+            touch "$RUNNER_TEMP/slack_terminal_sent" || true
+            echo "no findings.json -> needs human"; exit 0
+          fi
+          CLEAN="$(uv run python -c 'import json; f=json.load(open("observation/findings.json")); i=f.get("wire",{}).get("infra",{}); print("dirty" if (not f.get("capability_ran")) or any(i.get(k,0) for k in ("rate_limit","api_error","status_error")) else "clean")')"
+          if [ "$CLEAN" = "clean" ]; then
+            gh pr edit "$PR" -R "$REPO" --remove-label 'automation:integrate-running' \
+              --add-label 'automation:resolve-running' || true
+            echo "clean=yes" >> "$GITHUB_OUTPUT"
+            uv run automation slack reply \
+              --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" \
+              --text ':white_check_mark: Observe clean, chaining to resolve' --run-url "$RUN_URL" || true
+            echo "observe clean -> resolve"
+          else
+            gh pr edit "$PR" -R "$REPO" --remove-label 'automation:integrate-running' \
+              --add-label 'automation:integrate-needs-human' || true
+            echo "clean=no" >> "$GITHUB_OUTPUT"
+            uv run automation slack reply \
+              --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" --mention \
+              --text ':warning: Needs human: observe infra-dirty (rate-limit / API error / capability suite did not run)' \
+              --pr-url "$PR_URL" --run-url "$RUN_URL" || true
+            touch "$RUNNER_TEMP/slack_terminal_sent" || true
+            echo "observe infra-dirty or did-not-run -> needs human"
+          fi
+
+      # -------------------------------------------------------------- RESOLVE (clean only)
+      - name: Slack notify - resolve started
+        if: steps.gate.outputs.clean == 'yes'
+        env:
+          CANDIDATE_NAME: ${{ steps.parse.outputs.name }}
+        run: |
+          uv run automation slack reply \
+            --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" \
+            --text ':wrench: Resolve started' --run-url "$RUN_URL" || true
+
+      - name: Configure git identity
+        if: steps.gate.outputs.clean == 'yes'
+        run: |
+          git config user.name "tolokaforge-automation[bot]"
+          git config user.email "automation@users.noreply.github.com"
+
+      - name: Install Claude Code CLI
+        if: steps.gate.outputs.clean == 'yes'
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Start LiteLLM gateway (Anthropic /v1/messages -> OpenRouter; agent on the OpenRouter budget)
+        # The resolve + finalize agent is the Claude Code CLI, which speaks the Anthropic Messages
+        # API. OpenRouter has no /v1/messages endpoint, so this LiteLLM proxy bridges it to
+        # openrouter/<model> - moving the agent OFF the capped ANTHROPIC_API_KEY workspace and onto
+        # the ARENA_AUTOMATION_OPENROUTER_API_KEY budget. Backgrounded; it persists for the two
+        # agent steps that follow in this job.
+        if: steps.gate.outputs.clean == 'yes'
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.ARENA_AUTOMATION_OPENROUTER_API_KEY }}
+        run: |
+          set -euo pipefail
+          printf 'model_list:\n  - model_name: %s\n    litellm_params:\n      model: %s\n      api_key: os.environ/OPENROUTER_API_KEY\nlitellm_settings:\n  drop_params: true\n' \
+            "$AGENT_MODEL" "$RESOLVE_AGENT_OR_MODEL" > /tmp/litellm.config.yaml
+          echo "--- gateway config ---"; cat /tmp/litellm.config.yaml
+          # Pinned to the litellm version in uv.lock (repro + supply-chain: an unpinned latest could
+          # ship a broken/hostile release that runs with secrets in env). Scrub the job's write-token
+          # and Slack token from the proxy's environment - it only needs OPENROUTER_API_KEY.
+          env -u GH_TOKEN -u SLACK_BOT_TOKEN nohup uvx --from 'litellm[proxy]==1.87.0' litellm \
+            --config /tmp/litellm.config.yaml --host 127.0.0.1 --port 4000 \
+            > /tmp/litellm.log 2>&1 &
+          echo $! > /tmp/litellm.pid
+          # Wait for readiness (the first uvx run downloads litellm, so allow generous time).
+          ready=no
+          for _ in $(seq 1 90); do
+            if curl -fsS http://127.0.0.1:4000/health/readiness >/dev/null 2>&1; then ready=yes; break; fi
+            if ! kill -0 "$(cat /tmp/litellm.pid)" 2>/dev/null; then
+              echo "::error::LiteLLM gateway process exited during startup"; tail -80 /tmp/litellm.log; exit 1
+            fi
+            sleep 2
+          done
+          if [ "$ready" != "yes" ]; then
+            echo "::error::LiteLLM gateway did not become ready in time"; tail -80 /tmp/litellm.log; exit 1
+          fi
+          # Smoke the full path (gateway -> OpenRouter -> model) so a bad RESOLVE_AGENT_OR_MODEL slug
+          # or an OpenRouter routing problem fails fast HERE with a clear error, instead of silently
+          # making every resolve iteration produce no overlay (which would read as a false "throttle").
+          if ! curl -fsS -m 90 -X POST http://127.0.0.1:4000/v1/messages \
+               -H 'x-api-key: sk-litellm-local' -H 'anthropic-version: 2023-06-01' \
+               -H 'content-type: application/json' \
+               -d "{\"model\":\"${AGENT_MODEL}\",\"max_tokens\":4,\"messages\":[{\"role\":\"user\",\"content\":\"ok\"}]}" \
+               >/tmp/litellm.smoke 2>&1; then
+            echo "::error::gateway smoke request failed (bad model slug / OpenRouter routing / key)"; cat /tmp/litellm.smoke; tail -40 /tmp/litellm.log; exit 1
+          fi
+          echo "LiteLLM gateway ready + smoke OK on http://127.0.0.1:4000"
+
+      - name: Resolve fix-loop (deterministic; short Opus agent per iteration)
+        id: loop
+        if: steps.gate.outputs.clean == 'yes'
+        env:
+          # Agent -> LiteLLM gateway -> OpenRouter (NOT the capped first-party ANTHROPIC_API_KEY).
+          # The dummy key only satisfies the CLI's x-api-key header; the localhost gateway is unauthenticated.
+          ANTHROPIC_BASE_URL: "http://127.0.0.1:4000"
+          ANTHROPIC_API_KEY: "sk-litellm-local"
+          # Any small-model call the CLI makes must also resolve to the gateway alias (the gateway
+          # only knows AGENT_MODEL), else it 400s. Nonessential traffic is disabled too.
+          ANTHROPIC_SMALL_FAST_MODEL: ${{ env.AGENT_MODEL }}
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+          OPENROUTER_API_KEY: ${{ secrets.ARENA_AUTOMATION_OPENROUTER_API_KEY }}
+          # Empty GH_TOKEN: the --dangerously-skip-permissions compose agent (and the reprobe)
+          # in this step never call GitHub, so deny them `gh` (no PR merge/comment/label/API).
+          GH_TOKEN: ""
+          TF_PROVIDER: ${{ steps.parse.outputs.provider }}
+          TF_NAME: ${{ steps.parse.outputs.name }}
+          MODEL_ID: ${{ steps.slug.outputs.model_id }}
+        run: |
+          set -uo pipefail
+          mkdir -p observation/resolve
+          P=tools/automation/src/automation/prompts
+          fill () {  # $1 = prompt file, $2 = iteration (or empty)
+            sed \
+              -e "s|{{OBS_DIR}}|observation|g" -e "s|{{PROVIDER}}|${TF_PROVIDER}|g" \
+              -e "s|{{NAME}}|${TF_NAME}|g" -e "s|{{MODEL_ID}}|${MODEL_ID}|g" \
+              -e "s|{{PR}}|${PR}|g" -e "s|{{MAX_ITER}}|${MAX_ITER}|g" -e "s|{{ITER}}|${2:-1}|g" \
+              -e "s|{{MODEL}}|${TF_NAME}|g" -e "s|{{ENGINE_VERSION}}|${GITHUB_SHA}|g" \
+              -e "s|{{BASE_DIR}}|observation|g" -e "s|{{DOMAINS_WITH_COUNTS}}|see findings.json|g" \
+              -e "s|{{TOTAL_TRIALS}}|see findings.json|g" -e "s|{{ANCHORS}}|none|g" \
+              -e "s|{{INFRA_THRESHOLD}}|0.05|g" -e "s|{{GO_BOUNDARY}}|observe mode|g" "$1"
+          }
+          CONVERGED=no
+          # Per-iteration outcome log; the needs-human step turns it into a "why it did not
+          # converge" PR comment via `automation resolve-report`.
+          : > observation/resolve/loop_summary.md
+          for i in $(seq 1 "$MAX_ITER"); do
+            echo "::group::Resolve iteration $i"
+            # The agent's model calls go through the LiteLLM gateway; if it died mid-run, every
+            # iteration would silently produce no overlay - surface that rather than mask it.
+            kill -0 "$(cat /tmp/litellm.pid 2>/dev/null)" 2>/dev/null || echo "::warning::LiteLLM gateway process is not alive at iteration $i (agent calls will fail)"
+            rm -f observation/resolve/overlay.yaml observation/resolve/decision.json
+            { fill "$P/_shared_context.md"; echo; echo '---'; echo; fill "$P/resolve_agent.md" "$i"; } > /tmp/compose_$i.md
+            # `|| true`: an agent that exhausts --max-turns (or errors) exits non-zero, and
+            # this step runs under `bash -e`; without the guard that non-zero would abort the
+            # WHOLE resolve instead of degrading to the no-overlay path below. A stuck iteration
+            # must fall through to the next one (and ultimately to needs-human), not hard-fail.
+            claude -p "$(cat /tmp/compose_$i.md)" --model "$AGENT_MODEL" \
+              --allowedTools "Bash,Read,Edit,Write" --dangerously-skip-permissions \
+              --max-turns "${RESOLVE_MAX_TURNS}" --verbose || true
+            # Agent-requested escalation: if it lacks the data to produce a CORRECT policy (a
+            # data-bound quirk whose scope needs real-domain evidence the observe never surfaced),
+            # it sets `needs_human: true` in decision.json. Break immediately - no wasted
+            # iterations, no fabricated fix. Checked before the overlay guard: escalation needs
+            # only decision.json (the agent need not write an overlay it does not believe in).
+            NEEDS_HUMAN="$(uv run python -c "import json,sys; print('yes' if json.load(open(sys.argv[1])).get('needs_human') else 'no')" observation/resolve/decision.json 2>/dev/null || echo no)"
+            if [ "$NEEDS_HUMAN" = "yes" ]; then
+              REASON="$(uv run python -c "import json,sys; d=json.load(open(sys.argv[1])); print((d.get('needs_human_reason') or d.get('notes') or 'insufficient data to generate a correct policy').replace(chr(10),' '))" observation/resolve/decision.json 2>/dev/null || echo 'insufficient data to generate a correct policy')"
+              echo "iteration $i: agent requested human review -> $REASON"
+              echo "needs_human=yes" >> "$GITHUB_OUTPUT"
+              echo "needs_human_reason=$REASON" >> "$GITHUB_OUTPUT"
+              echo "::endgroup::"; break
+            fi
+            if [ ! -f observation/resolve/overlay.yaml ] || [ ! -f observation/resolve/decision.json ]; then
+              echo "::warning::iteration $i produced no overlay/decision (agent stalled or hit max-turns)"
+              printf -- '- Iter %s: no overlay produced (agent stalled / hit its turn limit / an upstream error via the OpenRouter gateway)\n' "$i" >> observation/resolve/loop_summary.md
+              echo "::endgroup::"
+              # Back off before the next attempt: a no-overlay iteration usually means the agent
+              # exhausted its turns, often because its calls through the LiteLLM -> OpenRouter gateway
+              # hit a transient error / rate limit. A short, growing sleep (capped 90s) lets that
+              # window pass; it fires ONLY on this failure path, so a converging run is never slowed.
+              if [ "$i" -lt "$MAX_ITER" ]; then sleep $(( i * 15 > 90 ? 90 : i * 15 )); fi
+              continue
+            fi
+            # Reprobe ONLY the agent's fix-targets (single-line python-c, no indentation
+            # to break). All-ceiling decisions name none -> nothing to prove, skip reprobe.
+            TARGETS="$(uv run python -c "import json,sys; print(','.join(json.load(open(sys.argv[1])).get('fix_targets',[])))" observation/resolve/decision.json 2>/dev/null || echo '')"
+            if [ -z "$TARGETS" ]; then
+              echo "iteration $i: decision named no fix-targets (all-ceiling) -> NO_TARGETS"
+              VERDICT=NO_TARGETS
+            else
+              # Workflow runs the reprobe (agent never does). Only the fix-targets, K reps
+              # each, as a flat (probe x rep) pool at RESOLVE_CAP_PARALLEL width. Fast.
+              uv run automation reprobe \
+                --baseline observation/findings.json --overlay observation/resolve/overlay.yaml \
+                --provider "$TF_PROVIDER" --name "$TF_NAME" \
+                --out "observation/resolve/reprobe_$i" --skip-wire \
+                --targets "$TARGETS" \
+                --capability-k "${RESOLVE_CAPABILITY_K}" --cap-parallel "${RESOLVE_CAP_PARALLEL}" || true
+              cp "observation/resolve/reprobe_$i/findings.json" observation/resolve/last_reprobe.json 2>/dev/null || true
+              # Are all fix-targets green under the overlay? (helper script, not inline
+              # python, so YAML indentation cannot break it.)
+              VERDICT="$(uv run automation greencheck observation/resolve/decision.json observation/resolve/reprobe_$i/findings.json 2>/dev/null || echo PARSE_FAIL)"
+            fi
+            echo "iteration $i verdict: $VERDICT"
+            printf -- '- Iter %s: fix produced, reprobe verdict = %s\n' "$i" "$VERDICT" >> observation/resolve/loop_summary.md
+            echo "::endgroup::"
+            # Converge when every fix-target is green, OR the agent proved there is nothing
+            # to fix (all failures are genuine ceilings -> finalize writes them as unsupported).
+            if [ "$VERDICT" = "CONVERGED" ] || [ "$VERDICT" = "NO_TARGETS" ]; then CONVERGED=yes; break; fi
+          done
+          echo "converged=$CONVERGED" >> "$GITHUB_OUTPUT"
+
+      - name: Finalize - compose the integration (agent writes preset + cert)
+        # AGENT step, scoped: empty GH_TOKEN so the --dangerously-skip-permissions agent cannot
+        # use `gh`; it only reads findings + writes files. All commit/push/label/merge happen in
+        # the SEPARATE step below - the only place that holds a real GH_TOKEN.
+        if: steps.gate.outputs.clean == 'yes' && steps.loop.outputs.converged == 'yes'
+        env:
+          # Agent -> LiteLLM gateway -> OpenRouter (see the resolve step + job env). GH_TOKEN stays
+          # empty: this --dangerously-skip-permissions agent only writes files; git/gh live below.
+          ANTHROPIC_BASE_URL: "http://127.0.0.1:4000"
+          ANTHROPIC_API_KEY: "sk-litellm-local"
+          ANTHROPIC_SMALL_FAST_MODEL: ${{ env.AGENT_MODEL }}
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+          GH_TOKEN: ""
+          TF_PROVIDER: ${{ steps.parse.outputs.provider }}
+          TF_NAME: ${{ steps.parse.outputs.name }}
+          MODEL_ID: ${{ steps.slug.outputs.model_id }}
+        run: |
+          set -euo pipefail
+          P=tools/automation/src/automation/prompts
+          fill () {
+            sed -e "s|{{OBS_DIR}}|observation|g" -e "s|{{PROVIDER}}|${TF_PROVIDER}|g" \
+              -e "s|{{NAME}}|${TF_NAME}|g" -e "s|{{MODEL_ID}}|${MODEL_ID}|g" -e "s|{{PR}}|${PR}|g" "$1"
+          }
+          fill "$P/resolve_finalize.md" > /tmp/finalize.md
+          # `|| true`: if the agent hits --max-turns it exits non-zero; do not abort - the commit
+          # step below decides success by whether files changed.
+          claude -p "$(cat /tmp/finalize.md)" --model "$AGENT_MODEL" \
+            --allowedTools "Bash,Read,Edit,Write" --dangerously-skip-permissions \
+            --max-turns "${RESOLVE_MAX_TURNS}" --verbose || true
+
+      - name: Finalize - verify + commit + report (holds GH_TOKEN; no agent)
+        id: finalize
+        if: steps.gate.outputs.clean == 'yes' && steps.loop.outputs.converged == 'yes'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TF_PROVIDER: ${{ steps.parse.outputs.provider }}
+          TF_NAME: ${{ steps.parse.outputs.name }}
+          MODEL_ID: ${{ steps.slug.outputs.model_id }}
+          AUTO_MERGE_ENABLED: ${{ vars.ARENA_AUTOMATION_AUTO_MERGE_ENABLED }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref || inputs.head_ref }}
+        run: |
+          set -euo pipefail
+          # Deterministic commit + report (the agent only wrote files). Stage the WHOLE engine
+          # LLM package, not a fixed file list: a code-CREATE can write a new adapter class in ANY
+          # module (reasoning_codec / schema_sanitizer / prompt_policy / content_policy /
+          # cache_policy), and a narrow list silently drops the new file while committing its
+          # wiring -> a build-breaking dangling import. Plus the cert + preset.
+          git add tolokaforge/core/llm tolokaforge/core/data/model_presets.yaml \
+            tolokaforge/core/data/pricing.json tests/integration/llm/ 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "::error::finalize produced no file changes"; exit 1
+          fi
+          # Cert-vs-baseline reconciliation - run BEFORE the stash so observation/findings.json is
+          # still present (the `stash --include-untracked` below would hide the untracked artifact).
+          # Every probed capability must be declared, and no capability the baseline shows passing
+          # (>=0.9) may be `known_unsupported`. Catches the mimo-class under-declaration (re2 15/15
+          # omitted from the cert) + false-pessimism (implicit-cache 14/15 -> unsupported). set -e
+          # safe (`if !` never aborts the step). Exit 1 -> needs-human.
+          if ! uv run automation reconcile-cert \
+               --model-id "$MODEL_ID" --findings observation/findings.json; then
+            echo "::error::cert does not reconcile with the observe baseline - refusing to commit"
+            exit 1
+          fi
+          # Verify EXACTLY the staged tree (what we are about to commit), not the workspace.
+          # `stash --keep-index` drops everything not staged so the worktree == the future
+          # commit; then gate on: (1) it imports; (2) no-regression - the resolved policy must
+          # not turn any already-valid tool-call arg INVALID (anti-over-reach); (3) recovery
+          # oracle - per-model fixtures map the known corruption shapes to the exact expected
+          # value. Any failure exits 1 -> needs-human, so a broken / divergent / over-reaching
+          # fix never ships as integrate-done.
+          STASHED=no
+          git stash push --keep-index --include-untracked -m resolve-verify >/dev/null 2>&1 && STASHED=yes
+          VERIFY_OK=yes
+          uv run python -c "import tolokaforge.core.llm" || VERIFY_OK=no
+          if [ "$VERIFY_OK" = "yes" ]; then
+            uv run python -m pytest -q -p no:cacheprovider \
+              tests/unit/llm/test_policy_no_regression.py \
+              tests/unit/llm/test_policy_array_recovery.py || VERIFY_OK=no
+          fi
+          # Restore the resolve evidence (observation/, pr_comment.md, pr_body.md). A silently
+          # failed pop would drop the data-scope review gate + the PR comment, so make it fatal.
+          if [ "$STASHED" = "yes" ]; then
+            git stash pop >/dev/null 2>&1 || { echo "::error::stash pop failed - resolve evidence not restored"; exit 1; }
+          fi
+          if [ "$VERIFY_OK" != "yes" ]; then
+            echo "::error::staged integration failed verification (import / over-reach no-regression / recovery-oracle gate) - refusing to commit"
+            exit 1
+          fi
+          git commit -m "integrate: ${TF_NAME} via auto-resolve (preset + cert)" \
+            -m "Auto-resolve landed the proven policy. See the PR comment for the reprobe evidence and known_unsupported ceilings. Do not merge if this is a disposable test branch."
+          # persist-credentials:false on checkout left no ambient token; supply one explicitly for
+          # this push only (github.token is masked in logs; git redacts it from URL errors).
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "HEAD:${HEAD_REF}"
+          RECORD_URL=""
+          if [ -f observation/resolve/pr_comment.md ]; then
+            RECORD_URL="$(gh pr comment "$PR" -R "$REPO" --body-file observation/resolve/pr_comment.md || true)"
+          fi
+          [ -f observation/resolve/pr_body.md ] && gh pr edit "$PR" -R "$REPO" --body-file observation/resolve/pr_body.md || true
+          # Data-scope review gate: an array-under-free-form-object recovery is DATA-BOUND - its
+          # scope depends on domain data the observe may not fully surface, so even a converged,
+          # gate-passing fix needs a broader HUMAN check before merge. Route it to needs-human
+          # with a warning (the fix is already committed above), NOT a silent integrate-done.
+          # (set -e safe: grep as an `if` condition never aborts the step on no-match.)
+          DATA_SCOPE=no
+          if grep -q '"data_scope_review"[[:space:]]*:[[:space:]]*true' observation/resolve/decision.json 2>/dev/null; then
+            DATA_SCOPE=yes
+          fi
+          if [ "$DATA_SCOPE" = "no" ] && [ -f observation/findings.json ] \
+             && grep -qiE "valid (list|array)" observation/findings.json; then
+            DATA_SCOPE=yes
+          fi
+          if [ "$DATA_SCOPE" = "yes" ]; then
+            WARN_URL="$(gh pr comment "$PR" -R "$REPO" --body \
+              "WARNING - human review required (data-scope): the fix converged and passed the local gates, but it addresses a DATA-RELATED array / free-form-object recovery class whose scope depends on domain data the pipeline did not fully see. A human must verify it covers ALL affected domains and fields (a broader check) before merge - a locally-green fix can still be too narrow (or over-broad) on unseen data." || true)"
+            gh pr edit "$PR" -R "$REPO" --remove-label 'automation:resolve-running' \
+              --add-label 'automation:integrate-needs-human' || true
+            uv run automation slack reply \
+              --channel "$SLACK_CHANNEL" --pr "$PR" --model "$TF_NAME" --mention \
+              --text "$(printf '%s\n%s' ':warning: Needs human: integrated but a data-scope review is required (free-form array recovery)' 'Fix is committed; a human must verify the recovery scope across all domains before merge.')" \
+              --pr-comment "${WARN_URL:-$RECORD_URL}" --pr-url "$PR_URL" --run-url "$RUN_URL" || true
+          else
+            gh pr edit "$PR" -R "$REPO" --remove-label 'automation:resolve-running' \
+              --add-label 'automation:integrate-done' || true
+            # Optional auto-merge (ARENA_AUTOMATION_AUTO_MERGE_ENABLED, case-insensitive `true`):
+            # squash-merge the integration PR on success. NEVER merges a disposable de-integration
+            # test branch (`test/*` - e.g. test/observe-<model> carries cert/preset DELETIONS and
+            # must never merge out). Any failure (branch protection, draft, perms, conflict) leaves
+            # the PR OPEN and never fails the job: false / missing / error => nothing merges.
+            AUTO_MERGE="$(printf '%s' "${AUTO_MERGE_ENABLED:-}" | tr '[:upper:]' '[:lower:]')"
+            MERGED=no
+            if [ "$AUTO_MERGE" = "true" ]; then
+              case "${HEAD_REF:-}" in
+                test/*)
+                  echo "auto-merge skipped: '${HEAD_REF:-}' is a disposable test branch (never merged)" ;;
+                *)
+                  # Price check is a MERGE PRECONDITION: never auto-merge a model with no
+                  # pricing.json entry (its cost reports would be wrong). ensure_pricing --check
+                  # exits non-zero if the candidate is unpriced.
+                  if ! uv run automation ensure-pricing --name "$TF_NAME" --check; then
+                    echo "::warning::auto-merge skipped: '$TF_NAME' has no pricing.json entry (price check failed) - PR left open"
+                  elif gh pr merge "$PR" -R "$REPO" --squash; then
+                    MERGED=yes
+                  else
+                    echo "::warning::ARENA_AUTOMATION_AUTO_MERGE_ENABLED=true but squash-merge failed - PR left open for manual merge"
+                  fi ;;
+              esac
+            fi
+            # One settings deep-link (the Actions variables page where
+            # ARENA_AUTOMATION_AUTO_MERGE_ENABLED lives) rendered as "configure <here>" (only
+            # the word "here" is the link) on every auto-merge outcome. Derived from env +
+            # defaulted so it is set -u safe.
+            SETTINGS_URL="${GITHUB_SERVER_URL:-https://github.com}/$REPO/settings/variables/actions"
+            if [ "$MERGED" = "yes" ]; then
+              MSG="$(printf '%s\n%s' ':white_check_mark: Integrated + auto-merged (squash): preset + cert landed on the base branch.' "Auto-merge is on - squash-merged automatically on success (configure <$SETTINGS_URL|here>).")"
+            elif [ "$AUTO_MERGE" = "true" ]; then
+              MSG="$(printf '%s\n%s' ':white_check_mark: Integrated: preset + cert committed to the PR branch.' "Auto-merge is on but did NOT complete (disposable test branch, missing pricing, branch protection, draft, or a merge error) - PR left open (configure <$SETTINGS_URL|here>).")"
+            else
+              MSG="$(printf '%s\n%s' ':white_check_mark: Integrated: preset + cert committed to the PR branch.' "Human review gate - auto-merge off (configure <$SETTINGS_URL|here>).")"
+            fi
+            uv run automation slack reply \
+              --channel "$SLACK_CHANNEL" --pr "$PR" --model "$TF_NAME" --mention \
+              --text "$MSG" \
+              --pr-comment "$RECORD_URL" --pr-url "$PR_URL" --run-url "$RUN_URL" || true
+          fi
+          touch "$RUNNER_TEMP/slack_terminal_sent" || true
+
+      - name: Flag needs-human (resolve did not converge / finalize failed)
+        # Fires only on the clean-observe path when the loop never converged OR finalize failed
+        # (agent hit max-turns / wrote nothing / broken-or-divergent policy / push failed). The
+        # infra-dirty path already labelled needs-human in the gate step.
+        if: always() && steps.gate.outputs.clean == 'yes' && (steps.loop.outputs.converged != 'yes' || steps.finalize.outcome != 'success')
+        env:
+          CANDIDATE_NAME: ${{ steps.parse.outputs.name }}
+          NEEDS_HUMAN: ${{ steps.loop.outputs.needs_human }}
+          NEEDS_HUMAN_REASON: ${{ steps.loop.outputs.needs_human_reason }}
+        run: |
+          gh pr edit "$PR" -R "$REPO" --remove-label 'automation:resolve-running' \
+            --add-label 'automation:integrate-needs-human' || true
+          if [ "${NEEDS_HUMAN:-}" = "yes" ]; then
+            # The agent itself requested a human: it lacked the data for a correct policy.
+            BODY="The resolve agent requested human review: ${NEEDS_HUMAN_REASON}. It judged it cannot produce a correct policy from the observe data alone (a data-bound quirk) and did not fabricate a fix. Marked \`automation:integrate-needs-human\`. Latest artifacts are on the run. Run: ${RUN_URL}"
+            SLACK=":raising_hand: Needs human (agent-requested): ${NEEDS_HUMAN_REASON}"
+          else
+            REPORT="$(uv run automation resolve-report --dir observation/resolve --max-iter "${MAX_ITER}" 2>/dev/null || true)"
+            [ -n "$REPORT" ] || REPORT="Resolve did not converge within ${MAX_ITER} iterations, or converged but finalize failed (agent hit max-turns, wrote no changes, a broken/divergent policy failed the staged verification, or the push failed)."
+            BODY="$(printf '%s\n\nMarked automation:integrate-needs-human. Latest overlay + reprobe are in the run artifacts. Run: %s' "$REPORT" "${RUN_URL}")"
+            SLACK=":warning: Needs human: resolve did not converge within ${MAX_ITER} iterations (or finalize failed)"
+          fi
+          CURL="$(gh pr comment "$PR" -R "$REPO" --body "$BODY" || true)"
+          uv run automation slack reply \
+            --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" --mention \
+            --text "$SLACK" \
+            --pr-comment "$CURL" --pr-url "$PR_URL" --run-url "$RUN_URL" || true
+          touch "$RUNNER_TEMP/slack_terminal_sent" || true
+
+      - name: Slack notify - unexpected failure (catch-all)
+        # Last line of defence: an unexpected step failure (checkout done, but e.g. uv sync,
+        # docker build, or a gate/step crash) that left the PR mid-state with no explicit handler
+        # above. The dedup marker makes handled needs-human / infra / no-converge failures skip
+        # this, so it never double-pings. Fires only when something actually failed.
+        if: failure()
+        env:
+          CANDIDATE_NAME: ${{ steps.parse.outputs.name }}
+        run: |
+          if [ -f "$RUNNER_TEMP/slack_terminal_sent" ]; then
+            echo "terminal Slack already sent -> no catch-all ping"; exit 0
+          fi
+          uv run automation slack reply \
+            --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" --mention \
+            --text ':rotating_light: Pipeline error: unexpected failure, PR left mid-state' \
+            --pr-url "$PR_URL" --run-url "$RUN_URL" || true

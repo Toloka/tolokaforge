@@ -1,0 +1,39 @@
+task_id: "record_deep_nested"
+name: "Wire-probe: deeply-nested object argument"
+description: >
+  Non-scoring wire-shape probe. A 4-level nested object (order -> customer ->
+  address) plus an array-of-objects stresses serialization at depth, eliciting
+  dict-flatten (hoisting nested fields up), stringified sub-objects, and
+  $ref/$defs handling.
+domain: ../../_shared/domain.yaml
+max_turns: 3
+
+initial_user_message: >
+  Submit an order with id ORD-9001 for customer Anna Kovacs, whose address is
+  12 Market Street in Budapest, country code HU. The order has two line items:
+  SKU-1 with quantity 2, and SKU-2 with quantity 3. Add the note: handle with care.
+  Then you're done.
+
+initial_state: {}
+
+tools:
+  agent:
+    enabled:
+      - submit_order
+
+user_simulator:
+  scripted_flow:
+    - role: user
+      content: "###STOP###"
+
+metadata:
+  expected_failure_modes:
+    - deep_nesting
+    - dict_flatten
+    - stringified_dict
+  tags:
+    - smoke
+    - wire-probe
+    - non-scoring
+
+grading: "grading.yaml"

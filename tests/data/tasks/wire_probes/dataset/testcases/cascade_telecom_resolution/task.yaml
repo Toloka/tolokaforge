@@ -1,0 +1,69 @@
+task_id: "cascade_telecom_resolution"
+name: "Telecom probe: full account-resolution cascade (multi-step)"
+description: >
+  Non-scoring wire-shape probe derived from the public tau2-bench telecom domain
+  (policy stripped). A sonnet-4.6 user-sim drives a long resolution cascade -
+  look up the subscriber, register payment methods (a dict-map of a discriminated
+  union), pay an overdue invoice, resume a suspended service, top up data - so a
+  model reveals id-threading / fan-in habits AND the request-side shapes
+  (dict-map + union, Decimal, nested address, enums, constraints) in one trial.
+domain: ../../_shared/domain.yaml
+max_turns: 18
+
+initial_user_message: >
+  Hi - I need help with my mobile account. My number is +15551234567. Can you
+  pull up my account first?
+
+initial_state: {}
+
+tools:
+  agent:
+    enabled:
+      - lookup_subscriber
+      - get_subscriber_details
+      - get_invoices
+      - register_payment_methods
+      - send_payment_request
+      - set_service_status
+      - top_up_data
+      - update_address
+
+user_simulator:
+  mode: llm
+  persona: cooperative
+  backstory: >
+    You are a mobile subscriber whose phone number is +15551234567. You want the
+    assistant to work through your requests one at a time, waiting for it to
+    confirm each before you ask for the next:
+    (1) look up your account from your phone number, and check your invoices;
+    (2) add two payment methods to the account: under the label primary, a card
+        ending four two four two that expires August twenty-twenty-seven; and
+        under the label backup, a voucher whose code is SAVE10 worth twenty-five
+        dollars;
+    (3) pay off your overdue invoice (the amount is forty-two dollars and fifty
+        cents);
+    (4) your service line one is suspended - ask to set it back to active;
+    (5) add twenty gigabytes of data to that same service line.
+    Give the assistant only the values above in plain words; do not describe how
+    to format anything. Once all five are confirmed, thank the assistant and end.
+    Keep replies short.
+
+metadata:
+  expected_failure_modes:
+    - dict_map
+    - discriminated_union
+    - stringified_dict
+    - decimal_field
+    - lifecycle_threading
+    - fan_in
+    - enum_membership
+    - validation_constraints
+  tags:
+    - smoke
+    - wire-probe
+    - non-scoring
+    - multi-turn
+    - tau2-derived
+    - cascade
+
+grading: "grading.yaml"

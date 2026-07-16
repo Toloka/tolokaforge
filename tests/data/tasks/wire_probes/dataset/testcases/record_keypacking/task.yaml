@@ -1,0 +1,38 @@
+task_id: "record_keypacking"
+name: "Wire-probe: multi-field dict-map (key-packing)"
+description: >
+  Non-scoring wire-shape probe. A Dict[str, {qty, unit_price}] argument whose
+  value has multiple fields elicits key-packing (the model packs the fields
+  INTO the key string, e.g. "SKU-A|qty=10|price=9.99") plus Decimal-in-dict-map
+  and stringified-dict.
+domain: ../../_shared/domain.yaml
+max_turns: 3
+
+initial_user_message: >
+  On record REC-2001, set the line items: SKU-A with qty 10 and unit price 9.99,
+  and SKU-B with qty 5 and unit price 4.50. Then you're done.
+
+initial_state: {}
+
+tools:
+  agent:
+    enabled:
+      - set_line_items
+
+user_simulator:
+  scripted_flow:
+    - role: user
+      content: "###STOP###"
+
+metadata:
+  expected_failure_modes:
+    - key_packing
+    - dict_map
+    - stringified_dict
+    - decimal_field
+  tags:
+    - smoke
+    - wire-probe
+    - non-scoring
+
+grading: "grading.yaml"

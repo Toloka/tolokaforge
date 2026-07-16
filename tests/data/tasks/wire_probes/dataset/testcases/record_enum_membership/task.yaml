@@ -1,0 +1,31 @@
+task_id: "record_enum_membership"
+name: "Wire-probe: closed-enum membership"
+description: >
+  Non-scoring wire-shape probe. Elicits out-of-enum value invention: the natural answer (a synonym) is NOT an enum member; the emitted value must be one of low|medium|high.
+domain: ../../_shared/domain.yaml
+max_turns: 3
+
+initial_user_message: >
+  Mark record REC-3002 as URGENT priority. Then you're done.
+
+initial_state: {}
+
+tools:
+  agent:
+    enabled:
+      - set_priority
+
+user_simulator:
+  scripted_flow:
+    - role: user
+      content: "###STOP###"
+
+metadata:
+  expected_failure_modes:
+    - enum_membership
+  tags:
+    - smoke
+    - wire-probe
+    - non-scoring
+
+grading: "grading.yaml"

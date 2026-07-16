@@ -41,6 +41,10 @@ from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import Message, MessageRole, ModelConfig, ToolCall
 from tolokaforge.core.pricing import estimate_cost
 
+# Silence litellm's stdout banners ("Provider List: https://docs.litellm.ai/docs/providers",
+# "LiteLLM completion() model= ...") - pure noise in probe/eval logs; no effect on behavior/results.
+litellm.suppress_debug_info = True
+
 __all__ = ["GenerationResult", "LLMApiTimeoutError", "LLMClient", "UserSimulator"]
 
 
