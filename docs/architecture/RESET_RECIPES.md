@@ -114,10 +114,14 @@ Provisioning failed at reset_recipe: reset recipe for service 'app-db' (seed 'po
 
 carrying the recipe's own diagnostic output at the end.
 
-## Reference example
+## Reference examples
+
+Two runnable packs ship as end-to-end references, one per stateful seed kind.
+
+### `sql_dump` — `multi_service_postgres_reset`
 
 [`examples/native/multi_service_postgres_reset`](../../examples/native/multi_service_postgres_reset)
-is the runnable end-to-end example. Its compose `init.sql` seeds a widget
+is the `sql_dump` reference. Its compose `init.sql` seeds a widget
 row `name = 'factory_default'`; the `postgres_baseline` seed
 (`sql_dump`) overwrites it to `name = 'baseline'` at every provision. The
 task's agent reads the row back over a PostgREST API and writes it to a
@@ -127,3 +131,17 @@ reads `baseline`. Had the recipe not fired, the row would still read
 `sql_dump` dispatch ran. `tests/integration/test_reset_recipe_end_to_end.py`
 drives the pack via `tolokaforge run` at `repeats: 2` and asserts both
 trials observe `baseline`.
+
+### `redis_dump` — `multi_service_cache_debug`
+
+[`examples/native/multi_service_cache_debug`](../../examples/native/multi_service_cache_debug)
+is the `redis_dump` reference. Its `redis` service is labelled
+`isolation: reset` and bound to the `cache_poisoned` seed (`redis_dump`),
+an RDB snapshot that pre-loads `order:4021` with a **stale** value
+(`status: "processing"`) at every provision, while postgres holds the fresh
+truth (`status: "shipped"`). The agent is told the orders API serves stale
+data, inspects the app and cache layers over HTTP, and writes a root-cause
+note naming the cache-invalidation bug. `tests/integration/test_cache_debug_end_to_end.py`
+proves the recipe fired by asserting the captured `services/redis.log`
+carries an RDB-load signature — the restart that reloaded `dump.rdb` — so the
+`redis_dump` dispatch is witnessed directly from the per-trial backend.
