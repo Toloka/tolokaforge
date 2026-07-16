@@ -57,7 +57,7 @@ so the first run isn't slowed down by a cold docker build.
 
 For tasks that need extra services beyond the built-ins (a real
 database, a custom HTTP API), a task can ship its own docker-compose
-stack — see the [multi-container tasks guide](guides/multi_container_tasks.md).
+stack — see the [multi-container tasks guide](multi_container_tasks.md).
 
 ## Set Up Tasks
 

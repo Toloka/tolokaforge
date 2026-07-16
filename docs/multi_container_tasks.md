@@ -13,6 +13,117 @@ For the full Project model, see
 runtime backend lifecycle, see
 [`docs/architecture/RUNTIME_BACKENDS.md`](architecture/RUNTIME_BACKENDS.md).
 
+## Running the examples
+
+If you want to see the machinery work before authoring your own stack, the
+repo ships four multi-container packs that run end-to-end with one command
+each. They form a ladder — start at the top for the simplest shape, drop to
+the bottom for the flagship.
+
+| Pack | What makes it different |
+| --- | --- |
+| [`multi_service_postgres`](../examples/native/multi_service_postgres/README.md) | The primer. A single postgres behind a PostgREST API — the simplest real three-tier stack, no application code to author (PostgREST generates the REST endpoints from the schema). |
+| [`multi_service_postgres_reset`](../examples/native/multi_service_postgres_reset/README.md) | Adds the reset-recipe pattern: a `reset` postgres service re-seeded from a named `sql_dump` seed at the start of every trial. |
+| [`multi_service_lot_ops`](../examples/native/multi_service_lot_ops/README.md) | The first pack to grade the substrate. The agent mutates postgres over a FastAPI API; `state_checks.db_probes` verifies the row directly through a read-only `grader` role — an independent oracle, not the API the agent wrote through. |
+| [`multi_service_helpdesk_workflow`](../examples/native/multi_service_helpdesk_workflow/README.md) | The flagship. Five FastAPI services + an in-container postgres-FTS policy corpus. The agent must reconcile customer, product, site, and policy data to pick the one policy-valid resolution of three plausible paths; a wrong path grades down even with a well-formed CRM row. Declares its postgres substrate `ephemeral` explicitly and formalises the LLM user-simulator persona pattern. |
+
+### The command
+
+Every pack runs the same way — point `tolokaforge run` at its `run_config.yaml`:
+
+```bash
+scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_postgres/run_config.yaml
+scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_postgres_reset/run_config.yaml
+scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_lot_ops/run_config.yaml
+scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_helpdesk_workflow/run_config.yaml
+```
+
+`scripts/with_env.sh` loads `.env` (so `OPENROUTER_API_KEY` reaches the run)
+before invoking the CLI. Prerequisites for every pack:
+
+- A running Docker daemon — `docker version` must return cleanly.
+- `OPENROUTER_API_KEY` in `.env`; every pack drives real models.
+
+Each run writes to the `output_dir` named in its `run_config.yaml` (under
+`results/`). To validate a pack's tasks without running them, use
+`uv run tolokaforge validate --tasks "<pack>/dataset/**/task.yaml"`.
+
+**Cost expectations** (a single trial each, honest ballpark — check each
+pack's `run_config.yaml` for the exact models):
+
+| Pack | Models | Rough cost |
+| --- | --- | --- |
+| `multi_service_postgres` | Sonnet agent + user, 15 turns | ~$1–3 |
+| `multi_service_postgres_reset` | Haiku agent + user, `repeats: 2` | ~$0.15–0.40 |
+| `multi_service_lot_ops` | Haiku agent + user, Sonnet judge | ~$0.30–1.00 |
+| `multi_service_helpdesk_workflow` | Haiku agent + user, Sonnet judge, 18 turns | ~$0.50–1.50 |
+
+### What to look at in the output
+
+Every trial lands under `<run_dir>/trials/<task_id>/<trial_index>/`. The
+files worth opening after a run:
+
+- **`grade.yaml`** — the verdict: `binary_pass`, `score`, the per-family
+  `components` breakdown, and a `reasons` string. For a pack that uses
+  `db_probes`, `reasons` carries a `DB probes: …` segment (`DB probes: all
+  probes passed`, or the failing assertion). When an LLM judge ran,
+  `criterion_results` gives the per-criterion rubric breakdown.
+- **`env.yaml`** — for a manifest-driven trial this carries an
+  `environment:` block recording the resolved substrate: `network_policy`,
+  `runner_service`, and a per-service `services:` map with each service's
+  resolved image (and whether it's `pinned`), `isolation`, `reset_seed`,
+  `dsns` (passwords redacted to `***`), and container-side `mounts` (host
+  source paths omitted). It is a pure function of the resolved manifest, so
+  it survives per-trial teardown and tells a post-mortem exactly which
+  image / DSN / mounts a trial ran against without leaking secrets.
+- **`services/<name>.log`** — raw `docker compose logs` for each service,
+  written on the per-trial backend when a trial is diagnostics-worthy: it
+  fails to provision, its body errors/times out, **or** it runs to
+  completion but grades red. One file per service that produced output; the
+  tail bound is `compute.log_tail` (default 500 lines). A passing trial does
+  not trigger capture. This makes post-mortem on a red integration run
+  trivial — the service that misbehaved is right there.
+- **`trajectory.yaml`** and **`metrics.yaml`** — the message transcript and
+  the per-trial usage / cost / tool-call telemetry. Both are documented in
+  [`docs/OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md); `metrics.yaml` also amends a
+  `captured_service_logs` byte-count map when service logs are captured.
+
+### How the pieces fit
+
+A multi-container run composes five layers:
+
+1. **The task pack declares an `environment_manifest`** — a compose file
+   plus a per-service isolation map (`shared` / `reset` / `ephemeral`).
+   This is the sole source of truth for the topology.
+2. **The runtime backend materialises the stack.** Isolation drives the
+   choice automatically: any `reset`/`ephemeral` service routes the run to
+   the per-trial backend (fresh stack per trial, reset recipes applied);
+   an all-`shared` manifest uses the shared-stack backend (materialised
+   once). No flag selects this — the tasks do.
+3. **The agent runs inside the runner container** and reaches the other
+   services over the internal compose network by service name (e.g.
+   `http://policy-search:8000`). `network_policy` governs public egress.
+4. **Grading blends independent signals** — `state_checks.db_probes`
+   (an independent postgres oracle via a read-only role) with
+   `transcript_rules.required_actions` (did the agent take the right tool
+   actions) and an `llm_judge` rubric, combined by weight.
+5. **Traces land in the trial dir** — `grade.yaml`, `trajectory.yaml`,
+   `metrics.yaml`, `env.yaml`, and (on failure) per-service logs — the full
+   post-mortem surface for one trial.
+
+### Where to go next
+
+- [`docs/architecture/PROJECTS.md`](architecture/PROJECTS.md) — the Project
+  schema: `assets`, `default_environment`, per-service isolation, merge chains.
+- [`docs/GRADING.md`](GRADING.md) § Substrate Grading — the full
+  `state_checks.db_probes` field reference and aggregation rules.
+- [`docs/OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md) — every trial artifact in detail.
+- [`docs/TASKS.md`](TASKS.md) § User Simulator — the specialised-persona
+  pattern the helpdesk pack uses for its LLM user simulator.
+
+The rest of this guide is the authoring reference: how to declare a stack,
+choose isolation, write reset recipes, and grade against substrate state.
+
 ## When to declare a multi-container task
 
 The engine already ships built-in stacks — `core_stack` (runner +
