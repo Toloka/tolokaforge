@@ -850,7 +850,7 @@ def test_run_with_default_null_events_completes_without_raising(tmp_path: Path) 
 
 
 # ---------------------------------------------------------------------------
-# Stage 3 wiring — call-observation threading + trial_started model identity
+# Call-observation threading + trial_started model identity
 # ---------------------------------------------------------------------------
 
 
@@ -930,17 +930,17 @@ def test_tool_calling_loop_forwards_call_observation_to_generate() -> None:
     assert kwargs["observation"].trial_id == "taskA:0"
 
 
-def test_tool_calling_loop_omits_observation_when_unset() -> None:
-    """Judge path (and any pre-Stage-3 caller): with ``call_observation``
-    unset, ``generate`` is called without an ``observation`` kwarg — keeps
-    the ``LoopLLMClient`` Protocol free of the extra parameter that the
-    judge's scripted doubles never learn."""
+def test_tool_calling_loop_forwards_none_observation_when_unset() -> None:
+    """Judge path (and any caller that leaves ``call_observation`` unset):
+    ``generate`` receives ``observation=None`` — the ``LoopLLMClient``
+    Protocol declares the kwarg, and the ``LLMClient`` treats ``None`` as
+    "no per-call sink", so the LLM-call trio does not fire."""
     events = _RecordingEvents()
 
     client = _run_agent_loop_with(events, call_observation=None)
 
     assert len(client.received) == 1
-    assert "observation" not in client.received[0]
+    assert client.received[0]["observation"] is None
 
 
 def test_user_simulator_llm_reply_forwards_observation_to_generate() -> None:

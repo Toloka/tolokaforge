@@ -1,6 +1,6 @@
 """LLM-call trio emission from :meth:`LLMClient.generate`.
 
-Locks the observation contract added in #389:
+Locks the observation contract:
 
 - ``observation=None`` (default) → zero events, output byte-identical to
   the pre-observation path.
@@ -207,9 +207,10 @@ class TestRetryFires:
         assert finishes[1]["error"] == "RuntimeError: LLM API call failed: kaboom"
         assert finishes[2]["error"] is None
 
-        # retry_scheduled carries the exception class name as reason and a positive backoff.
+        # retry_scheduled carries ``f"{ExcType}: {msg}"`` as reason (matching
+        # the ``llm_call_finished.error`` surface) and a positive backoff.
         for retry in retries:
-            assert retry["reason"] == "RuntimeError"
+            assert retry["reason"].startswith("RuntimeError: LLM API call failed:")
             assert retry["next_attempt_in_s"] > 0.0
             assert retry["trial_id"] == "task_x:0"
             assert retry["role"] == "agent"
@@ -241,7 +242,7 @@ class TestRetryFires:
             assert finished["error"] is not None
             assert finished["error"].startswith("RuntimeError:")
         for retry in retries:
-            assert retry["reason"] == "RuntimeError"
+            assert retry["reason"].startswith("RuntimeError: LLM API call failed:")
 
 
 class TestRetryScheduledOrdering:

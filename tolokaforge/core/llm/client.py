@@ -1030,7 +1030,7 @@ class LLMClient:
                 model=self.model_name,
                 attempt=retry_state.attempt_number,
                 next_attempt_in_s=float(next_action.sleep) if next_action else 0.0,
-                reason=exc.__class__.__name__ if exc is not None else "",
+                reason=f"{type(exc).__name__}: {exc}" if exc is not None else "",
             )
 
         return Retrying(

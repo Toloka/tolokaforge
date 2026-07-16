@@ -63,6 +63,7 @@ class LoopLLMClient(Protocol):
         messages: list[Message],
         tools: list[dict[str, Any]],
         tool_choice: str = "auto",
+        observation: LLMCallObservation | None = None,
     ) -> GenerationResult: ...
 
 
@@ -312,22 +313,12 @@ class ToolCallingLoop:
         self.logger.debug("Requesting agent response", turn=turn)
         if self.request_limiter is not None:
             self.request_limiter.acquire()
-        # ``observation`` is forwarded only when the caller opted in — keeps
-        # the ``LoopLLMClient`` Protocol free of an observation kwarg the
-        # judge's scripted doubles do not need.
-        if self.call_observation is not None:
-            return self.llm_client.generate(
-                system=system_prompt,
-                messages=messages,
-                tools=self.tool_schemas,
-                tool_choice="auto",
-                observation=self.call_observation,
-            )
         return self.llm_client.generate(
             system=system_prompt,
             messages=messages,
             tools=self.tool_schemas,
             tool_choice="auto",
+            observation=self.call_observation,
         )
 
     def _advance_user_turn(

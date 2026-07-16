@@ -40,7 +40,7 @@ class _ScriptedClient:
         self._results = list(results)
         self.calls = 0
 
-    def generate(self, system, messages, tools, tool_choice="auto"):
+    def generate(self, system, messages, tools, tool_choice="auto", observation=None):
         self.calls += 1
         return self._results.pop(0)
 
@@ -202,7 +202,7 @@ def test_episode_timeout_terminates_before_first_generation():
 
 def test_generation_error_is_classified_via_shared_classifier():
     class _Boom:
-        def generate(self, system, messages, tools, tool_choice="auto"):
+        def generate(self, system, messages, tools, tool_choice="auto", observation=None):
             raise LLMApiTimeoutError("LLM API call timed out")
 
     messages: list[Message] = []
