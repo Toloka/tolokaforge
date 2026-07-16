@@ -107,8 +107,8 @@ class TestProvisionFailureLogCapture:
 @pytest.mark.skipif(not is_docker_daemon_available(), reason="Docker not available")
 class TestSuccessPathCapture:
     """After a *successful* provision, ``capture_service_logs(handle,
-    failed=False)`` writes per-service ``.log`` files only when the on-success
-    debug policy is set — the default keeps the output dir bounded."""
+    capture_worthy=False)`` writes per-service ``.log`` files only when the
+    on-success debug policy is set — the default keeps the output dir bounded."""
 
     @staticmethod
     def _success_spec(trial_id: str) -> TrialSpec:
@@ -121,7 +121,7 @@ class TestSuccessPathCapture:
         )
         handle = backend.provision(self._success_spec("task-1:0"))
         try:
-            assert backend.capture_service_logs(handle, failed=False) == {}
+            assert backend.capture_service_logs(handle, capture_worthy=False) == {}
         finally:
             backend.teardown(handle)
 
@@ -133,7 +133,7 @@ class TestSuccessPathCapture:
         )
         handle = backend.provision(self._success_spec("task-1:0"))
         try:
-            captured = backend.capture_service_logs(handle, failed=False)
+            captured = backend.capture_service_logs(handle, capture_worthy=False)
         finally:
             backend.teardown(handle)
 

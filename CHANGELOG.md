@@ -6,6 +6,7 @@ All notable changes to this project are documented in this file.
 
 ### Feat
 
+- **runtime**: per-service log capture now also fires on a completed-but-red grade (`status: completed`, `binary_pass: false`), not only execution failures — writes `services/<service>.log` + amends `metrics.yaml.captured_service_logs` before teardown (#418)
 - **grading**: `state_checks.db_probes` grading primitive — declarative postgres substrate assertions (#400)
 - **schema**: task.yaml minimal shape is task_id + description; initial_state / tools / user_simulator / grading now optional with sane defaults (#366)
 - **runtime**: `compute.log_tail` + `compute.capture_logs_on_success` config knobs and a per-service compose-log capture primitive for trial-failure diagnostics (#302)

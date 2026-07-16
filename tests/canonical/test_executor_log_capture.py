@@ -1,17 +1,18 @@
 """Lock the trial-body log-capture contract on ``ProvisioningTrialExecutor``.
 
 After ``conductor.run`` returns and before teardown, the executor calls
-``runtime_backend.capture_service_logs(handle, failed=...)`` where ``failed``
-is true only for an execution failure (``ERROR`` / ``TIMEOUT``) — a clean run
-that merely failed grading is not a capture trigger. When the backend returns
-a non-empty byte map the executor emits the ``trial.service_logs_captured``
+``runtime_backend.capture_service_logs(handle, capture_worthy=...)`` where
+``capture_worthy`` is true for an execution failure (``ERROR`` / ``TIMEOUT``)
+or a completed-but-red grade (``COMPLETED`` with ``binary_pass is False``). A
+completed trial that passes is not capture-worthy. When the backend returns a
+non-empty byte map the executor emits the ``trial.service_logs_captured``
 summary line and amends the trial's ``metrics.yaml`` with a top-level
 ``captured_service_logs`` mapping.
 
 No Docker: an :class:`InMemoryRuntimeBackend` subclass returns a stub byte map
-(gated on the ``failed`` flag, writing no ``.log`` files) and an
-:class:`InMemoryConductor` drives the trajectory status. The real per-service
-``.log`` capture is locked by the Docker integration test.
+(gated on the ``capture_worthy`` flag, writing no ``.log`` files) and an
+:class:`InMemoryConductor` drives the trajectory status and grade. The real
+per-service ``.log`` capture is locked by the Docker integration test.
 """
 
 from __future__ import annotations
@@ -37,16 +38,17 @@ _BYTE_MAP = {"db": 128, "runner": 64}
 
 class _StubCaptureBackend(InMemoryRuntimeBackend):
     """In-memory backend whose ``capture_service_logs`` returns a stub byte
-    map, gated exactly like the real backend (``failed`` or on-success), and
-    writes no ``.log`` files. Still records the ``(trial_id, failed)`` call."""
+    map, gated exactly like the real backend (``capture_worthy`` or
+    on-success), and writes no ``.log`` files. Still records the
+    ``(trial_id, capture_worthy)`` call."""
 
     def __init__(self, *, on_success: bool = False) -> None:
         super().__init__()
         self._on_success = on_success
 
-    def capture_service_logs(self, handle: EnvHandle, *, failed: bool) -> dict[str, int]:
-        self.call_log.capture_service_logs_calls.append((handle.trial_id, failed))
-        if failed or self._on_success:
+    def capture_service_logs(self, handle: EnvHandle, *, capture_worthy: bool) -> dict[str, int]:
+        self.call_log.capture_service_logs_calls.append((handle.trial_id, capture_worthy))
+        if capture_worthy or self._on_success:
             return dict(_BYTE_MAP)
         return {}
 
@@ -127,8 +129,8 @@ class TestErrorTrialCapture:
         assert len(_summary_lines(executor.logger)) == 1
 
 
-class TestGradedFailIsNotCapture:
-    def test_completed_binary_fail_does_not_capture(self, tmp_path: Path) -> None:
+class TestGradedFailIsCapture:
+    def test_completed_binary_fail_captures_and_amends_metrics(self, tmp_path: Path) -> None:
         backend = _StubCaptureBackend()
         factory = _factory_for(TrialStatus.COMPLETED, binary_pass=False)
         executor = _make_executor(backend, factory, tmp_path)
@@ -136,7 +138,29 @@ class TestGradedFailIsNotCapture:
 
         executor.execute(make_trial_spec(trial_id="task-1:0"), make_task_config(task_id="task-1"))
 
-        # Capture is still consulted, but with failed=False the map is empty.
+        # A completed-but-red grade is capture-worthy.
+        assert backend.call_log.capture_service_logs_calls == [("task-1:0", True)]
+
+        summary = _summary_lines(executor.logger)
+        assert len(summary) == 1
+        assert summary[0]["context"]["services"] == _BYTE_MAP
+
+        metrics = yaml.safe_load(metrics_path.read_text())
+        assert metrics["captured_service_logs"] == _BYTE_MAP
+        # Pre-existing keys survive the read-add-write amendment.
+        assert metrics["cost_usd"] == 0.5
+
+
+class TestPassingTrialIsNotCapture:
+    def test_completed_binary_pass_does_not_capture(self, tmp_path: Path) -> None:
+        backend = _StubCaptureBackend()
+        factory = _factory_for(TrialStatus.COMPLETED, binary_pass=True)
+        executor = _make_executor(backend, factory, tmp_path)
+        metrics_path = _write_metrics(tmp_path, "task-1", 0)
+
+        executor.execute(make_trial_spec(trial_id="task-1:0"), make_task_config(task_id="task-1"))
+
+        # Capture is still consulted, but with capture_worthy=False the map is empty.
         assert backend.call_log.capture_service_logs_calls == [("task-1:0", False)]
         assert _summary_lines(executor.logger) == []
 

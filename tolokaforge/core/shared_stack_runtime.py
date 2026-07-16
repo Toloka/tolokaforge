@@ -937,7 +937,7 @@ class SharedStackRuntimeBackend:
         down at :meth:`close`, not per-trial. Idempotent by construction."""
 
     def capture_service_logs(  # noqa: ARG002 — Protocol conformance
-        self, handle: EnvHandle, *, failed: bool
+        self, handle: EnvHandle, *, capture_worthy: bool
     ) -> dict[str, int]:
         """Documented no-op returning ``{}``.
 

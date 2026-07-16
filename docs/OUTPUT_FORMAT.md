@@ -26,7 +26,7 @@ bumped and this document is updated in the same commit.
             ├── logs.yaml
             ├── prompts.yaml                ← agent + user-sim system prompts
             ├── tools_schemas.yaml          ← post-policy tool list
-            └── services/                   ← per-service compose logs (only on trial failure)
+            └── services/                   ← per-service compose logs (on trial-body or graded failure)
                 ├── {service}.log
                 └── _capture.yaml           ← manifest (provision-failure path only)
 ```
@@ -323,9 +323,11 @@ table):
 | `cache_read_input_tokens` | Anthropic | Tokens re-used from the ephemeral cache this call |
 | `provider_raw` | — | Best-effort dump of the *last* call's raw usage block |
 
-### `captured_service_logs` — only on trial-body failure
+### `captured_service_logs` — on trial-body or graded failure
 
-When a trial body fails (`trajectory.status` is `error` or `timeout`) on the
+When a trial is diagnostics-worthy — its body fails (`trajectory.status` is
+`error` or `timeout`) **or** it runs to completion but grades red
+(`trajectory.status` is `completed` with `grade.binary_pass: false`) — on the
 per-trial runtime backend, the executor captures each compose service's
 `docker compose logs` output to
 [`services/{service}.log`](#trialstask_idtrial_indexservices) **before**
@@ -337,16 +339,15 @@ captured_service_logs:
   runner: 512
 ```
 
-The key is present only when at least one service produced output. Capture on
-a successful trial is off by default; enable it with
+The key is present only when at least one service produced output. A
+`completed` trial that passes, or one with no grade, does not trigger capture.
+Capture on a successful trial is off by default; enable it with
 `compute.capture_logs_on_success: true` (see [`docs/CONFIG.md`](CONFIG.md:1)).
-Graded failures (`status: completed`, `binary_pass: false`) do **not** trigger
-capture — that keeps the output-dir footprint bounded.
 
 ## `trials/{task_id}/{trial_index}/services/`
 
-Per-service compose logs, written **only on trial failure** and only on the
-per-trial runtime backend (see
+Per-service compose logs, written on a trial-body or graded failure and only on
+the per-trial runtime backend (see
 [`docs/architecture/RUNTIME_BACKENDS.md`](architecture/RUNTIME_BACKENDS.md:1)
 § "Per-service log capture on failure"). The shared-stack backend never writes
 this directory.
@@ -366,8 +367,8 @@ this directory.
       bytes: 4096
   ```
 
-  On the trial-body-failure path the durable record is the
-  [`metrics.yaml` `captured_service_logs`](#captured_service_logs--only-on-trial-body-failure)
+  On the trial-body path the durable record is the
+  [`metrics.yaml` `captured_service_logs`](#captured_service_logs--on-trial-body-or-graded-failure)
   field instead, so the two surfaces never both write a record.
 
 ## `trials/{task_id}/{trial_index}/grade.yaml`
