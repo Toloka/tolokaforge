@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 import yaml
-from copilot.participants import HumanCLIParticipant, LLMCopilotParticipant
-from copilot.schema import CopilotSuggestion
+from intervener.participants import HumanIntervener, LLMIntervener
+from intervener.schema import InterventionSuggestion
 
 from tolokaforge.session import (
     AssistantMessage,
@@ -87,22 +87,22 @@ def _make_looping_session() -> RecordedTrialSession:
     return RecordedTrialSession.from_events(trial_id=trial_id, events=events)
 
 
-class TestLLMCopilotHeuristic:
+class TestLLMIntervenerHeuristic:
     def test_stuck_pattern_is_detected_by_heuristic(self, monkeypatch):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         session = _make_looping_session()
-        copilot = LLMCopilotParticipant(auto_inject=False)
-        log = copilot.run(session)
+        intervener = LLMIntervener(auto_inject=False)
+        log = intervener.run(session)
 
         # Every entry has identical shape (via the shared base class)
         for entry in log.entries:
             assert entry.trial_id == "TEST-01:0"
-            assert entry.participant_id == "llm_copilot"
+            assert entry.participant_id == "llm_intervener"
 
-        # At least one suggestion should carry a payload with the CopilotSuggestion shape
+        # At least one suggestion should carry a payload with the InterventionSuggestion shape
         payloads = [entry.payload for entry in log.entries if entry.payload is not None]
         assert payloads, "expected at least one suggestion payload in the log"
-        parsed = [CopilotSuggestion.model_validate(p) for p in payloads]
+        parsed = [InterventionSuggestion.model_validate(p) for p in payloads]
 
         # The heuristic should classify the loop as medium urgency somewhere in the window
         stuck_matches = [s for s in parsed if "auth_login" in s.situation]
@@ -117,15 +117,15 @@ class TestLLMCopilotHeuristic:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         session = _make_looping_session()
         # Heuristic tops out at medium — auto-inject must be silent
-        copilot = LLMCopilotParticipant(auto_inject=True)
-        copilot.run(session)
+        intervener = LLMIntervener(auto_inject=True)
+        intervener.run(session)
         assert session.captured_interventions == []
 
 
 class TestHumanCLIParticipantScripted:
     def test_scripted_inject_produces_intervention_of_correct_kind(self):
         session = _make_looping_session()
-        human = HumanCLIParticipant(
+        human = HumanIntervener(
             non_interactive_script=[
                 "",  # first prompt seam — no intervention
                 "try /v2/auth instead",  # bare text → InjectMessage
@@ -154,10 +154,8 @@ class TestSharedLogShapeAcrossParticipants:
 
     def test_field_set_is_identical(self, monkeypatch):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        llm_log = LLMCopilotParticipant(auto_inject=False).run(_make_looping_session())
-        human_log = HumanCLIParticipant(non_interactive_script=[""] * 10).run(
-            _make_looping_session()
-        )
+        llm_log = LLMIntervener(auto_inject=False).run(_make_looping_session())
+        human_log = HumanIntervener(non_interactive_script=[""] * 10).run(_make_looping_session())
 
         llm_fields = {frozenset(entry.model_dump(mode="json").keys()) for entry in llm_log.entries}
         human_fields = {
@@ -168,27 +166,27 @@ class TestSharedLogShapeAcrossParticipants:
 
 
 class TestDemoDriverEndToEnd:
-    def test_copilot_driver_produces_session_log_yaml(self, tmp_path: Path, monkeypatch):
+    def test_llm_driver_produces_session_log_yaml(self, tmp_path: Path, monkeypatch):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         traj = _write_looping_trajectory(tmp_path)
 
-        from copilot.demo.attach_recorded import main
+        from intervener.demo.attach_recorded import main
 
         rc = main(
             [
                 "--trajectory",
                 str(traj),
                 "--as",
-                "copilot",
+                "llm",
             ]
         )
         assert rc == 0
 
-        out = traj.with_name("session_log__copilot.yaml")
+        out = traj.with_name("session_log__llm.yaml")
         assert out.exists()
         loaded = yaml.safe_load(out.read_text())
         assert loaded["trial_id"] == "TEST-01:0"
-        assert loaded["participant_id"] == "llm_copilot"
+        assert loaded["participant_id"] == "llm_intervener"
         assert len(loaded["entries"]) > 0
 
     def test_human_driver_with_script_produces_session_log_yaml(self, tmp_path: Path):
@@ -196,7 +194,7 @@ class TestDemoDriverEndToEnd:
         script = tmp_path / "human.script"
         script.write_text("try /v2/auth\n\n\n")
 
-        from copilot.demo.attach_recorded import main
+        from intervener.demo.attach_recorded import main
 
         rc = main(
             [
@@ -213,7 +211,7 @@ class TestDemoDriverEndToEnd:
         out = traj.with_name("session_log__human.yaml")
         assert out.exists()
         loaded = yaml.safe_load(out.read_text())
-        assert loaded["participant_id"] == "human_cli"
+        assert loaded["participant_id"] == "human_intervener"
 
 
 def _write_looping_trajectory(tmp_path: Path) -> Path:

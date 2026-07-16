@@ -1,7 +1,7 @@
 [project]
-name = "copilot"
+name = "intervener"
 version = "0.1.0"
-description = "Intervention Copilot — reference LLM and Human participants for tolokaforge's Trial Session gate."
+description = "Reference LLM and Human participants (interveners) for tolokaforge's Trial Session gate."
 requires-python = ">=3.10"
 dependencies = [
     "tolokaforge",
@@ -14,14 +14,14 @@ dependencies = [
 anthropic = ["anthropic>=0.40"]
 
 [project.scripts]
-copilot-demo = "copilot.demo.attach_recorded:main"
+intervener-demo = "intervener.demo.attach_recorded:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["copilot"]
+packages = ["intervener"]
 
 [tool.pytest.ini_options]
 markers = [

@@ -1,4 +1,4 @@
-"""LLM pipeline stages for :class:`LLMCopilotParticipant`.
+"""LLM pipeline stages for :class:`LLMIntervener`.
 
 M0/M2 scope: **situation classifier** + **message drafter**. Retrieval over
 past interventions and calibrated urgency scoring land in M3 as part of the
@@ -7,6 +7,6 @@ retrieval or a calibrated urgency head does not require rewriting the
 participant.
 """
 
-from copilot.pipeline.drafter import draft_suggestion
+from intervener.pipeline.drafter import draft_suggestion
 
 __all__ = ["draft_suggestion"]

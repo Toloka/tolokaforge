@@ -1,7 +1,7 @@
 """LLM message drafter — single-call pipeline stage.
 
 Given a trial context (the most recent N events plus a running conversation
-digest), asks an LLM to produce a :class:`CopilotSuggestion` with structured
+digest), asks an LLM to produce a :class:`InterventionSuggestion` with structured
 output. When the ``ANTHROPIC_API_KEY`` env var is unset, falls back to a
 deterministic heuristic drafter so the demo still runs end-to-end and its
 shape is inspectable without live provider access.
@@ -17,7 +17,7 @@ import os
 import re
 from typing import Any
 
-from copilot.schema import CopilotSuggestion
+from intervener.schema import InterventionSuggestion
 from tolokaforge.session import (
     AssistantMessage,
     ToolCallEmitted,
@@ -28,7 +28,7 @@ from tolokaforge.session import (
 __all__ = ["draft_suggestion"]
 
 _DEFAULT_MODEL = "claude-opus-4-7"
-_SYSTEM = """You are an LLM copilot embedded in an eval harness.
+_SYSTEM = """You are an LLM intervener embedded in an eval harness.
 You watch a running agent trial and, when the agent is stuck or about to waste budget,
 propose a single next message the human operator should inject to unstick it.
 
@@ -50,8 +50,8 @@ def draft_suggestion(
     at_seq: int,
     recent_events: list[TrialEvent],
     model: str = _DEFAULT_MODEL,
-) -> CopilotSuggestion:
-    """Produce a :class:`CopilotSuggestion` from a window of recent events.
+) -> InterventionSuggestion:
+    """Produce a :class:`InterventionSuggestion` from a window of recent events.
 
     Uses Anthropic Messages API when both ``ANTHROPIC_API_KEY`` is set AND the
     ``anthropic`` package is importable; otherwise falls back to the heuristic
@@ -62,7 +62,7 @@ def draft_suggestion(
     payload = _call_llm(context, model=model) if _llm_available() else _heuristic(recent_events)
     payload["trial_id"] = trial_id
     payload["at_seq"] = at_seq
-    return CopilotSuggestion.model_validate(payload)
+    return InterventionSuggestion.model_validate(payload)
 
 
 def _llm_available() -> bool:

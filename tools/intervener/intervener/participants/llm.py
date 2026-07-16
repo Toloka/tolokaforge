@@ -1,7 +1,7 @@
-"""``LLMCopilotParticipant`` — reference LLM participant.
+"""``LLMIntervener`` — reference LLM participant.
 
 Watches the event stream and, at each natural intervention seam (assistant
-turn boundary, terminal), asks the drafter for a :class:`CopilotSuggestion`.
+turn boundary, terminal), asks the drafter for a :class:`InterventionSuggestion`.
 If urgency is ``high`` or ``critical`` and the participant is in
 ``PARTICIPANT`` / ``ADMIN`` role, submits an :class:`InjectMessage`
 intervention. Otherwise the suggestion is logged as an observation.
@@ -14,9 +14,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from copilot.participants.base import EventReaction, Participant
-from copilot.pipeline import draft_suggestion
-from copilot.schema import CopilotSuggestion
+from intervener.participants.base import EventReaction, Participant
+from intervener.pipeline import draft_suggestion
+from intervener.schema import InterventionSuggestion
 from tolokaforge.session import (
     AssistantMessage,
     InjectMessage,
@@ -29,22 +29,22 @@ from tolokaforge.session import (
     TrialSession,
 )
 
-__all__ = ["LLMCopilotParticipant"]
+__all__ = ["LLMIntervener"]
 
 _INTERVENE_URGENCIES = {"high", "critical"}
 
 
-class LLMCopilotParticipant(Participant):
-    """LLM copilot that proposes interventions at natural turn seams.
+class LLMIntervener(Participant):
+    """LLM intervener that proposes interventions at natural turn seams.
 
-    ``auto_inject``: when ``True``, the copilot submits ``InjectMessage``
+    ``auto_inject``: when ``True``, the intervener submits ``InjectMessage``
     interventions on high-urgency suggestions. When ``False`` (recommended
     for RecordedTrialSession demos), suggestions are logged only.
     """
 
     def __init__(
         self,
-        participant_id: str = "llm_copilot",
+        participant_id: str = "llm_intervener",
         role: ParticipantRole = ParticipantRole.PARTICIPANT,
         auto_inject: bool = True,
         drafter_model: str | None = None,
@@ -85,7 +85,7 @@ class LLMCopilotParticipant(Participant):
             event, (AssistantMessage, ToolResultObserved, ToolCallEmitted, TerminalReached)
         )
 
-    def _draft(self, trial_id: str, at_seq: int) -> CopilotSuggestion:
+    def _draft(self, trial_id: str, at_seq: int) -> InterventionSuggestion:
         kwargs = {"model": self._drafter_model} if self._drafter_model else {}
         return draft_suggestion(
             trial_id=trial_id,

@@ -1,4 +1,4 @@
-"""``copilot-demo`` — replay a recorded trajectory into either participant.
+"""``intervener-demo`` — replay a recorded trajectory into either participant.
 
 Reads a captured ``trajectory.yaml`` (optionally truncated at a given turn),
 attaches the requested participant to a :class:`RecordedTrialSession`, drains
@@ -8,8 +8,8 @@ Both participant types produce identical session-log shape — the contract is
 genuinely shared. See ``docs/OPEN_AGENT_LOOP.md`` §3 and the M2 milestone
 description.
 
-    uv run copilot-demo --trajectory trajectory.yaml --as copilot
-    uv run copilot-demo --archive <run-dir> --trial MAN-34 --truncate-turn 3 --as human
+    uv run intervener-demo --trajectory trajectory.yaml --as llm
+    uv run intervener-demo --archive <run-dir> --trial MAN-34 --truncate-turn 3 --as human
 """
 
 from __future__ import annotations
@@ -21,14 +21,14 @@ from pathlib import Path
 import yaml
 from rich.console import Console
 
-from copilot.participants import (
-    HumanCLIParticipant,
-    LLMCopilotParticipant,
+from intervener.participants import (
+    HumanIntervener,
+    LLMIntervener,
     Participant,
 )
 from tolokaforge.session import RecordedTrialSession
 
-_CHOICES = ("copilot", "human")
+_CHOICES = ("llm", "human")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -126,12 +126,12 @@ def _resolve_trajectory_path(args: argparse.Namespace) -> Path:
 
 
 def _build_participant(args: argparse.Namespace) -> Participant:
-    if args.participant == "copilot":
-        return LLMCopilotParticipant(auto_inject=args.auto_inject)
+    if args.participant == "llm":
+        return LLMIntervener(auto_inject=args.auto_inject)
     script: list[str] | None = None
     if args.script is not None:
         script = [line.rstrip("\n") for line in args.script.read_text().splitlines()]
-    return HumanCLIParticipant(non_interactive_script=script)
+    return HumanIntervener(non_interactive_script=script)
 
 
 if __name__ == "__main__":

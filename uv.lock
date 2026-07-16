@@ -9,8 +9,8 @@ resolution-markers = [
 
 [manifest]
 members = [
-    "copilot",
     "dev-mcp",
+    "intervener",
     "pricing-updater",
     "rubric-calibrator",
     "tolokaforge",
@@ -581,32 +581,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/17/cc/d87b094ef858c67fe
 wheels = [
     { url = "https://files.pythonhosted.org/packages/98/35/c7995b1e66159193dd31ed5628d59acbaf4611811645eedf0fb2d5a91946/commitizen-4.16.3-py3-none-any.whl", hash = "sha256:ce1be39fe98a16725fd0c960daf0f360acac86db7ae8db1e1df8d3541005b5be", size = 88927, upload-time = "2026-05-30T06:34:20.006Z" },
 ]
-
-[[package]]
-name = "copilot"
-version = "0.1.0"
-source = { editable = "tools/copilot" }
-dependencies = [
-    { name = "pydantic" },
-    { name = "pyyaml" },
-    { name = "rich" },
-    { name = "tolokaforge" },
-]
-
-[package.optional-dependencies]
-anthropic = [
-    { name = "anthropic" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "anthropic", marker = "extra == 'anthropic'", specifier = ">=0.40" },
-    { name = "pydantic", specifier = ">=2.7" },
-    { name = "pyyaml", specifier = ">=6.0" },
-    { name = "rich", specifier = ">=13.7" },
-    { name = "tolokaforge", editable = "." },
-]
-provides-extras = ["anthropic"]
 
 [[package]]
 name = "coverage"
@@ -1475,6 +1449,32 @@ sdist = { url = "https://files.pythonhosted.org/packages/72/34/14ca021ce8e5dfedc
 wheels = [
     { url = "https://files.pythonhosted.org/packages/cb/b1/3846dd7f199d53cb17f49cba7e651e9ce294d8497c8c150530ed11865bb8/iniconfig-2.3.0-py3-none-any.whl", hash = "sha256:f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12", size = 7484, upload-time = "2025-10-18T21:55:41.639Z" },
 ]
+
+[[package]]
+name = "intervener"
+version = "0.1.0"
+source = { editable = "tools/intervener" }
+dependencies = [
+    { name = "pydantic" },
+    { name = "pyyaml" },
+    { name = "rich" },
+    { name = "tolokaforge" },
+]
+
+[package.optional-dependencies]
+anthropic = [
+    { name = "anthropic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "anthropic", marker = "extra == 'anthropic'", specifier = ">=0.40" },
+    { name = "pydantic", specifier = ">=2.7" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "rich", specifier = ">=13.7" },
+    { name = "tolokaforge", editable = "." },
+]
+provides-extras = ["anthropic"]
 
 [[package]]
 name = "jinja2"

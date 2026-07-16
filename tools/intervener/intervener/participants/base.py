@@ -38,7 +38,7 @@ class EventReaction:
     ``intervention`` is optional — a participant may observe without acting.
     ``note`` is an optional diagnostic string included in the session log.
     ``payload`` is optional structured data attached to the log (e.g. the
-    full :class:`CopilotSuggestion` for the LLM path).
+    full :class:`InterventionSuggestion` for the LLM path).
     """
 
     intervention: TrialIntervention | None = None

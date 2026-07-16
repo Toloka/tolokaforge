@@ -1,4 +1,4 @@
-"""``HumanCLIParticipant`` — reference human participant.
+"""``HumanIntervener`` — reference human participant.
 
 Renders every event to a Rich console. At natural seams (assistant turn,
 tool result, terminal) prompts the operator for an intervention. Empty
@@ -19,7 +19,7 @@ from datetime import UTC, datetime
 from rich.console import Console
 from rich.panel import Panel
 
-from copilot.participants.base import EventReaction, Participant
+from intervener.participants.base import EventReaction, Participant
 from tolokaforge.session import (
     AssistantMessage,
     InjectMessage,
@@ -37,10 +37,10 @@ from tolokaforge.session import (
     TurnStarted,
 )
 
-__all__ = ["HumanCLIParticipant"]
+__all__ = ["HumanIntervener"]
 
 
-class HumanCLIParticipant(Participant):
+class HumanIntervener(Participant):
     """Interactive human participant driven from stdin.
 
     ``non_interactive_script`` — optional list of lines to feed in place of
@@ -49,7 +49,7 @@ class HumanCLIParticipant(Participant):
 
     def __init__(
         self,
-        participant_id: str = "human_cli",
+        participant_id: str = "human_intervener",
         role: ParticipantRole = ParticipantRole.PARTICIPANT,
         console: Console | None = None,
         non_interactive_script: list[str] | None = None,
