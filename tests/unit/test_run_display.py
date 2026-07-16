@@ -1293,6 +1293,31 @@ def test_boot_log_region_dropped_when_budget_below_minimum_panel_height() -> Non
     assert sum(sizes.values()) == 12
 
 
+def test_boot_log_layout_self_consistent_when_banner_and_boot_log_co_occur() -> None:
+    """Contrived state — ``_banner`` set alongside boot-log activation at
+    ``_total_trials == 0`` — must still produce a row sum equal to
+    ``max(12, viewport - 1)``.
+
+    No current emitter fires both regions simultaneously, but the layout
+    math must not silently depend on that caller-ordering invariant. A
+    future emitter that raised ``_banner`` before dispatch (e.g.
+    ``trial_failed`` during boot) would otherwise overflow the row budget
+    by ``banner_h == 5`` — Rich Live would re-anchor and re-introduce the
+    #392 panel-stacking regression. Locks the invariant at the layout
+    level so it holds regardless of which events fire first.
+    """
+    display = LiveRunDisplay(refresh_per_second=1000)
+    _install_stub_live(display, height=20)
+    _seed_boot_state(display, record_count=5)
+    display._banner = ("auth error", "check credentials", None)
+
+    layout = display._build_layout()
+    sizes = {getattr(c, "name", None): c.size for c in layout.children}
+
+    assert sizes.get("banner") == 5
+    assert sum(sizes.values()) == max(12, 20 - 1)
+
+
 # ---------------------------------------------------------------------------
 # `trial_provisioned` — containers land on the focused card
 # ---------------------------------------------------------------------------

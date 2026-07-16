@@ -416,8 +416,10 @@ def _render_boot_log_tail(
 
     Mirrors :func:`_render_services_table`'s flat-``Text``-inside-``Panel``
     shape: a Rich ``Table`` inside a tight fixed-height ``Layout`` can
-    silently drop rows. Callers must guard the empty-filtered case; this
-    helper is only ever invoked when the filtered list is non-empty.
+    silently drop rows. The internal :func:`_docker_boot_records` call is
+    idempotent — pre-filtered input passes through unchanged, and
+    unfiltered input is filtered here — so this helper is safe to invoke
+    with either shape.
     """
     filtered = _docker_boot_records(records)
     tail = filtered[-max_lines:]
@@ -1046,7 +1048,7 @@ class LiveRunDisplay:
         # needs ≥ 3 rows to render at least one content line; below that
         # the region drops entirely so we never emit a zero-content
         # bordered box.
-        budget = total - services_h - bottom_h - 5
+        budget = total - banner_h - services_h - bottom_h - 5
         boot_log_h = min(desired_boot_log_h, budget) if desired_boot_log_h else 0
         if boot_log_h < 3:
             boot_log_h = 0
