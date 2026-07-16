@@ -11,8 +11,9 @@ initial_user_message: |
   The lot-ops API is at http://app-service:8000 — it's got the lots, the
   reason-code catalog, and the corrective-actions table. Pull the right
   contamination reason code and open the action against lot 7 with a short
-  note about what happened. When it's logged, drop me a quick completion
-  report under submissions/ so I've got something to hand to my shift lead.
+  note about what happened. Just one record, please — don't double it up.
+  When it's logged, drop me a quick completion report under submissions/ so
+  I've got something to hand to my shift lead.
 adapter_type: "native"
 environment_manifest:
   compose_file: "../../../shared/environment.compose.yaml"
@@ -39,4 +40,5 @@ policies:
   guidance:
     - "Reach the API with the `http_request` tool against `http://app-service:8000` — GET the reason-code catalog to find the contamination code before opening the action; do not guess it."
     - "Open the corrective action by POSTing to the lot's corrective-actions endpoint; it must reference lot 7 and the contamination reason code."
+    - "Open exactly one corrective action for the lot. If the POST returns a success response, do not send it again — read the response to confirm, then move on to writing the completion report."
 grading: "grading.yaml"
