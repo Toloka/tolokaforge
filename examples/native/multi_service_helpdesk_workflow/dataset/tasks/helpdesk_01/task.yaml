@@ -64,6 +64,7 @@ policies:
   guidance:
     - "Reach each service by its base URL with the `http_request` tool: the delivery tracker, product catalog, and site info are read with GET; inspect DLV-4021 (delivery_id 4021), its product, and the Northwind site."
     - "Search the policy corpus by POSTing your query to `http://policy-search:8000/search` with a JSON body `{\"q\": \"...\"}` — do not guess the after-hours rule, read it."
-    - "Derive the resolution path from the policy applied to the site's capabilities; do not assume it. Only one path is permitted for this site."
-    - "Record the outcome as a CRM case (`POST http://crm:8000/cases`) naming the customer, delivery, chosen path, and a short justification, then annotate the delivery (`PATCH http://delivery-tracker:8000/deliveries/4021`) with the same resolution path."
+    - "Derive the resolution path from the policy applied to the site's capabilities; do not assume it. Only one path is permitted for this site. The `resolution_path` value must be one of the short slugs `reschedule`, `temp_controlled_hold`, or `specialist_handoff`."
+    - "Record the outcome as a CRM case by POSTing to `http://crm:8000/cases` with a JSON body `{\"delivery_id\": 4021, \"customer_id\": \"NORTHWIND\", \"resolution_path\": \"<the chosen slug>\", \"summary\": \"<one sentence naming the customer, the delivery, the chosen path, and why per policy>\"}` — use the integer `delivery_id` 4021, not the string label."
+    - "Then annotate the delivery with `PATCH http://delivery-tracker:8000/deliveries/4021` and a JSON body `{\"resolution_path\": \"<the same slug>\", \"resolution_note\": \"<one-sentence justification>\"}`."
 grading: "grading.yaml"

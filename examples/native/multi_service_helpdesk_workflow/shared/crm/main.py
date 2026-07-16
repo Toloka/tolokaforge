@@ -16,11 +16,10 @@ from typing import Any
 
 import asyncpg
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
 
 
 class NewCase(BaseModel):
-    model_config = ConfigDict(extra="forbid")
     delivery_id: int
     customer_id: str
     resolution_path: str
