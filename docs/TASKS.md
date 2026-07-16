@@ -177,6 +177,36 @@ user_simulator:
 
 Scripted mode (`mode: "scripted"`) is available for simple deterministic flows but produces less realistic conversations.
 
+### Specialised personas
+
+For adversarial, multi-step tasks where the agent must *extract* the deciding
+facts through conversation, sharpen the `backstory` into a specialised persona.
+A specialised persona is a `backstory` with six components:
+
+- **Named persona.** Give the user a name, role, and organisation ("You are Ana
+  Reyes, operations coordinator at Northwind Biologics"). Concreteness keeps the
+  simulator in character across a long exchange.
+- **Facts the user knows.** State plainly what this person is aware of — the
+  problem they are chasing, the constraints they live under — so the simulator
+  answers consistently.
+- **Reveal-on-ask rules.** List the deciding facts the user will confirm *only
+  when asked*, each with an explicit "do NOT volunteer this unprompted". This
+  forces the agent to investigate rather than be handed the answer.
+- **Never name the solution.** Bar the user from naming the resolution, quoting
+  policy, or otherwise doing the agent's reasoning ("Never name a resolution path
+  or quote policy; that is the agent's job").
+- **Natural opening.** Instruct the user to open in their own words with the
+  problem, not a list of fields — this is what makes the first turn realistic.
+- **`###STOP###` exit.** Give a precise exit condition ("Say `###STOP###` once
+  the agent confirms a resolution is recorded"), not a generic "when done".
+
+The worked example is
+[`examples/native/multi_service_helpdesk_workflow`](../examples/native/multi_service_helpdesk_workflow/):
+its coordinator persona knows the shipment is delayed and after-hours, confirms
+the site has no cold storage or specialist only when asked, and never names the
+policy-correct resolution — so the agent must reconcile four services plus a
+policy corpus to derive it.
+
 ## Browser vs Mobile Tool
 
 Use `browser` for full web browsing tasks (URL navigation, search). Use `mobile` for phone app tasks (no URL bar, mobile viewport).
