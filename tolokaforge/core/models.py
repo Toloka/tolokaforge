@@ -852,6 +852,29 @@ class ObservabilityConfig(BaseModel):
     logging: LoggingConfig | None = None
 
 
+class OpenAgentLoopConfig(BaseModel):
+    """Per-run knobs for the Open Agent Loop gate.
+
+    When ``enabled`` is true, every trial in the run gets a live
+    :class:`tolokaforge.session.InProcessTrialSession` and the orchestrator
+    fills :attr:`ConductorContext.observer_provider` with a factory that
+    returns a :class:`SessionLoopObserver` bound to that trial's session.
+    Sealed batch behaviour is the unchanged default (``enabled=False``);
+    setting the flag does not affect any trial that does not attach a
+    participant — events are published but simply discarded by the bounded
+    per-participant queues when no one is listening.
+
+    Future fields will land here for M1 sub-5 (pause / intervention policy)
+    and M4 (transport selection). Kept intentionally minimal today so the
+    schema addition is additive.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    enabled: bool = False
+    """Turn open mode on. Default sealed."""
+
+
 _DUAL_HOME_COMPUTE_ALIASES: tuple[tuple[str, str], ...] = (
     ("workers", "workers"),
     ("max_budget_usd", "max_budget_usd"),
@@ -881,6 +904,10 @@ class RunConfig(BaseModel):
     compute: ComputeConfig | None = None
     storage: StorageConfig | None = None
     observability: ObservabilityConfig | None = None
+    open_agent_loop: OpenAgentLoopConfig | None = None
+    """Open Agent Loop gate configuration. ``None`` (default) keeps every
+    trial sealed; setting ``open_agent_loop.enabled = True`` puts the run
+    in open mode. See :class:`OpenAgentLoopConfig`."""
 
     @property
     def effective_workers(self) -> int:

@@ -56,6 +56,7 @@ from tolokaforge.session.protocols import (
     TrialSession,
 )
 from tolokaforge.session.recorded import RecordedTrialSession
+from tolokaforge.session.registry import SessionRegistry
 
 __all__ = [
     "ApproveTool",
@@ -76,6 +77,7 @@ __all__ = [
     "Resume",
     "ResumeAcknowledged",
     "SessionLoopObserver",
+    "SessionRegistry",
     "TerminalReached",
     "ToolCallEmitted",
     "ToolResultObserved",

@@ -63,6 +63,11 @@ from tolokaforge.core.trial import (
 )
 from tolokaforge.core.trial_executor import TrialExecutor
 from tolokaforge.runner.models import AdapterType, TaskDescription
+from tolokaforge.session import (
+    InProcessTrialSession,
+    SessionLoopObserver,
+    SessionRegistry,
+)
 
 # Tools that need Playwright + Chromium baked into the runner image. The
 # orchestrator scans the task list before starting the docker stack and
@@ -271,6 +276,15 @@ class Orchestrator:
         # task is wasted work. Populated lazily by ``_build_trial_spec``.
         self._task_desc_cache: dict[str, TaskDescription] = {}
 
+        # Open Agent Loop registry — one live InProcessTrialSession per trial
+        # when the run is in open mode; ``None`` in sealed mode. Populated
+        # lazily inside :meth:`_build_conductor` so the registry only exists
+        # when actually needed. Exposed as :attr:`sessions` for external
+        # participant lookup (M2 CLI attach reads through this).
+        self._session_registry: SessionRegistry | None = None
+        if config.open_agent_loop is not None and config.open_agent_loop.enabled:
+            self._session_registry = SessionRegistry()
+
         # Initialize logger
         log_level = logging.DEBUG if verbose else logging.INFO
         self.logger = get_logger("orchestrator", level=log_level, strict=strict)
@@ -427,6 +441,7 @@ class Orchestrator:
             trial_grader=trial_grader,
             output_dir=output_dir,
             request_limiter=request_limiter,
+            observer_provider=self._build_observer_provider(),
         )
         if self._conductor_factory is not None:
             return self._conductor_factory(ctx)
@@ -436,6 +451,38 @@ class Orchestrator:
         # field on the context surfaces as a loud unexpected-kwarg
         # error here instead of a silent omission.
         return InProcessConductor(**vars(ctx))
+
+    @property
+    def sessions(self) -> SessionRegistry | None:
+        """Live-session registry for this run when open mode is on, else
+        ``None``. External participants (M2 CLI attach, cross-trial
+        orchestrator) look sessions up here by ``trial_id``. Sessions are
+        created lazily by the observer provider — a trial that has not yet
+        entered the run body will not have a session yet.
+        """
+        return self._session_registry
+
+    def _build_observer_provider(
+        self,
+    ) -> Callable[[str], SessionLoopObserver | None] | None:
+        """Return a per-trial observer factory for the current run, or ``None``
+        in sealed mode.
+
+        The provider closes over :attr:`_session_registry` and, when called
+        with a ``trial_id``, gets-or-creates the trial's session and returns
+        a fresh :class:`SessionLoopObserver` bound to it. Threading is safe
+        under the registry's own lock; each trial's conductor runs on its
+        own worker thread and receives its own observer instance.
+        """
+        registry = self._session_registry
+        if registry is None:
+            return None
+
+        def _provider(trial_id: str) -> SessionLoopObserver | None:
+            session: InProcessTrialSession = registry.get_or_create(trial_id)
+            return SessionLoopObserver(session)
+
+        return _provider
 
     def _build_trial_spec(
         self,
