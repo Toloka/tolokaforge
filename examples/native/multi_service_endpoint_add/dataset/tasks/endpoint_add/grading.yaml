@@ -16,7 +16,7 @@ combine:
 state_checks:
   jsonpaths:
     - path_glob: "/env/fs/agent-visible/test_result.txt"
-      contains: "PASS"
+      contains_ci: "PASS"
       description: "the real test suite passed (testrunner wrote PASS)"
 transcript_rules:
   max_turns: 25

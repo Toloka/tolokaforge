@@ -64,6 +64,38 @@ def test_check_fails_when_file_missing_expected_text(tmp_path: Path):
     assert "FAIL: must mention X" in reasons
 
 
+@pytest.mark.parametrize(
+    ("marker", "expected_score", "expected_reason"),
+    [
+        ("PASS", 1.0, "PASS: test suite passed"),
+        ("FAIL", 0.0, "FAIL: test suite passed"),
+    ],
+)
+def test_pass_marker_discriminates_against_fail(
+    tmp_path: Path, marker: str, expected_score: float, expected_reason: str
+):
+    """A test-result marker file checked with ``contains_ci: "PASS"`` must score
+    1.0 only when the marker says PASS. A file containing exactly ``FAIL`` must
+    NOT vacuously satisfy the check — this is the decisive state-check floor the
+    endpoint_add pack relies on, and using ``contains:`` instead of
+    ``contains_ci:`` would silently always-pass because the missing key defaults
+    to ``""`` and ``"" in content`` is vacuously True.
+    """
+    marker_file = tmp_path / "test_result.txt"
+    marker_file.write_text(marker)
+
+    checks = [
+        {
+            "path_glob": str(marker_file),
+            "contains_ci": "PASS",
+            "description": "test suite passed",
+        }
+    ]
+    score, reasons = evaluate_jsonpath_file_checks(checks)
+    assert score == expected_score
+    assert expected_reason in reasons
+
+
 def test_check_fails_when_no_files_match_glob(tmp_path: Path):
     checks = [
         {
