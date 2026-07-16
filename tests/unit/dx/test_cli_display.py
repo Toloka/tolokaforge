@@ -285,20 +285,19 @@ class TestSelectDisplayMode:
 
     @pytest.mark.parametrize("ci_value", ["0", "false", "False", "FALSE", "no", "off", ""])
     def test_ci_falsy_falls_through(self, ci_value: str) -> None:
-        # With CI falsy and a TTY stream, isatty branch selects FULL. The
-        # CLI callback drops to RICH when textual isn't installed.
+        # With CI falsy and a TTY stream, isatty branch selects RICH.
         result = select_display_mode(explicit=None, env={"CI": ci_value}, stream=_fake_tty())
-        assert result is DisplayMode.FULL
+        assert result is DisplayMode.RICH
 
-    def test_ci_zero_on_tty_resolves_full(self) -> None:
-        # CI=0 is not truthy, falls through to isatty → FULL (Textual TUI).
+    def test_ci_zero_on_tty_resolves_rich(self) -> None:
+        # CI=0 is not truthy, falls through to isatty → RICH.
         assert (
             select_display_mode(explicit=None, env={"CI": "0"}, stream=_fake_tty())
-            is DisplayMode.FULL
+            is DisplayMode.RICH
         )
 
-    def test_isatty_true_selects_full(self) -> None:
-        assert select_display_mode(explicit=None, env={}, stream=_fake_tty()) is DisplayMode.FULL
+    def test_isatty_true_selects_rich(self) -> None:
+        assert select_display_mode(explicit=None, env={}, stream=_fake_tty()) is DisplayMode.RICH
 
     def test_isatty_false_selects_plain(self) -> None:
         assert select_display_mode(explicit=None, env={}, stream=_fake_pipe()) is DisplayMode.PLAIN

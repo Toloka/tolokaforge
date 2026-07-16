@@ -212,17 +212,18 @@ def select_display_mode(
     """Resolve the effective display mode.
 
     Precedence (highest first): ``explicit`` > ``env["TOLOKAFORGE_DISPLAY"]``
-    > ``env["CI"]`` truthy → ``PLAIN`` > ``stream.isatty()`` → ``FULL`` > ``PLAIN``.
+    > ``env["CI"]`` truthy → ``PLAIN`` > ``stream.isatty()`` → ``RICH`` > ``PLAIN``.
 
-    On a TTY we default to ``FULL`` (the Textual TUI). The CLI callback
-    at :func:`tolokaforge.dx.cli.main._resolve_display_mode` transparently
-    falls back to :attr:`DisplayMode.RICH` with a WARNING when the
-    ``textual`` package is not installed — so headless installs
-    (``pip install tolokaforge`` without ``[dx]``) still land on ``PLAIN``
-    (they never reach the TTY branch anyway) and dev installs that skip
-    ``[dx]`` degrade gracefully. Operators who prefer the Rich Live panel
-    (keeps the run visible in terminal scrollback after exit) can force
-    it with ``--display=rich`` or ``TOLOKAFORGE_DISPLAY=rich``.
+    NB: the TTY default is ``RICH``, not ``FULL``. A previous attempt to
+    default to ``FULL`` (Textual TUI) surfaced a threading bug in
+    :class:`~tolokaforge.dx.tui.TextualRunApp` — Textual's
+    :class:`LinuxDriver` calls :func:`signal.signal` at startup, which
+    Python restricts to the main thread; ``TextualRunApp.__enter__``
+    spawns Textual on a daemon thread. Fixing this needs a real threading
+    redesign (invert the loop, or install a signals-free driver); tracked
+    as a follow-up. Meanwhile operators who want the TUI must ask for it
+    explicitly with ``--display=full``, which is the same code path the
+    unit tests exercise via ``App.run_test()`` (no driver, no signals).
 
     ``env`` defaults to :data:`os.environ`; ``stream`` defaults to
     :data:`sys.stderr`. Unrecognised values in ``explicit`` or the env var
@@ -244,7 +245,7 @@ def select_display_mode(
 
     target_stream = stream if stream is not None else sys.stderr
     if target_stream.isatty():
-        return DisplayMode.FULL
+        return DisplayMode.RICH
     return DisplayMode.PLAIN
 
 
