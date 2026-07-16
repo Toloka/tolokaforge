@@ -202,7 +202,9 @@ Event handlers on `TextualRunApp` are called from the orchestrator's worker thre
 
 Explicit flag beats env var; env var beats `CI`; `CI` beats isatty.
 
-The TTY default is `rich`, not `full` — Textual's `LinuxDriver` calls `signal.signal(...)` at startup which requires the main thread, but `TextualRunApp` runs on a daemon thread. Fixing that needs a threading redesign; tracked as a follow-up. Operators who want the TUI must ask for it explicitly with `--display=full` (which is the same code path the unit tests exercise via `App.run_test()`, so it can misbehave in-vivo despite green tests until the redesign lands).
+The TTY default is `rich`, not `full` — operators who want the TUI ask for it explicitly with `--display=full`.
+
+Under `--display=full`, Ctrl-Z suspend and mid-run terminal-resize reflow don't work — Textual's driver installs OS signal handlers (`SIGTSTP` / `SIGCONT` / `SIGWINCH`) at startup and we run Textual on a background thread where Python forbids that. The signal-handler installation is a documented no-op in this codepath; the trade-off is deliberate and preserves everything else about the TUI. See tolokaforge issue #470 for the rationale.
 
 ### Composition with `--log-format`
 

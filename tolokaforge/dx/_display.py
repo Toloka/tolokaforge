@@ -214,16 +214,10 @@ def select_display_mode(
     Precedence (highest first): ``explicit`` > ``env["TOLOKAFORGE_DISPLAY"]``
     > ``env["CI"]`` truthy → ``PLAIN`` > ``stream.isatty()`` → ``RICH`` > ``PLAIN``.
 
-    NB: the TTY default is ``RICH``, not ``FULL``. A previous attempt to
-    default to ``FULL`` (Textual TUI) surfaced a threading bug in
-    :class:`~tolokaforge.dx.tui.TextualRunApp` — Textual's
-    :class:`LinuxDriver` calls :func:`signal.signal` at startup, which
-    Python restricts to the main thread; ``TextualRunApp.__enter__``
-    spawns Textual on a daemon thread. Fixing this needs a real threading
-    redesign (invert the loop, or install a signals-free driver); tracked
-    as a follow-up. Meanwhile operators who want the TUI must ask for it
-    explicitly with ``--display=full``, which is the same code path the
-    unit tests exercise via ``App.run_test()`` (no driver, no signals).
+    The TTY default is ``RICH``, not ``FULL`` — the Textual TUI is an
+    explicit opt-in via ``--display=full``. See ``docs/CLI.md`` § Full TUI
+    for the trade-offs (Ctrl-Z suspend and mid-run terminal-resize reflow
+    don't work under ``--display=full``).
 
     ``env`` defaults to :data:`os.environ`; ``stream`` defaults to
     :data:`sys.stderr`. Unrecognised values in ``explicit`` or the env var

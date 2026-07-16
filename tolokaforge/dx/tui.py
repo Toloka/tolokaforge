@@ -32,6 +32,7 @@ buffer the Rich panel uses.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import threading
 from collections import deque
@@ -42,6 +43,7 @@ from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.drivers.linux_driver import LinuxDriver
 from textual.screen import ModalScreen
 from textual.widgets import (
     DataTable,
@@ -89,6 +91,66 @@ tab. Rows beyond the cap collapse into a `…and N more` tail so the
 section stays scannable at a glance."""
 
 _LOGGER = logging.getLogger("tolokaforge.dx.tui")
+
+
+@contextlib.contextmanager
+def _tolerate_signal_thread_errors():
+    """Scope-limited monkey-patch of ``signal.signal`` used by Textual's
+    ``LinuxDriver``.
+
+    Textual's driver installs OS signal handlers (``SIGTSTP`` / ``SIGCONT``
+    / ``SIGWINCH``) at boot. Python raises ``ValueError("signal only works
+    in main thread ...")`` when those calls run off the main thread — and
+    :class:`TextualRunApp` runs the driver on a daemon thread. Inside this
+    context manager the offending ``ValueError`` is swallowed and any other
+    ``ValueError`` is re-raised. The patch targets
+    ``textual.drivers.linux_driver.signal.signal`` only and is restored on
+    exit. See tolokaforge issue #470.
+    """
+    import textual.drivers.linux_driver as _driver_mod
+
+    original = _driver_mod.signal.signal
+
+    def _tolerant_signal(signum, handler):
+        try:
+            return original(signum, handler)
+        except ValueError as exc:
+            if "main thread" in str(exc):
+                return None
+            raise
+
+    _driver_mod.signal.signal = _tolerant_signal
+    try:
+        yield
+    finally:
+        _driver_mod.signal.signal = original
+
+
+class _SignalTolerantLinuxDriver(LinuxDriver):
+    """``LinuxDriver`` that no-ops off-main-thread signal-handler installs.
+
+    Textual's ``LinuxDriver`` installs ``SIGTSTP`` / ``SIGCONT`` in
+    ``__init__`` and ``SIGWINCH`` in ``start_application_mode``; Python
+    restricts signal-handler installation to the main thread, so those
+    calls crash the whole app when the driver runs on
+    :class:`TextualRunApp`'s daemon thread. Each entry point that installs
+    a signal is wrapped in :func:`_tolerate_signal_thread_errors` so the
+    handler install becomes a no-op instead. Ctrl-Z suspend and mid-run
+    terminal-resize reflow are the accepted losses. See tolokaforge issue
+    #470.
+    """
+
+    def __init__(self, *args, **kwargs):
+        with _tolerate_signal_thread_errors():
+            super().__init__(*args, **kwargs)
+
+    def start_application_mode(self):
+        with _tolerate_signal_thread_errors():
+            super().start_application_mode()
+
+    def stop(self):
+        with _tolerate_signal_thread_errors():
+            super().stop()
 
 
 _TAB_IDS: tuple[str, ...] = ("overview", "logs", "services", "infra", "errors")
@@ -207,6 +269,8 @@ class TextualRunApp(App[None]):
     :meth:`App.call_from_thread` when the loop is active and buffer into
     :attr:`_pending` before mount.
     """
+
+    driver_class = _SignalTolerantLinuxDriver
 
     CSS = """
     #status { dock: top; height: 1; }

@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import io
 import logging
+import signal
+import threading
 from pathlib import Path
 
 import pytest
@@ -29,6 +31,8 @@ from tolokaforge.dx.tui import (
     RunStatusBar,
     TextualRunApp,
     TrialListView,
+    _SignalTolerantLinuxDriver,
+    _tolerate_signal_thread_errors,
 )
 
 pytestmark = pytest.mark.unit
@@ -64,6 +68,62 @@ def test_for_mode_full_falls_back_to_rich_when_textual_import_fails(
     ctx = LiveRunDisplay.for_mode(DisplayMode.FULL)
     assert isinstance(ctx, LiveRunDisplay)
     assert not isinstance(ctx, TextualRunApp)
+
+
+def test_tolerate_signal_thread_errors_swallows_non_main_thread_valueerror() -> None:
+    """Off-main-thread ``signal.signal`` errors become no-ops; other
+    ``ValueError`` still propagates.
+
+    Locks the contract of :func:`_tolerate_signal_thread_errors` — the
+    guard that lets Textual's ``LinuxDriver`` boot on
+    :class:`TextualRunApp`'s daemon thread (see tolokaforge issue #470).
+    """
+    import textual.drivers.linux_driver as _driver_mod
+
+    swallow_errors: list[BaseException] = []
+
+    def _install_sigtstp_off_main_thread() -> None:
+        try:
+            with _tolerate_signal_thread_errors():
+                _driver_mod.signal.signal(signal.SIGTSTP, signal.SIG_DFL)
+        except BaseException as exc:  # noqa: BLE001 — capture whatever surfaces
+            swallow_errors.append(exc)
+
+    thread = threading.Thread(target=_install_sigtstp_off_main_thread)
+    thread.start()
+    thread.join(timeout=5.0)
+    assert not thread.is_alive()
+    assert swallow_errors == [], f"unexpected exception on thread: {swallow_errors!r}"
+
+    # Defensive: a ValueError NOT matching "main thread" must still propagate.
+    propagate_errors: list[BaseException] = []
+
+    def _boom(*_args: object, **_kwargs: object) -> None:
+        raise ValueError("unrelated failure")
+
+    def _raise_unrelated_valueerror() -> None:
+        try:
+            with _tolerate_signal_thread_errors():
+                original = _driver_mod.signal.signal
+                _driver_mod.signal.signal = _boom
+                try:
+                    _driver_mod.signal.signal(signal.SIGTSTP, signal.SIG_DFL)
+                finally:
+                    _driver_mod.signal.signal = original
+        except BaseException as exc:  # noqa: BLE001
+            propagate_errors.append(exc)
+
+    thread2 = threading.Thread(target=_raise_unrelated_valueerror)
+    thread2.start()
+    thread2.join(timeout=5.0)
+    assert not thread2.is_alive()
+    assert len(propagate_errors) == 1
+    assert isinstance(propagate_errors[0], ValueError)
+    assert "unrelated failure" in str(propagate_errors[0])
+
+
+def test_textual_run_app_driver_class_is_signal_tolerant() -> None:
+    assert TextualRunApp.driver_class is _SignalTolerantLinuxDriver
 
 
 # ---------------------------------------------------------------------------
