@@ -430,6 +430,8 @@ _PATH_FIELD_REWRITERS: tuple[_FieldRewriter, ...] = (
     _rewrite_string_field("tools", "agent", "mcp_server"),
     _rewrite_string_field("tools", "user", "mcp_server"),
     _rewrite_string_field("initial_state", "json_db"),
+    _rewrite_string_field("initial_state", "schemas"),
+    _rewrite_string_field("initial_state", "unstable_fields"),
     _rewrite_string_field("initial_state", "system_prompt"),
     _rewrite_filesystem_copy,
 )

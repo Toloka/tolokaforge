@@ -21,6 +21,32 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+def _load_json_list_reference(
+    value: str | list[dict[str, Any]] | None,
+    *,
+    task_dir: Path,
+    field_name: str,
+) -> list[dict[str, Any]]:
+    """Resolve an inline list or a task-relative JSON list without fallbacks."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+
+    path = task_dir / value
+    if not path.is_file():
+        raise RuntimeError(f"initial_state.{field_name} file not found: {path}")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Could not load initial_state.{field_name} from {path}: {exc}") from exc
+    if not isinstance(payload, list) or any(not isinstance(item, dict) for item in payload):
+        raise RuntimeError(
+            f"initial_state.{field_name} must resolve to a JSON list of objects: {path}"
+        )
+    return payload
+
+
 def _builtin_tool_schemas(
     tool_names: list[str], tool_configs: dict[str, dict] | None = None
 ) -> dict[str, dict]:
@@ -716,8 +742,16 @@ class NativeAdapter(BaseAdapter):
         # Build initial state config
         initial_state = RunnerInitialStateConfig(
             tables=initial_tables,
-            schemas=[],
-            unstable_fields=[],
+            schemas=_load_json_list_reference(
+                task.initial_state.schemas,
+                task_dir=task_dir,
+                field_name="schemas",
+            ),
+            unstable_fields=_load_json_list_reference(
+                task.initial_state.unstable_fields,
+                task_dir=task_dir,
+                field_name="unstable_fields",
+            ),
             filesystem=initial_filesystem,
         )
 
@@ -733,7 +767,11 @@ class NativeAdapter(BaseAdapter):
         # Bundle task directory files as base64 artifacts for Docker Runner.
         # The Runner runs in a separate container without access to the host
         # filesystem, so we transfer all necessary files via gRPC/TaskDescription.
-        tool_artifacts = self._bundle_task_artifacts(task_dir) if mcp_server_ref else {}
+        tool_artifacts = (
+            self._bundle_task_artifacts(task_dir, task_path=self._task_files[task_id])
+            if mcp_server_ref
+            else {}
+        )
 
         # mcp_server.py loads its initial state from ``initial_state.json``
         # next to itself (see ``create_server`` in tools_interface.py). For the
@@ -947,7 +985,12 @@ class NativeAdapter(BaseAdapter):
 
         return schemas
 
-    def _bundle_task_artifacts(self, task_dir: Path) -> dict[str, str]:
+    def _bundle_task_artifacts(
+        self,
+        task_dir: Path,
+        *,
+        task_path: Path | None = None,
+    ) -> dict[str, str]:
         """Bundle task directory files as base64-encoded artifacts.
 
         Reads Python sources, JSON/YAML data files, Markdown, and plain text
@@ -962,14 +1005,23 @@ class NativeAdapter(BaseAdapter):
         layout in a temp directory and passes the resolved absolute path to
         :class:`MCPServerToolWrapper`.
 
-        Recursive globs (``**/*``) are required by the shared-domain layout
-        where ``task_dir`` is the domain root and the actual files live under
-        ``_shared/`` and ``testcases/<case>/``.
+        In the shared-domain layout only ``_shared/``, domain-level
+        ``fixtures/``, and the active testcase are transferred. Bundling all
+        sibling cases scales quadratically and leaks unrelated case assets
+        into the runner container. Flat tasks retain their recursive bundle.
 
         Returns:
             dict mapping relative path → base64-encoded content.
         """
         artifacts: dict[str, str] = {}
+
+        include_roots: tuple[Path, ...] = (task_dir,)
+        if task_path is not None and task_path.parent.parent.name == "testcases":
+            include_roots = tuple(
+                path
+                for path in (task_dir / "_shared", task_dir / "fixtures", task_path.parent)
+                if path.exists()
+            )
 
         for pattern in (
             "*.py",
@@ -985,16 +1037,19 @@ class NativeAdapter(BaseAdapter):
             "*.txt",
             "**/*.txt",
         ):
-            for file_path in task_dir.glob(pattern):
-                if not file_path.is_file():
-                    continue
-                rel_path = file_path.relative_to(task_dir).as_posix()
-                if rel_path in artifacts:
-                    continue
-                try:
-                    artifacts[rel_path] = base64.b64encode(file_path.read_bytes()).decode("ascii")
-                except Exception as e:
-                    logger.warning("Could not bundle artifact", path=rel_path, error=str(e))
+            for include_root in include_roots:
+                for file_path in include_root.glob(pattern):
+                    if not file_path.is_file():
+                        continue
+                    rel_path = file_path.relative_to(task_dir).as_posix()
+                    if rel_path in artifacts:
+                        continue
+                    try:
+                        artifacts[rel_path] = base64.b64encode(file_path.read_bytes()).decode(
+                            "ascii"
+                        )
+                    except Exception as e:
+                        logger.warning("Could not bundle artifact", path=rel_path, error=str(e))
 
         logger.info("Bundled task artifacts", count=len(artifacts), task_dir=str(task_dir))
         return artifacts

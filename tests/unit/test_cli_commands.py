@@ -6,6 +6,7 @@ config_commands.py, docker_commands.py.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -113,6 +114,25 @@ class TestValidateCommand:
             or result.exit_code != 0
             or "0 valid" in result.output
         )
+
+    def test_native_verify_fails_closed_when_no_tasks_match(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        report_path = tmp_path / "verification.json"
+
+        result = runner.invoke(
+            cli,
+            [
+                "native-verify",
+                "--tasks",
+                str(tmp_path / "missing" / "**" / "task.yaml"),
+                "--report",
+                str(report_path),
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert json.loads(report_path.read_text())["passed"] is False
 
 
 # ===================================================================

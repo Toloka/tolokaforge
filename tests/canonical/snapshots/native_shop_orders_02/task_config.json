@@ -20,7 +20,9 @@
     "json_db": "initial_state.json",
     "mock_web": null,
     "rag": null,
-    "system_prompt": null
+    "schemas": null,
+    "system_prompt": null,
+    "unstable_fields": null
   },
   "initial_user_message": "Hi! I'm customer C-101 (Alex Torres). I'd like to buy 1 \u00d7 Wireless Headphones and 2 \u00d7 USB-C Hub 7-Port. Please check the catalog first so you can confirm availability, then place the order and process my payment.\n",
   "max_turns": 14,
