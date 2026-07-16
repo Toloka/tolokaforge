@@ -32,7 +32,9 @@ from typing import Any
 
 import yaml
 from testcontainers.compose import DockerCompose
+from testcontainers.compose.compose import ComposeContainer
 
+from tolokaforge.core.run_display_events import ContainerSnapshot
 from tolokaforge.core.trial import EnvEndpoints, NetworkPolicy
 
 logger = logging.getLogger(__name__)
@@ -360,6 +362,26 @@ def shutdown_compose(compose: DockerCompose) -> None:
         compose.stop(down=True)
     except Exception:  # noqa: BLE001 — best-effort teardown
         logger.exception("compose_materialisation: docker compose down failed")
+
+
+def compose_container_to_snapshot(container: ComposeContainer) -> ContainerSnapshot:
+    """Map a testcontainers ``ComposeContainer`` to a :class:`ContainerSnapshot`.
+
+    Fields the display panel reads: container name, compose service, docker
+    state, health (``None`` if the service declared no health probe), and
+    the ``TargetPort → PublishedPort`` mapping for published ports.
+    """
+    ports: dict[int, int] = {}
+    for publisher in container.Publishers or []:
+        if publisher.TargetPort is not None and publisher.PublishedPort is not None:
+            ports[publisher.TargetPort] = publisher.PublishedPort
+    return ContainerSnapshot(
+        name=container.Name or "",
+        service=container.Service or "",
+        state=container.State or "unknown",
+        health=container.Health if container.Health else None,
+        ports=ports,
+    )
 
 
 def cleanup_partial_materialisation(compose: DockerCompose | None, temp_dir: Path) -> None:

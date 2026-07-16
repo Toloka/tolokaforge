@@ -18,6 +18,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from testcontainers.compose.compose import ComposeContainer, PublishedPortModel
 
 from tolokaforge.core.compose_materialisation import (
     NETPOLICY_EDGE_NETWORK,
@@ -26,6 +27,7 @@ from tolokaforge.core.compose_materialisation import (
     NetworkPolicyError,
     apply_network_policy_to_compose_file,
     cleanup_partial_materialisation,
+    compose_container_to_snapshot,
     copy_compose_context,
     enforce_network_policy,
     first_published_port,
@@ -272,6 +274,80 @@ class TestShutdownCompose:
         compose.stop.side_effect = RuntimeError("docker daemon disconnected")
 
         shutdown_compose(compose)  # must not raise
+
+
+class TestComposeContainerToSnapshot:
+    """Map ``ComposeContainer`` → ``ContainerSnapshot`` — the shape the
+    infrastructure sub-panel consumes via :meth:`RuntimeBackend.get_infrastructure_snapshot`.
+    """
+
+    def test_maps_full_container_shape(self) -> None:
+        container = ComposeContainer(
+            Name="proj-runner-1",
+            Service="runner",
+            State="running",
+            Health="healthy",
+            Publishers=[
+                PublishedPortModel(TargetPort=50051, PublishedPort=60051),
+                PublishedPortModel(TargetPort=8000, PublishedPort=61000),
+            ],
+        )
+
+        snapshot = compose_container_to_snapshot(container)
+
+        assert snapshot == {
+            "name": "proj-runner-1",
+            "service": "runner",
+            "state": "running",
+            "health": "healthy",
+            "ports": {50051: 60051, 8000: 61000},
+        }
+
+    def test_missing_health_maps_to_none(self) -> None:
+        """A compose service that declares no health probe leaves
+        ``Health`` empty on the container; the snapshot renders that as
+        ``None`` (falsy short-circuit) so the panel does not print a
+        stale 'unhealthy' badge."""
+        container = ComposeContainer(
+            Name="db-1",
+            Service="db",
+            State="running",
+            Health=None,
+            Publishers=[],
+        )
+
+        snapshot = compose_container_to_snapshot(container)
+
+        assert snapshot["health"] is None
+        assert snapshot["ports"] == {}
+
+    def test_missing_state_defaults_to_unknown(self) -> None:
+        """``State`` unset — testcontainers' shape allows every field to
+        be ``None``. Snapshot fills in a stable literal so downstream
+        rendering does not have to branch on ``None``."""
+        container = ComposeContainer(Name="c", Service="s")
+
+        snapshot = compose_container_to_snapshot(container)
+
+        assert snapshot["state"] == "unknown"
+
+    def test_skips_publishers_missing_target_or_published_port(self) -> None:
+        """Partial publisher rows (either half absent) are dropped so
+        the ports map only carries well-formed pairs."""
+        container = ComposeContainer(
+            Name="c",
+            Service="s",
+            State="running",
+            Publishers=[
+                PublishedPortModel(TargetPort=50051, PublishedPort=60051),
+                PublishedPortModel(TargetPort=None, PublishedPort=61000),
+                PublishedPortModel(TargetPort=8000, PublishedPort=None),
+            ],
+        )
+
+        snapshot = compose_container_to_snapshot(container)
+
+        assert snapshot["ports"] == {50051: 60051}
 
 
 class TestCleanupPartialMaterialisation:

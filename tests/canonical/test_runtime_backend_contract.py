@@ -255,6 +255,56 @@ class TestProvisioningProtocolConformance:
         assert callable(PerTrialRuntimeBackend().capture_service_logs)
 
 
+class TestInfrastructureSnapshotProtocolConformance:
+    """Every backend implements :meth:`RuntimeBackend.get_infrastructure_snapshot`
+    (the ``RunDisplayEvents`` seam's runtime hook). The Protocol widened in #416 —
+    the orchestrator calls this on the hot path per trial, so a missing
+    implementation on any backend is a run-corrupting hole.
+    """
+
+    def test_get_infrastructure_snapshot_is_present_on_all_backends(self) -> None:
+        from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
+
+        implementations = [
+            InMemoryRuntimeBackend(),
+            SharedStackRuntimeBackend(runner_address="sentinel:50051"),
+            PerTrialRuntimeBackend(),
+        ]
+        for impl in implementations:
+            assert callable(
+                getattr(impl, "get_infrastructure_snapshot", None)
+            ), f"{type(impl).__name__} is missing RuntimeBackend.get_infrastructure_snapshot"
+
+    def test_in_memory_returns_synthetic_single_container(self) -> None:
+        """The in-memory backend has no real substrate; it returns a
+        deterministic single-container snapshot keyed by trial id so
+        display tests can assert against a known shape without docker.
+        """
+        backend = InMemoryRuntimeBackend()
+        handle = backend.provision(_make_trial_spec(trial_id="task-1:0"))
+
+        snapshot = backend.get_infrastructure_snapshot(handle)
+
+        assert snapshot == [
+            {
+                "name": "in-memory-runner-task-1:0",
+                "service": "runner",
+                "state": "running",
+                "health": "healthy",
+                "ports": {50051: 50051},
+            }
+        ]
+
+    def test_shared_stack_built_in_mode_returns_empty(self) -> None:
+        """In built-in-stack mode the shared-stack backend materialises no
+        compose project of its own — the services widget already covers
+        the built-in ``EngineStack``, so the infra snapshot is empty."""
+        backend = SharedStackRuntimeBackend(runner_address="sentinel:50051")
+        handle = backend.provision(_make_trial_spec())
+
+        assert backend.get_infrastructure_snapshot(handle) == []
+
+
 class TestEnvHandleShape:
     def test_handle_exposes_trial_id(self) -> None:
         backend = InMemoryRuntimeBackend()
