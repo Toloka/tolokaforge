@@ -26,7 +26,7 @@ import sys
 import threading
 import traceback
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -386,6 +386,45 @@ def _render_services_table(services: list[ServiceSnapshot]) -> Text:
         ports = _summarise_ports(svc.get("ports", {}))
         lines.append(f"  {glyph}  {svc['name']:<{name_w}}  {status:<12}  {ports}".rstrip())
     return Text("\n".join(lines))
+
+
+def _docker_boot_records(records: Iterable[logging.LogRecord]) -> list[logging.LogRecord]:
+    """Return the boot-window docker milestone records, in input order.
+
+    The trailing dot is load-bearing: it excludes the bare
+    ``tolokaforge.docker`` namespace logger and any sibling like
+    ``tolokaforge.dockerx``.
+    """
+    return [r for r in records if r.name.startswith("tolokaforge.docker.")]
+
+
+def _render_boot_log_tail(records: Iterable[logging.LogRecord], max_lines: int = 5) -> Panel:
+    """Render the last ``max_lines`` ``tolokaforge.docker.*`` records as a Panel.
+
+    Timestamps are rendered in UTC so the byte output is stable across
+    dev-box and CI timezones. ``int(record.msecs)`` truncates rather than
+    rounds — ``f"{999.6:03.0f}"`` would overflow to ``"1000"`` and misalign
+    the column; ``int()`` caps at 999.
+
+    Mirrors :func:`_render_services_table`'s flat-``Text``-inside-``Panel``
+    shape: a Rich ``Table`` inside a tight fixed-height ``Layout`` can
+    silently drop rows. Callers must guard the empty-filtered case; this
+    helper is only ever invoked when the filtered list is non-empty.
+    """
+    filtered = _docker_boot_records(records)
+    tail = filtered[-max_lines:]
+    lines: list[str] = []
+    for record in tail:
+        short_name = record.name.rsplit(".", 1)[-1]
+        stamp = datetime.fromtimestamp(record.created, tz=timezone.utc).strftime("%H:%M:%S")
+        stamp = f"{stamp}.{int(record.msecs):03d}"
+        lines.append(f"{stamp} | {short_name} | {record.getMessage()}")
+    return Panel(
+        Text("\n".join(lines)),
+        title="Boot log",
+        border_style="muted",
+        padding=(0, 1),
+    )
 
 
 def _render_containers_table(containers: list[ContainerSnapshot]) -> Table:

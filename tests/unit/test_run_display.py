@@ -958,6 +958,143 @@ def test_services_widget_absent_once_trials_dispatch() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Boot-log helpers — filter predicate + tail renderer for the startup widget
+# ---------------------------------------------------------------------------
+
+
+def _make_docker_record(
+    *, name: str, created: float, msecs: float, message: str
+) -> logging.LogRecord:
+    """Build a real ``LogRecord`` with pinned ``created``/``msecs``.
+
+    Uses ``makeLogRecord`` so ``getMessage()`` / ``%``-formatting runs for
+    real (no mock) — the ``msg``/``args`` field is exercised the same way
+    the production ``_LogSink`` sees it.
+    """
+    return logging.makeLogRecord(
+        {
+            "name": name,
+            "levelno": logging.INFO,
+            "levelname": "INFO",
+            "msg": message,
+            "args": None,
+            "created": created,
+            "msecs": msecs,
+            "pathname": __file__,
+            "lineno": 0,
+        }
+    )
+
+
+def test_docker_boot_records_keeps_docker_dot_prefix_only() -> None:
+    from tolokaforge.dx.live_panel import _docker_boot_records
+
+    records = [
+        _make_docker_record(
+            name="tolokaforge.docker.stack",
+            created=1784205296.0,
+            msecs=0.0,
+            message="starting stack",
+        ),
+        _make_docker_record(
+            name="tolokaforge.docker.container",
+            created=1784205297.0,
+            msecs=0.0,
+            message="starting container",
+        ),
+        _make_docker_record(
+            name="tolokaforge.docker.health",
+            created=1784205298.0,
+            msecs=0.0,
+            message="healthy",
+        ),
+        _make_docker_record(
+            name="tolokaforge.runner",
+            created=1784205299.0,
+            msecs=0.0,
+            message="runner note",
+        ),
+        _make_docker_record(
+            name="tolokaforge.docker",
+            created=1784205300.0,
+            msecs=0.0,
+            message="bare docker namespace",
+        ),
+    ]
+
+    kept = _docker_boot_records(records)
+    assert [r.name for r in kept] == [
+        "tolokaforge.docker.stack",
+        "tolokaforge.docker.container",
+        "tolokaforge.docker.health",
+    ]
+
+
+def test_render_boot_log_tail_keeps_last_max_lines_in_order() -> None:
+    from rich.console import Console
+
+    from tolokaforge.dx._display import THEME
+    from tolokaforge.dx.live_panel import _render_boot_log_tail
+
+    # Eight docker records at t=1784205296.0 + i seconds; last five are indices 3..7.
+    base_epoch = 1784205296.0
+    records = [
+        _make_docker_record(
+            name="tolokaforge.docker.stack",
+            created=base_epoch + i,
+            msecs=(i + 1) * 100.0,
+            message=f"milestone-{i}",
+        )
+        for i in range(8)
+    ]
+
+    panel = _render_boot_log_tail(records, max_lines=5)
+    console = Console(
+        width=120, force_terminal=True, color_system="truecolor", record=True, theme=THEME
+    )
+    console.print(panel)
+    body = console.export_text()
+
+    # Dropped: indices 0..2 (older than the tail window).
+    for dropped in ("milestone-0", "milestone-1", "milestone-2"):
+        assert dropped not in body, f"{dropped} should have been trimmed"
+    # Kept: indices 3..7, in input order (most-recent last).
+    for kept in ("milestone-3", "milestone-4", "milestone-5", "milestone-6", "milestone-7"):
+        assert kept in body
+
+    # Deterministic UTC timestamp: base_epoch=1784205296.0 → 12:34:56 UTC on 2026-07-16.
+    # First kept line: index 3 → +3s → 12:34:59, msecs=400 → ".400".
+    assert "12:34:59.400 | stack | milestone-3" in body
+    # Last kept line: index 7 → +7s → 12:35:03, msecs=800 → ".800".
+    assert "12:35:03.800 | stack | milestone-7" in body
+
+
+def test_render_boot_log_tail_truncates_msecs_below_1000() -> None:
+    """``msecs = 999.6`` renders ``.999`` — the column never widens to 4 digits."""
+    from rich.console import Console
+
+    from tolokaforge.dx._display import THEME
+    from tolokaforge.dx.live_panel import _render_boot_log_tail
+
+    record = _make_docker_record(
+        name="tolokaforge.docker.stack",
+        created=1784205296.0,
+        msecs=999.6,
+        message="msec-truncation",
+    )
+
+    panel = _render_boot_log_tail([record], max_lines=5)
+    console = Console(
+        width=120, force_terminal=True, color_system="truecolor", record=True, theme=THEME
+    )
+    console.print(panel)
+    body = console.export_text()
+
+    assert "12:34:56.999 | stack | msec-truncation" in body
+    assert ".1000" not in body
+
+
+# ---------------------------------------------------------------------------
 # `trial_provisioned` — containers land on the focused card
 # ---------------------------------------------------------------------------
 
