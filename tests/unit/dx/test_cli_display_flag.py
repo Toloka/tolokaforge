@@ -27,7 +27,7 @@ import yaml
 from click.testing import CliRunner
 
 import tolokaforge.dx.cli.main as cli_main
-from tests.unit.test_cli_stdout_contract import _make_stub_orchestrator
+from tests.unit.dx.test_cli_stdout_contract import _make_stub_orchestrator
 from tolokaforge.core.logging import (
     _TOLOKAFORGE_ROOT_HANDLER_SENTINEL,
     LogFormat,
