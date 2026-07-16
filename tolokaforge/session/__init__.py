@@ -49,6 +49,7 @@ from tolokaforge.session.interventions import (
     TrialIntervention,
 )
 from tolokaforge.session.loop_observer import SessionLoopObserver
+from tolokaforge.session.manager import OpenAgentLoopManager
 from tolokaforge.session.protocols import (
     ParticipantHandle,
     ParticipantRole,
@@ -68,6 +69,7 @@ __all__ = [
     "InjectMessage",
     "InterventionAck",
     "Kill",
+    "OpenAgentLoopManager",
     "ParticipantHandle",
     "ParticipantRole",
     "Pause",
