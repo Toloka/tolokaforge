@@ -1,0 +1,34 @@
+# Open Agent Loop example — runs the bundled tool_use tasks under open mode
+# so a copilot participant can attach live via the Python API. See README.md
+# in this directory for the full flow.
+#
+#   scripts/with_env.sh uv run python examples/open_agent_loop/run_with_copilot.py
+#
+# The `open_agent_loop.enabled: true` block below is the only field that
+# differs from examples/native/tool_use/run_config.yaml — sealed batch runs
+# ignore it entirely.
+models:
+  agent:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.0
+    max_tokens: 4096
+  user:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.2
+
+orchestrator:
+  workers: 1
+  repeats: 1
+  max_turns: 8
+  queue_backend: sqlite
+
+evaluation:
+  task_packs:
+    - "examples/native/tool_use/dataset"
+  tasks_glob: "**/task.yaml"
+  output_dir: "results/open_agent_loop_example"
+
+open_agent_loop:
+  enabled: true
