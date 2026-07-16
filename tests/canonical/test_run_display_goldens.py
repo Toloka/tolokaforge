@@ -34,6 +34,7 @@ Determinism knobs:
 from __future__ import annotations
 
 import itertools
+import logging
 from collections.abc import Iterator
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -42,7 +43,9 @@ import pytest
 from rich.console import Console
 from rich.terminal_theme import DEFAULT_TERMINAL_THEME
 
+from tolokaforge.core.run_display_events import ServiceSnapshot
 from tolokaforge.dx import live_panel
+from tolokaforge.dx._display import THEME
 from tolokaforge.dx.live_panel import LiveRunDisplay
 
 pytestmark = pytest.mark.canonical
@@ -237,6 +240,129 @@ def test_run_display_panel_svg_with_budget(
             f"SVG golden drift for panel_{width}_budget_{style_label}.svg — "
             "re-run with `--update-canon` if the change is intentional, "
             "then review the diff before committing."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Boot-window golden: panel state before ``run_started`` with docker records
+# buffered — locks the "Boot log" region's byte-level rendering.
+# ---------------------------------------------------------------------------
+
+# ``1784205296.0`` renders as ``12:34:56`` UTC on 2026-07-16. Later records
+# step forward by whole seconds so the ``HH:MM:SS`` column advances by one
+# every row. ``msecs`` values are chosen so each row's ``.mmm`` segment
+# differs and the ``int()`` truncation contract is exercised on non-zero
+# fractional millis. ``created`` is a wall-clock float independent of the
+# ``frozen_clock`` fixture (which patches :func:`live_panel._now`); the
+# helper renders these bytes deterministically because it formats
+# ``record.created`` in UTC.
+_BOOT_LOG_BASE_EPOCH = 1784205296.0
+
+# Widest realistic docker short-name (17 chars) — locks the column so a
+# future logger with a shorter or longer name would surface as a golden
+# byte-drift. The five records fill the boot-log region at its full
+# un-clamped height (``min(5, _BOOT_LOG_MAX_LINES) + 2 == 7`` rows) so the
+# golden is diffed against the region's maximum content.
+_BOOT_LOG_RECORDS: tuple[tuple[str, float, float, str], ...] = (
+    ("tolokaforge.docker.stack", 0.0, 100.0, "starting engine stack"),
+    ("tolokaforge.docker.builder", 1.0, 250.0, "Building images for 2 services"),
+    ("tolokaforge.docker.container", 2.0, 500.0, "Starting container 'runner'"),
+    (
+        "tolokaforge.docker.wait_for_services",
+        3.0,
+        750.0,
+        "Waiting for 'runner' to be ready",
+    ),
+    ("tolokaforge.docker.container", 4.0, 900.0, "Service 'runner' is healthy"),
+)
+
+
+def _replay_boot_state(display: LiveRunDisplay) -> None:
+    """Drive ``display`` into the pre-``run_started`` boot window.
+
+    Emits a ``phase_changed`` event (matching the orchestrator's
+    ``starting_services`` call site) and pushes a fixed sequence of real
+    :class:`logging.LogRecord`s into ``_log_buffer`` with pinned
+    ``created`` / ``msecs`` so the rendered ``HH:MM:SS.mmm`` bytes are
+    deterministic. Real ``LogRecord``s (not mocks) exercise the same
+    ``%``-formatting path :class:`_LogSink` sees in production.
+    """
+    services: list[ServiceSnapshot] = [
+        {"name": "runner", "status": "starting", "ports": {50051: 50051}, "role": "engine"},
+        {"name": "db", "status": "starting", "ports": {8000: 8000}, "role": "engine"},
+    ]
+    display.phase_changed(phase="starting_services", detail="docker compose up", services=services)
+    for name, created_offset, msecs, message in _BOOT_LOG_RECORDS:
+        display._log_buffer.append(
+            logging.makeLogRecord(
+                {
+                    "name": name,
+                    "levelno": logging.INFO,
+                    "levelname": "INFO",
+                    "msg": message,
+                    "args": None,
+                    "created": _BOOT_LOG_BASE_EPOCH + created_offset,
+                    "msecs": msecs,
+                    "pathname": __file__,
+                    "lineno": 0,
+                }
+            )
+        )
+
+
+def _render_boot_log_svg(width: int) -> str:
+    """Render the boot-window panel to SVG at ``width`` columns.
+
+    Unlike the mid-run renderer, the boot-window layout activates
+    ``border_style="muted"`` on the boot-log panel and the ``muted`` /
+    ``cyan`` styles on the phase-spinner bottom bar. Both are semantic
+    theme tokens that resolve through :data:`THEME`, so the recorder
+    ``Console`` must have that theme installed or Rich raises
+    :class:`rich.errors.MissingStyle`.
+    """
+    recorder = Console(
+        record=True,
+        width=width,
+        force_terminal=True,
+        color_system="truecolor",
+        theme=THEME,
+    )
+    display = LiveRunDisplay(refresh_per_second=1000, max_trial_rows=20)
+    _replay_boot_state(display)
+    recorder.print(display._build_layout())
+    return recorder.export_svg(
+        title="tolokaforge run",
+        theme=DEFAULT_TERMINAL_THEME,
+        unique_id=SVG_UNIQUE_ID,
+    )
+
+
+@pytest.mark.parametrize("width", _WIDTHS, ids=[f"width{w}" for w in _WIDTHS])
+def test_run_display_boot_log_panel_svg(
+    request: pytest.FixtureRequest,
+    frozen_clock: None,
+    width: int,
+) -> None:
+    """The boot-window SVG matches ``panel_boot_log_{width}.svg`` byte-for-byte."""
+
+    actual = _render_boot_log_svg(width)
+    golden_path = GOLDEN_DIR / f"panel_boot_log_{width}.svg"
+
+    if request.config.getoption("--update-canon"):
+        golden_path.parent.mkdir(parents=True, exist_ok=True)
+        golden_path.write_text(actual, encoding="utf-8")
+        return
+
+    assert golden_path.exists(), (
+        f"Golden missing: {golden_path.relative_to(GOLDEN_DIR.parent.parent.parent)}. "
+        "Run `uv run pytest tests/canonical/test_run_display_goldens.py --update-canon`."
+    )
+    expected = golden_path.read_text(encoding="utf-8")
+    if actual != expected:
+        pytest.fail(
+            f"SVG golden drift for panel_boot_log_{width}.svg — re-run with "
+            "`--update-canon` if the change is intentional, then review the "
+            "diff before committing."
         )
 
 

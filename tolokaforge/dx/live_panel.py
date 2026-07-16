@@ -26,7 +26,7 @@ import sys
 import threading
 import traceback
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -58,6 +58,12 @@ buffer is scoped to one run — ~500 records covers the busiest observed
 Docker-boot window with a few hundred records of headroom for
 in-trial output — and never grows without bound thanks to
 ``deque(maxlen=…)``."""
+
+_BOOT_LOG_MAX_LINES = 5
+"""Content-row cap for the boot-log region. Feeds both
+:func:`_render_boot_log_tail`'s default ``max_lines`` and the desired
+height computed in :meth:`LiveRunDisplay._build_layout` so the two
+never drift out of sync."""
 
 
 def _now() -> datetime:
@@ -386,6 +392,49 @@ def _render_services_table(services: list[ServiceSnapshot]) -> Text:
         ports = _summarise_ports(svc.get("ports", {}))
         lines.append(f"  {glyph}  {svc['name']:<{name_w}}  {status:<12}  {ports}".rstrip())
     return Text("\n".join(lines))
+
+
+def _docker_boot_records(records: Iterable[logging.LogRecord]) -> list[logging.LogRecord]:
+    """Return the boot-window docker milestone records, in input order.
+
+    The trailing dot is load-bearing: it excludes the bare
+    ``tolokaforge.docker`` namespace logger and any sibling like
+    ``tolokaforge.dockerx``.
+    """
+    return [r for r in records if r.name.startswith("tolokaforge.docker.")]
+
+
+def _render_boot_log_tail(
+    records: Iterable[logging.LogRecord], max_lines: int = _BOOT_LOG_MAX_LINES
+) -> Panel:
+    """Render the last ``max_lines`` ``tolokaforge.docker.*`` records as a Panel.
+
+    Timestamps are rendered in UTC so the byte output is stable across
+    dev-box and CI timezones. ``int(record.msecs)`` truncates rather than
+    rounds — ``f"{999.6:03.0f}"`` would overflow to ``"1000"`` and misalign
+    the column; ``int()`` caps at 999.
+
+    Mirrors :func:`_render_services_table`'s flat-``Text``-inside-``Panel``
+    shape: a Rich ``Table`` inside a tight fixed-height ``Layout`` can
+    silently drop rows. The internal :func:`_docker_boot_records` call is
+    idempotent — pre-filtered input passes through unchanged, and
+    unfiltered input is filtered here — so this helper is safe to invoke
+    with either shape.
+    """
+    filtered = _docker_boot_records(records)
+    tail = filtered[-max_lines:]
+    lines: list[str] = []
+    for record in tail:
+        short_name = record.name.rsplit(".", 1)[-1]
+        stamp = datetime.fromtimestamp(record.created, tz=timezone.utc).strftime("%H:%M:%S")
+        stamp = f"{stamp}.{int(record.msecs):03d}"
+        lines.append(f"{stamp} | {short_name} | {record.getMessage()}")
+    return Panel(
+        Text("\n".join(lines)),
+        title="Boot log",
+        border_style="muted",
+        padding=(0, 1),
+    )
 
 
 def _render_containers_table(containers: list[ContainerSnapshot]) -> Table:
@@ -953,36 +1002,64 @@ class LiveRunDisplay:
         re-anchor and stacks copies (visible bug: multiple panel snapshots
         pile up as services region appears/disappears).
 
-        So: total = ``viewport - 1``. Optional regions (banner, services)
-        appear by *stealing* rows from ``main``, not by lengthening the
-        overall renderable. The invariant holds every refresh.
+        So: total = ``viewport - 1``. Optional regions (banner, services,
+        boot_log) appear by *stealing* rows from ``main``, not by
+        lengthening the overall renderable. The invariant holds every
+        refresh.
 
         Row composition (top → bottom):
 
         - Optional ``banner`` (size 5) — first auth-shaped failure.
         - Optional ``services`` (size ``len(services) + 2`` — one line per
           service + 2 border rows). Only during the startup window
-          (``_total_trials == 0`` and ``_services`` populated). Trials
-          dispatch → widget disappears → ``main`` reclaims its rows.
+          (``_total_trials == 0`` and ``_services`` populated).
+        - Optional ``boot_log`` (size ``min(len(filtered), _BOOT_LOG_MAX_LINES)
+          + 2`` desired, clamped down to whatever rows are left after
+          ``services`` and ``main``'s floor of 5; dropped entirely when the
+          clamp leaves < 3 rows). Only during the startup window when
+          ``_docker_boot_records(_log_buffer)`` is non-empty. Trials dispatch
+          → both widgets disappear → ``main`` reclaims their rows.
         - ``main`` (fills the leftover; min 5) — trials + focused split.
         - ``bottom`` (size 1) — spinner + phase / counters.
+
+        The boot-log clamp preserves the stable-height invariant:
+        when boot_log is present, the sum of every row's size is exactly
+        ``total``. When absent, the sum matches the pre-boot-log layout
+        byte-for-byte.
         """
         layout = Layout()
         with self._lock:
             banner = self._banner
             services = self._services
             in_startup = bool(self._total_trials == 0 and services)
+            boot_filtered: list[logging.LogRecord] = (
+                _docker_boot_records(self._log_buffer) if self._total_trials == 0 else []
+            )
         viewport = self._viewport_rows()
         total = max(12, viewport - 1)
         banner_h = 5 if banner is not None else 0
         services_h = (len(services) + 2) if in_startup and services else 0
         bottom_h = 1
-        main_h = max(5, total - banner_h - services_h - bottom_h)
+        desired_boot_log_h = (
+            min(len(boot_filtered), _BOOT_LOG_MAX_LINES) + 2 if boot_filtered else 0
+        )
+        # ``budget`` is the row count boot-log may steal from ``main``
+        # without pushing ``main`` below its floor of 5. A bordered Panel
+        # needs ≥ 3 rows to render at least one content line; below that
+        # the region drops entirely so we never emit a zero-content
+        # bordered box.
+        budget = total - banner_h - services_h - bottom_h - 5
+        boot_log_h = min(desired_boot_log_h, budget) if desired_boot_log_h else 0
+        if boot_log_h < 3:
+            boot_log_h = 0
+        main_h = max(5, total - banner_h - services_h - boot_log_h - bottom_h)
         row_defs: list[Layout] = []
         if banner is not None:
             row_defs.append(Layout(name="banner", size=banner_h))
         if in_startup and services:
             row_defs.append(Layout(name="services", size=services_h))
+        if boot_log_h > 0:
+            row_defs.append(Layout(name="boot_log", size=boot_log_h))
         row_defs.append(Layout(name="main", size=main_h))
         row_defs.append(Layout(name="bottom", size=bottom_h))
         layout.split_column(*row_defs)
@@ -991,6 +1068,10 @@ class LiveRunDisplay:
         if in_startup and services:
             layout["services"].update(
                 Panel(_render_services_table(services), title="Services", padding=(0, 1))
+            )
+        if boot_log_h > 0:
+            layout["boot_log"].update(
+                _render_boot_log_tail(boot_filtered, max_lines=boot_log_h - 2)
             )
         layout["main"].split_row(
             Layout(name="trials", ratio=2),
