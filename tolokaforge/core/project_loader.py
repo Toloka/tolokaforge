@@ -39,6 +39,7 @@ from typing import Any
 
 import yaml
 
+from tolokaforge.core.assets import compute_seed_digest
 from tolokaforge.core.models import (
     EnvironmentManifest,
     EnvironmentPatch,
@@ -141,24 +142,23 @@ def load_project_config(path: Path) -> ProjectConfig:
 
 
 def _verify_seed_digests(project: ProjectConfig, project_yaml_path: Path) -> None:
-    """Read each ``assets.seeds.<name>.path`` and compare its sha256 to
-    the declared ``digest``. Raises ``RuntimeError`` on mismatch or
-    missing file, naming the seed key, declared digest, and actual
+    """Read each ``assets.seeds.<name>.path`` and compare its digest to
+    the declared ``digest``. A seed path is either a file (byte-stream
+    hash) or a directory (deterministic tree hash) — both go through
+    :func:`compute_seed_digest`. Raises ``RuntimeError`` on mismatch or
+    missing path, naming the seed key, declared digest, and actual
     digest so the author sees the exact fix.
     """
-    import hashlib
-
     if project.assets is None:
         return
     for name, seed in project.assets.seeds.items():
         seed_path = Path(seed.path)
-        if not seed_path.is_file():
+        if not seed_path.exists():
             raise RuntimeError(
-                f"assets.seeds.{name}.path {seed_path!s} does not exist or is "
-                f"not a file (declared in {project_yaml_path})."
+                f"assets.seeds.{name}.path {seed_path!s} does not exist "
+                f"(declared in {project_yaml_path})."
             )
-        actual_bytes = seed_path.read_bytes()
-        actual_digest = "sha256:" + hashlib.sha256(actual_bytes).hexdigest()
+        actual_digest = compute_seed_digest(seed_path)
         if seed.digest != actual_digest:
             raise RuntimeError(
                 f"assets.seeds.{name}: digest mismatch for {seed_path!s}. "
