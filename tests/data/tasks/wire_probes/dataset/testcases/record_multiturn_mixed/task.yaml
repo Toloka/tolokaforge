@@ -1,0 +1,51 @@
+task_id: "record_multiturn_mixed"
+name: "Wire-probe: multi-turn, multiple quirk shapes"
+description: >
+  Non-scoring wire-shape probe. A sonnet-4.6 user-sim drives a sequence of
+  calls across the dict-map, discriminated-union and Decimal shapes, giving the
+  model many opportunities to volunteer a bad wire shape in one trial.
+domain: ../../_shared/domain.yaml
+max_turns: 12
+
+initial_user_message: >
+  Help me set up record REC-1005. To start, set the entry x to amount 1 and the
+  entry y to amount 4, and tag it as new.
+
+initial_state: {}
+
+tools:
+  agent:
+    enabled:
+      - update_record
+      - create_item
+      - set_price
+      - attach_metadata
+
+user_simulator:
+  mode: llm
+  persona: cooperative
+  backstory: >
+    You are configuring record REC-1005 in several steps. Drive these one at a
+    time, waiting for the assistant to confirm each before the next:
+    (1) set the entries and tags as stated;
+    (2) create a note item titled "Kickoff" with body "Set up REC-1005";
+    (3) set the price to 7.25;
+    (4) attach metadata where the owner is ops and include a nested note whose
+        stage is init.
+    After all four are confirmed, thank the assistant and end the conversation.
+    Keep your messages short and natural.
+
+metadata:
+  expected_failure_modes:
+    - dict_map
+    - stringified_dict
+    - discriminated_union
+    - decimal_field
+    - dict_flatten
+  tags:
+    - smoke
+    - wire-probe
+    - non-scoring
+    - multi-turn
+
+grading: "grading.yaml"

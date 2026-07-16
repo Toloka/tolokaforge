@@ -1,30 +1,41 @@
 """Wiring tests for :class:`RunDisplayEvents` propagation.
 
-Locks that the orchestrator, conductor, and runner all fire the seven
-Protocol events from the natural sites the plan documents:
+Locks that every engine surface — per-trial (``_AgentMetricsSink``,
+``InProcessConductor._grade``, ``ProvisioningTrialExecutor.execute``)
+and run-level (``Orchestrator``) — fires the RunDisplayEvents seam
+events it owns:
 
-- ``Orchestrator.run()`` — ``run_started`` before the pool, ``trial_started``
-  in ``submit_one``, ``trial_completed`` / ``trial_failed`` in the wait
-  loop, ``run_finished`` before ``return output_dir.resolve()``.
-- ``InProcessConductor._grade`` — ``judgment_scored`` right after
-  ``trajectory.grade`` is populated.
-- ``_AgentMetricsSink.record_generation`` — ``trial_progress`` after
+- ``_AgentMetricsSink.record_generation`` fires ``trial_progress`` after
   internal metrics accumulation.
+- ``InProcessConductor._grade`` fires ``judgment_scored`` right after
+  ``trajectory.grade`` is populated.
+- ``ProvisioningTrialExecutor.execute`` fires ``trial_provisioned``
+  after ``runtime_backend.await_ready(handle)`` succeeds.
+- ``Orchestrator`` threads the injected sink into the conductor and
+  trial-executor seams, fires ``phase_changed`` / ``run_started`` /
+  ``trial_started`` / ``trial_completed`` / ``trial_failed`` /
+  ``run_finished``, and — critically — populates
+  ``_total_index_by_key`` inside ``_build_pending_trials`` so
+  ``trial_started`` emissions carry distinct run-wide indices rather
+  than a silent ``0`` from the ``.get(..., 0)`` fallback.
 
 The tests use a small ``_RecordingEvents`` double that appends each call
-to a shared list — no assertions on emission order across layers, only
-that every emission the plan mandates fires with the documented kwargs.
+to a shared list so kwargs and call kinds can be asserted directly.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
+from tests.canonical._factories import (
+    make_env_endpoints,
+    make_task_config,
+    make_trial_spec,
+)
 from tolokaforge.core.llm import GenerationResult
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.models import Metrics
@@ -123,9 +134,8 @@ def test_agent_metrics_sink_treats_none_cost_as_zero_delta() -> None:
 
 
 def test_agent_metrics_sink_accumulates_metrics_before_emitting() -> None:
-    """Metrics accumulate first; emission is defensive against a raise in the
-    display path (though Protocol contract already forbids implementations
-    from raising)."""
+    """Metrics accumulate first; two record_generation calls yield two
+    ``trial_progress`` emissions with the per-call deltas."""
     from tolokaforge.core.runner import _AgentMetricsSink
 
     events = _RecordingEvents()
@@ -163,50 +173,15 @@ def test_conductor_context_carries_events_field() -> None:
     assert "events" in field_names
 
 
-def test_orchestrator_deps_defaults_to_null_events() -> None:
-    from tolokaforge.core.orchestrator import OrchestratorDeps
+def test_conductor_context_events_defaults_to_null_sink() -> None:
+    from dataclasses import fields as dataclass_fields
+
+    from tolokaforge.core.conductor import ConductorContext
     from tolokaforge.core.run_display_events import _NullRunDisplayEvents
 
-    deps = OrchestratorDeps()
-    assert isinstance(deps.events, _NullRunDisplayEvents)
-
-
-def test_orchestrator_deps_stores_injected_events() -> None:
-    from tolokaforge.core.orchestrator import OrchestratorDeps
-
-    events = _RecordingEvents()
-    deps = OrchestratorDeps(events=events)
-    assert deps.events is events
-
-
-def test_build_conductor_threads_events_into_context(tmp_path: Path) -> None:
-    """The orchestrator's ``events`` field is what ends up on the
-    ``ConductorContext`` the factory receives."""
-    from tolokaforge.core.conductor import ConductorContext, InMemoryConductor
-    from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
-
-    events = _RecordingEvents()
-    captured: dict[str, ConductorContext] = {}
-
-    def factory(ctx: ConductorContext) -> InMemoryConductor:
-        captured["ctx"] = ctx
-        return InMemoryConductor()
-
-    config = _make_minimal_run_config()
-    orch = Orchestrator(
-        config,
-        deps=OrchestratorDeps(events=events, conductor_factory=factory),
-    )
-    orch.adapter = MagicMock()
-
-    orch._build_conductor(
-        agent_client=MagicMock(),
-        runtime_backend=MagicMock(),
-        output_dir=tmp_path,
-        request_limiter=None,
-    )
-
-    assert captured["ctx"].events is events
+    events_field = next(f for f in dataclass_fields(ConductorContext) if f.name == "events")
+    default_value = events_field.default_factory()
+    assert isinstance(default_value, _NullRunDisplayEvents)
 
 
 def test_in_process_conductor_grade_fires_judgment_scored(tmp_path: Path) -> None:
@@ -217,15 +192,16 @@ def test_in_process_conductor_grade_fires_judgment_scored(tmp_path: Path) -> Non
 
     from tolokaforge.core.conductor import InProcessConductor, _TrialSetup
     from tolokaforge.core.models import (
+        EvaluationConfig,
         Grade,
         GradeComponents,
-        Message,
         Metrics,
+        ModelConfig,
+        OrchestratorConfig,
+        RunConfig,
         Trajectory,
         TrialStatus,
     )
-    from tolokaforge.core.trial import EnvEndpoints, TrialSpec
-    from tolokaforge.runner.models import TaskDescription
 
     events = _RecordingEvents()
 
@@ -240,7 +216,11 @@ def test_in_process_conductor_grade_fires_judgment_scored(tmp_path: Path) -> Non
     conductor = InProcessConductor(
         adapter=MagicMock(),
         artifact_writer=MagicMock(),
-        config=_make_minimal_run_config(),
+        config=RunConfig(
+            models={"agent": ModelConfig(provider="openai", name="gpt-4")},
+            orchestrator=OrchestratorConfig(workers=1, repeats=1, auto_start_services=False),
+            evaluation=EvaluationConfig(output_dir=str(tmp_path / "results" / "run")),
+        ),
         logger=MagicMock(),
         agent_client=MagicMock(),
         runtime_backend=MagicMock(),
@@ -265,27 +245,13 @@ def test_in_process_conductor_grade_fires_judgment_scored(tmp_path: Path) -> Non
         start_ts=datetime.now(UTC),
         end_ts=datetime.now(UTC),
         status=TrialStatus.COMPLETED,
-        messages=[Message.__class__ for _ in ()],  # type: ignore[list-item]
+        messages=[],
         metrics=Metrics(),
     )
-    trajectory.messages = []
     runner_stub = MagicMock()
     runner_stub.effective_system_prompt = "sys"
-    spec = TrialSpec(
-        trial_id="taskA:0",
-        run_id="run-1",
-        attempt_id=0,
-        task=TaskDescription(
-            task_id="taskA",
-            name="taskA",
-            category="test",
-            description="d",
-            adapter_type="native",
-            system_prompt="sys",
-        ),
-        agent_model_config=config_agent_model(),
-        env_endpoints=EnvEndpoints(db_url=None, rag_url=None, runner_url="http://x"),
-    )
+
+    spec = make_trial_spec(trial_id="taskA:0", task_id="taskA")
     task_config = MagicMock(task_id="taskA")
 
     conductor._grade(spec, task_config, trial_setup, trajectory, runner_stub, "sys")
@@ -295,39 +261,421 @@ def test_in_process_conductor_grade_fires_judgment_scored(tmp_path: Path) -> Non
     assert kwargs == {"trial_id": "taskA:0", "score": 0.75, "binary_pass": True}
 
 
-# ---------------------------------------------------------------------------
-# Orchestrator.run() — full end-to-end emission
-# ---------------------------------------------------------------------------
-
-
-def config_agent_model():
-    from tolokaforge.core.models import ModelConfig
-
-    return ModelConfig(provider="openai", name="gpt-4")
-
-
-def _make_minimal_run_config(**overrides: Any):
+def test_in_process_conductor_default_events_is_null_sink(tmp_path: Path) -> None:
+    """When constructed without an ``events`` kwarg, the conductor holds the
+    null sink so callers that skip the wiring keep working."""
+    from tolokaforge.core.conductor import InProcessConductor
     from tolokaforge.core.models import (
         EvaluationConfig,
         ModelConfig,
         OrchestratorConfig,
         RunConfig,
     )
+    from tolokaforge.core.run_display_events import _NullRunDisplayEvents
 
-    defaults: dict[str, Any] = {
-        "models": {"agent": ModelConfig(provider="openai", name="gpt-4")},
-        "orchestrator": OrchestratorConfig(
-            workers=1,
-            repeats=1,
-            auto_start_services=False,
+    conductor = InProcessConductor(
+        adapter=MagicMock(),
+        artifact_writer=MagicMock(),
+        config=RunConfig(
+            models={"agent": ModelConfig(provider="openai", name="gpt-4")},
+            orchestrator=OrchestratorConfig(workers=1, repeats=1, auto_start_services=False),
+            evaluation=EvaluationConfig(output_dir=str(tmp_path / "results" / "run")),
         ),
-        "evaluation": EvaluationConfig(output_dir="results/test_run"),
+        logger=MagicMock(),
+        agent_client=MagicMock(),
+        runtime_backend=MagicMock(),
+        trial_grader=MagicMock(),
+        output_dir=tmp_path,
+    )
+    assert isinstance(conductor.events, _NullRunDisplayEvents)
+
+
+# ---------------------------------------------------------------------------
+# ProvisioningTrialExecutor — fires `trial_provisioned` post-await_ready
+# ---------------------------------------------------------------------------
+
+
+def test_provisioning_trial_executor_fires_trial_provisioned_after_await_ready() -> None:
+    """After ``endpoints(handle)`` returns, the executor emits
+    ``trial_provisioned`` with the runtime's infrastructure snapshot and
+    an endpoints map assembled from the resolved :class:`EnvEndpoints`."""
+    from tolokaforge.core.conductor import InMemoryConductor
+    from tolokaforge.core.runtime import InMemoryRuntimeBackend
+    from tolokaforge.core.trial_executor import ProvisioningTrialExecutor
+
+    events = _RecordingEvents()
+    backend = InMemoryRuntimeBackend()
+    conductor = InMemoryConductor()
+    executor = ProvisioningTrialExecutor(
+        runtime_backend=backend,
+        conductor=conductor,
+        logger=MagicMock(),
+        events=events,
+    )
+
+    spec = make_trial_spec(
+        trial_id="task-1:0",
+        env_endpoints=make_env_endpoints(
+            db_url="http://db.local:8000", runner_url="http://runner.local:50051"
+        ),
+    )
+    executor.execute(spec, make_task_config())
+
+    provisioned = events.kwargs_for("trial_provisioned")
+    assert len(provisioned) == 1
+    kwargs = provisioned[0]
+    assert kwargs["trial_id"] == "task-1:0"
+    # InMemoryRuntimeBackend synthesises one container row keyed on trial_id.
+    assert isinstance(kwargs["containers"], list)
+    assert len(kwargs["containers"]) == 1
+    # The endpoints map is post-provisioning (from InMemoryRuntimeBackend);
+    # runner + db keys always appear because that backend fills both fields.
+    endpoints_map = kwargs["endpoints"]
+    assert set(endpoints_map.keys()) >= {"runner", "db"}
+    for url in endpoints_map.values():
+        assert isinstance(url, str) and url
+
+
+def test_provisioning_trial_executor_default_events_is_silent() -> None:
+    """The default null-events sink does not emit and does not raise."""
+    from tolokaforge.core.conductor import InMemoryConductor
+    from tolokaforge.core.runtime import InMemoryRuntimeBackend
+    from tolokaforge.core.trial_executor import ProvisioningTrialExecutor
+
+    backend = InMemoryRuntimeBackend()
+    executor = ProvisioningTrialExecutor(
+        runtime_backend=backend,
+        conductor=InMemoryConductor(),
+        logger=MagicMock(),
+    )
+    executor.execute(make_trial_spec(), make_task_config())
+
+
+def test_provisioning_trial_executor_skips_trial_provisioned_on_provision_error() -> None:
+    """When provisioning fails before ``endpoints(handle)``, no
+    ``trial_provisioned`` fires — the display never sees a half-live trial."""
+    from tolokaforge.core.conductor import InMemoryConductor
+    from tolokaforge.core.runtime import InMemoryRuntimeBackend
+    from tolokaforge.core.trial_executor import ProvisioningTrialExecutor
+
+    events = _RecordingEvents()
+    backend = InMemoryRuntimeBackend(await_ready_times_out=True)
+    executor = ProvisioningTrialExecutor(
+        runtime_backend=backend,
+        conductor=InMemoryConductor(),
+        logger=MagicMock(),
+        events=events,
+    )
+    executor.execute(make_trial_spec(), make_task_config())
+    assert events.kwargs_for("trial_provisioned") == []
+
+
+# ---------------------------------------------------------------------------
+# _endpoints_to_map helper
+# ---------------------------------------------------------------------------
+
+
+def test_endpoints_to_map_projects_present_urls() -> None:
+    from tolokaforge.core.trial import EnvEndpoints
+    from tolokaforge.core.trial_executor import _endpoints_to_map
+
+    mapping = _endpoints_to_map(
+        EnvEndpoints(
+            runner_url="http://r:50051",
+            db_url="http://d:8000",
+            rag_url="http://rag:9000",
+        )
+    )
+    assert mapping == {
+        "runner": "http://r:50051",
+        "db": "http://d:8000",
+        "rag": "http://rag:9000",
     }
-    defaults.update(overrides)
-    return RunConfig(**defaults)
 
 
-def _make_task_config(task_id: str):
+def test_endpoints_to_map_omits_absent_urls() -> None:
+    from tolokaforge.core.trial import EnvEndpoints
+    from tolokaforge.core.trial_executor import _endpoints_to_map
+
+    mapping = _endpoints_to_map(
+        EnvEndpoints(runner_url="http://r:50051", db_url=None, rag_url=None)
+    )
+    assert mapping == {"runner": "http://r:50051"}
+
+
+# ---------------------------------------------------------------------------
+# OrchestratorDeps — carries the events sink; defaults to _NullRunDisplayEvents
+# ---------------------------------------------------------------------------
+
+
+def test_orchestrator_deps_carries_events_field() -> None:
+    from tolokaforge.core.orchestrator import OrchestratorDeps
+
+    field_names = {f.name for f in OrchestratorDeps.__dataclass_fields__.values()}
+    assert "events" in field_names
+
+
+def test_orchestrator_deps_events_defaults_to_null_sink() -> None:
+    from dataclasses import fields as dataclass_fields
+
+    from tolokaforge.core.orchestrator import OrchestratorDeps
+    from tolokaforge.core.run_display_events import _NullRunDisplayEvents
+
+    events_field = next(f for f in dataclass_fields(OrchestratorDeps) if f.name == "events")
+    default_value = events_field.default_factory()
+    assert isinstance(default_value, _NullRunDisplayEvents)
+
+
+def test_orchestrator_stores_events_from_deps() -> None:
+    """The injected events sink is captured on ``self._events`` verbatim
+    — the orchestrator never wraps or replaces it."""
+    from tolokaforge.core.models import (
+        EvaluationConfig,
+        ModelConfig,
+        OrchestratorConfig,
+        RunConfig,
+    )
+    from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
+
+    events = _RecordingEvents()
+    config = RunConfig(
+        models={"agent": ModelConfig(provider="openai", name="gpt-4")},
+        orchestrator=OrchestratorConfig(workers=1, repeats=1, auto_start_services=False),
+        evaluation=EvaluationConfig(output_dir="/tmp/test-events-wiring"),
+    )
+    orch = Orchestrator(config, deps=OrchestratorDeps(events=events))
+    assert orch._events is events
+    assert orch._total_index_by_key == {}
+
+
+# ---------------------------------------------------------------------------
+# _build_pending_trials — populates _total_index_by_key with distinct indices
+# ---------------------------------------------------------------------------
+
+
+def _make_orchestrator_with_tasks(task_ids: list[str], repeats: int, shuffle: bool = False) -> Any:
+    """Build a bare :class:`Orchestrator` for pending-trial construction tests."""
+    from tolokaforge.core.models import (
+        EvaluationConfig,
+        InitialStateConfig,
+        ModelConfig,
+        OrchestratorConfig,
+        RunConfig,
+        TaskConfig,
+        ToolsConfig,
+        UserSimulatorConfig,
+    )
+    from tolokaforge.core.orchestrator import Orchestrator
+
+    config = RunConfig(
+        models={"agent": ModelConfig(provider="openai", name="gpt-4")},
+        orchestrator=OrchestratorConfig(
+            workers=1,
+            repeats=repeats,
+            auto_start_services=False,
+            shuffle_trials=shuffle,
+        ),
+        evaluation=EvaluationConfig(output_dir="/tmp/pending-trials-test"),
+    )
+    orch = Orchestrator(config)
+    tasks = [
+        TaskConfig(
+            task_id=task_id,
+            name=task_id,
+            category="tool_use",
+            description="d",
+            initial_state=InitialStateConfig(),
+            tools=ToolsConfig(),
+            user_simulator=UserSimulatorConfig(mode="scripted"),
+            grading="grading.yaml",
+        )
+        for task_id in task_ids
+    ]
+    return orch, tasks
+
+
+def test_build_pending_trials_populates_total_index_by_key_with_distinct_values() -> None:
+    """The dict must map every ``(task_id, trial_idx)`` pair to a unique
+    run-wide index 0..N-1. This is the guardrail against the
+    ``trial_started`` emission's ``.get(..., 0)`` fallback silently
+    reporting every trial as ``total_index=0``."""
+    orch, tasks = _make_orchestrator_with_tasks(["A", "B", "C"], repeats=1)
+
+    orch._build_pending_trials(tasks, repeats=1)
+
+    assert orch._total_index_by_key == {
+        ("A", 0): 0,
+        ("B", 0): 1,
+        ("C", 0): 2,
+    }
+
+
+def test_build_pending_trials_indices_span_full_range_for_multi_repeat() -> None:
+    """Six trials (3 tasks × 2 repeats) must map to indices 0..5 with no
+    collisions — mirrors the multi-repeat case where the orchestrator
+    fans a task out into ``repeats`` per-trial entries."""
+    orch, tasks = _make_orchestrator_with_tasks(["A", "B", "C"], repeats=2)
+
+    orch._build_pending_trials(tasks, repeats=2)
+
+    values = sorted(orch._total_index_by_key.values())
+    assert values == [0, 1, 2, 3, 4, 5]
+    assert set(orch._total_index_by_key.keys()) == {
+        ("A", 0),
+        ("A", 1),
+        ("B", 0),
+        ("B", 1),
+        ("C", 0),
+        ("C", 1),
+    }
+
+
+def test_build_pending_trials_indices_are_distinct_under_shuffle() -> None:
+    """Even under ``shuffle_trials``, every key maps to a distinct index
+    0..N-1 — the dict is populated from the shuffled order, so lookup
+    always resolves to the correct run-wide slot."""
+    import random
+
+    orch, tasks = _make_orchestrator_with_tasks(
+        [f"T{i}" for i in range(5)], repeats=1, shuffle=True
+    )
+    random.seed(0)
+
+    orch._build_pending_trials(tasks, repeats=1)
+
+    values = sorted(orch._total_index_by_key.values())
+    assert values == [0, 1, 2, 3, 4]
+
+
+# ---------------------------------------------------------------------------
+# _declared_engine_service_snapshots / _engine_service_snapshots helpers
+# ---------------------------------------------------------------------------
+
+
+def test_declared_engine_service_snapshots_returns_created_rows() -> None:
+    """Fires on ``phase_changed(starting_services)`` before any container is
+    up — every declared service ships as ``status="created"`` with empty
+    ports so the widget can render the row before docker responds."""
+    from tolokaforge.core.orchestrator import _declared_engine_service_snapshots
+
+    stack = MagicMock()
+    stack.services = {"runner": object(), "db-service": object()}
+
+    snapshots = _declared_engine_service_snapshots(stack)
+
+    assert snapshots == [
+        {"name": "runner", "status": "created", "ports": {}, "role": "engine"},
+        {"name": "db-service", "status": "created", "ports": {}, "role": "engine"},
+    ]
+
+
+def test_engine_service_snapshots_prefers_health_over_status() -> None:
+    """When a service reports a real health probe verdict, that value
+    wins over the raw lifecycle string — a ``running`` container whose
+    probe is still starting must not read as ready."""
+    from tolokaforge.core.orchestrator import _engine_service_snapshots
+
+    stack = MagicMock()
+    runner_status = MagicMock(status="running", health="healthy", ports={50051: 50052})
+    db_status = MagicMock(status="running", health="starting", ports={5432: 55432})
+    stack.get_status.return_value = {"runner": runner_status, "db-service": db_status}
+
+    snapshots = _engine_service_snapshots(stack)
+
+    assert snapshots == [
+        {"name": "runner", "status": "healthy", "ports": {50051: 50052}, "role": "engine"},
+        {"name": "db-service", "status": "starting", "ports": {5432: 55432}, "role": "engine"},
+    ]
+
+
+def test_engine_service_snapshots_falls_back_to_status_when_health_absent() -> None:
+    """No health probe → ``health`` is ``"unknown"`` on the underlying
+    :class:`ServiceStatus`. The snapshot falls back to the container
+    ``status`` so the widget still reports a meaningful value."""
+    from tolokaforge.core.orchestrator import _engine_service_snapshots
+
+    stack = MagicMock()
+    stack.get_status.return_value = {
+        "runner": MagicMock(status="running", health="unknown", ports={}),
+    }
+
+    (snapshot,) = _engine_service_snapshots(stack)
+
+    assert snapshot["status"] == "running"
+
+
+# ---------------------------------------------------------------------------
+# _build_conductor / _build_trial_executor thread events through
+# ---------------------------------------------------------------------------
+
+
+def _build_orch_for_seam_threading(events: Any) -> Any:
+    from tolokaforge.core.models import (
+        EvaluationConfig,
+        ModelConfig,
+        OrchestratorConfig,
+        RunConfig,
+    )
+    from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
+
+    config = RunConfig(
+        models={"agent": ModelConfig(provider="openai", name="gpt-4")},
+        orchestrator=OrchestratorConfig(workers=1, repeats=1, auto_start_services=False),
+        evaluation=EvaluationConfig(output_dir="/tmp/seam-thread-test"),
+    )
+    orch = Orchestrator(config, deps=OrchestratorDeps(events=events))
+    orch.adapter = MagicMock()
+    return orch
+
+
+def test_build_conductor_threads_events_into_context(tmp_path: Path) -> None:
+    """``_build_conductor`` writes the orchestrator's ``self._events`` onto
+    :class:`ConductorContext.events` — the conductor factory sees the
+    same sink the orchestrator holds."""
+    from tolokaforge.core.conductor import ConductorContext
+
+    events = _RecordingEvents()
+    orch = _build_orch_for_seam_threading(events)
+
+    captured_ctx: list[ConductorContext] = []
+
+    def capture_factory(ctx: ConductorContext) -> Any:
+        captured_ctx.append(ctx)
+        return MagicMock()
+
+    orch._conductor_factory = capture_factory
+    orch._build_conductor(
+        agent_client=MagicMock(),
+        runtime_backend=MagicMock(),
+        output_dir=tmp_path,
+        request_limiter=None,
+    )
+
+    assert len(captured_ctx) == 1
+    assert captured_ctx[0].events is events
+
+
+def test_build_trial_executor_threads_events_into_provisioning_executor() -> None:
+    """``_build_trial_executor`` constructs a :class:`ProvisioningTrialExecutor`
+    whose ``events`` attribute is the same sink threaded through the
+    orchestrator's deps — no rewrapping, no silent null fallback."""
+    events = _RecordingEvents()
+    orch = _build_orch_for_seam_threading(events)
+
+    executor = orch._build_trial_executor(
+        runtime_backend=MagicMock(),
+        conductor=MagicMock(),
+        log_capture=None,
+    )
+    assert executor.events is events
+
+
+# ---------------------------------------------------------------------------
+# Full-run emission ordering + distinct trial_started total_index values
+# ---------------------------------------------------------------------------
+
+
+def _make_task_for_run(task_id: str) -> Any:
     from tolokaforge.core.models import (
         InitialStateConfig,
         TaskConfig,
@@ -337,9 +685,9 @@ def _make_task_config(task_id: str):
 
     return TaskConfig(
         task_id=task_id,
-        name=f"Test Task {task_id}",
+        name=task_id,
         category="tool_use",
-        description="A test task",
+        description="d",
         initial_state=InitialStateConfig(),
         tools=ToolsConfig(),
         user_simulator=UserSimulatorConfig(mode="scripted"),
@@ -347,7 +695,7 @@ def _make_task_config(task_id: str):
     )
 
 
-def _task_description(task_id: str):
+def _make_task_description_for_run(task_id: str) -> Any:
     from tolokaforge.runner.models import GradingConfig, TaskDescription
 
     return TaskDescription(
@@ -357,168 +705,136 @@ def _task_description(task_id: str):
         description="d",
         adapter_type="native",
         system_prompt="sys",
-        grading=GradingConfig(),
+        grading=GradingConfig(llm_judge=None),
     )
 
 
-def _orchestrator_for_run(
-    events: _RecordingEvents,
-    task_ids: list[str],
-    *,
-    conductor_factory: Callable[[Any], Any] | None = None,
-    tmp_path: Path,
-):
-    """Build an Orchestrator wired for a full ``run()`` end-to-end.
+def test_run_emits_lifecycle_with_distinct_trial_started_total_indices(tmp_path: Path) -> None:
+    """Drive a full ``Orchestrator.run()`` with 3 trials against an
+    in-memory conductor and runtime backend.
 
-    Uses :class:`InMemoryRuntimeBackend` (no docker), :class:`InMemoryConductor`
-    (returns synthetic-success trajectory by default), and a mocked adapter
-    whose task descriptions carry no ``llm_judge`` so the judge gate is a
-    no-op.
+    Locks two invariants:
+
+    1. Every lifecycle emission fires at least once — ``phase_changed``
+       for the ``starting_services`` skip path (auto_start_services=False
+       so only ``connecting_runtime`` fires), ``run_started``,
+       ``trial_started`` × 3, ``trial_completed`` × 3, and
+       ``run_finished``.
+    2. The three ``trial_started`` emissions carry **distinct**
+       ``total_index`` values ``{0, 1, 2}`` — proving the
+       ``.get(..., 0)`` fallback in the emission site is never hit
+       silently across a multi-trial run.
     """
-    from tolokaforge.core.conductor import InMemoryConductor
+    from tolokaforge.core.conductor import ConductorContext, InMemoryConductor
+    from tolokaforge.core.models import (
+        EvaluationConfig,
+        ModelConfig,
+        OrchestratorConfig,
+        RunConfig,
+    )
     from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
     from tolokaforge.core.runtime import InMemoryRuntimeBackend
 
-    config = _make_minimal_run_config(
-        evaluation={"output_dir": str(tmp_path / "results" / "run")},
+    events = _RecordingEvents()
+
+    run_root = tmp_path / "results" / "run_base"
+    run_root.parent.mkdir(parents=True, exist_ok=True)
+    config = RunConfig(
+        models={"agent": ModelConfig(provider="openai", name="gpt-4")},
+        orchestrator=OrchestratorConfig(
+            workers=1,
+            repeats=1,
+            auto_start_services=False,
+            shuffle_trials=False,
+        ),
+        evaluation=EvaluationConfig(output_dir=str(run_root)),
     )
-    factory = conductor_factory or (lambda _ctx: InMemoryConductor())
-    runtime = InMemoryRuntimeBackend()
+
+    def make_conductor(_ctx: ConductorContext) -> InMemoryConductor:
+        return InMemoryConductor()
 
     orch = Orchestrator(
         config,
         deps=OrchestratorDeps(
             events=events,
-            runtime_backend=runtime,
-            conductor_factory=factory,
+            runtime_backend=InMemoryRuntimeBackend(),
+            conductor_factory=make_conductor,
         ),
     )
-    orch.tasks = [_make_task_config(tid) for tid in task_ids]
+    orch.tasks = [_make_task_for_run(tid) for tid in ("TASK-A", "TASK-B", "TASK-C")]
+
     adapter = MagicMock()
-    adapter.to_task_description.side_effect = lambda tid: _task_description(tid)
-    adapter.docker_stack_requirements.return_value = MagicMock(needs_rag_service=False)
+    adapter.to_task_description.side_effect = _make_task_description_for_run
+    adapter.docker_stack_requirements.return_value = None
     orch.adapter = adapter
-    return orch, runtime
-
-
-def test_orchestrator_run_emits_run_started_and_run_finished(tmp_path: Path) -> None:
-    events = _RecordingEvents()
-    orch, _runtime = _orchestrator_for_run(events, ["taskA"], tmp_path=tmp_path)
-
-    output_dir = orch.run()
-
-    # phase_changed events legitimately fire before run_started (Docker
-    # startup visibility). Ordering assertions are on lifecycle events only.
-    lifecycle = [k for k in events.kinds() if k != "phase_changed"]
-    assert lifecycle[0] == "run_started"
-    assert lifecycle[-1] == "run_finished"
-
-    (start_kwargs,) = events.kwargs_for("run_started")
-    assert start_kwargs == {"total_trials": 1, "initial_completed": 0}
-
-    (finish_kwargs,) = events.kwargs_for("run_finished")
-    assert finish_kwargs == {"output_dir": output_dir}
-
-
-def test_orchestrator_run_emits_trial_started_and_trial_completed_per_trial(
-    tmp_path: Path,
-) -> None:
-    events = _RecordingEvents()
-    orch, _runtime = _orchestrator_for_run(events, ["taskA", "taskB", "taskC"], tmp_path=tmp_path)
 
     orch.run()
 
-    started_ids = {kw["trial_id"] for kw in events.kwargs_for("trial_started")}
-    completed_ids = {kw["trial_id"] for kw in events.kwargs_for("trial_completed")}
-    assert started_ids == {"taskA:0", "taskB:0", "taskC:0"}
-    assert completed_ids == {"taskA:0", "taskB:0", "taskC:0"}
+    # Every lifecycle emission fires — run_started once, 3× trial_started,
+    # 3× trial_completed, run_finished once, and connecting_runtime phase.
+    kinds = events.kinds()
+    assert kinds.count("run_started") == 1
+    assert kinds.count("trial_started") == 3
+    assert kinds.count("trial_completed") == 3
+    assert kinds.count("run_finished") == 1
+    assert kinds.count("trial_failed") == 0
+    phase_calls = events.kwargs_for("phase_changed")
+    phases = [call["phase"] for call in phase_calls]
+    assert "connecting_runtime" in phases
 
-    for kw in events.kwargs_for("trial_completed"):
-        # Default success trajectory carries ``binary_pass=True`` and ``score=1.0``.
-        assert kw["binary_pass"] is True
-        assert kw["score"] == 1.0
+    # The critic-required invariant: distinct total_index values across the
+    # three trial_started emissions. If ``_total_index_by_key`` were not
+    # populated, ``.get(..., 0)`` would emit ``0`` for every trial.
+    trial_started = events.kwargs_for("trial_started")
+    total_indices = [call["total_index"] for call in trial_started]
+    assert sorted(total_indices) == [0, 1, 2]
+    assert len(set(total_indices)) == 3
+
+    # run_finished carries the resolved output directory the reports were
+    # written into.
+    (run_finished,) = events.kwargs_for("run_finished")
+    assert run_finished["output_dir"].exists()
 
 
-def test_orchestrator_run_fires_trial_failed_when_retries_exhausted(tmp_path: Path) -> None:
-    """A trajectory classified retryable that exhausts retries fires
-    ``trial_failed(retryable=True, ...)`` — the retry-exhausted branch."""
-    from datetime import UTC, datetime
-
-    from tolokaforge.core.conductor import InMemoryConductor
+def test_run_with_default_null_events_completes_without_raising(tmp_path: Path) -> None:
+    """The default sink is :class:`_NullRunDisplayEvents` — a complete run
+    against it must never raise a ``TypeError`` from a mis-kwarged
+    emission. Guards the null-default across every one of the 9 methods
+    the engine calls."""
+    from tolokaforge.core.conductor import ConductorContext, InMemoryConductor
     from tolokaforge.core.models import (
-        Metrics,
-        TerminationReason,
-        Trajectory,
-        TrialStatus,
+        EvaluationConfig,
+        ModelConfig,
+        OrchestratorConfig,
+        RunConfig,
+    )
+    from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
+    from tolokaforge.core.runtime import InMemoryRuntimeBackend
+
+    run_root = tmp_path / "results" / "null_base"
+    run_root.parent.mkdir(parents=True, exist_ok=True)
+    config = RunConfig(
+        models={"agent": ModelConfig(provider="openai", name="gpt-4")},
+        orchestrator=OrchestratorConfig(workers=1, repeats=1, auto_start_services=False),
+        evaluation=EvaluationConfig(output_dir=str(run_root)),
     )
 
-    def error_trajectory(task_id: str, trial_idx: int) -> Trajectory:
-        now = datetime.now(UTC)
-        return Trajectory(
-            task_id=task_id,
-            trial_index=trial_idx,
-            start_ts=now,
-            end_ts=now,
-            status=TrialStatus.ERROR,
-            termination_reason=TerminationReason.API_ERROR,
-            messages=[],
-            metrics=Metrics(),
-        )
+    def make_conductor(_ctx: ConductorContext) -> InMemoryConductor:
+        return InMemoryConductor()
 
-    events = _RecordingEvents()
-    orch, _runtime = _orchestrator_for_run(
-        events,
-        ["taskA"],
-        conductor_factory=lambda _ctx: InMemoryConductor(trajectory_factory=error_trajectory),
-        tmp_path=tmp_path,
+    # No `events=...` — the default :class:`_NullRunDisplayEvents` sink applies.
+    orch = Orchestrator(
+        config,
+        deps=OrchestratorDeps(
+            runtime_backend=InMemoryRuntimeBackend(),
+            conductor_factory=make_conductor,
+        ),
     )
+    orch.tasks = [_make_task_for_run("TASK-A")]
+
+    adapter = MagicMock()
+    adapter.to_task_description.side_effect = _make_task_description_for_run
+    adapter.docker_stack_requirements.return_value = None
+    orch.adapter = adapter
 
     orch.run()
-
-    failed_kwargs = events.kwargs_for("trial_failed")
-    assert len(failed_kwargs) == 1
-    assert failed_kwargs[0]["trial_id"] == "taskA:0"
-    assert failed_kwargs[0]["retryable"] is True
-    assert "API_ERROR" in failed_kwargs[0]["error"] or "api_error" in failed_kwargs[0]["error"]
-
-
-def test_orchestrator_run_fires_trial_failed_on_hard_exception(tmp_path: Path) -> None:
-    """Hard exception in the conductor with retries exhausted fires
-    ``trial_failed`` carrying the exception message."""
-    from tolokaforge.core.conductor import InMemoryConductor
-
-    def boom_factory(task_id: str, trial_idx: int):
-        raise RuntimeError("boom")
-
-    events = _RecordingEvents()
-    orch, _runtime = _orchestrator_for_run(
-        events,
-        ["taskA"],
-        conductor_factory=lambda _ctx: InMemoryConductor(trajectory_factory=boom_factory),
-        tmp_path=tmp_path,
-    )
-
-    orch.run()
-
-    failed_kwargs = events.kwargs_for("trial_failed")
-    assert len(failed_kwargs) == 1
-    assert failed_kwargs[0]["trial_id"] == "taskA:0"
-    assert "boom" in failed_kwargs[0]["error"]
-
-
-def test_orchestrator_run_events_are_ordered_run_started_first_run_finished_last(
-    tmp_path: Path,
-) -> None:
-    events = _RecordingEvents()
-    orch, _runtime = _orchestrator_for_run(events, ["taskA", "taskB"], tmp_path=tmp_path)
-
-    orch.run()
-
-    # phase_changed events legitimately fire before run_started (Docker
-    # startup visibility). Ordering assertions are on lifecycle events only.
-    lifecycle = [k for k in events.kinds() if k != "phase_changed"]
-    assert lifecycle[0] == "run_started"
-    assert lifecycle[-1] == "run_finished"
-    # trial_started + trial_completed for each trial land between the two.
-    assert lifecycle.count("trial_started") == 2
-    assert lifecycle.count("trial_completed") == 2

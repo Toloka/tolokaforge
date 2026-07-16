@@ -241,13 +241,68 @@ def _make_one_service_manifest() -> EnvironmentManifest:
 class TestProvisioningProtocolConformance:
     def test_shared_stack_runtime_backend_has_provisioning_methods(self) -> None:
         backend = SharedStackRuntimeBackend(runner_address="sentinel:50051")
-        for method in ("provision", "await_ready", "endpoints", "teardown"):
+        for method in ("provision", "await_ready", "endpoints", "teardown", "capture_service_logs"):
             assert callable(getattr(backend, method))
 
     def test_in_memory_backend_has_provisioning_methods(self) -> None:
         backend = InMemoryRuntimeBackend()
-        for method in ("provision", "await_ready", "endpoints", "teardown"):
+        for method in ("provision", "await_ready", "endpoints", "teardown", "capture_service_logs"):
             assert callable(getattr(backend, method))
+
+    def test_per_trial_backend_has_capture_service_logs(self) -> None:
+        from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
+
+        assert callable(PerTrialRuntimeBackend().capture_service_logs)
+
+
+class TestInfrastructureSnapshotProtocolConformance:
+    """Every backend implements :meth:`RuntimeBackend.get_infrastructure_snapshot`
+    (the ``RunDisplayEvents`` seam's runtime hook). The Protocol widened in #416 —
+    the orchestrator calls this on the hot path per trial, so a missing
+    implementation on any backend is a run-corrupting hole.
+    """
+
+    def test_get_infrastructure_snapshot_is_present_on_all_backends(self) -> None:
+        from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
+
+        implementations = [
+            InMemoryRuntimeBackend(),
+            SharedStackRuntimeBackend(runner_address="sentinel:50051"),
+            PerTrialRuntimeBackend(),
+        ]
+        for impl in implementations:
+            assert callable(
+                getattr(impl, "get_infrastructure_snapshot", None)
+            ), f"{type(impl).__name__} is missing RuntimeBackend.get_infrastructure_snapshot"
+
+    def test_in_memory_returns_synthetic_single_container(self) -> None:
+        """The in-memory backend has no real substrate; it returns a
+        deterministic single-container snapshot keyed by trial id so
+        display tests can assert against a known shape without docker.
+        """
+        backend = InMemoryRuntimeBackend()
+        handle = backend.provision(_make_trial_spec(trial_id="task-1:0"))
+
+        snapshot = backend.get_infrastructure_snapshot(handle)
+
+        assert snapshot == [
+            {
+                "name": "in-memory-runner-task-1:0",
+                "service": "runner",
+                "state": "running",
+                "health": "healthy",
+                "ports": {50051: 50051},
+            }
+        ]
+
+    def test_shared_stack_built_in_mode_returns_empty(self) -> None:
+        """In built-in-stack mode the shared-stack backend materialises no
+        compose project of its own — the services widget already covers
+        the built-in ``EngineStack``, so the infra snapshot is empty."""
+        backend = SharedStackRuntimeBackend(runner_address="sentinel:50051")
+        handle = backend.provision(_make_trial_spec())
+
+        assert backend.get_infrastructure_snapshot(handle) == []
 
 
 class TestEnvHandleShape:
@@ -423,3 +478,27 @@ class TestInMemoryProvisioningCallLog:
         backend = InMemoryRuntimeBackend(fail_provision_after_service="db")
         with pytest.raises(ProvisionError):
             backend.provision(_make_trial_spec(manifest=_make_two_service_manifest()))
+
+
+class TestCaptureServiceLogsContract:
+    """``capture_service_logs`` is a Protocol method on every backend. The
+    in-memory fixture records the ``(trial_id, failed)`` pair for tests to
+    assert against; the shared-stack backend is a documented no-op. Real
+    per-service ``.log`` capture on the per-trial backend is locked by the
+    Docker integration test."""
+
+    def test_in_memory_records_call_and_returns_empty(self) -> None:
+        backend = InMemoryRuntimeBackend()
+        handle = backend.provision(_make_trial_spec(trial_id="task-1:0"))
+        assert backend.capture_service_logs(handle, failed=True) == {}
+        assert backend.capture_service_logs(handle, failed=False) == {}
+        assert backend.call_log.capture_service_logs_calls == [
+            ("task-1:0", True),
+            ("task-1:0", False),
+        ]
+
+    def test_shared_stack_is_no_op(self) -> None:
+        backend = SharedStackRuntimeBackend(runner_address="localhost:50051")
+        handle = backend.provision(_make_trial_spec(trial_id="task-1:0"))
+        assert backend.capture_service_logs(handle, failed=True) == {}
+        assert backend.capture_service_logs(handle, failed=False) == {}

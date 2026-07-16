@@ -526,8 +526,13 @@ class TestActorRosterSubsetOfModels:
 
 
 class TestProjectAssetsPathAnchoring:
-    """``assets.seeds.<name>.path`` and bare-string shorthand entries
-    resolve to absolute paths under the project directory."""
+    """``assets.seeds.<name>.path`` entries resolve to absolute paths
+    under the project directory."""
+
+    def _seed_digest(self, seed: Path) -> str:
+        import hashlib
+
+        return "sha256:" + hashlib.sha256(seed.read_bytes()).hexdigest()
 
     def test_dict_form_relative_path_anchored(self, tmp_path: Path) -> None:
         # A seed file that must exist so downstream consumers can find it.
@@ -543,6 +548,7 @@ class TestProjectAssetsPathAnchoring:
                         "base": {
                             "path": "shared/seeds/base.sql",
                             "kind": "sql_dump",
+                            "digest": self._seed_digest(seed),
                         },
                     },
                 },
@@ -552,18 +558,46 @@ class TestProjectAssetsPathAnchoring:
         assert project.assets is not None
         assert project.assets.seeds["base"].path == seed.resolve()
 
-    def test_bare_string_shorthand_relative_anchored(self, tmp_path: Path) -> None:
+    def test_digest_mismatch_fails_loud(self, tmp_path: Path) -> None:
         seed = tmp_path / "shared" / "seeds" / "base.sql"
         seed.parent.mkdir(parents=True)
         seed.write_text("-- fixture\n")
         _write_yaml(
             tmp_path / "project.yaml",
-            {"name": "p", "assets": {"seeds": {"base": "shared/seeds/base.sql"}}},
+            {
+                "name": "p",
+                "assets": {
+                    "seeds": {
+                        "base": {
+                            "path": "shared/seeds/base.sql",
+                            "kind": "sql_dump",
+                            "digest": "sha256:" + "0" * 64,
+                        },
+                    },
+                },
+            },
         )
-        project = load_project_config(tmp_path / "project.yaml")
-        assert project.assets is not None
-        assert project.assets.seeds["base"].path == seed.resolve()
-        assert project.assets.seeds["base"].kind == "sql_dump"
+        with pytest.raises(RuntimeError, match="digest mismatch"):
+            load_project_config(tmp_path / "project.yaml")
+
+    def test_missing_seed_file_fails_loud(self, tmp_path: Path) -> None:
+        _write_yaml(
+            tmp_path / "project.yaml",
+            {
+                "name": "p",
+                "assets": {
+                    "seeds": {
+                        "base": {
+                            "path": "shared/seeds/missing.sql",
+                            "kind": "sql_dump",
+                            "digest": "sha256:" + "0" * 64,
+                        },
+                    },
+                },
+            },
+        )
+        with pytest.raises(RuntimeError, match="does not exist"):
+            load_project_config(tmp_path / "project.yaml")
 
 
 class TestEnvVarInterpolation:

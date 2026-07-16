@@ -60,6 +60,25 @@ user_simulator:
 grading: "grading.yaml"
 ```
 
+### Minimal task
+
+The only required fields are `task_id` and `description`. Everything above is
+optional and defaults to a sane value:
+
+| Field | Default when omitted |
+| --- | --- |
+| `initial_state` | empty state (no JSON DB, filesystem, mock-web, or RAG) |
+| `tools` | no tools enabled for agent or user |
+| `user_simulator` | cooperative LLM user (`mode: llm`, `persona: cooperative`) |
+| `grading` | a `grading.yaml` sitting next to `task.yaml` is picked up automatically; if there is none, the task has no grading configured |
+
+So a task that inherits everything from its Project needs only:
+
+```yaml
+task_id: "api_endpoint_add"
+description: "Add a POST /orders endpoint backed by the orders table."
+```
+
 ## Initial State
 
 - `json_db`: JSON file loaded into the JSON DB service. Use this for any task state that needs to be verified by grading.
@@ -75,13 +94,18 @@ docker-compose stack — extra services beyond the engine's built-in
 stack (extended to include mock-web / rag-service if the task uses their
 tools).
 
-The manifest points at a compose file that lives next to `task.yaml`:
+The manifest points at a compose file that lives next to `task.yaml`, plus a per-service `services:` map that declares each service's isolation posture:
 
 ```yaml
 environment_manifest:
   compose_file: "./environment.compose.yaml"
   runner_service: "runner"
-  isolation: "shared_ok"          # or "per_trial" (default)
+  services:
+    app-db:
+      isolation: "reset"
+      reset:
+        seed: "postgres_baseline"   # name from project-level assets.seeds
+    # any service not listed here defaults to `ephemeral`
 ```
 
 Field reference:
@@ -90,15 +114,31 @@ Field reference:
 | --- | --- | --- | --- |
 | `compose_file` | yes | — | Path to the docker-compose YAML. Relative paths resolve against `task.yaml`. This file is the sole source of truth for services, images, ports, volumes, healthchecks, and `depends_on`. |
 | `runner_service` | no | `"default"` | Which compose service is the tolokaforge runner. Must be a service declared in the compose file. |
-| `isolation` | no | `"per_trial"` | `"per_trial"` (fresh stack per trial) or `"shared_ok"` (all trials share the run's stack). See [multi-container guide](guides/multi_container_tasks.md#choosing-isolation) for how to pick. |
+| `services.<name>.isolation` | no | `"ephemeral"` | Per-service posture: `"shared"` (long-lived across trials), `"reset"` (fresh container per trial + `reset.seed` recipe reapplied at each provision), `"ephemeral"` (fresh container per trial, no seed). Backend selection is task-driven — any `reset`/`ephemeral` service routes the run to `PerTrialRuntimeBackend` automatically. See the [multi-container guide](guides/multi_container_tasks.md#choosing-isolation) for how to pick. |
+| `services.<name>.reset.seed` | when `isolation: reset` | — | Name of the seed to apply on each provision. Must exist in the project's `assets.seeds` registry. See [`docs/architecture/RESET_RECIPES.md`](architecture/RESET_RECIPES.md) for the four seed kinds (`sql_dump` / `filesystem_dir` / `redis_dump` / `bare`). |
+| `network_policy` | no | `"no_internet"` | Public-egress posture for the task's application services. `no_internet` (default) attaches every task service to an `internal` docker network so no service can reach the public internet; `full_internet` runs the compose file unchanged. `limited_internet` is refused at materialisation (needs an egress-allowlist proxy — #323). See below. |
+
+`network_policy` enforcement (docker backends):
+
+- `no_internet` (default) — every task service joins an injected `internal:
+  true` network, so no application service reaches the public internet;
+  inter-service DNS still works. The `runner_service` additionally joins a
+  non-internal edge network so its published gRPC port stays host-reachable
+  and it retains egress for in-container LLM-as-judge grading. The contract
+  is scoped to application services — egress of tools the agent executes
+  *inside* the runner is not blocked (#325).
+- `full_internet` — the compose file runs verbatim; every service keeps
+  whatever egress its networks allow.
+- `limited_internet` — refused before any container starts (raises
+  `NetworkPolicyError`). A per-host allowlist needs an egress-proxy sidecar,
+  tracked in #323; refusing is the only honest option since docker's
+  `internal` flag is binary. Declare `no_internet` or `full_internet`
+  explicitly.
 
 Fields declared on the model but **not yet enforced by the provisioner** —
 declaring them is accepted for forward-compatibility but has no runtime
 effect today:
 
-- `network_policy` — reserved. Default `no_internet` is documented but not
-  yet enforced. Compose-file `network_mode: host` is still rejected by the
-  manifest validator regardless.
 - `security_context_defaults` — reserved. No provisioner consumer yet.
 - `initial_state` (on the manifest itself, not the task-level
   `initial_state`) — reserved for per-service fixture copy operations. Use

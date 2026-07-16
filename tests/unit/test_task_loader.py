@@ -22,6 +22,7 @@ from tolokaforge.adapters._task_loader import (
     deep_merge,
     load_task_yaml,
 )
+from tolokaforge.adapters.native import NativeAdapter
 
 pytestmark = pytest.mark.unit
 
@@ -495,6 +496,61 @@ def test_inline_json_db_dict_survives_load(tmp_path: Path) -> None:
     )
     task, _ = load_task_yaml(case_dir / "task.yaml")
     assert task.initial_state.json_db == {"items": [{"id": 1}]}
+
+
+class TestSiblingGradingAutoPickup:
+    """A ``grading.yaml`` next to ``task.yaml`` is auto-picked when the merged
+    config sets no ``grading``. Explicit ``grading:`` always wins; a missing
+    sibling leaves ``grading`` unset rather than fabricating a path."""
+
+    @staticmethod
+    def _write_minimal_task(task_dir: Path, **extra: object) -> Path:
+        task_dir.mkdir(parents=True, exist_ok=True)
+        data: dict = {"task_id": "min", "description": "minimal task"}
+        data.update(extra)
+        _write_yaml(task_dir / "task.yaml", data)
+        return task_dir / "task.yaml"
+
+    @staticmethod
+    def _write_grading(path: Path) -> None:
+        _write_yaml(
+            path,
+            {
+                "combine": {
+                    "method": "weighted",
+                    "weights": {"state_checks": 1.0},
+                    "pass_threshold": 1.0,
+                }
+            },
+        )
+
+    def test_sibling_grading_auto_picked_and_loads(self, tmp_path: Path) -> None:
+        task_dir = tmp_path / "flat_task"
+        task_path = self._write_minimal_task(task_dir)
+        self._write_grading(task_dir / "grading.yaml")
+
+        task, task_root = load_task_yaml(task_path)
+
+        expected = (task_dir / "grading.yaml").resolve()
+        assert task.grading == str(expected)
+        assert Path(task.grading).is_absolute()
+
+        adapter = NativeAdapter({"tasks_glob": "*/task.yaml", "base_dir": str(tmp_path)})
+        grading = adapter.get_grading_config("min")
+        assert grading.combine.weights == {"state_checks": 1.0}
+
+    def test_no_sibling_leaves_grading_none(self, tmp_path: Path) -> None:
+        task_path = self._write_minimal_task(tmp_path / "flat_task")
+        task, _ = load_task_yaml(task_path)
+        assert task.grading is None
+
+    def test_explicit_grading_not_overridden_by_sibling(self, tmp_path: Path) -> None:
+        task_dir = tmp_path / "flat_task"
+        task_path = self._write_minimal_task(task_dir, grading="other.yaml")
+        self._write_grading(task_dir / "grading.yaml")
+
+        task, _ = load_task_yaml(task_path)
+        assert task.grading == "other.yaml"
 
 
 def test_load_task_yaml_real_example(tmp_path: Path) -> None:

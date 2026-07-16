@@ -1,0 +1,24 @@
+combine:
+  method: weighted
+  weights:
+    state_checks: 0.7
+    transcript_rules: 0.3
+  pass_threshold: 0.5
+state_checks:
+  jsonpaths:
+    - path_glob: "/env/fs/agent-visible/submissions/*"
+      contains_ci: "slow_start_ok"
+      description: "Submission records the seeded widget name — proof the agent read it over PostgREST, which is only possible if the depends_on + healthcheck chain held the start order and the first API call did not hit a refused connection"
+transcript_rules:
+  max_turns: 8
+  required_actions:
+    - action_id: "query_api"
+      requestor: assistant
+      name: bash
+      arguments: {}
+      compare_args: []
+    - action_id: "write_submission"
+      requestor: assistant
+      name: write_file
+      arguments: {}
+      compare_args: []

@@ -23,7 +23,10 @@ from tolokaforge.runner.models import CriterionResult as CriterionResult
 from tolokaforge.runner.models import EnvironmentManifest as EnvironmentManifest
 from tolokaforge.runner.models import EnvironmentPatch as EnvironmentPatch
 from tolokaforge.runner.models import LLMJudgeConfig as LLMJudgeConfig
+from tolokaforge.runner.models import ResetSpec as ResetSpec
 from tolokaforge.runner.models import Rubric as Rubric
+from tolokaforge.runner.models import ServiceIsolation as ServiceIsolation
+from tolokaforge.runner.models import ServiceSpec as ServiceSpec
 from tolokaforge.runner.models import StackPatch as StackPatch
 
 
@@ -515,26 +518,26 @@ class OrchestratorConfig(BaseModel):
     for backward compatibility; a ``DeprecationWarning`` fires when
     the field is explicitly set."""
 
-    runtime: Literal["shared", "per_trial"] = "shared"
-    """Runtime backend selection.
+    runtime: Literal["shared", "per_trial"] | None = None
+    """Deprecated operator override for backend selection.
 
-    * ``shared`` (default) — one docker-compose stack shared across every
-      trial in the run (``SharedStackRuntimeBackend``). Preserves today's
-      behaviour; fastest for stateless tasks.
-    * ``per_trial`` — one docker-compose stack per trial via Testcontainers
-      (``PerTrialRuntimeBackend``). Required by tasks whose manifest
-      declares ``isolation: per_trial``.
+    Backend selection is task-driven — the orchestrator picks
+    :class:`PerTrialRuntimeBackend` when any task's manifest requires
+    per-trial materialisation, otherwise :class:`SharedStackRuntimeBackend`.
+    Setting this field bypasses that signal and emits a
+    ``DeprecationWarning``. Retired in a future release.
 
-    Legacy value ``docker`` is accepted as an alias for ``shared`` with a
-    deprecation warning at load time; drop it from configs going forward.
+    Legacy value ``docker`` is accepted as an alias for ``shared`` with
+    the same deprecation warning; drop both from configs going forward.
     """
 
     @field_validator("runtime", mode="before")
     @classmethod
     def _accept_legacy_docker_alias(cls, value: Any) -> Any:
-        """Accept ``docker`` as a deprecated alias for ``shared`` so
-        older run configs continue to load. Emits a ``DeprecationWarning``
-        and structured-log-friendly stderr line."""
+        """Accept ``docker`` as an alias for ``shared`` and emit the
+        deprecation warning for any explicit setting."""
+        if value is None:
+            return value
         if value == "docker":
             warnings.warn(
                 "OrchestratorConfig.runtime = 'docker' is a deprecated alias "
@@ -542,7 +545,16 @@ class OrchestratorConfig(BaseModel):
                 DeprecationWarning,
                 stacklevel=2,
             )
-            return "shared"
+            value = "shared"
+        warnings.warn(
+            "OrchestratorConfig.runtime is deprecated; backend selection is "
+            "now task-driven (any task requiring per-trial isolation forces "
+            "PerTrialRuntimeBackend, otherwise SharedStackRuntimeBackend). "
+            "Drop `orchestrator.runtime` from the run config. Retired in a "
+            "future release.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return value
 
     @model_validator(mode="before")
@@ -671,6 +683,8 @@ class ComputeConfig(BaseModel):
     max_budget_usd: float | None = Field(default=None, ge=0.0)
     max_requests_per_second: float | None = Field(default=None, gt=0.0)
     max_attempt_retries: int = Field(default=0, ge=0)
+    log_tail: int = Field(default=500, ge=1)
+    capture_logs_on_success: bool = False
     local_docker: LocalDockerComputeConfig | None = None
 
     capabilities: list[Any] = Field(default_factory=list)
@@ -1157,9 +1171,9 @@ class TaskConfig(BaseModel):
     adapter_type: str = "native"  # Adapter runtime type (native, tlk_mcp_core, tau, …)
     max_turns: int | None = None  # Optional per-task turn cap override
     initial_user_message: str | None = None  # If provided, sent directly as first user message
-    initial_state: InitialStateConfig
-    tools: ToolsConfig
-    user_simulator: UserSimulatorConfig
+    initial_state: InitialStateConfig = Field(default_factory=InitialStateConfig)
+    tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    user_simulator: UserSimulatorConfig = Field(default_factory=UserSimulatorConfig)
     actors: dict[str, ActorSpec] | None = None
     """Task-level actor overrides. Reserved at the parse layer; runtime
     binding lands with the canonical rename. Reserved actor names
@@ -1169,7 +1183,7 @@ class TaskConfig(BaseModel):
     policies: dict[str, Any] = Field(
         default_factory=dict
     )  # Can contain guidance list or agent_system_prompt string
-    grading: str  # Path to grading.yaml
+    grading: str | None = None  # Path to grading.yaml; sibling grading.yaml auto-picked when unset
     system_prompt: str | None = None  # Path to system prompt file (e.g., wiki.md)
     adapter_settings: dict[str, Any] | None = None  # Opaque dict parsed by each adapter type
 
@@ -1358,10 +1372,11 @@ class SeedRef(BaseModel):
     """One entry in ``assets.seeds`` — a named baseline that reset
     recipes and initial-state fixtures reference by name.
 
-    Two authoring shapes both parse: the full ``{path, kind, digest?}``
+    Two authoring shapes both parse: the full ``{path, kind, digest}``
     dict, or a bare string path (kind inferred from the extension when
-    unambiguous). ``digest`` verification lands with the reset-recipe
-    milestone; this milestone reserves the field."""
+    unambiguous). The bare-string form is only legal at load time when
+    the enclosing loader stamps the digest before construction — the
+    ``tolokaforge assets stamp`` verb is the canonical migration path."""
 
     path: Path
     """Location of the seed file. Anchored to the project directory by
@@ -1372,10 +1387,10 @@ class SeedRef(BaseModel):
     handling map to matching kinds; ``bare`` covers raw files that a
     later recipe consumes verbatim."""
 
-    digest: str | None = None
-    """``sha256:...`` content hash. Optional today; the reset-recipe
-    milestone verifies it at load time so a swap without stamping the
-    digest fails loud."""
+    digest: str
+    """``sha256:<64 hex>`` content hash. Verified against the file's
+    bytes at load time by :func:`tolokaforge.core.project_loader.load_project_config`
+    so a swap without re-stamping fails loud."""
 
     model_config = {"extra": "forbid"}
 

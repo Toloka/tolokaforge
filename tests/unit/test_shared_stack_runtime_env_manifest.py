@@ -116,6 +116,10 @@ class TestConnectMaterialises:
                 lambda src, dst: None,
             ),
             patch(
+                "tolokaforge.core.shared_stack_runtime.apply_network_policy_to_compose_file",
+                lambda *a, **k: None,
+            ),
+            patch(
                 "tolokaforge.core.shared_stack_runtime.resolve_runner_endpoint",
                 return_value=("localhost", 60051),
             ),
@@ -150,6 +154,10 @@ class TestConnectMaterialises:
             patch(
                 "tolokaforge.core.shared_stack_runtime.copy_compose_context",
                 lambda src, dst: None,
+            ),
+            patch(
+                "tolokaforge.core.shared_stack_runtime.apply_network_policy_to_compose_file",
+                lambda *a, **k: None,
             ),
             patch(
                 "tolokaforge.core.shared_stack_runtime.resolve_runner_endpoint",
@@ -187,6 +195,10 @@ class TestConnectMaterialises:
                 lambda src, dst: None,
             ),
             patch(
+                "tolokaforge.core.shared_stack_runtime.apply_network_policy_to_compose_file",
+                lambda *a, **k: None,
+            ),
+            patch(
                 "tolokaforge.core.shared_stack_runtime.resolve_runner_endpoint",
                 return_value=("localhost", 60051),
             ),
@@ -215,6 +227,10 @@ class TestConnectMaterialises:
             patch(
                 "tolokaforge.core.shared_stack_runtime.copy_compose_context",
                 lambda src, dst: None,
+            ),
+            patch(
+                "tolokaforge.core.shared_stack_runtime.apply_network_policy_to_compose_file",
+                lambda *a, **k: None,
             ),
             patch(
                 "tolokaforge.core.shared_stack_runtime.cleanup_partial_materialisation"

@@ -119,7 +119,7 @@ in `task.yaml` — the orchestrator refuses to run a `per_trial` task on the
 shared backend so cross-trial contamination is a startup-time error, not a
 silent grading bug.
 
-Read [docs/guides/isolated_trials.md](docs/guides/isolated_trials.md) for
+Read [docs/isolated_trials.md](docs/isolated_trials.md) for
 a walkthrough (when to use each mode, how to opt in, cost tradeoffs), or
 [docs/architecture/RUNTIME_BACKENDS.md](docs/architecture/RUNTIME_BACKENDS.md)
 for the full lifecycle deep-dive.
@@ -133,11 +133,16 @@ materialises that stack instead. Real databases, real APIs, custom
 services, whatever the compose file names.
 
 ```yaml
-# task.yaml
-environment_manifest:
-  compose_file: "./environment.compose.yaml"
-  runner_service: "runner"
-  isolation: "shared_ok"        # or "per_trial"
+# project.yaml
+default_environment:
+  stack:
+    compose_file: "./environment.compose.yaml"
+    runner_service: "runner"
+  services:
+    app-db:                     # per-service isolation: shared | reset | ephemeral
+      isolation: "reset"
+      reset: { seed: "postgres_baseline" }
+  network_policy: "no_internet"
 ```
 
 The [`multi_service`](examples/native/multi_service/) example is the
@@ -145,7 +150,7 @@ smallest working demonstration (runner + db-service + an nginx serving a
 product catalog); its two siblings scale up to a multi-endpoint join and a
 full PostgREST + postgres three-tier stack.
 
-Read [docs/guides/multi_container_tasks.md](docs/guides/multi_container_tasks.md)
+Read [docs/multi_container_tasks.md](docs/multi_container_tasks.md)
 for a walkthrough, or [ADR-0018](docs/architecture/adr/0018-multi-container-under-shared-runtime.md)
 for the case-matrix that decides which mode fits your task.
 
@@ -161,9 +166,12 @@ examples/             # Reference task layouts with runnable run_config.yaml
 ├── native/           # default `native` adapter
 │   ├── browser_task/
 │   ├── coding/
-│   ├── multi_service/          # task-declared compose (nginx catalog)
-│   ├── multi_service_advanced/ # multi-endpoint join
-│   ├── multi_service_postgres/ # PostgREST + postgres three-tier
+│   ├── multi_service/                # task-declared compose (nginx catalog)
+│   ├── multi_service_advanced/       # multi-endpoint join
+│   ├── multi_service_postgres/       # PostgREST + postgres three-tier
+│   ├── multi_service_postgres_reset/ # project layer + per-trial postgres reset
+│   ├── multi_service_slow_start/     # startup-order stress (slow-start postgres)
+│   ├── example-microservices-pack/   # reference project for the Project schema
 │   ├── native_shared_domain/
 │   └── tool_use/
 └── terminal_bench/   # `terminal_bench` adapter (Docker compose)
@@ -180,8 +188,10 @@ examples/             # Reference task layouts with runnable run_config.yaml
 | Browser/mobile tools | [docs/BROWSER_TOOLS.md](docs/BROWSER_TOOLS.md) |
 | Runner & distributed execution | [docs/RUNNER.md](docs/RUNNER.md) |
 | Runtime backends (shared vs per-trial) | [docs/architecture/RUNTIME_BACKENDS.md](docs/architecture/RUNTIME_BACKENDS.md) |
-| Isolated trials guide | [docs/guides/isolated_trials.md](docs/guides/isolated_trials.md) |
-| Multi-container task guide | [docs/guides/multi_container_tasks.md](docs/guides/multi_container_tasks.md) |
+| Projects — top-level abstraction | [docs/architecture/PROJECTS.md](docs/architecture/PROJECTS.md) |
+| Reset recipes (seed-backed per-trial reset) | [docs/architecture/RESET_RECIPES.md](docs/architecture/RESET_RECIPES.md) |
+| Isolated trials guide | [docs/isolated_trials.md](docs/isolated_trials.md) |
+| Multi-container task guide | [docs/multi_container_tasks.md](docs/multi_container_tasks.md) |
 | Adapter architecture | [docs/ADAPTER_ARCHITECTURE.md](docs/ADAPTER_ARCHITECTURE.md) |
 | Analytics & failure attribution | [docs/ANALYTICS.md](docs/ANALYTICS.md) |
 | Python package API | [docs/PYTHON_PACKAGE.md](docs/PYTHON_PACKAGE.md) |
@@ -206,13 +216,16 @@ services (db-service, mock-web, RAG on demand):
 | [`examples/terminal_bench/`](examples/terminal_bench/) | Docker-compose stacks with `terminal_bench` adapter |
 
 Multi-container tasks — the task ships its own compose file declaring
-additional services (see [multi_container_tasks.md](docs/guides/multi_container_tasks.md)):
+additional services (see [multi_container_tasks.md](docs/multi_container_tasks.md)):
 
 | Example | Description |
 | --- | --- |
 | [`examples/native/multi_service/`](examples/native/multi_service/) | Smallest multi-service task — runner + db-service + nginx product catalog |
 | [`examples/native/multi_service_advanced/`](examples/native/multi_service_advanced/) | Multi-endpoint aggregation across two task-specific HTTP APIs |
 | [`examples/native/multi_service_postgres/`](examples/native/multi_service_postgres/) | Realistic three-tier stack — PostgREST + postgres, no application code in the task pack |
+| [`examples/native/multi_service_postgres_reset/`](examples/native/multi_service_postgres_reset/) | Project layer — per-trial postgres reset via a named `sql_dump` seed |
+| [`examples/native/multi_service_slow_start/`](examples/native/multi_service_slow_start/) | Cross-service startup-order stress — slow-start postgres + `depends_on: service_healthy` |
+| [`examples/native/example-microservices-pack/`](examples/native/example-microservices-pack/) | Reference project for the full Project schema (see [`docs/architecture/PROJECTS.md`](docs/architecture/PROJECTS.md)) |
 
 ## Testing
 

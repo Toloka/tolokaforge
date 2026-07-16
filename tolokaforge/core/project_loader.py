@@ -42,7 +42,9 @@ import yaml
 from tolokaforge.core.models import (
     EnvironmentManifest,
     EnvironmentPatch,
+    GradingCombineConfig,
     ProjectConfig,
+    ServiceSpec,
     TaskDefaults,
 )
 
@@ -106,7 +108,11 @@ def load_project_config(path: Path) -> ProjectConfig:
 
     Raises ``FileNotFoundError`` if the file does not exist, ``RuntimeError``
     if the YAML is not a mapping, and ``pydantic.ValidationError`` if the
-    contents don't validate against :class:`ProjectConfig`.
+    contents don't validate against :class:`ProjectConfig`. Every declared
+    seed's ``digest`` is verified against the file's bytes after
+    construction; a mismatch (or missing file) raises ``RuntimeError``
+    naming the seed key, the declared digest, and the actual digest so
+    a swap without re-stamping fails loud.
 
     Scope note: ``${VAR}`` interpolation is **not** applied to
     ``project.yaml`` values — only the run-config load path (see
@@ -129,7 +135,37 @@ def load_project_config(path: Path) -> ProjectConfig:
     # Resolve default_environment.compose_file relative to the project dir
     # so EnvironmentManifest's validator can locate it regardless of CWD.
     _resolve_project_paths(data, path.parent)
-    return ProjectConfig(**data)
+    project = ProjectConfig(**data)
+    _verify_seed_digests(project, path)
+    return project
+
+
+def _verify_seed_digests(project: ProjectConfig, project_yaml_path: Path) -> None:
+    """Read each ``assets.seeds.<name>.path`` and compare its sha256 to
+    the declared ``digest``. Raises ``RuntimeError`` on mismatch or
+    missing file, naming the seed key, declared digest, and actual
+    digest so the author sees the exact fix.
+    """
+    import hashlib
+
+    if project.assets is None:
+        return
+    for name, seed in project.assets.seeds.items():
+        seed_path = Path(seed.path)
+        if not seed_path.is_file():
+            raise RuntimeError(
+                f"assets.seeds.{name}.path {seed_path!s} does not exist or is "
+                f"not a file (declared in {project_yaml_path})."
+            )
+        actual_bytes = seed_path.read_bytes()
+        actual_digest = "sha256:" + hashlib.sha256(actual_bytes).hexdigest()
+        if seed.digest != actual_digest:
+            raise RuntimeError(
+                f"assets.seeds.{name}: digest mismatch for {seed_path!s}. "
+                f"Declared: {seed.digest}. Actual: {actual_digest}. "
+                "Re-stamp via `tolokaforge assets stamp` or restore the "
+                "original file."
+            )
 
 
 def _resolve_project_paths(data: dict, project_dir: Path) -> None:
@@ -292,12 +328,38 @@ def resolve_effective_run_config_data(
     """
     if project is None or project.run_defaults is None:
         return dict(run_config_data)
-    # ``exclude_defaults`` drops fields whose value equals the schema
-    # default (None for optionals, {} / [] for containers). Every
-    # dropped key therefore adds no information — merging them in
-    # would just repeat the schema default at merge time.
-    base = project.run_defaults.model_dump(exclude_defaults=True)
+    # ``exclude_unset`` drops fields the author never touched, keeping the
+    # ones they explicitly wrote — including fields whose value equals the
+    # schema default. ``exclude_defaults`` would drop those too, and that
+    # silently strips the ``type`` discriminator from
+    # ``storage.artifacts`` / ``storage.logs`` (``type: "local"`` matches
+    # the ``LocalStorageConfig.type`` default), which then makes
+    # ``RunConfig(**merged)`` fail to reconstruct the discriminated union
+    # with ``union_tag_not_found``. Any run_config's own fields still win
+    # on conflict via ``deep_merge`` below.
+    base = project.run_defaults.model_dump(exclude_unset=True)
     return deep_merge(base, run_config_data)
+
+
+def resolve_effective_grading_combine(
+    project_combine: dict[str, Any] | None,
+    task_combine: dict[str, Any] | None,
+) -> GradingCombineConfig:
+    """Resolve a task's effective ``combine`` from the project defaults
+    layered under the task's own ``grading.yaml.combine``.
+
+    ``task_combine`` wins over ``project_combine`` field-by-field;
+    ``weights`` merges key-by-key (task key wins, project-only keys
+    survive) per the documented config algebra. Any field neither layer
+    sets falls through to :class:`GradingCombineConfig`'s own defaults
+    (``method="weighted"``, ``weights={}``, ``pass_threshold=0.8``).
+
+    Both inputs are raw dicts — the project defaults arrive as a
+    ``model_dump`` view and the task combine as parsed ``grading.yaml`` —
+    so neither side needs a model instance.
+    """
+    merged = deep_merge(project_combine or {}, task_combine or {})
+    return GradingCombineConfig(**merged)
 
 
 # ── High-level loader entry point ──────────────────────────────────────
@@ -554,8 +616,8 @@ _POLICY_REQUEST_FIELDS = ("network_policy", "security_context_defaults")
 that are substrate-neutral (they describe the trial regardless of
 substrate)."""
 
-_SERVICE_TREATMENT_FIELDS = ("initial_state", "isolation")
-"""Fields that are scoped to the reviewed stack — discarded on atomic
+_SERVICE_TREATMENT_FIELDS = ("initial_state", "services")
+"""Fields scoped to the reviewed stack — discarded on atomic
 ``stack`` replacement (the project's opt-outs reviewed the project's
 services, not the replacement stack)."""
 
@@ -582,12 +644,16 @@ def resolve(
       clean slate of ``inputs`` and ``runner_service`` (a foreign
       compose file's ``${var}`` slots must never silently capture
       inherited values).
-    - Service-treatment fields (``initial_state``, root ``isolation``)
-      are discarded — the project's opt-outs reviewed the project's
-      services, not the replacement stack.
+    - Service-treatment fields (``initial_state``, ``services``) are
+      discarded — the project's per-service opt-outs reviewed the
+      project's services, not the replacement stack.
     - Policy-request fields (``network_policy``,
       ``security_context_defaults``) survive — substrate-neutral, they
       describe the trial regardless of substrate.
+
+    After manifest construction, every compose service missing from the
+    merged ``services`` map is filled with an ``ephemeral`` default so
+    downstream consumers see the complete map.
 
     Anchoring: ``stack.compose_file`` paths must already be absolute
     when this runs. The project loader and the task loader anchor them
@@ -625,7 +691,25 @@ def resolve(
             continue
         manifest_kwargs[field] = value
 
-    return EnvironmentManifest(**manifest_kwargs)
+    manifest = EnvironmentManifest(**manifest_kwargs)
+    _fill_missing_service_defaults(manifest)
+    return manifest
+
+
+def _fill_missing_service_defaults(manifest: EnvironmentManifest) -> None:
+    """Insert an ``ephemeral`` :class:`ServiceSpec` for every compose
+    service that lacks a manifest entry after merge.
+
+    In-place on the manifest's ``services`` mapping. Consumers can then
+    walk every compose service and read a canonical isolation label
+    without a missing-key fallback.
+    """
+    declared = set(manifest.services)
+    compose_services = manifest.load_compose().get("services") or {}
+    for name in compose_services:
+        if name in declared:
+            continue
+        manifest.services[name] = ServiceSpec(isolation="ephemeral")
 
 
 def _dump_patch(patch: EnvironmentPatch | None) -> dict[str, Any]:

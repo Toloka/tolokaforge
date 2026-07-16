@@ -13,6 +13,7 @@ from tolokaforge.adapters.base import AdapterEnvironment, BaseAdapter
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import EnvironmentPatch, GradingConfig, TaskConfig
 from tolokaforge.core.project_loader import resolve as resolve_environment
+from tolokaforge.core.project_loader import resolve_effective_grading_combine
 
 if TYPE_CHECKING:
     from tolokaforge.runner.models import TaskDescription
@@ -315,13 +316,29 @@ class NativeAdapter(BaseAdapter):
         task = self.get_task(task_id)
         task_dir = self.get_task_dir(task_id)
 
+        if task.grading is None:
+            raise ValueError(
+                f"task {task_id!r} has no grading configured "
+                "(no `grading:` field and no sibling grading.yaml)"
+            )
+
         grading_path = task_dir / task.grading
         if grading_path.exists():
             with open(grading_path) as f:
                 grading_data = yaml.safe_load(f)
-            return GradingConfig(**grading_data)
+            task_combine = grading_data.pop("combine", None)
+            combine = resolve_effective_grading_combine(
+                self._project_combine_defaults(), task_combine
+            )
+            return GradingConfig(**grading_data, combine=combine)
 
         raise ValueError(f"Grading config not found: {grading_path}")
+
+    def _project_combine_defaults(self) -> dict[str, Any] | None:
+        """The project's ``task_defaults.grading_defaults.combine`` sub-dict,
+        the base layer under each task's own ``grading.yaml.combine``.
+        ``None`` when the enclosing project sets no grading defaults."""
+        return self._project_task_defaults.get("grading_defaults", {}).get("combine")
 
     def reset_environment(self, env: AdapterEnvironment) -> None:
         """Reset environment to initial state by reloading data"""
@@ -647,11 +664,14 @@ class NativeAdapter(BaseAdapter):
             llm_judge_config = RunnerLLMJudgeConfig(**llm_judge_data)
 
         # Build combined grading config
-        combine_data = grading_data.get("combine", {}) if grading_data else {}
+        combine_data = grading_data.get("combine") if grading_data else None
+        effective_combine = resolve_effective_grading_combine(
+            self._project_combine_defaults(), combine_data
+        )
         grading_config = RunnerGradingConfig(
-            combine_method=combine_data.get("method", "weighted"),
-            weights=combine_data.get("weights", {"state_checks": 1.0}),
-            pass_threshold=combine_data.get("pass_threshold", 1.0),
+            combine_method=effective_combine.method,
+            weights=effective_combine.weights,
+            pass_threshold=effective_combine.pass_threshold,
             state_checks=state_checks,
             transcript_rules=transcript_rules,
             llm_judge=llm_judge_config,

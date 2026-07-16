@@ -23,7 +23,7 @@ Main is responsible for: target confirmation, critique-loop mediation, plan appr
 ## Invocation
 
 ```
-/executing-development-tickets <issue-number>
+/executing-development-tickets <issue-number> [base_branch=<ref>]
 ```
 
 or natural language: "execute issue #237", "let's do #244".
@@ -31,8 +31,11 @@ or natural language: "execute issue #237", "let's do #244".
 Examples:
 - `/executing-development-tickets 237`
 - "Execute issue #245"
+- `/executing-development-tickets 245 base_branch=feat/terminal-dx` — target a milestone integration branch
 
 The skill expects the issue to live in `Toloka/tolokaforge`. If a different repo is needed, ask the user.
+
+**Base branch.** Optional context, defaults to `main`. Direct invocations should almost always use the default. `/implement-milestone` passes `base_branch=feat/<milestone-slug>` so per-issue branches stack on the milestone integration branch and per-issue PRs merge into it rather than `main`. When set, it replaces `main` in Step 6 (branch creation) and Step 10 (PR creation). Nothing else changes — the critic, implementer, and reviewer are agnostic to the base branch.
 
 ## Workflow
 
@@ -64,13 +67,16 @@ Produce a staged plan only. Do NOT execute it — main will dispatch stages.
 
 Drive your standard planning workflow:
 1. Read root AGENTS.md, README.md, the docs/*.md for every subsystem touched,
-   docs/FUTURE_DEVELOPMENT.md, and any related docs/plans/ entries.
+   docs/FUTURE_DEVELOPMENT.md, and any related plans under
+   ~/.claude/plans/toloka-tolokaforge/.
 2. Reproduce the current behaviour by running it: dev MCP run_tests / run_python,
    `make docker-up` for env services, a targeted `tolokaforge run` if the behaviour
    only shows end-to-end. For a bugfix, capture the reproducing failure.
 3. File any out-of-scope "Discovered issues" via the GitHub MCP and reference the
    numbers in the plan.
-4. Write the plan to docs/plans/<YYYY-MM-DD>-issue-<N>-<short-name>.md.
+4. Write the plan to ~/.claude/plans/toloka-tolokaforge/issue-<N>-<short-name>.md
+   (a scratch path outside the repo — plans are never committed to the tree; the
+   plan's durable home is the per-issue PR body).
 5. Return the structured "Handoff to main" block per your spec. Stop there —
    do not create the branch, do not launch other agents, do not open a PR.
 
@@ -80,6 +86,40 @@ running, lock behaviour with tests at the right tier, no compromise, surface
 discovered issues, comment hygiene.
 ```
 
+### Step 3b — Assemble the per-issue briefing pack
+
+After the architect returns, before dispatching the critic, main assembles a **briefing pack** — a scratch file at `~/.claude/plans/toloka-tolokaforge/issue-<N>-briefing.md` (never committed) that every subsequent subagent reads first. The pack cuts per-subagent cold-start cost by pre-selecting the `AGENTS.md` sections and `docs/*.md` slices relevant to this issue rather than each agent reading everything from cold.
+
+Structure:
+
+```markdown
+# Briefing — issue #<N>: <title>
+
+## Subsystems touched
+<bullets — from architect's handoff or the plan's Stage list>
+
+## AGENTS.md anchors relevant to this issue
+- **Core Rules:** <N, M, ...> — the rule numbers this issue's stages implicate
+- **Type-system table row:** <the row that governs any new contract this issue introduces>
+- **Gotchas:** <#a, #b> — numbered gotcha entries relevant to the affected subsystems
+
+## docs/*.md excerpts
+<For each `docs/*.md` file the plan cites: file path + a short quoted excerpt of the section that matters. Aim for 3–10 lines per file, not the whole file.>
+
+## Plan summary
+<Copy the plan's Goal, Non-goals, and per-stage headings — enough that a subagent can hold the shape of the change without re-opening the plan.>
+
+## Compatibility surfaces touched
+<bullets — from the plan's per-stage "Compatibility" fields>
+
+## Discovered-issue links
+<Issue numbers filed by the architect during discovery, one line each.>
+```
+
+Every subsequent subagent's prompt (critic, stage implementers, reviewers, and revision-round SendMessages to the architect) starts with: *"Read `~/.claude/plans/toloka-tolokaforge/issue-<N>-briefing.md` first — it has AGENTS.md rules and docs pre-selected for this issue. Read source `AGENTS.md` and `docs/*.md` in full only when the briefing is silent on your question."*
+
+The briefing is a **bootstrap, not a replacement**. AGENTS.md remains binding — the full-read fallback preserves rigour. Update the briefing's "Plan summary" section whenever the plan revises in Step 4; keep the file under ~5 KB (long briefings defeat the purpose).
+
 ### Step 4 — Critique loop (architect ↔ critic)
 
 If the architect returned `DISCOVERY-BLOCKER: ...` instead of a plan, relay it to the user and stop. No critique, no branch, no execution.
@@ -88,7 +128,7 @@ Otherwise, before the user sees the plan, pressure-test it:
 
 1. **Launch** `plan-critic` via the Agent tool with `name=critic` (so re-critique rounds go through `SendMessage` and keep its context). Prompt:
    ```
-   Critique the plan at <docs/plans/...> for issue #<N> in Toloka/tolokaforge (round 1).
+   Critique the plan at <~/.claude/plans/toloka-tolokaforge/...> for issue #<N> in Toloka/tolokaforge (round 1).
 
    Issue body:
    <verbatim issue body>
@@ -118,20 +158,30 @@ When the critique loop settles:
 
 ```bash
 git fetch origin
-git checkout main
-git pull origin main
+git checkout <base_branch>            # main by default; feat/<slug> under /implement-milestone
+git pull --ff-only origin <base_branch>
 git checkout -b <branch-from-plan>
 ```
 
-Confirm clean working tree first (`git status`). If dirty, ask the user before proceeding.
+Confirm clean working tree first (`git status`). If dirty, ask the user before proceeding. If `<base_branch>` doesn't exist on `origin`, stop and ask — a milestone integration branch that should exist but doesn't is a bookkeeping error, not something to paper over.
 
 ### Step 7 — Stage dispatch loop
 
-For each stage in the plan, serially (never in parallel — the working tree and commit history are shared):
+For each stage in the plan, serially (never in parallel — the working tree and commit history are shared).
 
-1. **Launch** `plan-stage-implementer` via the Agent tool, fresh context per stage. Prompt:
+**Persistent-mode toggle.** If the plan has **≤ 4 stages**, launch the first stage's implementer with `name=impl-issue-<N>` and use `SendMessage` to dispatch stages 2..N to the same instance. The persistent implementer keeps `AGENTS.md`, subsystem docs, plan, briefing, and prior-stage context in-conversation, eliminating ~30 s of cold-start per subsequent stage.
+
+If the plan has **> 4 stages**, launch each stage's implementer with a fresh context. The accumulated context in a persistent 5-stage-plus implementer would push against its useful window and risk cross-stage decision leak.
+
+Every `SendMessage` in persistent mode carries the current plan file contents verbatim, plus the reminder: *"The plan file is authoritative — ignore any prior version you may remember from earlier in this conversation."* This defends against cross-stage drift when main updates the plan mid-issue (Step 7.3 justified-drift handling).
+
+Corrective implementer launches (unjustified drift → corrective launch; Step 9 fix loop) always use **fresh context** regardless of the persistent-mode toggle — corrections need their own reasoning trail and must not be tempted to reconcile with prior decisions.
+
+The "one stage = one commit" contract, the drift-handling rules, and the corrective-launch cap are unchanged.
+
+1. **Launch** `plan-stage-implementer` via the Agent tool. For stage 1: fresh Agent launch (`name=impl-issue-<N>` if the plan has ≤ 4 stages, otherwise unnamed). For stages 2..N in persistent mode: `SendMessage` to `impl-issue-<N>` instead. Prompt (same for both transports):
    ```
-   Implement Stage <N> of <docs/plans/...>. Full plan path: <docs/plans/...>.
+   Implement Stage <N> of <~/.claude/plans/toloka-tolokaforge/...>. Full plan path: <~/.claude/plans/toloka-tolokaforge/...>.
    Stage block (verbatim):
 
    <paste stage block from plan>
@@ -153,15 +203,31 @@ For each stage in the plan, serially (never in parallel — the working tree and
 
 Per-stage cycle cap: if a stage requires more than 2 corrective implementer launches, stop and surface to the user — the plan likely needs revision by the architect.
 
-### Step 8 — Branch review
+### Step 8 — Branch review (sharded, parallel)
 
-When all stages are done, launch `branch-code-reviewer` via the Agent tool. Prompt:
+When all stages are done, launch **three sharded reviewers in parallel** via the Agent tool. Send all three tool calls in one message so they run concurrently:
+
+- `reviewer-correctness` — owns Blocker rules 1, 3, 5, 6, 7 + Correctness / Security / Performance dimensions (behaviour bugs, silent failures, test-tier honesty, secret access).
+- `reviewer-hygiene` — owns Blocker rules 2, 4, 8, 9, 11 + Maintainability / Documentation dimensions (harness/task-pack boundary, compat-surface migration, comment hygiene, structure, doc freshness).
+- `reviewer-type-fit` — owns Blocker rule 10 + Type-system fit / Task design / Dockerfile / MCP-usage dimensions (contract shape, task-pack anti-patterns, model/provider evidence).
+
+Each reviewer gets the same prompt shape (`subagent_type` differs; scope narrows by charter):
 
 ```
-Review the current branch vs main against AGENTS.md and the code-review skill rules.
-Plan: <docs/plans/...>. Cover branch + staged + unstaged. Return findings in the
-standard format.
+Review the current branch vs <base_branch> against AGENTS.md and the code-review
+skill rules within YOUR scope. Plan: <~/.claude/plans/toloka-tolokaforge/...>.
+Briefing: <~/.claude/plans/toloka-tolokaforge/issue-<N>-briefing.md> if present.
+Cover branch + staged + unstaged. Return findings in the standard format.
 ```
+
+When all three return:
+
+1. Concatenate findings from the three lanes.
+2. Dedupe by `(file:line, rule)` — the rare cross-lane overlap resolves to the reviewer whose lane owns the rule; drop the duplicate.
+3. Sort by severity (🔴 → 🟠 → 🟡 → 🔵), then by file path.
+4. Proceed to Step 9 with the merged list.
+
+Total review wall-clock ≈ the slowest single lane, not the sum. On a small diff or a direct `/code-review` invocation, the monolithic `branch-code-reviewer` remains available as a single-agent fallback; the sharded path is the default inside this pipeline.
 
 ### Step 9 — Fix Blocker / Major findings
 
@@ -176,20 +242,28 @@ If the reviewer returns 🔴 Blocker or 🟠 Major findings:
 
    <paste reviewer findings verbatim>
    ```
-3. Re-launch `branch-code-reviewer` on the updated branch.
-4. Loop until verdict is `APPROVE` or `APPROVE WITH NITS`. **Cap: 2 fix rounds.** If the reviewer keeps finding the same Blocker, stop and ask the user — don't grind the implementer.
+3. Re-launch the three sharded reviewers (`reviewer-correctness`, `reviewer-hygiene`, `reviewer-type-fit`) in parallel on the updated branch, same as Step 8. Merge findings the same way.
+4. Loop until every lane's verdict is `APPROVE` or `APPROVE WITH NITS`. **Cap: 2 fix rounds.** If any lane keeps finding the same Blocker, stop and ask the user — don't grind the implementer.
 
 Nit / Minor findings: surface to the user as optional follow-ups; don't block the PR on them.
 
 ### Step 10 — Open the PR
 
+Per-issue PR bodies are read by three audiences: the human reviewer, the next agent that plans work in this area, and the milestone consolidation PR (which draws its Decision / Rationale rows from every stacked PR). The template below gives each of them what they need without ballooning the body — every heading below is required; keep bullets tight.
+
 ```bash
-gh pr create --title "<concise title from plan>" --body "$(cat <<'EOF'
+gh pr create --base <base_branch> --title "<concise title from plan>" --body "$(cat <<'EOF'
 ## Summary
-<2–3 bullets from the plan's Goal>
+<2–3 bullets from the plan's Goal — what user-visible thing changes>
+
+## Design choices
+- **<Decision>**: <"X because Y" — one line each; 1–3 rows for a typical ticket, more only if the ticket genuinely introduced multiple decisions>
+
+## Concepts introduced
+<One short paragraph naming any new abstraction, contract, policy slot, or vocabulary the reader will encounter. If none, write "None — mechanical change."  This is the section the milestone consolidation PR cites when explaining the whole to a future reader or agent.>
 
 ## Plan
-See docs/plans/<file>
+<the staged plan, pasted from ~/.claude/plans/toloka-tolokaforge/issue-<N>-<short-name>.md — plans have no in-repo home, so the PR body is the plan's durable record>
 
 ## Discovered issues
 - Filed: #<n>, #<m>
@@ -198,12 +272,14 @@ See docs/plans/<file>
 ## Test plan
 - <bullets — what to verify post-merge>
 
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
+Closes #<issue>
 EOF
 )"
 ```
 
-The `claude-review.yml` workflow will run its own hygiene pass on the PR — treat its findings like reviewer findings (fix or rebut, don't ignore).
+Do not add an AI-attribution footer. The `claude-review.yml` workflow will run its own hygiene pass on the PR — treat its findings like reviewer findings (fix or rebut, don't ignore).
+
+Full worked template with placeholder examples lives at `.agents/skills/implement-milestone/pr-templates.md` — same source of truth used by the milestone consolidation PR.
 
 ### Step 11 — Hand-off
 
@@ -235,6 +311,7 @@ Surface to the user:
 | Implementer drifts from the plan | Justified → update the plan, show diff, continue. Unjustified → corrective implementer launch. Cap at 2 corrections per stage; then revise the plan with the architect. |
 | Reviewer keeps finding the same Blocker | Stop after 2 fix rounds and ask the user. Don't loop indefinitely. |
 | Working tree dirty when Step 6 starts | Ask the user before mutating — uncommitted work may be theirs. |
+| `base_branch` passed but not present on `origin` | Stop and ask. A milestone integration branch that should exist but doesn't is a bookkeeping error upstream in `/implement-milestone`, not something to paper over by silently falling back to `main`. |
 
 ## Anti-patterns
 

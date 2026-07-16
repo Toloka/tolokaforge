@@ -18,11 +18,18 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from testcontainers.compose.compose import ComposeContainer, PublishedPortModel
 
 from tolokaforge.core.compose_materialisation import (
+    NETPOLICY_EDGE_NETWORK,
+    NETPOLICY_INTERNAL_NETWORK,
     RUNNER_PORT_DEFAULT,
+    NetworkPolicyError,
+    apply_network_policy_to_compose_file,
     cleanup_partial_materialisation,
+    compose_container_to_snapshot,
     copy_compose_context,
+    enforce_network_policy,
     first_published_port,
     make_project_temp_dir,
     resolve_env_endpoints,
@@ -30,7 +37,9 @@ from tolokaforge.core.compose_materialisation import (
     resolve_rag_url,
     resolve_runner_endpoint,
     shutdown_compose,
+    verify_network_policy_supported,
 )
+from tolokaforge.core.trial import NetworkPolicy
 
 pytestmark = pytest.mark.unit
 
@@ -267,6 +276,80 @@ class TestShutdownCompose:
         shutdown_compose(compose)  # must not raise
 
 
+class TestComposeContainerToSnapshot:
+    """Map ``ComposeContainer`` → ``ContainerSnapshot`` — the shape the
+    infrastructure sub-panel consumes via :meth:`RuntimeBackend.get_infrastructure_snapshot`.
+    """
+
+    def test_maps_full_container_shape(self) -> None:
+        container = ComposeContainer(
+            Name="proj-runner-1",
+            Service="runner",
+            State="running",
+            Health="healthy",
+            Publishers=[
+                PublishedPortModel(TargetPort=50051, PublishedPort=60051),
+                PublishedPortModel(TargetPort=8000, PublishedPort=61000),
+            ],
+        )
+
+        snapshot = compose_container_to_snapshot(container)
+
+        assert snapshot == {
+            "name": "proj-runner-1",
+            "service": "runner",
+            "state": "running",
+            "health": "healthy",
+            "ports": {50051: 60051, 8000: 61000},
+        }
+
+    def test_missing_health_maps_to_none(self) -> None:
+        """A compose service that declares no health probe leaves
+        ``Health`` empty on the container; the snapshot renders that as
+        ``None`` (falsy short-circuit) so the panel does not print a
+        stale 'unhealthy' badge."""
+        container = ComposeContainer(
+            Name="db-1",
+            Service="db",
+            State="running",
+            Health=None,
+            Publishers=[],
+        )
+
+        snapshot = compose_container_to_snapshot(container)
+
+        assert snapshot["health"] is None
+        assert snapshot["ports"] == {}
+
+    def test_missing_state_defaults_to_unknown(self) -> None:
+        """``State`` unset — testcontainers' shape allows every field to
+        be ``None``. Snapshot fills in a stable literal so downstream
+        rendering does not have to branch on ``None``."""
+        container = ComposeContainer(Name="c", Service="s")
+
+        snapshot = compose_container_to_snapshot(container)
+
+        assert snapshot["state"] == "unknown"
+
+    def test_skips_publishers_missing_target_or_published_port(self) -> None:
+        """Partial publisher rows (either half absent) are dropped so
+        the ports map only carries well-formed pairs."""
+        container = ComposeContainer(
+            Name="c",
+            Service="s",
+            State="running",
+            Publishers=[
+                PublishedPortModel(TargetPort=50051, PublishedPort=60051),
+                PublishedPortModel(TargetPort=None, PublishedPort=61000),
+                PublishedPortModel(TargetPort=8000, PublishedPort=None),
+            ],
+        )
+
+        snapshot = compose_container_to_snapshot(container)
+
+        assert snapshot["ports"] == {50051: 60051}
+
+
 class TestCleanupPartialMaterialisation:
     def test_none_compose_still_removes_temp_dir(self, tmp_path: Path) -> None:
         """Early-failure case: compose was never constructed. The
@@ -293,3 +376,122 @@ class TestCleanupPartialMaterialisation:
         """Teardown is idempotent — a temp dir already removed
         (or never created) doesn't cause a failure."""
         cleanup_partial_materialisation(None, tmp_path / "does-not-exist")
+
+
+def _minimal_compose() -> dict:
+    """Two services, no task-declared networks (join the compose default)."""
+    return {
+        "services": {
+            "runner": {"image": "tolokaforge-runner:local", "ports": ["50051"]},
+            "app-service": {"image": "nginx:1.27-alpine", "ports": ["80"]},
+        }
+    }
+
+
+class TestVerifyNetworkPolicySupported:
+    def test_limited_internet_raises(self) -> None:
+        with pytest.raises(NetworkPolicyError, match="limited_internet"):
+            verify_network_policy_supported(NetworkPolicy.LIMITED_INTERNET)
+
+    def test_error_names_323_and_alternatives(self) -> None:
+        with pytest.raises(NetworkPolicyError) as excinfo:
+            verify_network_policy_supported(NetworkPolicy.LIMITED_INTERNET)
+        message = str(excinfo.value)
+        assert "#323" in message
+        assert "no_internet" in message
+        assert "full_internet" in message
+
+    @pytest.mark.parametrize("policy", [NetworkPolicy.NO_INTERNET, NetworkPolicy.FULL_INTERNET])
+    def test_enforceable_policies_return_cleanly(self, policy: NetworkPolicy) -> None:
+        assert verify_network_policy_supported(policy) is None
+
+
+class TestEnforceNetworkPolicy:
+    def test_full_internet_is_identity(self) -> None:
+        doc = _minimal_compose()
+        result = enforce_network_policy(doc, NetworkPolicy.FULL_INTERNET, "runner")
+        assert result is doc
+
+    def test_limited_internet_raises_belt_and_suspenders(self) -> None:
+        with pytest.raises(NetworkPolicyError):
+            enforce_network_policy(_minimal_compose(), NetworkPolicy.LIMITED_INTERNET, "runner")
+
+    def test_no_internet_does_not_mutate_input(self) -> None:
+        doc = _minimal_compose()
+        enforce_network_policy(doc, NetworkPolicy.NO_INTERNET, "runner")
+        assert "networks" not in doc
+        assert "networks" not in doc["services"]["runner"]
+
+    def test_no_internet_injects_internal_and_edge_networks(self) -> None:
+        result = enforce_network_policy(_minimal_compose(), NetworkPolicy.NO_INTERNET, "runner")
+        assert result["networks"][NETPOLICY_INTERNAL_NETWORK] == {"internal": True}
+        assert result["networks"][NETPOLICY_EDGE_NETWORK] == {}
+
+    def test_no_internet_attaches_every_service_to_internal(self) -> None:
+        result = enforce_network_policy(_minimal_compose(), NetworkPolicy.NO_INTERNET, "runner")
+        for service in result["services"].values():
+            assert NETPOLICY_INTERNAL_NETWORK in service["networks"]
+
+    def test_no_internet_runner_additionally_on_edge(self) -> None:
+        result = enforce_network_policy(_minimal_compose(), NetworkPolicy.NO_INTERNET, "runner")
+        assert NETPOLICY_EDGE_NETWORK in result["services"]["runner"]["networks"]
+        assert NETPOLICY_EDGE_NETWORK not in result["services"]["app-service"]["networks"]
+
+    def test_no_internet_forces_task_declared_networks_internal(self) -> None:
+        """A doc that declares its own networks: those are forced
+        internal:true, and the runner still gains the edge network."""
+        doc = {
+            "services": {
+                "runner": {"image": "r:local", "networks": ["backplane"]},
+                "app-service": {"image": "nginx:1.27-alpine", "networks": ["backplane"]},
+            },
+            "networks": {"backplane": {"driver": "bridge"}},
+        }
+        result = enforce_network_policy(doc, NetworkPolicy.NO_INTERNET, "runner")
+
+        assert result["networks"]["backplane"]["internal"] is True
+        assert result["networks"]["backplane"]["driver"] == "bridge"
+        for service in result["services"].values():
+            assert "backplane" in service["networks"]
+            assert NETPOLICY_INTERNAL_NETWORK in service["networks"]
+        assert NETPOLICY_EDGE_NETWORK in result["services"]["runner"]["networks"]
+
+    def test_no_internet_preserves_mapping_form_networks(self) -> None:
+        """A service using the mapping form (aliases / static IPs) keeps
+        that shape and its per-network config when the internal net is
+        merged in."""
+        doc = {
+            "services": {
+                "runner": {
+                    "image": "r:local",
+                    "networks": {"backplane": {"aliases": ["r"]}},
+                },
+            },
+            "networks": {"backplane": {}},
+        }
+        result = enforce_network_policy(doc, NetworkPolicy.NO_INTERNET, "runner")
+        nets = result["services"]["runner"]["networks"]
+        assert isinstance(nets, dict)
+        assert nets["backplane"] == {"aliases": ["r"]}
+        assert NETPOLICY_INTERNAL_NETWORK in nets
+        assert NETPOLICY_EDGE_NETWORK in nets
+
+
+class TestApplyNetworkPolicyToComposeFile:
+    def test_full_internet_leaves_file_byte_identical(self, tmp_path: Path) -> None:
+        compose = tmp_path / "compose.yaml"
+        original = "services:\n  runner:\n    image: r:local  # keep this comment\n"
+        compose.write_text(original)
+        apply_network_policy_to_compose_file(compose, NetworkPolicy.FULL_INTERNET, "runner")
+        assert compose.read_text() == original
+
+    def test_no_internet_rewrites_file_with_injected_networks(self, tmp_path: Path) -> None:
+        import yaml
+
+        compose = tmp_path / "compose.yaml"
+        compose.write_text("services:\n  runner:\n    image: r:local\n")
+        apply_network_policy_to_compose_file(compose, NetworkPolicy.NO_INTERNET, "runner")
+
+        doc = yaml.safe_load(compose.read_text())
+        assert doc["networks"][NETPOLICY_INTERNAL_NETWORK] == {"internal": True}
+        assert NETPOLICY_EDGE_NETWORK in doc["services"]["runner"]["networks"]

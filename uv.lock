@@ -9,6 +9,7 @@ resolution-markers = [
 
 [manifest]
 members = [
+    "automation",
     "dev-mcp",
     "pricing-updater",
     "rubric-calibrator",
@@ -241,6 +242,27 @@ source = { registry = "https://pypi.org/simple/" }
 sdist = { url = "https://files.pythonhosted.org/packages/9a/8e/82a0fe20a541c03148528be8cac2408564a6c9a0cc7e9171802bc1d26985/attrs-26.1.0.tar.gz", hash = "sha256:d03ceb89cb322a8fd706d4fb91940737b6642aa36998fe130a9bc96c985eff32", size = 952055, upload-time = "2026-03-19T14:22:25.026Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/64/b4/17d4b0b2a2dc85a6df63d1157e028ed19f90d4cd97c36717afef2bc2f395/attrs-26.1.0-py3-none-any.whl", hash = "sha256:c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309", size = 67548, upload-time = "2026-03-19T14:22:23.645Z" },
+]
+
+[[package]]
+name = "automation"
+version = "0.1.0"
+source = { editable = "tools/automation" }
+dependencies = [
+    { name = "click" },
+    { name = "pyyaml" },
+    { name = "rich" },
+    { name = "tolokaforge" },
+    { name = "typer" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "click", specifier = ">=8.0.0,<8.2.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "rich", specifier = ">=13.0.0" },
+    { name = "tolokaforge", editable = "." },
+    { name = "typer", specifier = ">=0.12.5,<0.13" },
 ]
 
 [[package]]
@@ -3953,7 +3975,7 @@ wheels = [
 
 [[package]]
 name = "tolokaforge"
-version = "0.8.3"
+version = "0.8.4"
 source = { editable = "." }
 dependencies = [
     { name = "addict" },
@@ -4031,6 +4053,7 @@ terminal-bench = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "automation" },
     { name = "black" },
     { name = "build" },
     { name = "click-repl" },
@@ -4110,6 +4133,7 @@ provides-extras = ["dx", "browser", "server", "rag", "office", "terminal-bench",
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "automation", editable = "tools/automation" },
     { name = "black", specifier = "==26.3.1" },
     { name = "build", specifier = ">=1.0.0" },
     { name = "click-repl", specifier = ">=0.3.0" },

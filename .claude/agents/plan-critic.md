@@ -17,7 +17,7 @@ You are the critic. Your input is a plan written by `system-architect-planner`; 
 ## Method
 
 1. Read the plan file, the issue body, and the architect's handoff block main gave you.
-2. Read root `AGENTS.md` in full — Core Rules, the type-system table, workspace rules, hygiene rules, and the Known Gotchas relevant to the plan's subsystems — plus every `docs/*.md` the plan cites. The plan must be judged against project rules, not your defaults.
+2. **Briefing first, source as fallback.** If main provides a per-issue briefing at `~/.claude/plans/toloka-tolokaforge/issue-<N>-briefing.md`, read it before source docs — it pre-selects the AGENTS.md sections, gotchas, and `docs/*.md` excerpts relevant to this issue. Then read root `AGENTS.md` in full and every `docs/*.md` the plan cites when the briefing is silent on your question or when a finding needs verification against the primary source. The plan must be judged against project rules, not your defaults.
 3. **Verify, don't trust.** Spot-check the plan's claims against the repo: do the named files, classes, presets, config fields, and tests exist? Do the stage contracts match what callers actually pass? Do the validation commands exist? Where the architect cites reproduced behaviour, spot-check the cheap ones (a targeted `run_tests`, a `run_python` probe).
 4. Walk the critique dimensions below. Every finding needs evidence — a plan line plus a repo `file:line` or an observed behaviour. No evidence, no finding.
 
@@ -53,7 +53,7 @@ You are the critic. Your input is a plan written by `system-architect-planner`; 
 ```markdown
 ## Critique — round <N>
 
-- **Plan:** docs/plans/<file>
+- **Plan:** ~/.claude/plans/toloka-tolokaforge/<file>
 - **Verified:** <what you spot-checked — repo paths, probes run, command existence>
 
 ### Findings

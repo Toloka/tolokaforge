@@ -8,22 +8,16 @@ per-item deltas live in `tasks/<name>/task.yaml` and
 inheritance and override patterns. Read alongside
 [`docs/architecture/PROJECTS.md`](../../../docs/architecture/PROJECTS.md).
 
-> **Status.** This project is authored against the **proposed**
-> Project schema (PROJECTS.md § "Delta from current
-> implementation") and is the reference example the milestones
-> implement against.
->
-> The Project-layer rollout lands in stages: **M2 (#211)** wires
-> the `project.yaml` loader and base+delta merging; **M2.5
-> (#220)** adds the environment-patch / `stack` sub-object /
-> `actors` reservation / dual-home resolution that this pack
-> already uses; **M3 (#212)** delivers the manifest `services`
-> map, seed-backed reset recipes, and the backend-capabilities
-> registry. Until M2.5 lands, `tolokaforge run` will silently
-> ignore fields such as `assets.seeds`, `default_environment.stack`,
-> `default_environment.services`, and `task_defaults.actors`
-> (they're not in today's shipped schema); strict validation
-> that rejects them arrives with **M4 (#213)**.
+> **Status.** Reference project for the Project schema — full
+> inheritance/override matrix across 5 tasks. See
+> [`docs/architecture/PROJECTS.md`](../../../docs/architecture/PROJECTS.md).
+> `backend-api` runs [PostgREST](https://postgrest.org), which
+> auto-generates a REST API from the postgres schema — the pack ships
+> no application code. The compose stack materialises and serves the
+> seeded schema; the loader and per-task manifest resolution work
+> end-to-end. Running individual tasks via `tolokaforge run` needs
+> task-schema relaxation (#366) to land first, since these tasks use
+> the minimal `task_id` + `description` shape PROJECTS.md documents.
 
 ## Layout
 

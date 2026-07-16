@@ -13,15 +13,15 @@ wrapper over an external artifact).
 ## The seam
 
 `RuntimeBackend` is the orchestrator's execution surface. A single Protocol,
-nine methods, three concerns:
+ten methods, three concerns:
 
 | Group | Methods | Called when |
 |---|---|---|
 | Run-level lifecycle | `connect`, `close`, `health_check` | Once per orchestrator run |
-| Per-trial provisioning (ADR-0010) | `provision`, `await_ready`, `endpoints`, `teardown` | Around every trial body |
+| Per-trial provisioning (ADR-0010) | `provision`, `await_ready`, `endpoints`, `teardown`, `capture_service_logs` | Around every trial body |
 | Per-trial RPC (ADR-0013) | `register_trial`, `execute_tool`, `grade_trial`, `get_state`, `reset_trial`, `cleanup_trial` | Inside the trial body |
 
-Every implementation ships all nine. The orchestrator holds one backend
+Every implementation ships all ten. The orchestrator holds one backend
 instance for the whole run; the conductor calls it per-trial.
 
 ```mermaid
@@ -52,7 +52,7 @@ Selection is a run-level choice with two knobs and a safety enforcement:
 
 - **Config**: `orchestrator.runtime: shared | per_trial` in the run config YAML. Default `shared`.
 - **CLI override**: `tolokaforge run --runtime {shared,per_trial}` overrides the config for a single invocation. The banner printed at run start names the backend and the source (`cli-flag` vs `config` vs `default`) so operators can see what actually got chosen.
-- **Task-side enforcement**: every task's `environment_manifest.isolation` declares its requirement (`per_trial` default, `shared_ok` opt-out). The orchestrator refuses to start the run if any task requires `per_trial` and the selected backend is `SharedStackRuntimeBackend` — silent cross-trial state contamination is what this guard prevents. See "Isolation enforcement" below.
+- **Task-side enforcement**: every task's `environment_manifest.services.<name>.isolation` declares its per-service posture (`shared` / `reset` / `ephemeral`; unlabelled services default to `ephemeral`). Backend selection is task-driven: any `reset` or `ephemeral` service routes the run to `PerTrialRuntimeBackend` automatically. An explicit `orchestrator.runtime` override is refused at startup if it contradicts per-service semantics — silent cross-trial state contamination is what this guard prevents. See "Isolation enforcement" below.
 
 Legacy `orchestrator.runtime: docker` is accepted as a deprecated alias for `shared` with a `DeprecationWarning` at config load.
 
@@ -168,6 +168,12 @@ Nine steps, in order. Failure at any step raises `ProvisionError(stage="provisio
 8. **Cache the client** — `self._clients[spec.trial_id] = client`. This is the map every per-trial RPC method reads from.
 9. **Return `_LocalEnvHandle`** carrying the trial_id (public), the compose stack, the runner service name + port, the temp dir, and the endpoints snapshot. All except `trial_id` are backend-private; callers treat the handle as an opaque token.
 
+### Slow-dependency start order
+
+Step 5's `--wait` is the whole start-order contract: it blocks until every service's compose `healthcheck:` reports healthy, and each service's `depends_on: {condition: service_healthy}` gates the start sequence. So `PerTrialRuntimeBackend` blocks on the full dependency chain before the trial's first RPC — a service never starts against a dependency that is not yet accepting connections.
+
+The `examples/native/multi_service_slow_start` pack stress-covers this against a deliberately slow dependency. Its `app-db` runs a trailing `SELECT pg_sleep(25)` in a `docker-entrypoint-initdb.d` init script (which postgres executes on a socket-only temp server, so TCP :5432 is genuinely refused for the window) and a TCP-probing healthcheck (`pg_isready -h`) with `start_period` sized above the sleep. `app-service` (PostgREST) declares `depends_on: {app-db: {condition: service_healthy}}`, so `--wait` holds it — and the trial's first tool call — until postgres is TCP-reachable. A passing grade proves the chain held: had it not, PostgREST would start against a refused connection and the first runner → app-service → postgres call would fail. `tests/integration/test_startup_order_stress.py` asserts the provision takes ≥20 s and the grade passes.
+
 ## Endpoint resolution
 
 `endpoints(handle)` is a **pure read** — it returns `handle.endpoints`, resolved once at provision time. This is a deliberate departure from an earlier design where `endpoints()` re-queried the compose stack every call: a method named `endpoints` mutating state on missing-service was surprising.
@@ -264,34 +270,38 @@ A second `teardown(handle)` call finds nothing in the cache, exits quickly. Fore
 
 ## Isolation enforcement
 
-Every `EnvironmentManifest` declares a `TaskIsolation` (default `per_trial`, opt-out `shared_ok`). The orchestrator reads this immediately after backend selection and refuses the run if the combination is unsafe.
+Isolation is declared **per service** on the resolved `EnvironmentManifest` via `services.<name>.isolation`. Three values (per ADR-0018 amendment):
+
+- **`shared`** — the service is long-lived across trials; all trials in the run see the same container instance.
+- **`reset`** — a fresh container per trial, plus the recipe named by `reset.seed` runs at each provision to reapply the seed state.
+- **`ephemeral`** — a fresh container per trial, no seed applied. This is the default for any service declared in the compose file without an explicit `isolation` entry.
+
+Backend selection is **task-driven**, not operator-driven: if any service on any task in the run has `isolation: reset` or `ephemeral`, the orchestrator routes to `PerTrialRuntimeBackend` automatically. A run with every service labelled `shared` (or a task with no `services:` map at all — the pre-Project-layer shape) stays on `SharedStackRuntimeBackend`. An explicit `orchestrator.runtime` override in the run config wins, but is refused at startup if it violates a task's declared per-service semantics (silent cross-trial state contamination is what this guard prevents).
 
 ```mermaid
 flowchart TD
-    Start[Orchestrator.run] --> Backend[Construct RuntimeBackend<br/>per config / CLI override]
-    Backend --> Check{{"For each task in the run:<br/>manifest.isolation ?"}}
-    Check -->|None or shared_ok| OK[Compatible]
-    Check -->|per_trial + PerTrialRuntimeBackend| OK
-    Check -->|per_trial + SharedStackRuntimeBackend| Refuse["Refuse run<br/>RuntimeError names offending tasks<br/>+ two concrete fixes"]
-    OK --> Trials[Run trials]
+    Start[Orchestrator.run] --> Select{{"For each task:<br/>any service `reset` / `ephemeral` ?"}}
+    Select -->|No — all `shared`| Shared[SharedStackRuntimeBackend]
+    Select -->|Yes| PerTrial[PerTrialRuntimeBackend]
+    Override[Explicit orchestrator.runtime override] -.->|Compatible?| Shared
+    Override -.->|Compatible?| PerTrial
+    Override -.->|Incompatible| Refuse["Refuse run<br/>RuntimeError names offending tasks<br/>+ concrete fix"]
+    Shared --> Trials[Run trials]
+    PerTrial --> Trials
     Refuse --> Stop[Zero trials executed]
 ```
 
-Fail-loud fix message names both remedies:
-
-- Switch the runtime: pass `--runtime per_trial` or set `orchestrator.runtime: per_trial` in the config.
-- Opt the task out: set `environment_manifest.isolation: shared_ok` (only appropriate for genuinely stateless tasks).
-
-Enforcement lives at the orchestrator layer, not on `SharedStackRuntimeBackend.provision()`. Refusing the run BEFORE any trial starts (rather than trial-by-trial) means the operator sees the whole failure at once instead of watching trials time out or produce garbage verdicts.
-
 `PerTrialRuntimeBackend` accepts every task — per-trial isolation is a superset of shared-stack semantics for correctness purposes. Cost of per-trial provisioning for genuinely stateless tasks is a separate concern (the loud-defaults banner surfaces the cost/benefit trade so operators can pick the right backend for their workload).
+
+See [`RESET_RECIPES.md`](RESET_RECIPES.md) for the four seed kinds (`sql_dump`, `filesystem_dir`, `redis_dump`, `bare`) that `isolation: reset` binds to via `services.<name>.reset.seed`.
 
 ## Failure modes
 
 | Where | What is raised | What is cleaned up before the raise |
 |---|---|---|
 | `provision` — no manifest | `ProvisionError(stage="provision")` | Nothing to clean |
-| `provision` — compose start fails | `ProvisionError(stage="provision")` wrapping the compose error | Per-trial temp dir removed |
+| `provision` — compose start fails | `ProvisionError(stage="provision")` wrapping the compose error | Per-service logs captured before teardown (see below); per-trial temp dir removed |
+| `provision` — reset recipe fails | `ProvisionError(stage="reset_recipe")` | Per-service logs captured before teardown (see below); compose stack torn down + temp dir removed |
 | `provision` — runner-client construction (host/port unresolvable) | `ProvisionError(stage="provision")` | Compose stack torn down + temp dir removed |
 | `provision` — endpoint resolution (missing `db-service`) | Not a failure — `EnvEndpoints.db_url` stays `None`; the runner reads `DB_SERVICE_URL` from its container env | — |
 | `await_ready` | Never raises today (`--wait` gates during provision); reserved for future backends | — |
@@ -306,6 +316,62 @@ The provisioning contract (ADR-0010) requires provisioners to make a
 best-effort teardown of anything partially materialised before raising.
 `PerTrialRuntimeBackend` honours that at every failure point above — no
 half-provisioned resources leaked to the daemon.
+
+## Per-service log capture on failure
+
+When a multi-service trial fails, the moment an operator needs to know *why*
+postgres / PostgREST went sideways is exactly the moment the containers are
+about to be torn down. `PerTrialRuntimeBackend` captures each declared
+service's `docker compose logs` output — one `<service>.log` per service —
+into the trial bundle **before** the stack comes down, under:
+
+```
+<output_dir>/trials/<task_id>/<trial_index>/services/<service>.log
+```
+
+**What counts as failure.** Capture fires on a `ProvisionError` (the
+provision-stage path) or an execution failure (`trajectory.status` in
+`{ERROR, TIMEOUT}`, the trial-body path). A `COMPLETED` trial that merely
+failed grading (`binary_pass=False`) is **not** a capture trigger — that
+would capture on most trials of a hard benchmark and blow the output-dir size
+budget. The `compute.capture_logs_on_success` debug flag overrides this and
+captures on success too.
+
+**Two capture surfaces.**
+
+- **Provision-failure path** — `provision()` captures before
+  `cleanup_partial_materialisation` in both failure branches (compose
+  `up --wait` failure and reset-recipe failure). No `metrics.yaml` exists yet
+  (the conductor never ran), so the durable record is a `services/_capture.yaml`
+  manifest written alongside the `.log` files:
+  `{"tail": int, "capture_reason": "provision_error", "services": {"<name>": {"bytes": int}}}`.
+- **Trial-body-failure path** — the [`TrialExecutor`](#per-trial-substrate-bracket-trialexecutor)
+  drives this surface: after `conductor.run` returns and before teardown it
+  calls `capture_service_logs(handle, *, failed)`, the Protocol hook that writes
+  the per-service `.log` files for a still-live trial stack (the `service_names`
+  snapshot taken at provision time) and returns a `{service: bytes_written}`
+  map. On a non-empty map the executor emits the `trial.service_logs_captured`
+  summary log line and amends the trial's existing `metrics.yaml` with a
+  top-level `captured_service_logs` mapping — the durable record on this path
+  (the hook writes only the `.log` files). See
+  [`docs/OUTPUT_FORMAT.md`](../OUTPUT_FORMAT.md:1) § `captured_service_logs`.
+
+Both surfaces are best-effort: capture runs *because* a failure was already
+decided, so a per-service fetch error is logged at debug and that service is
+omitted — capture never raises and never masks the original error.
+
+**`--tail` mechanism.** Testcontainers' `DockerCompose.get_logs` has no tail
+bound, so the helper drives the compose CLI directly
+(`docker compose … logs --no-color --no-log-prefix --tail=<N> <service>`),
+deriving the base command from the `DockerCompose` instance and running the
+subprocess with `cwd=<context>` so Compose resolves the per-trial project from
+the context-dir basename. `compute.log_tail` (default 500) sets `N`.
+
+**Shared-stack no-op.** `SharedStackRuntimeBackend.capture_service_logs` returns
+`{}` unconditionally. Its stack is run-wide, not trial-scoped, and its per-trial
+`teardown` is a no-op — there is no per-trial stack to read, and capturing the
+same run-wide containers on every trial would be meaningless. Run-level capture
+on a shared-stack materialise failure is a separate, future surface.
 
 ## `SharedStackRuntimeBackend` vs `PerTrialRuntimeBackend` side-by-side
 
@@ -351,7 +417,7 @@ The manifest is **substrate-neutral by design**: `EnvironmentManifest` points at
 
 Concretely, when the next substrate lands (e.g. Kubernetes):
 
-- Write a new class that satisfies the nine-method `RuntimeBackend` Protocol.
+- Write a new class that satisfies the ten-method `RuntimeBackend` Protocol.
 - Inside `provision`, translate `manifest.load_compose()` into that substrate's shape (a k8s backend would use `kompose` or a small owned translator to render Pod / Service specs, then `kubectl apply`; a Modal / E2B backend would render into its SDK's spec type).
 - Advertise the backend's isolation posture by setting the class-level `isolation_mode: IsolationMode` attribute — `SHARED_STACK` if trials share one materialisation, `PER_TRIAL_STACK` if each trial gets its own. The orchestrator's isolation-compatibility check reads this attribute, not the class name, so a `KubernetesPerTrialRuntimeBackend` (or whatever it's called) slots into the enforcement path with zero orchestrator changes.
 - Wire the backend into config: extend the `orchestrator.runtime` selector so operators can pick between the shipped backends.

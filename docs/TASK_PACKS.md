@@ -71,6 +71,11 @@ Minimum task directory contract:
    - `rag/`
    - task-local fixtures/files referenced by tools
 
+A task can also declare an `environment_manifest` to ship its own
+docker-compose stack (a real database, a custom API), with per-service
+isolation (`services.<name>.isolation: shared | reset | ephemeral`). See
+the [multi-container tasks guide](guides/multi_container_tasks.md).
+
 Recommended scorer patterns:
 
 1. Deterministic checks (`state_checks`, tool expectations) for objective outcomes.

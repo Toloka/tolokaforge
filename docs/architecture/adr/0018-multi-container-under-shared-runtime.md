@@ -1,9 +1,12 @@
 # 0018. Multi-container capability under shared runtime
 
-- **Status:** Accepted
+- **Status:** Accepted (amended)
 - **Date:** 2026-07-04
+- **Amended:** 2026-07-14 — isolation is per-service in the manifest;
+  backend selection is task-driven; `orchestrator.runtime` is a
+  deprecated override.
 - **Deciders:** @CiroGamboa
-- **Supersedes:** —
+- **Supersedes:** ADR-0009 (isolation surface only)
 - **Superseded by:** —
 
 ## TL;DR
@@ -15,6 +18,67 @@ that needed a realistic multi-service environment but were fine sharing state
 across trials had no path. This ADR decouples them by extending
 `SharedStackRuntimeBackend` to consume `environment_manifest` — task-declared
 services get materialised **once per run** under shared semantics.
+
+## Amendment — per-service isolation, task-driven backend selection
+
+The originally-shipped whole-manifest `isolation` field
+(`per_trial` / `shared_ok`) is superseded. Isolation now lives per
+compose service in the manifest under
+`default_environment.services.<name>.isolation` with the vocabulary
+`shared` / `reset` / `ephemeral`. Services without a manifest entry
+default to `ephemeral`; the overall default per ADR-0009 stays
+`per_trial`. Reset-labelled services bind to a named seed in
+`project.assets.seeds` and dispatch through the recipe registry at
+`tolokaforge/runtime/reset_recipes/` (kinds: `sql_dump`,
+`filesystem_dir`, `redis_dump`, `bare`).
+
+Backend selection is **task-driven**: the orchestrator resolves the
+task set, reads each task's `EnvironmentManifest.requires_per_trial`
+(true iff any service is not `shared`), and picks
+`PerTrialRuntimeBackend` when any task requires it, otherwise
+`SharedStackRuntimeBackend`. The legacy `orchestrator.runtime` field
+survives as a deprecated override — setting it emits a
+`DeprecationWarning`; retirement is deferred to a later milestone.
+The isolation-compatibility guard (`_verify_isolation_compatibility`)
+now only fires under that override path, when an operator forces a
+shared backend against a per-trial-requiring task set (or asks for an
+`ephemeral` service on a shared backend, which cannot be honoured
+without a compose-down between trials).
+
+The 2×2 matrix below is unchanged in shape — cases A / B / C still
+map onto the same cells — but each cell is now reached via the
+task-driven signal derived from the per-service isolation map. Case
+B (shared + task-declared stack) is entered by declaring every
+service `isolation: shared`; case C (per-trial + task-declared
+stack) by declaring at least one `reset` or `ephemeral` service.
+
+Compose files carry **zero isolation semantics**. The manifest is the
+single authority; the compose file is the substrate definition. A
+task can declare its own `services.<name>` entries as a patch on top
+of the project's, and the patch deep-merges per service. Atomic
+`stack` replacement (a task supplying its own `stack.compose_file`)
+still discards the project's service-treatment fields — the
+project's per-service opt-outs reviewed the project's services, not
+the replacement stack.
+
+`resolve_environment_identity(env)` returns a SHA-256 over the
+canonicalised compose bytes, `stack_inputs`, per-service isolation
+map, and referenced seed digests. Emitted for observability at run
+start; materialisation / dedup consumers land later per the public
+roadmap.
+
+Backend capabilities move to a registry under
+`tolokaforge/core/backend_capabilities.py`. Runs declare
+`compute.capabilities` (bare string or `{name: params}`); backends
+advertise via `advertised_capabilities`. Admission at run start
+refuses `requested - advertised` non-empty, and refuses unknown names
+outright. Local-docker's baseline vocabulary is `per_trial_stack`,
+`shared_stack`, `reset_recipes:{sql_dump,filesystem_dir,redis_dump,bare}`,
+and `network_isolation:no_internet`; Kubernetes wiring is deferred.
+
+See also [ADR-0009](0009-environment-manifest.md); the manifest's
+outer contract is unchanged, only the isolation surface it carries
+moved sub-tree.
 
 ## The two independent axes
 
@@ -200,9 +264,10 @@ Key differences from Case A:
   engine's runner + db-service go unused; the task's compose owns them via
   `:local` alias references.
 - **Every trial sees the same substrate.** State persists across trials.
-  Task authors opt into this by setting `environment_manifest.isolation:
-  shared_ok`; the isolation guard refuses shared+manifest for
-  `isolation: per_trial` declarations.
+  Task authors opt into this by labelling every service
+  `services.<name>.isolation: shared` in the manifest; any `reset` or
+  `ephemeral` label routes the run onto `PerTrialRuntimeBackend` via
+  task-driven selection.
 
 ### Case C — `per_trial` + task-declared stack (already shipped)
 
@@ -246,6 +311,51 @@ Key differences from Case B:
 
 Shipped in v0.7.0 (`PerTrialRuntimeBackend` + `--runtime` CLI).
 
+## Network policy enforcement
+
+`EnvironmentManifest.network_policy` parameterises how the docker backends
+materialise a task-declared stack (Case B and Case C). It is a closed enum
+with three values; the default is `no_internet`.
+
+Both backends materialise the same way: `copy_compose_context` copies the
+task's compose file into an isolated project directory, the copy is rewritten
+in place by `enforce_network_policy` (`compose_materialisation.py`), then
+`DockerCompose` brings the rewritten file up.
+
+| Value | Enforcement |
+|---|---|
+| `no_internet` (default) | Every task service is attached to an injected `internal: true` network (`tolokaforge_netpolicy_internal`), and any network the task already declared is forced `internal: true`. No application service can reach the public internet; inter-service DNS is intact because every service shares the internal network. The `runner_service` is *additionally* attached to a non-internal edge network (`tolokaforge_netpolicy_edge`). |
+| `full_internet` | The compose file is run unchanged; the transform is identity. |
+| `limited_internet` | Refused before any container starts. `verify_network_policy_supported` raises `NetworkPolicyError` ahead of the compose-up. |
+
+The injected network names are prefixed by compose with the per-run /
+per-trial project name, so they are unique on the daemon and cannot collide
+with a task-declared network of the same base name.
+
+**Why the runner keeps egress under `no_internet`.** The engine runner runs
+LLM-as-judge grading in-container and must reach the LLM provider to grade;
+its published gRPC port must also stay host-reachable so the backend can
+resolve and connect to it. The edge-network attachment gives the runner both.
+The honest `no_internet` contract is therefore scoped: **task-declared
+application services have zero public egress; the runner retains its
+control-plane and grading egress.**
+
+**Scope boundary.** `no_internet` blocks egress at the container-network
+level, so it does not block egress of tools the agent executes *inside* the
+runner (those share the runner's edge access). Blocking runner-executed tool
+egress is tracked separately in #325.
+
+**`limited_internet` is refused, not approximated.** Docker's `internal` flag
+is binary — a network either has egress or it does not. A real per-host
+allowlist needs an egress-proxy sidecar, tracked in #323. Silently granting
+full or no internet would under- or over-enforce a declared security posture,
+so materialisation fails loud until #323 lands. Task authors declare
+`no_internet` or `full_internet` explicitly.
+
+The `network_isolation:no_internet` backend capability (advertised by both
+docker backends, admitted by the capability gate at run start) reflects this
+enforcement.
+
 ## Choosing a case — decision flow
 
 ```mermaid
@@ -255,8 +365,8 @@ flowchart TB
   Q2{Do trials mutate<br/>state that the grader<br/>reads at trial end?}
   Q3{Is the task<br/>state-mutation<br/>trial-scoped?}
   A[Case A<br/>shared + built-in<br/>no env_manifest]
-  B[Case B<br/>shared + env_manifest<br/>isolation: shared_ok]
-  C[Case C<br/>per_trial + env_manifest<br/>isolation: per_trial]
+  B[Case B<br/>shared + env_manifest<br/>every service isolation: shared]
+  C[Case C<br/>per_trial + env_manifest<br/>at least one reset / ephemeral service]
 
   START --> Q1
   Q1 -- No --> A
@@ -279,10 +389,12 @@ flowchart TB
 - **Prefer Case B over Case C when possible.** Case B pays compose-up cost
   once per run; Case C pays it every trial. Case C is only worth its
   overhead when trials genuinely need fresh state that the grader reads.
-- **`isolation: per_trial` is a task-author declaration, not an operator
-  choice.** The task's declaration determines the case; the operator picks
-  the runtime backend and the isolation guard refuses incompatible
-  combinations (shared runtime + per_trial-declared task → fail loud).
+- **Isolation is a task-author declaration, not an operator choice.**
+  The manifest's per-service isolation map determines the case; backend
+  selection is task-driven from that map. The deprecated
+  `orchestrator.runtime` override still wins if set, and the isolation-
+  compatibility guard refuses incompatible overrides (shared runtime
+  forced against a per-trial-requiring task set → fail loud).
 
 ## Consequences
 
@@ -352,10 +464,15 @@ flowchart TB
   - `tolokaforge/core/shared_stack_runtime.py` — Case A + Case B backend
   - `tolokaforge/core/per_trial_runtime.py` — Case C backend
   - `tolokaforge/core/compose_materialisation.py` — shared materialisation primitives
-  - `tolokaforge/core/orchestrator.py` — `_extract_run_env_manifest`, `task_stack_mode`, backend construction
+  - `tolokaforge/core/orchestrator.py` — `_select_backend_from_tasks`, `_construct_runtime_backend`, `_verify_isolation_compatibility`, `_admit_capabilities`
+  - `tolokaforge/core/backend_capabilities.py` — capability registry + admission gate
+  - `tolokaforge/core/env_identity.py` — `resolve_environment_identity`
+  - `tolokaforge/runtime/reset_recipes/` — per-kind reset dispatchers
 - Related docs:
   - `docs/architecture/RUNTIME_BACKENDS.md` — mechanics deep-dive
+  - `docs/architecture/PROJECTS.md` — `services.<name>.isolation` + `reset.seed` surface
 - Case B examples (all under `examples/native/`):
   - `multi_service/` — minimum Case B: one task-specific HTTP service (nginx + static JSON)
   - `multi_service_advanced/` — multi-endpoint join across two task-specific HTTP services + smaller-model tier (Haiku)
   - `multi_service_postgres/` — three-tier stack (agent → PostgREST → real `postgres:16`); the task's application backend is a genuine relational database
+  - `example-microservices-pack/` — four-service stack (runner + db-service + postgres + backend-api) exercising the per-service `reset` recipe against `postgres` seeded from `app_baseline`

@@ -1,0 +1,25 @@
+task_id: "reset_probe"
+name: "Widget Baseline Lookup"
+category: "reset_probe"
+description: "Read a single widget's current name from a PostgREST API backed by a real postgres database whose baseline is restored by a reset recipe, and record it to a submission file."
+initial_user_message: |
+  A support REST API at http://app-service:3000 serves a `widgets` resource
+  (fields: `id`, `name`). The on-call needs the current `name` of widget 1
+  on record — read it from the API and write it to a file under
+  `submissions/`. Let me know once it's recorded.
+adapter_type: "native"
+initial_state:
+  filesystem: {}
+tools:
+  agent:
+    enabled: ["bash", "write_file"]
+  user:
+    enabled: []
+user_simulator:
+  mode: llm
+  persona: cooperative
+  backstory: "You are the on-call engineer waiting for the widget's name to be recorded. Answer brief clarifying questions if asked and end with ###STOP### once the value is written to a submission file."
+policies:
+  guidance:
+    - "Reach the REST API from `bash` with `python3 -c 'import urllib.request; ...'` — the runner container joins the same docker network as `app-service` and resolves it by service name. (The bash allowlist permits python but not curl/wget.)"
+grading: "grading.yaml"

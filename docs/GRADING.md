@@ -293,6 +293,34 @@ combine:
   pass_threshold: 0.75
 ```
 
+### Inheriting `combine` from the project
+
+`combine` is optional per task. A task's effective `combine` is the project's
+`task_defaults.grading_defaults.combine` with the task's own `grading.yaml.combine`
+layered on top: task fields win, `weights` merge key-by-key (a task key overrides
+the project's; project-only keys survive), and any field neither layer sets falls
+through to the canonical defaults (`method: weighted`, `weights: {}`,
+`pass_threshold: 0.8`).
+
+A task that ships no `combine` block inherits the project block whole; a task that
+ships a partial block inherits every field it does not set. When the project
+declares no `grading_defaults`, a task without `combine` resolves to the canonical
+defaults.
+
+```yaml
+# project.yaml
+task_defaults:
+  grading_defaults:
+    combine:
+      weights: { llm_judge: 1.0 }
+      pass_threshold: 0.8
+
+# tasks/long_debugging_session/grading.yaml — overrides only pass_threshold
+combine:
+  pass_threshold: 0.7
+# effective: weights { llm_judge: 1.0 } (inherited), pass_threshold 0.7, method weighted
+```
+
 ---
 
 ## Grading for RL Training

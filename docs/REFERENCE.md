@@ -473,3 +473,4 @@ tools:
 - [ADAPTER_ARCHITECTURE.md](ADAPTER_ARCHITECTURE.md) - Adapter architecture for task loading
 - [CUSTOM_CHECKS.md](CUSTOM_CHECKS.md) - Custom Python validation
 - [SECURITY.md](SECURITY.md) - Security model
+- [Multi-container tasks guide](guides/multi_container_tasks.md) - Declaring an `environment_manifest` so a task ships its own docker-compose stack

@@ -1,0 +1,56 @@
+# Project spec for the cross-service startup-order stress example.
+#
+# Stress-covers Docker's `depends_on: {condition: service_healthy}` +
+# compose `healthcheck:` + `up --wait` chain against a deliberately slow
+# dependency. `app-db` is genuinely TCP-unreachable for ~25 s while its
+# init script runs, so `app-service` (PostgREST) must not start — and the
+# agent's first API call must not fire — until the chain reports healthy.
+# See README.md.
+#
+# See docs/architecture/PROJECTS.md for the full Project model.
+
+name: "multi-service-slow-start"
+version: 1
+description: >
+  Single-task project proving the compose depends_on + healthcheck +
+  `up --wait` chain holds when a dependency is deliberately slow to become
+  ready. A real postgres service (app-db) blocks TCP for ~25 s during
+  init; the agent reads a seeded value back over PostgREST and grading
+  asserts it observed it, which is only possible if the chain gated the
+  start order correctly.
+
+tasks:
+  discovery:
+    glob: "tasks/**/task.yaml"
+
+# ── Default environment ─────────────────────────────────────────
+# Every task inherits this unless it declares its own
+# `environment_manifest`. No `services` block: the loader fills every
+# compose service with the `ephemeral` default, so the manifest's
+# `requires_per_trial` is true and backend selection routes the run onto
+# the per-trial backend without any `orchestrator.runtime` override.
+default_environment:
+  stack:
+    compose_file: "./shared/environment.compose.yaml"
+    runner_service: "runner"
+
+# ── Task defaults — base for every task ─────────────────────────
+task_defaults:
+  adapter_type: "native"
+  max_turns: 8
+  actors:
+    user:
+      mode: "llm"
+      persona: "cooperative"
+
+# ── Run defaults — base for every run config ────────────────────
+# Storage and observability use the RunConfig defaults (local artifacts
+# + logs, sqlite queue); only compute and orchestrator knobs are set as
+# project-wide bases here.
+run_defaults:
+  compute:
+    provider: "local-docker"
+    workers: 1
+  orchestrator:
+    auto_start_services: true
+    shuffle_trials: false

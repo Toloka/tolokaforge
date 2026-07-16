@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from collections.abc import Callable
 from typing import Any
@@ -40,6 +41,10 @@ from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import Message, MessageRole, ModelConfig, ToolCall
 from tolokaforge.core.pricing import estimate_cost
 
+# Silence litellm's stdout banners ("Provider List: https://docs.litellm.ai/docs/providers",
+# "LiteLLM completion() model= ...") - pure noise in probe/eval logs; no effect on behavior/results.
+litellm.suppress_debug_info = True
+
 __all__ = ["GenerationResult", "LLMApiTimeoutError", "LLMClient", "UserSimulator"]
 
 
@@ -48,6 +53,10 @@ _module_logger = get_logger("llm_client_cost")
 
 DEFAULT_API_CALL_TIMEOUT_S = 120.0
 DEFAULT_API_TIMEOUT_RETRIES = 5
+# Hard wall-clock ceiling per upstream call. ``None`` keeps the wall-clock
+# abort disabled by default (backward-compatible); opt in per-model via the
+# preset or the ``TOLOKAFORGE_LLM_API_CALL_WALL_TIMEOUT_S`` env var.
+DEFAULT_API_CALL_WALL_TIMEOUT_S: float | None = None
 
 
 class LLMApiTimeoutError(RuntimeError):
@@ -402,6 +411,7 @@ class LLMClient:
 
         self._api_call_timeout_s = self._load_api_timeout()
         self._api_timeout_retries = self._load_api_timeout_retries()
+        self._api_call_wall_timeout_s = self._load_api_wall_timeout()
 
     # ------------------------------------------------------------------
     # Model capabilities — preserved entry point for tests that reassign it
@@ -515,6 +525,27 @@ class LLMClient:
         if self.capabilities.api_call_retries is not None:
             return self.capabilities.api_call_retries
         return DEFAULT_API_TIMEOUT_RETRIES
+
+    def _load_api_wall_timeout(self) -> float | None:
+        """Resolve the hard wall-clock ceiling for a single call.
+
+        Priority: env var ``TOLOKAFORGE_LLM_API_CALL_WALL_TIMEOUT_S``
+        (operational override) → ``self.capabilities.api_call_wall_timeout_s``
+        (per-model preset) → :data:`DEFAULT_API_CALL_WALL_TIMEOUT_S`.
+
+        ``None`` disables the wall-clock abort (the backward-compatible
+        default) — the call is then bounded only by the per-read
+        ``api_call_timeout_s``.
+        """
+        env_value = self._parse_env_positive_float(
+            "TOLOKAFORGE_LLM_API_CALL_WALL_TIMEOUT_S",
+            default=None,
+        )
+        if env_value is not None:
+            return env_value
+        if self.capabilities.api_call_wall_timeout_s is not None:
+            return self.capabilities.api_call_wall_timeout_s
+        return DEFAULT_API_CALL_WALL_TIMEOUT_S
 
     def _parse_env_positive_float(self, name: str, default: float | None) -> float | None:
         raw = os.getenv(name)
@@ -1165,6 +1196,13 @@ class LLMClient:
         attempts. With the defaults (5 retries, 120 s timeout) that's
         ~6 × 120 s + ~17 s ≈ 12 minutes before :class:`LLMApiTimeoutError`
         fires.
+
+        When ``api_call_wall_timeout_s`` is set, a call that exceeds that hard
+        wall-clock budget is aborted at ~``wall`` and raised as
+        :class:`LLMApiTimeoutError` immediately, bypassing the retry budget
+        above (retrying a runaway generation would only stack abandoned
+        in-flight calls). That retry budget still applies to transient
+        read-timeouts raised by the call itself.
         """
 
         @retry(
@@ -1175,7 +1213,38 @@ class LLMClient:
             reraise=True,  # surface the last TimeoutError, not RetryError
         )
         def _call() -> Any:
-            return completion(**kwargs)
+            wall_timeout_s = self._api_call_wall_timeout_s
+            if wall_timeout_s is None:
+                return completion(**kwargs)
+            # Enforce a hard wall-clock ceiling. The ``timeout`` in kwargs is
+            # only a per-read httpx timeout that a slowly-streamed or runaway
+            # response keeps resetting, so it never bounds total elapsed time.
+            # Run the call on a daemon thread and stop waiting once the budget
+            # is spent. A daemon thread cannot block interpreter shutdown, and
+            # the overrun is terminal (raised as LLMApiTimeoutError, not routed
+            # back into the retry below) so a persistently runaway provider
+            # cannot stack multiple abandoned in-flight calls (upstream cost +
+            # connection-pool pressure). Transient read-timeouts raised by the
+            # call itself still propagate and retry normally.
+            result_box: dict[str, Any] = {}
+            error_box: list[BaseException] = []
+
+            def _run() -> None:
+                try:
+                    result_box["value"] = completion(**kwargs)
+                except BaseException as exc:  # captured, re-raised on the caller thread
+                    error_box.append(exc)
+
+            worker = threading.Thread(target=_run, daemon=True, name="llm-wall-timeout-call")
+            worker.start()
+            worker.join(timeout=wall_timeout_s)
+            if worker.is_alive():
+                raise LLMApiTimeoutError(
+                    f"LLM API call exceeded wall-clock timeout of {wall_timeout_s}s"
+                )
+            if error_box:
+                raise error_box[0]
+            return result_box["value"]
 
         try:
             return _call()

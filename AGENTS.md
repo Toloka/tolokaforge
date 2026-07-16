@@ -165,13 +165,17 @@ make docker-status       # Show Docker service status
 | `benchmark.yml` | Manual / scheduled | Run benchmark suites against branches |
 | `ci.yml` | Push to `main`, PRs, manual | Lint, test matrix, build, integration, validate |
 | `claude-review.yml` | PR opened/synced, `@claude` comment, inline review comment | AI code review via the Claude Code Action — flags violations of the rules in this file |
+| `integrate-model.yml` | `integrate: <slug>` PR label / `workflow_dispatch` | Model auto-integration engine: observe → resolve → finalize (see `docs/AUTO_INTEGRATION.md`) |
 | `release-gate.yml` | Tag/release events | Final pre-release gate |
+| `slack-integrate.yml` | Scheduled / manual | Polls Slack for `@bot integrate <model>` requests, opens the draft PR, dispatches `integrate-model.yml` |
 
 **Required GitHub secrets:**
 
 | Secret | Required by |
 |---|---|
-| `ANTHROPIC_API_KEY` | `claude-review.yml` (the reviewer model) and any integration tests that use Claude |
+| `ANTHROPIC_API_KEY` | `claude-review.yml` (the reviewer model) and any integration tests that use Claude. NOT used by `integrate-model.yml` (its resolve/finalize agent runs on OpenRouter via the LiteLLM gateway). |
+| `ARENA_AUTOMATION_OPENROUTER_API_KEY` | `integrate-model.yml` - candidate-model probes/reprobes AND the resolve/finalize agent (routed through the LiteLLM -> OpenRouter gateway) |
+| `ARENA_AUTOMATION_SLACK_BOT_TOKEN` | `integrate-model.yml` + `slack-integrate.yml` (thread notifications and the request poller; both degrade to a no-op without it) |
 
 Optional secrets (integration tests auto-skip without them): `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY`, `NOVA_API_KEY`, `TYPESENSE_API_KEY`. CI passes provider keys to test jobs as env vars; runtime code reads them via `SecretManager` (never directly).
 
@@ -320,11 +324,11 @@ When extending an existing contract, follow the existing choice unless you have 
 
 **Current workspace packages:**
 
-- `tools/benchmark-analyzer` — Benchmark result analysis
-- `tools/demo-recorder` — Demo recording utilities
-- `tools/eval-orchestrator` — Benchmark eval splitting and merging for CI shards
+- `tools/automation` — Arena model auto-integration: observe / resolve / finalize + Slack poller
+- `tools/dev-mcp` — Dev MCP server (run tests, lint, format, validate tasks)
 - `tools/pricing-updater` — LLM pricing data updates
 - `tools/rubric-calibrator` — Rubric-judge calibration: agreement metrics + trust gate
+- `external_adapters/tolokaforge-adapter-terminal-bench` — Terminal-Bench adapter
 
 ### Virtual Environment
 
@@ -480,6 +484,7 @@ Full six-step process: [`docs/ADD_NEW_MODEL.md`](docs/ADD_NEW_MODEL.md).
 | Docker / Runner | `docs/RUNNER.md` |
 | Adapters | `docs/ADAPTERS.md` |
 | CLI | `docs/CLI.md` |
+| Model auto-integration | `docs/AUTO_INTEGRATION.md` |
 | Future plans | `docs/FUTURE_DEVELOPMENT.md` |
 | API reference | `docs/API.md` |
 | Troubleshooting | `docs/TROUBLESHOOTING.md` |
