@@ -2026,9 +2026,152 @@ def test_bottom_bar_hint_appears_in_manual_mode_and_hides_in_auto_follow(
     # Auto-follow ON → hint absent, output byte-identical to pre-Stage-B.
     display._auto_follow = True
     auto = display._render_bottom_bar()
-    assert "[j/k nav · f follow]" not in auto.plain
+    assert "[j/k nav · f follow · l logs]" not in auto.plain
 
     # Auto-follow OFF while trials have started → hint present.
     display._auto_follow = False
     manual = display._render_bottom_bar()
-    assert "[j/k nav · f follow]" in manual.plain
+    assert "[j/k nav · f follow · l logs]" in manual.plain
+
+
+# ---------------------------------------------------------------------------
+# Per-trial log stream — ctxvar stamping + `l` toggle + filtered render
+# ---------------------------------------------------------------------------
+
+
+def _push_tagged_record(
+    display: LiveRunDisplay, level: int, message: str, trial_id: str | None
+) -> None:
+    record = _make_log_record(level, message)
+    if trial_id is not None:
+        record.trial_id = trial_id  # type: ignore[attr-defined]
+    display._log_buffer.append(record)
+
+
+def test_log_sink_stamps_trial_id_from_ctxvar() -> None:
+    from collections import deque
+
+    from tolokaforge.core.logging_context import TRIAL_ID_CTXVAR
+    from tolokaforge.dx.live_panel import _LogSink
+
+    buffer: deque[logging.LogRecord] = deque(maxlen=500)
+    sink = _LogSink(print_above=lambda _line: None, formatter=None, buffer=buffer)
+
+    token = TRIAL_ID_CTXVAR.set("x:0")
+    try:
+        sink.emit(_make_log_record(logging.INFO, "in scope"))
+    finally:
+        TRIAL_ID_CTXVAR.reset(token)
+    sink.emit(_make_log_record(logging.INFO, "out of scope"))
+
+    assert getattr(buffer[0], "trial_id", None) == "x:0"
+    assert getattr(buffer[1], "trial_id", None) is None
+
+
+def test_log_sink_preserves_pre_tagged_trial_id() -> None:
+    from collections import deque
+
+    from tolokaforge.core.logging_context import TRIAL_ID_CTXVAR
+    from tolokaforge.dx.live_panel import _LogSink
+
+    buffer: deque[logging.LogRecord] = deque(maxlen=500)
+    sink = _LogSink(print_above=lambda _line: None, formatter=None, buffer=buffer)
+
+    token = TRIAL_ID_CTXVAR.set("x:0")
+    try:
+        # Simulates the Docker logging pipeline's ``extra={"trial_id": ...}``.
+        record = _make_log_record(logging.INFO, "docker line")
+        record.trial_id = "y:0"  # type: ignore[attr-defined]
+        sink.emit(record)
+    finally:
+        TRIAL_ID_CTXVAR.reset(token)
+
+    assert getattr(buffer[0], "trial_id", None) == "y:0"
+
+
+def test_l_toggles_log_pane_state() -> None:
+    from tolokaforge.dx.live_panel import _KeyboardListener
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    listener = _KeyboardListener(display, stdin=_FakeStdin(isatty=True))
+    auto_before = display._auto_follow
+    assert display._show_logs_pane is False
+
+    listener._dispatch("l")
+    assert display._show_logs_pane is True
+
+    listener._dispatch("l")
+    assert display._show_logs_pane is False
+    # `l` is orthogonal to auto-follow.
+    assert display._auto_follow is auto_before
+
+
+def test_render_right_pane_shows_filtered_logs_when_toggled() -> None:
+    display = LiveRunDisplay(refresh_per_second=1000)
+    _seed_three_started_trials(display)
+    display._focused_trial_id = "b:0"
+    _push_tagged_record(display, logging.INFO, "alpha only", "a:0")
+    _push_tagged_record(display, logging.INFO, "hello from b", "b:0")
+    _push_tagged_record(display, logging.INFO, "untagged noise", None)
+
+    display._show_logs_pane = True
+    body = _render_right_pane_text(display)
+
+    assert "hello from b" in body
+    assert "alpha only" not in body
+    assert "untagged noise" not in body
+
+
+def test_render_right_pane_log_view_empty_state() -> None:
+    display = LiveRunDisplay(refresh_per_second=1000)
+    _seed_three_started_trials(display)
+    display._focused_trial_id = "b:0"
+    _push_tagged_record(display, logging.INFO, "alpha only", "a:0")
+    _push_tagged_record(display, logging.INFO, "gamma only", "c:0")
+
+    display._show_logs_pane = True
+    body = _render_right_pane_text(display)
+
+    assert "(no log records yet for this trial)" in body
+
+
+def test_render_right_pane_reverts_to_summary_when_toggled_off() -> None:
+    display = LiveRunDisplay(refresh_per_second=1000)
+    _seed_three_started_trials(display)
+    _push_tagged_record(display, logging.INFO, "hello from c", "c:0")
+
+    display._toggle_log_pane()
+    display._toggle_log_pane()
+    body = _render_right_pane_text(display)
+
+    assert "turn 0" in body
+    assert "in 0 / out 0 tok" in body
+    assert "(no log records yet for this trial)" not in body
+
+
+def test_bottom_bar_hint_includes_logs_key_in_manual_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    _seed_three_started_trials(display)
+
+    display._nav_next_trial()  # `j` → manual mode
+    bar = display._render_bottom_bar()
+
+    assert "l logs" in bar.plain
+
+
+def test_render_right_pane_shows_last_twenty_records_only() -> None:
+    display = LiveRunDisplay(refresh_per_second=1000)
+    _seed_three_started_trials(display)
+    for i in range(30):
+        _push_tagged_record(display, logging.INFO, f"rec-{i:02d}", "c:0")
+
+    display._show_logs_pane = True
+    body = _render_right_pane_text(display)
+
+    assert "rec-29" in body
+    assert "rec-10" in body
+    # rec-00..rec-09 scroll off — only the last 20 records render.
+    assert "rec-09" not in body

@@ -44,6 +44,7 @@ from rich.table import Table
 from rich.text import Text
 
 from tolokaforge.core.logging import _TOLOKAFORGE_ROOT_HANDLER_SENTINEL
+from tolokaforge.core.logging_context import TRIAL_ID_CTXVAR
 from tolokaforge.core.run_display_events import (
     _NULL_EVENTS,
     ContainerSnapshot,
@@ -110,6 +111,13 @@ class _LogSink(logging.Handler):
         self.buffer = buffer
 
     def emit(self, record: logging.LogRecord) -> None:
+        # Stamp the active trial identity so the per-trial log view can filter,
+        # but never overwrite a ``trial_id`` an emitter set explicitly (e.g. the
+        # Docker logging pipeline's ``extra={"trial_id": ...}``).
+        if getattr(record, "trial_id", None) is None:
+            ctx_trial_id = TRIAL_ID_CTXVAR.get()
+            if ctx_trial_id is not None:
+                record.trial_id = ctx_trial_id  # type: ignore[attr-defined]
         self.buffer.append(record)
         if record.levelno < logging.WARNING:
             return
@@ -600,6 +608,47 @@ def _truncate_error(error_str: str, *, width: int = 60) -> str:
     return first_line[: width - 1] + "…"
 
 
+_TRIAL_LOG_TAIL_MAX = 20
+"""Number of most-recent per-trial log records shown in the focused pane's
+log view. Kept small so the pane stays a fixed-height tail, not a scrollback."""
+
+
+def _log_level_style(levelno: int) -> str:
+    """Map a log level to a THEME token for the per-trial log view.
+
+    ``DEBUG`` → ``muted``, ``INFO`` → ``default`` (unstyled), ``WARNING`` →
+    ``warn``, ``ERROR`` / ``CRITICAL`` → ``error``. Levels between the standard
+    thresholds take the style of the nearest lower threshold.
+    """
+    if levelno >= logging.ERROR:
+        return "error"
+    if levelno >= logging.WARNING:
+        return "warn"
+    if levelno >= logging.INFO:
+        return "default"
+    return "muted"
+
+
+def _render_trial_log_tail(records: list[logging.LogRecord], *, width: int) -> RenderableType:
+    """Render the last :data:`_TRIAL_LOG_TAIL_MAX` records as level-styled lines.
+
+    ``records`` is already filtered to the focused trial and in chronological
+    order. Each line is ``HH:MM:SS  LEVEL  logger.name  message`` (UTC stamp for
+    stable output across timezones), truncated to ``width``. Empty input renders
+    a dim placeholder.
+    """
+    if not records:
+        return Text("(no log records yet for this trial)", style="muted")
+    lines: list[Text] = []
+    for record in records[-_TRIAL_LOG_TAIL_MAX:]:
+        stamp = datetime.fromtimestamp(record.created, tz=timezone.utc).strftime("%H:%M:%S")
+        line = f"{stamp}  {record.levelname}  {record.name}  {record.getMessage()}"
+        if len(line) > width:
+            line = line[: width - 1] + "…"
+        lines.append(Text(line, style=_log_level_style(record.levelno)))
+    return Group(*lines)
+
+
 class _KeyboardListener:
     """Daemon-thread keyboard listener for :class:`LiveRunDisplay`.
 
@@ -695,6 +744,8 @@ class _KeyboardListener:
             self._display._nav_last_trial()
         elif key == "f":
             self._display._toggle_auto_follow()
+        elif key == "l":
+            self._display._toggle_log_pane()
 
 
 class _NoopDisplayCtx:
@@ -741,6 +792,10 @@ class LiveRunDisplay:
         # matches the pre-listener behaviour). Flipped to ``False`` by the
         # nav callbacks; flipped back by :meth:`_toggle_auto_follow`.
         self._auto_follow: bool = True
+        # ``True`` → the focused pane body shows the focused trial's log tail
+        # instead of its summary. Toggled by ``l`` via :meth:`_toggle_log_pane`;
+        # orthogonal to :attr:`_auto_follow`.
+        self._show_logs_pane: bool = False
         # POSIX keyboard listener; set in :meth:`__enter__` when the guards
         # pass. ``None`` when stdin is not a TTY / on Windows / when the
         # escape-hatch env var is set.
@@ -1211,6 +1266,14 @@ class LiveRunDisplay:
                 self._focused_trial_id = newest.trial_id
             self._refresh_live_locked()
 
+    def _toggle_log_pane(self) -> None:
+        """Flip :attr:`_show_logs_pane` — swap the focused pane body between the
+        summary and the focused trial's per-trial log tail. Leaves
+        :attr:`_auto_follow` untouched."""
+        with self._lock:
+            self._show_logs_pane = not self._show_logs_pane
+            self._refresh_live_locked()
+
     def _focus_at_offset_locked(self, delta: int) -> None:
         """Move focus by ``delta`` positions in :meth:`_visible_cards` order.
 
@@ -1458,6 +1521,12 @@ class LiveRunDisplay:
         with self._lock:
             trial_id = self._focused_trial_id
             card = self._trials.get(trial_id) if trial_id is not None else None
+            show_logs = self._show_logs_pane
+            log_tail: list[logging.LogRecord] = (
+                [r for r in self._log_buffer if getattr(r, "trial_id", None) == trial_id]
+                if show_logs and trial_id is not None
+                else []
+            )
             snapshot: _FocusedPaneSnapshot | None = (
                 _FocusedPaneSnapshot(
                     turn_count=card.turn_count,
@@ -1493,6 +1562,9 @@ class LiveRunDisplay:
             if position is not None
             else "Focused trial"
         )
+        if show_logs:
+            width = self._live.console.width if self._live is not None else 120
+            return Panel(_render_trial_log_tail(log_tail, width=width), title=title)
         if snapshot.status == "failed" and snapshot.error:
             hint = _derive_hint(snapshot.error)
             parts = [
@@ -1568,10 +1640,10 @@ class LiveRunDisplay:
             if cost_style == "default":
                 return Text(line)
             return Text.from_markup(line)
-        # Manual-nav hint prepends literal ``[j/k nav · f follow]`` — the
-        # bracketed prefix must be escape()'d so Rich does not consume it
+        # Manual-nav hint prepends literal ``[j/k nav · f follow · l logs]`` —
+        # the bracketed prefix must be escape()'d so Rich does not consume it
         # as an unknown style tag.
-        return Text.from_markup(_escape_markup("[j/k nav · f follow] ") + line)
+        return Text.from_markup(_escape_markup("[j/k nav · f follow · l logs] ") + line)
 
 
 __all__ = [

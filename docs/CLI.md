@@ -168,9 +168,12 @@ On a TTY, the panel opens a daemon-thread keyboard listener in POSIX `termios` c
 | `H` (capital) | Focus first visible trial |
 | `L` (capital) | Focus last visible trial |
 | `f` | Toggle auto-follow — when flipped back on, focus snaps to the trial with the newest `last_update_ts` |
+| `l` | Toggle per-trial log stream in the Focused pane |
 | any other | Ignored |
 
 Cbreak (not raw) mode preserves `Ctrl-C`, so killing the run still works.
+
+Pressing `l` swaps the Focused pane body between its structured summary and a stream of log records emitted during the focused trial's execution; the pane title stays `Focused trial · N/M` in both states, and `l` does not affect auto-follow. Records are auto-tagged with the trial identity via a run-time context variable while the trial executes, so records emitted outside any trial's execution (Docker boot, run teardown) never appear in the per-trial view — that scoping is intentional. The view shows the last 20 records for the focused trial; widen the terminal to see more of each line.
 
 The listener short-circuits and leaves the panel in auto-follow-only mode when `sys.stdin.isatty()` is False (piped stdin, CI), when `sys.platform == "win32"` (different terminal-input model), or when `TOLOKAFORGE_INTERACTIVE_PANEL=0` is set (explicit escape hatch for terminal-compat issues or operators who prefer the pre-listener behaviour). Termios settings are captured on `LiveRunDisplay.__enter__` and restored under a `try / finally` on `__exit__`, so an in-run exception still leaves the terminal usable.
 
