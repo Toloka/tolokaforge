@@ -65,52 +65,39 @@ plain `native/tool_use` config: one `open_agent_loop:` block.
 
 ## 3. Architecture at a glance
 
-```
-                        ┌──────────────────────────────┐
-                        │        Orchestrator          │
-                        │   (scheduler + trial fan-out)│
-                        │                              │
-                        │   ┌──── OrchestratorDeps ────┤
-                        │   │                          │
-                        │   │  oal_manager: Optional   │
-                        │   │  ─ SessionRegistry       │
-                        │   │  ─ observer_provider()   │
-                        │   │  ─ intervention_h…()     │
-                        │   │  ─ write_trace()         │
-                        │   └──────────────────────────┤
-                        └───────────┬──────────────────┘
-                                    │ ConductorContext
-                                    │  (observer_provider,
-                                    │   intervention_handler_provider)
-                                    ▼
-                        ┌──────────────────────────────┐
-                        │      InProcessConductor      │
-                        │   (per-trial executor)       │
-                        │                              │
-                        │   ┌── ToolCallingLoop ───────┤
-                        │   │                          │
-                        │   │  LoopObserver seam       │
-                        │   │  InterventionHandler seam│
-                        │   └──────────────────────────┤
-                        └───────────┬──────────────────┘
-                                    │ SessionLoopObserver.publish()
-                                    │ SessionInterventionHandler.drain_and_apply()
-                                    ▼
-                        ┌──────────────────────────────┐
-                        │   InProcessTrialSession      │
-                        │   (bus per trial_id)         │
-                        │                              │
-                        │   attach() / detach()        │
-                        │   iter_events() / submit()   │
-                        └───────────┬──────────────────┘
-                                    │
-                                    ▼
-                        ┌──────────────────────────────┐
-                        │        Participants          │
-                        │   ─ LLMIntervener            │
-                        │   ─ HumanIntervener          │
-                        │   ─ your custom participant  │
-                        └──────────────────────────────┘
+```mermaid
+flowchart LR
+    subgraph Process["Orchestrator process"]
+        Orch["Orchestrator<br/>(scheduler + trial fan-out)<br/>deps.oal_manager"]
+        Conductor["InProcessConductor<br/>(per-trial executor)"]
+        Loop["ToolCallingLoop<br/>LoopObserver seam · InterventionHandler seam"]
+        Manager["OpenAgentLoopManager<br/>SessionRegistry · write_trace"]
+        Session["InProcessTrialSession<br/>events broadcast · interventions queue"]
+    end
+
+    subgraph Participants["Participants (attach externally)"]
+        direction TB
+        LLM["LLM copilot"]
+        Human["Human"]
+        Safety["Safety monitor"]
+        Cross["Cross-trial<br/>orchestrator"]
+    end
+
+    Orch -->|ConductorContext<br/>observer_provider·intervention_handler_provider| Conductor
+    Conductor --> Loop
+    Manager -->|hands out providers| Orch
+    Manager --> Session
+    Loop -->|publish events| Session
+    Loop <-->|drain interventions| Session
+
+    Session -.->|iter_events| LLM
+    Session -.->|iter_events| Human
+    Session -.->|iter_events| Safety
+    Session -.->|iter_events| Cross
+    LLM -.->|submit| Session
+    Human -.->|submit| Session
+    Safety -.->|submit| Session
+    Cross -.->|submit| Session
 ```
 
 Key points:
@@ -207,6 +194,21 @@ Roles (`tolokaforge.session.ParticipantRole`):
 Within a tier, **later wins**: if two `participant`s submit an
 `inject_message` at the same turn boundary, the later one is applied and the
 earlier one is recorded as `superseded`.
+
+```mermaid
+flowchart TB
+    Sub["Two interventions submitted<br/>at the same boundary"]
+    Priority{"Same role tier?"}
+    Higher["Higher-tier wins<br/>lower recorded as superseded"]
+    Later["Later submission wins<br/>earlier recorded as superseded"]
+    Trace[("Both attempts land in<br/>open_agent_loop.yaml")]
+
+    Sub --> Priority
+    Priority -->|no| Higher
+    Priority -->|yes| Later
+    Higher --> Trace
+    Later --> Trace
+```
 
 Attach flow:
 
@@ -313,18 +315,36 @@ existing analytics tooling that reads `trajectory.yaml` is unaffected.
 
 ---
 
-## 8. Writing your own participant
+## 8. The intervener package
 
-The complete participant contract, plus reference LLM and Human
-implementations, lives in [`tools/intervener/`](../tools/intervener/). See
-its [README](../tools/intervener/README.md) for the author's guide. Minimum
-outline:
+Everything a participant needs — the reference LLM and human participants,
+the compositional sink + controller layer, the interactive tools plug-in
+surface — ships in [`tools/intervener/`](../tools/intervener/). The full
+design guide is [`docs/INTERVENER.md`](INTERVENER.md).
+
+30k-foot summary of what's in there:
+
+| Layer | Purpose | Reference impls |
+| --- | --- | --- |
+| **`Participant`** (event-reactive) | Simplest shape — subclass and implement `handle_event(event)`. Best fit for LLM drafters and rule-based agents. | `LLMIntervener`, `HumanIntervener` |
+| **`ComposedParticipant`** (compositional) | Wires N sinks + M controllers around one `SessionBinding`. Best fit for independent-thread inputs (keyboard, HTTP, timer). | — |
+| **`EventSink`** Protocol | Read side: consumes each event drained from the bus. | `RichConsoleSink`, `PlainLineSink`, `JsonlSink`, `RollingEventsSink`, `SilentSink`, `CompoundSink` |
+| **`InputController`** Protocol | Write side: decides when and what to submit. | `KeyboardController`, `ScriptedController`, `EventReactiveController`, `TimerController` |
+| **`InteractiveTool`** Protocol | Consumer-agnostic utilities (`context`, `analyze`, …) callable from the keyboard REPL, an LLM controller, an HTTP webhook, a script. Auto-discovered from installed packages via Python entry-points. | `ContextTool`, `AnalyzeTool` |
+
+**Decoupling constraint:** the intervener never imports
+`tolokaforge.core.llm`, `tolokaforge.secrets`, or other runner-side
+internals. Any capability the runner owns (credentials, provider
+selection, LLM calls) reaches tools through narrow contracts — chiefly
+`SessionBinding` and `LLMCallable` — that callers wire concrete backends
+into. See [`docs/INTERVENER.md`](INTERVENER.md) §6 for the full contract.
+
+Minimum "custom participant" outline for a simple observer:
 
 ```python
 from tolokaforge.session import (
     ParticipantRole,
     TrialSession,
-    InjectMessage,
 )
 
 
@@ -338,25 +358,19 @@ class MyMonitorParticipant:
             session.detach(handle)
 ```
 
-Participants are ordinary Python objects — nothing here mandates threading,
-async, or a specific execution model. The bundled `LLMIntervener` runs on a
-background thread; the `HumanIntervener` runs in the foreground with a Rich
-REPL. Any object implementing the loop above is a valid participant.
-
-To attach from your own driver (as opposed to running through the bundled
-example), pre-create the session before the orchestrator asks for it, then
-give the session to your participant:
+To attach from your own driver, pre-create the session before the
+orchestrator starts and hand it to your participant on a background
+thread:
 
 ```python
-orchestrator = Orchestrator(config=config)  # config has open_agent_loop.enabled: true
+orchestrator = Orchestrator(config=config)  # open_agent_loop.enabled: true
 session = orchestrator.sessions.get_or_create(f"{task_id}:{trial_idx}")
 threading.Thread(target=my_participant.run, args=(session,), daemon=True).start()
-orchestrator.run()  # blocks; loop observer + intervention handler wire in automatically
+orchestrator.run()  # blocks; loop observer + intervention handler wire in
 ```
 
-The `get_or_create` call is idempotent and threadsafe. Pre-creating is
-optional — if you attach later, you just miss the events that fired before
-your attach.
+`get_or_create` is idempotent and threadsafe. Pre-creating is optional — a
+later attach just misses events that fired before it.
 
 ---
 
@@ -398,11 +412,54 @@ accommodate them.
 
 ---
 
+## 11. Runtime view — one trial, one participant attached
+
+Sequence of events for a paused trial where an operator injects a message
+and steps the trial forward. The `alt` block covers the pause →
+inject-message → resume path; the shaded rectangle marks when the loop
+is blocked in the pause-poll waiting for a resume.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Loop as ToolCallingLoop
+    participant Pump as InterventionHandler<br/>(pump)
+    participant Bus as InProcessTrialSession
+    participant P as Participant
+
+    Loop->>Pump: drain_and_apply()<br/>(top of each turn)
+    Pump-->>Loop: nothing pending
+    Loop->>Loop: agent LLM call
+    Loop->>Bus: publish(TurnStarted, AssistantMessage, …)
+    Bus-->>P: iter_events → events
+
+    Note over P: operator decides to intervene
+    P->>Bus: submit(Pause)
+    Bus->>Pump: queued
+
+    Loop->>Pump: drain_and_apply() (next turn)
+    Pump->>Bus: publish(PauseAcknowledged)
+    activate Pump
+    Note right of Pump: pause-poll loop<br/>every 0.1s
+    Bus-->>P: PauseAcknowledged
+    P->>Bus: submit(InjectMessage)
+    P->>Bus: submit(Resume)
+    Pump-->>Loop: exit pause loop
+    deactivate Pump
+
+    Pump->>Loop: append InjectMessage as USER turn
+    Loop->>Bus: publish(ResumeAcknowledged)
+    Loop->>Loop: next agent LLM call<br/>(sees operator's injected message)
+```
+
+---
+
 ## See also
 
+- [`docs/INTERVENER.md`](INTERVENER.md) — canonical design guide for the intervener peer package: sinks, controllers, tools, decoupling contract.
 - [ADR-0019 — Open Agent Loop: TrialSession Protocols and gate](architecture/adr/0019-open-agent-loop-sessions.md) — the architectural record.
 - [`examples/open_agent_loop/`](../examples/open_agent_loop/) — the runnable example.
-- [`tools/intervener/README.md`](../tools/intervener/README.md) — reference participants and the author's guide.
+- [`tools/intervener/README.md`](../tools/intervener/README.md) — package README (installation, CLI, layout).
 - [`tolokaforge/session/`](../tolokaforge/session/) — the module itself. Every public class is `__all__`-exported and docstringed.
 - [`docs/CONFIG.md`](CONFIG.md#open-agent-loop) — where the config block lives in the wider run-config schema.
 - [`docs/architecture/README.md`](architecture/README.md) — the C4 view; the session block sits alongside the conductor.
