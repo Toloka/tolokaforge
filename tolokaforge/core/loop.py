@@ -149,6 +149,67 @@ class MetricsSink(Protocol):
     def record_tool_call(self) -> None: ...
 
 
+class LoopObserver(Protocol):
+    """Passive observer of the loop's natural seams.
+
+    An optional seam that lets an external consumer — today the Open Agent
+    Loop's ``SessionLoopObserver`` — receive turn-boundary and tool-call
+    signals without touching the loop's control flow. All methods are
+    called synchronously from the loop's producer thread; implementations
+    must return quickly (queue-put or similar) to avoid blocking the trial.
+
+    Every method has a default no-op via :data:`_NULL_LOOP_OBSERVER`, so
+    the loop's sealed batch mode incurs no overhead when no observer is
+    attached.
+    """
+
+    def on_turn_start(self, turn_index: int) -> None:
+        """Called at the top of each turn iteration, before the LLM call."""
+
+    def on_assistant_message(self, content: str, has_reasoning: bool) -> None:
+        """Called immediately after the assistant's message is appended to the
+        transcript, before termination or tool-execution branches run."""
+
+    def on_tool_call(self, call_id: str, tool_name: str, arguments: dict[str, Any]) -> None:
+        """Called before each tool call is dispatched to the executor."""
+
+    def on_tool_result(
+        self, call_id: str, tool_name: str, duration_ms: int, output: str, success: bool
+    ) -> None:
+        """Called after each tool call returns, with duration and outcome."""
+
+    def on_terminal(
+        self, status: TrialStatus, termination_reason: TerminationReason | None
+    ) -> None:
+        """Called exactly once at the end of :meth:`ToolCallingLoop.run`."""
+
+
+class _NullLoopObserver:
+    """No-op :class:`LoopObserver` — the default when no observer is attached."""
+
+    def on_turn_start(self, turn_index: int) -> None:
+        return None
+
+    def on_assistant_message(self, content: str, has_reasoning: bool) -> None:
+        return None
+
+    def on_tool_call(self, call_id: str, tool_name: str, arguments: dict[str, Any]) -> None:
+        return None
+
+    def on_tool_result(
+        self, call_id: str, tool_name: str, duration_ms: int, output: str, success: bool
+    ) -> None:
+        return None
+
+    def on_terminal(
+        self, status: TrialStatus, termination_reason: TerminationReason | None
+    ) -> None:
+        return None
+
+
+_NULL_LOOP_OBSERVER: LoopObserver = _NullLoopObserver()
+
+
 ErrorClassifier = Callable[[Exception], TerminationDecision]
 
 
@@ -223,6 +284,7 @@ class ToolCallingLoop:
         None
     )
     classify_error: ErrorClassifier = classify_loop_error
+    observer: LoopObserver = _NULL_LOOP_OBSERVER
 
     # Captured from the first generation's effective system prompt.
     _captured_effective_prompt: str | None = field(default=None, init=False)
@@ -239,6 +301,7 @@ class ToolCallingLoop:
         termination_reason: TerminationReason | None = None
 
         for turn in range(self.config.max_turns):
+            self.observer.on_turn_start(turn)
             timeout_decision = self._check_episode_timeout(start_time)
             if timeout_decision is not None:
                 status = timeout_decision.status or status
@@ -274,6 +337,7 @@ class ToolCallingLoop:
                 )
             )
 
+        self.observer.on_terminal(status, termination_reason)
         return LoopOutcome(
             status=status,
             termination_reason=termination_reason,
@@ -294,6 +358,12 @@ class ToolCallingLoop:
         self.metrics.record_generation(result)
         self._log_generation(turn, result)
         messages.append(self._assistant_message(result))
+        self.observer.on_assistant_message(
+            content=result.text or "",
+            has_reasoning=bool(
+                getattr(result, "reasoning", None) or getattr(result, "thinking_blocks", None)
+            ),
+        )
 
         decision = self.should_terminate(result, turn, messages)
         if decision is not None:
@@ -340,6 +410,9 @@ class ToolCallingLoop:
     def _execute_tool_calls(self, result: GenerationResult, messages: list[Message]) -> None:
         for tc in result.tool_calls:
             self._maybe_recover_arguments(tc, result.text)
+            self.observer.on_tool_call(
+                call_id=tc.id, tool_name=tc.name, arguments=dict(tc.arguments or {})
+            )
             tool_start = time.time()
             tool_result = self.tool_executor.execute(tc.name, tc.arguments)
             tool_duration = time.time() - tool_start
@@ -352,12 +425,20 @@ class ToolCallingLoop:
             else:
                 self.logger.warning("Tool execution failed", tool=tc.name, error=tool_result.error)
 
+            tool_output = (
+                tool_result.output if tool_result.success else f"Error: {tool_result.error}"
+            )
+            self.observer.on_tool_result(
+                call_id=tc.id,
+                tool_name=tc.name,
+                duration_ms=int(tool_duration * 1000),
+                output=tool_output,
+                success=tool_result.success,
+            )
             messages.append(
                 Message(
                     role=MessageRole.TOOL,
-                    content=(
-                        tool_result.output if tool_result.success else f"Error: {tool_result.error}"
-                    ),
+                    content=tool_output,
                     content_blocks=(tool_result.content_blocks if tool_result.success else None),
                     tool_call_id=tc.id,
                     ts=_now(),
