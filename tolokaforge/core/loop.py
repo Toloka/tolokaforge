@@ -46,6 +46,7 @@ from tolokaforge.core.models import (
     TerminationReason,
     TrialStatus,
 )
+from tolokaforge.core.run_display_events import LLMCallObservation
 from tolokaforge.tools.registry import ToolExecutor
 
 
@@ -62,6 +63,7 @@ class LoopLLMClient(Protocol):
         messages: list[Message],
         tools: list[dict[str, Any]],
         tool_choice: str = "auto",
+        observation: LLMCallObservation | None = None,
     ) -> GenerationResult: ...
 
 
@@ -223,6 +225,7 @@ class ToolCallingLoop:
         None
     )
     classify_error: ErrorClassifier = classify_loop_error
+    call_observation: LLMCallObservation | None = None
 
     # Captured from the first generation's effective system prompt.
     _captured_effective_prompt: str | None = field(default=None, init=False)
@@ -315,6 +318,7 @@ class ToolCallingLoop:
             messages=messages,
             tools=self.tool_schemas,
             tool_choice="auto",
+            observation=self.call_observation,
         )
 
     def _advance_user_turn(

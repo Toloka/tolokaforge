@@ -160,7 +160,15 @@ class _RouterJudge:
                 return fid
         raise AssertionError(f"no fixture marker found in opening message: {opening!r}")
 
-    def generate(self, system, messages, tools, tool_choice="auto") -> GenerationResult:
+    def generate(
+        self,
+        system,
+        messages,
+        tools,
+        tool_choice="auto",
+        *,
+        observation=None,
+    ) -> GenerationResult:
         self.calls += 1
         active = self._active_fixture(messages)
         if active in self._error_ids:

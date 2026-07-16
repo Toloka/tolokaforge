@@ -1,23 +1,30 @@
 """Unit tests locking the :class:`RunDisplayEvents` engine seam.
 
-The seam is the pluggable front-end attach point designated by ADR-0019.
-It lives in :mod:`tolokaforge.core.run_display_events` so the engine can
-import the Protocol without dragging any front-end dependency graph into
-worker containers, the gRPC runner, or the cloud-runtime trial-plane.
+The seam lives in :mod:`tolokaforge.core.run_display_events` so the
+engine can import the Protocol without dragging any front-end
+dependency graph into worker containers, the gRPC runner, or the
+cloud-runtime trial-plane.
 
 These tests lock:
 
-- The Protocol declares exactly the 9 lifecycle methods the engine will
-  emit.
+- The Protocol declares exactly the 12 lifecycle methods the engine
+  emits: 9 trial/run boundary events plus the in-flight LLM-call trio
+  (``llm_call_started`` / ``llm_call_finished`` /
+  ``llm_retry_scheduled``).
 - Every method is kwarg-only (ADR-0011: field additions must not break
   positional callers).
 - :data:`_NULL_EVENTS` / :class:`_NullRunDisplayEvents` are structural
   members of the Protocol and every method no-ops without raising when
-  called with its documented kwargs.
+  called with its documented kwargs — including the widened
+  ``trial_started`` model-identity fields.
+- :class:`LLMCallObservation` is a frozen dataclass carrying the seam
+  reference + call identity (``trial_id`` + ``role``) that
+  ``LLMClient.generate`` will thread through per call.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import inspect
 from pathlib import Path
 
@@ -26,6 +33,7 @@ import pytest
 from tolokaforge.core.run_display_events import (
     _NULL_EVENTS,
     ContainerSnapshot,
+    LLMCallObservation,
     RunDisplayEvents,
     ServiceSnapshot,
     _NullRunDisplayEvents,
@@ -45,17 +53,21 @@ LIFECYCLE_METHODS: frozenset[str] = frozenset(
         "run_finished",
         "phase_changed",
         "trial_provisioned",
+        "llm_call_started",
+        "llm_call_finished",
+        "llm_retry_scheduled",
     }
 )
 
 
-def test_protocol_declares_exactly_nine_lifecycle_methods() -> None:
+def test_protocol_declares_exactly_twelve_lifecycle_methods() -> None:
     declared = {
         name
         for name in vars(RunDisplayEvents)
         if not name.startswith("_") and callable(vars(RunDisplayEvents)[name])
     }
     assert declared == LIFECYCLE_METHODS
+    assert len(LIFECYCLE_METHODS) == 12
 
 
 @pytest.mark.parametrize("method_name", sorted(LIFECYCLE_METHODS))
@@ -68,6 +80,21 @@ def test_protocol_methods_are_kwarg_only(method_name: str) -> None:
         kind = param.kind
         message = f"{method_name}.{param.name} must be keyword-only (ADR-0011)"
         assert kind is inspect.Parameter.KEYWORD_ONLY, message
+
+
+def test_trial_started_accepts_optional_model_identity_kwargs() -> None:
+    """``trial_started`` carries ``agent_model`` / ``user_model`` as
+    optional-defaulted kwargs so the Rich display can label per-role
+    LLM calls without a second lookup — the orchestrator populates them
+    from the ``ModelConfig`` in scope at the emission site."""
+    signature = inspect.signature(RunDisplayEvents.trial_started)
+    params = signature.parameters
+    assert "agent_model" in params
+    assert "user_model" in params
+    assert params["agent_model"].annotation == "str | None"
+    assert params["user_model"].annotation == "str | None"
+    assert params["agent_model"].default is None
+    assert params["user_model"].default is None
 
 
 def test_null_run_display_events_satisfies_protocol() -> None:
@@ -95,7 +122,14 @@ def test_null_events_calls_do_not_raise_with_documented_kwargs() -> None:
 
     _NULL_EVENTS.run_started(total_trials=3, initial_completed=0)
     _NULL_EVENTS.phase_changed(phase="starting_services", detail=None, services=services)
-    _NULL_EVENTS.trial_started(trial_id="a:0", task_id="a", trial_index=0, total_index=0)
+    _NULL_EVENTS.trial_started(
+        trial_id="a:0",
+        task_id="a",
+        trial_index=0,
+        total_index=0,
+        agent_model="openai/gpt-4",
+        user_model="openai/gpt-4o-mini",
+    )
     _NULL_EVENTS.trial_provisioned(
         trial_id="a:0",
         containers=containers,
@@ -111,6 +145,33 @@ def test_null_events_calls_do_not_raise_with_documented_kwargs() -> None:
     _NULL_EVENTS.trial_completed(trial_id="a:0", binary_pass=True, score=1.0)
     _NULL_EVENTS.trial_failed(trial_id="a:1", error="LLMApiTimeoutError", retryable=False)
     _NULL_EVENTS.run_finished(output_dir=Path("/tmp/output"))
+    _NULL_EVENTS.llm_call_started(
+        trial_id="a:0", role="agent", provider="openai", model="gpt-4", attempt=1
+    )
+    _NULL_EVENTS.llm_call_finished(
+        trial_id="a:0",
+        role="agent",
+        provider="openai",
+        model="gpt-4",
+        attempt=1,
+        duration_s=0.42,
+        error=None,
+    )
+    _NULL_EVENTS.llm_retry_scheduled(
+        trial_id="a:0",
+        role="agent",
+        provider="openai",
+        model="gpt-4",
+        attempt=1,
+        next_attempt_in_s=4.0,
+        reason="Timeout while calling gpt-4",
+    )
+
+
+def test_null_events_trial_started_accepts_legacy_call_without_model_kwargs() -> None:
+    """The two new ``trial_started`` model-identity kwargs default to
+    ``None`` so any caller that predates the widening keeps working."""
+    _NULL_EVENTS.trial_started(trial_id="a:0", task_id="a", trial_index=0, total_index=0)
 
 
 def test_null_events_methods_accept_only_keyword_arguments() -> None:
@@ -138,3 +199,19 @@ def test_container_snapshot_shape_is_typed_dict() -> None:
         "ports": {},
     }
     assert set(snapshot.keys()) == {"name", "service", "state", "health", "ports"}
+
+
+def test_llm_call_observation_is_frozen_dataclass_bundling_seam_and_identity() -> None:
+    """The per-call context threaded into ``LLMClient.generate`` is a
+    frozen dataclass so it never mutates in flight while a trial's
+    worker thread hands it to the client — the client only reads
+    ``(events, trial_id, role)`` and forwards to the seam."""
+    assert dataclasses.is_dataclass(LLMCallObservation)
+    assert LLMCallObservation.__dataclass_params__.frozen is True
+
+    field_names = {f.name for f in dataclasses.fields(LLMCallObservation)}
+    assert field_names == {"events", "trial_id", "role"}
+
+    observation = LLMCallObservation(events=_NULL_EVENTS, trial_id="a:0", role="agent")
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        observation.trial_id = "b:0"  # type: ignore[misc]

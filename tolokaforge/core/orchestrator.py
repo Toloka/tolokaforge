@@ -1537,6 +1537,8 @@ class Orchestrator:
                     task_id=lease.task_id,
                     trial_index=lease.trial_index,
                     total_index=self._total_index_by_key.get((lease.task_id, lease.trial_index), 0),
+                    agent_model=f"{agent_config.provider}/{agent_config.name}",
+                    user_model=f"{user_config.provider}/{user_config.name}",
                 )
 
                 try:
