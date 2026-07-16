@@ -53,9 +53,19 @@ class _StubCaptureBackend(InMemoryRuntimeBackend):
         return {}
 
 
-def _factory_for(status: TrialStatus, *, binary_pass: bool) -> object:
+def _factory_for(status: TrialStatus, *, binary_pass: bool | None) -> object:
     def _factory(task_id: str, trial_idx: int) -> Trajectory:
         now = datetime.now(UTC)
+        grade = (
+            None
+            if binary_pass is None
+            else Grade(
+                binary_pass=binary_pass,
+                score=1.0 if binary_pass else 0.0,
+                components=GradeComponents(),
+                reasons="synthetic",
+            )
+        )
         return Trajectory(
             task_id=task_id,
             trial_index=trial_idx,
@@ -64,12 +74,7 @@ def _factory_for(status: TrialStatus, *, binary_pass: bool) -> object:
             status=status,
             messages=[],
             metrics=Metrics(),
-            grade=Grade(
-                binary_pass=binary_pass,
-                score=1.0 if binary_pass else 0.0,
-                components=GradeComponents(),
-                reasons="synthetic",
-            ),
+            grade=grade,
         )
 
     return _factory
@@ -138,7 +143,6 @@ class TestGradedFailIsCapture:
 
         executor.execute(make_trial_spec(trial_id="task-1:0"), make_task_config(task_id="task-1"))
 
-        # A completed-but-red grade is capture-worthy.
         assert backend.call_log.capture_service_logs_calls == [("task-1:0", True)]
 
         summary = _summary_lines(executor.logger)
@@ -161,6 +165,22 @@ class TestPassingTrialIsNotCapture:
         executor.execute(make_trial_spec(trial_id="task-1:0"), make_task_config(task_id="task-1"))
 
         # Capture is still consulted, but with capture_worthy=False the map is empty.
+        assert backend.call_log.capture_service_logs_calls == [("task-1:0", False)]
+        assert _summary_lines(executor.logger) == []
+
+        metrics = yaml.safe_load(metrics_path.read_text())
+        assert "captured_service_logs" not in metrics
+
+
+class TestUngradedCompletedIsNotCapture:
+    def test_completed_without_grade_does_not_capture(self, tmp_path: Path) -> None:
+        backend = _StubCaptureBackend()
+        factory = _factory_for(TrialStatus.COMPLETED, binary_pass=None)
+        executor = _make_executor(backend, factory, tmp_path)
+        metrics_path = _write_metrics(tmp_path, "task-1", 0)
+
+        executor.execute(make_trial_spec(trial_id="task-1:0"), make_task_config(task_id="task-1"))
+
         assert backend.call_log.capture_service_logs_calls == [("task-1:0", False)]
         assert _summary_lines(executor.logger) == []
 
