@@ -122,8 +122,24 @@ def test_tolerate_signal_thread_errors_swallows_non_main_thread_valueerror() -> 
     assert "unrelated failure" in str(propagate_errors[0])
 
 
-def test_textual_run_app_driver_class_is_signal_tolerant() -> None:
-    assert TextualRunApp.driver_class is _SignalTolerantLinuxDriver
+def test_textual_run_app_uses_signal_tolerant_driver_on_posix() -> None:
+    """Locks the actual override point.
+
+    Textual's :meth:`App.__init__` assigns ``self.driver_class = driver_class
+    or self.get_driver_class()``, so a class-level ``driver_class`` attribute
+    on ``TextualRunApp`` gets shadowed and never reaches the driver. The
+    correct override is :meth:`App.get_driver_class`. This assertion locks
+    that — instantiate the app on the main thread (safe: unit tests already
+    do this) and check the resolved driver class.
+    """
+    import sys
+
+    app = TextualRunApp()
+    if sys.platform == "win32":
+        # Windows driver is separate and untouched by #470.
+        assert app.driver_class is not _SignalTolerantLinuxDriver
+    else:
+        assert app.driver_class is _SignalTolerantLinuxDriver
 
 
 # ---------------------------------------------------------------------------

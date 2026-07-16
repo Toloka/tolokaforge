@@ -43,6 +43,7 @@ from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.driver import Driver
 from textual.drivers.linux_driver import LinuxDriver
 from textual.screen import ModalScreen
 from textual.widgets import (
@@ -270,7 +271,22 @@ class TextualRunApp(App[None]):
     :attr:`_pending` before mount.
     """
 
-    driver_class = _SignalTolerantLinuxDriver
+    def get_driver_class(self) -> type[Driver]:
+        """Force our signal-tolerant driver on Linux + macOS.
+
+        Textual's :meth:`App.__init__` calls
+        ``self.driver_class = driver_class or self.get_driver_class()`` which
+        overwrites a class-level ``driver_class = …`` attribute with the
+        return of this method (line 637 in textual/app.py). So the correct
+        override point is the method, not the attribute. Windows falls
+        back to ``super().get_driver_class()`` (its driver doesn't have
+        the SIGTSTP / SIGCONT / SIGWINCH problem). See #470.
+        """
+        import sys as _sys
+
+        if _sys.platform == "win32":
+            return super().get_driver_class()
+        return _SignalTolerantLinuxDriver
 
     CSS = """
     #status { dock: top; height: 1; }
