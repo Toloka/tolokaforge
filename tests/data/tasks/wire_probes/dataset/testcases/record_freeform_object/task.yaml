@@ -1,0 +1,36 @@
+task_id: "record_freeform_object"
+name: "Wire-probe: free-form open object argument"
+description: >
+  Non-scoring wire-shape probe. Elicits the free-form additionalProperties:true
+  hollow-out class (a model omits the field, flat-packs inner keys at the call
+  top level, or stringifies) on attach_metadata.metadata.
+domain: ../../_shared/domain.yaml
+max_turns: 3
+
+initial_user_message: >
+  On record REC-1003, attach metadata: the source is import, the priority is 2,
+  and include a nested note whose who is ops and whose when is today. Then you're done.
+
+initial_state: {}
+
+tools:
+  agent:
+    enabled:
+      - attach_metadata
+
+user_simulator:
+  scripted_flow:
+    - role: user
+      content: "###STOP###"
+
+metadata:
+  expected_failure_modes:
+    - dict_flatten
+    - stringified_dict
+    - empty_container
+  tags:
+    - smoke
+    - wire-probe
+    - non-scoring
+
+grading: "grading.yaml"

@@ -1,0 +1,66 @@
+# Shared domain for the wire-probe merged pack: the higher-complexity,
+# multi-step derived cases (tau2-bench telecom resolution + API-Bank
+# tool-registry meta-flow + hand-authored neutral records). Complex dict-map /
+# discriminated-union / id-threading / meta-tool shapes, policy stripped,
+# neutral entities. Each testcase enables only the subset of tools it needs.
+category: "tool_use"
+
+tools:
+  agent:
+    mcp_server: "mcp_server.py"
+    enabled:
+      # telecom (tau2-bench-derived)
+      - lookup_subscriber
+      - get_subscriber_details
+      - get_invoices
+      - register_payment_methods
+      - send_payment_request
+      - set_service_status
+      - update_address
+      - top_up_data
+      - get_network_status
+      # registry (API-Bank-derived)
+      - search_tools
+      - get_access_token
+      - add_meeting
+      - add_reminder
+      - add_alarm
+      - book_room
+      - query_balance
+      - transfer_funds
+      - register_devices
+      - set_preferences
+      - search_hotels
+      - cancel_booking
+      - get_service_health
+      # records sandbox tools (merged)
+      - update_record
+      - create_item
+      - set_price
+      - attach_metadata
+      - set_line_items
+      - create_record
+      - get_info
+      - write_note
+      - get_status
+      - set_priority
+      - set_quota
+      - link_ref
+      - submit_payload
+      - configure
+      - run_command
+      - submit_order
+      - add_section
+      - finalize_record
+      - submit_tree
+      - submit_blocks
+      # free-form nested-array probe (hidden-type array inside an open object)
+      - apply_record_update
+      - submit_record
+  user:
+    enabled: []
+
+user_simulator:
+  mode: scripted
+
+system_prompt: "system_prompt.md"

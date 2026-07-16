@@ -1,0 +1,43 @@
+task_id: "record_lifecycle_threading"
+name: "Wire-probe: lifecycle id-threading (multi-turn)"
+description: >
+  Non-scoring wire-shape probe. Two steps: create_record returns a fresh id;
+  the model must thread THAT returned id into the follow-up set_line_items call.
+  Elicits placeholder-id / non-threading (the model invents an id like
+  REC-00000000 instead of using the returned one).
+domain: ../../_shared/domain.yaml
+max_turns: 8
+
+initial_user_message: >
+  Create a new record for me.
+
+initial_state: {}
+
+tools:
+  agent:
+    enabled:
+      - create_record
+      - set_line_items
+
+user_simulator:
+  mode: llm
+  persona: cooperative
+  backstory: >
+    You are setting up a new record in two steps. First ask the assistant to
+    create a new record. After it confirms and tells you the new record id, ask
+    it to set the line items on THAT record: SKU-X with qty 2 and unit price
+    3.00. Refer to it as "the record you just created" (do not repeat the id
+    yourself). Once the line items are set, thank it briefly and end.
+
+metadata:
+  expected_failure_modes:
+    - lifecycle_threading
+    - placeholder_id
+    - key_packing
+  tags:
+    - smoke
+    - wire-probe
+    - non-scoring
+    - multi-turn
+
+grading: "grading.yaml"

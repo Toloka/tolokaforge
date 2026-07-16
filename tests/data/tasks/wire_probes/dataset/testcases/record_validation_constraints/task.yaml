@@ -1,0 +1,31 @@
+task_id: "record_validation_constraints"
+name: "Wire-probe: validation constraints honored"
+description: >
+  Non-scoring wire-shape probe. Elicits silently-ignored constraints: codes must be exactly 2 UNIQUE, amount >=10 and multiple of 5. The request tempts a duplicate code and a non-multiple amount.
+domain: ../../_shared/domain.yaml
+max_turns: 3
+
+initial_user_message: >
+  On record REC-3003, set the quota with codes A1 and A1, and amount 12. Then you're done.
+
+initial_state: {}
+
+tools:
+  agent:
+    enabled:
+      - set_quota
+
+user_simulator:
+  scripted_flow:
+    - role: user
+      content: "###STOP###"
+
+metadata:
+  expected_failure_modes:
+    - validation_constraints
+  tags:
+    - smoke
+    - wire-probe
+    - non-scoring
+
+grading: "grading.yaml"

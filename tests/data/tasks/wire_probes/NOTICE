@@ -1,0 +1,20 @@
+smoke_public - wire-shape integration smoke probes
+
+This probe set is SYNTHETIC and contains NO private leaderboard content: no
+private domain tools, tasks, databases, policies, or answer keys. The tool
+argument schemas are hand-authored, generic shapes whose only purpose is to
+elicit known wire-serialisation quirks.
+
+Structural inspiration (shapes and patterns only; nothing reproduced verbatim,
+schemas are derived/rewritten and all entities renamed to fictional ones):
+- tau-bench / tau2-bench (Sierra) - MIT - multi-turn tool-use task shape; the
+  telecom domain's multi-step account-resolution FLOW and the nested-subscriber /
+  discriminated-payment-method SHAPES (telecom.py, cascade_telecom_* /
+  cascade_subscriber_onboarding testcases).
+- API-Bank (Alibaba DAMO) - MIT - the meta-tool discovery FLOW: search for the
+  right tool, then call it with a threaded access token (registry.py,
+  cascade_registry_* testcases).
+- JSON Schema Test Suite (json-schema-org) - MIT - per-keyword schema shapes.
+- Berkeley Function Calling Leaderboard / Gorilla - Apache-2.0 - tool signatures.
+
+The set is non-scoring, so it carries no answer key to leak.

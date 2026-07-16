@@ -16,7 +16,6 @@ on:
       - tolokaforge/core/data/model_presets.yaml
       - tolokaforge/core/data/pricing.json
       - tests/integration/llm/registry.py
-      - .automation/requests/**
       - uv.lock
       - docs/**
       - CHANGELOG.md

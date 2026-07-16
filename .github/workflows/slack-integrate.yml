@@ -1,0 +1,147 @@
+name: Slack-triggered integration poller
+
+# Turns a Slack request ("@delivery-tech-bot integrate Grok 4.5 and Hy3") into integration
+# runs, with NO new app and NO PAT - only the github-actions[bot] GITHUB_TOKEN. A bot token
+# cannot be reached from outside GitHub, so the initiative comes from INSIDE: this workflow
+# POLLS the channel (the existing bot token, read-only history), resolves each model phrase to
+# an OpenRouter slug DETERMINISTICALLY (automation.model_resolver - no LLM guessing), and:
+#   * clearly-identified model  -> opens a draft integration PR + dispatches integrate-model.yml
+#   * ambiguous / unknown model -> replies in-thread asking for an exact slug (no run started)
+#
+# It dispatches integrate-model.yml via `gh workflow run` (workflow_dispatch) because a label
+# or PR added with GITHUB_TOKEN would NOT trigger a second workflow (the Actions recursion
+# guard); workflow_dispatch + repository_dispatch are the only two exceptions, so the whole
+# chain stays on github-actions[bot].
+#
+# Dedup is state-free: a request whose thread already has a bot reply is skipped, and a slug is
+# only queued AFTER its reply posts - so re-polling never double-acts and no watermark is stored.
+#
+# NOTE ON TRIGGERS: GitHub only runs `schedule` and accepts `workflow_dispatch` for a workflow
+# once this file is on the DEFAULT branch (a brand-new workflow on a feature branch is not yet
+# registered), so the scheduled poll + manual dispatch activate after this lands on main. Before
+# then the flow is validated by the unit tests + a local resolver dry-run, and, for one live run,
+# by TEMPORARILY adding a `push:` trigger on the feature branch (removed before merge).
+
+on:
+  schedule:
+    # Poll cadence == trigger latency. Tiered: busy weekday hours poll often, quiet hours rarely.
+    # Times track HUNGARY LOCAL (CEST = UTC+2); GitHub cron is UTC-only, so shift each hour range
+    # by -1 for winter-exact (CET) timing. Ranges are disjoint, so no minute double-fires.
+    - cron: "*/10 6-17 * * 1-5" # weekday daytime, local ~08:00-20:00 -> every 10 min
+    - cron: "*/30 0-5 * * 1-5" # weekday early morning, local ~02:00-08:00 -> every 30 min
+    - cron: "*/30 18-23 * * 1-5" # weekday evening/night, local ~20:00-02:00 -> every 30 min
+    - cron: "*/30 * * * 0,6" # all weekend (Sat/Sun) -> every 30 min
+  workflow_dispatch: {}
+
+permissions:
+  contents: write # push the seed branch
+  pull-requests: write # open the draft integration PR (the poller adds no labels)
+  actions: write # gh workflow run integrate-model.yml (workflow_dispatch)
+
+concurrency:
+  # Single-flight: never let two polls overlap (the state-free dedup assumes one poller at a
+  # time; this closes the within-interval race). A queued poll waits for the running one.
+  group: slack-integrate-poll
+  cancel-in-progress: false
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      BASE_REF: ${{ github.ref_name }}
+      RUN_ID: ${{ github.run_id }}
+      # Slack (all optional; an absent token/channel makes the poll a logged no-op).
+      SLACK_BOT_TOKEN: ${{ secrets.ARENA_AUTOMATION_SLACK_BOT_TOKEN }}
+      SLACK_CHANNEL: ${{ vars.ARENA_AUTOMATION_SLACK_CHANNEL }}
+      # Optional comma-separated Slack user-id allowlist. Empty => anyone in the channel may
+      # trigger (channel membership is the authz gate; GitHub only ever sees github-actions[bot]).
+      ALLOWED_USERS: ${{ vars.ARENA_AUTOMATION_SLACK_ALLOWED_USERS }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need origin/<base> to branch the seed commit from
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.9.5"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv python install 3.12
+      - run: uv sync --dev --locked
+
+      - name: Poll the channel and resolve requests
+        # Reads history, resolves each @bot integrate request, posts one threaded reply per
+        # request, and writes plan.json = [{slug, requester, message_ts}] for the resolved models.
+        run: |
+          uv run automation slack-poll \
+            --channel "$SLACK_CHANNEL" \
+            --allowed-users "$ALLOWED_USERS" \
+            --window-hours 48 \
+            --out plan.json
+          echo "plan.json:"; cat plan.json
+
+      - name: Open a draft PR + dispatch the engine per resolved model
+        run: |
+          set -uo pipefail
+          COUNT="$(jq 'length' plan.json 2>/dev/null || echo 0)"
+          echo "plan has ${COUNT} model(s) to integrate"
+          if [ "${COUNT}" = "0" ]; then echo "nothing to integrate"; exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Bootstrap one model: open a draft PR on an empty seed commit (a PR needs >=1 commit
+          # ahead of base, not a file diff, so no artifact is committed; the request metadata
+          # lives in the commit message + PR body) then dispatch the engine on it. Any failure
+          # logs a warning and returns non-zero so the caller continues to the next model.
+          bootstrap () {
+            SLUG="$1"; REQUESTER="$2"; TS="$3"
+            # EXACT open-PR check (grep -Fx, not the fuzzy `--search in:title`): the fuzzy form
+            # would let "integrate: x-ai/grok-4.5" match an open "integrate: x-ai/grok-4" (skip)
+            # or miss on `/`.`-tokenization (duplicate). -F makes SLUG a literal, not a pattern.
+            EXISTING="$(gh pr list -R "$REPO" --state open --json title --jq '.[].title' 2>/dev/null \
+              | grep -Fxc "integrate: $SLUG" || true)"
+            if [ "${EXISTING:-0}" != "0" ]; then
+              echo "open integration PR already exists for '$SLUG' -> skip"; return 0
+            fi
+            SAFE="$(printf '%s' "$SLUG" | tr '/ ' '--' | tr -cd 'A-Za-z0-9._-')"
+            BRANCH="automation/slack-integrate/${SAFE}-${RUN_ID}"
+            git checkout -B "$BRANCH" "origin/${BASE_REF}" || return 1
+            git commit -q --allow-empty \
+              -m "chore(automation): seed Slack-requested integration of ${SLUG}" \
+              -m "requested_by: ${REQUESTER}" -m "slack_message_ts: ${TS}" -m "source: slack" || return 1
+            git push -q -u origin "$BRANCH" || return 1
+            PR_URL="$(gh pr create -R "$REPO" --draft --base "$BASE_REF" --head "$BRANCH" \
+              --title "integrate: ${SLUG}" \
+              --body "Auto-opened from a Slack request by <@${REQUESTER}> (message ts ${TS}). The poller resolved the model deterministically against the OpenRouter catalog; this draft PR is the human review gate. The integration engine runs via workflow_dispatch on this PR." )" || return 1
+            PR_NUM="$(printf '%s' "$PR_URL" | grep -oE '[0-9]+$')"
+            [ -n "$PR_NUM" ] || { echo "could not parse PR number from '$PR_URL'"; return 1; }
+            echo "opened PR #${PR_NUM} for ${SLUG} (${PR_URL})"
+            gh workflow run integrate-model.yml -R "$REPO" --ref "$BASE_REF" \
+              -f pr="$PR_NUM" -f head_ref="$BRANCH" -f model="$SLUG" -f source=slack || return 1
+            echo "dispatched integrate-model.yml for PR #${PR_NUM} (${SLUG})"
+            # Confirm in the requester's own thread, WITH the PR link (the poll-step reply was
+            # posted before the PR existed; the engine's progress thread is a separate root).
+            uv run automation slack post-thread --channel "$SLACK_CHANNEL" --thread-ts "$TS" \
+              --text ":rocket: Opened <${PR_URL}|PR #${PR_NUM}> for ${SLUG} - the integration run has started." || true
+          }
+
+          mapfile -t ROWS < <(jq -c '.[]' plan.json)
+          FAIL=0
+          for row in "${ROWS[@]}"; do
+            SLUG="$(printf '%s' "$row" | jq -r '.slug')"
+            REQUESTER="$(printf '%s' "$row" | jq -r '.requester')"
+            TS="$(printf '%s' "$row" | jq -r '.message_ts')"
+            git checkout -q "$BASE_REF" 2>/dev/null || git checkout -q -B "$BASE_REF" "origin/${BASE_REF}"
+            if ! bootstrap "$SLUG" "$REQUESTER" "$TS"; then
+              echo "::warning title=Integration bootstrap failed::could not start integration for ${SLUG} (see log); continuing"
+              # Not silent: the poll-step reply already said this model was starting, so tell the
+              # requester in-thread that it did NOT, and to re-request (the reply marker means it
+              # will not auto-retry).
+              uv run automation slack post-thread --channel "$SLACK_CHANNEL" --thread-ts "$TS" \
+                --text ":x: I could not start the integration for ${SLUG} (a transient error opening the PR or dispatching). Please re-request it by tagging me with that model again." || true
+              FAIL=1
+            fi
+          done
+          exit "$FAIL"

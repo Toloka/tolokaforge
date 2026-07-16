@@ -1,0 +1,45 @@
+task_id: "cascade_registry_tool_select"
+name: "Registry probe: search then call the discovered tool (single-shot)"
+description: >
+  Non-scoring wire-shape probe (API-Bank-derived, policy stripped). Isolates the
+  meta-tool dimension in one user turn: the model must call search_tools, read
+  the descriptor it returns, get an access token, then call the discovered tool
+  with the token threaded in. Tests output-selects-next-tool + token threading
+  cleanly, in a single attributable trial.
+domain: ../../_shared/domain.yaml
+max_turns: 6
+
+initial_user_message: >
+  I don't know which of your tools to use. Find the one for scheduling a calendar
+  meeting, log me in first with username alice and password demo1234, then use it
+  to schedule a meeting about the quarterly review on the second of July
+  twenty-twenty-six at three in the afternoon, with bob and carol attending. Then
+  you're done.
+
+initial_state: {}
+
+tools:
+  agent:
+    enabled:
+      - search_tools
+      - get_access_token
+      - add_meeting
+
+user_simulator:
+  scripted_flow:
+    - role: user
+      content: "###STOP###"
+
+metadata:
+  expected_failure_modes:
+    - tool_selection_relevance
+    - lifecycle_threading
+    - placeholder_id
+  tags:
+    - smoke
+    - wire-probe
+    - non-scoring
+    - apibank-derived
+    - meta-tool
+
+grading: "grading.yaml"

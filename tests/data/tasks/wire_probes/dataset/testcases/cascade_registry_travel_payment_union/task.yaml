@@ -1,0 +1,103 @@
+task_id: "cascade_registry_travel_payment_union"
+name: "Registry probe: travel-payment cascade with hotel meta-search, payment-method union dict-map, deposit request, token-threaded transfer, devices, free-form prefs (multi-step)"
+description: >
+  Non-scoring wire-shape probe that crosses the public meta-tool registry and
+  the tau2-bench telecom surfaces (policy stripped). A cooperative llm user-sim
+  settles a trip account but never names a tool, so the model must call
+  search_tools, read the returned descriptor, and call the tool it names
+  (output-selects-next-tool) while threading an access token (lifecycle). Unlike
+  the other travel cascade this one is centered on the HEAVIEST shape: the trip
+  payment methods are a dict-map of a DISCRIMINATED UNION (card | voucher | bank)
+  under two labels (dict_map + discriminated_union + dict_flatten +
+  stringified_dict). It also threads ids the model must capture at runtime - a
+  subscriber id from a phone lookup and an invoice id from an invoice list - and
+  fans them into a Decimal deposit request (fan_in + decimal_field +
+  placeholder_id), then fans TWO account ids under one threaded token into a
+  Decimal transfer, registers a register_devices dict-map of DeviceSpec entries,
+  and sets a set_preferences free-form open object (additionalProperties).
+  Multi-turn breadth amplifies catch-rate across the union, dict-map, Decimal,
+  fan-in and token-threading surfaces.
+domain: ../../_shared/domain.yaml
+max_turns: 24
+
+initial_user_message: >
+  Hi - I'm wrapping up the booking for a trip and I'm not sure which of your
+  tools I need for each part. Can you first find the tool for looking up hotels?
+  I'll give you the trip details once you've found it.
+
+initial_state: {}
+
+tools:
+  agent:
+    enabled:
+      - search_tools
+      - get_access_token
+      - search_hotels
+      - lookup_subscriber
+      - get_invoices
+      - register_payment_methods
+      - send_payment_request
+      - transfer_funds
+      - register_devices
+      - set_preferences
+
+user_simulator:
+  mode: llm
+  persona: cooperative
+  backstory: >
+    You are settling the account for a short trip and you want the assistant to
+    find the right tool for each request before doing it, and to log you in the
+    first time a tool needs it (your username is wanderer7 and your password is
+    voyage2026). Work through these strictly one at a time, and wait for the
+    assistant to confirm each one is done before you reveal the next:
+    (1) ask it to find the tool for looking up hotels, then have it search for
+        hotels in Riverton checking in on the second of July twenty-twenty-six
+        and checking out on the fifth of July twenty-twenty-six;
+    (2) ask it to look up your account from your phone number, which is plus one
+        five five five two zero one nine nine eight eight, and then list the
+        invoices on whatever account that lookup turns up - let the assistant
+        carry over the ids it gets back, you do not know them;
+    (3) ask it to put two payment methods on the account it just found: under the
+        label travel use a card ending five one one one that expires September
+        twenty-twenty-eight, and under the label backup use a voucher whose code
+        is TRIP20 worth forty dollars;
+    (4) ask it to pay the deposit: send a payment request for thirty-seven dollars
+        and twenty-five cents against that same account and the overdue invoice
+        the listing turned up - again let the assistant reuse the ids, you do not
+        know them;
+    (5) ask it to move the balancing money: transfer two hundred ten dollars and
+        seventy-five cents from account ACC-5501 to account ACC-6602;
+    (6) ask it to register the two devices you are bringing on the trip: a phone
+        under the label travel-phone and a tablet under the label reader;
+    (7) finally, ask it to set your trip preferences: a room on a high floor, a
+        quiet room, and a late checkout.
+    Give the assistant only the values above in plain words; never describe how to
+    format anything, never spell out fields or structure, and do not name the
+    tools yourself - let the assistant discover them. Once all seven are
+    confirmed, thank the assistant and end. Keep your replies short.
+
+metadata:
+  expected_failure_modes:
+    - tool_selection_relevance
+    - schema_at_volume
+    - lifecycle_threading
+    - fan_in
+    - placeholder_id
+    - discriminated_union
+    - dict_map
+    - dict_flatten
+    - decimal_field
+    - free_form_object
+    - stringified_dict
+    - key_packing
+  tags:
+    - smoke
+    - wire-probe
+    - non-scoring
+    - multi-turn
+    - apibank-derived
+    - tau2-derived
+    - meta-tool
+    - cascade
+
+grading: "grading.yaml"

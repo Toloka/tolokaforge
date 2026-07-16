@@ -1,0 +1,48 @@
+task_id: "record_multihop_chain"
+name: "Wire-probe: multi-hop chain + fan-in id-threading"
+description: >
+  Non-scoring wire-shape probe. A 3-step chain where each step returns an id the
+  next must reference, ending in a fan-in (finalize needs BOTH the record id and
+  the section id). Elicits placeholder-id / non-threading and dropped-output
+  across a longer dependency chain.
+domain: ../../_shared/domain.yaml
+max_turns: 10
+
+initial_user_message: >
+  Create a new record for me.
+
+initial_state: {}
+
+tools:
+  agent:
+    enabled:
+      - create_record
+      - add_section
+      - finalize_record
+
+user_simulator:
+  mode: llm
+  persona: cooperative
+  backstory: >
+    You are creating and finalizing a record in three steps. Drive them one at a
+    time, waiting for confirmation each time, and never repeat the ids yourself
+    (the assistant must carry them forward):
+    (1) ask the assistant to create a new record;
+    (2) after it tells you the new record id, ask it to add a section to that
+        record;
+    (3) after it tells you the new section id, ask it to finalize that record
+        using both the record and the section it just created.
+    Once finalized, thank it briefly and end.
+
+metadata:
+  expected_failure_modes:
+    - lifecycle_threading
+    - fan_in
+    - placeholder_id
+  tags:
+    - smoke
+    - wire-probe
+    - non-scoring
+    - multi-turn
+
+grading: "grading.yaml"
