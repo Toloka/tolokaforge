@@ -53,6 +53,11 @@ from tolokaforge.core.output.aggregates import FileAggregateWriter, RunAggregate
 from tolokaforge.core.output.artifacts import FileArtifactWriter, TrialArtifactWriter
 from tolokaforge.core.rate_limiter import GlobalRateLimiter
 from tolokaforge.core.resume import RunStateManager
+from tolokaforge.core.run_display_events import (
+    RunDisplayEvents,
+    ServiceSnapshot,
+    _NullRunDisplayEvents,
+)
 from tolokaforge.core.run_queue import AttemptLease, create_run_queue
 from tolokaforge.core.runtime import RuntimeBackend
 from tolokaforge.core.trial import (
@@ -173,6 +178,46 @@ def _normalise_runner_url(runner_address: str) -> str:
     return f"http://{runner_address}"
 
 
+def _declared_engine_service_snapshots(service_stack: Any) -> list[ServiceSnapshot]:
+    """Return one ``ServiceSnapshot`` per declared engine service.
+
+    Fired on ``phase_changed(phase="starting_services", …)`` so the
+    panel can render the service list with ``status="created"`` before
+    any container has been brought up. Reads ``service_stack.services``
+    — the declared :class:`ServiceDefinition` mapping — so it works
+    before ``start_all()``.
+    """
+    snapshots: list[ServiceSnapshot] = []
+    for name in service_stack.services:
+        snapshots.append(ServiceSnapshot(name=name, status="created", ports={}, role="engine"))
+    return snapshots
+
+
+def _engine_service_snapshots(service_stack: Any) -> list[ServiceSnapshot]:
+    """Return one ``ServiceSnapshot`` per running engine service.
+
+    Fired on ``phase_changed(phase="services_ready", …)`` after
+    ``start_all()`` completes so the panel can render live status +
+    resolved ports. Reads ``service_stack.get_status()`` for the
+    lifecycle string and ``.health`` for the probe verdict; the widget
+    prefers ``health`` when present because ``status="running"`` on a
+    container whose probe is still starting overstates readiness.
+    """
+    statuses = service_stack.get_status()
+    snapshots: list[ServiceSnapshot] = []
+    for name, status in statuses.items():
+        effective = status.health if status.health not in (None, "unknown") else status.status
+        snapshots.append(
+            ServiceSnapshot(
+                name=name,
+                status=effective,
+                ports=dict(status.ports),
+                role="engine",
+            )
+        )
+    return snapshots
+
+
 def _build_env_endpoints(runner_address: str) -> EnvEndpoints:
     """Resolve the per-trial service URLs for inclusion in :class:`TrialSpec`.
 
@@ -217,6 +262,7 @@ class OrchestratorDeps:
     run_aggregate_writer: RunAggregateWriter = field(default_factory=FileAggregateWriter)
     runtime_backend: RuntimeBackend | None = None
     conductor_factory: ConductorFactory | None = None
+    events: RunDisplayEvents = field(default_factory=_NullRunDisplayEvents)
 
 
 class Orchestrator:
@@ -264,12 +310,18 @@ class Orchestrator:
         self._run_aggregate_writer: RunAggregateWriter = resolved_deps.run_aggregate_writer
         self._injected_runtime_backend: RuntimeBackend | None = resolved_deps.runtime_backend
         self._conductor_factory: ConductorFactory | None = resolved_deps.conductor_factory
+        self._events: RunDisplayEvents = resolved_deps.events
         # Per-run cache of resolved ``TaskDescription`` objects keyed by
         # task_id. ``adapter.to_task_description()`` reads the system
         # prompt, tool schemas, fixtures, and base64-bundles the task_dir
         # — repeating that K times for ``repeats=K`` trials of the same
         # task is wasted work. Populated lazily by ``_build_trial_spec``.
         self._task_desc_cache: dict[str, TaskDescription] = {}
+        # Run-wide trial ordering: ``(task_id, trial_index) → total_index``
+        # (0..total-1). Populated by :meth:`_build_pending_trials` and
+        # read at the ``trial_started`` emission site so the panel can
+        # render a global ``[N/M]`` prefix.
+        self._total_index_by_key: dict[tuple[str, int], int] = {}
 
         # Initialize logger
         log_level = logging.DEBUG if verbose else logging.INFO
@@ -427,6 +479,7 @@ class Orchestrator:
             trial_grader=trial_grader,
             output_dir=output_dir,
             request_limiter=request_limiter,
+            events=self._events,
         )
         if self._conductor_factory is not None:
             return self._conductor_factory(ctx)
@@ -847,6 +900,7 @@ class Orchestrator:
             conductor=conductor,
             logger=self.logger,
             log_capture=log_capture,
+            events=self._events,
         )
 
     def _verify_isolation_compatibility(self, runtime_backend: RuntimeBackend) -> None:
@@ -926,6 +980,10 @@ class Orchestrator:
         Order is (task, trial_index) lexicographic. With
         ``orchestrator.shuffle_trials`` set, the order is randomized —
         diagnostic only, does not eliminate state leakage between trials.
+
+        Populates :attr:`_total_index_by_key` as a side effect so the
+        ``trial_started`` emission site can render a run-wide
+        ``[N/M]`` prefix without recomputing.
         """
         pending_trials: list[tuple[str, int]] = []
         for task in tasks:
@@ -936,6 +994,7 @@ class Orchestrator:
 
         if self.config.orchestrator.shuffle_trials:
             random.shuffle(pending_trials)
+        self._total_index_by_key = {key: idx for idx, key in enumerate(pending_trials)}
         return pending_trials
 
     def _ensure_typesense_started(self) -> None:
@@ -1149,6 +1208,7 @@ class Orchestrator:
 
         # Ensure TypeSense is started and tasks are loaded
         if not self.tasks:
+            self._events.phase_changed(phase="loading_tasks")
             self.load_tasks()
 
         # Initialize resume state manager
@@ -1308,7 +1368,16 @@ class Orchestrator:
                         "Building Docker images and starting containers "
                         "(this may take a few minutes on first run)..."
                     )
+                    self._events.phase_changed(
+                        phase="starting_services",
+                        detail="docker compose up",
+                        services=_declared_engine_service_snapshots(service_stack),
+                    )
                     service_stack.start_all(wait=True)
+                    self._events.phase_changed(
+                        phase="services_ready",
+                        services=_engine_service_snapshots(service_stack),
+                    )
                     self._ensure_engine_image_local_aliases(service_stack)
                     # Use localhost address — the orchestrator runs on the host,
                     # not inside Docker, so Docker container names don't resolve.
@@ -1353,6 +1422,7 @@ class Orchestrator:
                 run_id=run_id,
                 log_capture=log_capture,
             )
+        self._events.phase_changed(phase="connecting_runtime")
         runtime_backend.connect()
         self.logger.info("Runtime backend connected")
         self._verify_isolation_compatibility(runtime_backend)
@@ -1430,6 +1500,11 @@ class Orchestrator:
         lease_seconds = max(300, self.config.orchestrator.timeouts.episode_s * 2)
         lease_owner = f"orchestrator:{os.getpid()}"
 
+        self._events.run_started(
+            total_trials=run_state.total_trials,
+            initial_completed=run_state.completed_trials,
+        )
+
         # Run tasks with parallel workers using the durable queue.
         with ThreadPoolExecutor(max_workers=self.config.effective_workers) as executor:
             active_futures: dict[Any, AttemptLease] = {}
@@ -1457,6 +1532,13 @@ class Orchestrator:
                 run_state.mark_running(lease.task_id, lease.trial_index)
                 self.state_manager.save_state(run_state)
 
+                self._events.trial_started(
+                    trial_id=f"{lease.task_id}:{lease.trial_index}",
+                    task_id=lease.task_id,
+                    trial_index=lease.trial_index,
+                    total_index=self._total_index_by_key.get((lease.task_id, lease.trial_index), 0),
+                )
+
                 try:
                     spec = self._build_trial_spec(
                         task=task,
@@ -1479,6 +1561,11 @@ class Orchestrator:
                     run_queue.mark_failed(lease.id, f"Spec build failed: {e}", retryable=False)
                     run_state.mark_failed(lease.task_id, lease.trial_index, str(e))
                     self.state_manager.save_state(run_state)
+                    self._events.trial_failed(
+                        trial_id=f"{lease.task_id}:{lease.trial_index}",
+                        error=str(e),
+                        retryable=False,
+                    )
                     return True
                 future = executor.submit(trial_executor.execute, spec, task)
                 active_futures[future] = lease
@@ -1531,6 +1618,11 @@ class Orchestrator:
                                     f"Retry limit reached after transient failure: {reason}",
                                 )
                                 self.state_manager.save_state(run_state)
+                                self._events.trial_failed(
+                                    trial_id=f"{task_id}:{trial_idx}",
+                                    error=f"Retry limit reached after transient failure: {reason}",
+                                    retryable=True,
+                                )
                             self.logger.info(
                                 "Trial failed (transient)",
                                 task_id=task_id,
@@ -1551,6 +1643,14 @@ class Orchestrator:
                             else:
                                 run_state.mark_completed(task_id, trial_idx, False, 0.0)
                             self.state_manager.save_state(run_state)
+
+                            self._events.trial_completed(
+                                trial_id=f"{task_id}:{trial_idx}",
+                                binary_pass=(
+                                    trajectory.grade.binary_pass if trajectory.grade else False
+                                ),
+                                score=trajectory.grade.score if trajectory.grade else None,
+                            )
 
                             self.logger.info(
                                 "Trial completed",
@@ -1578,6 +1678,11 @@ class Orchestrator:
                             # Mark as failed only when retries are exhausted.
                             run_state.mark_failed(task_id, trial_idx, str(e))
                             self.state_manager.save_state(run_state)
+                            self._events.trial_failed(
+                                trial_id=f"{task_id}:{trial_idx}",
+                                error=str(e),
+                                retryable=True,
+                            )
 
                     # Stop scheduling new work once budget cap is reached.
                     if budget_limit is not None and total_cost_usd >= budget_limit:
@@ -1634,6 +1739,8 @@ class Orchestrator:
 
         # Generate reports
         self._generate_reports(output_dir)
+
+        self._events.run_finished(output_dir=output_dir.resolve())
 
     def run_worker(self, output_dir: Path, max_attempts: int | None = None) -> dict[str, Any]:
         """Run as a worker consuming attempts from the durable queue.
