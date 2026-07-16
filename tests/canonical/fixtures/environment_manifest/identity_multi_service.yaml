@@ -1,0 +1,19 @@
+services:
+  runner:
+    image: tolokaforge-runner:0.5.0
+    environment:
+      DB_SERVICE_URL: "http://db-service:8000"
+  app-service:
+    image: tolokaforge-runner:0.5.0
+    environment:
+      APP_DB_DSN: "postgresql://app:app_pw@app-db:5432/mfg"
+    volumes:
+      - ./app/main.py:/srv/app/main.py:ro
+  app-db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: "mfg"
+      POSTGRES_USER: "app"
+      POSTGRES_PASSWORD: "app_pw"
+    volumes:
+      - ./app-db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
