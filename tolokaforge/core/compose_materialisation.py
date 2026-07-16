@@ -20,17 +20,22 @@ handles). The backends layer those on top.
 
 from __future__ import annotations
 
+import copy
 import logging
 import shutil
+import subprocess
 import tempfile
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import yaml
 from testcontainers.compose import DockerCompose
 from testcontainers.compose.compose import ComposeContainer
 
 from tolokaforge.core.run_display_events import ContainerSnapshot
-from tolokaforge.core.trial import EnvEndpoints
+from tolokaforge.core.trial import EnvEndpoints, NetworkPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +63,124 @@ core stack exposes and the port task compose files publish for the
 RAG_SERVICE_CANDIDATES = ("rag", "rag-service")
 """Compose service names checked when resolving the RAG endpoint.
 First match wins; ``None`` returned if no match is exposed."""
+
+
+# ---------------------------------------------------------------------------
+# Network-policy enforcement
+# ---------------------------------------------------------------------------
+
+
+NETPOLICY_INTERNAL_NETWORK = "tolokaforge_netpolicy_internal"
+"""Injected ``internal: true`` network every task service joins under
+``no_internet``. No public egress; inter-service DNS stays intact because
+every service shares it. Compose prefixes it with the per-run/per-trial
+project name, so the fully-qualified network is unique on the daemon and
+cannot collide with a task-declared network of the same base name."""
+
+NETPOLICY_EDGE_NETWORK = "tolokaforge_netpolicy_edge"
+"""Injected non-internal network the runner service *additionally* joins
+under ``no_internet``, so its published gRPC port stays host-reachable and
+it retains egress for in-container LLM-as-judge grading."""
+
+
+class NetworkPolicyError(ValueError):
+    """A declared ``network_policy`` has no docker enforcement available."""
+
+
+def verify_network_policy_supported(policy: NetworkPolicy) -> None:
+    """Raise :class:`NetworkPolicyError` if ``policy`` cannot be enforced by
+    the docker provisioner. ``limited_internet`` needs an egress-allowlist
+    proxy sidecar (#323); refusing to run is the only honest option —
+    silently granting full or no internet would under/over-enforce a
+    declared security posture. ``no_internet`` and ``full_internet`` return
+    cleanly. Reads only ``policy`` — no compose I/O — so callers can hoist it
+    before any temp-dir creation or docker work."""
+    if policy is NetworkPolicy.LIMITED_INTERNET:
+        raise NetworkPolicyError(
+            "network_policy 'limited_internet' is not enforceable yet: it needs an "
+            "egress-allowlist proxy sidecar (#323). Declare 'no_internet' or "
+            "'full_internet' explicitly."
+        )
+
+
+def enforce_network_policy(
+    compose_doc: dict[str, Any],
+    policy: NetworkPolicy,
+    runner_service: str,
+) -> dict[str, Any]:
+    """Return a compose doc rewritten to enforce ``policy``.
+
+    ``full_internet`` returns ``compose_doc`` unchanged (same object).
+    ``no_internet`` returns a deep copy in which (1) every service joins the
+    injected :data:`NETPOLICY_INTERNAL_NETWORK` (``internal: true`` — no
+    egress), any network the task already declared is forced ``internal:
+    true`` too, and (2) ``runner_service`` additionally joins the non-internal
+    :data:`NETPOLICY_EDGE_NETWORK`. ``limited_internet`` raises
+    :class:`NetworkPolicyError` (belt-and-suspenders — the enforcement point
+    is :func:`verify_network_policy_supported`; reaching here with it is a
+    wiring bug and must fail loud rather than return an egress-capable doc).
+
+    ``runner_service`` is guaranteed present in ``services`` by
+    :class:`EnvironmentManifest` validation.
+    """
+    if policy is NetworkPolicy.FULL_INTERNET:
+        return compose_doc
+    if policy is NetworkPolicy.LIMITED_INTERNET:
+        raise NetworkPolicyError(
+            "enforce_network_policy reached with 'limited_internet'; this value has no "
+            "docker enforcement (#323) and must be refused by verify_network_policy_supported "
+            "before any compose rewrite."
+        )
+
+    doc = copy.deepcopy(compose_doc)
+    networks: dict[str, Any] = doc.setdefault("networks", {})
+    for name, config in networks.items():
+        merged = dict(config) if isinstance(config, dict) else {}
+        merged["internal"] = True
+        networks[name] = merged
+    networks[NETPOLICY_INTERNAL_NETWORK] = {"internal": True}
+    networks[NETPOLICY_EDGE_NETWORK] = {}
+
+    services: dict[str, Any] = doc["services"]
+    for service_name, service in services.items():
+        attachments = [NETPOLICY_INTERNAL_NETWORK]
+        if service_name == runner_service:
+            attachments.append(NETPOLICY_EDGE_NETWORK)
+        service["networks"] = _merge_service_networks(service.get("networks"), attachments)
+    return doc
+
+
+def _merge_service_networks(existing: Any, additions: list[str]) -> Any:
+    """Add each name in ``additions`` to a service-level ``networks:`` value,
+    preserving its declared shape (list or mapping) and any per-network config
+    (aliases, static IPs). Absent ``existing`` yields a plain list. Idempotent:
+    a name already present is left untouched."""
+    if isinstance(existing, dict):
+        merged = dict(existing)
+        for name in additions:
+            if name not in merged:
+                merged[name] = None
+        return merged
+    current = list(existing) if isinstance(existing, list) else []
+    for name in additions:
+        if name not in current:
+            current.append(name)
+    return current
+
+
+def apply_network_policy_to_compose_file(
+    compose_file: Path, policy: NetworkPolicy, runner_service: str
+) -> None:
+    """Read ``compose_file``, apply :func:`enforce_network_policy`, and write
+    the result back in place. ``full_internet`` leaves the file byte-identical
+    (the transform is identity), so its comments and formatting survive."""
+    with compose_file.open() as f:
+        doc = yaml.safe_load(f)
+    transformed = enforce_network_policy(doc, policy, runner_service)
+    if transformed is doc:
+        return
+    with compose_file.open("w") as f:
+        yaml.safe_dump(transformed, f, sort_keys=False)
 
 
 # ---------------------------------------------------------------------------
@@ -273,3 +396,118 @@ def cleanup_partial_materialisation(compose: DockerCompose | None, temp_dir: Pat
     if compose is not None:
         shutdown_compose(compose)
     shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Per-service log capture on failure
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class LogCaptureConfig:
+    """Per-run policy for capturing per-service compose logs on trial failure.
+
+    ``output_root`` is the run's ``output_dir``; capture writes under
+    ``output_root/trials/<task>/<idx>/services/``. ``tail`` is the
+    ``docker compose logs --tail`` bound. ``on_success`` is the debug escape
+    hatch that captures logs for successful trials too.
+    """
+
+    output_root: Path
+    tail: int
+    on_success: bool
+
+
+def capture_compose_service_logs(
+    compose: DockerCompose | None,
+    service_names: Iterable[str],
+    dest_dir: Path,
+    tail: int,
+) -> dict[str, int]:
+    """Write ``docker compose logs`` output per service to ``dest_dir``.
+
+    Returns ``{service_name: bytes_written}`` for the services that produced
+    output. Best-effort diagnostics captured *because* a trial already failed:
+    a per-service fetch error is ``logger.debug``-logged and that service is
+    omitted from the map — this function never raises.
+
+    The compose CLI is driven directly (testcontainers' ``get_logs`` has no
+    tail bound): the base command comes from ``compose.compose_command_property``
+    (``docker compose -f <file>``), and the subprocess runs with
+    ``cwd=str(compose.context)`` so Docker Compose derives the project name from
+    the context-dir basename — the same basename the per-trial temp dir encodes.
+    A wrong cwd silently targets no project and returns empty logs.
+
+    ``compose is None`` (nothing materialised) or an empty ``service_names``
+    returns ``{}`` without creating ``dest_dir``. ``dest_dir`` is created
+    (parents included) only when there is at least one service to attempt.
+    """
+    if compose is None:
+        return {}
+    names = list(service_names)
+    if not names:
+        return {}
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    base_command = list(compose.compose_command_property)
+    context = str(compose.context)
+    captured: dict[str, int] = {}
+    for name in names:
+        output = _fetch_service_logs(base_command, context, name, tail)
+        if not output:
+            continue
+        (dest_dir / f"{name}.log").write_bytes(output)
+        captured[name] = len(output)
+    return captured
+
+
+def _fetch_service_logs(
+    base_command: list[str], context: str, service: str, tail: int
+) -> bytes | None:
+    """Run ``docker compose logs`` for one service, returning its raw bytes.
+
+    ``None`` on any subprocess failure (logged at debug) — the caller omits the
+    service. Empty output is returned as-is and the caller skips it.
+    """
+    command = [*base_command, "logs", "--no-color", "--no-log-prefix", "--tail", str(tail), service]
+    try:
+        result = subprocess.run(command, cwd=context, capture_output=True, check=True)
+    except (
+        Exception
+    ) as exc:  # noqa: BLE001 — best-effort diagnostics; subprocess raises varied types
+        logger.debug("compose_materialisation: logs fetch for service %r failed: %s", service, exc)
+        return None
+    return result.stdout
+
+
+def trial_services_dir(output_root: Path, trial_id: str) -> Path:
+    """Return the per-trial ``services/`` capture dir for ``trial_id``.
+
+    ``trial_id`` is the canonical ``"{task_id}:{trial_index}"`` id; the tail
+    ``:index`` becomes the trial subdir, matching the conductor's
+    ``output_root/trials/<task_id>/<index>/`` bundle layout.
+    """
+    task_id, trial_index = trial_id.rsplit(":", 1)
+    return output_root / "trials" / task_id / trial_index / "services"
+
+
+def write_capture_manifest(
+    dest_dir: Path,
+    tail: int,
+    captured: Mapping[str, int],
+    capture_reason: str = "provision_error",
+) -> None:
+    """Write ``dest_dir/_capture.yaml`` recording captured per-service byte counts.
+
+    The durable record for the provision-failure path, where no ``metrics.yaml``
+    exists to amend. Shape:
+    ``{"tail": int, "capture_reason": str, "services": {"<name>": {"bytes": int}}}``.
+    ``dest_dir`` must already exist (the ``.log`` writer creates it).
+    """
+    manifest = {
+        "tail": tail,
+        "capture_reason": capture_reason,
+        "services": {name: {"bytes": count} for name, count in captured.items()},
+    }
+    with (dest_dir / "_capture.yaml").open("w") as f:
+        yaml.safe_dump(manifest, f, sort_keys=False)

@@ -86,7 +86,7 @@ class EnvHandle(Protocol):
 # ---------------------------------------------------------------------------
 
 
-ProvisionStage = Literal["provision", "await_ready"]
+ProvisionStage = Literal["provision", "await_ready", "reset_recipe"]
 
 
 class ProvisionError(Exception):
@@ -143,6 +143,13 @@ class RuntimeBackend(Protocol):
     trials sets :attr:`IsolationMode.SHARED_STACK`; any backend that
     materialises an independent substrate per trial sets
     :attr:`IsolationMode.PER_TRIAL_STACK`."""
+
+    advertised_capabilities: frozenset[str]
+    """Names from :data:`tolokaforge.core.backend_capabilities.CAPABILITY_REGISTRY`
+    this backend honours. Read by
+    :func:`tolokaforge.core.backend_capabilities.check_admission` at run
+    start to reject runs whose ``compute.capabilities`` request exceeds
+    the advertisement."""
 
     # ---- Run-level lifecycle ----
     def connect(self, timeout: float = 30.0, retry_interval: float = 1.0) -> None:
@@ -316,6 +323,20 @@ class RuntimeBackend(Protocol):
         """
         ...
 
+    def capture_service_logs(self, handle: EnvHandle, *, failed: bool) -> dict[str, int]:
+        """Capture per-service logs for ``handle``'s stack; return a
+        ``{service_name: bytes_written}`` map.
+
+        Writes ``docker compose logs`` output to the handle's trial
+        ``services/`` dir when the backend has a live per-trial stack and
+        (``failed`` or the backend's on-success policy), then returns the
+        byte map for the services that produced output; returns ``{}``
+        otherwise. Never raises — best-effort diagnostics captured *because*
+        a failure is already decided. Backends without a trial-scoped stack
+        (the shared-stack backend) are documented no-ops returning ``{}``.
+        """
+        ...
+
     def get_infrastructure_snapshot(self, handle: EnvHandle) -> list[ContainerSnapshot]:
         """Return a per-trial container-state snapshot for ``handle``.
 
@@ -353,6 +374,7 @@ class RuntimeBackendCallLog:
     await_ready_calls: list[str] = field(default_factory=list)
     endpoints_calls: list[str] = field(default_factory=list)
     torn_down_trials: list[str] = field(default_factory=list)
+    capture_service_logs_calls: list[tuple[str, bool]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -412,17 +434,23 @@ class InMemoryRuntimeBackend:
     :meth:`Orchestrator._verify_isolation_compatibility` can override the
     attribute on the instance."""
 
+    advertised_capabilities: frozenset[str] = frozenset()
+    """Test fixture advertises nothing by default; tests exercising the
+    admission gate override on the instance."""
+
     def __init__(
         self,
         *,
         fail_provision_after_service: str | None = None,
         await_ready_times_out: bool = False,
         isolation_mode: IsolationMode = IsolationMode.SHARED_STACK,
+        advertised_capabilities: frozenset[str] = frozenset(),
     ) -> None:
         self.call_log = RuntimeBackendCallLog()
         self._fail_provision_after_service = fail_provision_after_service
         self._await_ready_times_out = await_ready_times_out
         self.isolation_mode = isolation_mode
+        self.advertised_capabilities = advertised_capabilities
 
     # ---- Run-level lifecycle ----
     def connect(self, timeout: float = 30.0, retry_interval: float = 1.0) -> None:
@@ -479,6 +507,10 @@ class InMemoryRuntimeBackend:
 
     def teardown(self, handle: EnvHandle) -> None:
         self.call_log.torn_down_trials.append(handle.trial_id)
+
+    def capture_service_logs(self, handle: EnvHandle, *, failed: bool) -> dict[str, int]:
+        self.call_log.capture_service_logs_calls.append((handle.trial_id, failed))
+        return {}
 
     def get_infrastructure_snapshot(self, handle: EnvHandle) -> list[ContainerSnapshot]:
         """Return a synthetic single-container snapshot for tests.

@@ -28,6 +28,7 @@ from testcontainers.compose import DockerCompose
 
 from tolokaforge.core.compose_materialisation import (
     RUNNER_PORT_DEFAULT,
+    apply_network_policy_to_compose_file,
     cleanup_partial_materialisation,
     compose_container_to_snapshot,
     copy_compose_context,
@@ -35,7 +36,9 @@ from tolokaforge.core.compose_materialisation import (
     resolve_env_endpoints,
     resolve_runner_endpoint,
     shutdown_compose,
+    verify_network_policy_supported,
 )
+from tolokaforge.core.models import SeedRef
 from tolokaforge.core.run_display_events import ContainerSnapshot
 from tolokaforge.core.runtime import EnvHandle, IsolationMode, ProvisionError
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, EnvEndpoints, EnvironmentManifest
@@ -686,7 +689,13 @@ class SharedStackRuntimeBackend:
     isolation_mode: IsolationMode = IsolationMode.SHARED_STACK
     """Every trial in the run talks to the same runner container. Read by
     the orchestrator's compatibility check to refuse runs whose tasks
-    declare ``environment_manifest.isolation: per_trial``."""
+    require per-trial substrate materialisation."""
+
+    advertised_capabilities: frozenset[str] = frozenset(
+        {"shared_stack", "network_isolation:no_internet"}
+    )
+    """Local-docker shared-stack capability advertisement. Read by
+    :func:`tolokaforge.core.backend_capabilities.check_admission`."""
 
     def __init__(
         self,
@@ -694,6 +703,7 @@ class SharedStackRuntimeBackend:
         endpoints: EnvEndpoints | None = None,
         env_manifest: EnvironmentManifest | None = None,
         run_id: str = "run",
+        seeds: dict[str, SeedRef] | None = None,
     ):
         """Initialize the shared-stack runtime.
 
@@ -722,6 +732,7 @@ class SharedStackRuntimeBackend:
         self._run_id = run_id
         self._compose: DockerCompose | None = None
         self._temp_dir: Path | None = None
+        self.seeds: dict[str, SeedRef] = dict(seeds or {})
 
         self.runner_client: GrpcRunnerClient | None
         self._endpoints: EnvEndpoints | None
@@ -814,10 +825,16 @@ class SharedStackRuntimeBackend:
         assert self._env_manifest is not None  # narrowed by caller
         manifest = self._env_manifest
 
+        verify_network_policy_supported(manifest.network_policy)
         temp_dir = make_project_temp_dir(self._run_id)
         compose: DockerCompose | None = None
         try:
             copy_compose_context(manifest.compose_file, temp_dir)
+            apply_network_policy_to_compose_file(
+                temp_dir / manifest.compose_file.name,
+                manifest.network_policy,
+                manifest.runner_service,
+            )
             compose = DockerCompose(
                 context=str(temp_dir),
                 compose_file_name=manifest.compose_file.name,
@@ -919,6 +936,19 @@ class SharedStackRuntimeBackend:
     def teardown(self, handle: EnvHandle) -> None:  # noqa: ARG002 — Protocol conformance
         """No-op: the shared stack lives for the whole run and is torn
         down at :meth:`close`, not per-trial. Idempotent by construction."""
+
+    def capture_service_logs(  # noqa: ARG002 — Protocol conformance
+        self, handle: EnvHandle, *, failed: bool
+    ) -> dict[str, int]:
+        """Documented no-op returning ``{}``.
+
+        The shared stack is run-wide, not trial-scoped, and per-trial
+        :meth:`teardown` is a no-op — so per-trial log capture has no
+        stack to read and would capture the same run-wide containers on
+        every trial. Run-level capture on a shared-stack materialise
+        failure is a separate surface (see
+        ``docs/architecture/RUNTIME_BACKENDS.md``)."""
+        return {}
 
     def get_infrastructure_snapshot(
         self, handle: EnvHandle
