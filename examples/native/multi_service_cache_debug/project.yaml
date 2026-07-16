@@ -1,0 +1,70 @@
+# Project spec for the multi_service_cache_debug example.
+#
+# Demonstrates the wired redis_dump reset code path end-to-end via
+# `tolokaforge run`: the `redis` service is labelled `isolation: reset` and
+# bound to the named seed `cache_poisoned`. At the start of every trial the
+# per-trial backend brings up a fresh compose stack and restores the RDB seed
+# into redis, pre-loading `order:4021` with a STALE cached value while postgres
+# holds the fresh truth. See README.md.
+#
+# See docs/architecture/PROJECTS.md for the full Project model.
+
+name: "multi-service-cache-debug"
+version: 1
+description: >
+  Single-task debugging project proving the redis_dump seed-backed reset recipe
+  fires through the CLI. A real redis service is restored to the `cache_poisoned`
+  RDB seed per trial, poisoning `order:4021` with a stale status; the agent
+  diagnoses the cache-invalidation bug over HTTP across the app and cache layers
+  and writes a root-cause note that three-way grading evaluates.
+
+tasks:
+  discovery:
+    glob: "tasks/**/task.yaml"
+
+# ── Shared assets ───────────────────────────────────────────────
+# Named seeds the reset recipe references by name. The digest is stamped by
+# `uv run tolokaforge assets stamp` and verified at load; regenerate the seed
+# with `assets/build_seed.py`, then re-stamp.
+assets:
+  seeds:
+    cache_poisoned:
+      path: "./assets/cache_poisoned.rdb"
+      kind: "redis_dump"
+      digest: "sha256:2ed7205055b017d48ae10d83217e4f841a5727662215adbbca97459b59e361be"
+
+# ── Default environment ─────────────────────────────────────────
+# Every task inherits this unless it declares its own `environment_manifest`.
+# The cache_debug task declares none, so it inherits this stack whole
+# (including `redis: reset`).
+default_environment:
+  stack:
+    compose_file: "./shared/environment.compose.yaml"
+    runner_service: "runner"
+  services:
+    # `redis` is restored to the named RDB seed at the start of every trial.
+    # The other services carry no entry → they default to `ephemeral` (fresh
+    # per trial). The reset/ephemeral mix makes `requires_per_trial` true,
+    # forcing per-trial backend selection (the only backend that applies
+    # reset recipes).
+    redis:
+      isolation: "reset"
+      reset: { seed: "cache_poisoned" }
+
+# ── Task defaults — base for every task ─────────────────────────
+task_defaults:
+  adapter_type: "native"
+  max_turns: 20
+  actors:
+    user:
+      mode: "llm"
+      persona: "cooperative"
+
+# ── Run defaults — base for every run config ────────────────────
+run_defaults:
+  compute:
+    provider: "local-docker"
+    workers: 1
+  orchestrator:
+    auto_start_services: true
+    shuffle_trials: false
