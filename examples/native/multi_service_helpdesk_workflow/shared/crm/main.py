@@ -20,6 +20,7 @@ from pydantic import BaseModel
 
 
 class NewCase(BaseModel):
+    # No extra="forbid": stray agent-added fields are dropped, not 422'd — keeps a guidance-following agent's POST valid.
     delivery_id: int
     customer_id: str
     resolution_path: str

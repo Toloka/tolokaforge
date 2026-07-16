@@ -181,7 +181,7 @@ Scripted mode (`mode: "scripted"`) is available for simple deterministic flows b
 
 For adversarial, multi-step tasks where the agent must *extract* the deciding
 facts through conversation, sharpen the `backstory` into a specialised persona.
-A specialised persona is a `backstory` with five components:
+A specialised persona is a `backstory` with six components:
 
 - **Named persona.** Give the user a name, role, and organisation ("You are Ana
   Reyes, operations coordinator at Northwind Biologics"). Concreteness keeps the
