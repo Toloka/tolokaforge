@@ -28,7 +28,9 @@ def enter_repl(ctx: click.Context) -> None:
     """
     history_path = Path.home() / ".tolokaforge_history"
     console.print(
-        "[info]tolokaforge[/info] interactive shell. Type `help` for commands, `exit` to quit."
+        "[info]tolokaforge[/info] interactive shell. "
+        "Type `:help` for commands, `:exit` (or Ctrl-D) to quit. "
+        "Subcommands work as usual: `run --config …`, `status`, etc."
     )
     _click_repl(
         ctx,
