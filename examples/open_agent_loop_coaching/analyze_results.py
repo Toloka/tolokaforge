@@ -75,6 +75,27 @@ class ArmSummary:
         return sum((t.coach_report or {}).get("interventions_submitted", 0) for t in self.trials)
 
 
+def _resolve_arm_dir(results_dir: Path, arm_name: str) -> Path | None:
+    """Find the on-disk directory for `arm_name`.
+
+    Handles two shapes:
+    * Exact match — `results_dir / arm_name` (Python driver output).
+    * Timestamped — `arm_name_YYYYMMDD_HHMMSS` (CLI `tolokaforge run` output).
+
+    If multiple timestamped variants exist, returns the most recent by
+    directory name (lexicographic, which matches chronological for the
+    YYYYMMDD_HHMMSS format).
+    """
+    exact = results_dir / arm_name
+    if exact.is_dir():
+        return exact
+    candidates = sorted(
+        (p for p in results_dir.iterdir() if p.is_dir() and p.name.startswith(f"{arm_name}_")),
+        reverse=True,
+    )
+    return candidates[0] if candidates else None
+
+
 def load_arm(arm_dir: Path, arm_name: str) -> ArmSummary:
     summary = ArmSummary(name=arm_name)
 
@@ -274,12 +295,19 @@ def main(argv: list[str] | None = None) -> int:
 
     arms: dict[str, ArmSummary] = {}
     for arm_name in _ARM_ORDER:
-        arm_dir = results_dir / arm_name
-        if arm_dir.is_dir():
+        arm_dir = _resolve_arm_dir(results_dir, arm_name)
+        if arm_dir is not None:
             arms[arm_name] = load_arm(arm_dir, arm_name)
+            if arm_dir.name != arm_name:
+                print(f"  {arm_name} → {arm_dir.name} (CLI-timestamped run)")
 
     if not arms:
-        print(f"no arms found under {results_dir}", file=sys.stderr)
+        print(
+            f"no arms found under {results_dir}\n"
+            f"expected subdirs named `solo`, `rule_coached`, `llm_coached` "
+            f"(or `<name>_YYYYMMDD_HHMMSS` from a CLI run)",
+            file=sys.stderr,
+        )
         return 2
 
     print_table(list(arms.values()))

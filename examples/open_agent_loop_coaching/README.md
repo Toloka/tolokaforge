@@ -73,6 +73,19 @@ top-level driver (`run_ab_study.py`) is the only place that wraps
 
 ## Running
 
+> **⚠  You MUST use `run_ab_study.py` — not `tolokaforge run`.**
+>
+> The coach lives in the driver process and attaches to the session
+> before `orchestrator.run()` starts. `tolokaforge run <config>` runs
+> the orchestrator without a driver — the OAL machinery activates and
+> the trace file is written, but **no coach is ever spawned**. You'll
+> get an open-mode run that behaves identically to the sealed baseline
+> and produces `interventions: []` for every trial.
+>
+> A run performed with `tolokaforge run` will also stamp `_YYYYMMDD_HHMMSS`
+> onto every output directory. `run_ab_study.py` writes to the exact
+> paths in each run config, without stamps.
+
 Prerequisites:
 
 - Docker running (every trial needs the Runner service).
@@ -99,6 +112,11 @@ Then compute the summary:
 ```bash
 uv run python examples/open_agent_loop_coaching/analyze_results.py
 ```
+
+The analyzer accepts both output shapes — pristine `results/coaching_ab/solo/`
+directories from the driver, and CLI-timestamped `solo_YYYYMMDD_HHMMSS/`
+directories if you ran the wrong way. If both exist, the most-recent
+timestamped variant is used.
 
 Expect ~$0.20–$1.00 per arm at the default `repeats=4` (LLM-coached is
 the most expensive because of the extra LLM traffic). Whole study is
