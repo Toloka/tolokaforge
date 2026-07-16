@@ -30,6 +30,7 @@ from tolokaforge.core.compose_materialisation import (
     RUNNER_PORT_DEFAULT,
     apply_network_policy_to_compose_file,
     cleanup_partial_materialisation,
+    compose_container_to_snapshot,
     copy_compose_context,
     make_project_temp_dir,
     resolve_env_endpoints,
@@ -38,7 +39,8 @@ from tolokaforge.core.compose_materialisation import (
     verify_network_policy_supported,
 )
 from tolokaforge.core.models import SeedRef
-from tolokaforge.core.runtime import IsolationMode, ProvisionError
+from tolokaforge.core.run_display_events import ContainerSnapshot
+from tolokaforge.core.runtime import EnvHandle, IsolationMode, ProvisionError
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, EnvEndpoints, EnvironmentManifest
 from tolokaforge.runner import (
     ExecutionStatus,
@@ -48,7 +50,6 @@ from tolokaforge.runner import (
 from tolokaforge.tools.registry import ToolResult
 
 if TYPE_CHECKING:  # pragma: no cover — type-only imports for provisioning surface
-    from tolokaforge.core.runtime import EnvHandle
     from tolokaforge.core.trial import TrialSpec
 
 logger = logging.getLogger(__name__)
@@ -948,6 +949,28 @@ class SharedStackRuntimeBackend:
         failure is a separate surface (see
         ``docs/architecture/RUNTIME_BACKENDS.md``)."""
         return {}
+
+    def get_infrastructure_snapshot(
+        self, handle: EnvHandle
+    ) -> list[ContainerSnapshot]:  # noqa: ARG002 — Protocol conformance
+        """Return the shared-stack container snapshot.
+
+        In task-declared-stack mode (``env_manifest`` is set) reads
+        ``self._compose.get_containers()`` — every trial sees the same
+        snapshot for the run's shared substrate. In built-in-stack mode
+        (``self._compose is None``) returns an empty list: the services
+        widget already covers the built-in ``EngineStack``.
+        """
+        if self._compose is None:
+            return []
+        try:
+            containers = self._compose.get_containers()
+        except Exception:  # noqa: BLE001 — display must never raise past orchestrator
+            logger.exception(
+                "SharedStackRuntimeBackend.get_infrastructure_snapshot: docker ps failed"
+            )
+            return []
+        return [compose_container_to_snapshot(c) for c in containers]
 
     # ---- Per-trial RPC operations (ADR-0013) ----
     # Thin delegates to ``self.runner_client``. Kept as explicit methods

@@ -22,6 +22,7 @@ from tolokaforge.core.models import (
     TrialStatus,
 )
 from tolokaforge.core.rate_limiter import GlobalRateLimiter
+from tolokaforge.core.run_display_events import _NULL_EVENTS, RunDisplayEvents
 from tolokaforge.core.stuck import StuckDetector
 from tolokaforge.tools.registry import ToolExecutor
 
@@ -51,6 +52,7 @@ class TrialRunner:
         request_limiter: GlobalRateLimiter | None = None,
         verbose: bool = False,
         strict: bool = False,
+        events: RunDisplayEvents = _NULL_EVENTS,
     ):
         self.task_id = task_id
         self.trial_index = trial_index
@@ -66,6 +68,7 @@ class TrialRunner:
         self.request_limiter = request_limiter
         self.verbose = verbose
         self.strict = strict
+        self._events = events
 
         self.messages: list[Message] = []
         self.metrics = Metrics()
@@ -193,7 +196,11 @@ class TrialRunner:
                     max_turns=self.max_turns,
                     episode_timeout_s=self.episode_timeout_s,
                 ),
-                metrics=_AgentMetricsSink(self.metrics),
+                metrics=_AgentMetricsSink(
+                    self.metrics,
+                    events=self._events,
+                    trial_id=trial_id,
+                ),
                 should_terminate=self._agent_termination,
                 user_turn=self._agent_user_turn,
                 request_limiter=self.request_limiter,
@@ -428,11 +435,22 @@ class _AgentMetricsSink(MetricsSink):
 
     ``Usage.__add__`` is field-wise; ``calls`` concatenate (preserving per-call
     cost_source / latency_s); ``provider_raw`` is "latest wins" per the Usage
-    contract.
+    contract. Every ``record_generation`` also fires
+    :meth:`RunDisplayEvents.trial_progress` on the injected events sink so
+    the live display accumulates per-turn deltas alongside the run-level
+    cumulative counters it derives from ``run_started`` / ``trial_*``.
     """
 
-    def __init__(self, metrics: Metrics) -> None:
+    def __init__(
+        self,
+        metrics: Metrics,
+        *,
+        events: RunDisplayEvents = _NULL_EVENTS,
+        trial_id: str = "",
+    ) -> None:
         self._metrics = metrics
+        self._events = events
+        self._trial_id = trial_id
 
     def record_generation(self, result: GenerationResult) -> None:
         self._metrics.api_calls += 1
@@ -442,6 +460,12 @@ class _AgentMetricsSink(MetricsSink):
                 self._metrics.cost_usd = result.cost_usd
             else:
                 self._metrics.cost_usd += result.cost_usd
+        self._events.trial_progress(
+            trial_id=self._trial_id,
+            prompt_tokens_delta=result.usage.prompt_tokens,
+            completion_tokens_delta=result.usage.completion_tokens,
+            cost_delta_usd=result.cost_usd if result.cost_usd is not None else 0.0,
+        )
 
     def record_tool_call(self) -> None:
         self._metrics.tool_calls += 1

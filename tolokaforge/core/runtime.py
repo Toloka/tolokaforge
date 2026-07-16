@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
+from tolokaforge.core.run_display_events import ContainerSnapshot
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, EnvEndpoints, TrialSpec
 
 if TYPE_CHECKING:  # pragma: no cover — type-only imports
@@ -336,6 +337,21 @@ class RuntimeBackend(Protocol):
         """
         ...
 
+    def get_infrastructure_snapshot(self, handle: EnvHandle) -> list[ContainerSnapshot]:
+        """Return a per-trial container-state snapshot for ``handle``.
+
+        Called by the orchestrator right after :meth:`await_ready` so the
+        display can render an infrastructure sub-panel for the focused
+        trial. Backends that do not materialise per-trial substrate
+        (the built-in ``SharedStackRuntimeBackend`` in built-in-stack
+        mode) return an empty list — the services widget already covers
+        that path.
+
+        Must not raise: the orchestrator invokes this on the hot path
+        for every trial and a raise would corrupt the runner loop.
+        """
+        ...
+
 
 # ---------------------------------------------------------------------------
 # InMemoryRuntimeBackend — non-gRPC, test fixture
@@ -495,6 +511,24 @@ class InMemoryRuntimeBackend:
     def capture_service_logs(self, handle: EnvHandle, *, failed: bool) -> dict[str, int]:
         self.call_log.capture_service_logs_calls.append((handle.trial_id, failed))
         return {}
+
+    def get_infrastructure_snapshot(self, handle: EnvHandle) -> list[ContainerSnapshot]:
+        """Return a synthetic single-container snapshot for tests.
+
+        The in-memory backend has no real substrate, so the snapshot is
+        deterministic: one ``ContainerSnapshot`` per trial identifying
+        the in-memory runner. Tests that exercise the panel's infra
+        rendering can rely on this shape without standing up docker.
+        """
+        return [
+            ContainerSnapshot(
+                name=f"in-memory-runner-{handle.trial_id}",
+                service="runner",
+                state="running",
+                health="healthy",
+                ports={50051: 50051},
+            )
+        ]
 
     # ---- Per-trial RPC operations (ADR-0013) ----
     # The in-memory backend has no runner service to talk to; every RPC
