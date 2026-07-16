@@ -1095,6 +1095,205 @@ def test_render_boot_log_tail_truncates_msecs_below_1000() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Boot-log region — layout wiring, activation gate, height clamp
+# ---------------------------------------------------------------------------
+
+
+def _install_stub_live(display: LiveRunDisplay, height: int) -> None:
+    class _StubConsole:
+        pass
+
+    class _StubLive:
+        def __init__(self) -> None:
+            self.console = _StubConsole()
+
+        def update(self, *_a: object, **_kw: object) -> None:
+            pass
+
+    _StubConsole.height = height  # type: ignore[attr-defined]
+    display._live = _StubLive()  # type: ignore[assignment]
+
+
+def test_boot_log_region_present_between_services_and_main_during_boot() -> None:
+    """During the startup window with buffered docker records, the boot-log
+    region sits between the services widget and ``main``."""
+    from tolokaforge.core.run_display_events import ServiceSnapshot
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    services: list[ServiceSnapshot] = [
+        {"name": "runner", "status": "starting", "ports": {50051: 50051}, "role": "engine"},
+    ]
+    display.phase_changed(phase="starting_services", detail="docker compose up", services=services)
+    for i in range(3):
+        display._log_buffer.append(
+            _make_docker_record(
+                name="tolokaforge.docker.stack",
+                created=1784205296.0 + i,
+                msecs=0.0,
+                message=f"milestone-{i}",
+            )
+        )
+
+    layout = display._build_layout()
+    names = [getattr(c, "name", None) for c in layout.children]
+    assert "services" in names
+    assert "boot_log" in names
+    assert names.index("boot_log") == names.index("services") + 1
+    assert names.index("boot_log") == names.index("main") - 1
+
+
+def test_boot_log_region_absent_once_trials_dispatch() -> None:
+    """``run_started`` collapses the boot-log region even with docker records
+    still in the buffer — mirrors the services widget."""
+    display = LiveRunDisplay(refresh_per_second=1000)
+    for i in range(3):
+        display._log_buffer.append(
+            _make_docker_record(
+                name="tolokaforge.docker.stack",
+                created=1784205296.0 + i,
+                msecs=0.0,
+                message=f"milestone-{i}",
+            )
+        )
+    display.run_started(total_trials=1, initial_completed=0)
+
+    layout = display._build_layout()
+    names = {getattr(c, "name", None) for c in layout.children}
+    assert "boot_log" not in names
+
+
+def test_boot_log_region_absent_when_no_docker_records_buffered() -> None:
+    """A buffer with only a non-docker record leaves the boot-log region off —
+    no empty bordered panel."""
+    display = LiveRunDisplay(refresh_per_second=1000)
+    display._log_buffer.append(
+        _make_docker_record(
+            name="tolokaforge.runner",
+            created=1784205296.0,
+            msecs=0.0,
+            message="runner note",
+        )
+    )
+
+    layout = display._build_layout()
+    names = {getattr(c, "name", None) for c in layout.children}
+    assert "boot_log" not in names
+
+
+def _seed_boot_state(display: LiveRunDisplay, *, record_count: int) -> None:
+    from tolokaforge.core.run_display_events import ServiceSnapshot
+
+    services: list[ServiceSnapshot] = [
+        {"name": "runner", "status": "starting", "ports": {50051: 50051}, "role": "engine"},
+        {"name": "db-service", "status": "starting", "ports": {8000: 8000}, "role": "engine"},
+    ]
+    display.phase_changed(phase="starting_services", detail="docker compose up", services=services)
+    for i in range(record_count):
+        display._log_buffer.append(
+            _make_docker_record(
+                name="tolokaforge.docker.stack",
+                created=1784205296.0 + i,
+                msecs=(i + 1) * 100.0,
+                message=f"milestone-{i}",
+            )
+        )
+
+
+def _layout_child(layout: object, name: str) -> object | None:
+    for child in getattr(layout, "children", []):
+        if getattr(child, "name", None) == name:
+            return child
+    return None
+
+
+def test_boot_log_height_invariant_no_clamp_tall_viewport() -> None:
+    """Viewport 40: boot-log gets its full desired height (5 records + 2 = 7)
+    and the total row sum equals ``max(12, 40 - 1) == 39``."""
+    display = LiveRunDisplay(refresh_per_second=1000)
+    _install_stub_live(display, height=40)
+    _seed_boot_state(display, record_count=5)
+
+    layout = display._build_layout()
+    sizes = {getattr(c, "name", None): c.size for c in layout.children}
+
+    assert sizes["boot_log"] == 7  # 5 records + 2 border rows
+    assert sizes["main"] >= 5
+    assert sum(sizes.values()) == 39
+
+
+def test_boot_log_height_clamped_but_present_locks_392_regression() -> None:
+    """Viewport 15: boot-log clamps to ``budget = 14 - 4 - 1 - 5 = 4`` rows;
+    region stays present, ``main`` stays at its floor of 5, sum equals 14.
+
+    This is the regime that would silently overflow under the naive
+    ``main_h = max(5, total - …)`` formula: ``4 services + 7 desired boot-log
+    + 5 main-floor + 1 bottom = 17 > 14``. Row sum > total re-anchors Rich
+    Live and re-introduces the #392 panel stacking, so this assertion is
+    the regression lock.
+
+    Additionally: rendering the boot-log region into text with the SAME
+    clamped ``max_lines`` locks the "most-recent-last under clamp" contract
+    — the newest records must survive the crop, not the oldest.
+    """
+    from rich.console import Console
+
+    from tolokaforge.dx._display import THEME
+    from tolokaforge.dx.live_panel import _docker_boot_records, _render_boot_log_tail
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    _install_stub_live(display, height=15)
+    _seed_boot_state(display, record_count=5)
+
+    layout = display._build_layout()
+    sizes = {getattr(c, "name", None): c.size for c in layout.children}
+
+    assert "boot_log" in sizes, "boot-log region must survive the mid-viewport clamp"
+    assert sizes["boot_log"] == 4  # budget = 14 - 4 - 1 - 5 = 4
+    assert sizes["services"] == 4
+    assert sizes["main"] == 5
+    assert sizes["bottom"] == 1
+    assert sum(sizes.values()) == 14
+
+    filtered = _docker_boot_records(tuple(display._log_buffer))
+    panel = _render_boot_log_tail(filtered, max_lines=sizes["boot_log"] - 2)
+    console = Console(
+        width=120, force_terminal=True, color_system="truecolor", record=True, theme=THEME
+    )
+    console.print(panel)
+    body = console.export_text()
+    # boot_log_h - 2 == 2 content rows: the LAST 2 records must be kept,
+    # older ones dropped. Rich crops a Panel from the bottom, so passing
+    # a hardcoded max_lines=5 would drop the 3 newest and invert the
+    # "most-recent-last" contract exactly on small terminals.
+    for kept in ("milestone-3", "milestone-4"):
+        assert kept in body, f"newest record {kept} must survive the clamp"
+    for dropped in ("milestone-0", "milestone-1", "milestone-2"):
+        assert dropped not in body, f"older record {dropped} must be trimmed"
+
+
+def test_boot_log_region_dropped_when_budget_below_minimum_panel_height() -> None:
+    """Viewport 12: ``budget = 12 - 4 - 1 - 5 = 2 < 3`` → region absent.
+
+    Layout is byte-identical to the services-only window: sum equals
+    ``max(12, 12 - 1) == 12``, and ``boot_log`` is not among the child
+    names.
+    """
+    display = LiveRunDisplay(refresh_per_second=1000)
+    _install_stub_live(display, height=12)
+    _seed_boot_state(display, record_count=5)
+
+    layout = display._build_layout()
+    names = [getattr(c, "name", None) for c in layout.children]
+    sizes = {name: c.size for name, c in zip(names, layout.children, strict=True)}
+
+    assert "boot_log" not in names
+    assert sizes["services"] == 4
+    assert sizes["main"] == 7  # total 12 - 4 services - 1 bottom - 0 banner - 0 boot_log
+    assert sizes["bottom"] == 1
+    assert sum(sizes.values()) == 12
+
+
+# ---------------------------------------------------------------------------
 # `trial_provisioned` — containers land on the focused card
 # ---------------------------------------------------------------------------
 
