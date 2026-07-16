@@ -462,6 +462,41 @@ class Orchestrator:
         """
         return self._session_registry
 
+    def _write_open_agent_loop_trace(self, output_dir: Path, task_id: str, trial_idx: int) -> None:
+        """Persist the trial's open_agent_loop snapshot to disk.
+
+        No-op when open mode is off or the trial never entered the run body
+        (no session created for it). Writes ``trials/<task_id>/<trial_idx>/
+        open_agent_loop.yaml`` alongside ``trajectory.yaml``. Companion-file
+        shape (not merged into ``trajectory.yaml``) keeps the Trajectory
+        model unchanged and canonical snapshot tests undisturbed; a later
+        follow-up can promote the section into the Trajectory model.
+
+        Called from the orchestrator's trial-completion handler after the
+        conductor returns. Failures are logged and swallowed — the trace
+        write must never mask the actual trial result the operator cares
+        about.
+        """
+        if self._session_registry is None:
+            return
+        session = self._session_registry.get(f"{task_id}:{trial_idx}")
+        if session is None:
+            return
+        import yaml
+
+        trace_path = output_dir / "trials" / task_id / str(trial_idx) / "open_agent_loop.yaml"
+        try:
+            trace_path.parent.mkdir(parents=True, exist_ok=True)
+            with trace_path.open("w") as fh:
+                yaml.safe_dump(session.snapshot(), fh, sort_keys=False)
+        except Exception as write_err:  # noqa: BLE001 — trace write must not mask trial result
+            self.logger.warning(
+                "Failed to write open_agent_loop trace; continuing",
+                task_id=task_id,
+                trial_index=trial_idx,
+                error=str(write_err),
+            )
+
     def _build_observer_provider(
         self,
     ) -> Callable[[str], SessionLoopObserver | None] | None:
@@ -1546,6 +1581,13 @@ class Orchestrator:
                         self.results.append(trajectory)
                         trial_cost = trajectory.metrics.cost_usd or 0.0
                         total_cost_usd += trial_cost
+
+                        # Persist the open_agent_loop trace on every attempt
+                        # completion — no-op when open mode is off or the trial
+                        # never entered the run body. On retry the file is
+                        # overwritten with the accumulated session history
+                        # across attempts (session is keyed by trial_id).
+                        self._write_open_agent_loop_trace(output_dir, task_id, trial_idx)
 
                         # Retry transient infra failures based on queue retry policy.
                         if self._is_retryable_trajectory(trajectory):

@@ -67,6 +67,25 @@ class QueuedIntervention:
     submitted_at: datetime
 
 
+@dataclass(frozen=True)
+class _InterventionRecord:
+    """Durable trace-side record of one submitted intervention.
+
+    Kept separate from :class:`QueuedIntervention` (which lives on the
+    volatile producer queue and gets drained by the pause pump) — this
+    record persists for the trial's lifetime and lands in the
+    ``open_agent_loop`` trajectory-trace section. Includes the ack outcome
+    that ``submit`` returned so the trace tells the full story.
+    """
+
+    trial_id: str
+    participant_id: str
+    intervention: TrialIntervention
+    ack_outcome: str
+    ack_reason: str | None
+    submitted_at: datetime
+
+
 @dataclass
 class _ParticipantSlot:
     """Per-participant queue + handle. One slot per attached participant."""
@@ -97,6 +116,14 @@ class InProcessTrialSession:
         self._lock = threading.RLock()
         self._seq_counter = 0
         self._closed = False
+        # History captured for the durable open_agent_loop trace. Every
+        # published event lands here in seq order regardless of whether any
+        # participant is attached; every intervention submitted through
+        # :meth:`submit` is recorded with the ack outcome so the trace
+        # replays deterministically once written to disk (see
+        # :meth:`snapshot`). Bounded implicitly by the trial's turn budget.
+        self._event_history: list[TrialEvent] = []
+        self._intervention_history: list[_InterventionRecord] = []
 
     # ------------------------------------------------------------------
     # TrialSession Protocol
@@ -190,20 +217,33 @@ class InProcessTrialSession:
         # Confirm the handle is still attached; a detached participant
         # cannot submit further interventions.
         self._require_slot(handle)
+        submitted_at = datetime.now(UTC)
         self._intervention_queue.put(
             QueuedIntervention(
                 handle=handle,
                 intervention=intervention,
-                submitted_at=datetime.now(UTC),
+                submitted_at=submitted_at,
             )
         )
-        return InterventionAck(
+        ack = InterventionAck(
             intervention_kind=intervention.kind,
             trial_id=self._trial_id,
             participant_id=handle.participant_id,
             outcome="queued",
             reason=None,
         )
+        with self._lock:
+            self._intervention_history.append(
+                _InterventionRecord(
+                    trial_id=self._trial_id,
+                    participant_id=handle.participant_id,
+                    intervention=intervention,
+                    ack_outcome=ack.outcome,
+                    ack_reason=ack.reason,
+                    submitted_at=submitted_at,
+                )
+            )
+        return ack
 
     # ------------------------------------------------------------------
     # Producer-side API (concrete class, not on the Protocol)
@@ -229,12 +269,18 @@ class InProcessTrialSession:
         Publishing after close is a programmer error and raises
         ``RuntimeError`` — the sealed conductor would never do this;
         catching this early avoids silent event loss.
+
+        Records the event on the durable history buffer regardless of
+        whether any participant is attached, so the ``open_agent_loop``
+        trajectory-trace snapshot is faithful even for unattached open-mode
+        trials.
         """
         with self._lock:
             if self._closed:
                 raise RuntimeError(
                     f"Cannot publish {event.kind!r} to a closed session (trial_id={self._trial_id!r})."
                 )
+            self._event_history.append(event)
             for slot in self._participants.values():
                 slot.event_queue.put(event)
             if isinstance(event, TerminalReached):
@@ -277,6 +323,38 @@ class InProcessTrialSession:
     @property
     def is_closed(self) -> bool:
         return self._closed
+
+    def snapshot(self) -> dict[str, Any]:
+        """Serialisable snapshot of everything published + submitted for this
+        trial, in the shape the ``open_agent_loop`` trajectory-trace section
+        persists to disk.
+
+        Returns a plain ``dict`` (not a Pydantic model) so callers can drop
+        it straight into a YAML dump without wrestling with model shapes.
+        Every event and intervention round-trips through Pydantic v2's
+        ``model_dump(mode="json")`` so datetime / enum / discriminator
+        handling matches the wire format the session module already uses
+        elsewhere.
+        """
+        with self._lock:
+            events = [event.model_dump(mode="json") for event in self._event_history]
+            interventions = [
+                {
+                    "trial_id": record.trial_id,
+                    "participant_id": record.participant_id,
+                    "submitted_at": record.submitted_at.isoformat(),
+                    "ack_outcome": record.ack_outcome,
+                    "ack_reason": record.ack_reason,
+                    "intervention": record.intervention.model_dump(mode="json"),
+                }
+                for record in self._intervention_history
+            ]
+        return {
+            "trial_id": self._trial_id,
+            "closed": self._closed,
+            "events": events,
+            "interventions": interventions,
+        }
 
     @property
     def attached_participant_ids(self) -> list[str]:
