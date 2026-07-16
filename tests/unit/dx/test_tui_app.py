@@ -269,6 +269,186 @@ async def test_auth_shaped_failure_populates_overview_banner() -> None:
 
 
 # ---------------------------------------------------------------------------
+# LLM in-flight state — waiting / retry line + model identity + Live calls
+# ---------------------------------------------------------------------------
+
+
+async def test_trial_started_accepts_model_kwargs_and_renders_header() -> None:
+    """The widened ``trial_started`` accepts ``agent_model`` / ``user_model``
+    and paints a ``model: <name>`` header line into the focused pane."""
+    app = TextualRunApp()
+    async with app.run_test() as pilot:
+        app.trial_started(
+            trial_id="a:0",
+            task_id="a",
+            trial_index=0,
+            total_index=0,
+            agent_model="openrouter/anthropic/claude-sonnet-4-6",
+            user_model="openrouter/openai/gpt-5.4",
+        )
+        await pilot.pause()
+        card = app._trials["a:0"]
+        assert card.agent_model == "openrouter/anthropic/claude-sonnet-4-6"
+        assert card.user_model == "openrouter/openai/gpt-5.4"
+        pane = app.query_one("#focused", FocusedTrialView)
+        rendered = str(pane.render())
+        assert "model: openrouter/anthropic/claude-sonnet-4-6" in rendered
+
+
+async def test_llm_call_started_paints_waiting_line() -> None:
+    app = TextualRunApp()
+    async with app.run_test() as pilot:
+        app.trial_started(trial_id="a:0", task_id="a", trial_index=0, total_index=0)
+        app.llm_call_started(
+            trial_id="a:0",
+            role="agent",
+            provider="openrouter",
+            model="anthropic/claude-sonnet-4-6",
+            attempt=1,
+        )
+        await pilot.pause()
+        pane = app.query_one("#focused", FocusedTrialView)
+        rendered = str(pane.render())
+        assert "waiting on agent: openrouter/anthropic/claude-sonnet-4-6" in rendered
+
+
+async def test_llm_retry_scheduled_replaces_waiting_with_retry_line() -> None:
+    app = TextualRunApp()
+    async with app.run_test() as pilot:
+        app.trial_started(trial_id="a:0", task_id="a", trial_index=0, total_index=0)
+        app.llm_call_started(
+            trial_id="a:0",
+            role="agent",
+            provider="openrouter",
+            model="anthropic/claude-sonnet-4-6",
+            attempt=1,
+        )
+        app.llm_retry_scheduled(
+            trial_id="a:0",
+            role="agent",
+            provider="openrouter",
+            model="anthropic/claude-sonnet-4-6",
+            attempt=2,
+            next_attempt_in_s=8.0,
+            reason="APIConnectionError",
+        )
+        await pilot.pause()
+        pane = app.query_one("#focused", FocusedTrialView)
+        rendered = str(pane.render())
+        assert "retry 2/5 after 8s (APIConnectionError)" in rendered
+        assert "waiting on" not in rendered
+
+
+async def test_llm_call_finished_clears_call_state_line() -> None:
+    app = TextualRunApp()
+    async with app.run_test() as pilot:
+        app.trial_started(trial_id="a:0", task_id="a", trial_index=0, total_index=0)
+        app.llm_call_started(
+            trial_id="a:0",
+            role="agent",
+            provider="openrouter",
+            model="anthropic/claude-sonnet-4-6",
+            attempt=1,
+        )
+        app.llm_call_finished(
+            trial_id="a:0",
+            role="agent",
+            provider="openrouter",
+            model="anthropic/claude-sonnet-4-6",
+            attempt=1,
+            duration_s=0.4,
+            error=None,
+        )
+        await pilot.pause()
+        pane = app.query_one("#focused", FocusedTrialView)
+        rendered = str(pane.render())
+        assert "waiting on" not in rendered
+        assert "retry" not in rendered
+
+
+async def test_trial_completed_clears_stale_llm_state_from_pane() -> None:
+    app = TextualRunApp()
+    async with app.run_test() as pilot:
+        app.trial_started(trial_id="a:0", task_id="a", trial_index=0, total_index=0)
+        app.llm_call_started(
+            trial_id="a:0",
+            role="agent",
+            provider="openrouter",
+            model="anthropic/claude-sonnet-4-6",
+            attempt=1,
+        )
+        app.trial_completed(trial_id="a:0", binary_pass=True, score=1.0)
+        await pilot.pause()
+        pane = app.query_one("#focused", FocusedTrialView)
+        rendered = str(pane.render())
+        assert "waiting on" not in rendered
+
+
+async def test_overview_live_calls_lists_in_flight_across_trials() -> None:
+    """Overview tab surfaces a "Live calls" section listing every running
+    trial with an in-flight LLM call, so operators see cross-trial state
+    without cycling the trial list cursor."""
+    app = TextualRunApp()
+    async with app.run_test() as pilot:
+        for i in range(3):
+            app.trial_started(trial_id=f"t{i}:0", task_id=f"task_{i}", trial_index=0, total_index=i)
+            app.llm_call_started(
+                trial_id=f"t{i}:0",
+                role="agent",
+                provider="openrouter",
+                model="anthropic/claude-sonnet-4-6",
+                attempt=1,
+            )
+        await pilot.pause()
+        overview = app.query_one("#overview-body", Static)
+        rendered = str(overview.render())
+        assert "Live calls" in rendered
+        for i in range(3):
+            assert f"task_{i} · 0" in rendered
+
+
+async def test_overview_live_calls_caps_rows_at_ten_with_more_tail() -> None:
+    """Falsification proof for the row cap: firing 12 in-flight calls
+    yields exactly 10 rows plus a `…and 2 more` tail. Without the cap,
+    the section would render all 12 lines and the assertion on ``and 2
+    more`` would fail; with a wrong cap value, the trailing count would
+    diverge."""
+    app = TextualRunApp()
+    async with app.run_test() as pilot:
+        for i in range(12):
+            app.trial_started(
+                trial_id=f"t{i:02d}:0",
+                task_id=f"task_{i:02d}",
+                trial_index=0,
+                total_index=i,
+            )
+            app.llm_call_started(
+                trial_id=f"t{i:02d}:0",
+                role="agent",
+                provider="openrouter",
+                model="anthropic/claude-sonnet-4-6",
+                attempt=1,
+            )
+        await pilot.pause()
+        overview = app.query_one("#overview-body", Static)
+        rendered = str(overview.render())
+        # First 10 trials render as visible rows (trial_order preserves
+        # insertion order, so the earliest 10 win).
+        for i in range(10):
+            assert f"task_{i:02d} · 0" in rendered
+        # The 11th and 12th collapse into the tail.
+        assert "task_10 · 0" not in rendered
+        assert "task_11 · 0" not in rendered
+        assert "…and 2 more" in rendered
+
+
+async def test_llm_call_started_kwarg_only_enforcement() -> None:
+    app = TextualRunApp()
+    with pytest.raises(TypeError):
+        app.llm_call_started("a:0")  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
 # Log-sink integration — LOGS + ERRORS tabs feed off the same buffer
 # ---------------------------------------------------------------------------
 

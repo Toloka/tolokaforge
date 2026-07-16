@@ -273,20 +273,29 @@ does not carry ``max_attempts``, so the ``/5`` label in the retry line
 mirrors the runner's fixed cap. Change together with the runner constant."""
 
 
-def _format_call_state_line(snapshot: _FocusedPaneSnapshot) -> str | None:
+def _format_call_state_line(
+    *,
+    llm_role: LLMCallRole | None,
+    llm_provider_model: str | None,
+    llm_call_start_ts: datetime | None,
+    llm_retry_state: tuple[int, float, str] | None,
+) -> str | None:
     """Render the in-flight LLM line for the focused pane.
 
     Precedence: retry state wins over waiting state (a scheduled retry is
     strictly more informative — it names the failure reason and the
-    remaining backoff). Returns ``None`` when no call is in flight.
+    remaining backoff). Returns ``None`` when no call is in flight. Shared
+    between the Rich panel's right-pane summary and the Textual TUI's
+    focused pane / Overview "Live calls" section so both surfaces render
+    the same literal shape.
     """
-    if snapshot.llm_retry_state is not None:
-        attempt, next_in_s, reason = snapshot.llm_retry_state
+    if llm_retry_state is not None:
+        attempt, next_in_s, reason = llm_retry_state
         return f"↻ retry {attempt}/{_RETRY_MAX_ATTEMPTS} after {next_in_s:.0f}s ({reason})"
-    if snapshot.llm_role is not None and snapshot.llm_call_start_ts is not None:
-        elapsed = (_now() - snapshot.llm_call_start_ts).total_seconds()
-        provider_model = snapshot.llm_provider_model or ""
-        return f"⏳ waiting on {snapshot.llm_role}: {provider_model} — {elapsed:.1f}s"
+    if llm_role is not None and llm_call_start_ts is not None:
+        elapsed = (_now() - llm_call_start_ts).total_seconds()
+        provider_model = llm_provider_model or ""
+        return f"⏳ waiting on {llm_role}: {provider_model} — {elapsed:.1f}s"
     return None
 
 
@@ -1317,7 +1326,12 @@ class LiveRunDisplay:
             f"{_format_cost(snapshot.cost_usd)} · "
             f"last: {snapshot.last_event_kind}"
         )
-        call_line = _format_call_state_line(snapshot)
+        call_line = _format_call_state_line(
+            llm_role=snapshot.llm_role,
+            llm_provider_model=snapshot.llm_provider_model,
+            llm_call_start_ts=snapshot.llm_call_start_ts,
+            llm_retry_state=snapshot.llm_retry_state,
+        )
         if call_line is not None:
             summary_lines.append(call_line)
         summary = Text("\n".join(summary_lines))
