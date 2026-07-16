@@ -172,6 +172,13 @@ down and re-provisions between trials, and the only one that applies reset
 recipes). If every service is `shared`, the run uses the shared-stack
 backend, which materialises the stack once and shares it across all trials.
 
+Declaring a substrate service `ephemeral` explicitly is the named form of the
+unlabelled default: it routes the whole run to the per-trial backend and gives
+each trial a clean substrate, which is the correct posture for a mutation task
+graded on the state it leaves behind. The
+[`multi_service_helpdesk_workflow`](../examples/native/multi_service_helpdesk_workflow/)
+pack declares its postgres `app-db` `ephemeral` for exactly this reason.
+
 Rule of thumb: leave a service unlabelled (defaults to `ephemeral`) unless
 you have a reason not to. Declare `shared` only after verifying the service
 carries no cross-trial state that could leak into grading; declare `reset`
@@ -294,6 +301,11 @@ reference.
 - [`examples/native/multi_service_lot_ops/README.md`](../examples/native/multi_service_lot_ops/README.md)
   — substrate-state grading: the agent mutates postgres over a FastAPI API and
   `state_checks.db_probes` verifies the row directly via a read-only role
+- [`examples/native/multi_service_helpdesk_workflow/README.md`](../examples/native/multi_service_helpdesk_workflow/README.md)
+  — flagship cross-service pack: four FastAPI services + in-container
+  postgres-FTS policy search, an adversarial three-path resolution graded on
+  policy correctness, an explicit `ephemeral` substrate, and the specialised
+  user-simulator persona pattern
 - [`examples/native/example-microservices-pack/`](../examples/native/example-microservices-pack/)
   — the schema reference pack: full inheritance/override matrix across five
   tasks (reference only, see its README before running)

@@ -316,6 +316,14 @@ combined with hash or `jsonpaths` checks in the same task. It fills the
 `state_checks` component and combines with `transcript_rules` / `llm_judge`
 through the normal weighted combine below.
 
+A probe can encode **policy correctness**, not just existence: assert the
+specific value a policy selects (`resolution_path == "reschedule"`) rather than
+that any well-formed row was written, so an agent that takes a plausible-but-wrong
+path grades down even though its row parses. The
+[`multi_service_helpdesk_workflow`](../examples/native/multi_service_helpdesk_workflow/)
+pack is the adversarial example — three resolution paths look defensible; the
+probe passes only for the one the after-hours policy permits.
+
 ---
 
 ## Score Combination
