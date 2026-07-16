@@ -1479,10 +1479,20 @@ class LiveRunDisplay:
                 if card is not None
                 else None
             )
+            visible = self._visible_cards()
+            visible_total = len(visible)
+            position = next(
+                (i + 1 for i, c in enumerate(visible) if c.trial_id == trial_id),
+                None,
+            )
         if snapshot is None:
             body = Text("(waiting for first trial)")
             return Panel(body, title="Focused trial")
-        title = f"Focused trial · {snapshot.task_id} · {snapshot.trial_index}"
+        title = (
+            f"Focused trial · {position}/{visible_total}"
+            if position is not None
+            else "Focused trial"
+        )
         if snapshot.status == "failed" and snapshot.error:
             hint = _derive_hint(snapshot.error)
             parts = [
