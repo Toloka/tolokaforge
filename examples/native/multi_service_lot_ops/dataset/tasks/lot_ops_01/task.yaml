@@ -1,0 +1,44 @@
+task_id: "lot_ops_01"
+name: "Open a Corrective Action for a Contaminated Lot"
+category: "multi_service"
+description: "A shop-floor operator reports a contamination issue on a production lot. The agent must look the lot up over the manufacturing REST API, open a corrective-action record with the right reason code, and write an operator-facing completion report."
+max_turns: 10
+initial_user_message: |
+  Hey — we've got a problem on the sterile vial line. Lot LOT-1007 (that's
+  lot_id 7 in the system) came back from QC with a contamination hit, so I
+  need a corrective action opened against it before we can move on.
+
+  The lot-ops API is at http://app-service:8000 — it's got the lots, the
+  reason-code catalog, and the corrective-actions table. Pull the right
+  contamination reason code and open the action against lot 7 with a short
+  note about what happened. Just one record, please — don't double it up.
+  When it's logged, drop me a quick completion report under submissions/ so
+  I've got something to hand to my shift lead.
+adapter_type: "native"
+environment_manifest:
+  compose_file: "../../../shared/environment.compose.yaml"
+  runner_service: "runner"
+  services:
+    runner: {isolation: "shared"}
+    db-service: {isolation: "shared"}
+    app-service: {isolation: "shared"}
+    app-db: {isolation: "shared"}
+initial_state:
+  filesystem: {}
+tools:
+  agent:
+    enabled: ["http_request", "write_file"]
+    http_request:
+      allowed_hosts: ["app-service:8000"]
+  user:
+    enabled: []
+user_simulator:
+  mode: llm
+  persona: cooperative
+  backstory: "You are the shop-floor operator who flagged the contamination on lot LOT-1007. You know it needs a corrective action but you rely on the agent to know the system. Answer brief clarifying questions plainly, do not volunteer the reason code or spell out API calls, and end with ###STOP### once the action is logged and the report is written."
+policies:
+  guidance:
+    - "Reach the API with the `http_request` tool against `http://app-service:8000` — GET the reason-code catalog to find the contamination code before opening the action; do not guess it."
+    - "Open the corrective action by POSTing to the lot's corrective-actions endpoint; it must reference lot 7 and the contamination reason code."
+    - "Open exactly one corrective action for the lot. If the POST returns a success response, do not send it again — read the response to confirm, then move on to writing the completion report."
+grading: "grading.yaml"

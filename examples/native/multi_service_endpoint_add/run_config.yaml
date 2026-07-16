@@ -1,0 +1,50 @@
+# Multi-service `endpoint_add` example — run config.
+#
+#   agent (runner /work) ── source (shared volume) ── testrunner /workspace
+#                                                            │
+#   testrunner POST /run-tests → unittest ──▶ app-db:16 (orders + customers)
+#
+# Exercises the filesystem_dir reset recipe + test-execution grading via
+# `tolokaforge run`: the `testrunner` service is `isolation: reset` bound to the
+# `pristine_source` directory seed, so the per-trial backend re-seeds the shared
+# volume with the pristine FastAPI source before each trial. The agent reads the
+# code, adds `GET /orders/{id}/summary`, and runs the suite over http_request;
+# the real PASS/FAIL marker is the deterministic grading floor.
+#
+# `runtime: per_trial` because `testrunner` is `isolation: reset` and the other
+# services default to `ephemeral` — that mix routes the run onto the per-trial
+# backend, the only backend that applies reset recipes.
+#
+# Requirements:
+#   - Docker daemon running.
+#   - OPENROUTER_API_KEY in .env.
+models:
+  agent:
+    provider: "openrouter"
+    name: "anthropic/claude-haiku-4-5"
+    temperature: 0.0
+    max_tokens: 4096
+  user:
+    provider: "openrouter"
+    name: "anthropic/claude-haiku-4-5"
+    temperature: 0.2
+  judge:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.0
+
+orchestrator:
+  workers: 1
+  repeats: 2
+  max_turns: 25
+  runtime: per_trial
+  queue_backend: sqlite
+
+compute:
+  capture_logs_on_success: true
+
+evaluation:
+  task_packs:
+    - "examples/native/multi_service_endpoint_add/dataset"
+  tasks_glob: "tasks/endpoint_add/task.yaml"
+  output_dir: "results/multi_service_endpoint_add_example"

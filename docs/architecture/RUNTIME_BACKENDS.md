@@ -329,13 +329,14 @@ into the trial bundle **before** the stack comes down, under:
 <output_dir>/trials/<task_id>/<trial_index>/services/<service>.log
 ```
 
-**What counts as failure.** Capture fires on a `ProvisionError` (the
-provision-stage path) or an execution failure (`trajectory.status` in
-`{ERROR, TIMEOUT}`, the trial-body path). A `COMPLETED` trial that merely
-failed grading (`binary_pass=False`) is **not** a capture trigger — that
-would capture on most trials of a hard benchmark and blow the output-dir size
-budget. The `compute.capture_logs_on_success` debug flag overrides this and
-captures on success too.
+**What counts as diagnostics-worthy.** Capture fires on a `ProvisionError`
+(the provision-stage path), an execution failure (`trajectory.status` in
+`{ERROR, TIMEOUT}`), or a completed-but-red grade (`trajectory.status`
+`COMPLETED` with `grade.binary_pass=False`) — the last is the case where a task
+author needs postgres / PostgREST output to diagnose why the agent's mutations
+did not land. A `COMPLETED` trial that passes, or one with no grade, does not
+trigger capture. The `compute.capture_logs_on_success` debug flag overrides
+this and captures on success too.
 
 **Two capture surfaces.**
 
@@ -345,12 +346,14 @@ captures on success too.
   (the conductor never ran), so the durable record is a `services/_capture.yaml`
   manifest written alongside the `.log` files:
   `{"tail": int, "capture_reason": "provision_error", "services": {"<name>": {"bytes": int}}}`.
-- **Trial-body-failure path** — the [`TrialExecutor`](#per-trial-substrate-bracket-trialexecutor)
+- **Trial-body path** — the [`TrialExecutor`](#per-trial-substrate-bracket-trialexecutor)
   drives this surface: after `conductor.run` returns and before teardown it
-  calls `capture_service_logs(handle, *, failed)`, the Protocol hook that writes
-  the per-service `.log` files for a still-live trial stack (the `service_names`
-  snapshot taken at provision time) and returns a `{service: bytes_written}`
-  map. On a non-empty map the executor emits the `trial.service_logs_captured`
+  computes whether the outcome is diagnostics-worthy (execution failure or a
+  completed-but-red grade) and calls `capture_service_logs(handle, *,
+  capture_worthy)`, the Protocol hook that writes the per-service `.log` files
+  for a still-live trial stack (the `service_names` snapshot taken at provision
+  time) and returns a `{service: bytes_written}` map. On a non-empty map the
+  executor emits the `trial.service_logs_captured`
   summary log line and amends the trial's existing `metrics.yaml` with a
   top-level `captured_service_logs` mapping — the durable record on this path
   (the hook writes only the `.log` files). See

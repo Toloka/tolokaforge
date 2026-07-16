@@ -1249,6 +1249,7 @@ class StateChecksConfig(BaseModel):
     hash: dict[str, Any] | None = None
     env_assertions: list[EnvAssertion] = Field(default_factory=list)  # NEW
     db_hash_check: bool = False  # NEW - compare final DB hash
+    db_probes: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class CommunicateInfo(BaseModel):

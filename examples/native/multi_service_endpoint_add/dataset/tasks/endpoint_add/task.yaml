@@ -1,0 +1,48 @@
+task_id: "endpoint_add"
+name: "Add Order Summary Endpoint"
+category: "multi_service"
+description: "A small FastAPI orders service has a failing test demanding a new GET /orders/{id}/summary endpoint that joins an order with its customer. The agent reads the existing code, adds the endpoint following the established patterns, and triggers the real test suite over HTTP to verify it passes."
+max_turns: 25
+initial_user_message: |
+  Hey — I filed a failing test for a feature we need. The orders service in
+  `/work` (FastAPI over postgres) needs a new endpoint `GET /orders/{id}/summary`
+  that returns an order together with its customer — the order fields plus a
+  nested `customer` object. I already wrote the test in `tests/test_summary.py`;
+  it's red right now because the endpoint doesn't exist.
+
+  Can you add the endpoint so the suite goes green? The code lives in `/work`
+  (`app.py` plus `tests/`). There's a test-runner service at
+  `http://testrunner:8000` — `POST /run-tests` runs the full suite against your
+  edited source and returns the output. Please run it after your final edit so
+  we can see it pass.
+adapter_type: "native"
+initial_state:
+  filesystem: {}
+tools:
+  agent:
+    enabled: ["read_file", "list_dir", "write_file", "http_request"]
+    http_request:
+      allowed_hosts:
+        - "testrunner:8000"
+  user:
+    enabled: []
+user_simulator:
+  mode: llm
+  persona: "teammate engineer"
+  backstory: |
+    You are the teammate who filed the failing test and asked for the new
+    endpoint. You know the feature you want (an order-plus-customer summary at
+    `GET /orders/{id}/summary`) and that the test in `tests/test_summary.py`
+    encodes the exact shape. Rules:
+    - Open naturally with the request, in your own words.
+    - If asked what the summary should contain, point at the test as the source
+      of truth — don't dictate the SQL or the endpoint code yourself.
+    - Answer clarifying questions plainly; leave the implementation to the agent.
+    - Say ###STOP### once the agent has added the endpoint and told you the suite
+      passes.
+policies:
+  guidance:
+    - "The codebase is in `/work`: `app.py` is the FastAPI service, `tests/` holds the suite. Read it with `read_file` / `list_dir` and edit with `write_file`. Follow the patterns already in `app.py` (asyncpg pool, the `_fetch_one` helper, path-parameter routes)."
+    - "Add `GET /orders/{order_id}/summary`: return the order joined with its customer. `tests/test_summary.py` encodes the exact response shape and status codes — treat it as the contract; do not weaken or edit the test."
+    - "Verify by calling `POST http://testrunner:8000/run-tests` with the `http_request` tool — it runs the full suite against your edited source and returns pass/fail plus output. Re-run it after your final edit so the recorded result reflects the finished code."
+grading: "grading.yaml"

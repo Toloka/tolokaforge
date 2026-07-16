@@ -662,6 +662,68 @@ def evaluate_jsonpath_state_checks(
     return score, reasons
 
 
+async def _fetch_probe_rows(dsn: str, query: str) -> list[dict[str, Any]]:
+    """Connect to ``dsn`` via asyncpg, run ``query``, return rows as dicts.
+
+    Isolated so unit tests inject rows without a live database; the asyncpg
+    import is deferred so importing this module never requires the driver.
+    """
+    import asyncpg
+
+    conn = await asyncpg.connect(dsn)
+    try:
+        records = await conn.fetch(query)
+    finally:
+        await conn.close()
+    return [dict(record) for record in records]
+
+
+async def evaluate_db_probes(probes: list[dict[str, Any]]) -> tuple[float, str]:
+    """Evaluate substrate SQL probes against a task-declared postgres.
+
+    For each probe, connect to its ``dsn``, run its read-only ``query``, shape
+    the result into ``{"rows": [...], "row_count": N}``, and apply its ``expect``
+    JSONPath assertions via ``evaluate_jsonpath_state_checks``.
+
+    Two-level aggregation: a probe passes iff *every* ``expect`` assertion passes
+    (its JSONPath score is 1.0); the component score is the fraction of passing
+    probes. A connection/query failure is a FAILED probe with an actionable
+    reason (fail loud — never a silent pass). Empty list → -1.0 sentinel,
+    matching the file/state evaluators.
+    """
+    if not probes:
+        return -1.0, ""
+
+    passed = 0
+    total = len(probes)
+    reasons_parts: list[str] = []
+
+    for probe in probes:
+        name = probe.get("name", "")
+        description = probe.get("description") or name
+        expect = probe.get("expect", []) or []
+
+        try:
+            rows = await _fetch_probe_rows(probe.get("dsn", ""), probe.get("query", ""))
+        except Exception as exc:
+            reasons_parts.append(
+                f"FAIL: probe {name!r} could not query postgres: "
+                f"{type(exc).__name__}: {exc} — {description}"
+            )
+            continue
+
+        state = {"rows": rows, "row_count": len(rows)}
+        probe_score, probe_reasons = evaluate_jsonpath_state_checks(expect, state)
+        if probe_score == 1.0:
+            passed += 1
+            reasons_parts.append(f"PASS: probe {name!r} — {probe_reasons}")
+        else:
+            reasons_parts.append(f"FAIL: probe {name!r} — {probe_reasons}")
+
+    score = passed / total
+    return score, "; ".join(reasons_parts)
+
+
 def evaluate_jsonpath_checks(
     checks: list[dict[str, Any]],
     state: dict[str, Any] | None = None,
@@ -765,6 +827,11 @@ def combine_grade_components(
         active_components["state_checks"] = hash_score
     elif jsonpath_score >= 0:
         active_components["state_checks"] = jsonpath_score
+    # db_probes is the sole state source for its tasks (mixing with hash/jsonpath
+    # in one task is out of scope), so it fills the state_checks slot directly.
+    db_probe_score = components.get("db_probe_score", -1.0)
+    if db_probe_score >= 0:
+        active_components["state_checks"] = db_probe_score
     if transcript_score >= 0:
         active_components["transcript_rules"] = transcript_score
 
@@ -878,6 +945,17 @@ def build_grade_reasons(
             reasons.append("JSONPath: all checks passed")
         else:
             reasons.append(f"JSONPath: score={jsonpath_score:.2f}")
+
+    # State checks reason — db probes
+    db_probe_score = components.get("db_probe_score", -1.0)
+    if db_probe_score >= 0:
+        db_probe_reasons = components.get("db_probe_reasons", "")
+        if db_probe_reasons:
+            reasons.append(f"DB probes: {db_probe_reasons}")
+        elif db_probe_score == 1.0:
+            reasons.append("DB probes: all probes passed")
+        else:
+            reasons.append(f"DB probes: score={db_probe_score:.2f}")
 
     # Transcript rules reason
     transcript_score = components.get("transcript_score", -1.0)

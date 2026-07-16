@@ -1,0 +1,27 @@
+# Project spec for the multi_service_helpdesk_workflow example.
+#
+# A single native task that reconciles data across four FastAPI business
+# services plus an in-container postgres-FTS policy corpus over one postgres
+# substrate, and grades the resulting mutation directly against the database
+# through a read-only role (state_checks.db_probes) for *policy correctness*.
+# The task declares its own `environment_manifest` (postgres `app-db` is
+# `isolation: ephemeral`, the stateless services `shared`), so this project
+# only supplies discovery + native defaults. See README.md.
+#
+# See docs/architecture/PROJECTS.md for the full Project model.
+
+name: "multi-service-helpdesk-workflow"
+version: 1
+description: >
+  Single-task flagship project demonstrating cross-service reasoning and
+  policy-correctness grading: the agent reconciles four services plus a policy
+  corpus to derive the one permitted resolution, records it as a CRM case, and
+  grading reads the substrate directly via a least-privilege read-only role —
+  an independent oracle that checks the policy-correct value, not mere existence.
+
+tasks:
+  discovery:
+    glob: "tasks/**/task.yaml"
+
+task_defaults:
+  adapter_type: "native"

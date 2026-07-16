@@ -276,6 +276,24 @@ class RequiredAction(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class DbProbe(BaseModel):
+    """A declarative read-only SQL assertion against a task-declared postgres.
+
+    Grading connects to ``dsn``, runs ``query`` (a single read-only ``SELECT``),
+    shapes the result into ``{"rows": [{col: val, ...}, ...], "row_count": N}``,
+    and applies ``expect`` — JSONPath assertions in the same vocabulary as
+    ``jsonpath_checks`` (``equals``/``equals_ci``/``contains``/``contains_ci``).
+    """
+
+    name: str
+    dsn: str
+    query: str
+    expect: list[dict[str, Any]]
+    description: str = ""
+
+    model_config = {"extra": "forbid"}
+
+
 class StateChecksConfig(BaseModel):
     """State-based grading configuration."""
 
@@ -289,6 +307,9 @@ class StateChecksConfig(BaseModel):
 
     # Environment assertions (Native adapter)
     env_assertions: list[EnvAssertion] = Field(default_factory=list)
+
+    # Substrate SQL assertions against a task-declared postgres DSN
+    db_probes: list[DbProbe] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 
@@ -1467,6 +1488,8 @@ class GradeComponents(BaseModel):
     hash_score: float = -1.0  # -1.0 means not evaluated
     jsonpath_score: float = -1.0  # -1.0 means not evaluated
     jsonpath_reasons: str = ""
+    db_probe_score: float = -1.0  # -1.0 means not evaluated
+    db_probe_reasons: str = ""
     transcript_pass: bool | None = None
     transcript_score: float = -1.0
     llm_judge_score: float = -1.0  # -1.0 means not evaluated

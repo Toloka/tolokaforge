@@ -261,6 +261,71 @@ evaluation:
 
 ---
 
+## Substrate Grading (`state_checks.db_probes`)
+
+`db_probes` grade against a task-declared postgres **substrate** directly,
+rather than against the agent's own written file or the engine's JSON DB
+state service. Each probe connects to a task-local DSN, runs an author-written
+read-only `SELECT`, and applies the same JSONPath assertion vocabulary as
+`jsonpaths` (`equals` / `equals_ci` / `contains` / `contains_ci`) to the query
+result. This is an **independent oracle**: it reads the database through a
+least-privilege read-only role, not through the API the agent mutated, so an
+API bug cannot mask a grading miss.
+
+```yaml
+state_checks:
+  db_probes:
+    - name: corrective_action_recorded
+      dsn: "postgresql://grader:grader_pw@app-db:5432/mfg"
+      query: "SELECT reason_code, status FROM corrective_actions WHERE lot_id = 7"
+      expect:
+        - path: "$.rows[0].reason_code"
+          equals: "CAPA-01"
+          description: "reason code matches"
+        - path: "$.row_count"
+          equals: 1
+          description: "exactly one corrective action"
+      description: "a corrective action exists for lot 7"
+```
+
+**Fields:**
+
+- `name` — probe identifier, shown in grade reasons.
+- `dsn` — postgres connection string. Use a dedicated read-only role
+  (`GRANT SELECT` only) so grading cannot mutate the substrate.
+- `query` — a single read-only `SELECT`.
+- `expect` — JSONPath assertions evaluated against the probe result.
+- `description` — human-readable summary.
+
+**Result shape.** Rows are shaped into
+`{"rows": [{col: val, ...}, ...], "row_count": <int>}`, so `expect` paths
+address individual rows (`$.rows[0].status`), whole columns
+(`$.rows[*].status`), or the count (`$.row_count`).
+
+**Aggregation (two-level).** A probe *passes* iff **every** one of its `expect`
+assertions passes; the component score is the **fraction of passing probes**.
+A single-probe task therefore scores 0.0 or 1.0.
+
+**Fail-loud.** A connection or query failure is a **failed** probe with an
+actionable reason — never a silent pass. The runner image ships `asyncpg`, the
+async driver `db_probes` connect with; the runner container joins the task's
+docker network, so it reaches the substrate (e.g. `app-db:5432`) at grade time.
+
+`db_probes` is the sole state source for the tasks that use it — it is not
+combined with hash or `jsonpaths` checks in the same task. It fills the
+`state_checks` component and combines with `transcript_rules` / `llm_judge`
+through the normal weighted combine below.
+
+A probe can encode **policy correctness**, not just existence: assert the
+specific value a policy selects (`resolution_path == "reschedule"`) rather than
+that any well-formed row was written, so an agent that takes a plausible-but-wrong
+path grades down even though its row parses. The
+[`multi_service_helpdesk_workflow`](../examples/native/multi_service_helpdesk_workflow/)
+pack is the adversarial example — three resolution paths look defensible; the
+probe passes only for the one the after-hours policy permits.
+
+---
+
 ## Score Combination
 
 Final score formula:

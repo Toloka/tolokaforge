@@ -114,10 +114,14 @@ Provisioning failed at reset_recipe: reset recipe for service 'app-db' (seed 'po
 
 carrying the recipe's own diagnostic output at the end.
 
-## Reference example
+## Reference examples
+
+Three runnable packs ship as end-to-end references, one per stateful seed kind.
+
+### `sql_dump` — `multi_service_postgres_reset`
 
 [`examples/native/multi_service_postgres_reset`](../../examples/native/multi_service_postgres_reset)
-is the runnable end-to-end example. Its compose `init.sql` seeds a widget
+is the `sql_dump` reference. Its compose `init.sql` seeds a widget
 row `name = 'factory_default'`; the `postgres_baseline` seed
 (`sql_dump`) overwrites it to `name = 'baseline'` at every provision. The
 task's agent reads the row back over a PostgREST API and writes it to a
@@ -127,3 +131,38 @@ reads `baseline`. Had the recipe not fired, the row would still read
 `sql_dump` dispatch ran. `tests/integration/test_reset_recipe_end_to_end.py`
 drives the pack via `tolokaforge run` at `repeats: 2` and asserts both
 trials observe `baseline`.
+
+### `redis_dump` — `multi_service_cache_debug`
+
+[`examples/native/multi_service_cache_debug`](../../examples/native/multi_service_cache_debug)
+is the `redis_dump` reference. Its `redis` service is labelled
+`isolation: reset` and bound to the `cache_poisoned` seed (`redis_dump`),
+an RDB snapshot that pre-loads `order:4021` with a **stale** value
+(`status: "processing"`) at every provision, while postgres holds the fresh
+truth (`status: "shipped"`). The agent is told the orders API serves stale
+data, inspects the app and cache layers over HTTP, and writes a root-cause
+note naming the cache-invalidation bug. `tests/integration/test_cache_debug_end_to_end.py`
+proves the recipe fired by asserting the captured `services/redis.log`
+carries an RDB-load signature — the restart that reloaded `dump.rdb` — so the
+`redis_dump` dispatch is witnessed directly from the per-trial backend.
+
+### `filesystem_dir` — `multi_service_endpoint_add`
+
+[`examples/native/multi_service_endpoint_add`](../../examples/native/multi_service_endpoint_add)
+is the `filesystem_dir` reference. Its `pristine_source` seed is a **directory
+tree** — a small FastAPI orders service (`app.py` plus a `tests/` suite) — bound
+to a `testrunner` service labelled `isolation: reset`. The novel piece is the
+**shared-volume bridge**: one named volume (`source`) is mounted into both the
+`runner` service (as `/work`, the agent's workspace) and the `testrunner` (as
+`/workspace`, the recipe's target). At every provision the recipe copies the
+pristine tree into that volume, so the source the agent edits over `/work` is the
+same source the `testrunner` runs the suite against over `/workspace`. The agent
+adds a missing `GET /orders/{id}/summary` endpoint and calls the testrunner's
+`POST /run-tests`, whose real `unittest` exit code writes a `PASS`/`FAIL` marker
+back into the volume — the decisive `state_checks` grading floor.
+`tests/integration/test_endpoint_add_end_to_end.py` witnesses the recipe directly:
+after a real `PerTrialRuntimeBackend` provision it reads `runner:/work/app.py` and
+confirms it matches the seed (the recipe fired across the bridge), then drives
+`POST /run-tests` on the pristine source (marker `FAIL`) and again after writing
+the reference endpoint (marker `PASS`), proving the grading floor tracks the real
+suite result.

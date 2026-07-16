@@ -396,6 +396,7 @@ class NativeAdapter(BaseAdapter):
 
         from tolokaforge.runner.models import (
             AdapterType,
+            DbProbe,
             EnvAssertion,
             GoldenAction,
             InitializationAction,
@@ -616,12 +617,15 @@ class NativeAdapter(BaseAdapter):
                         )
                     )
 
+                db_probes = [DbProbe(**probe) for probe in state_checks_data.get("db_probes", [])]
+
                 state_checks = StateChecksConfig(
                     hash_enabled=bool(hash_config and hash_config.get("enabled", False)),
                     expected_hash=hash_config.get("expected_state_hash") if hash_config else None,
                     golden_actions=golden_actions,
                     jsonpath_checks=state_checks_data.get("jsonpaths", []),
                     env_assertions=env_assertions,
+                    db_probes=db_probes,
                 )
 
             # Build transcript rules

@@ -114,7 +114,7 @@ Field reference:
 | --- | --- | --- | --- |
 | `compose_file` | yes | — | Path to the docker-compose YAML. Relative paths resolve against `task.yaml`. This file is the sole source of truth for services, images, ports, volumes, healthchecks, and `depends_on`. |
 | `runner_service` | no | `"default"` | Which compose service is the tolokaforge runner. Must be a service declared in the compose file. |
-| `services.<name>.isolation` | no | `"ephemeral"` | Per-service posture: `"shared"` (long-lived across trials), `"reset"` (fresh container per trial + `reset.seed` recipe reapplied at each provision), `"ephemeral"` (fresh container per trial, no seed). Backend selection is task-driven — any `reset`/`ephemeral` service routes the run to `PerTrialRuntimeBackend` automatically. See the [multi-container guide](guides/multi_container_tasks.md#choosing-isolation) for how to pick. |
+| `services.<name>.isolation` | no | `"ephemeral"` | Per-service posture: `"shared"` (long-lived across trials), `"reset"` (fresh container per trial + `reset.seed` recipe reapplied at each provision), `"ephemeral"` (fresh container per trial, no seed). Backend selection is task-driven — any `reset`/`ephemeral` service routes the run to `PerTrialRuntimeBackend` automatically. See the [multi-container guide](multi_container_tasks.md#choosing-isolation) for how to pick. |
 | `services.<name>.reset.seed` | when `isolation: reset` | — | Name of the seed to apply on each provision. Must exist in the project's `assets.seeds` registry. See [`docs/architecture/RESET_RECIPES.md`](architecture/RESET_RECIPES.md) for the four seed kinds (`sql_dump` / `filesystem_dir` / `redis_dump` / `bare`). |
 | `network_policy` | no | `"no_internet"` | Public-egress posture for the task's application services. `no_internet` (default) attaches every task service to an `internal` docker network so no service can reach the public internet; `full_internet` runs the compose file unchanged. `limited_internet` is refused at materialisation (needs an egress-allowlist proxy — #323). See below. |
 
@@ -157,7 +157,7 @@ load:
 - `runner_service` must be declared in the compose file.
 
 For a full walkthrough anchored to a working example, see the
-[multi-container tasks guide](guides/multi_container_tasks.md). For the
+[multi-container tasks guide](multi_container_tasks.md). For the
 underlying case matrix (built-in vs task-declared × shared vs per-trial)
 see [ADR-0018](architecture/adr/0018-multi-container-under-shared-runtime.md).
 
@@ -176,6 +176,36 @@ user_simulator:
 ```
 
 Scripted mode (`mode: "scripted"`) is available for simple deterministic flows but produces less realistic conversations.
+
+### Specialised personas
+
+For adversarial, multi-step tasks where the agent must *extract* the deciding
+facts through conversation, sharpen the `backstory` into a specialised persona.
+A specialised persona is a `backstory` with six components:
+
+- **Named persona.** Give the user a name, role, and organisation ("You are Ana
+  Reyes, operations coordinator at Northwind Biologics"). Concreteness keeps the
+  simulator in character across a long exchange.
+- **Facts the user knows.** State plainly what this person is aware of — the
+  problem they are chasing, the constraints they live under — so the simulator
+  answers consistently.
+- **Reveal-on-ask rules.** List the deciding facts the user will confirm *only
+  when asked*, each with an explicit "do NOT volunteer this unprompted". This
+  forces the agent to investigate rather than be handed the answer.
+- **Never name the solution.** Bar the user from naming the resolution, quoting
+  policy, or otherwise doing the agent's reasoning ("Never name a resolution path
+  or quote policy; that is the agent's job").
+- **Natural opening.** Instruct the user to open in their own words with the
+  problem, not a list of fields — this is what makes the first turn realistic.
+- **`###STOP###` exit.** Give a precise exit condition ("Say `###STOP###` once
+  the agent confirms a resolution is recorded"), not a generic "when done".
+
+The worked example is
+[`examples/native/multi_service_helpdesk_workflow`](../examples/native/multi_service_helpdesk_workflow/):
+its coordinator persona knows the shipment is delayed and after-hours, confirms
+the site has no cold storage or specialist only when asked, and never names the
+policy-correct resolution — so the agent must reconcile four services plus a
+policy corpus to derive it.
 
 ## Browser vs Mobile Tool
 
