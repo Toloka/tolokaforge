@@ -267,6 +267,18 @@ time. Full field reference in
 [`docs/GRADING.md`](GRADING.md) § Substrate Grading; the
 `multi_service_lot_ops` pack below is the worked example.
 
+## Recorded environment identity
+
+Each trial's `env.yaml` records the resolved environment identity under an
+`environment` block: the network policy, the runner service, and per-service
+image (pinned or floating), isolation, reset seed, redacted DSNs, and
+container mount targets. Because it is a pure function of the resolved
+manifest, the identity survives per-trial stack teardown and gives a
+post-mortem the exact substrate a trial ran against — which image, which
+DSN, which mounts — without leaking secrets or host paths. See
+[`docs/OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md) § `env.yaml` for the field
+reference.
+
 ## Further reading
 
 - [`examples/native/multi_service_postgres_reset/README.md`](../examples/native/multi_service_postgres_reset/README.md)

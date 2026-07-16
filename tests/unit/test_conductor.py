@@ -7,6 +7,7 @@ in ``tests/canonical/test_conductor_contract.py``.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -15,9 +16,10 @@ import pytest
 from tolokaforge.core.conductor import (
     ConductorCallLog,
     InMemoryConductor,
+    InProcessConductor,
     _default_success_trajectory,
 )
-from tolokaforge.core.models import ModelConfig
+from tolokaforge.core.models import ModelConfig, ResetSpec, ServiceSpec
 from tolokaforge.core.trial import EnvEndpoints, EnvironmentManifest, TrialSpec
 from tolokaforge.runner.models import TaskDescription
 
@@ -215,3 +217,76 @@ class TestTrialSpecWireExclusion:
 
         assert '"task_id":"t1"' in wire_json
         assert '"adapter_type":"native"' in wire_json
+
+
+class TestCaptureFinalStateEnvironmentBlock:
+    """``_capture_final_state`` records the resolved environment identity under
+    ``final_env_state["environment"]`` only when the trial's task carries an
+    ``environment_manifest``. Manifest-less trials keep the JSON-DB-only shape —
+    the additive/back-compat guarantee the descriptor rests on.
+    """
+
+    def _conductor(self) -> InProcessConductor:
+        conductor = InProcessConductor(
+            adapter=MagicMock(),
+            artifact_writer=MagicMock(),
+            config=MagicMock(),
+            logger=MagicMock(),
+            agent_client=MagicMock(),
+            runtime_backend=MagicMock(),
+            trial_grader=MagicMock(),
+            output_dir=Path("/tmp"),
+        )
+        conductor.runtime_backend.get_state.return_value = {"success": False}
+        return conductor
+
+    def _setup(self) -> MagicMock:
+        setup = MagicMock()
+        setup.trial_id = "t1:0"
+        setup.env_state.get_final_state.return_value = {}
+        setup.env_state.agent_visible_dir = Path("/tmp/agent")
+        setup.adapter_env.data = None
+        return setup
+
+    def _manifest(self) -> EnvironmentManifest:
+        fixture = (
+            Path(__file__).parent.parent
+            / "canonical"
+            / "fixtures"
+            / "environment_manifest"
+            / "identity_multi_service.yaml"
+        )
+        return EnvironmentManifest(
+            compose_file=fixture,
+            runner_service="runner",
+            services={
+                "runner": ServiceSpec(isolation="shared"),
+                "app-service": ServiceSpec(isolation="shared"),
+                "app-db": ServiceSpec(isolation="reset", reset=ResetSpec(seed="baseline")),
+            },
+        )
+
+    def test_manifest_bearing_trial_gains_environment_block(self) -> None:
+        spec = _make_spec()
+        spec = spec.model_copy(
+            update={"task": spec.task.model_copy(update={"environment_manifest": self._manifest()})}
+        )
+        trajectory = _default_success_trajectory("t1", 0)
+
+        self._conductor()._capture_final_state(spec, self._setup(), trajectory)
+
+        environment = trajectory.final_env_state["environment"]
+        assert set(environment["services"]) == {"runner", "app-service", "app-db"}
+        assert environment["services"]["app-service"]["dsns"] == [
+            "postgresql://app:***@app-db:5432/mfg"
+        ]
+        assert "app_pw" not in json.dumps(trajectory.final_env_state)
+
+    def test_manifest_less_trial_omits_environment_block(self) -> None:
+        spec = _make_spec()
+        assert spec.task.environment_manifest is None
+        trajectory = _default_success_trajectory("t1", 0)
+
+        self._conductor()._capture_final_state(spec, self._setup(), trajectory)
+
+        assert "environment" not in trajectory.final_env_state

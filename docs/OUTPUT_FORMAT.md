@@ -252,10 +252,63 @@ user:
 db: {...}          # Full database state
 filesystem: {...}  # File system state
 mock_web_url: "..."
+agent_visible_dir: /work
+environment:       # present only for manifest-driven trials (see below)
+  network_policy: no_internet
+  runner_service: runner
+  services:
+    app-db:
+      image: postgres:16
+      pinned: true
+      isolation: reset
+      reset_seed: baseline
+      dsns: []
+      mounts:
+        - /docker-entrypoint-initdb.d/init.sql:ro
+    app-service:
+      image: tolokaforge-runner:0.5.0
+      pinned: true
+      isolation: shared
+      reset_seed: null
+      dsns:
+        - postgresql://app:***@app-db:5432/mfg
+      mounts:
+        - /srv/app/main.py:ro
 ```
 
 Free-form snapshot of the environment state at trial end. Adapters /
 tasks control the shape; no schema version attached.
+
+### `environment` — resolved environment identity
+
+Manifest-driven trials (a task carrying an `environment_manifest`, i.e.
+Project-layer / multi-container substrates) record the resolved
+environment identity under `environment`. The block is a pure function of
+the trial's `EnvironmentManifest`, so it is available for post-mortems
+even after a per-trial stack is torn down. Trials without a manifest
+(run.yaml-only / JSON-DB tasks) omit the key entirely.
+
+Top-level keys:
+
+| Key | Meaning |
+|---|---|
+| `network_policy` | Run-level network posture (`no_internet` / `limited_internet` / `full_internet`) |
+| `runner_service` | Compose service the runner executes inside |
+| `services` | Per-service identity, keyed by compose service name |
+
+Each `services.<name>` entry:
+
+| Field | Meaning |
+|---|---|
+| `image` | Resolved image reference after `${VAR}` / `${VAR:-default}` substitution from `stack_inputs` |
+| `pinned` | `true` when the resolved image carries a digest or a non-floating tag |
+| `isolation` | `shared` / `reset` / `ephemeral`; services absent from the manifest default to `ephemeral` |
+| `reset_seed` | Seed name for a `reset` service, else `null` |
+| `dsns` | Connection strings from the service's compose `environment`, each with any embedded password replaced by `***` |
+| `mounts` | Container-side mount targets (`<target>:<mode>`); host source paths are omitted |
+
+DSN passwords are redacted and host mount sources are never recorded, so
+the block is safe to share and stable across hosts.
 
 ## `trials/{task_id}/{trial_index}/metrics.yaml`
 

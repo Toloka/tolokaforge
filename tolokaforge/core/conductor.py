@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from tolokaforge.adapters import BaseAdapter
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.docker_adapter import DockerRunnerAdapter
+from tolokaforge.core.env_identity import describe_environment_identity
 from tolokaforge.core.env_state import EnvironmentState
 from tolokaforge.core.llm import LLMClient, UserSimulator, build_capabilities
 from tolokaforge.core.llm.presets import (
@@ -329,7 +330,7 @@ class InProcessConductor:
         """
         setup = self._setup_trial(spec, task_config)
         trajectory, runner, system_prompt = self._run_agent_loop(spec, task_config, setup)
-        self._capture_final_state(setup, trajectory)
+        self._capture_final_state(spec, setup, trajectory)
         self._grade(spec, task_config, setup, trajectory, runner, system_prompt)
         self._write_artifacts(spec, task_config, setup, trajectory, runner)
         return TrialResult.from_trajectory(
@@ -608,6 +609,7 @@ class InProcessConductor:
 
     def _capture_final_state(
         self,
+        spec: TrialSpec,
         setup: _TrialSetup,
         trajectory: Trajectory,
     ) -> None:
@@ -619,6 +621,12 @@ class InProcessConductor:
         ``adapter_env.data`` (from :meth:`BaseAdapter.create_environment`)
         is a snapshot from before the trial ran; it is used as a fallback
         only when the Runner-side read fails.
+
+        When the trial's task carries an ``environment_manifest`` (a
+        Project-layer / multi-container substrate), the resolved
+        environment identity is recorded under the ``environment`` key so a
+        post-mortem can read which services, images, DSNs, and mounts backed
+        the trial. Manifest-less trials keep the JSON-DB-only shape.
         """
         runner_state: dict[str, Any] | None = None
         try:
@@ -657,6 +665,13 @@ class InProcessConductor:
         final_state = setup.env_state.get_final_state()
         # Pass agent_visible_dir so the agentic judge can read files from disk.
         final_state["agent_visible_dir"] = str(setup.env_state.agent_visible_dir)
+
+        manifest = spec.task.environment_manifest
+        if manifest is not None:
+            final_state["environment"] = describe_environment_identity(manifest).model_dump(
+                mode="json"
+            )
+
         trajectory.final_env_state = final_state
 
     def _grade(
