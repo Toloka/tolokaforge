@@ -68,12 +68,7 @@ from tolokaforge.core.trial import (
 )
 from tolokaforge.core.trial_executor import TrialExecutor
 from tolokaforge.runner.models import AdapterType, TaskDescription
-from tolokaforge.session import (
-    InProcessTrialSession,
-    SessionInterventionHandler,
-    SessionLoopObserver,
-    SessionRegistry,
-)
+from tolokaforge.session import OpenAgentLoopManager, SessionRegistry
 
 # Tools that need Playwright + Chromium baked into the runner image. The
 # orchestrator scans the task list before starting the docker stack and
@@ -269,6 +264,16 @@ class OrchestratorDeps:
     runtime_backend: RuntimeBackend | None = None
     conductor_factory: ConductorFactory | None = None
     events: RunDisplayEvents = field(default_factory=_NullRunDisplayEvents)
+    oal_manager: OpenAgentLoopManager | None = None
+    """Optional Open Agent Loop coordinator supplied by the caller.
+
+    ``None`` means "auto-construct from config" — the orchestrator's
+    backward-compat fallback calls :meth:`OpenAgentLoopManager.from_config`
+    if ``config.open_agent_loop.enabled`` is true, so a plain YAML flag
+    still activates the gate without any Python wiring changes. Set
+    explicitly by callers (CLI, scripts) that want to inject a bespoke
+    manager or share one across runs.
+    """
 
 
 class Orchestrator:
@@ -329,14 +334,16 @@ class Orchestrator:
         # render a global ``[N/M]`` prefix.
         self._total_index_by_key: dict[tuple[str, int], int] = {}
 
-        # Open Agent Loop registry — one live InProcessTrialSession per trial
-        # when the run is in open mode; ``None`` in sealed mode. Populated
-        # lazily inside :meth:`_build_conductor` so the registry only exists
-        # when actually needed. Exposed as :attr:`sessions` for external
-        # participant lookup (M2 CLI attach reads through this).
-        self._session_registry: SessionRegistry | None = None
-        if config.open_agent_loop is not None and config.open_agent_loop.enabled:
-            self._session_registry = SessionRegistry()
+        # Open Agent Loop coordinator — owns the SessionRegistry, the
+        # per-trial observer / intervention providers, and the trace-write
+        # hook. ``None`` in sealed mode. Caller-supplied via
+        # ``OrchestratorDeps.oal_manager`` (preferred); backward-compat
+        # fallback auto-constructs one when ``config.open_agent_loop.enabled``
+        # is true, so flipping the YAML flag alone still activates the gate.
+        # Exposed as :attr:`sessions` for external participant lookup.
+        self._oal_manager: OpenAgentLoopManager | None = (
+            resolved_deps.oal_manager or OpenAgentLoopManager.from_config(config)
+        )
 
         # Initialize logger
         log_level = logging.DEBUG if verbose else logging.INFO
@@ -494,8 +501,14 @@ class Orchestrator:
             trial_grader=trial_grader,
             output_dir=output_dir,
             request_limiter=request_limiter,
-            observer_provider=self._build_observer_provider(),
-            intervention_handler_provider=self._build_intervention_handler_provider(),
+            observer_provider=(
+                self._oal_manager.observer_provider() if self._oal_manager is not None else None
+            ),
+            intervention_handler_provider=(
+                self._oal_manager.intervention_handler_provider()
+                if self._oal_manager is not None
+                else None
+            ),
             events=self._events,
         )
         if self._conductor_factory is not None:
@@ -510,40 +523,27 @@ class Orchestrator:
     @property
     def sessions(self) -> SessionRegistry | None:
         """Live-session registry for this run when open mode is on, else
-        ``None``. External participants (M2 CLI attach, cross-trial
-        orchestrator) look sessions up here by ``trial_id``. Sessions are
-        created lazily by the observer provider — a trial that has not yet
-        entered the run body will not have a session yet.
+        ``None``. Convenience shim that delegates to
+        :attr:`OpenAgentLoopManager.sessions` — kept on the orchestrator so
+        external callers don't have to know whether OAL wiring is manager-
+        supplied or auto-constructed from config.
         """
-        return self._session_registry
+        if self._oal_manager is None:
+            return None
+        return self._oal_manager.sessions
 
     def _write_open_agent_loop_trace(self, output_dir: Path, task_id: str, trial_idx: int) -> None:
-        """Persist the trial's open_agent_loop snapshot to disk.
+        """Delegate to the OAL manager's trace writer.
 
-        No-op when open mode is off or the trial never entered the run body
-        (no session created for it). Writes ``trials/<task_id>/<trial_idx>/
-        open_agent_loop.yaml`` alongside ``trajectory.yaml``. Companion-file
-        shape (not merged into ``trajectory.yaml``) keeps the Trajectory
-        model unchanged and canonical snapshot tests undisturbed; a later
-        follow-up can promote the section into the Trajectory model.
-
-        Called from the orchestrator's trial-completion handler after the
-        conductor returns. Failures are logged and swallowed — the trace
-        write must never mask the actual trial result the operator cares
-        about.
+        No-op when open mode is off. Manager owns the actual write; the
+        orchestrator's contribution is the ``try/except`` around it — trace
+        writes must never mask the actual trial result the operator cares
+        about, so failures are logged and swallowed.
         """
-        if self._session_registry is None:
+        if self._oal_manager is None:
             return
-        session = self._session_registry.get(f"{task_id}:{trial_idx}")
-        if session is None:
-            return
-        import yaml
-
-        trace_path = output_dir / "trials" / task_id / str(trial_idx) / "open_agent_loop.yaml"
         try:
-            trace_path.parent.mkdir(parents=True, exist_ok=True)
-            with trace_path.open("w") as fh:
-                yaml.safe_dump(session.snapshot(), fh, sort_keys=False)
+            self._oal_manager.write_trace(output_dir, task_id, trial_idx)
         except Exception as write_err:  # noqa: BLE001 — trace write must not mask trial result
             self.logger.warning(
                 "Failed to write open_agent_loop trace; continuing",
@@ -551,48 +551,6 @@ class Orchestrator:
                 trial_index=trial_idx,
                 error=str(write_err),
             )
-
-    def _build_observer_provider(
-        self,
-    ) -> Callable[[str], SessionLoopObserver | None] | None:
-        """Return a per-trial observer factory for the current run, or ``None``
-        in sealed mode.
-
-        The provider closes over :attr:`_session_registry` and, when called
-        with a ``trial_id``, gets-or-creates the trial's session and returns
-        a fresh :class:`SessionLoopObserver` bound to it. Threading is safe
-        under the registry's own lock; each trial's conductor runs on its
-        own worker thread and receives its own observer instance.
-        """
-        registry = self._session_registry
-        if registry is None:
-            return None
-
-        def _provider(trial_id: str) -> SessionLoopObserver | None:
-            session: InProcessTrialSession = registry.get_or_create(trial_id)
-            return SessionLoopObserver(session)
-
-        return _provider
-
-    def _build_intervention_handler_provider(
-        self,
-    ) -> Callable[[str], SessionInterventionHandler | None] | None:
-        """Return a per-trial intervention-handler factory for the current run,
-        or ``None`` in sealed mode.
-
-        Symmetric to :meth:`_build_observer_provider`. Same registry — the
-        observer and the handler bind to the same session per trial, so
-        events and interventions round-trip through one bus.
-        """
-        registry = self._session_registry
-        if registry is None:
-            return None
-
-        def _provider(trial_id: str) -> SessionInterventionHandler | None:
-            session: InProcessTrialSession = registry.get_or_create(trial_id)
-            return SessionInterventionHandler(session)
-
-        return _provider
 
     def _build_trial_spec(
         self,
