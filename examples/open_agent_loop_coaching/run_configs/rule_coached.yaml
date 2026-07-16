@@ -1,0 +1,29 @@
+# Rule-coached arm — open mode + rule-based coach (event-pattern only, no LLM).
+# Identical to solo.yaml except open_agent_loop.enabled + output_dir.
+models:
+  agent:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4.6"
+    temperature: 0.0
+    max_tokens: 4096
+    seed: 42
+  user:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4.6"
+    temperature: 0.2
+    seed: 42
+
+orchestrator:
+  workers: 1
+  repeats: 4
+  max_turns: 9
+  queue_backend: sqlite
+
+evaluation:
+  task_packs:
+    - "examples/native/tool_use/dataset"
+  tasks_glob: "**/tool_use_public_example_01/task.yaml"
+  output_dir: "results/coaching_ab/rule_coached"
+
+open_agent_loop:
+  enabled: true
