@@ -77,6 +77,15 @@ class _RecordingEvents:
     def trial_provisioned(self, **kwargs: Any) -> None:
         self.calls.append(("trial_provisioned", kwargs))
 
+    def llm_call_started(self, **kwargs: Any) -> None:
+        self.calls.append(("llm_call_started", kwargs))
+
+    def llm_call_finished(self, **kwargs: Any) -> None:
+        self.calls.append(("llm_call_finished", kwargs))
+
+    def llm_retry_scheduled(self, **kwargs: Any) -> None:
+        self.calls.append(("llm_retry_scheduled", kwargs))
+
     def kinds(self) -> list[str]:
         return [name for name, _ in self.calls]
 
@@ -799,8 +808,8 @@ def test_run_emits_lifecycle_with_distinct_trial_started_total_indices(tmp_path:
 def test_run_with_default_null_events_completes_without_raising(tmp_path: Path) -> None:
     """The default sink is :class:`_NullRunDisplayEvents` — a complete run
     against it must never raise a ``TypeError`` from a mis-kwarged
-    emission. Guards the null-default across every one of the 9 methods
-    the engine calls."""
+    emission. Guards the null-default across every RunDisplayEvents
+    method the engine calls from ``Orchestrator.run()``."""
     from tolokaforge.core.conductor import ConductorContext, InMemoryConductor
     from tolokaforge.core.models import (
         EvaluationConfig,
