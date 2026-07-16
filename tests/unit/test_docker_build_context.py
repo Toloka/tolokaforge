@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tolokaforge.docker.builder import build_image, get_image_definition
+from tolokaforge.docker.builder import build_all_images, build_image, get_image_definition
 from tolokaforge.docker.image import Image
 from tolokaforge.docker.stack import ServiceDefinition, ServiceStack
 from tolokaforge.docker.wheel_resolver import WheelArtifact
@@ -185,6 +185,7 @@ def test_build_image_respects_context_files(monkeypatch) -> None:
 
     image = build_image("runner", force=True)
     assert image.full_tag == "tolokaforge-runner:deadbeef"
+    assert image.build_args == {"WHEEL_FILENAME": "tolokaforge-0.2.0-py3-none-any.whl"}
     assert not Path(captured["context"]).exists(), "Temporary build context should be cleaned up"
 
 
@@ -218,7 +219,29 @@ def test_build_image_non_force_path_uses_isolated_context(monkeypatch) -> None:
 
     image = build_image("runner")
     assert image.full_tag == "tolokaforge-runner:cafe1234"
+    assert image.build_args == {"WHEEL_FILENAME": "tolokaforge-0.2.0-py3-none-any.whl"}
     assert not Path(captured["context"]).exists(), "Temporary build context should be cleaned up"
+
+
+def test_build_all_images_fails_closed_on_partial_build(monkeypatch) -> None:
+    """Bulk builds must not report success when one required image failed."""
+
+    def fake_build_image(service_name, registry=None, force=False):  # noqa: ARG001
+        if service_name == "runner":
+            raise RuntimeError("wheel copy failed")
+        return Image(
+            name=f"tolokaforge-{service_name}",
+            tag="deadbeef",
+            image_id="dummy",
+            dockerfile="Dockerfile",
+            context=".",
+            context_hash="deadbeef",
+        )
+
+    monkeypatch.setattr("tolokaforge.docker.builder.build_image", fake_build_image)
+
+    with pytest.raises(RuntimeError, match=r"Failed to build 1 of 2.*runner"):
+        build_all_images(core_only=True)
 
 
 def test_start_service_builds_with_isolated_context_when_skipping_build_images(

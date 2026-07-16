@@ -178,13 +178,13 @@ def build_all_images(
             failed.append(service_name)
 
     if failed:
-        logger.warning(
-            "Image build completed with %d failure(s): %s",
-            len(failed),
-            failed,
+        failed_names = ", ".join(failed)
+        raise RuntimeError(
+            f"Failed to build {len(failed)} of {len(services_to_build)} "
+            f"Docker images: {failed_names}"
         )
-    else:
-        logger.info("All %d images built successfully", len(images))
+
+    logger.info("All %d images built successfully", len(images))
 
     return images
 
@@ -229,6 +229,7 @@ def build_image(
                 return Image.build(
                     dockerfile=str(dockerfile_path),
                     context=str(build_context),
+                    build_args=definition.get("build_args", {}),
                     name=definition["name"],
                 )
 
@@ -239,6 +240,7 @@ def build_image(
                 name=definition["name"],
                 dockerfile=str(dockerfile_path),
                 context=str(build_context),
+                build_args=definition.get("build_args", {}),
             )
         finally:
             shutil.rmtree(build_context, ignore_errors=True)
