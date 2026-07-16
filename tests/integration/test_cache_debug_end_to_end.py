@@ -14,7 +14,7 @@ distinct behaviours:
   with an :class:`InMemoryConductor`. Asserts the captured ``services/redis.log``
   carries an RDB-load signature — **proving the ``redis_dump`` recipe fired** —
   and that the FastAPI + postgres services also produced captured logs —
-  **proving #418 multi-service capture on a completed-but-red grade**. No LLM
+  **proving multi-service capture on a completed-but-red grade**. No LLM
   key, no agent loop; only the trial outcome is deterministic.
 * **Test B — runnable + two-layer inspection (one Haiku run, ~$0.50-1.50).**
   Runs the pack's ``run_config.yaml`` through ``tolokaforge run`` as a
@@ -24,8 +24,7 @@ distinct behaviours:
   (``cache-admin:8000``) with 2xx GETs, wrote a ``submissions/`` note, and the
   ``capture_logs_on_success`` ``redis.log`` again carries the RDB-load
   signature. Deliberately *out of scope*: ``binary_pass``, ``state_checks``,
-  judge success — those are agent-correctness / model-flaky concerns (the
-  #400/#401 learning).
+  judge success — those are agent-correctness / model-flaky concerns.
 
 **Gated.** Both require a real Docker daemon (the per-trial runtime brings up
 the compose stack). Test B additionally needs a real LLM provider key;
@@ -70,7 +69,7 @@ _TASK_ID = "cache_debug"
 # them in ``redis.log`` proves the ``redis_dump`` recipe fired.
 _RDB_LOAD_SIGNATURES = ("Loading RDB", "Done loading RDB", "DB loaded from disk")
 
-# The FastAPI + postgres services whose captured logs prove #418 multi-service
+# The FastAPI + postgres services whose captured logs prove multi-service
 # capture (redis is asserted separately for its RDB-load signature).
 _APP_SERVICES = ("orders-api", "cache-admin", "app-db")
 
@@ -106,7 +105,7 @@ def _pack_manifest_and_seeds() -> tuple[EnvironmentManifest, dict[str, SeedRef]]
 class TestCacheDebugRedGradeCapture:
     """A completed-but-red trial on the pack's stack fires the ``redis_dump``
     recipe (RDB-load evidence in ``redis.log``) and captures every declared
-    service's logs before teardown (#418). The stack, the reset recipe, the
+    service's logs before teardown. The stack, the reset recipe, the
     compose-logs subprocess, and the capture are all real — only the trial
     outcome is deterministic."""
 
@@ -161,7 +160,7 @@ class TestCacheDebugRedGradeCapture:
 
         for service in _APP_SERVICES:
             log_file = services_dir / f"{service}.log"
-            assert log_file.is_file(), f"missing {service}.log — #418 multi-service capture gap"
+            assert log_file.is_file(), f"missing {service}.log — multi-service log capture gap"
             assert log_file.stat().st_size > 0, f"empty {service}.log"
 
         metrics = yaml.safe_load(metrics_path.read_text())

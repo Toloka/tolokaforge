@@ -43,8 +43,7 @@ user_simulator:
       submissions/ and told you what it found.
 policies:
   guidance:
-    - "Read the customer-facing value with the `http_request` tool: GET http://orders-api:8000/orders/4021 — this is what returns stale."
-    - "Read the source of truth: GET http://orders-api:8000/orders/4021/source — this bypasses the cache and reads postgres directly."
-    - "Inspect the cache layer directly: GET http://cache-admin:8000/cache/order:4021 — this shows the raw cached value behind the key."
-    - "Compare the three reads to locate where the staleness lives, then write your root-cause note to `submissions/rootcause.md` with the `write_file` tool, naming what is wrong and why the stale value is served."
+    - "The orders API is at `http://orders-api:8000` — `GET /orders/{id}` returns the served order, `GET /orders/{id}/source` returns the order as recorded in the source-of-truth datastore, `POST /orders/{id}` records a status update. The cache-admin service at `http://cache-admin:8000` exposes read-only inspection: `GET /keys` lists keys, `GET /cache/{key}` returns the raw cached value. Reach all of these with the `http_request` tool."
+    - "Diagnose the reported staleness by inspecting both layers and comparing what each returns for order 4021. Do not guess the root cause — derive it from the divergence you observe."
+    - "Write a short root-cause note to `submissions/rootcause.md` with the `write_file` tool, naming the bug and the mechanism."
 grading: "grading.yaml"
