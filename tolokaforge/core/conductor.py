@@ -50,6 +50,11 @@ from tolokaforge.core.models import (
 )
 from tolokaforge.core.output.artifacts import TrialArtifactWriter
 from tolokaforge.core.rate_limiter import GlobalRateLimiter
+from tolokaforge.core.run_display_events import (
+    _NULL_EVENTS,
+    RunDisplayEvents,
+    _NullRunDisplayEvents,
+)
 from tolokaforge.core.runner import TrialRunner
 from tolokaforge.core.runtime import RuntimeBackend
 from tolokaforge.core.stuck import StuckDetector
@@ -126,6 +131,11 @@ class ConductorContext:
     :class:`~tolokaforge.session.SessionInterventionHandler`. Alternate
     handlers (rule-based safety enforcer, batch-scripted operator, etc.)
     plug in the same way without conductor changes.
+    """
+    events: RunDisplayEvents = field(default_factory=_NullRunDisplayEvents)
+    """Front-end display seam — orchestrator-outer-boundary run / trial /
+    service events. Complementary to :attr:`observer_provider` (loop-inner
+    seams); different level of granularity, no functional overlap.
     """
 
 
@@ -323,6 +333,7 @@ class InProcessConductor:
         request_limiter: GlobalRateLimiter | None = None,
         observer_provider: Callable[[str], LoopObserver | None] | None = None,
         intervention_handler_provider: Callable[[str], InterventionHandler | None] | None = None,
+        events: RunDisplayEvents = _NULL_EVENTS,
     ) -> None:
         self.adapter = adapter
         self._artifact_writer = artifact_writer
@@ -337,6 +348,7 @@ class InProcessConductor:
         self.request_limiter = request_limiter
         self.observer_provider = observer_provider
         self.intervention_handler_provider = intervention_handler_provider
+        self.events = events
 
     def _maybe_build_intervention_handler(self, trial_id: str) -> InterventionHandler | None:
         """Consult the ``intervention_handler_provider`` for this trial's pump.
@@ -655,6 +667,7 @@ class InProcessConductor:
             strict=self.strict,
             loop_observer=loop_observer,
             intervention_handler=intervention_handler,
+            events=self.events,
         )
 
         # Use initial_user_message if provided (e.g., tool-use style tasks).
@@ -737,6 +750,11 @@ class InProcessConductor:
         """
         agent_system_prompt = runner.effective_system_prompt or system_prompt
         trajectory.grade = self.trial_grader.grade(spec, trajectory, agent_system_prompt)
+        self.events.judgment_scored(
+            trial_id=setup.trial_id,
+            score=trajectory.grade.score,
+            binary_pass=trajectory.grade.binary_pass,
+        )
         self.logger.info(
             "Trial graded",
             task_id=task_config.task_id,
