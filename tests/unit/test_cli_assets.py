@@ -1,10 +1,11 @@
 """Unit tests for ``tolokaforge assets stamp`` and the digest helper.
 
 The verb walks ``assets.seeds.<name>`` entries, computes
-``sha256:<hex>`` over each referenced file, and writes the ``digest``
-field back into ``project.yaml``. This suite covers write mode,
-``--check`` dry-run, missing-file failure, bare-string shorthand
-coercion, and idempotency.
+``sha256:<hex>`` over each referenced seed — a file's byte stream or a
+directory's tree hash — and writes the ``digest`` field back into
+``project.yaml``. This suite covers write mode, ``--check`` dry-run,
+missing-file failure, bare-string shorthand coercion, directory
+(``filesystem_dir``) seeds, and idempotency.
 """
 
 from __future__ import annotations
@@ -122,6 +123,47 @@ class TestAssetsStampWriteMode:
         assert result2.exit_code == 0
         assert "already current" in result2.output
         assert project_yaml.stat().st_mtime_ns == mtime_after_first
+
+    def test_directory_seed_stamped_and_check_passes(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        # A ``filesystem_dir`` seed's ``path`` is a directory tree, not a
+        # file. Stamp must digest the tree (not reject it as "missing") and
+        # ``--check`` must then confirm the written digest matches.
+        seed_dir = tmp_path / "assets" / "source"
+        (seed_dir / "pkg").mkdir(parents=True)
+        (seed_dir / "app.py").write_text("x = 1\n")
+        (seed_dir / "pkg" / "mod.py").write_text("y = 2\n")
+        expected = compute_seed_digest(seed_dir)
+
+        project_yaml = tmp_path / "project.yaml"
+        project_yaml.write_text(
+            yaml.safe_dump(
+                {
+                    "name": "p",
+                    "assets": {
+                        "seeds": {
+                            "src": {
+                                "path": "assets/source",
+                                "kind": "filesystem_dir",
+                                "digest": "sha256:placeholder",
+                            },
+                        },
+                    },
+                },
+                sort_keys=False,
+            ),
+        )
+
+        result = runner.invoke(cli, ["assets", "stamp", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "wrote 1 digest" in result.output
+        entry = yaml.safe_load(project_yaml.read_text())["assets"]["seeds"]["src"]
+        assert entry["digest"] == expected
+
+        check = runner.invoke(cli, ["assets", "stamp", "--check", str(tmp_path)])
+        assert check.exit_code == 0, check.output
+        assert "match" in check.output
 
     def test_bare_string_shorthand_coerced_to_dict_with_digest(
         self, runner: CliRunner, tmp_path: Path

@@ -1,0 +1,40 @@
+# Three-way weighted grading for endpoint_add.
+#
+#   state_checks     (0.5) — the decisive floor: the real test result. The
+#     testrunner writes `test_result.txt` = PASS only when the whole suite
+#     (including the summary target) passes; FAIL contains no "PASS" substring.
+#   transcript_rules (0.2) — the agent edited code (write_file) and ran the suite
+#     (http_request → /run-tests), within the turn budget.
+#   llm_judge        (0.3) — code quality of the added endpoint.
+#
+# Weight 0.5 on state_checks is decisive: transcript_rules + llm_judge sum to
+# 0.5 < 0.6, so a run whose tests do not pass cannot reach threshold.
+combine:
+  method: weighted
+  weights: { state_checks: 0.5, transcript_rules: 0.2, llm_judge: 0.3 }
+  pass_threshold: 0.6
+state_checks:
+  jsonpaths:
+    - path_glob: "/env/fs/agent-visible/test_result.txt"
+      contains_ci: "PASS"
+      description: "the real test suite passed (testrunner wrote PASS)"
+transcript_rules:
+  max_turns: 25
+  required_actions:
+    - { action_id: edit_source, requestor: assistant, name: write_file,   arguments: {},                                                              compare_args: [] }
+    - { action_id: run_suite,   requestor: assistant, name: http_request, arguments: { url: "http://testrunner:8000/run-tests", method: "POST" }, compare_args: [url, method] }
+llm_judge:
+  rubric:
+    reference: |
+      The endpoint is `GET /orders/{order_id}/summary`. It fetches the order and
+      its customer in one join (orders JOIN customers ON orders.customer_id =
+      customers.customer_id) and returns the order fields (order_id, product,
+      status, amount) alongside a nested `customer` object (customer_id, name,
+      email, tier). A missing order returns 404. A good implementation reuses the
+      existing patterns in `app.py` — the asyncpg pool on `app.state`, the
+      `_fetch_one`/`_serialize` helpers, a single query rather than two round
+      trips — with no unused imports and no debug prints.
+    criteria:
+      - { id: correct_join, description: "Builds the summary from an order joined with its customer (single query joining orders and customers on customer_id), not two unrelated fetches or a hardcoded shape.", kind: binary, required: true, weight: 1.0 }
+      - { id: follows_patterns, description: "Reuses the existing app.py patterns — the app.state asyncpg pool and the fetch/serialize helpers — rather than opening a new connection or a different style.", kind: graded, weight: 1.0 }
+      - { id: clean_code, description: "No unused imports, no debug prints, readable naming consistent with the surrounding code.", kind: graded, weight: 0.5 }

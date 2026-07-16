@@ -1,0 +1,72 @@
+# Project spec for the multi_service_endpoint_add example.
+#
+# Demonstrates the wired filesystem_dir reset code path end-to-end via
+# `tolokaforge run`: the `testrunner` service is labelled `isolation: reset` and
+# bound to the named directory seed `pristine_source`. At the start of every
+# trial the per-trial backend brings up a fresh compose stack and restores the
+# pristine FastAPI source tree into the shared `source` volume — which is also
+# the agent's `/work` — so `repeats: 2` starts each trial from clean source. See
+# README.md.
+#
+# See docs/architecture/PROJECTS.md for the full Project model.
+
+name: "multi-service-endpoint-add"
+version: 1
+description: >
+  Single-task auto-dev project proving the filesystem_dir seed-backed reset
+  recipe fires through the CLI. A pristine FastAPI source tree is restored into a
+  shared volume per trial; the agent adds a `GET /orders/{id}/summary` endpoint,
+  runs the real test suite over HTTP, and the PASS/FAIL marker is the
+  deterministic floor of a three-way grade.
+
+tasks:
+  discovery:
+    glob: "tasks/**/task.yaml"
+
+# ── Shared assets ───────────────────────────────────────────────
+# Named seeds the reset recipe references by name. `pristine_source` is a
+# `filesystem_dir` seed — a directory tree, digested by a deterministic tree
+# hash. Stamp it with `uv run tolokaforge assets stamp` (verified at load);
+# never edit the digest by hand.
+assets:
+  seeds:
+    pristine_source:
+      path: "./assets/source"
+      kind: "filesystem_dir"
+      digest: "sha256:507789746d954476edbc18aab8b46a0cfa31d88cd151aced2e8fefe0b188ec12"
+
+# ── Default environment ─────────────────────────────────────────
+# Every task inherits this unless it declares its own `environment_manifest`.
+# The endpoint_add task declares none, so it inherits this stack whole
+# (including `testrunner: reset`).
+default_environment:
+  stack:
+    compose_file: "./shared/environment.compose.yaml"
+    runner_service: "runner"
+  services:
+    # `testrunner` mounts the shared `source` volume at /workspace; the recipe
+    # restores the `pristine_source` tree into it at the start of every trial.
+    # The other services carry no entry → they default to `ephemeral` (fresh per
+    # trial). The reset/ephemeral mix makes `requires_per_trial` true, forcing
+    # per-trial backend selection (the only backend that applies reset recipes).
+    testrunner:
+      isolation: "reset"
+      reset: { seed: "pristine_source" }
+
+# ── Task defaults — base for every task ─────────────────────────
+task_defaults:
+  adapter_type: "native"
+  max_turns: 25
+  actors:
+    user:
+      mode: "llm"
+      persona: "cooperative"
+
+# ── Run defaults — base for every run config ────────────────────
+run_defaults:
+  compute:
+    provider: "local-docker"
+    workers: 1
+  orchestrator:
+    auto_start_services: true
+    shuffle_trials: false
