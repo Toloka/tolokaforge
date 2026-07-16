@@ -476,6 +476,26 @@ def validate(tasks: str):
     console.print(f"\n[bold]Summary:[/bold] {valid} valid, {invalid} invalid")
 
 
+@cli.command("native-verify")
+@click.option("--tasks", required=True, help="Glob pattern for native task files")
+@click.option("--report", "report_path", required=True, type=click.Path(path_type=Path))
+def native_verify(tasks: str, report_path: Path) -> None:
+    """Execute native MCP schemas and goldens, failing on any mismatch."""
+    from tolokaforge.adapters.native_verify import (
+        verify_native_tasks,
+        write_native_verification_report,
+    )
+
+    report = verify_native_tasks(tasks)
+    write_native_verification_report(report, report_path)
+    if not report.passed:
+        raise click.ClickException(
+            f"native verification failed: {len(report.cases)} cases, "
+            f"{len(report.duplicate_task_ids)} duplicate task IDs; report={report_path}"
+        )
+    console.print(f"[green]Native verification passed:[/green] {len(report.cases)} cases")
+
+
 def _collect_run_spend_and_tokens(run_dir: Path) -> tuple[float, int, int]:
     """Aggregate spend / prompt-tokens / completion-tokens from per-trial metrics.
 

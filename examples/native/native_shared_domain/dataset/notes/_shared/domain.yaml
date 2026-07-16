@@ -15,4 +15,8 @@ user_simulator:
   mode: llm
   persona: cooperative
 
+initial_state:
+  schemas: "db_schema.json"
+  unstable_fields: "unstable_fields.json"
+
 system_prompt: "system_prompt.md"

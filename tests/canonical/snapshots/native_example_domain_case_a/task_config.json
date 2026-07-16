@@ -11,7 +11,9 @@
     "json_db": "testcases/case_a/initial_state.json",
     "mock_web": null,
     "rag": null,
-    "system_prompt": null
+    "schemas": null,
+    "system_prompt": null,
+    "unstable_fields": null
   },
   "initial_user_message": "Echo 'hello'.",
   "max_turns": null,

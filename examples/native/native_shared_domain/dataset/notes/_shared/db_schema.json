@@ -1,0 +1,11 @@
+[
+  {
+    "table_name": "notes",
+    "fields": {
+      "id": "string",
+      "title": "string",
+      "body": "string"
+    },
+    "primary_key": "id"
+  }
+]

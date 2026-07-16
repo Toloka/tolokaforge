@@ -23,6 +23,7 @@ import importlib
 import json
 import logging
 import re
+import selectors
 import subprocess
 import sys
 import time
@@ -425,6 +426,7 @@ class MCPServerProcess(BaseModel):
     script_path: str
     process: Any | None = None  # subprocess.Popen - can't type properly
     request_id: int = 0
+    request_timeout_seconds: float = 30.0
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -501,6 +503,16 @@ class MCPServerProcess(BaseModel):
         self.process.stdin.flush()
 
         # Read response
+        selector = selectors.DefaultSelector()
+        selector.register(self.process.stdout, selectors.EVENT_READ)
+        ready = selector.select(timeout=self.request_timeout_seconds)
+        selector.close()
+        if not ready:
+            self.stop()
+            raise TimeoutError(
+                f"MCP server request timed out after {self.request_timeout_seconds:g}s "
+                f"(script={self.script_path}, method={method})"
+            )
         response_line = self.process.stdout.readline()
         if not response_line:
             # Drain stderr so the actual subprocess crash reason is visible.

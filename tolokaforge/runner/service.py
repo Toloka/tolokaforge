@@ -71,6 +71,7 @@ from tolokaforge.runner.tool_factory import (
     ToolLifecycleContext,
     ToolReconstructionError,
 )
+from tolokaforge.runner.tool_result import tool_error_message
 
 logger = logging.getLogger(__name__)
 
@@ -1355,14 +1356,18 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
             try:
                 # Execute tool
+                output = None
                 if hasattr(tool, "execute"):
-                    await tool.execute(arguments)
+                    output = await tool.execute(arguments)
                 elif callable(tool):
                     if inspect.iscoroutinefunction(tool):
-                        await tool(arguments)
+                        output = await tool(arguments)
                     else:
                         loop = asyncio.get_event_loop()
-                        await loop.run_in_executor(None, lambda t=tool, a=arguments: t(a))
+                        output = await loop.run_in_executor(None, lambda t=tool, a=arguments: t(a))
+                error_message = tool_error_message(output)
+                if error_message is not None:
+                    raise RuntimeError(f"tool returned an error result: {error_message}")
                 logger.debug(f"GradeTrial: Golden action {i} executed: {tool_name}")
 
             except Exception as e:

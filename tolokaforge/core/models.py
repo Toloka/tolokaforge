@@ -577,6 +577,8 @@ class InitialStateConfig(BaseModel):
     """Initial environment state configuration"""
 
     json_db: str | dict[str, Any] | None = None  # JSON DB initial state
+    schemas: str | list[dict[str, Any]] | None = None
+    unstable_fields: str | list[dict[str, Any]] | None = None
     device_overrides: dict[str, Any] | None = None  # Per-task device state overrides
     filesystem: dict[str, Any] | None = None
     mock_web: dict[str, Any] | None = None

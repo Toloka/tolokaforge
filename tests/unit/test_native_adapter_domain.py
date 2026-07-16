@@ -167,6 +167,14 @@ class TestBundleArtifacts:
             decoded = base64.b64decode(val)
             assert decoded == (domain_fixture / key).read_bytes(), key
 
+    def test_active_case_bundle_excludes_sibling_cases(self, domain_fixture: Path) -> None:
+        adapter = _adapter_over(domain_fixture)
+        task_path = domain_fixture / "testcases" / "case_a" / "task.yaml"
+        artifacts = adapter._bundle_task_artifacts(domain_fixture, task_path=task_path)
+
+        assert "testcases/case_a/task.yaml" in artifacts
+        assert not any(key.startswith("testcases/case_b/") for key in artifacts)
+
 
 # ---------------------------------------------------------------------------
 # Flat-layout regression — domain support must not break the existing path.
