@@ -17,7 +17,7 @@ from tolokaforge.core.llm.client import GenerationResult
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.logging import init_trial_logger
 from tolokaforge.core.loop import LoopConfig, ToolCallingLoop
-from tolokaforge.core.models import Message, MessageRole
+from tolokaforge.core.models import Message, MessageRole, TerminationReason, TrialStatus
 from tolokaforge.session import (
     ApproveTool,
     EditState,
@@ -116,16 +116,6 @@ class TestNotYetSupportedKindsRejected:
         "factory,expected_reason_substring",
         [
             (
-                lambda pid: Kill(
-                    trial_id="t:0",
-                    attach_to_seq=0,
-                    participant_id=pid,
-                    timestamp=_NOW,
-                    reason="stop please",
-                ),
-                "Kill",
-            ),
-            (
                 lambda pid: Pause(
                     trial_id="t:0", attach_to_seq=0, participant_id=pid, timestamp=_NOW
                 ),
@@ -185,6 +175,143 @@ class TestNotYetSupportedKindsRejected:
         assert expected_reason_substring in snap["interventions"][0]["ack_reason"]
 
 
+class TestKillHandling:
+    """Kill terminates the loop cleanly with USER_STOP and the participant's
+    reason. Non-kill drained interventions at the same pause point are marked
+    ``superseded``.
+    """
+
+    def _submit_kill(
+        self,
+        session: InProcessTrialSession,
+        participant_id: str = "p_kill",
+        role: ParticipantRole = ParticipantRole.PARTICIPANT,
+        reason: str = "give up",
+    ):
+        handle = session.attach(participant_id, role)
+        intervention = Kill(
+            trial_id=session.trial_id,
+            attach_to_seq=0,
+            participant_id=handle.participant_id,
+            timestamp=_NOW,
+            reason=reason,
+        )
+        session.interventions().submit(handle, intervention)
+        return handle, intervention
+
+    def test_kill_returns_termination_decision_with_user_stop(self):
+        session = InProcessTrialSession(trial_id="t:0")
+        _, kill = self._submit_kill(session, reason="stop please")
+        handler = SessionInterventionHandler(session)
+
+        decision = handler.drain_and_apply([])
+
+        assert decision is not None
+        assert decision.reason == TerminationReason.USER_STOP
+        assert decision.status == TrialStatus.FAILED
+        assert "stop please" in decision.system_message
+        assert kill.participant_id in decision.system_message
+
+    def test_kill_recorded_as_accepted_in_trace(self):
+        session = InProcessTrialSession(trial_id="t:0")
+        self._submit_kill(session)
+        handler = SessionInterventionHandler(session)
+
+        handler.drain_and_apply([])
+
+        snap = session.snapshot()
+        assert snap["interventions"][0]["ack_outcome"] == "accepted"
+
+    def test_kill_supersedes_concurrent_inject(self):
+        """A Kill and an Inject drained at the same pause point: Kill wins,
+        Inject is superseded, ``messages`` is unchanged.
+        """
+        session = InProcessTrialSession(trial_id="t:0")
+        _submit_inject(session, "please try again")
+        self._submit_kill(session, reason="never mind")
+        handler = SessionInterventionHandler(session)
+
+        messages: list[Message] = []
+        decision = handler.drain_and_apply(messages)
+
+        assert decision is not None
+        assert messages == []  # Inject NOT applied
+
+        outcomes = {
+            rec["intervention"]["kind"]: rec["ack_outcome"]
+            for rec in session.snapshot()["interventions"]
+        }
+        assert outcomes["inject_message"] == "superseded"
+        assert outcomes["kill"] == "accepted"
+
+
+class TestRolePriority:
+    """Two Kill interventions from different roles at the same pause point:
+    admin > participant. Within a tier, later submission wins.
+    """
+
+    def _submit_kill_from(
+        self,
+        session: InProcessTrialSession,
+        participant_id: str,
+        role: ParticipantRole,
+        reason: str,
+    ) -> Kill:
+        handle = session.attach(participant_id, role)
+        intervention = Kill(
+            trial_id=session.trial_id,
+            attach_to_seq=0,
+            participant_id=participant_id,
+            timestamp=_NOW,
+            reason=reason,
+        )
+        session.interventions().submit(handle, intervention)
+        return intervention
+
+    def test_admin_kill_beats_participant_kill(self):
+        session = InProcessTrialSession(trial_id="t:0")
+        # Participant kill submitted FIRST, admin kill submitted SECOND —
+        # admin still wins on role priority (not submit order).
+        self._submit_kill_from(session, "p_user", ParticipantRole.PARTICIPANT, "user says stop")
+        self._submit_kill_from(session, "p_admin", ParticipantRole.ADMIN, "admin says stop")
+
+        handler = SessionInterventionHandler(session)
+        decision = handler.drain_and_apply([])
+
+        assert decision is not None
+        assert "admin says stop" in decision.system_message
+        assert "p_admin" in decision.system_message
+
+    def test_later_submitted_wins_within_same_tier(self):
+        """Two participant-role kills: later submission wins (stable sort +
+        reversed index in the priority tuple).
+        """
+        session = InProcessTrialSession(trial_id="t:0")
+        self._submit_kill_from(session, "p_first", ParticipantRole.PARTICIPANT, "first reason")
+        self._submit_kill_from(session, "p_second", ParticipantRole.PARTICIPANT, "second reason")
+
+        handler = SessionInterventionHandler(session)
+        decision = handler.drain_and_apply([])
+
+        assert decision is not None
+        assert "second reason" in decision.system_message
+        assert "p_second" in decision.system_message
+
+    def test_losing_kill_marked_superseded_with_reference_to_winner(self):
+        session = InProcessTrialSession(trial_id="t:0")
+        self._submit_kill_from(session, "p_user", ParticipantRole.PARTICIPANT, "user reason")
+        self._submit_kill_from(session, "p_admin", ParticipantRole.ADMIN, "admin reason")
+
+        handler = SessionInterventionHandler(session)
+        handler.drain_and_apply([])
+
+        snap = session.snapshot()
+        outcomes_by_pid = {rec["participant_id"]: rec for rec in snap["interventions"]}
+        assert outcomes_by_pid["p_admin"]["ack_outcome"] == "accepted"
+        assert outcomes_by_pid["p_user"]["ack_outcome"] == "superseded"
+        assert "p_admin" in outcomes_by_pid["p_user"]["ack_reason"]
+
+
 class TestLoopIntegration:
     """Drive :class:`ToolCallingLoop` with the pump attached; verify that an
     InjectMessage submitted between turns actually reaches the next agent
@@ -227,6 +354,54 @@ class TestLoopIntegration:
         assert len(seen_messages_per_call) == 1
         contents = [m.content for m in seen_messages_per_call[0] if m.role == MessageRole.USER]
         assert "try /v2/auth instead" in contents
+
+
+class TestLoopIntegrationKill:
+    """Kill submitted between turns actually terminates the running loop."""
+
+    def test_kill_terminates_loop_with_user_stop(self):
+        session = InProcessTrialSession(trial_id="t:0")
+        # Queue a Kill before turn 0's generate runs
+        handle = session.attach("p_kill", ParticipantRole.PARTICIPANT)
+        session.interventions().submit(
+            handle,
+            Kill(
+                trial_id="t:0",
+                attach_to_seq=0,
+                participant_id="p_kill",
+                timestamp=_NOW,
+                reason="operator abort",
+            ),
+        )
+        handler = SessionInterventionHandler(session)
+
+        # If Kill were ignored, this side_effect would run and the loop
+        # would call generate 10 times (max_turns). If Kill works, the loop
+        # terminates before the first generate and the mock is never called.
+        llm_client = MagicMock()
+        llm_client.generate.side_effect = lambda *a, **kw: GenerationResult(
+            text="never runs", tool_calls=[], usage=Usage()
+        )
+
+        loop = ToolCallingLoop(
+            llm_client=llm_client,
+            tool_executor=MagicMock(),
+            tool_schemas=[],
+            config=LoopConfig(max_turns=10, episode_timeout_s=60),
+            metrics=MagicMock(),
+            should_terminate=lambda result, turn, messages: None,
+            logger=init_trial_logger("t:0", verbose=False, strict=False),
+            intervention_handler=handler,
+        )
+        messages: list[Message] = []
+        outcome = loop.run(system_prompt="sys", messages=messages, start_time=time.time())
+
+        assert outcome.termination_reason == TerminationReason.USER_STOP
+        assert outcome.status == TrialStatus.FAILED
+        llm_client.generate.assert_not_called()
+        # A system message recording the kill lands on the transcript
+        system_contents = [m.content for m in messages if m.role == MessageRole.SYSTEM]
+        assert any("operator abort" in c for c in system_contents)
 
 
 class TestNullPumpIsNoOp:

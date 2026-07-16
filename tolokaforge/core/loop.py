@@ -225,20 +225,27 @@ class InterventionHandler(Protocol):
     incurs one no-op call per turn.
     """
 
-    def drain_and_apply(self, messages: list[Message]) -> None:
+    def drain_and_apply(self, messages: list[Message]) -> TerminationDecision | None:
         """Drain pending interventions and apply them to the running trial.
 
         Called at the top of each turn, before the LLM generate call. The
         handler must return quickly (drain from a queue, apply to messages,
         record outcomes) — the loop's producer thread is blocked while this
         runs.
+
+        Returns a :class:`TerminationDecision` when a drained intervention
+        (typically ``Kill``) should terminate the loop cleanly. Returning
+        ``None`` means "no terminal intervention; continue with the next turn".
+        The returned decision's ``system_message`` is appended to the transcript
+        by the loop and its ``reason`` becomes the trajectory's
+        ``termination_reason``.
         """
 
 
 class _NullInterventionHandler:
     """No-op :class:`InterventionHandler` — the default when no pump is wired."""
 
-    def drain_and_apply(self, messages: list[Message]) -> None:
+    def drain_and_apply(self, messages: list[Message]) -> TerminationDecision | None:
         return None
 
 
@@ -337,7 +344,12 @@ class ToolCallingLoop:
         termination_reason: TerminationReason | None = None
 
         for turn in range(self.config.max_turns):
-            self.intervention_handler.drain_and_apply(messages)
+            kill_decision = self.intervention_handler.drain_and_apply(messages)
+            if kill_decision is not None:
+                messages.append(self._system_message(kill_decision.system_message))
+                status = kill_decision.status or status
+                termination_reason = kill_decision.reason
+                break
             self.observer.on_turn_start(turn)
             timeout_decision = self._check_episode_timeout(start_time)
             if timeout_decision is not None:
