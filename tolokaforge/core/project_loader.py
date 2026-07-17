@@ -621,6 +621,11 @@ _SERVICE_TREATMENT_FIELDS = ("initial_state", "services")
 ``stack`` replacement (the project's opt-outs reviewed the project's
 services, not the replacement stack)."""
 
+_ENDPOINT_OVERRIDE_FIELDS = ("runner_port", "db_service", "db_port", "rag_service", "rag_port")
+"""Endpoint-resolution overrides carried under ``stack``. Substrate-scoped
+— cleared with the rest of ``stack`` on atomic replacement — so a task that
+swaps ``stack.compose_file`` drops any project-side endpoint override."""
+
 
 def resolve(
     project_env: EnvironmentPatch | None,
@@ -685,6 +690,10 @@ def resolve(
     runner_service = stack.get("runner_service")
     if runner_service:
         manifest_kwargs["runner_service"] = runner_service
+    for field in _ENDPOINT_OVERRIDE_FIELDS:
+        value = stack.get(field)
+        if value is not None:
+            manifest_kwargs[field] = value
     for field in (*_SERVICE_TREATMENT_FIELDS, *_POLICY_REQUEST_FIELDS):
         value = merged.get(field)
         if value is None:
