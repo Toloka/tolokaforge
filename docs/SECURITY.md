@@ -56,7 +56,7 @@ Multiple timeout layers prevent runaway execution:
 | Per-tool timeout | 30s | `ToolPolicy.timeout_s` |
 | Per-turn timeout | 60s | `orchestrator.timeouts.turn_s` |
 | Episode timeout | 1200s | `orchestrator.timeouts.episode_s` |
-| Max turns | 50 | `orchestrator.max_turns` |
+| Max turns | 50 (engine default) | `orchestrator.max_turns` (optional cap) |
 | Request throttle | 1.0/s | `orchestrator.max_requests_per_second` |
 
 ### Budget Cap
