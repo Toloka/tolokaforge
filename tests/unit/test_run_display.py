@@ -560,9 +560,8 @@ def test_focus_does_not_alternate_under_interleaved_progress(
             completion_tokens_delta=1,
             cost_delta_usd=0.0,
         )
-        assert (
-            display._focused_trial_id == "a:0"
-        ), f"trial_progress on iteration {i} unexpectedly moved focus"
+        msg = f"trial_progress on iteration {i} unexpectedly moved focus"
+        assert display._focused_trial_id == "a:0", msg
 
     # Lifecycle event on b:0 moves focus.
     display.trial_started(trial_id="b:0", task_id="b", trial_index=0, total_index=0)
