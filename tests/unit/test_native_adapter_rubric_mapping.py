@@ -18,7 +18,9 @@ from tolokaforge.adapters.native import NativeAdapter
 pytestmark = pytest.mark.unit
 
 
-def _build_task(tmp_path: Path, grading: dict) -> NativeAdapter:
+def _build_task(
+    tmp_path: Path, grading: dict, *, project_task_defaults: dict | None = None
+) -> NativeAdapter:
     task_dir = tmp_path / "tasks" / "rubric_task"
     task_dir.mkdir(parents=True)
     (task_dir / "system_prompt.md").write_text("system\n")
@@ -38,7 +40,32 @@ def _build_task(tmp_path: Path, grading: dict) -> NativeAdapter:
         },
     )
     write_yaml_file(task_dir / "grading.yaml", grading)
-    return NativeAdapter({"base_dir": str(tmp_path), "tasks_glob": "tasks/**/task.yaml"})
+    params: dict = {"base_dir": str(tmp_path), "tasks_glob": "tasks/**/task.yaml"}
+    if project_task_defaults is not None:
+        params["project_task_defaults"] = project_task_defaults
+    return NativeAdapter(params)
+
+
+def _rubric_grading(customization: dict | None = None) -> dict:
+    """A minimal valid rubric grading block, optionally with a customization sub-block."""
+    llm_judge: dict = {
+        "rubric": {
+            "criteria": [
+                {"id": "a", "description": "d", "kind": "binary", "weight": 1.0},
+            ],
+        },
+    }
+    if customization is not None:
+        llm_judge["customization"] = customization
+    return {
+        "combine": {"method": "weighted", "weights": {"llm_judge": 1.0}},
+        "llm_judge": llm_judge,
+    }
+
+
+def _judge_defaults(customization: dict) -> dict:
+    """A project ``task_defaults`` carrying only a judge customization default."""
+    return {"grading_defaults": {"llm_judge": {"customization": customization}}}
 
 
 def test_structured_rubric_maps_into_runner_llm_judge(tmp_path: Path):
@@ -131,3 +158,76 @@ def test_legacy_model_ref_in_task_grading_is_rejected(tmp_path: Path):
 
     with pytest.raises(ValueError, match="model_ref moved to the run config"):
         adapter.to_task_description("rubric_task")
+
+
+# ---------------------------------------------------------------------------
+# Judge customization: project→task layering + "attach only when set"
+# ---------------------------------------------------------------------------
+
+
+def test_customization_absent_leaves_llm_judge_config_identical(tmp_path: Path):
+    """A rubric task with no customization block (and no project default) produces
+    ``customization is None`` — the parsed config is identical to one built without
+    the feature, and no nested customization object is attached (the wire carries a
+    plain ``"customization": null``)."""
+    from tolokaforge.runner.models import LLMJudgeConfig
+
+    adapter = _build_task(tmp_path, _rubric_grading())
+    judge = adapter.to_task_description("rubric_task").grading.llm_judge
+
+    assert judge.customization is None
+    # No nested-null object on the wire; reconstructs identically.
+    rehydrated = LLMJudgeConfig.model_validate_json(judge.model_dump_json())
+    assert rehydrated.customization is None
+
+
+def test_explicit_null_llm_judge_key_loads_as_no_judge(tmp_path: Path):
+    """A grading.yaml whose ``llm_judge:`` key is explicit-null (YAML parses it to
+    ``None``) loads with ``grading.llm_judge is None`` instead of crashing the
+    customization extraction on a ``None`` block."""
+    adapter = _build_task(
+        tmp_path,
+        {
+            "combine": {"method": "weighted", "weights": {"state_checks": 1.0}},
+            "llm_judge": None,
+        },
+    )
+
+    task_desc = adapter.to_task_description("rubric_task")
+
+    assert task_desc.grading.llm_judge is None
+
+
+def test_task_customization_attached_when_set(tmp_path: Path):
+    adapter = _build_task(tmp_path, _rubric_grading({"disable_knowledge_search": True}))
+    judge = adapter.to_task_description("rubric_task").grading.llm_judge
+
+    assert judge.customization is not None
+    assert judge.customization.disable_knowledge_search is True
+
+
+def test_project_default_inherited_when_task_unset(tmp_path: Path):
+    """A project default disables KB search; a rubric task with no customization
+    block inherits it (task-unset never clears a set project default)."""
+    adapter = _build_task(
+        tmp_path,
+        _rubric_grading(),
+        project_task_defaults=_judge_defaults({"disable_knowledge_search": True}),
+    )
+    judge = adapter.to_task_description("rubric_task").grading.llm_judge
+
+    assert judge.customization is not None
+    assert judge.customization.disable_knowledge_search is True
+
+
+def test_task_false_overrides_project_true(tmp_path: Path):
+    """Tri-state: an explicit task ``false`` overrides a project ``true``."""
+    adapter = _build_task(
+        tmp_path,
+        _rubric_grading({"disable_knowledge_search": False}),
+        project_task_defaults=_judge_defaults({"disable_knowledge_search": True}),
+    )
+    judge = adapter.to_task_description("rubric_task").grading.llm_judge
+
+    assert judge.customization is not None
+    assert judge.customization.disable_knowledge_search is False

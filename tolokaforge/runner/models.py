@@ -441,6 +441,21 @@ class CriterionResult(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class JudgeCustomization(BaseModel):
+    """Judge tool-surface customization, sibling of ``rubric`` under ``llm_judge``.
+
+    Tri-state ``disable_knowledge_search``: ``None`` (unset) means the faithful
+    default (the judge is offered whatever knowledge-search tools the agent had);
+    ``True`` withholds every knowledge-search tool from the judge's surface;
+    ``False`` explicitly keeps them (so a task can override a project default that
+    disabled them). Layered project→task by :func:`resolve_effective_judge_customization`.
+    """
+
+    disable_knowledge_search: bool | None = None
+
+    model_config = {"extra": "forbid"}
+
+
 class LLMJudgeConfig(BaseModel):
     """LLM-based grading configuration.
 
@@ -450,9 +465,12 @@ class LLMJudgeConfig(BaseModel):
     derived from the rubric's criteria (Stage 3), not author-specified. The
     judge *model* is no longer pinned here: it lives at the run level under
     ``RunConfig.models["judge"]`` and rides ``TrialSpec.judge_model_config``.
+    ``customization`` is attached only when a config layer sets it, so a task
+    with no customization block serializes an identical config.
     """
 
     rubric: Rubric  # Structured grading rubric
+    customization: JudgeCustomization | None = None
 
     model_config = {"extra": "forbid"}
 

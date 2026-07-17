@@ -1,6 +1,6 @@
 """A proto Grade carrying criterion_results round-trips to the Pydantic Grade.
 
-Pins the Stage-2 data-plane seam: the runner returns per-criterion rubric
+Pins the data-plane seam: the runner returns per-criterion rubric
 results on the proto ``Grade``; ``RunnerClient.grade_trial`` lowers that proto
 into the dict the orchestrator consumes; the orchestrator then builds the
 Pydantic ``Grade`` from that dict. This test drives the real proto→dict path
@@ -29,7 +29,7 @@ pytestmark = pytest.mark.unit
 
 
 def _grade_from_dict(g: dict) -> Grade:
-    """Mirror the orchestrator's dict→Pydantic Grade construction (Stage 5)."""
+    """Mirror the orchestrator's dict→Pydantic Grade construction."""
     criterion_results = None
     raw = g.get("criterion_results")
     if raw:
@@ -133,7 +133,7 @@ def test_proto_grade_without_criterion_results_yields_none():
 
     grade = _grade_from_dict(result["grade"])
     assert grade.criterion_results is None
-    # No judge_report set on the proto ⇒ None all the way through (Stage 5).
+    # No judge_report set on the proto ⇒ None all the way through.
     assert result["grade"]["judge_report"] is None
     assert grade.judge_usage is None
     assert grade.judge_transcript is None

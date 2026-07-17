@@ -20,12 +20,14 @@ import os
 from pathlib import Path
 
 import pytest
+import yaml
 
 from tolokaforge.core.grading.judge import (
     JudgeStatus,
     LLMJudge,
     model_config_from_ref,
 )
+from tolokaforge.core.grading.kb_search import SearchHit
 from tolokaforge.core.grading.rubric import SubmitReportValidationError, parse_submit_report
 from tolokaforge.runner.models import Rubric
 
@@ -453,3 +455,135 @@ def test_rubric_judge_live_recovers_through_forced_retry(monkeypatch):
         and "rejected" in (m.get("content") or "")
     ]
     assert rejection_results, "no injected rejection role=tool result in the transcript"
+
+
+# ---------------------------------------------------------------------------
+# Judge customization acceptance — disable_knowledge_search end-to-end
+# ---------------------------------------------------------------------------
+
+
+class _StubKnowledgeSearch:
+    """In-memory ``KnowledgeSearch`` giving the judge a KB tool to offer/withhold.
+
+    The LLM is real; the KB backend is a stub (mirroring ``_DictDBReader`` for the
+    DB). Its presence is what matters: with the flag off the judge is offered
+    ``search_kb``; with it on the judge withholds it, so ``withheld`` is non-empty.
+    """
+
+    def search(self, query: str, top_k: int = 5, alpha: float = 0.5) -> list[SearchHit]:
+        return [
+            SearchHit(
+                doc_id="policy_1",
+                source="refund_policy.md",
+                score=0.9,
+                text="Refunds are issued to the original payment method within 30 days.",
+            )
+        ]
+
+
+def _tool_names_in_transcript(transcript) -> list[str]:
+    return [tc["name"] for m in transcript for tc in (m.get("tool_calls") or [])]
+
+
+def _write_live_grade(tmp_path: Path, result) -> tuple[dict, dict]:
+    """Materialise the live judge result into real ``grade.yaml`` +
+    ``judge_trajectory.yaml`` via the production :class:`FileArtifactWriter`, then
+    read both back. The proto→dict→Grade field mapping is contract-locked in
+    ``tests/canonical/test_trial_grader_contract.py``; here we assert the written
+    bundle carries the live judge's gating record."""
+    from tolokaforge.core.models import Grade, GradeComponents, JudgeKbGating
+    from tolokaforge.core.models import JudgeStatus as HostJudgeStatus
+    from tolokaforge.core.models import JudgeUsage as HostJudgeUsage
+    from tolokaforge.core.output.artifacts import FileArtifactWriter
+
+    grade = Grade(
+        binary_pass=bool(result.binary_pass),
+        score=result.score if result.score is not None else 0.0,
+        components=GradeComponents(llm_judge=result.score if result.score is not None else -1.0),
+        reasons=result.reasons,
+        criterion_results=list(result.criterion_results),
+        judge_status=HostJudgeStatus(result.status.value),
+        judge_usage=HostJudgeUsage(
+            calls=result.usage.calls,
+            prompt_tokens=result.usage.prompt_tokens,
+            completion_tokens=result.usage.completion_tokens,
+            reasoning_tokens=result.usage.reasoning_tokens,
+            cost_usd=result.usage.cost_usd,
+            tool_calls=result.usage.tool_calls,
+            consistency_rejections=result.usage.consistency_rejections,
+        ),
+        judge_transcript=list(result.transcript),
+        judge_kb_gating=JudgeKbGating(
+            knowledge_search_disabled=result.knowledge_search_disabled,
+            offered=list(result.kb_tools_offered),
+            withheld=list(result.kb_tools_withheld),
+        ),
+    )
+    trial_dir = tmp_path / "trials" / "judge_customization" / "0"
+    FileArtifactWriter().write_grade(trial_dir, grade)
+    grade_yaml = yaml.safe_load((trial_dir / "grade.yaml").read_text())
+    traj_yaml = yaml.safe_load((trial_dir / "judge_trajectory.yaml").read_text())
+    return grade_yaml, traj_yaml
+
+
+@pytest.mark.skipif(_MODEL_REF is None, reason="No OPENROUTER_API_KEY / OPENAI_API_KEY set")
+def test_rubric_judge_live_judge_customization_disabled(tmp_path):
+    """With ``disable_knowledge_search=True`` the real judge grades end-to-end with
+    NO KB tool in its surface: none offered, ``search_kb`` withheld, no KB call in
+    the trajectory, and ``grade.yaml`` records the gating (the authoritative
+    replay signal)."""
+    judge = LLMJudge(
+        model_config_from_ref(_MODEL_REF),
+        max_turns=10,
+        episode_timeout_s=180,
+        disable_knowledge_search=True,
+    )
+    result = judge.run(
+        rubric=_rubric(),
+        agent_system_prompt=_AGENT_SYSTEM_PROMPT,
+        transcript=_TRANSCRIPT,
+        db_reader=_DictDBReader(_DB_STATE),
+        kb_search=_StubKnowledgeSearch(),
+    )
+
+    # Grading completes end-to-end without the KB tool.
+    assert result.status is JudgeStatus.COMPLETED, result.reasons
+    # No KB tool in the judge's toolset; the agent's search_kb was withheld.
+    assert result.kb_tools_offered == ()
+    assert "search_kb" in result.kb_tools_withheld
+    assert result.knowledge_search_disabled is True
+    # No KB search call in the judge's trajectory (the tool was never offered).
+    assert "search_kb" not in _tool_names_in_transcript(result.transcript)
+
+    grade_yaml, traj_yaml = _write_live_grade(tmp_path, result)
+    gating = grade_yaml["judge_kb_gating"]
+    assert gating["knowledge_search_disabled"] is True
+    assert gating["offered"] == []
+    assert gating["withheld"]  # non-empty — the agent had a KB tool that was withheld
+    assert "search_kb" not in _tool_names_in_transcript(traj_yaml["messages"])
+
+
+@pytest.mark.skipif(_MODEL_REF is None, reason="No OPENROUTER_API_KEY / OPENAI_API_KEY set")
+def test_rubric_judge_live_judge_customization_baseline(tmp_path):
+    """Without the flag the judge is offered the SAME KB tool the agent had —
+    the faithful baseline: ``search_kb`` offered, nothing withheld, and
+    ``grade.yaml`` records ``knowledge_search_disabled: false``."""
+    judge = LLMJudge(model_config_from_ref(_MODEL_REF), max_turns=10, episode_timeout_s=180)
+    result = judge.run(
+        rubric=_rubric(),
+        agent_system_prompt=_AGENT_SYSTEM_PROMPT,
+        transcript=_TRANSCRIPT,
+        db_reader=_DictDBReader(_DB_STATE),
+        kb_search=_StubKnowledgeSearch(),
+    )
+
+    assert result.status is JudgeStatus.COMPLETED, result.reasons
+    assert result.kb_tools_offered == ("search_kb",)
+    assert result.kb_tools_withheld == ()
+    assert result.knowledge_search_disabled is False
+
+    grade_yaml, _ = _write_live_grade(tmp_path, result)
+    gating = grade_yaml["judge_kb_gating"]
+    assert gating["knowledge_search_disabled"] is False
+    assert gating["offered"] == ["search_kb"]
+    assert gating["withheld"] == []

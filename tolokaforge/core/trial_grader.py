@@ -34,6 +34,7 @@ from tolokaforge.core.models import (
     CriterionResult,
     Grade,
     GradeComponents,
+    JudgeKbGating,
     JudgeStatus,
     JudgeUsage,
     TerminationReason,
@@ -227,6 +228,7 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
 
     judge_usage: JudgeUsage | None = None
     judge_transcript: list[dict[str, Any]] | None = None
+    judge_kb_gating: JudgeKbGating | None = None
     raw_report = raw_grade.get("judge_report")
     if raw_report:
         judge_usage = JudgeUsage(
@@ -237,6 +239,11 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
             cost_usd=raw_report.get("cost_usd", 0.0),
             tool_calls=raw_report.get("tool_calls", 0),
             consistency_rejections=raw_report.get("consistency_rejections", 0),
+        )
+        judge_kb_gating = JudgeKbGating(
+            knowledge_search_disabled=raw_report.get("knowledge_search_disabled", False),
+            offered=list(raw_report.get("kb_tools_offered", [])),
+            withheld=list(raw_report.get("kb_tools_withheld", [])),
         )
         raw_transcript = raw_report.get("transcript_json")
         if raw_transcript:
@@ -262,4 +269,5 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
         judge_status=JudgeStatus.from_proto(raw_grade.get("judge_status", 0)),
         judge_usage=judge_usage,
         judge_transcript=judge_transcript,
+        judge_kb_gating=judge_kb_gating,
     )

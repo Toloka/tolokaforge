@@ -1150,6 +1150,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     tool_calls=judge_result.usage.tool_calls,
                     consistency_rejections=judge_result.usage.consistency_rejections,
                     transcript_json=json.dumps(list(judge_result.transcript)),
+                    knowledge_search_disabled=judge_result.knowledge_search_disabled,
+                    kb_tools_offered=list(judge_result.kb_tools_offered),
+                    kb_tools_withheld=list(judge_result.kb_tools_withheld),
                 )
                 if judge_result.status is JudgeStatus.ERRORED:
                     # Fail loud: the judge component is incomplete, NOT zero. Leave
@@ -1332,8 +1335,17 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             )
             state_diff_text = None
 
+        # Judge-side tool gating. The agent's tool surface is
+        # untouched: the runner still resolves kb_search / extra_read_tools
+        # faithfully above; the judge withholds the KB-tagged ones by construction
+        # when the effective customization asks for it. Absent/None → False.
+        customization = llm_judge_config.customization
+        disable_knowledge_search = bool(customization and customization.disable_knowledge_search)
+
         def _run() -> JudgeResult:
-            return LLMJudge(judge_model_config).run(
+            return LLMJudge(
+                judge_model_config, disable_knowledge_search=disable_knowledge_search
+            ).run(
                 rubric=llm_judge_config.rubric,
                 agent_system_prompt=agent_system_prompt,
                 transcript=transcript,
@@ -1469,6 +1481,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     description=schema.description,
                     parameters=schema.parameters,
                     invoke=_make_invoke(agent_tool),
+                    knowledge_search=True,
                 )
             )
 
@@ -2120,8 +2133,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             trial_context.clear_kb_search()
             del self.trials[trial_id]
 
-        # KNOWN PRE-EXISTING LIMITATION (issue #95, judge_kb_resolver Stage 5):
-        # the mcp_core TypeSense client handle registered by
+        # KNOWN LIMITATION: the mcp_core TypeSense client handle registered by
         # ``_init_typesense_for_trial`` (via mcp_core's
         # ``initialize_typesense_for_domain``) is NOT torn down here. mcp_core is
         # an optional, lazily-imported dependency that is not importable in this
