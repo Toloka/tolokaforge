@@ -17,6 +17,7 @@ RUN apt-get update -y && apt-get install -y \
     apt-transport-https \
     ca-certificates \
     gnupg \
+    # Host tooling only — the project interpreter is uv-managed from .python-version.
     python3 \
     python3-pip \
     python3-dev \

@@ -277,6 +277,8 @@ Recommended MCP servers for AI agents working on this project:
 - `ruff` for linting and formatting
 - `pytest` for testing
 
+The runtime Python version is single-sourced in `.python-version`; changing it propagates to dev, CI, the devcontainer (via uv), and all runtime Docker images. A canonical guard (`tests/canonical/test_python_version_single_source.py`) fails CI if a workflow or runtime Dockerfile hardcodes a version instead.
+
 **Don't suppress warnings** — update code to use actual functionality instead.
 
 ### Protected Directories
