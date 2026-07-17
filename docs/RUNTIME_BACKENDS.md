@@ -77,6 +77,32 @@ opt-in: tasks that do not declare an `environment_manifest` still run on
 `RuntimeBackendCallLog`; no Docker daemon required. Used by canonical
 contract tests.
 
+## Network posture
+
+Egress policy is a function of **composition** (built-in vs task-declared
+stack), not of lifecycle:
+
+- **Built-in stack (Case A — no `environment_manifest`).** `EngineStack` brings
+  up the engine's built-in services (runner + db-service ± mock-web ±
+  rag-service) on `runner-net`, a bridge network that is **not** `internal`.
+  This is `full_internet` **by construction**: the runner needs LLM-provider
+  egress for in-container LLM-as-judge grading, and every service on the stack
+  is first-party/trusted, so there is nothing untrusted to isolate. A Case A run
+  has no `network_policy` surface — that field lives on `EnvironmentManifest`,
+  which a Case A run does not have. Locked by
+  `tests/unit/test_network_internal.py`.
+- **Task-declared stack (Case B / Case C — `environment_manifest` set).** The
+  task's compose stack is the untrusted surface, so it carries the enforceable
+  posture: `EnvironmentManifest.network_policy` (default `no_internet`) is
+  applied by `enforce_network_policy` during materialisation. Under
+  `no_internet`, task services join an injected `internal: true` network while
+  the runner keeps a non-internal edge network for control-plane and grading
+  egress.
+
+See [ADR-0018](adr/0018-multi-container-under-shared-runtime.md) § "Network
+policy enforcement" for the enforcement table and [SECURITY.md](SECURITY.md)
+for the threat model.
+
 ## A trial's lifecycle on `PerTrialRuntimeBackend`
 
 The following sequence covers one trial end-to-end. Reads left-to-right in

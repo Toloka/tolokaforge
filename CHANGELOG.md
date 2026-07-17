@@ -15,6 +15,11 @@ All notable changes to this project are documented in this file.
 ### Docs
 
 - **guide**: task-pack image-layering guide covering the 3-tier base/environment/instance pattern from SWE-bench, with Dockerfile snippets and compose-file references (#146).
+- **security/runtime**: document the built-in (Case A) `EngineStack` as `full_internet` by construction — the built-in `runner-net` is non-internal and the runner retains egress for in-container LLM-as-judge grading; task-declared stacks remain the only path with an enforceable `network_policy`. Recorded in ADR-0018 + `RUNTIME_BACKENDS.md`, and locks the `Network.internal` foundation primitive + the `EngineStack.create_networks` non-internal invariant with a unit test (#324).
+
+### Fix
+
+- **docs/security**: rewrite `SECURITY.md`'s architecture overview, threat table, testing, and checklist to reflect the actual `runner-net` (non-internal, docker-py `EngineStack`) model. The doc previously described a vanished `env-net` (`internal: true`) network and `docker-compose.yaml`, and listed "executor reaching external internet — addressed by `env-net internal:true`" as an addressed threat that no longer holds (#324).
 
 ## v0.9.1 (2026-07-17)
 
