@@ -27,6 +27,16 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 uv sync
 ```
 
+### GitHub Codespaces
+
+Open the repo in a Codespace (**Code → Codespaces → Create codespace**) for a
+ready-to-run environment. The container image ships a pinned `uv`, `git-lfs`,
+Node, the `gh` CLI, and Playwright's OS dependencies. On create and attach it
+runs `uv sync`, installs Playwright's Chromium, pulls Git LFS objects, and
+installs the pre-commit hooks. To run evaluations, supply a provider key as a
+[Codespaces secret](https://docs.github.com/en/codespaces/managing-your-codespaces/managing-your-account-specific-secrets-for-github-codespaces)
+or in `.env` — `tolokaforge run` reads it from the environment.
+
 See [Python Package Guide](docs/PYTHON_PACKAGE.md) for all extras and programmatic API usage.
 
 ## Quick Start
