@@ -111,14 +111,15 @@ class RubricAggregate:
 
     ``binary_pass`` is INDICATIVE only — the judge component's own coarse pass
     signal (``not gate_failed`` and ``score >= GRADED_MET_THRESHOLD``, the 0.5
-    bar). It is NOT the authoritative pass verdict: the combine layer
-    (``combine.py``) decides pass by applying the real ``pass_threshold`` to
-    ``score`` AND requiring ``not gate_failed``. Do not mistake the 0.5 bar here
-    for the configured pass bar.
+    bar). It is NOT the authoritative pass verdict: the runner grading layer
+    (``runner/grading.py`` + ``runner/service.py``) decides pass by applying the
+    real ``pass_threshold`` to the weighted score and forcing a fail when
+    ``gate_failed``. Do not mistake the 0.5 bar here for the configured pass bar.
 
     ``gate_failed`` is the explicit required-gate signal the judge feeds into the
-    top-level combine layer: when ``True`` the rubric failed outright regardless
-    of the weighted ``score`` and the ``pass_threshold``. ``failed_required_ids``
+    runner grading layer (``runner/service.py``): when ``True`` the rubric failed
+    outright regardless of the weighted ``score`` and the ``pass_threshold``.
+    ``failed_required_ids``
     lists which required criteria tripped the gate, for reasons / diagnostics.
     """
 
