@@ -61,6 +61,21 @@ These surfaces are documented per-trial in
 [`docs/RUNTIME_BACKENDS.md`](RUNTIME_BACKENDS.md:1) § "Per-service log capture on
 failure".
 
+The roll-up is produced during report generation, at the end of a run, by
+scanning the run-output tree on disk — it reads the capture artifacts other
+stages already wrote, and does not itself capture anything. Discovery walks the
+three surfaces above: `trials/*/*/services/_capture.yaml` (provision-failure
+manifests), `trials/*/*/metrics.yaml` (trial-body byte maps under the
+`captured_service_logs` key), and `<output_dir>/services/_capture.yaml` (the
+run-level shared-stack manifest). Entries are ordered deterministically by
+`(task_id, trial_index, source)`; `per_service_bytes` sums each service across
+every entry and `total_bytes` is the grand total.
+
+Reading is fail-safe: a missing file, malformed YAML, a non-mapping payload, a
+mistyped byte count, or a non-integer trial-index directory is logged and that
+surface is skipped. A corrupt capture artifact never breaks report generation —
+the roll-up simply omits what it cannot parse.
+
 ## Core Metrics
 
 ### Success and Quality

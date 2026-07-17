@@ -51,6 +51,7 @@ from tolokaforge.core.models import (
 )
 from tolokaforge.core.output.aggregates import FileAggregateWriter, RunAggregateWriter
 from tolokaforge.core.output.artifacts import FileArtifactWriter, TrialArtifactWriter
+from tolokaforge.core.output.service_log_rollup import collect_service_log_captures
 from tolokaforge.core.rate_limiter import GlobalRateLimiter
 from tolokaforge.core.resume import RunStateManager
 from tolokaforge.core.run_display_events import (
@@ -2105,6 +2106,9 @@ class Orchestrator:
             )
 
         aggregate["schema_version"] = 1
+        aggregate["captured_service_logs"] = collect_service_log_captures(output_dir).model_dump(
+            by_alias=True, mode="json"
+        )
 
         # Deterministic failure attribution report
         failure_attributions = [
