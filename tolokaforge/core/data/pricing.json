@@ -884,7 +884,8 @@
     },
     "moonshotai/kimi-k3": {
       "input": 3.0,
-      "output": 15.0
+      "output": 15.0,
+      "cache_read": 0.3
     },
     "morph/morph-v3-fast": {
       "input": 0.8,

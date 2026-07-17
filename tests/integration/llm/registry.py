@@ -1137,13 +1137,19 @@ _ALL: list[MC] = [
     # K2 dict-stringify behaviour and needs no stringify-recovery preset.
     #
     # Positions built from a 15-repeat auto-integration observation
-    # (run 29564179005, 2026-07-17, on the ``default`` preset). That run was
-    # ~60% upstream-rate-limited (fresh-model 429s), so the capabilities whose
-    # only failures were those 429s — USAGE_METRICS_POPULATED (core),
-    # DISCRIMINATED_UNION_TOOL_CALL, the shape variants, allof_merge[top_level]
-    # — were reconfirmed with a clean live re-probe on 2026-07-17: all pass on
-    # ``default``. USAGE_METRICS_POPULATED and DISCRIMINATED_UNION_TOOL_CALL are
-    # therefore live-verified, not merely promoted on partial signal.
+    # (run 29564179005, 2026-07-17, on the ``default`` preset), which was
+    # ~60% upstream-rate-limited (fresh-model 429s). Capabilities whose
+    # observation failures were ALL 429s — USAGE_METRICS_POPULATED (core) and
+    # the dict-map / discriminated-union shape variants — were reconfirmed by a
+    # clean live re-probe on 2026-07-17 (all pass on ``default``);
+    # allof_merge[top_level] was also 429-only but its 6 non-429 runs all
+    # passed, so it needed no re-probe. USAGE_METRICS_POPULATED is additionally
+    # corroborated by COST_USD_POPULATED passing 15/15 (cost derives from usage
+    # tokens) and by populated prompt/completion tokens in other probes'
+    # provider_raw. DISCRIMINATED_UNION_TOOL_CALL is a genuine promotion, NOT a
+    # 429 artefact: its observation failures were real turn-2 misses (the
+    # sibling fails the union switch), yet kimi-k3 still passed 13-14/15 and
+    # passed the clean live re-probe.
     #
     # Two promotions vs the kimi-k2.7-code sibling that ARE clean-verified
     # here (15/15, not rate-limited): DECIMAL_FIELD_TOOL_CALL and
@@ -1184,11 +1190,15 @@ _ALL: list[MC] = [
         ),
         known_unsupported=frozenset(
             {
-                # Clean 0/15 in the observation (genuine, not rate-limited):
-                # kimi-k3 surfaces no structured thinking blocks, so neither
-                # thinking replay path applies, and it does not honour explicit
-                # ephemeral cache-control. Implicit (auto) caching DOES work —
-                # see IMPLICIT_PROMPT_CACHING in ``required`` above.
+                # Genuine (non-429) failures in the observation: kimi-k3
+                # surfaces no structured thinking blocks, so neither thinking
+                # replay path applies, and it does not honour explicit ephemeral
+                # cache-control. THINKING_EMITS_BLOCKS, THINKING_REPLAY_ROUNDTRIP
+                # and PROMPT_CACHING were a clean 0/15 (no 429s);
+                # UNSIGNED_THINKING_REPLAY was 429-contaminated (10/15) but all 5
+                # non-429 runs failed genuinely, consistent with the no-thinking
+                # surface. Implicit (auto) caching DOES work — see
+                # IMPLICIT_PROMPT_CACHING in ``required`` above.
                 C.THINKING_EMITS_BLOCKS,
                 C.THINKING_REPLAY_ROUNDTRIP,
                 C.UNSIGNED_THINKING_REPLAY,
