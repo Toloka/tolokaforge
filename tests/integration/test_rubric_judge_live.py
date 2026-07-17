@@ -26,7 +26,7 @@ from tolokaforge.core.grading.judge import (
     model_config_from_ref,
     run_rubric_judge,
 )
-from tolokaforge.core.grading.rubric import parse_submit_report
+from tolokaforge.core.grading.rubric import SubmitReportValidationError, parse_submit_report
 from tolokaforge.runner.models import Rubric
 
 pytestmark = [
@@ -399,3 +399,69 @@ def test_rubric_judge_live_markers_match_verdicts(label: str, model_ref: str):
         captured = _extract_submit_args(result)
         assert captured is not None, "no submit_report call found in transcript"
         _WELLFORMED_FIXTURE.write_text(json.dumps(captured, indent=2, ensure_ascii=False) + "\n")
+
+
+# ---------------------------------------------------------------------------
+# Retry recovery — OpenAI-family judge survives a rejected submit_report
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(_MODEL_REF is None, reason="No OPENROUTER_API_KEY / OPENAI_API_KEY set")
+def test_rubric_judge_live_recovers_through_forced_retry(monkeypatch):
+    """A real OpenAI-family judge recovers through the ``submit_report`` retry.
+
+    The model's tool call is 100% real on both turns — the only thing forced is
+    the harness's *validation decision*: ``parse_submit_report`` (as bound in the
+    judge module) rejects the first real payload exactly once, then delegates to
+    the real validator. This is the path a genuine weak-model miss takes: real
+    model → first submit_report → rejection → repaired retry sequence → live
+    provider round-trip → recovery. The assertion under test — the live provider
+    accepts the repaired tool-call/tool-result sequence rather than 400-ing on an
+    unanswered ``tool_call_id`` — is fully real.
+    """
+    from tolokaforge.core.grading import judge as judge_module
+
+    real_parse = judge_module.parse_submit_report
+    parse_calls = {"n": 0}
+
+    def _reject_first_then_delegate(tool_args, rubric):
+        parse_calls["n"] += 1
+        if parse_calls["n"] == 1:
+            raise SubmitReportValidationError(
+                "forced rejection to exercise the retry path (test only)"
+            )
+        return real_parse(tool_args, rubric)
+
+    monkeypatch.setattr(judge_module, "parse_submit_report", _reject_first_then_delegate)
+
+    result = run_rubric_judge(
+        rubric=_rubric(),
+        model_config=model_config_from_ref(_MODEL_REF),
+        agent_system_prompt=_AGENT_SYSTEM_PROMPT,
+        transcript=_TRANSCRIPT,
+        db_reader=_DictDBReader(_DB_STATE),
+        max_turns=10,
+        episode_timeout_s=180,
+    )
+
+    # The first real submit_report was rejected, and a second generation reached
+    # the validator — i.e. the live provider accepted the repaired retry sequence.
+    # A 400 on the retry would raise a BadRequestError the judge catches and turns
+    # into ERRORED before parse is called a second time, so this only holds when
+    # the repaired sequence was accepted.
+    assert parse_calls["n"] >= 2, result.reasons
+    assert result.status is JudgeStatus.COMPLETED, result.reasons
+    assert result.score is not None
+    # The forced rejection is a generic SubmitReportValidationError, not a
+    # VerdictConsistencyError, so the consistency counter is unaffected.
+    assert result.usage.consistency_rejections == 0
+    # The injected rejection is preserved in the audit transcript as the tool
+    # result for the rejected submit_report call.
+    rejection_results = [
+        m
+        for m in result.transcript
+        if m.get("role") == "tool"
+        and m.get("tool_call_id")
+        and "rejected" in (m.get("content") or "")
+    ]
+    assert rejection_results, "no injected rejection role=tool result in the transcript"
