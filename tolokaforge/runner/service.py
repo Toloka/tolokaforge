@@ -1332,8 +1332,17 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             )
             state_diff_text = None
 
+        # Judge-side tool gating (issue #465). The agent's tool surface is
+        # untouched: the runner still resolves kb_search / extra_read_tools
+        # faithfully above; the judge withholds the KB-tagged ones by construction
+        # when the effective customization asks for it. Absent/None → False.
+        customization = llm_judge_config.customization
+        disable_knowledge_search = bool(customization and customization.disable_knowledge_search)
+
         def _run() -> JudgeResult:
-            return LLMJudge(judge_model_config).run(
+            return LLMJudge(
+                judge_model_config, disable_knowledge_search=disable_knowledge_search
+            ).run(
                 rubric=llm_judge_config.rubric,
                 agent_system_prompt=agent_system_prompt,
                 transcript=transcript,

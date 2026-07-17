@@ -13,7 +13,10 @@ from tolokaforge.adapters.base import AdapterEnvironment, BaseAdapter
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import EnvironmentPatch, GradingConfig, TaskConfig
 from tolokaforge.core.project_loader import resolve as resolve_environment
-from tolokaforge.core.project_loader import resolve_effective_grading_combine
+from tolokaforge.core.project_loader import (
+    resolve_effective_grading_combine,
+    resolve_effective_judge_customization,
+)
 
 if TYPE_CHECKING:
     from tolokaforge.runner.models import TaskDescription
@@ -340,6 +343,16 @@ class NativeAdapter(BaseAdapter):
         ``None`` when the enclosing project sets no grading defaults."""
         return self._project_task_defaults.get("grading_defaults", {}).get("combine")
 
+    def _project_judge_customization_defaults(self) -> dict[str, Any] | None:
+        """The project's ``task_defaults.grading_defaults.llm_judge.customization``
+        sub-dict, the base layer under each task's own
+        ``grading.yaml.llm_judge.customization``. ``None`` when unset."""
+        return (
+            self._project_task_defaults.get("grading_defaults", {})
+            .get("llm_judge", {})
+            .get("customization")
+        )
+
     def reset_environment(self, env: AdapterEnvironment) -> None:
         """Reset environment to initial state by reloading data"""
         # For native tasks, environment state is managed by MCP server
@@ -661,11 +674,23 @@ class NativeAdapter(BaseAdapter):
         # (models.judge), so ``model_ref`` no longer exists on this block. A
         # lingering ``model_ref`` is rejected loudly by ``LLMJudgeConfig``.
         llm_judge_config = None
-        llm_judge_data = grading_data.get("llm_judge", {}) if grading_data else {}
+        llm_judge_data = (grading_data.get("llm_judge") if grading_data else None) or {}
+        # ``customization`` (sibling of ``rubric``) layers project→task; attach it
+        # only when a layer actually set it, so a task with no block reconstructs an
+        # identical ``LLMJudgeConfig`` (no wire-visible customization at all).
+        task_customization = llm_judge_data.pop("customization", None)
+        project_customization = self._project_judge_customization_defaults()
+        effective_customization = None
+        if task_customization is not None or project_customization is not None:
+            effective_customization = resolve_effective_judge_customization(
+                project_customization, task_customization
+            )
         if llm_judge_data and llm_judge_data.get("rubric"):
             from tolokaforge.runner.models import LLMJudgeConfig as RunnerLLMJudgeConfig
 
-            llm_judge_config = RunnerLLMJudgeConfig(**llm_judge_data)
+            llm_judge_config = RunnerLLMJudgeConfig(
+                **llm_judge_data, customization=effective_customization
+            )
 
         # Build combined grading config
         combine_data = grading_data.get("combine") if grading_data else None

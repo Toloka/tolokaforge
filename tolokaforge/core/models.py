@@ -22,6 +22,7 @@ from tolokaforge.runner.models import Criterion as Criterion
 from tolokaforge.runner.models import CriterionResult as CriterionResult
 from tolokaforge.runner.models import EnvironmentManifest as EnvironmentManifest
 from tolokaforge.runner.models import EnvironmentPatch as EnvironmentPatch
+from tolokaforge.runner.models import JudgeCustomization as JudgeCustomization
 from tolokaforge.runner.models import LLMJudgeConfig as LLMJudgeConfig
 from tolokaforge.runner.models import ResetSpec as ResetSpec
 from tolokaforge.runner.models import Rubric as Rubric
@@ -1294,11 +1295,25 @@ class GradingConfig(BaseModel):
     custom_checks: dict[str, Any] | None = None  # CustomChecksConfig as dict for flexibility
 
 
+class LLMJudgeDefaults(BaseModel):
+    """Project-level judge defaults under ``grading_defaults.llm_judge``.
+
+    Carries only ``customization`` — a project default never carries a rubric
+    (that is required per-task on :class:`LLMJudgeConfig`). ``customization``
+    deep-merges under each task's own ``llm_judge.customization``, tri-state
+    preserved (an unset task key never overrides a set project key)."""
+
+    customization: JudgeCustomization | None = None
+
+    model_config = {"extra": "forbid"}
+
+
 class GradingDefaults(BaseModel):
     """Grading defaults applied to every task via ``task_defaults``. A
     task's own ``grading.yaml.combine`` deep-merges on top."""
 
     combine: GradingCombineConfig | None = None
+    llm_judge: LLMJudgeDefaults | None = None
 
 
 class TaskDefaults(BaseModel):

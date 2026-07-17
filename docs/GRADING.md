@@ -150,11 +150,29 @@ capability is therefore resolved **per-trial to mirror the agent's** (issue #95)
 * **None** — if the agent had no KB tool, the judge gets none. You cannot
   penalise an agent for information it could not access.
 
+**Disabling knowledge search per task or project.** For a task whose rubric is
+fully self-contained, letting the judge pull policy context the author
+deliberately superseded is a correctness risk. Set
+`grading.llm_judge.customization.disable_knowledge_search: true` (a sibling of
+`rubric`) and the judge's tool surface carries **no** knowledge-search tool — the
+rag `search_kb`, the `search_policy` passthrough, and any future KB backend are
+**removed from the judge's schema, not stubbed**. This is **judge-side only**: the
+*agent's* KB tools for the same task are untouched; the runner still resolves the
+agent's KB faithfully and the judge withholds it by construction. Every non-KB
+read tool (DB reads, `read_file`) is unaffected. The setting is tri-state and
+layers project→task — see
+[PROJECTS.md](PROJECTS.md#task-override-semantics) and
+[CONFIG.md](CONFIG.md#grading-specification-gradingyaml). When absent, behaviour
+is exactly as above.
+
 **Seeing which backend was used.** The judge's `reasons` (surfaced into the grade
 output's `reasons`) always ends with a `Judge KB: …` note — `Judge KB: search_kb`,
-`Judge KB: search_policy`, or `Judge KB: none offered`. The `JudgeResult` also
-carries the structured `kb_tools_offered` tuple. This is the visible "graded
-with / without KB" signal. "none offered" is **observability, not an error** — we
+`Judge KB: search_policy`, or `Judge KB: none offered`. When knowledge search was
+disabled by config and the agent actually had a KB tool to withhold, the note
+reads `Judge KB: none offered (disabled by config)`, distinguishing a deliberate
+gate from a rubric that simply needed no KB. The `JudgeResult` also carries the
+structured `kb_tools_offered` tuple. This is the visible "graded with / without
+KB" signal. "none offered" is **observability, not an error** — we
 cannot statically know whether a given rubric needs a KB, so a KB-less judge
 still `COMPLETED`; the note simply makes the gap auditable. The judge's own
 `judge_trajectory.yaml` records which KB tools it actually *called*.

@@ -351,6 +351,81 @@ def test_search_policy_passthrough_skips_namespaced_non_tool_wrapper(caplog):
 
 
 # ---------------------------------------------------------------------------
+# _grade_llm_judge wires the effective disable_knowledge_search flag from the
+# merged llm_judge config into LLMJudge construction (issue #465). The agent's
+# tool surface is untouched; only the judge's construction flag changes.
+# ---------------------------------------------------------------------------
+
+
+class _FakeTaskDesc:
+    """Minimal task description: no workspace, no initial state (so the judge
+    state-diff and workspace-file paths degrade to None without a DB)."""
+
+    initial_state = None
+
+
+class _JudgeCtx:
+    """A lightweight trial context exposing only what ``_grade_llm_judge`` reads."""
+
+    def __init__(self, model_config) -> None:
+        self.judge_model_config = model_config
+        self.agent_tools: dict = {}
+        self.task_description = _FakeTaskDesc()
+
+    def resolve_kb_search(self):
+        return None
+
+
+@pytest.mark.parametrize(
+    "customization, expected",
+    [
+        (None, False),
+        ({"disable_knowledge_search": None}, False),
+        ({"disable_knowledge_search": False}, False),
+        ({"disable_knowledge_search": True}, True),
+    ],
+    ids=["absent", "unset", "explicit_false", "explicit_true"],
+)
+def test_grade_llm_judge_constructs_with_effective_disable_flag(
+    monkeypatch, customization, expected
+):
+    from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, JudgeUsage
+    from tolokaforge.core.models import ModelConfig
+    from tolokaforge.runner.models import JudgeCustomization, LLMJudgeConfig, Rubric
+
+    captured: dict = {}
+
+    class _SpyJudge:
+        def __init__(self, model_config, *, disable_knowledge_search=False, **_kw):
+            captured["disable"] = disable_knowledge_search
+
+        def run(self, **_kwargs):
+            return JudgeResult(
+                status=JudgeStatus.COMPLETED, usage=JudgeUsage(), reasons="ok", score=1.0
+            )
+
+    monkeypatch.setattr("tolokaforge.runner.service.LLMJudge", _SpyJudge)
+
+    service = _service(None)
+    try:
+        rubric = Rubric(criteria=[{"id": "a", "description": "d", "kind": "binary", "weight": 1.0}])
+        cfg = LLMJudgeConfig(
+            rubric=rubric,
+            customization=(
+                JudgeCustomization(**customization) if customization is not None else None
+            ),
+        )
+        ctx = _JudgeCtx(ModelConfig(provider="openai", name="gpt-4o-mini", temperature=0.0))
+        fut = asyncio.run_coroutine_threadsafe(
+            service._grade_llm_judge("t:0", cfg, [], ctx), service._loop
+        )
+        fut.result(timeout=5.0)
+        assert captured["disable"] is expected
+    finally:
+        service.shutdown()
+
+
+# ---------------------------------------------------------------------------
 # _run_async: shared bridge used by the search_policy passthrough (and the DB /
 # grade / register bridges). On timeout it must release the orphaned coroutine
 # instead of leaking it for the loop's lifetime.

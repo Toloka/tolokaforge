@@ -700,6 +700,10 @@ task_defaults:
         # weight those.
         state_checks: 0.5
         llm_judge: 0.5
+    llm_judge:                       # project-default judge customization (no rubric here)
+      customization:
+        disable_knowledge_search: true  # withhold the judge's KB tools by default;
+                                        # a task may override with `false`
   timeouts:
     trial_seconds: 600
     tool_call_seconds: 60
@@ -771,6 +775,31 @@ The task's resolved manifest = resolve(`project.default_environment`,
 [Patches and the resolved environment document](#patches-and-the-resolved-environment-document).
 Touching `stack.inputs` alone deep-merges: the task stays on the
 project's compose file, with one substituted variable changed.
+
+The same deep-merge governs `grading_defaults.llm_judge.customization`. Its
+`disable_knowledge_search` is **tri-state**: unset (the faithful default — the
+judge keeps whatever KB tools the agent had), `true`, or `false`. A task's own
+`grading.yaml` under `llm_judge.customization` wins field-by-field, and because an
+unset task key never overrides a set project key, a task can flip a
+project-disabled judge back on with an explicit `false`:
+
+```yaml
+# tasks/self_contained_rubric/grading.yaml
+llm_judge:
+  customization:
+    disable_knowledge_search: false   # this task's rubric needs the agent's KB;
+                                      # override a project default that disabled it
+  rubric:
+    criteria:
+      - id: cites_policy
+        description: "Cites the applicable policy section"
+        kind: binary
+        weight: 1.0
+```
+
+When neither layer sets the field, the config is byte-identical to a task with no
+customization block at all. The block is judge-side only — it never changes the
+agent's tools (see [GRADING.md](GRADING.md#judge-kb-faithfulness)).
 
 ### Full override — replace entirely
 

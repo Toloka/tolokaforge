@@ -323,6 +323,10 @@ transcript_rules:
 
 llm_judge:                                 # the judge MODEL is set once per run
                                            # under models.judge — NOT here
+  customization:                           # optional; sibling of rubric
+    disable_knowledge_search: true         # tri-state (unset | true | false):
+                                           # true withholds every knowledge-search
+                                           # tool from the JUDGE (agent untouched)
   rubric:                                  # structured Rubric (NOT free text)
     reference: |                           # optional author-written ground truth
       The correct order total is $42.50 with apple_pay.
@@ -342,7 +346,17 @@ The rubric is a structured `Rubric` (per-criterion scoring + a required gate),
 not a free-text blob; the old `rubric: "<text>"` shape, the `output_schema`
 field, and the per-task judge-model field were all removed. The judge **model**
 is now a run-level role (`models.judge`, see above) — separate from the agent
-under test, with no default and no fallback. See
+under test, with no default and no fallback.
+
+`customization` is an optional block, sibling of `rubric`, holding judge-side
+tool settings. Its only field today, `disable_knowledge_search`, is tri-state
+(`unset` | `true` | `false`): `true` removes every knowledge-search tool from the
+judge's schema (rag `search_kb`, the `search_policy` passthrough, any future KB
+backend) — the *agent's* tools are untouched. Omitting the block is byte-identical
+to today. It layers project→task (a project default under
+`grading_defaults.llm_judge.customization`, tri-state, task wins) — see
+[PROJECTS.md](PROJECTS.md#task-override-semantics). A malformed value or unknown
+key under `customization` is rejected loudly at load. See
 [GRADING.md](GRADING.md#llm-judge-rubric-grading) for the judge mechanism, the
 two weighting layers, and the fail-loud ERRORED status.
 
