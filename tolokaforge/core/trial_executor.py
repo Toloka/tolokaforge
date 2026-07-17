@@ -23,8 +23,9 @@ without touching the orchestrator.
 
 from __future__ import annotations
 
+import time
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import yaml
 
@@ -116,6 +117,7 @@ class ProvisioningTrialExecutor:
             task_id=task_id,
             trial_index=trial_idx,
         )
+        provision_start = time.monotonic()
         try:
             handle = self.runtime_backend.provision(spec)
         except ProvisionError as e:
@@ -143,6 +145,7 @@ class ProvisioningTrialExecutor:
 
         try:
             real_endpoints = self.runtime_backend.endpoints(handle)
+            provisioning_duration_s = time.monotonic() - provision_start
             containers = self.runtime_backend.get_infrastructure_snapshot(handle)
             self.events.trial_provisioned(
                 trial_id=spec.trial_id,
@@ -157,6 +160,11 @@ class ProvisioningTrialExecutor:
                 runner_url=real_endpoints.runner_url,
             )
             result = self.conductor.run(final_spec, task_config)
+            self._amend_trial_metrics(
+                task_id,
+                trial_idx,
+                {"provisioning_duration_s": round(provisioning_duration_s, 3)},
+            )
             self._capture_service_logs(handle, result, task_id, trial_idx)
             return result
         finally:
@@ -192,18 +200,17 @@ class ProvisioningTrialExecutor:
             trial_index=trial_idx,
             services=byte_map,
         )
-        self._amend_metrics_with_captured_logs(task_id, trial_idx, byte_map)
+        self._amend_trial_metrics(task_id, trial_idx, {"captured_service_logs": dict(byte_map)})
 
-    def _amend_metrics_with_captured_logs(
-        self, task_id: str, trial_idx: int, byte_map: dict[str, int]
-    ) -> None:
-        """Add a top-level ``captured_service_logs`` mapping to the trial's
-        ``metrics.yaml`` — the durable record for the trial-body path.
+    def _amend_trial_metrics(self, task_id: str, trial_idx: int, updates: dict[str, Any]) -> None:
+        """Merge ``updates`` into the trial's ``metrics.yaml`` as top-level keys.
 
-        Read-add-write of the plain YAML mapping the conductor already wrote.
-        No-op when no ``log_capture`` output root is configured or the file is
-        absent. Logs and continues on I/O failure so a diagnostic write never
-        masks the trial result.
+        Read-add-write of the plain YAML mapping the conductor already wrote —
+        the durable landing spot for host-side per-trial values
+        (``provisioning_duration_s``, ``captured_service_logs``). No-op when no
+        ``log_capture`` output root is configured or the file is absent. Logs
+        and continues on I/O failure so a diagnostic write never masks the trial
+        result.
         """
         if self.log_capture is None:
             return
@@ -215,12 +222,12 @@ class ProvisioningTrialExecutor:
         try:
             with metrics_path.open() as f:
                 metrics = yaml.safe_load(f) or {}
-            metrics["captured_service_logs"] = dict(byte_map)
+            metrics.update(updates)
             with metrics_path.open("w") as f:
                 yaml.safe_dump(metrics, f, sort_keys=False)
         except Exception as amend_err:  # noqa: BLE001 — best-effort diagnostic amendment
             self.logger.warning(
-                "Amending metrics.yaml with captured_service_logs failed; continuing",
+                "Amending metrics.yaml failed; continuing",
                 task_id=task_id,
                 trial_index=trial_idx,
                 error=str(amend_err),

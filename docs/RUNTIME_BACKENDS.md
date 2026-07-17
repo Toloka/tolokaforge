@@ -359,6 +359,12 @@ this and captures on success too.
   (the hook writes only the `.log` files). See
   [`docs/OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md:1) § `captured_service_logs`.
 
+On every trial that provisions successfully, the executor also amends the
+trial's `metrics.yaml` with a top-level `provisioning_duration_s` — the
+monotonic-clock wall-clock of the `provision → await_ready → endpoints` bracket,
+measured before `provision()` and stopped at `endpoints()` return. See
+[`docs/OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md:1) § `provisioning_duration_s`.
+
 Both surfaces are best-effort: capture runs *because* a failure was already
 decided, so a per-service fetch error is logged at debug and that service is
 omitted — capture never raises and never masks the original error.
