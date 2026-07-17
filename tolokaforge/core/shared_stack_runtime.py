@@ -27,7 +27,8 @@ import grpc
 from testcontainers.compose import DockerCompose
 
 from tolokaforge.core.compose_materialisation import (
-    RUNNER_PORT_DEFAULT,
+    DB_SERVICE_DEFAULT,
+    DB_SERVICE_PORT_DEFAULT,
     LogCaptureConfig,
     apply_network_policy_to_compose_file,
     capture_compose_service_logs,
@@ -859,7 +860,7 @@ class SharedStackRuntimeBackend:
             ) from exc
 
         runner_endpoint = resolve_runner_endpoint(
-            compose, manifest.runner_service, RUNNER_PORT_DEFAULT
+            compose, manifest.runner_service, manifest.runner_port
         )
         if runner_endpoint is None:
             self._capture_materialise_failure_logs(compose)
@@ -869,7 +870,7 @@ class SharedStackRuntimeBackend:
                 stage="provision",
                 reason=(
                     f"runner_service {manifest.runner_service!r} does not expose port "
-                    f"{RUNNER_PORT_DEFAULT} in the shared task-declared compose stack"
+                    f"{manifest.runner_port} in the shared task-declared compose stack"
                 ),
             )
         runner_host, runner_host_port = runner_endpoint
@@ -879,7 +880,15 @@ class SharedStackRuntimeBackend:
         # `db_url=None`. The runner-side DBServiceClient reads DB_SERVICE_URL
         # from its container env, and `db_json.py` tools fall back to the
         # same env var, so a missing db_url is not a provisioning failure.
-        endpoints = resolve_env_endpoints(compose, runner_host, runner_host_port)
+        endpoints = resolve_env_endpoints(
+            compose,
+            runner_host,
+            runner_host_port,
+            db_service=manifest.db_service or DB_SERVICE_DEFAULT,
+            db_port=manifest.db_port or DB_SERVICE_PORT_DEFAULT,
+            rag_service=manifest.rag_service,
+            rag_port=manifest.rag_port,
+        )
 
         # Preserve the materialised state on the backend so close() can tear it down.
         self._compose = compose

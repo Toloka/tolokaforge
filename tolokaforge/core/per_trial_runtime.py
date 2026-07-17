@@ -37,7 +37,8 @@ from typing import TYPE_CHECKING, Any
 from testcontainers.compose import DockerCompose
 
 from tolokaforge.core.compose_materialisation import (
-    RUNNER_PORT_DEFAULT,
+    DB_SERVICE_DEFAULT,
+    DB_SERVICE_PORT_DEFAULT,
     LogCaptureConfig,
     apply_network_policy_to_compose_file,
     capture_compose_service_logs,
@@ -256,7 +257,7 @@ class PerTrialRuntimeBackend:
             raise
 
         runner_service = manifest.runner_service
-        runner_port = RUNNER_PORT_DEFAULT
+        runner_port = manifest.runner_port
         runner_endpoint = resolve_runner_endpoint(compose, runner_service, runner_port)
         if runner_endpoint is None:
             cleanup_partial_materialisation(compose, temp_dir)
@@ -275,7 +276,15 @@ class PerTrialRuntimeBackend:
         # `db_url=None`. The runner-side DBServiceClient reads DB_SERVICE_URL
         # from its container env, and `db_json.py` tools fall back to the
         # same env var, so a missing db_url is not a provisioning failure.
-        endpoints = resolve_env_endpoints(compose, runner_host, runner_host_port)
+        endpoints = resolve_env_endpoints(
+            compose,
+            runner_host,
+            runner_host_port,
+            db_service=manifest.db_service or DB_SERVICE_DEFAULT,
+            db_port=manifest.db_port or DB_SERVICE_PORT_DEFAULT,
+            rag_service=manifest.rag_service,
+            rag_port=manifest.rag_port,
+        )
 
         # Client is constructed but not yet connected. Connect is deferred
         # to first per-trial RPC use — see :attr:`_connected_trials`.
