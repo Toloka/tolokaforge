@@ -2,34 +2,29 @@
 
 All notable changes to this project are documented in this file.
 
-## Unreleased
+## v0.9.0 (2026-07-17)
 
 ### Feat
 
-- **core**: `tolokaforge.core.run_display_events` publishes the `RunDisplayEvents` engine seam — a 9-method `@runtime_checkable` Protocol with `ServiceSnapshot` / `ContainerSnapshot` TypedDicts and a `_NULL_EVENTS` no-op default — that front-ends implement to consume per-trial lifecycle events without pulling any UI package into the engine dependency graph. The orchestrator, conductor, and trial executor emit every lifecycle event through the seam; `OrchestratorDeps.events` accepts a consumer sink (defaults to the null singleton, so runs that never attach a front-end are byte-identical to the pre-seam engine) (#416)
-- **runtime**: `RuntimeBackend` widens with `get_infrastructure_snapshot(handle) -> list[ContainerSnapshot]` — the display's per-trial infrastructure hook. `PerTrialRuntimeBackend` reads its per-trial compose stack; `SharedStackRuntimeBackend` returns `[]` in built-in mode and reads the run-wide compose otherwise; `InMemoryRuntimeBackend` returns a synthetic single-container shape. Every in-repo backend implements the new method in the same commit, so out-of-tree implementers of `RuntimeBackend` (none on `main`) would need to add the method to keep `isinstance(impl, RuntimeBackend)` semantically complete (#416)
-- **examples**: multi_service_cache_debug — the runnable redis_dump reset-recipe reference: redis isolation:reset seeded with poisoned cache state, a FastAPI cache-invalidation bug the agent diagnoses over http_request across the app + cache layers, three-way note grading, and a failure path that exercises per-service log capture (#402)
-- **examples**: multi_service_endpoint_add — the runnable filesystem_dir reset-recipe reference: source-directory isolation:reset seeded from a pristine tree, an in-container test-runner service whose real unittest exit code is the grading floor, and an auto-dev scenario where the agent reads existing code + writes a missing endpoint + verifies via the test-runner (#403).
-- **assets**: filesystem_dir directory-tree seed digest support in compute_seed_digest, project-loader verification, and `tolokaforge assets stamp` — unblocks any pack declaring a filesystem_dir seed (#403).
-- **examples**: multi_service_helpdesk_workflow flagship pack — four FastAPI services + in-container postgres-FTS policy search, adversarial three-path resolution graded on policy correctness, explicit ephemeral substrate, and the first documented LLM user-simulator persona pattern (#401)
-- **runtime**: per-service log capture now also fires on a completed-but-red grade (`status: completed`, `binary_pass: false`), not only execution failures — writes `services/<service>.log` + amends `metrics.yaml.captured_service_logs` before teardown (#418)
-- **grading**: `state_checks.db_probes` grading primitive — declarative postgres substrate assertions (#400)
-- **schema**: task.yaml minimal shape is task_id + description; initial_state / tools / user_simulator / grading now optional with sane defaults (#366)
-- **runtime**: `compute.log_tail` + `compute.capture_logs_on_success` config knobs and a per-service compose-log capture primitive for trial-failure diagnostics (#302)
-- **runtime**: `PerTrialRuntimeBackend` captures per-service logs on provision-stage failure (compose-up / reset-recipe) before teardown, writing `services/<service>.log` + a `services/_capture.yaml` manifest; `RuntimeBackend` gains `capture_service_logs` (per-trial writes `.log` files; shared-stack is a documented no-op) (#302)
-- **runtime**: on a trial-body failure (`ERROR` / `TIMEOUT`) the trial executor captures per-service logs before teardown, emits a `trial.service_logs_captured` summary line, and amends the trial's `metrics.yaml` with a `captured_service_logs` byte-count map (#302)
-- **examples**: `multi_service_slow_start` pack + `test_startup_order_stress.py` stress-cover the `depends_on` + healthcheck + `--wait` start-order chain against a `pg_sleep`-driven ≥20 s slow dependency, proving the per-trial backend blocks on the full chain before the trial's first RPC (#303)
+- **examples,runtime,assets**: multi-container example depth (Milestone 18) (#469)
+- **core**: observability seam extension — llm_call trio + model identity (#389) (#450)
+- **automation**: model auto-integration pipeline (observe/resolve/finalize + Slack-triggered poller) (#154)
+- **project-layer**: make Project schema end-to-end runnable — task-schema relaxation, grading_defaults merge, dead-seam cleanup, docs residue (#375) (#390)
+- **skills**: milestone integration-branch workflow with rich consolidation PR (#372)
+- **examples**: swap example-microservices-pack backend-api from fictional to postgrest (real image) (#367)
+- **runtime**: per-service log capture on trial failure (#302) (#347)
 
 ### Fix
 
-- **env-identity**: Project-layer / multi-container trials now record resolved environment identity (services, pinned images, network policy, redacted DSNs, mounts) in `env.yaml`; previously these sections were empty (#419)
-- **grading**: a project's `task_defaults.grading_defaults.combine` now deep-merges under each task's own `grading.yaml.combine` (task fields win, `weights` merge key-by-key); a task that omits `combine` inherits the project block instead of an arbitrary `{state_checks: 1.0}` / `pass_threshold: 1.0` fallback, and `get_grading_config` no longer raises on tasks that ship no `combine` block (#376)
-- **runtime**: `SharedStackRuntimeBackend` no longer advertises `reset_recipes:*` capabilities — a shared stack cannot honour them (reset tasks route to `PerTrialRuntimeBackend`, which still advertises them). A shared-selected run that requested a `reset_recipes:*` capability was admitting a capability it could not deliver; it is now refused at run start with the standard admission error (#310)
+- **loader**: preserve storage discriminator tag under run_defaults merge (#312) (#365)
 
-### Docs
+### Refactor
 
-- **layout**: flatten `docs/architecture/*` → `docs/*` (matching the earlier `docs/guides/*` flatten): `PROJECTS.md`, `RUNTIME_BACKENDS.md`, `RESET_RECIPES.md`, `ROADMAP.md` move to `docs/`; the arc42 overview moves to `docs/ARCHITECTURE.md`; `docs/adr/` kept as a subfolder. Also renames `docs/multi_container_tasks.md` → `docs/MULTI_CONTAINER_GUIDE.md` and prominently links it from `README.md` so multi-container onboarding has one obvious entry point.
-- **multi-container**: guided "Running the examples" walkthrough in `docs/multi_container_tasks.md` — pack catalog, the end-to-end run command + cost expectations per pack, and how to read the trial output (`grade.yaml` incl. the `DB probes:` reason, `env.yaml` environment identity, per-service logs); fixes the broken `guides/multi_container_tasks.md` cross-links across the docs tree
+- **core**: extract RunDisplayEvents engine seam to main (#416) (#433)
+
+### Perf
+
+- **orchestration**: reclaim wall-clock in /implement-milestone via overlap, review sharding, and stack warmup (#426)
 
 ## v0.8.4 (2026-07-15)
 
