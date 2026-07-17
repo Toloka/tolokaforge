@@ -109,12 +109,26 @@ def _two_criteria_rubric(required: bool = False) -> Rubric:
     )
 
 
+def _verdict_marker(verdict) -> str:
+    """The trailing marker line a well-formed justification must carry.
+
+    A ``bool`` verdict is a binary criterion (VERDICT: MET / NOT MET); a real
+    number is graded (SCORE: <value>). Any other type is a deliberately malformed
+    verdict whose type check fires before the marker check, so no marker matters.
+    """
+    if isinstance(verdict, bool):
+        return "VERDICT: MET" if verdict else "VERDICT: NOT MET"
+    if isinstance(verdict, (int, float)):
+        return f"SCORE: {verdict}"
+    return ""
+
+
 def _submit_args(**criteria) -> dict:
     """Build a well-formed submit_report payload from {id: verdict} kwargs."""
     args: dict = {"reasons": "overall summary"}
     for cid, verdict in criteria.items():
         args[cid] = verdict
-        args[f"{cid}_justification"] = f"because {cid}"
+        args[f"{cid}_justification"] = f"because {cid}\n{_verdict_marker(verdict)}"
     return args
 
 

@@ -120,9 +120,14 @@ grading:
   *Judge KB faithfulness* below), `read_file` (only when the agent produced a
   workspace), and the rubric-derived `submit_report`. No `write`, no `compute`.
 * **Single call, per-criterion output.** The judge inspects the final state, then
-  calls `submit_report` once with `{met, score, justification}` for every
-  criterion (its arg schema is generated from the rubric and validated with
-  Pydantic).
+  calls `submit_report` once with `{justification, met|score}` for every criterion
+  (its arg schema is generated from the rubric). For each criterion the schema
+  places the justification **before** the verdict field, so the verdict is written
+  after the reasoning (reason-then-answer). Each justification must end with a
+  `VERDICT: MET` / `VERDICT: NOT MET` (binary) or `SCORE: <value>` (graded) marker
+  line, and the submitted verdict must match it — a missing or contradicting
+  marker is rejected (see *Fail-loud* below). The marker is stored verbatim in the
+  `criterion_results` justification.
 
 ### Judge KB faithfulness
 
@@ -169,6 +174,12 @@ marks the grade `judge_status: errored`. It **never** falls back to `0.0` or
 `0.5` (AGENTS.md rule 1). An errored `llm_judge` component is left *unscored* and
 **excluded from the weighted combine** — it is not read as a zero. Reviewers see
 `judge_status: errored` in `grade.yaml`; downstream analytics must branch on it.
+
+A submitted verdict that disagrees with its justification's trailing
+`VERDICT:` / `SCORE:` marker (or a justification missing that marker) is a
+malformed `submit_report`: the criterion is named and both sides quoted, the judge
+is re-prompted, and on retry exhaustion the trial rides the same ERRORED path — an
+unverifiable verdict is never accepted as a grade.
 
 ### Required-gate semantics
 
