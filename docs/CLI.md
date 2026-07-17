@@ -159,23 +159,27 @@ Under `--display={plain,log,none}` and on non-TTY streams, `LiveRunDisplay.for_m
 
 ### Keyboard navigation
 
-On a TTY, the panel opens a daemon-thread keyboard listener in POSIX `termios` cbreak mode. `_focused_trial_id` starts in **auto-follow** mode — focus tracks the most-recent lifecycle event, byte-identical to the pre-listener behaviour. Pressing any nav key flips the panel into **manual** mode; new lifecycle events still re-order `_visible_cards()` but focus stays where the operator put it. When manual mode is active and at least one trial has started, the bottom bar prepends `[j/k nav · f follow]` as a subtle hint.
+On a TTY, the panel opens a daemon-thread keyboard listener in POSIX `termios` cbreak mode. The read loop pulls raw bytes with `os.read(fd, 32)` — one syscall drains everything the tty driver holds, so a burst (fast typist, paste, or a multi-byte arrow-key ESC sequence) never strands keystrokes in a userspace buffer. `_focused_trial_id` starts in **auto-follow** mode — focus tracks the most-recent lifecycle event, byte-identical to the pre-listener behaviour. Pressing any nav key flips the panel into **manual** mode; new lifecycle events still re-order `_visible_cards()` but focus stays where the operator put it. When manual mode is active and at least one trial has started, the bottom bar prepends `[j/k or ↑↓ nav · H/L first/last · f follow · l logs]` as a subtle hint.
 
 | Key | Action |
 |---|---|
-| `j` | Focus next visible trial (in `_visible_cards()` order — the same order the left pane shows) |
-| `k` | Focus previous visible trial |
-| `H` (capital) | Focus first visible trial |
-| `L` (capital) | Focus last visible trial |
+| `j` / `↓` | Focus next visible trial (in `_visible_cards()` order — the same order the left pane shows) |
+| `k` / `↑` | Focus previous visible trial |
+| `→` | Focus next visible trial (same as `j`) |
+| `←` | Focus previous visible trial (same as `k`) |
+| `H` (capital) / `Home` | Focus first visible trial |
+| `L` (capital) / `End` | Focus last visible trial |
 | `f` | Toggle auto-follow — when flipped back on, focus snaps to the trial with the newest `last_update_ts` |
 | `l` | Toggle per-trial log stream in the Focused pane |
 | any other | Ignored |
+
+Arrow keys, `Home`, and `End` arrive as multi-byte ESC sequences (CSI `\x1b[A`…`\x1b[F` and the SS3 `\x1bOH` / `\x1bOF` Home/End variants some terminals emit). A small state machine buffers the ESC prefix and maps a completed sequence to its nav key; an unknown or over-long sequence, or a lone ESC keypress with no follow-up byte, is dropped rather than dispatched as a letter.
 
 Cbreak (not raw) mode preserves `Ctrl-C`, so killing the run still works.
 
 Pressing `l` swaps the Focused pane body between its structured summary and a stream of log records emitted during the focused trial's execution; the pane title stays `Focused trial · N/M` in both states, and `l` does not affect auto-follow. Records are auto-tagged with the trial identity via a run-time context variable while the trial executes, so records emitted outside any trial's execution (Docker boot, run teardown) never appear in the per-trial view — that scoping is intentional. The view shows the last 20 records for the focused trial; widen the terminal to see more of each line.
 
-The listener short-circuits and leaves the panel in auto-follow-only mode when `sys.stdin.isatty()` is False (piped stdin, CI), when `sys.platform == "win32"` (different terminal-input model), or when `TOLOKAFORGE_INTERACTIVE_PANEL=0` is set (explicit escape hatch for terminal-compat issues or operators who prefer the pre-listener behaviour). Termios settings are captured on `LiveRunDisplay.__enter__` and restored under a `try / finally` on `__exit__`, so an in-run exception still leaves the terminal usable.
+The listener short-circuits and leaves the panel in auto-follow-only mode when `sys.stdin.isatty()` is False (piped stdin, CI), when `sys.platform == "win32"` (different terminal-input model), when `TOLOKAFORGE_INTERACTIVE_PANEL=0` is set (explicit escape hatch for terminal-compat issues or operators who prefer the pre-listener behaviour), or when the cbreak setup itself raises (`termios.error` / `OSError` / `ValueError` on an exotic pty or container where `isatty()` lies) — in that last case the panel degrades to auto-follow-only rather than aborting the Live setup. Termios settings are captured on `LiveRunDisplay.__enter__` and restored under a `try / finally` on `__exit__`, so an in-run exception still leaves the terminal usable.
 
 ### Precedence
 

@@ -13,6 +13,7 @@ import logging
 import os
 import sys
 import threading
+import time
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -2023,15 +2024,17 @@ def test_bottom_bar_hint_appears_in_manual_mode_and_hides_in_auto_follow(
     display.run_started(total_trials=5, initial_completed=0)
     display.trial_started(trial_id="a:0", task_id="a", trial_index=0, total_index=0)
 
+    hint = "[j/k or ↑↓ nav · H/L first/last · f follow · l logs]"
+
     # Auto-follow ON → hint absent, output byte-identical to pre-Stage-B.
     display._auto_follow = True
     auto = display._render_bottom_bar()
-    assert "[j/k nav · f follow · l logs]" not in auto.plain
+    assert hint not in auto.plain
 
     # Auto-follow OFF while trials have started → hint present.
     display._auto_follow = False
     manual = display._render_bottom_bar()
-    assert "[j/k nav · f follow · l logs]" in manual.plain
+    assert hint in manual.plain
 
 
 # ---------------------------------------------------------------------------
@@ -2175,3 +2178,242 @@ def test_render_right_pane_shows_last_twenty_records_only() -> None:
     assert "rec-10" in body
     # rec-00..rec-09 scroll off — only the last 20 records render.
     assert "rec-09" not in body
+
+
+# ---------------------------------------------------------------------------
+# Raw-fd read loop + ESC-sequence parsing (Fixes 1 & 2)
+# ---------------------------------------------------------------------------
+
+
+class _PipeStdin:
+    """stdin-shaped wrapper over an ``os.pipe()`` read-end fd.
+
+    ``isatty`` lies True so the listener's start guards pass; ``fileno``
+    returns the read-end so ``termios``/``os.read`` in the listener act on
+    the pipe.
+    """
+
+    def __init__(self, read_fd: int) -> None:
+        self._fd = read_fd
+
+    def isatty(self) -> bool:
+        return True
+
+    def fileno(self) -> int:
+        return self._fd
+
+
+def _wait_until(predicate: Callable[[], bool], *, timeout: float = 2.0) -> bool:
+    """Poll ``predicate`` until True or ``timeout`` elapses — deterministic
+    substitute for sleeping on the listener thread's read timing."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.005)
+    return predicate()
+
+
+def _spawn_pipe_listener(
+    display: LiveRunDisplay,
+) -> tuple[object, threading.Thread, int]:
+    """Start a listener's read loop on an ``os.pipe()`` read-end, bypassing
+    the termios setup (a pipe is not a tty). ``_stdin`` is a real buffered
+    file object so the falsification revert (``self._stdin.read(1)``) still
+    exercises the userspace-buffering stranding bug. Returns
+    ``(listener, thread, write_fd)``."""
+    from tolokaforge.dx.live_panel import _KeyboardListener
+
+    read_fd, write_fd = os.pipe()
+    stdin = os.fdopen(read_fd, "r")
+    listener = _KeyboardListener(display, stdin=stdin)
+    listener._fd = read_fd
+    listener._enabled = True
+    thread = threading.Thread(target=listener._run, name="test-panel-input", daemon=True)
+    thread.start()
+    return listener, thread, write_fd
+
+
+def _stop_pipe_listener(listener: object, thread: threading.Thread, write_fd: int | None) -> None:
+    if write_fd is not None:
+        try:
+            os.close(write_fd)
+        except OSError:
+            pass
+    listener._stop_event.set()  # type: ignore[attr-defined]
+    thread.join(timeout=1.0)
+    listener._stdin.close()  # type: ignore[attr-defined]
+
+
+def test_burst_input_dispatches_every_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    _seed_three_started_trials(display)
+    # Visible [c, b, a]; focus starts on c:0.
+    listener, thread, write_fd = _spawn_pipe_listener(display)
+    try:
+        # j j k j from c → b → a → b → a in one syscall's worth of bytes.
+        os.write(write_fd, b"jjkj")
+        moved = _wait_until(lambda: display._focused_trial_id == "a:0")
+        assert moved, f"expected focus a:0 after burst, got {display._focused_trial_id}"
+    finally:
+        _stop_pipe_listener(listener, thread, write_fd)
+
+
+def test_arrow_up_maps_to_prev_arrow_down_to_next(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    _seed_three_started_trials(display)
+    listener, thread, write_fd = _spawn_pipe_listener(display)
+    try:
+        os.write(write_fd, b"\x1b[B")  # down → next
+        assert _wait_until(lambda: display._focused_trial_id == "b:0")
+        os.write(write_fd, b"\x1b[A")  # up → prev
+        assert _wait_until(lambda: display._focused_trial_id == "c:0")
+    finally:
+        _stop_pipe_listener(listener, thread, write_fd)
+
+
+def test_arrow_left_right_map_to_prev_next(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    _seed_three_started_trials(display)
+    listener, thread, write_fd = _spawn_pipe_listener(display)
+    try:
+        os.write(write_fd, b"\x1b[C")  # right → next
+        assert _wait_until(lambda: display._focused_trial_id == "b:0")
+        os.write(write_fd, b"\x1b[D")  # left → prev
+        assert _wait_until(lambda: display._focused_trial_id == "c:0")
+    finally:
+        _stop_pipe_listener(listener, thread, write_fd)
+
+
+@pytest.mark.parametrize("home_bytes", [b"\x1b[H", b"\x1bOH"])
+def test_home_key_csi_and_ss3_variants_focus_first(
+    monkeypatch: pytest.MonkeyPatch, home_bytes: bytes
+) -> None:
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    _seed_three_started_trials(display)
+    listener, thread, write_fd = _spawn_pipe_listener(display)
+    try:
+        os.write(write_fd, b"\x1b[B")  # move off first (c → b)
+        assert _wait_until(lambda: display._focused_trial_id == "b:0")
+        os.write(write_fd, home_bytes)  # Home → first visible (c)
+        assert _wait_until(lambda: display._focused_trial_id == "c:0")
+    finally:
+        _stop_pipe_listener(listener, thread, write_fd)
+
+
+@pytest.mark.parametrize("end_bytes", [b"\x1b[F", b"\x1bOF"])
+def test_end_key_csi_and_ss3_variants_focus_last(
+    monkeypatch: pytest.MonkeyPatch, end_bytes: bytes
+) -> None:
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    _seed_three_started_trials(display)
+    listener, thread, write_fd = _spawn_pipe_listener(display)
+    try:
+        os.write(write_fd, end_bytes)  # End → last visible (a)
+        assert _wait_until(lambda: display._focused_trial_id == "a:0")
+    finally:
+        _stop_pipe_listener(listener, thread, write_fd)
+
+
+def test_unknown_esc_sequence_is_dropped_silently(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    _seed_three_started_trials(display)
+    listener, thread, write_fd = _spawn_pipe_listener(display)
+    try:
+        # Shift-Tab (\x1b[Z) is unknown; the trailing j must still dispatch
+        # exactly one move, proving the unknown run was dropped, not queued.
+        os.write(write_fd, b"\x1b[Zj")
+        assert _wait_until(lambda: display._focused_trial_id == "b:0")
+        assert display._focused_trial_id == "b:0"
+        assert thread.is_alive()
+    finally:
+        _stop_pipe_listener(listener, thread, write_fd)
+
+
+def test_bare_esc_press_is_dropped(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    _seed_three_started_trials(display)
+    listener, thread, write_fd = _spawn_pipe_listener(display)
+    try:
+        os.write(write_fd, b"\x1b")
+        # Let the read-loop's select timeout fire so the lone ESC is flushed.
+        time.sleep(0.25)
+        assert display._focused_trial_id == "c:0"
+        assert display._auto_follow is True
+        # A later keypress is unaffected by the dropped ESC — j moves once.
+        os.write(write_fd, b"j")
+        assert _wait_until(lambda: display._focused_trial_id == "b:0")
+    finally:
+        _stop_pipe_listener(listener, thread, write_fd)
+
+
+def test_pipe_eof_stops_listener_thread() -> None:
+    display = LiveRunDisplay(refresh_per_second=1000)
+    listener, thread, write_fd = _spawn_pipe_listener(display)
+    try:
+        # Closing the write end makes os.read return b"" — the thread must
+        # exit on its own, without _stop_event being set.
+        os.close(write_fd)
+        assert _wait_until(lambda: not thread.is_alive())
+    finally:
+        _stop_pipe_listener(listener, thread, None)
+
+
+def test_l_before_first_trial_shows_placeholder() -> None:
+    display = LiveRunDisplay(refresh_per_second=1000)
+
+    default_body = _render_right_pane_text(display)
+    assert "(waiting for first trial)" in default_body
+
+    display._show_logs_pane = True
+    logs_body = _render_right_pane_text(display)
+    assert "log stream enabled" in logs_body
+
+
+def test_bottom_bar_hint_advertises_first_last_shortcuts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    _seed_three_started_trials(display)
+
+    display._nav_next_trial()  # enter manual mode
+    bar = display._render_bottom_bar()
+
+    assert "H/L" in bar.plain
+    assert "↑↓" in bar.plain
+
+
+def test_listener_disabled_when_tcgetattr_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import termios
+
+    from tolokaforge.dx.live_panel import _KeyboardListener
+
+    def _boom(_fd: int) -> list[object]:
+        raise termios.error("no tty here")
+
+    monkeypatch.setattr("tolokaforge.dx.live_panel.termios.tcgetattr", _boom)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    read_fd, write_fd = os.pipe()
+    try:
+        listener = _KeyboardListener(display, stdin=_PipeStdin(read_fd))
+        with listener:
+            assert listener.enabled() is False
+            assert listener._thread is None
+            assert listener._original_termios is None
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)

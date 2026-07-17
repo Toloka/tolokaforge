@@ -649,6 +649,23 @@ def _render_trial_log_tail(records: list[logging.LogRecord], *, width: int) -> R
     return Group(*lines)
 
 
+_ESC_SEQUENCES: dict[str, str] = {
+    "\x1b[A": "k",
+    "\x1bOA": "k",
+    "\x1b[B": "j",
+    "\x1bOB": "j",
+    "\x1b[C": "j",
+    "\x1bOC": "j",
+    "\x1b[D": "k",
+    "\x1bOD": "k",
+    "\x1b[H": "H",
+    "\x1bOH": "H",
+    "\x1b[F": "L",
+    "\x1bOF": "L",
+}
+_ESC_PREFIXES: frozenset[str] = frozenset({"\x1b", "\x1b[", "\x1bO"})
+
+
 class _KeyboardListener:
     """Daemon-thread keyboard listener for :class:`LiveRunDisplay`.
 
@@ -671,6 +688,10 @@ class _KeyboardListener:
         self._stop_event = threading.Event()
         self._original_termios: list[Any] | None = None
         self._enabled: bool = False
+        self._fd: int | None = None
+        # Buffers a partially-read ESC sequence (arrow / Home / End) across
+        # bytes; empty when not mid-sequence.
+        self._pending_esc: str = ""
 
     def enabled(self) -> bool:
         """True when :meth:`__enter__` actually started the input thread."""
@@ -691,9 +712,17 @@ class _KeyboardListener:
     def __enter__(self) -> _KeyboardListener:
         if not self._should_start():
             return self
-        fd = self._stdin.fileno()
-        self._original_termios = termios.tcgetattr(fd)
-        tty.setcbreak(fd)
+        try:
+            fd = self._stdin.fileno()
+            self._original_termios = termios.tcgetattr(fd)
+            tty.setcbreak(fd)
+        except (termios.error, OSError, ValueError):
+            # Exotic pty / container where ``isatty()`` lies: leave the panel
+            # in auto-follow-only mode instead of aborting the Live setup.
+            self._original_termios = None
+            self._enabled = False
+            return self
+        self._fd = fd
         self._enabled = True
         self._thread = threading.Thread(
             target=self._run, name="tolokaforge-panel-input", daemon=True
@@ -718,20 +747,44 @@ class _KeyboardListener:
     def _run(self) -> None:
         while not self._stop_event.is_set():
             try:
-                ready, _, _ = select.select([self._stdin], [], [], 0.1)
+                ready, _, _ = select.select([self._fd], [], [], 0.1)
             except (ValueError, OSError):
                 # stdin closed or otherwise invalidated mid-run — exit
                 # the thread; termios restoration still runs in __exit__.
                 return
             if not ready:
+                # A lone ESC with no follow-up byte is a bare ESC keypress,
+                # not the start of a sequence — drop it so it can't merge
+                # with the next keypress into a phantom arrow key.
+                self._pending_esc = ""
                 continue
             try:
-                key = self._stdin.read(1)
+                chunk = os.read(self._fd, 32)
             except (ValueError, OSError):
                 return
-            if not key:
+            if not chunk:
+                # EOF — the read end is exhausted (pipe closed); exit cleanly
+                # rather than spin on a fd that will never block again.
+                return
+            self._consume_bytes(chunk.decode("utf-8", errors="replace"))
+
+    def _consume_bytes(self, chars: str) -> None:
+        for ch in chars:
+            if not self._pending_esc and ch == "\x1b":
+                self._pending_esc = "\x1b"
                 continue
-            self._dispatch(key)
+            if not self._pending_esc:
+                self._dispatch(ch)
+                continue
+            self._pending_esc += ch
+            mapped = _ESC_SEQUENCES.get(self._pending_esc)
+            if mapped is not None:
+                self._pending_esc = ""
+                self._dispatch(mapped)
+            elif self._pending_esc not in _ESC_PREFIXES:
+                # Unknown or over-long sequence — drop the whole buffer rather
+                # than dispatch a byte that was only part of a CSI/SS3 run.
+                self._pending_esc = ""
 
     def _dispatch(self, key: str) -> None:
         if key == "j":
@@ -1555,7 +1608,10 @@ class LiveRunDisplay:
                 None,
             )
         if snapshot is None:
-            body = Text("(waiting for first trial)")
+            if show_logs:
+                body = Text("(log stream enabled — waiting for first trial)", style="dim")
+            else:
+                body = Text("(waiting for first trial)")
             return Panel(body, title="Focused trial")
         title = (
             f"Focused trial · {position}/{visible_total}"
@@ -1640,10 +1696,11 @@ class LiveRunDisplay:
             if cost_style == "default":
                 return Text(line)
             return Text.from_markup(line)
-        # Manual-nav hint prepends literal ``[j/k nav · f follow · l logs]`` —
-        # the bracketed prefix must be escape()'d so Rich does not consume it
-        # as an unknown style tag.
-        return Text.from_markup(_escape_markup("[j/k nav · f follow · l logs] ") + line)
+        # Manual-nav hint prepends a literal bracketed binding legend — the
+        # prefix must be escape()'d so Rich does not consume it as an unknown
+        # style tag.
+        hint = "[j/k or ↑↓ nav · H/L first/last · f follow · l logs] "
+        return Text.from_markup(_escape_markup(hint) + line)
 
 
 __all__ = [
