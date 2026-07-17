@@ -108,11 +108,6 @@ complete config replacing the image default, so the effective ``http_access``
 ordering does not depend on the image's ``conf.d`` include order."""
 
 
-class NetworkPolicyError(ValueError):
-    """Raised when a declared ``network_policy`` cannot be enforced by the
-    docker provisioner."""
-
-
 def enforce_network_policy(
     compose_doc: dict[str, Any],
     policy: NetworkPolicy,
