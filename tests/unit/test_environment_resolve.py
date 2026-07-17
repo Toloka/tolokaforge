@@ -265,10 +265,81 @@ class TestAtomicStackReplacement:
         task = EnvironmentPatch(
             stack=StackPatch(compose_file=ENV_FIXTURE),
             network_policy=NetworkPolicy.LIMITED_INTERNET,
+            limited_internet_allowlist=["api.openai.com"],
         )
         manifest = resolve(project, task)
         assert manifest is not None
         assert manifest.network_policy == NetworkPolicy.LIMITED_INTERNET
+        assert manifest.limited_internet_allowlist == ["api.openai.com"]
+
+
+class TestLimitedInternetAllowlistMerge:
+    """The allowlist is a policy-request field — it threads through resolve(),
+    survives atomic ``stack`` replacement, and the task list replaces the
+    project list outright (task-wins, never a union)."""
+
+    def test_task_inherits_project_allowlist_on_deep_merge(self) -> None:
+        project = EnvironmentPatch(
+            stack=StackPatch(compose_file=ENV_FIXTURE, runner_service="default"),
+            network_policy=NetworkPolicy.LIMITED_INTERNET,
+            limited_internet_allowlist=["api.openai.com", "*.example.com"],
+        )
+        task = EnvironmentPatch(stack=StackPatch(inputs={"postgres_version": "17"}))
+        manifest = resolve(project, task)
+        assert manifest is not None
+        assert manifest.network_policy is NetworkPolicy.LIMITED_INTERNET
+        assert manifest.limited_internet_allowlist == ["api.openai.com", "*.example.com"]
+
+    def test_task_allowlist_replaces_project_allowlist(self) -> None:
+        project = EnvironmentPatch(
+            stack=StackPatch(compose_file=ENV_FIXTURE, runner_service="default"),
+            network_policy=NetworkPolicy.LIMITED_INTERNET,
+            limited_internet_allowlist=["api.openai.com", "*.example.com"],
+        )
+        task = EnvironmentPatch(limited_internet_allowlist=["api.anthropic.com"])
+        manifest = resolve(project, task)
+        assert manifest is not None
+        # Atomic list replacement — the project's broader list is not unioned in.
+        assert manifest.limited_internet_allowlist == ["api.anthropic.com"]
+
+    def test_allowlist_survives_atomic_stack_replacement(self) -> None:
+        project = EnvironmentPatch(
+            stack=StackPatch(compose_file=ENV_FIXTURE),
+            network_policy=NetworkPolicy.LIMITED_INTERNET,
+            limited_internet_allowlist=["api.openai.com"],
+        )
+        task = EnvironmentPatch(stack=StackPatch(compose_file=ENV_FIXTURE))
+        manifest = resolve(project, task)
+        assert manifest is not None
+        assert manifest.network_policy is NetworkPolicy.LIMITED_INTERNET
+        assert manifest.limited_internet_allowlist == ["api.openai.com"]
+
+    def test_limited_internet_without_any_allowlist_fails_loud(self) -> None:
+        project = EnvironmentPatch(
+            stack=StackPatch(compose_file=ENV_FIXTURE),
+            network_policy=NetworkPolicy.LIMITED_INTERNET,
+        )
+        with pytest.raises(ValueError, match="requires a non-empty"):
+            resolve(project, None)
+
+    def test_allowlist_does_not_affect_environment_identity(self) -> None:
+        from tolokaforge.core.env_identity import resolve_environment_identity
+
+        def _manifest(allowlist: list[str]) -> EnvironmentManifest:
+            patch = EnvironmentPatch(
+                stack=StackPatch(compose_file=ENV_FIXTURE, runner_service="default"),
+                network_policy=NetworkPolicy.LIMITED_INTERNET,
+                limited_internet_allowlist=allowlist,
+            )
+            manifest = resolve(patch, None)
+            assert manifest is not None
+            return manifest
+
+        narrow = _manifest(["api.openai.com"])
+        broad = _manifest(["api.openai.com", "*.example.com"])
+        # The allowlist is an operational egress override, not architectural
+        # identity — it must not shift the environment digest.
+        assert resolve_environment_identity(narrow) == resolve_environment_identity(broad)
 
 
 class TestResolveEndpointOverrides:

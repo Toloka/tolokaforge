@@ -150,7 +150,7 @@ Three literal states, following METR task-standard's permission-string conventio
 | Value | Semantics |
 |---|---|
 | `no_internet` (default) | Services reach each other on the per-trial network only. No egress to the public internet; no reachability across per-trial projects. |
-| `limited_internet` | Egress permitted for a provisioner-defined allowlist. No cross-trial reachability. The allowlist is a provisioner concern, not a schema concern. |
+| `limited_internet` | Egress permitted only to the hosts in `limited_internet_allowlist` (a manifest field — DNS hostnames, exact or `*.` leading-wildcard). No cross-trial reachability. Enforced by an injected forward-proxy sidecar; see [ADR-0018](0018-multi-container-under-shared-runtime.md#network-policy-enforcement). |
 | `full_internet` | Unrestricted egress. Still no cross-trial reachability. |
 
 Extending to a fourth mode (e.g. `dns_only`) is a permission-string addition; no consumer breaks.

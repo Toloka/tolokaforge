@@ -611,10 +611,16 @@ def validate_actor_roster_subset_of_models(
 # ── Environment resolve ────────────────────────────────────────────────
 
 
-_POLICY_REQUEST_FIELDS = ("network_policy", "security_context_defaults")
+_POLICY_REQUEST_FIELDS = (
+    "network_policy",
+    "limited_internet_allowlist",
+    "security_context_defaults",
+)
 """Fields that survive atomic ``stack`` replacement — policy requests
 that are substrate-neutral (they describe the trial regardless of
-substrate)."""
+substrate). List-valued members (``limited_internet_allowlist``) replace
+outright on merge — the task list wins over the project list, never
+unions with it."""
 
 _SERVICE_TREATMENT_FIELDS = ("initial_state", "services")
 """Fields scoped to the reviewed stack — discarded on atomic
@@ -653,8 +659,9 @@ def resolve(
       discarded — the project's per-service opt-outs reviewed the
       project's services, not the replacement stack.
     - Policy-request fields (``network_policy``,
-      ``security_context_defaults``) survive — substrate-neutral, they
-      describe the trial regardless of substrate.
+      ``limited_internet_allowlist``, ``security_context_defaults``)
+      survive — substrate-neutral, they describe the trial regardless of
+      substrate.
 
     After manifest construction, every compose service missing from the
     merged ``services`` map is filled with an ``ephemeral`` default so

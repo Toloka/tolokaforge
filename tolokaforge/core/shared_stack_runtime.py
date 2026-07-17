@@ -40,7 +40,6 @@ from tolokaforge.core.compose_materialisation import (
     resolve_runner_endpoint,
     run_services_dir,
     shutdown_compose,
-    verify_network_policy_supported,
     write_capture_manifest,
 )
 from tolokaforge.core.models import SeedRef
@@ -697,7 +696,7 @@ class SharedStackRuntimeBackend:
     require per-trial substrate materialisation."""
 
     advertised_capabilities: frozenset[str] = frozenset(
-        {"shared_stack", "network_isolation:no_internet"}
+        {"shared_stack", "network_isolation:no_internet", "network_isolation:limited_internet"}
     )
     """Local-docker shared-stack capability advertisement. Read by
     :func:`tolokaforge.core.backend_capabilities.check_admission`."""
@@ -832,7 +831,6 @@ class SharedStackRuntimeBackend:
         assert self._env_manifest is not None  # narrowed by caller
         manifest = self._env_manifest
 
-        verify_network_policy_supported(manifest.network_policy)
         temp_dir = make_project_temp_dir(self._run_id)
         compose: DockerCompose | None = None
         try:
@@ -841,6 +839,7 @@ class SharedStackRuntimeBackend:
                 temp_dir / manifest.compose_file.name,
                 manifest.network_policy,
                 manifest.runner_service,
+                manifest.limited_internet_allowlist,
             )
             compose = DockerCompose(
                 context=str(temp_dir),

@@ -375,10 +375,49 @@ is applied, extension inference, and failure modes), see
 an edge network so LLM-judge grading can still reach model providers.
 
 `full_internet` is the explicit opt-in for a task that legitimately needs
-egress (fetching a remote resource, calling a third-party API under test).
-`limited_internet` fails loud today — the egress-proxy sidecar it needs is
-not yet shipped — so declaring it is a load-time error, not a silent
-degrade.
+unrestricted egress (fetching an arbitrary remote resource, calling any
+third-party API under test).
+
+`limited_internet` sits between the two: application services may reach a
+declared allowlist of hosts and nothing else. Declaring it requires a
+`limited_internet_allowlist` on the same `stack:` block; the two are validated
+together at load time — `limited_internet` with an empty allowlist is a load
+error, and a non-empty allowlist under any other policy is a load error.
+
+```yaml
+default_environment:
+  stack:
+    compose_file: ./shared/environment.compose.yaml
+    runner_service: runner
+    limited_internet_allowlist:
+      - api.openai.com        # exact host — only this hostname
+      - "*.githubusercontent.com"  # wildcard — any subdomain of githubusercontent.com
+  network_policy: limited_internet
+```
+
+Allowlist entry syntax:
+
+- **Bare hostname** (`api.openai.com`) — exact match. Only that hostname is
+  reachable; subdomains are not.
+- **Leading wildcard** (`*.example.com`) — subdomain suffix match: any host
+  ending in `.example.com` (e.g. `raw.example.com`, `cdn.assets.example.com`).
+  The bare apex `example.com` is *not* matched by `*.example.com` — list it
+  separately if you need it.
+
+Entries are DNS hostnames only. Schemes (`http://…`), embedded ports
+(`host:443`), URL paths, IP literals (`10.0.0.1`), and duplicate entries are
+all rejected at manifest load.
+
+How it is enforced: the provisioner injects a digest-pinned `ubuntu/squid`
+forward-proxy sidecar and points every application service's `HTTP(S)_PROXY`
+at it. The proxy is default-deny and forwards only to allowlisted hosts;
+everything else is refused with HTTP 403. HTTPS egress goes through the proxy
+via CONNECT tunnelling with no TLS interception — the allowlist matches on the
+target hostname, so pinned certificates keep working and there is no CA to
+install in the service's trust store. The `runner_service` is not proxied: it
+keeps direct edge egress for LLM-judge grading, exactly as under `no_internet`.
+For the full design see
+[ADR-0018](adr/0018-multi-container-under-shared-runtime.md#network-policy-enforcement).
 
 ## Adding another service
 
