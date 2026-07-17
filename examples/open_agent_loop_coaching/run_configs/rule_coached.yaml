@@ -20,7 +20,7 @@ orchestrator:
   queue_backend: sqlite
 
 evaluation:
-  task_packs:
+  projects:
     - "examples/native/tool_use/dataset"
   tasks_glob: "**/tool_use_public_example_01/task.yaml"
   output_dir: "results/coaching_ab/rule_coached"

@@ -82,13 +82,40 @@ def _load_coach_config(path: Path) -> CoachConfig:
     return CoachConfig.model_validate(yaml.safe_load(path.read_text()))
 
 
+def _resolve_output_dir(configured: Path) -> Path:
+    """Find the on-disk output directory the orchestrator actually used.
+
+    Prefers the pristine configured path if it exists; falls back to the
+    most-recent `<name>_YYYYMMDD_HHMMSS` sibling, which is what the
+    orchestrator produces when `run_id` is auto-generated.
+    """
+    if configured.is_dir():
+        return configured
+    parent = configured.parent
+    if not parent.is_dir():
+        return configured
+    prefix = f"{configured.name}_"
+    candidates = sorted(
+        (p for p in parent.iterdir() if p.is_dir() and p.name.startswith(prefix)),
+        reverse=True,
+    )
+    return candidates[0] if candidates else configured
+
+
 def _discover_trial_ids(config: RunConfig) -> list[str]:
     """Enumerate the trial IDs the orchestrator will produce, so we can
-    pre-create sessions before the run starts."""
+    pre-create sessions before the run starts.
+
+    Reads `evaluation.projects` (canonical) with `evaluation.task_packs`
+    fallback for legacy configs — the Pydantic model coerces `task_packs`
+    into `projects` internally, so post-validation `projects` is where
+    the actual paths live.
+    """
     trial_ids: list[str] = []
-    for task_pack in config.evaluation.task_packs:
-        task_root = REPO_ROOT / task_pack
-        for task_file in task_root.glob(config.evaluation.tasks_glob):
+    project_paths = list(config.evaluation.projects) or list(config.evaluation.task_packs)
+    for project in project_paths:
+        project_root = REPO_ROOT / project
+        for task_file in project_root.glob(config.evaluation.tasks_glob):
             task_raw = yaml.safe_load(task_file.read_text()) or {}
             task_id = task_raw.get("task_id") or task_file.parent.name
             for trial_idx in range(config.orchestrator.repeats):
@@ -190,7 +217,10 @@ def _run_arm(
         t.join(timeout=5.0)
 
     # Write coach report sidecars next to each trial's other artifacts.
-    output_root = REPO_ROOT / config.evaluation.output_dir
+    # The orchestrator stamps `_<timestamp>` onto the configured output_dir,
+    # so we resolve the actual on-disk root by preferring the pristine path
+    # and falling back to the most-recent `<name>_*` sibling.
+    output_root = _resolve_output_dir(REPO_ROOT / config.evaluation.output_dir)
     for trial_id, report in coach_reports.items():
         task_id, idx = trial_id.rsplit(":", 1)
         target = output_root / "trials" / task_id / idx / "coach_report.yaml"
