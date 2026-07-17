@@ -463,6 +463,8 @@ class GrpcRunnerClient:
                             "knowledge_search_disabled": grade.judge_report.knowledge_search_disabled,
                             "kb_tools_offered": list(grade.judge_report.kb_tools_offered),
                             "kb_tools_withheld": list(grade.judge_report.kb_tools_withheld),
+                            "state_diff_text": grade.judge_report.state_diff_text,
+                            "read_tools_offered": list(grade.judge_report.read_tools_offered),
                         }
                         if grade.HasField("judge_report")
                         else None

@@ -178,8 +178,9 @@ class OutputWriter:
         Args:
             grade: Grade object with scores, reasons, judge usage / transcript
         """
-        # Keep the transcript out of grade.yaml; it lands in the sidecar.
-        grade_payload = grade.model_dump(mode="json", exclude={"judge_transcript"})
+        # Keep the transcript and the judge's structured inputs out of grade.yaml;
+        # each lands in its own sidecar.
+        grade_payload = grade.model_dump(mode="json", exclude={"judge_transcript", "judge_inputs"})
         with open(self.output_dir / "grade.yaml", "w") as f:
             yaml.dump(
                 grade_payload,
@@ -197,6 +198,20 @@ class OutputWriter:
             with open(self.output_dir / "judge_trajectory.yaml", "w") as f:
                 yaml.dump(
                     {"messages": grade.judge_transcript},
+                    f,
+                    default_flow_style=False,
+                    allow_unicode=True,
+                    sort_keys=False,
+                )
+
+        # Sidecar: the judge's non-derivable run() inputs (state-diff string +
+        # read-tool surface), only when a judge ran. Absent file ⇒ no judge inputs
+        # recorded for this trial. Kept out of grade.yaml (the diff can be large);
+        # replay reconstructs the judge's opening message from it.
+        if grade.judge_inputs:
+            with open(self.output_dir / "judge_inputs.yaml", "w") as f:
+                yaml.dump(
+                    grade.judge_inputs.model_dump(mode="json"),
                     f,
                     default_flow_style=False,
                     allow_unicode=True,

@@ -321,6 +321,25 @@ class JudgeKbGating(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class JudgeInputs(BaseModel):
+    """The judge's non-derivable ``LLMJudge.run()`` inputs, recorded for offline replay.
+
+    The transcript, agent policy, rubric, and judge model are already structured in
+    sibling artifacts (``trajectory.yaml``, ``prompts.yaml``, ``task.yaml``); this
+    records only what a replay cannot otherwise reconstruct: the exact
+    ``state_diff`` string the judge saw (``None`` when no diff was built) and its
+    non-KB read-tool surface (``get_db_state`` / ``query_db`` / ``read_file`` — the
+    KB surface lives in :class:`JudgeKbGating`). Written to a sidecar
+    ``judge_inputs.yaml``, never inlined in ``grade.yaml`` (the diff can be large).
+    See docs/OUTPUT_FORMAT.md.
+    """
+
+    state_diff_text: str | None = None
+    read_tools_offered: list[str] = Field(default_factory=list)
+
+    model_config = {"extra": "forbid"}
+
+
 class CustomCheckDetail(BaseModel):
     """Detail for individual custom check result"""
 
@@ -361,6 +380,12 @@ class Grade(BaseModel):
     # ``grade.yaml`` (a scalar/lists block, unlike the transcript sidecar). Separate
     # from ``judge_usage``, which stays token/cost only. See docs/OUTPUT_FORMAT.md.
     judge_kb_gating: JudgeKbGating | None = None
+    # The judge's non-derivable ``run()`` inputs (state-diff string + non-KB
+    # read-tool surface). ``None`` when no judge ran. Excluded from the
+    # ``grade.yaml`` payload and written to a sidecar ``judge_inputs.yaml`` (the
+    # state-diff can be large), mirroring the ``judge_transcript`` split. See
+    # docs/OUTPUT_FORMAT.md.
+    judge_inputs: JudgeInputs | None = None
 
 
 class Trajectory(BaseModel):

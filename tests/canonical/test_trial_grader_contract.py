@@ -163,3 +163,51 @@ class TestJudgeKbGatingRoundTrip:
         parsed = _parse_grade_result(_grade_dict_from_proto(grade))
 
         assert parsed.judge_kb_gating is None
+
+
+class TestJudgeInputsRoundTrip:
+    """The judge's non-derivable ``run()`` inputs — the exact ``state_diff`` string
+    and the non-KB read-tool surface — survive proto → dict → ``Grade`` intact.
+    This is the record offline replay reads to rebuild the judge's opening message
+    and declare which live backends to shim."""
+
+    def test_state_diff_and_read_tools_round_trip(self) -> None:
+        from tolokaforge.core.trial_grader import _parse_grade_result
+        from tolokaforge.runner import runner_pb2
+
+        report = runner_pb2.JudgeReport(
+            state_diff_text="orders[1]: status open -> shipped",
+            read_tools_offered=["get_db_state", "query_db", "read_file"],
+        )
+        grade = runner_pb2.Grade(binary_pass=True, score=1.0, judge_report=report)
+
+        parsed = _parse_grade_result(_grade_dict_from_proto(grade))
+
+        assert parsed.judge_inputs is not None
+        assert parsed.judge_inputs.state_diff_text == "orders[1]: status open -> shipped"
+        assert parsed.judge_inputs.read_tools_offered == ["get_db_state", "query_db", "read_file"]
+
+    def test_empty_state_diff_text_maps_to_none(self) -> None:
+        from tolokaforge.core.trial_grader import _parse_grade_result
+        from tolokaforge.runner import runner_pb2
+
+        # A judge that ran but built no diff: the wire carries "" (proto3 string
+        # default), which must reconstruct as None, not the empty string.
+        report = runner_pb2.JudgeReport(state_diff_text="", read_tools_offered=["read_file"])
+        grade = runner_pb2.Grade(binary_pass=True, score=1.0, judge_report=report)
+
+        parsed = _parse_grade_result(_grade_dict_from_proto(grade))
+
+        assert parsed.judge_inputs is not None
+        assert parsed.judge_inputs.state_diff_text is None
+        assert parsed.judge_inputs.read_tools_offered == ["read_file"]
+
+    def test_absent_judge_report_yields_no_judge_inputs(self) -> None:
+        from tolokaforge.core.trial_grader import _parse_grade_result
+        from tolokaforge.runner import runner_pb2
+
+        grade = runner_pb2.Grade(binary_pass=True, score=1.0)  # no judge_report
+
+        parsed = _parse_grade_result(_grade_dict_from_proto(grade))
+
+        assert parsed.judge_inputs is None

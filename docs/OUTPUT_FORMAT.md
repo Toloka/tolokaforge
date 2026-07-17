@@ -23,6 +23,7 @@ bumped and this document is updated in the same commit.
             ├── metrics.yaml
             ├── grade.yaml
             ├── judge_trajectory.yaml       ← rubric-judge transcript (only when an LLM judge ran)
+            ├── judge_inputs.yaml           ← rubric-judge structured inputs for replay (only when an LLM judge ran)
             ├── logs.yaml
             ├── prompts.yaml                ← agent + user-sim system prompts
             ├── tools_schemas.yaml          ← post-policy tool list
@@ -546,6 +547,39 @@ the source of truth for *what the judge saw and did*. For an `errored`
 judge it carries the partial transcript up to the failure, which is the
 most useful debugging artifact.
 
+## `trials/{task_id}/{trial_index}/judge_inputs.yaml`
+
+The rubric judge's non-derivable `run()` inputs — written **only** when an
+LLM judge ran (absent file ⇒ no judge inputs for this trial). This is the
+record an offline **judge replay** reads to re-execute the judge over the
+recorded trajectory without live services: everything else the judge
+consumed is already structured elsewhere (the transcript in
+`trajectory.yaml`, the agent policy in `prompts.yaml`, the rubric + judge
+model in `task.yaml`), so this file carries only what a replay cannot
+otherwise reconstruct. Kept out of `grade.yaml` — the state-diff string can
+be large — for the same reason the transcript lives in its own sidecar.
+
+```yaml
+state_diff_text: |
+  orders[o1]: status open -> shipped
+  order_items[i1]: qty 1 -> 2
+read_tools_offered:
+  - get_db_state
+  - query_db
+```
+
+* `state_diff_text` — the exact `initial → final` state-delta string the
+  judge was handed as its primary outcome view (the agent's own edits, not
+  the trial-vs-golden diff, so it reveals nothing about the expected
+  answer). `null` when no diff was built (a non-DB task, or a DB read hiccup
+  degraded grading to no diff). A replay rebuilds the judge's opening
+  message from this exact string.
+* `read_tools_offered` — the non-KB read-only tools the judge was actually
+  offered this trial: `get_db_state` / `query_db` (a DB reader was supplied)
+  and `read_file` (a workspace existed). The KB read surface lives in
+  `grade.yaml` `judge_kb_gating`. A replay declares which of these live
+  backends it must shim offline.
+
 ## `trials/{task_id}/{trial_index}/logs.yaml`
 
 ```yaml
@@ -592,6 +626,7 @@ def load_trial(trial_dir: Path) -> dict:
         "metrics",
         "grade",
         "judge_trajectory",
+        "judge_inputs",
         "logs",
         "prompts",
         "tools_schemas",
