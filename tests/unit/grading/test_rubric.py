@@ -284,6 +284,22 @@ class TestVerdictConsistency:
         args["refund_amount_justification"] = "Correct amount.\n  verdict :  met  "
         parse_submit_report(args, _mixed_rubric())
 
+    def test_marker_appended_inline_to_final_sentence_accepted(self) -> None:
+        # Real models append the marker to the closing sentence rather than on a
+        # line of its own: the last VERDICT: on the final line is the verdict.
+        args = _valid_args(refund_met=True)
+        args["refund_amount_justification"] = (
+            "The order status is 'refunded', so the refund was issued. VERDICT: MET"
+        )
+        results = parse_submit_report(args, _mixed_rubric())
+        assert next(r for r in results if r.id == "refund_amount").met is True
+
+    def test_graded_marker_appended_inline_accepted(self) -> None:
+        args = _valid_args(tone_score=0.8)
+        args["tone_justification"] = "Warm and clear throughout. SCORE: 0.8"
+        results = parse_submit_report(args, _mixed_rubric())
+        assert next(r for r in results if r.id == "tone").score == pytest.approx(0.8)
+
     def test_justification_including_marker_stored_verbatim(self) -> None:
         args = _valid_args(refund_met=True)
         text = "Quoted $328.50 exactly.\nVERDICT: MET"
@@ -320,6 +336,56 @@ def _no_internal_references_rubric() -> Rubric:
             )
         ]
     )
+
+
+def _wellformed_live_rubric() -> Rubric:
+    # Matches the rubric the golden payload was captured under
+    # (tests/integration/test_rubric_judge_live.py::_rubric).
+    return Rubric(
+        reference="The correct refund for order o_1001 is $328.50 and it must be issued.",
+        criteria=[
+            Criterion(
+                id="refund_issued",
+                description="The order's refund was actually issued (status refunded).",
+                kind="binary",
+                required=True,
+                weight=1.0,
+            ),
+            Criterion(
+                id="amount_quoted",
+                description="The agent quoted the correct refund amount to the customer.",
+                expected="$328.50",
+                kind="binary",
+                weight=1.0,
+            ),
+            Criterion(
+                id="tone",
+                description="The reply is polite and professional.",
+                kind="graded",
+                weight=0.5,
+            ),
+        ],
+    )
+
+
+class TestWellFormedLivePayload:
+    """A real judge's well-formed submit_report payload passes validation.
+
+    ``data/wellformed_submit_report.json`` is a captured live-judge payload
+    (markers appended inline to each closing sentence, as real models emit them);
+    regenerable by re-running the live acceptance test with
+    ``TF_CAPTURE_JUDGE_PAYLOAD=1`` (see ``tests/README.md``). Fast, no spend —
+    proves real-model output conforms to the marker contract.
+    """
+
+    def test_captured_payload_parses_and_markers_match(self) -> None:
+        payload = _recorded_payload("wellformed")
+        rubric = _wellformed_live_rubric()
+        results = parse_submit_report(payload, rubric)  # raises on any marker mismatch
+        assert {r.id for r in results} == {"refund_issued", "amount_quoted", "tone"}
+        # Every justification carries its marker verbatim.
+        for r in results:
+            assert "VERDICT:" in r.justification or "SCORE:" in r.justification
 
 
 class TestRecordedRejectionFixtures:

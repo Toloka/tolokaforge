@@ -29,3 +29,13 @@ Two rejection shapes are exercised in `test_rubric.py`:
   concludes the criterion IS met); the appended `VERDICT: MET` is exactly what
   the fixed judge would emit. No *real* marker-contradiction payload can exist
   until the new schema ships, so the marker is reconstructed, not synthetic.
+
+## `wellformed_submit_report.json` — REGENERABLE live capture
+
+Separate from the frozen rejection captures: a real judge's well-formed
+`submit_report` payload under the current schema, every justification ending with
+a marker that matches its verdict (markers appended inline to the closing
+sentence, as real models emit them). `test_rubric.py::TestWellFormedLivePayload`
+re-validates it with no spend. **Regenerable** by re-running the live acceptance
+capture — `TF_CAPTURE_JUDGE_PAYLOAD=1` (see `tests/README.md`). Unlike the
+rejection captures above, this one may be refreshed.

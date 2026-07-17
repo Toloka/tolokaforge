@@ -15,7 +15,9 @@ Run with:
 
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
 
 import pytest
 
@@ -24,6 +26,7 @@ from tolokaforge.core.grading.judge import (
     model_config_from_ref,
     run_rubric_judge,
 )
+from tolokaforge.core.grading.rubric import parse_submit_report
 from tolokaforge.runner.models import Rubric
 
 pytestmark = [
@@ -31,6 +34,18 @@ pytestmark = [
     pytest.mark.requires_api,
     pytest.mark.llm,
 ]
+
+#: Golden well-formed submit_report payload captured from a real judge run. The
+#: unit test ``test_rubric.py::TestWellFormedLivePayload`` re-validates it with no
+#: spend. Regenerate by setting ``TF_CAPTURE_JUDGE_PAYLOAD=1`` when running the
+#: acceptance test below (see ``tests/README.md``).
+_WELLFORMED_FIXTURE = (
+    Path(__file__).resolve().parents[1]
+    / "unit"
+    / "grading"
+    / "data"
+    / "wellformed_submit_report.json"
+)
 
 
 def _pick_model() -> str | None:
@@ -302,3 +317,73 @@ def test_rubric_judge_live_against_real_db_service(db_test_client):
     )
     assert direct.status_code == 200, direct.text
     assert direct.json()["results"] == ["refunded"]
+
+
+# ---------------------------------------------------------------------------
+# Marker-consistency acceptance — real providers, strong + weak judge models
+# ---------------------------------------------------------------------------
+
+
+def _acceptance_models() -> list[tuple[str, str]]:
+    """(label, model_ref) pairs for the marker-acceptance run, gated on keys.
+
+    Strong: a GPT-class model that reliably terminates the agentic grading loop.
+    Weak: a smaller, different-family OpenRouter model that stresses the marker
+    format instruction. Both routed via OpenRouter so a single key covers them.
+    """
+    if not os.environ.get("OPENROUTER_API_KEY"):
+        return []
+    return [
+        ("strong", "openrouter/openai/gpt-4.1-mini"),
+        ("weak", "openrouter/meta-llama/llama-3.3-70b-instruct"),
+    ]
+
+
+def _extract_submit_args(result) -> dict | None:
+    """The real submit_report arguments the judge emitted, from its transcript."""
+    for msg in result.transcript:
+        for tc in msg.get("tool_calls") or []:
+            if tc.get("name") == "submit_report":
+                return tc.get("arguments")
+    return None
+
+
+@pytest.mark.skipif(not _acceptance_models(), reason="No OPENROUTER_API_KEY set")
+@pytest.mark.parametrize("label,model_ref", _acceptance_models(), ids=lambda v: v)
+def test_rubric_judge_live_markers_match_verdicts(label: str, model_ref: str):
+    """A well-formed transcript → COMPLETED with every justification's marker
+    matching its verdict and no consistency rejections, on strong + weak models.
+
+    Set ``TF_CAPTURE_JUDGE_PAYLOAD=1`` to (re)capture the strong model's real
+    well-formed submit_report payload into the golden fixture the unit acceptance
+    test re-validates without spend.
+    """
+    rubric = _rubric()
+    result = run_rubric_judge(
+        rubric=rubric,
+        model_config=model_config_from_ref(model_ref),
+        agent_system_prompt=_AGENT_SYSTEM_PROMPT,
+        transcript=_TRANSCRIPT,
+        db_reader=_DictDBReader(_DB_STATE),
+        max_turns=10,
+        episode_timeout_s=180,
+    )
+
+    assert result.status is JudgeStatus.COMPLETED, result.reasons
+    # No submit_report attempt was rejected for a verdict/justification mismatch.
+    assert result.usage.consistency_rejections == 0, result.reasons
+    # Every criterion carries a justification whose trailing marker matches its
+    # verdict — re-validated independently through parse_submit_report (raises
+    # VerdictConsistencyError on any mismatch).
+    replay: dict = {"reasons": result.reasons}
+    kinds = {c.id: c.kind for c in rubric.criteria}
+    for cr in result.criterion_results:
+        assert cr.justification.strip(), f"{cr.id} justification empty"
+        replay[f"{cr.id}_justification"] = cr.justification
+        replay[cr.id] = cr.met if kinds[cr.id] == "binary" else cr.score
+    parse_submit_report(replay, rubric)  # must not raise
+
+    if label == "strong" and os.environ.get("TF_CAPTURE_JUDGE_PAYLOAD") == "1":
+        captured = _extract_submit_args(result)
+        assert captured is not None, "no submit_report call found in transcript"
+        _WELLFORMED_FIXTURE.write_text(json.dumps(captured, indent=2, ensure_ascii=False) + "\n")

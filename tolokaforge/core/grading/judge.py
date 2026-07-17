@@ -266,7 +266,9 @@ _JUDGE_SYSTEM_PROMPT = (
     "reference where given. When you have enough evidence, call submit_report "
     "exactly once with a verdict and an evidence-based justification for every "
     "criterion. Do not call submit_report before you have inspected the relevant "
-    "state."
+    "state. End every criterion's justification with a final line 'VERDICT: MET' "
+    "or 'VERDICT: NOT MET' (binary) / 'SCORE: <value in [0,1]>' (graded), and make "
+    "that criterion's verdict field match it."
 )
 
 

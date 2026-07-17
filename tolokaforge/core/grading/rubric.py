@@ -48,11 +48,14 @@ _REASONS_KEY = "reasons"
 #: submitted ``score`` before the two are treated as contradictory.
 GRADED_MARKER_TOLERANCE = 0.05
 
-#: Trailing verdict marker parsers. Matched against the justification's final
-#: non-empty line only (anchoring — a "NOT MET" discussed mid-text must not
-#: false-match), anchored at the line start, whitespace-tolerant and
-#: case-insensitive. ``not met`` is spelled ahead of ``met`` in the alternation
-#: so it wins the match.
+#: Trailing verdict marker parsers. Searched within the justification's final
+#: non-empty line only (anchoring — a "NOT MET" discussed on an earlier line must
+#: not false-match), taking the LAST occurrence on that line so the marker may be
+#: appended inline to the closing sentence (``"...refund was issued. VERDICT:
+#: MET"``) as real models emit it, not only on a line of its own. The
+#: ``VERDICT:`` / ``SCORE:`` prefix is required, so a bare "NOT MET" phrase never
+#: matches. Whitespace-tolerant and case-insensitive; ``not met`` is spelled
+#: ahead of ``met`` in the alternation so it wins the match.
 _BINARY_MARKER_RE = re.compile(r"verdict\s*:\s*(not\s+met|met)", re.IGNORECASE)
 _GRADED_MARKER_RE = re.compile(r"score\s*:\s*([0-9]*\.?[0-9]+)", re.IGNORECASE)
 
@@ -285,25 +288,33 @@ def _final_nonempty_line(text: str) -> str:
     return ""
 
 
+def _last_match(regex: re.Pattern[str], line: str) -> re.Match[str] | None:
+    """The last occurrence of ``regex`` in ``line``, or None."""
+    matches = list(regex.finditer(line))
+    return matches[-1] if matches else None
+
+
 def _check_verdict_marker(
     criterion: Criterion, justification: str, met: bool, score: float
 ) -> None:
     """Reject a criterion whose trailing marker is missing or contradicts its verdict.
 
     The marker is read from the justification's final non-empty line only, so a
-    "NOT MET" discussed mid-text cannot false-match. The rejection message names
-    the criterion and quotes both the marker line and the submitted verdict, so
-    the bounded-retry re-prompt and the eventual errored-grade diagnostic show
-    both sides of the disagreement.
+    "NOT MET" discussed on an earlier line cannot false-match; within that line
+    the last ``VERDICT:`` / ``SCORE:`` occurrence wins, so a marker appended
+    inline to the closing sentence is accepted. The rejection message names the
+    criterion and quotes both the marker line and the submitted verdict, so the
+    bounded-retry re-prompt and the eventual errored-grade diagnostic show both
+    sides of the disagreement.
     """
     final_line = _final_nonempty_line(justification)
     if criterion.kind == "binary":
-        marker = _BINARY_MARKER_RE.match(final_line)
+        marker = _last_match(_BINARY_MARKER_RE, final_line)
         if marker is None:
             raise VerdictConsistencyError(
                 f"Criterion '{criterion.id}' justification is missing the required "
-                f"trailing verdict marker; its final line must be 'VERDICT: MET' or "
-                f"'VERDICT: NOT MET'. Final line was: {final_line!r}. Submitted "
+                f"trailing verdict marker; its final line must end with 'VERDICT: MET' "
+                f"or 'VERDICT: NOT MET'. Final line was: {final_line!r}. Submitted "
                 f"met={met}."
             )
         marker_met = "not" not in marker.group(1).lower()
@@ -315,11 +326,11 @@ def _check_verdict_marker(
             )
         return
 
-    marker = _GRADED_MARKER_RE.match(final_line)
+    marker = _last_match(_GRADED_MARKER_RE, final_line)
     if marker is None:
         raise VerdictConsistencyError(
             f"Criterion '{criterion.id}' justification is missing the required "
-            f"trailing score marker; its final line must be 'SCORE: <value in "
+            f"trailing score marker; its final line must end with 'SCORE: <value in "
             f"[0,1]>'. Final line was: {final_line!r}. Submitted score={score}."
         )
     marker_value = float(marker.group(1))
