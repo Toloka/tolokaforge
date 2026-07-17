@@ -221,6 +221,15 @@ malformed `submit_report`: the criterion is named and both sides quoted, the jud
 is re-prompted, and on retry exhaustion the trial rides the same ERRORED path — an
 unverifiable verdict is never accepted as a grade.
 
+The rejection is delivered on the wire as the **tool result** for the rejected
+`submit_report` call: the retry sequence answers every `tool_call_id` on the
+terminating assistant message with an adjacent `role=tool` result — the
+`submit_report` id carries the rejection reason plus the corrective instruction,
+and any read/search call the judge emitted in that same turn (never executed —
+`submit_report` ends the turn before tools run) carries an honest "not executed"
+note. This is a provider-valid tool-call/tool-result cycle, so the re-prompt
+gives the judge a genuine second attempt on every provider.
+
 ### Required-gate semantics
 
 A criterion with `required: true` is a **pure gate**, and is **excluded from the

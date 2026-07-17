@@ -102,6 +102,7 @@ Additional fixes landed this release:
 ### Fix
 
 - **grading**: rubric judge — order each criterion's `submit_report` justification before its verdict and reject a verdict that contradicts (or lacks) the justification's trailing `VERDICT:`/`SCORE:` marker; surface the per-trial count as an additive `judge_usage.consistency_rejections` field (default 0) in `grade.yaml` and the `JudgeReport` proto (#449)
+- **grading**: rubric judge `submit_report` re-prompt now returns the rejection as the tool result for the rejected call (every `tool_call_id` on the terminating turn answered by an adjacent `role=tool` result), so OpenAI/Azure-family judge models recover on retry instead of erroring with a 400 (#515)
 
 ## v0.9.0 (2026-07-17)
 

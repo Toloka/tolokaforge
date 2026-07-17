@@ -61,6 +61,16 @@ The rejection fixtures alongside it (`ae_bdg_*_submit_report.json`) are **frozen
 historical captures** — see `tests/unit/grading/data/README.md`; never
 regenerate those.
 
+### Live rubric-judge retry recovery
+
+`tests/integration/test_rubric_judge_live.py::test_rubric_judge_live_recovers_through_forced_retry`
+drives a real OpenAI-family judge through the `submit_report` retry path. The
+model's tool call is real on both turns; the test forces exactly one validation
+rejection (by patching `parse_submit_report` as bound in the judge module) so the
+retry fires deterministically, then asserts the live provider accepts the
+repaired tool-call/tool-result sequence (COMPLETED, no 400). Key-gated on
+`OPENROUTER_API_KEY` / `OPENAI_API_KEY`; skips without a key.
+
 ## Directory Structure
 
 ```
