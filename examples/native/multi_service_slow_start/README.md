@@ -72,7 +72,7 @@ uv run tolokaforge validate --tasks "examples/native/multi_service_slow_start/da
 ## Run
 
 ```bash
-scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_slow_start/run_config.yaml
+scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_slow_start/run_configs/dev.yaml
 ```
 
 Provisioning takes ≥25 s: the stack blocks on `app-db` becoming healthy,
@@ -85,7 +85,7 @@ runs fresh on every trial.
 ```
 examples/native/multi_service_slow_start/
 ├── project.yaml                       # Project spec: default_environment only (no services block, no assets)
-├── run_config.yaml                    # haiku agent + user, repeats: 1
+├── run_configs/dev.yaml               # haiku agent + user, repeats: 1
 ├── README.md                          # this file
 ├── shared/
 │   ├── environment.compose.yaml       # 4-service compose; app-db TCP healthcheck + wide start_period

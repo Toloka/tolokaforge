@@ -15,10 +15,11 @@ tools:
     enabled: ["bash", "write_file"]
   user:
     enabled: []
-user_simulator:
-  mode: llm
-  persona: cooperative
-  backstory: "You are the on-call engineer waiting for the widget's name to be recorded. Answer brief clarifying questions if asked and end with ###STOP### once the value is written to a submission file."
+actors:
+  user:
+    mode: llm
+    persona: cooperative
+    backstory: "You are the on-call engineer waiting for the widget's name to be recorded. Answer brief clarifying questions if asked and end with ###STOP### once the value is written to a submission file."
 policies:
   guidance:
     - "Reach the REST API from `bash` with `python3 -c 'import urllib.request; ...'` — the runner container joins the same docker network as `app-service` and resolves it by service name. (The bash allowlist permits python but not curl/wget.)"

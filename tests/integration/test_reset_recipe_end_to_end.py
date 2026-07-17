@@ -44,7 +44,7 @@ pytestmark = [
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PACK = "examples/native/multi_service_postgres_reset"
-_RUN_CONFIG = f"{_PACK}/run_config.yaml"
+_RUN_CONFIG = f"{_PACK}/run_configs/dev.yaml"
 
 
 def _output_basename() -> str:

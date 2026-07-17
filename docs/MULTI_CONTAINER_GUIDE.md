@@ -40,15 +40,15 @@ debugging investigation and an auto-dev build-and-verify loop.
 
 ### The command
 
-Every pack runs the same way — point `tolokaforge run` at its `run_config.yaml`:
+Every pack runs the same way — point `tolokaforge run` at its run config:
 
 ```bash
 scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_postgres/run_config.yaml
-scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_postgres_reset/run_config.yaml
-scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_lot_ops/run_config.yaml
-scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_helpdesk_workflow/run_config.yaml
-scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_cache_debug/run_config.yaml
-scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_endpoint_add/run_config.yaml
+scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_postgres_reset/run_configs/dev.yaml
+scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_lot_ops/run_configs/dev.yaml
+scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_helpdesk_workflow/run_configs/dev.yaml
+scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_cache_debug/run_configs/dev.yaml
+scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_endpoint_add/run_configs/dev.yaml
 ```
 
 `scripts/with_env.sh` loads `.env` (so `OPENROUTER_API_KEY` reaches the run)

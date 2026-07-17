@@ -56,7 +56,7 @@ class TestPackLayoutOnDisk:
     def test_all_pack_files_exist(self) -> None:
         expected = [
             _PACK_DIR / "project.yaml",
-            _PACK_DIR / "run_config.yaml",
+            _PACK_DIR / "run_configs" / "dev.yaml",
             _PACK_DIR / "README.md",
             _COMPOSE,
             _INIT_SQL,

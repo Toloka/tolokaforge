@@ -18,8 +18,9 @@ initial_user_message: |
   I'm counting on you to figure out what we're actually allowed to do.
 adapter_type: "native"
 environment_manifest:
-  compose_file: "../../../shared/environment.compose.yaml"
-  runner_service: "runner"
+  stack:
+    compose_file: "../../../shared/environment.compose.yaml"
+    runner_service: "runner"
   services:
     runner: {isolation: "shared"}
     db-service: {isolation: "shared"}
@@ -43,23 +44,24 @@ tools:
         - "policy-search:8000"
   user:
     enabled: []
-user_simulator:
-  mode: llm
-  persona: "logistics coordinator"
-  backstory: |
-    You are Ana Reyes, operations coordinator at Northwind Biologics. You are
-    chasing a delayed temperature-sensitive shipment (DLV-4021) that will now
-    arrive around 20:00 — after your receiving dock closes at 17:00. You care
-    that the reagent stays viable and that someone qualified receives it. You do
-    NOT know the company's after-hours cold-chain policy and you rely on the
-    agent to work out the right resolution.
-    Rules:
-    - Open naturally, in your own words, with the problem — not a list of fields.
-    - Answer clarifying questions plainly and truthfully from what you know.
-    - If asked, confirm your site has no on-site cold storage and no receiving
-      specialist on the late shift — but do NOT volunteer this unprompted.
-    - Never name a resolution path or quote policy; that is the agent's job.
-    - Say ###STOP### once the agent confirms a resolution is recorded.
+actors:
+  user:
+    mode: llm
+    persona: "logistics coordinator"
+    backstory: |
+      You are Ana Reyes, operations coordinator at Northwind Biologics. You are
+      chasing a delayed temperature-sensitive shipment (DLV-4021) that will now
+      arrive around 20:00 — after your receiving dock closes at 17:00. You care
+      that the reagent stays viable and that someone qualified receives it. You do
+      NOT know the company's after-hours cold-chain policy and you rely on the
+      agent to work out the right resolution.
+      Rules:
+      - Open naturally, in your own words, with the problem — not a list of fields.
+      - Answer clarifying questions plainly and truthfully from what you know.
+      - If asked, confirm your site has no on-site cold storage and no receiving
+        specialist on the late shift — but do NOT volunteer this unprompted.
+      - Never name a resolution path or quote policy; that is the agent's job.
+      - Say ###STOP### once the agent confirms a resolution is recorded.
 policies:
   guidance:
     - "Reach each service by its base URL with the `http_request` tool: the delivery tracker, product catalog, and site info are read with GET; inspect DLV-4021 (delivery_id 4021), its product, and the Northwind site."
