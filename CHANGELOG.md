@@ -6,6 +6,7 @@ All notable changes to this project are documented in this file.
 
 ### Feat
 
+- **runtime**: `SharedStackRuntimeBackend._materialise_manifest` now captures per-service compose logs to `<output_dir>/services/<name>.log` + `_capture.yaml` (with `capture_reason: "materialise_error"`) before cleanup on the failure path — mirroring #302's per-trial pattern for run-level materialise failures (#339).
 - **observability**: per-trial `provisioning_duration_s` recorded in `metrics.yaml` — wall-clock seconds around the `provision → await_ready → endpoints` bracket, monotonic-clock-measured, additive to the existing metrics shape (#354).
 
 ### Docs
