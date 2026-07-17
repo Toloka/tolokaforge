@@ -2041,6 +2041,123 @@ _ALL: list[MC] = [
             }
         ),
     ),
+    # -----------------------------------------------------------------
+    # Meta Muse Spark 1.1 — sole OpenRouter endpoint is Meta (the
+    # /endpoints list has one entry, so there is no provider pin to
+    # route around Meta behaviour) and the model is US-region-locked (a
+    # non-US call returns 403 "This model is only available in the
+    # United States"), so the capability suite must run from a US
+    # runner. Postures below were established by a full live
+    # characterisation run from US Codespaces on 2026-07-17 — every
+    # capability tentatively flipped to `required` per ADD_NEW_MODEL.md
+    # §3, then moved back only where it failed live. This SUPERSEDES the
+    # 2026-07-17 observe run (PR #474, Actions run 29562351690), which
+    # was infra-dirty and mis-characterised two postures: it reported
+    # implicit caching as "discount not applied" (false — see below) and
+    # discriminated-union as ~50% (8/15, 6/15) whereas the clean live
+    # re-test passed 18/18. The green `-k muse` suite is pasted in PR
+    # #474 per ADD_NEW_MODEL.md §4.
+    #
+    # IMPLICIT_PROMPT_CACHING is intentionally left UNDECLARED (in
+    # neither `required` nor `known_unsupported`). The Meta route
+    # auto-caches observably AND applies a genuine discount — OpenRouter
+    # bills cached input at the cache_read rate: for a call with 8703
+    # cached + 4 uncached prompt tokens the upstream prompt cost is
+    # 0.00131045 == 8703*0.15e-6 + 4*1.25e-6, versus 0.0109 at full
+    # rate. BUT it reports ~all input tokens as cached on EVERY call,
+    # including a genuinely cold first call: a 19,585-token,
+    # never-before-sent prompt returned cached=19,581 on call 1. With no
+    # cold baseline, test_implicit_prompt_caching's "call 2 costs less
+    # than call 1" assertion can never hold (so `required` is
+    # unachievable), while `known_unsupported` would be false and trips
+    # the auto-cache ratchet (test_known_unsupported_routes_do_not_auto_
+    # cache), which correctly refuses to call an observably-caching
+    # route "unsupported". Undeclared is the honest state:
+    # skip_unless_capability_declared skips the probe and the ratchet
+    # does not target it. Permitted by canon — IMPLICIT is non-core and
+    # registry-wide coverage is held by the other certs. Ratchet target
+    # for a future probe that can score an always-cached route.
+    # -----------------------------------------------------------------
+    MC(
+        model_id="openrouter__meta_muse-spark-1.1",
+        provider="openrouter",
+        name="meta/muse-spark-1.1",
+        env_key="OPENROUTER_API_KEY",
+        # IMPLICIT_PROMPT_CACHING is deliberately absent from BOTH sets —
+        # see the header note above.
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.DICT_MAP_TOOL_CALL,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+                # Two-turn discriminated union is supported but has a small
+                # residual turn-2 flake: live 2026-07-17 bare_union 9/10,
+                # explicit_discriminator 10/10 (8 dedicated reps + the
+                # all-required run + one full-suite run). The single miss
+                # answered turn 2 in prose instead of emitting the union
+                # call. ~90% clears the ~73% floor the other flaky-but-
+                # required caps (re2, required_fields) sit at, so this is
+                # `required` — the observe run's ~50% (bare 8/15, explicit
+                # 6/15) was infra-dirty noise that exaggerated the genuine
+                # but infrequent gap, NOT the copied-sibling
+                # `known_unsupported` posture. Like re2/required_fields this
+                # probe may need a re-run to go green (ADD_NEW_MODEL.md §4).
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # allOf merge works on 2 of 3 shapes (top_level + three_way
+                # PASS live) — the model CAN populate both merged
+                # subschemas. The `nested` shape (envelope.payload)
+                # deterministically trips Meta's content-management filter
+                # (content_policy_violation 400, param:prompt) on a benign
+                # order/inventory prompt: 0/6 live 2026-07-17 (5× step-4
+                # loop + all-required run) + 0/15 observe. A provider-filter
+                # false-positive, not a merge-capability gap, and Meta is
+                # the sole endpoint so there is no route around it. Ratchet
+                # target: flip to required when Meta stops filtering it.
+                C.ALLOF_MERGE_TOOL_CALL,
+                # API-layer 400 "Recursive JSON schemas are not currently
+                # supported" (param:parameters) on every recursive_ref
+                # shape — simple / deep_chain / wide_tree / nested_in_object
+                # all 0/1 live 2026-07-17 + 0/15 observe. Provider
+                # limitation, not a sanitiser gap. Ratchet target.
+                C.RECURSIVE_REF_TOOL_CALL,
+                # Reasoning is done internally (provider_raw carries
+                # reasoning_tokens; reasoning_details is
+                # type="reasoning.encrypted") but never surfaced as
+                # structured blocks over the OpenRouter route — the tests
+                # fail with "StructuredReasoning should be surfaced" /
+                # "turn 1 returned no structured reasoning" (all three 0/1
+                # live 2026-07-17 + 0/15 observe).
+                C.THINKING_EMITS_BLOCKS,
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.UNSIGNED_THINKING_REPLAY,
+                # Explicit Anthropic-style ephemeral cache_control is not
+                # wired for non-Anthropic OpenRouter routes: no cold-write
+                # cache-creation event (cache_creation_input_tokens=0,
+                # cache_write_tokens=0), so test_prompt_caching's
+                # creation assertion fails live 2026-07-17. Distinct from
+                # the auto-cache surface (IMPLICIT_PROMPT_CACHING, left
+                # undeclared — see header). Same explicit-cache posture as
+                # the gpt-oss-120b sibling.
+                C.PROMPT_CACHING,
+            }
+        ),
+    ),
 ]
 
 
