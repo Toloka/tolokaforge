@@ -40,6 +40,25 @@ scripts/with_env.sh uv run pytest tests/ -v -m integration
 scripts/with_env.sh uv run pytest tests/ -v
 ```
 
+### Regenerating the well-formed judge payload fixture
+
+`tests/unit/grading/data/wellformed_submit_report.json` is a real judge's
+well-formed `submit_report` payload (markers matching their verdicts). The unit
+test `tests/unit/grading/test_rubric.py::TestWellFormedLivePayload` re-validates
+it with no spend. To recapture it from a live judge run (real provider, small
+spend), set `TF_CAPTURE_JUDGE_PAYLOAD=1` — the mid-tier (gpt-4.1-mini) case of
+the marker acceptance test writes the fixture:
+
+```bash
+TF_CAPTURE_JUDGE_PAYLOAD=1 scripts/with_env.sh uv run pytest \
+  tests/integration/test_rubric_judge_live.py::test_rubric_judge_live_markers_match_verdicts \
+  -m integration
+```
+
+The rejection fixtures alongside it (`ae_bdg_*_submit_report.json`) are **frozen
+historical captures** — see `tests/unit/grading/data/README.md`; never
+regenerate those.
+
 ## Directory Structure
 
 ```

@@ -59,6 +59,7 @@ def _judge_grade() -> Grade:
             reasoning_tokens=0,
             cost_usd=0.0142,
             tool_calls=4,
+            consistency_rejections=2,
         ),
         judge_transcript=[
             {"role": "system", "content": "You are a grading judge."},
@@ -101,6 +102,7 @@ def test_write_grade_emits_breakdown_usage_and_transcript_sidecar(tmp_path: Path
     assert grade["judge_usage"]["prompt_tokens"] == 4120
     assert grade["judge_usage"]["cost_usd"] == pytest.approx(0.0142)
     assert grade["judge_usage"]["tool_calls"] == 4
+    assert grade["judge_usage"]["consistency_rejections"] == 2
 
     # The transcript is NOT inlined into grade.yaml — it lives in the sidecar.
     assert "judge_transcript" not in grade
@@ -137,7 +139,13 @@ def test_errored_judge_usage_and_partial_transcript_persist(tmp_path: Path) -> N
         components=GradeComponents(state_checks=0.5),  # llm_judge excluded (unscored)
         reasons="JUDGE ERRORED: did not call submit_report",
         judge_status=JudgeStatus.ERRORED,
-        judge_usage=JudgeUsage(calls=2, prompt_tokens=900, completion_tokens=50, tool_calls=1),
+        judge_usage=JudgeUsage(
+            calls=2,
+            prompt_tokens=900,
+            completion_tokens=50,
+            tool_calls=1,
+            consistency_rejections=3,
+        ),
         judge_transcript=[{"role": "system", "content": "judge prompt"}],
     )
     writer.write_grade(trial_dir, grade)
@@ -145,6 +153,8 @@ def test_errored_judge_usage_and_partial_transcript_persist(tmp_path: Path) -> N
     loaded = yaml.safe_load((trial_dir / "grade.yaml").read_text())
     assert loaded["judge_status"] == "errored"
     assert loaded["judge_usage"]["calls"] == 2
+    # An ERRORED judge still persists the consistency counter (fail loud).
+    assert loaded["judge_usage"]["consistency_rejections"] == 3
     # llm_judge stays None/-1 sentinel territory — no 0.0 fabricated for the judge.
     assert loaded["components"]["llm_judge"] is None
 
