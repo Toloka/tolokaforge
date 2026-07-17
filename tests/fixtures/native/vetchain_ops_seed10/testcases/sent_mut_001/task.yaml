@@ -1,0 +1,11 @@
+domain: ../../_shared/domain.yaml
+task_id: sent_mut_001
+name: "Dispense Schedule III controlled substance – valid DEA registration"
+description: >
+  Dispense a Schedule III controlled substance (buprenorphine) from central pharmacy
+  for a patient, verifying the requesting vet holds a valid DEA registration,
+  decrementing pharmacy inventory, and creating an immutable controlled substance
+  log entry.
+grading: grading.yaml
+initial_state:
+  json_db: initial_state.json

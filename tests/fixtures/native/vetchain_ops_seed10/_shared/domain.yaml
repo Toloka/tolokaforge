@@ -1,0 +1,28 @@
+task_id: vetchain_ops_domain
+name: "BluePine Veterinary Partners – vetchain_ops"
+category: veterinary_clinic_operations
+description: >
+  Internal clinic operations support for BluePine Veterinary Partners.
+  Covers controlled-substance dispensing, surgical booking, lab panel ordering,
+  equipment repair, shift coverage, inventory replenishment, billing correction,
+  inter-clinic patient transfer, vaccine lot recall, and provider onboarding
+  across 14 clinics sharing a central pharmacy and reference lab.
+adapter_type: native
+tools:
+  agent:
+    mcp_server: mcp_server.py
+    enabled:
+      - verify_dea_registration
+      - dispense_controlled_substance
+      - log_controlled_dispense
+  user:
+    enabled: []
+grading: grading.yaml
+system_prompt: system_prompt.md
+user_simulator:
+  mode: llm
+  persona: cooperative
+initial_state:
+  json_db: initial_state.json
+  schemas: db_schema.json
+  unstable_fields: unstable_fields.json

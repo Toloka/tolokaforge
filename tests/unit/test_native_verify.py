@@ -62,4 +62,5 @@ def test_native_verify_rejects_stale_tool_fixture(tmp_path: Path) -> None:
     report = verify_native_tasks(str(domain / "testcases" / "add_first_note" / "task.yaml"))
 
     assert not report.passed
-    assert "does not exactly match" in report.cases[0].checks[-1].detail
+    failed = [check for check in report.cases[0].checks if not check.passed]
+    assert any("does not exactly match" in check.detail for check in failed)

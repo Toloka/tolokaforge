@@ -1,0 +1,405 @@
+[
+  {
+    "table_name": "clinic",
+    "primary_key": "id",
+    "fields": {
+      "id":      "string",
+      "name":    "string",
+      "state":   "string",
+      "address": "string",
+      "status":  "string"
+    }
+  },
+  {
+    "table_name": "staff_member",
+    "primary_key": "id",
+    "fields": {
+      "id":                      "string",
+      "name":                    "string",
+      "role":                    "string",
+      "primary_clinic_id":       "string",
+      "employment_status":       "string",
+      "float_authorized":        "string",
+      "weekly_hours_worked":     "string",
+      "dea_registration_id":     "string",
+      "dea_registration_expiry": "string"
+    }
+  },
+  {
+    "table_name": "credential",
+    "primary_key": "id",
+    "fields": {
+      "id":                "string",
+      "staff_id":          "string",
+      "credential_type":   "string",
+      "credential_number": "string",
+      "issuing_authority": "string",
+      "issued_date":       "string",
+      "expiry_date":       "string",
+      "status":            "string"
+    }
+  },
+  {
+    "table_name": "patient",
+    "primary_key": "id",
+    "fields": {
+      "id":                   "string",
+      "name":                 "string",
+      "species":              "string",
+      "breed":                "string",
+      "owner_id":             "string",
+      "home_clinic_id":       "string",
+      "active_pharmacy_hold": "string",
+      "fasting_confirmed":    "string"
+    }
+  },
+  {
+    "table_name": "client",
+    "primary_key": "id",
+    "fields": {
+      "id":                      "string",
+      "name":                    "string",
+      "email":                   "string",
+      "phone":                   "string",
+      "insurance_provider":      "string",
+      "insurance_policy_number": "string",
+      "contact_complete":        "string"
+    }
+  },
+  {
+    "table_name": "surgical_suite",
+    "primary_key": "id",
+    "fields": {
+      "id":                             "string",
+      "clinic_id":                      "string",
+      "name":                           "string",
+      "status":                         "string",
+      "anesthesia_protocols_supported": "string"
+    }
+  },
+  {
+    "table_name": "surgical_booking",
+    "primary_key": "id",
+    "fields": {
+      "id":                  "string",
+      "patient_id":          "string",
+      "attending_vet_id":    "string",
+      "suite_id":            "string",
+      "procedure_code":      "string",
+      "scheduled_start":     "string",
+      "scheduled_end":       "string",
+      "anesthesia_protocol": "string",
+      "status":              "string",
+      "preop_consult_id":    "string"
+    }
+  },
+  {
+    "table_name": "pharmacy_item",
+    "primary_key": "id",
+    "fields": {
+      "id":                  "string",
+      "name":                "string",
+      "dea_schedule":        "string",
+      "quantity_on_hand":    "string",
+      "unit":                "string",
+      "requires_cold_chain": "string"
+    }
+  },
+  {
+    "table_name": "dispense_request",
+    "primary_key": "id",
+    "fields": {
+      "id":                 "string",
+      "requesting_vet_id":  "string",
+      "pharmacy_item_id":   "string",
+      "quantity_requested": "string",
+      "patient_id":         "string",
+      "clinic_id":          "string",
+      "witness_staff_id":   "string",
+      "status":             "string",
+      "refusal_reason":     "string"
+    }
+  },
+  {
+    "table_name": "controlled_substance_log",
+    "primary_key": "id",
+    "fields": {
+      "id":                  "string",
+      "dispense_request_id": "string",
+      "pharmacy_item_id":    "string",
+      "quantity_dispensed":  "string",
+      "dispensing_vet_id":   "string",
+      "witness_staff_id":    "string",
+      "dispensed_at":        "string",
+      "dea_schedule":        "string"
+    }
+  },
+  {
+    "table_name": "lab_order",
+    "primary_key": "id",
+    "fields": {
+      "id":                            "string",
+      "patient_id":                    "string",
+      "ordering_vet_id":               "string",
+      "panel_code":                    "string",
+      "species_compatibility_verified":"string",
+      "priority":                      "string",
+      "fasting_required":              "string",
+      "fasting_confirmed":             "string",
+      "status":                        "string",
+      "clinic_id":                     "string",
+      "ordered_at":                    "string",
+      "refusal_reason":                "string"
+    }
+  },
+  {
+    "table_name": "specimen_log",
+    "primary_key": "id",
+    "fields": {
+      "id":                    "string",
+      "lab_order_id":          "string",
+      "collected_at":          "string",
+      "collected_by_staff_id": "string",
+      "specimen_type":         "string"
+    }
+  },
+  {
+    "table_name": "equipment",
+    "primary_key": "id",
+    "fields": {
+      "id":             "string",
+      "clinic_id":      "string",
+      "name":           "string",
+      "equipment_type": "string",
+      "criticality":    "string",
+      "status":         "string"
+    }
+  },
+  {
+    "table_name": "repair_order",
+    "primary_key": "id",
+    "fields": {
+      "id":                   "string",
+      "equipment_id":         "string",
+      "clinic_id":            "string",
+      "status":               "string",
+      "criticality_snapshot": "string",
+      "vendor_id":            "string",
+      "loaner_equipment_id":  "string",
+      "opened_at":            "string",
+      "assigned_at":          "string",
+      "escalation_record_id": "string"
+    }
+  },
+  {
+    "table_name": "shift",
+    "primary_key": "id",
+    "fields": {
+      "id":                       "string",
+      "clinic_id":                "string",
+      "shift_start":              "string",
+      "shift_end":                "string",
+      "required_role":            "string",
+      "required_credential_type": "string",
+      "status":                   "string",
+      "assigned_staff_id":        "string",
+      "hours_duration":           "string"
+    }
+  },
+  {
+    "table_name": "shift_coverage_request",
+    "primary_key": "id",
+    "fields": {
+      "id":                   "string",
+      "shift_id":             "string",
+      "requested_staff_id":   "string",
+      "status":               "string",
+      "refusal_reason":       "string",
+      "escalation_record_id": "string"
+    }
+  },
+  {
+    "table_name": "inventory_item",
+    "primary_key": "id",
+    "fields": {
+      "id":                       "string",
+      "name":                     "string",
+      "item_type":                "string",
+      "central_quantity_on_hand": "string",
+      "requires_cold_chain":      "string",
+      "unit":                     "string"
+    }
+  },
+  {
+    "table_name": "clinic_inventory",
+    "primary_key": "id",
+    "fields": {
+      "id":                "string",
+      "clinic_id":         "string",
+      "inventory_item_id": "string",
+      "quantity_on_hand":  "string",
+      "par_level":         "string"
+    }
+  },
+  {
+    "table_name": "replenishment_order",
+    "primary_key": "id",
+    "fields": {
+      "id":                     "string",
+      "clinic_id":              "string",
+      "inventory_item_id":      "string",
+      "quantity_requested":     "string",
+      "status":                 "string",
+      "cold_transport_confirmed":"string",
+      "escalation_record_id":   "string"
+    }
+  },
+  {
+    "table_name": "invoice",
+    "primary_key": "id",
+    "fields": {
+      "id":                       "string",
+      "client_id":                "string",
+      "clinic_id":                "string",
+      "patient_id":               "string",
+      "total_amount_usd":         "string",
+      "insurance_preauth_number": "string",
+      "status":                   "string"
+    }
+  },
+  {
+    "table_name": "billing_correction",
+    "primary_key": "id",
+    "fields": {
+      "id":                        "string",
+      "invoice_id":                "string",
+      "requested_by_staff_id":     "string",
+      "adjustment_amount_usd":     "string",
+      "reason":                    "string",
+      "approval_tier_required":    "string",
+      "status":                    "string",
+      "approved_by_staff_id":      "string",
+      "refusal_reason":            "string",
+      "insurance_preauth_verified":"string"
+    }
+  },
+  {
+    "table_name": "patient_transfer",
+    "primary_key": "id",
+    "fields": {
+      "id":                    "string",
+      "patient_id":            "string",
+      "source_clinic_id":      "string",
+      "destination_clinic_id": "string",
+      "status":                "string",
+      "initiated_at":          "string",
+      "escalation_record_id":  "string"
+    }
+  },
+  {
+    "table_name": "vaccine_lot",
+    "primary_key": "id",
+    "fields": {
+      "id":              "string",
+      "lot_number":      "string",
+      "manufacturer":    "string",
+      "vaccine_product": "string",
+      "recall_status":   "string",
+      "recall_reason":   "string"
+    }
+  },
+  {
+    "table_name": "patient_vaccination",
+    "primary_key": "id",
+    "fields": {
+      "id":                       "string",
+      "patient_id":               "string",
+      "vaccine_lot_id":           "string",
+      "administered_at":          "string",
+      "administered_by_staff_id": "string",
+      "clinic_id":                "string",
+      "recall_flagged":           "string"
+    }
+  },
+  {
+    "table_name": "client_notification_task",
+    "primary_key": "id",
+    "fields": {
+      "id":                "string",
+      "client_id":         "string",
+      "patient_id":        "string",
+      "task_type":         "string",
+      "status":            "string",
+      "related_record_id": "string",
+      "created_at":        "string"
+    }
+  },
+  {
+    "table_name": "vaccine_recall_record",
+    "primary_key": "id",
+    "fields": {
+      "id":                          "string",
+      "vaccine_lot_id":              "string",
+      "initiated_at":                "string",
+      "initiated_by_staff_id":       "string",
+      "patients_flagged_count":      "integer",
+      "notifications_created_count": "integer",
+      "status":                      "string"
+    }
+  },
+  {
+    "table_name": "system_access_grant",
+    "primary_key": "id",
+    "fields": {
+      "id":                  "string",
+      "staff_id":            "string",
+      "system_module":       "string",
+      "granted_at":          "string",
+      "granted_by_staff_id": "string",
+      "status":              "string",
+      "refusal_reason":      "string"
+    }
+  },
+  {
+    "table_name": "appointment",
+    "primary_key": "id",
+    "fields": {
+      "id":                      "string",
+      "patient_id":              "string",
+      "clinic_id":               "string",
+      "appointment_type":        "string",
+      "scheduled_at":            "string",
+      "status":                  "string",
+      "transfer_id":             "string",
+      "rebooked_appointment_id": "string"
+    }
+  },
+  {
+    "table_name": "escalation_record",
+    "primary_key": "id",
+    "fields": {
+      "id":                  "string",
+      "operation_context":   "string",
+      "escalated_to":        "string",
+      "reason":              "string",
+      "related_entity_type": "string",
+      "related_entity_id":   "string",
+      "status":              "string",
+      "created_at":          "string"
+    }
+  },
+  {
+    "table_name": "audit_log",
+    "primary_key": "id",
+    "fields": {
+      "id":                  "string",
+      "operation_id":        "string",
+      "actor_staff_id":      "string",
+      "outcome":             "string",
+      "reason":              "string",
+      "related_entity_type": "string",
+      "related_entity_id":   "string",
+      "timestamp":           "string"
+    }
+  }
+]

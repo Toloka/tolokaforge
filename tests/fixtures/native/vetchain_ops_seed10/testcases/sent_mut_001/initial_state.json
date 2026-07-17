@@ -1,0 +1,95 @@
+{
+  "clinic": [
+    {
+      "id": "clinic_portland_east",
+      "name": "BluePine Portland East",
+      "state": "OR",
+      "address": "1001 E Burnside St, Portland, OR 97214",
+      "status": "active"
+    }
+  ],
+  "staff_member": [
+    {
+      "id": "vet_dr_hayes",
+      "name": "Dr. Hayes",
+      "role": "veterinarian",
+      "primary_clinic_id": "clinic_portland_east",
+      "employment_status": "active",
+      "float_authorized": false,
+      "weekly_hours_worked": 32,
+      "dea_registration_id": "BH1234567",
+      "dea_registration_expiry": "2027-06-30T00:00:00"
+    }
+  ],
+  "credential": [
+    {
+      "id": "cred_hayes_dea",
+      "staff_id": "vet_dr_hayes",
+      "credential_type": "dea_registration",
+      "credential_number": "BH1234567",
+      "issuing_authority": "DEA",
+      "issued_date": "2024-07-01T00:00:00",
+      "expiry_date": "2027-06-30T00:00:00",
+      "status": "active"
+    }
+  ],
+  "patient": [
+    {
+      "id": "patient_rex",
+      "name": "Rex",
+      "species": "canine",
+      "breed": "Labrador",
+      "owner_id": "client_smith",
+      "home_clinic_id": "clinic_portland_east",
+      "active_pharmacy_hold": false,
+      "fasting_confirmed": false
+    }
+  ],
+  "client": [],
+  "surgical_suite": [],
+  "surgical_booking": [],
+  "pharmacy_item": [
+    {
+      "id": "item_buprenorphine",
+      "name": "Buprenorphine 0.3mg/ml",
+      "dea_schedule": "III",
+      "quantity_on_hand": 50,
+      "unit": "ml",
+      "requires_cold_chain": false
+    }
+  ],
+  "dispense_request": [
+    {
+      "id": "dreq_001",
+      "requesting_vet_id": "vet_dr_hayes",
+      "pharmacy_item_id": "item_buprenorphine",
+      "quantity_requested": 10,
+      "patient_id": "patient_rex",
+      "clinic_id": "clinic_portland_east",
+      "witness_staff_id": null,
+      "status": "pending",
+      "refusal_reason": null
+    }
+  ],
+  "controlled_substance_log": [],
+  "lab_order": [],
+  "specimen_log": [],
+  "equipment": [],
+  "repair_order": [],
+  "shift": [],
+  "shift_coverage_request": [],
+  "inventory_item": [],
+  "clinic_inventory": [],
+  "replenishment_order": [],
+  "invoice": [],
+  "billing_correction": [],
+  "patient_transfer": [],
+  "vaccine_lot": [],
+  "patient_vaccination": [],
+  "client_notification_task": [],
+  "vaccine_recall_record": [],
+  "system_access_grant": [],
+  "appointment": [],
+  "escalation_record": [],
+  "audit_log": []
+}
