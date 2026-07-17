@@ -317,6 +317,13 @@ best-effort teardown of anything partially materialised before raising.
 `PerTrialRuntimeBackend` honours that at every failure point above — no
 half-provisioned resources leaked to the daemon.
 
+On the `provision` / `reset_recipe` / `await_ready` failure rows, after
+teardown the executor also writes the per-trial bundle — `trajectory.yaml` +
+`metrics.yaml` (carrying top-level `error: provision_error` + `error_reason`) +
+`grade.yaml` — to `{output_dir}/trials/{task_id}/{trial_index}/`, so cost
+aggregation and post-mortem tooling see a consistent trial-directory shape (see
+[`OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md) § "Provision-failure bundle").
+
 ## Per-service log capture on failure
 
 When a multi-service trial fails, the moment an operator needs to know *why*
