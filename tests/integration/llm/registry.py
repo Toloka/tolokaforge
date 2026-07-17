@@ -2052,39 +2052,15 @@ _ALL: list[MC] = [
     # capability tentatively flipped to `required` per ADD_NEW_MODEL.md
     # §3, then moved back only where it failed live. This SUPERSEDES the
     # 2026-07-17 observe run (PR #474, Actions run 29562351690), which
-    # was infra-dirty and mis-characterised two postures: it reported
-    # implicit caching as "discount not applied" (false — see below) and
-    # discriminated-union as ~50% (8/15, 6/15) whereas the clean live
-    # re-test passed 18/18. The green `-k muse` suite is pasted in PR
-    # #474 per ADD_NEW_MODEL.md §4.
-    #
-    # IMPLICIT_PROMPT_CACHING is intentionally left UNDECLARED (in
-    # neither `required` nor `known_unsupported`). The Meta route
-    # auto-caches observably AND applies a genuine discount — OpenRouter
-    # bills cached input at the cache_read rate: for a call with 8703
-    # cached + 4 uncached prompt tokens the upstream prompt cost is
-    # 0.00131045 == 8703*0.15e-6 + 4*1.25e-6, versus 0.0109 at full
-    # rate. BUT it reports ~all input tokens as cached on EVERY call,
-    # including a genuinely cold first call: a 19,585-token,
-    # never-before-sent prompt returned cached=19,581 on call 1. With no
-    # cold baseline, test_implicit_prompt_caching's "call 2 costs less
-    # than call 1" assertion can never hold (so `required` is
-    # unachievable), while `known_unsupported` would be false and trips
-    # the auto-cache ratchet (test_known_unsupported_routes_do_not_auto_
-    # cache), which correctly refuses to call an observably-caching
-    # route "unsupported". Undeclared is the honest state:
-    # skip_unless_capability_declared skips the probe and the ratchet
-    # does not target it. Permitted by canon — IMPLICIT is non-core and
-    # registry-wide coverage is held by the other certs. Ratchet target
-    # for a future probe that can score an always-cached route.
+    # was infra-dirty and mis-characterised discriminated-union as ~50%
+    # (8/15, 6/15) whereas the clean live re-test passed ~84%. The
+    # `-k muse` suite output is pasted in PR #474 per ADD_NEW_MODEL.md §4.
     # -----------------------------------------------------------------
     MC(
         model_id="openrouter__meta_muse-spark-1.1",
         provider="openrouter",
         name="meta/muse-spark-1.1",
         env_key="OPENROUTER_API_KEY",
-        # IMPLICIT_PROMPT_CACHING is deliberately absent from BOTH sets —
-        # see the header note above.
         required=frozenset(
             {
                 C.BASIC_COMPLETION,
@@ -2157,6 +2133,36 @@ _ALL: list[MC] = [
                 # undeclared — see header). Same explicit-cache posture as
                 # the gpt-oss-120b sibling.
                 C.PROMPT_CACHING,
+                # IMPLICIT_PROMPT_CACHING — known_unsupported because we
+                # cannot verify GENUINE auto-caching on this route and its
+                # cached-token reporting is not trustworthy as a caching
+                # signal. Observed live 2026-07-17 (US Codespaces):
+                #  * A price discount IS applied — OpenRouter bills cached
+                #    input at the cache_read rate: a call with 8703 cached +
+                #    4 uncached prompt tokens costs 0.00131045 ==
+                #    8703*0.15e-6 + 4*1.25e-6 (vs 0.0109 at full input rate).
+                #  * BUT ~all input is reported `cached` on EVERY call,
+                #    including a genuinely cold one: a 19,585-token,
+                #    never-before-sent unique prompt returned cached=19,581
+                #    on call 1. A real first-call cross-request cache HIT is
+                #    impossible, so this counter does not reflect a
+                #    verifiable prior-call hit — it tracks the discounted
+                #    billing tier (or is a provider mis-report), not caching
+                #    we can certify.
+                #  * The standard test_implicit_prompt_caching fails 3/3
+                #    (cost call1 == call2: with no cold baseline the
+                #    "call 2 < call 1" delta cannot exist).
+                # Net: the classic cold->warm reuse we would credit as
+                # caching is unverifiable here, so we do not claim it. NB:
+                # the observable cached_tokens would make the auto-cache
+                # ratchet (test_known_unsupported_routes_do_not_auto_cache)
+                # fire on this route, so muse is excluded there
+                # (_UNRELIABLE_COLD_CACHE_REPORT_NAMES) carrying this same
+                # rationale — the counter is not a reliable real-caching
+                # signal here. That exclusion is a targeted stopgap, not a
+                # real fix; a follow-up will teach the ratchet to send a cold
+                # probe before trusting cached_tokens.
+                C.IMPLICIT_PROMPT_CACHING,
             }
         ),
     ),
