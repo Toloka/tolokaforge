@@ -11,6 +11,71 @@ After a run, Tolokaforge writes analytics artifacts in `evaluation.output_dir`:
 - `metadata_slices.json`: aggregates sliced by benchmark type, complexity, tags, expected failure modes
 - `failure_attribution.json`: failed-attempt attribution summary + per-attempt evidence
 
+### `aggregate.json` → `captured_service_logs`
+
+`aggregate.json` carries a run-level roll-up of the per-service compose logs
+captured on failure, so an operator sees the full capture signal from one file
+without walking the trial tree. The field is always present: a run that captured
+nothing rolls up to a zero envelope (`captures: 0`, empty maps/lists), which is
+distinct from a pre-feature `aggregate.json` that omits the key.
+
+```yaml
+captured_service_logs:
+  captures: 2                       # number of capture bundles rolled up
+  total_bytes: 8704                 # grand total across all services and bundles
+  per_service_bytes:                # per-service byte sum across every bundle
+    db: 5120
+    runner: 512
+    api: 3072
+  entries:
+    - task_id: task-1               # null for the run-level shared-stack surface
+      trial_index: 0                # null for the run-level shared-stack surface
+      source: provision_failure     # which failure stage produced the bundle
+      capture_reason: provision_error  # manifest reason; null on the trial_body surface
+      total_bytes: 5632
+      services:
+        db: 5120
+        runner: 512
+    - task_id: null
+      trial_index: null
+      source: shared_stack_materialise
+      capture_reason: materialise_error
+      total_bytes: 3072
+      services:
+        api: 3072
+```
+
+`source` is one of a closed set naming the capture surface each bundle came from:
+
+- `provision_failure` — per-trial provision / reset-recipe failure
+  (`trials/<task>/<idx>/services/_capture.yaml`).
+- `trial_body` — per-trial trial-body or graded-red failure
+  (`trials/<task>/<idx>/metrics.yaml` → `captured_service_logs`). `capture_reason`
+  is `null` on this surface.
+- `shared_stack_materialise` — run-level shared-stack materialise failure
+  (`<output_dir>/services/_capture.yaml`). `task_id` and `trial_index` are `null`.
+
+These surfaces are documented per-trial in
+[`docs/OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md:1) § `captured_service_logs` and
+§ `services/`, and at the backend level in
+[`docs/RUNTIME_BACKENDS.md`](RUNTIME_BACKENDS.md:1) § "Per-service log capture on
+failure".
+
+The roll-up is produced during report generation, at the end of a run, by
+scanning the run-output tree on disk — it reads the capture artifacts other
+stages already wrote, and does not itself capture anything. Discovery walks the
+three surfaces above: `trials/*/*/services/_capture.yaml` (provision-failure
+manifests), `trials/*/*/metrics.yaml` (trial-body byte maps under the
+`captured_service_logs` key), and `<output_dir>/services/_capture.yaml` (the
+run-level shared-stack manifest). Entries are ordered deterministically by
+`(task_id, trial_index, source)`; `per_service_bytes` sums each service across
+every entry and `total_bytes` is the grand total.
+
+Reading is fail-safe: a missing file, malformed YAML, a non-mapping payload, a
+mistyped byte count, or a non-integer trial-index directory is logged and that
+surface is skipped. A corrupt capture artifact never breaks report generation —
+the roll-up simply omits what it cannot parse.
+
 ## Core Metrics
 
 ### Success and Quality
