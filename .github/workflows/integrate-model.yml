@@ -210,6 +210,37 @@ jobs:
         run: |
           uv run automation ensure-pricing --name "$TF_NAME" || true
 
+      - name: Calibrate candidate parallelism (429 staircase; can only LOWER the defaults)
+        # New / low-capacity models often rate-limit under the default 10-wide probe pools,
+        # which contaminates the observe (429/instability -> infra-dirty -> needs-human).
+        # A cheap staircase (waves of concurrent 1-token completions at 2/4/6/8/10) finds the
+        # highest clean concurrency; the recommendation caps at the configured values (it can
+        # only lower parallelism, never raise it) and floors at 2. Advisory + fail-open: no
+        # recommendation (tool error, missing key, OBSERVE_CALIBRATE=false) keeps the defaults.
+        id: calibrate
+        if: vars.OBSERVE_CALIBRATE != 'false'
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.ARENA_AUTOMATION_OPENROUTER_API_KEY }}
+          TF_NAME: ${{ steps.parse.outputs.name }}
+        run: |
+          set -uo pipefail
+          OUT="$(uv run automation calibrate-parallelism --name "$TF_NAME" \
+                 --ceiling "$CAP_PARALLEL" --floor 2 2>/dev/null || true)"
+          printf '%s\n' "$OUT"
+          REC="$(printf '%s' "$OUT" | jq -r '.recommended // empty' 2>/dev/null || true)"
+          if [ -n "$REC" ]; then
+            W=$(( REC < WORKERS ? REC : WORKERS ))
+            R=$(( REC < RESOLVE_CAP_PARALLEL ? REC : RESOLVE_CAP_PARALLEL ))
+            {
+              echo "cap_parallel=$REC"
+              echo "workers=$W"
+              echo "resolve_cap_parallel=$R"
+            } >> "$GITHUB_OUTPUT"
+            echo "calibrated: cap_parallel=$REC workers=$W resolve_cap_parallel=$R (defaults $CAP_PARALLEL/$WORKERS/$RESOLVE_CAP_PARALLEL)"
+          else
+            echo "::warning::parallelism calibration produced no recommendation - keeping defaults ($CAP_PARALLEL/$WORKERS/$RESOLVE_CAP_PARALLEL)"
+          fi
+
       # ---------------------------------------------------------------- OBSERVE
       - name: Capability integration probes (report-only, CAPABILITY_K repeats)
         # All capabilities run against the candidate (ephemeral all-required cert injected via
@@ -221,6 +252,8 @@ jobs:
           TF_CANDIDATE_NAME: ${{ steps.parse.outputs.name }}
           MODEL_ID: ${{ steps.slug.outputs.model_id }}
           OPENROUTER_API_KEY: ${{ secrets.ARENA_AUTOMATION_OPENROUTER_API_KEY }}
+          # Calibrated pool width (empty/skipped calibration -> the configured default).
+          CAP_PARALLEL: ${{ steps.calibrate.outputs.cap_parallel || env.CAP_PARALLEL }}
         run: |
           # Flat (node x rep) pool: collect the candidate's capability nodes once, then run
           # each node x rep as its own single-node pytest at CAP_PARALLEL width - so nodes AND
@@ -239,6 +272,7 @@ jobs:
           MODEL_ID: ${{ steps.slug.outputs.model_id }}
           TF_RUN_VARIANTS: "1"
           OPENROUTER_API_KEY: ${{ secrets.ARENA_AUTOMATION_OPENROUTER_API_KEY }}
+          CAP_PARALLEL: ${{ steps.calibrate.outputs.cap_parallel || env.CAP_PARALLEL }}
         run: |
           # Same flat (node x rep) pool as the capability step. The variant cases are the
           # slowest for a reasoning model (heavy thinking on the shape-sensitive shapes), so
@@ -254,6 +288,9 @@ jobs:
         env:
           TF_PROVIDER: ${{ steps.parse.outputs.provider }}
           TF_NAME: ${{ steps.parse.outputs.name }}
+          # Calibrated orchestrator width (the candidate is the binding constraint; the
+          # user-sim runs on a high-capacity slug). Empty/skipped -> the configured default.
+          WORKERS: ${{ steps.calibrate.outputs.workers || env.WORKERS }}
         run: |
           set -euo pipefail
           cat > observation/candidate_run.yaml <<YAML
@@ -469,6 +506,8 @@ jobs:
           TF_PROVIDER: ${{ steps.parse.outputs.provider }}
           TF_NAME: ${{ steps.parse.outputs.name }}
           MODEL_ID: ${{ steps.slug.outputs.model_id }}
+          # The reprobe drives the same candidate, so it shares the calibrated limit.
+          RESOLVE_CAP_PARALLEL: ${{ steps.calibrate.outputs.resolve_cap_parallel || env.RESOLVE_CAP_PARALLEL }}
         run: |
           set -uo pipefail
           mkdir -p observation/resolve
