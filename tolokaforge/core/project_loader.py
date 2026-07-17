@@ -133,6 +133,7 @@ def load_project_config(path: Path) -> ProjectConfig:
         raise RuntimeError(
             f"project.yaml at {path} is not a YAML mapping (got {type(data).__name__})"
         )
+    _reject_null_stack(data, path)
     # Resolve default_environment.compose_file relative to the project dir
     # so EnvironmentManifest's validator can locate it regardless of CWD.
     _resolve_project_paths(data, path.parent)
@@ -166,6 +167,30 @@ def _verify_seed_digests(project: ProjectConfig, project_yaml_path: Path) -> Non
                 "Re-stamp via `tolokaforge assets stamp` or restore the "
                 "original file."
             )
+
+
+def _reject_null_stack(data: dict, path: Path) -> None:
+    """Fail loud when ``default_environment.stack`` (or its
+    ``compose_file``) is present but explicitly null. A project omits the
+    key to declare no environment default; explicit-null is nonsense and
+    would otherwise be silently dropped by Pydantic's optional handling.
+    Pre-Pydantic so the message carries the ``project.yaml`` path.
+    """
+    env = data.get("default_environment")
+    if not isinstance(env, dict):
+        return
+    if "stack" in env and env["stack"] is None:
+        raise RuntimeError(
+            f"project.yaml at {path}: 'default_environment.stack' must not be null — "
+            "omit the key to declare no environment default, or declare a stack."
+        )
+    stack = env.get("stack")
+    if isinstance(stack, dict) and "compose_file" in stack and stack["compose_file"] is None:
+        raise RuntimeError(
+            f"project.yaml at {path}: 'default_environment.stack.compose_file' must not "
+            "be null — there is no engine-default compose file to fall through to. "
+            "Omit the key to declare no substrate pointer, or declare one."
+        )
 
 
 def _resolve_project_paths(data: dict, project_dir: Path) -> None:
