@@ -1127,6 +1127,70 @@ _ALL: list[MC] = [
             }
         ),
     ),
+    # Kimi-K3 (Moonshot AI via OpenRouter). A new-generation Kimi (1M ctx,
+    # $3 / $15), not a copy of the kimi-k2.x siblings: it does not match the
+    # ``*kimi-k2*`` glob, so it routes to the ``default`` preset rather than
+    # ``openrouter_dict_stringify_recovery``. Base and shape-variant dict-map
+    # (nested / wide / scalar) and Decimal tool calls all round-trip cleanly as
+    # native dicts on ``default``, so kimi-k3 does not inherit the K2
+    # dict-stringify behaviour and needs no stringify-recovery preset.
+    #
+    # Every position below is live-verified on the ``default`` preset
+    # (2026-07-17). Three capabilities the kimi-k2.7-code sibling marks
+    # ``known_unsupported`` are supported by kimi-k3 and promoted to
+    # ``required`` here: DECIMAL_FIELD_TOOL_CALL, IMPLICIT_PROMPT_CACHING
+    # (auto-cache works), and DISCRIMINATED_UNION_TOOL_CALL (kimi-k3 handles the
+    # turn-2 union switch the sibling fails). Each was re-tested against the live
+    # route, not inherited: see ADD_NEW_MODEL.md "anti-pattern: copying a sibling
+    # cert verbatim".
+    MC(
+        model_id="openrouter__moonshotai_kimi-k3",
+        provider="openrouter",
+        name="moonshotai/kimi-k3",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DICT_MAP_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.IMPLICIT_PROMPT_CACHING,
+                # Sibling (k2.6 / k2.7-code) fails the turn-2 union switch and
+                # marks this known_unsupported; kimi-k3 handles it (live-verified,
+                # both bare-union and explicit-discriminator).
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # Live-verified genuine failures on ``default``: kimi-k3 returns
+                # no structured reasoning, so it emits no thinking blocks
+                # (THINKING_EMITS_BLOCKS) and neither thinking-replay path works
+                # (THINKING_REPLAY_ROUNDTRIP; UNSIGNED_THINKING_REPLAY fails with
+                # "turn 1 returned no structured reasoning"). It also does not
+                # honour explicit ephemeral cache-control (PROMPT_CACHING).
+                # Implicit (auto) caching does work, so IMPLICIT_PROMPT_CACHING is
+                # in ``required`` above.
+                C.THINKING_EMITS_BLOCKS,
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.UNSIGNED_THINKING_REPLAY,
+                C.PROMPT_CACHING,
+            }
+        ),
+    ),
     MC(
         model_id="openrouter__deepseek_deepseek-v4-pro",
         provider="openrouter",
