@@ -63,7 +63,7 @@ def _is_anthropic(cert: ModelCertificate) -> bool:
 # certified. See tests/integration/llm/registry.py for the full evidence.
 # NB: this is a targeted exclusion, not a real fix — the ratchet cannot yet
 # distinguish "always-reports-cached" routes from genuine auto-cache. Tracked
-# as a follow-up to teach the ratchet to send a cold probe first.
+# in #484 (teach the ratchet to send a cold probe before trusting the count).
 _UNRELIABLE_COLD_CACHE_REPORT_NAMES = frozenset({"meta/muse-spark-1.1"})
 
 

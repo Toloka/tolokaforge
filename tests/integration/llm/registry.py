@@ -2160,8 +2160,8 @@ _ALL: list[MC] = [
                 # (_UNRELIABLE_COLD_CACHE_REPORT_NAMES) carrying this same
                 # rationale — the counter is not a reliable real-caching
                 # signal here. That exclusion is a targeted stopgap, not a
-                # real fix; a follow-up will teach the ratchet to send a cold
-                # probe before trusting cached_tokens.
+                # real fix; follow-up #484 will teach the ratchet to send a
+                # cold probe before trusting cached_tokens.
                 C.IMPLICIT_PROMPT_CACHING,
             }
         ),
