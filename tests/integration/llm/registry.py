@@ -2102,16 +2102,18 @@ _ALL: list[MC] = [
                 C.LEXICAL_TOOL_INVENTION,
                 C.REQUIRED_FIELDS_COMPLETE,
                 C.PROGRESS_AFTER_SUCCESS,
-                # Two-turn discriminated union is supported but has a small
-                # residual turn-2 flake: live 2026-07-17 bare_union 9/10,
-                # explicit_discriminator 10/10 (8 dedicated reps + the
-                # all-required run + one full-suite run). The single miss
-                # answered turn 2 in prose instead of emitting the union
-                # call. ~90% clears the ~73% floor the other flaky-but-
-                # required caps (re2, required_fields) sit at, so this is
-                # `required` — the observe run's ~50% (bare 8/15, explicit
-                # 6/15) was infra-dirty noise that exaggerated the genuine
-                # but infrequent gap, NOT the copied-sibling
+                # Two-turn discriminated union is supported with a residual
+                # turn-2 flake: live 2026-07-17 both params passed 32/38
+                # full runs (~84%), and 12/12 in a dedicated decisive round
+                # + 12/12 per-param in isolation. The misses cluster in
+                # degraded-provider windows (one round went 5/10 alongside a
+                # 288s latency outlier); healthy windows run ~96-100%. When
+                # it fails, turn 2 answers in prose instead of emitting the
+                # union call. ~84% clears the ~73% floor the other flaky-but-
+                # required caps (re2 ~85%, required_fields ~73%) sit at, so
+                # this is `required`. The observe run's ~50% (bare 8/15,
+                # explicit 6/15) was its documented infra-dirty window, not
+                # the steady-state rate — so this is NOT the copied-sibling
                 # `known_unsupported` posture. Like re2/required_fields this
                 # probe may need a re-run to go green (ADD_NEW_MODEL.md §4).
                 C.DISCRIMINATED_UNION_TOOL_CALL,
