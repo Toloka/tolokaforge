@@ -11,6 +11,7 @@ Docker daemon required.
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -22,6 +23,7 @@ from tests.canonical._factories import (
 )
 from tolokaforge.core.conductor import InMemoryConductor
 from tolokaforge.core.models import TerminationReason, TrialStatus
+from tolokaforge.core.output.artifacts import InMemoryArtifactWriter
 from tolokaforge.core.runtime import InMemoryRuntimeBackend, ProvisionError
 from tolokaforge.core.trial_executor import (
     ProvisioningTrialExecutor,
@@ -35,12 +37,17 @@ def _make_executor(
     *,
     backend: InMemoryRuntimeBackend | None = None,
     conductor: InMemoryConductor | None = None,
+    output_dir: Path = Path("/nonexistent-run-dir"),
 ) -> tuple[ProvisioningTrialExecutor, InMemoryRuntimeBackend, InMemoryConductor, MagicMock]:
     backend = backend or InMemoryRuntimeBackend()
     conductor = conductor or InMemoryConductor()
     logger = MagicMock()
     executor = ProvisioningTrialExecutor(
-        runtime_backend=backend, conductor=conductor, logger=logger
+        runtime_backend=backend,
+        conductor=conductor,
+        logger=logger,
+        output_dir=output_dir,
+        artifact_writer=InMemoryArtifactWriter(),
     )
     return executor, backend, conductor, logger
 
@@ -117,8 +124,6 @@ class TestProvisionErrorBranches:
         executor, _, conductor, logger = _make_executor(backend=backend)
         # environment_manifest with a service named "db" triggers the fake
         # failure.
-        from pathlib import Path
-
         from tolokaforge.core.trial import EnvironmentManifest
 
         fixture = (

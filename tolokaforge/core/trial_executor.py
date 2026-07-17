@@ -46,9 +46,11 @@ from tolokaforge.core.runtime import EnvHandle, ProvisionError, RuntimeBackend
 from tolokaforge.core.trial import TrialResult, TrialSpec
 
 if TYPE_CHECKING:
-    from tolokaforge.core.compose_materialisation import LogCaptureConfig
+    from pathlib import Path
+
     from tolokaforge.core.conductor import Conductor
     from tolokaforge.core.logging import StructuredLogger
+    from tolokaforge.core.output.artifacts import TrialArtifactWriter
     from tolokaforge.core.trial import EnvEndpoints
 
 __all__ = [
@@ -88,7 +90,14 @@ class ProvisioningTrialExecutor:
     completion but grades red — it captures per-service logs via
     ``runtime_backend.capture_service_logs`` before teardown, then records the
     captured byte counts on the trial's ``metrics.yaml`` (path derived from
-    ``log_capture.output_root``; ``None`` disables the amendment).
+    ``output_dir``; the amendment is a no-op when that file is absent).
+
+    When provisioning itself fails, the trial body never runs and the
+    conductor never writes the per-trial bundle. The executor writes a
+    minimal one itself (``trajectory.yaml`` / ``metrics.yaml`` /
+    ``grade.yaml``) via ``artifact_writer`` so post-hoc analysis and cost
+    aggregation see a consistent trial-directory shape whether the trial
+    completed or failed to provision.
 
     Instantiated once per run by the orchestrator's
     ``_build_trial_executor`` helper and submitted to the worker pool
@@ -100,13 +109,15 @@ class ProvisioningTrialExecutor:
         runtime_backend: RuntimeBackend,
         conductor: Conductor,
         logger: StructuredLogger,
-        log_capture: LogCaptureConfig | None = None,
+        output_dir: Path,
+        artifact_writer: TrialArtifactWriter,
         events: RunDisplayEvents = _NULL_EVENTS,
     ) -> None:
         self.runtime_backend = runtime_backend
         self.conductor = conductor
         self.logger = logger
-        self.log_capture = log_capture
+        self.output_dir = output_dir
+        self.artifact_writer = artifact_writer
         self.events = events
 
     def execute(self, spec: TrialSpec, task_config: TaskConfig) -> TrialResult:
@@ -128,7 +139,9 @@ class ProvisioningTrialExecutor:
                 stage=e.stage,
                 error=e.reason,
             )
-            return _synthesize_provision_failure_result(spec, e)
+            result = _synthesize_provision_failure_result(spec, e)
+            self._write_provision_failure_bundle(result.trajectory, e)
+            return result
 
         try:
             self.runtime_backend.await_ready(handle)
@@ -141,7 +154,9 @@ class ProvisioningTrialExecutor:
                 error=e.reason,
             )
             self._safe_teardown(handle, task_id, trial_idx)
-            return _synthesize_provision_failure_result(spec, e)
+            result = _synthesize_provision_failure_result(spec, e)
+            self._write_provision_failure_bundle(result.trajectory, e)
+            return result
 
         try:
             real_endpoints = self.runtime_backend.endpoints(handle)
@@ -202,21 +217,55 @@ class ProvisioningTrialExecutor:
         )
         self._amend_trial_metrics(task_id, trial_idx, {"captured_service_logs": dict(byte_map)})
 
+    def _write_provision_failure_bundle(
+        self, trajectory: Trajectory, error: ProvisionError
+    ) -> None:
+        """Persist a minimal trial bundle for a trial whose environment never
+        came up: ``trajectory.yaml`` / ``metrics.yaml`` / ``grade.yaml`` under
+        ``output_dir/trials/{task_id}/{trial_index}/``.
+
+        The conductor never ran, so nothing else writes this trial's directory.
+        Reuses the run's ``artifact_writer`` (no schema duplication), then amends
+        ``metrics.yaml`` with the top-level failure signal (``error`` /
+        ``error_reason``) via the shared ``_amend_trial_metrics`` path. Any write
+        failure is logged and swallowed — mirrors ``_safe_teardown``; it never
+        masks the synthesized ``ProvisionError`` result the caller returns.
+        """
+        task_id = trajectory.task_id
+        trial_idx = trajectory.trial_index
+        trial_dir = self.output_dir / "trials" / task_id / str(trial_idx)
+        try:
+            self.artifact_writer.write_trajectory(trial_dir, trajectory)
+            self.artifact_writer.write_metrics(trial_dir, trajectory)
+            if trajectory.grade is not None:
+                self.artifact_writer.write_grade(trial_dir, trajectory.grade)
+        except Exception as write_err:  # noqa: BLE001 — best-effort diagnostic bundle
+            self.logger.warning(
+                "Writing provision-failure bundle failed; continuing",
+                task_id=task_id,
+                trial_index=trial_idx,
+                error=str(write_err),
+            )
+            return
+        self._amend_trial_metrics(
+            task_id,
+            trial_idx,
+            {
+                "error": TerminationReason.PROVISION_ERROR.value,
+                "error_reason": error.reason,
+            },
+        )
+
     def _amend_trial_metrics(self, task_id: str, trial_idx: int, updates: dict[str, Any]) -> None:
         """Merge ``updates`` into the trial's ``metrics.yaml`` as top-level keys.
 
         Read-add-write of the plain YAML mapping the conductor already wrote —
         the durable landing spot for host-side per-trial values
-        (``provisioning_duration_s``, ``captured_service_logs``). No-op when no
-        ``log_capture`` output root is configured or the file is absent. Logs
-        and continues on I/O failure so a diagnostic write never masks the trial
-        result.
+        (``provisioning_duration_s``, ``captured_service_logs``). No-op when the
+        file is absent. Logs and continues on I/O failure so a diagnostic write
+        never masks the trial result.
         """
-        if self.log_capture is None:
-            return
-        metrics_path = (
-            self.log_capture.output_root / "trials" / task_id / str(trial_idx) / "metrics.yaml"
-        )
+        metrics_path = self.output_dir / "trials" / task_id / str(trial_idx) / "metrics.yaml"
         if not metrics_path.exists():
             return
         try:

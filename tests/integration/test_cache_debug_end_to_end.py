@@ -53,6 +53,7 @@ from tolokaforge.core.compose_materialisation import LogCaptureConfig
 from tolokaforge.core.conductor import InMemoryConductor
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import ModelConfig, SeedRef
+from tolokaforge.core.output.artifacts import InMemoryArtifactWriter
 from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
 from tolokaforge.core.project_loader import load_project_config, resolve
 from tolokaforge.core.trial import EnvEndpoints, EnvironmentManifest, TrialSpec
@@ -137,7 +138,8 @@ class TestCacheDebugRedGradeCapture:
             runtime_backend=backend,
             conductor=InMemoryConductor(trajectory_factory=_completed_red_factory),
             logger=StructuredLogger("test-cache-debug-red-capture"),
-            log_capture=log_capture,
+            output_dir=tmp_path,
+            artifact_writer=InMemoryArtifactWriter(),
         )
         metrics_path = _write_metrics(tmp_path, _TASK_ID, 0)
 

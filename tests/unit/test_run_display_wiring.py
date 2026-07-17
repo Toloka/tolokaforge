@@ -39,6 +39,7 @@ from tests.canonical._factories import (
 from tolokaforge.core.llm import GenerationResult
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.models import Metrics
+from tolokaforge.core.output.artifacts import InMemoryArtifactWriter
 from tolokaforge.core.run_display_events import RunDisplayEvents
 
 pytestmark = pytest.mark.unit
@@ -319,6 +320,8 @@ def test_provisioning_trial_executor_fires_trial_provisioned_after_await_ready()
         runtime_backend=backend,
         conductor=conductor,
         logger=MagicMock(),
+        output_dir=Path("/nonexistent-run-dir"),
+        artifact_writer=InMemoryArtifactWriter(),
         events=events,
     )
 
@@ -356,6 +359,8 @@ def test_provisioning_trial_executor_default_events_is_silent() -> None:
         runtime_backend=backend,
         conductor=InMemoryConductor(),
         logger=MagicMock(),
+        output_dir=Path("/nonexistent-run-dir"),
+        artifact_writer=InMemoryArtifactWriter(),
     )
     executor.execute(make_trial_spec(), make_task_config())
 
@@ -373,6 +378,8 @@ def test_provisioning_trial_executor_skips_trial_provisioned_on_provision_error(
         runtime_backend=backend,
         conductor=InMemoryConductor(),
         logger=MagicMock(),
+        output_dir=Path("/nonexistent-run-dir"),
+        artifact_writer=InMemoryArtifactWriter(),
         events=events,
     )
     executor.execute(make_trial_spec(), make_task_config())
@@ -674,7 +681,7 @@ def test_build_trial_executor_threads_events_into_provisioning_executor() -> Non
     executor = orch._build_trial_executor(
         runtime_backend=MagicMock(),
         conductor=MagicMock(),
-        log_capture=None,
+        output_dir=Path("/nonexistent-run-dir"),
     )
     assert executor.events is events
 
