@@ -1,4 +1,4 @@
-"""Stage 5 — the rubric judge's usage + transcript reach the trial bundle.
+"""The rubric judge's usage + transcript reach the trial bundle.
 
 Pins the output-plumbing behaviour: a ``Grade`` carrying ``criterion_results``,
 ``judge_status``, ``judge_usage`` and ``judge_transcript`` is written by the
@@ -32,7 +32,13 @@ from tolokaforge.core.output.artifacts import FileArtifactWriter, InMemoryArtifa
 pytestmark = pytest.mark.unit
 
 
-def _judge_grade() -> Grade:
+_KB_OFFERED = JudgeKbGating(knowledge_search_disabled=False, offered=["search_kb"], withheld=[])
+_KB_DISABLED = JudgeKbGating(
+    knowledge_search_disabled=True, offered=[], withheld=["search_kb", "search_policy"]
+)
+
+
+def _judge_grade(kb_gating: JudgeKbGating = _KB_OFFERED) -> Grade:
     return Grade(
         binary_pass=True,
         score=0.8,
@@ -73,17 +79,35 @@ def _judge_grade() -> Grade:
             },
             {"role": "tool", "content": "{...}", "tool_call_id": "c1"},
         ],
-        judge_kb_gating=JudgeKbGating(
-            knowledge_search_disabled=False, offered=["search_kb"], withheld=[]
-        ),
+        judge_kb_gating=kb_gating,
     )
 
 
-def test_write_grade_emits_breakdown_usage_and_transcript_sidecar(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "kb_gating, expected_gating",
+    [
+        (
+            _KB_OFFERED,
+            {"knowledge_search_disabled": False, "offered": ["search_kb"], "withheld": []},
+        ),
+        (
+            _KB_DISABLED,
+            {
+                "knowledge_search_disabled": True,
+                "offered": [],
+                "withheld": ["search_kb", "search_policy"],
+            },
+        ),
+    ],
+    ids=["kb_offered", "kb_disabled_withheld"],
+)
+def test_write_grade_emits_breakdown_usage_and_transcript_sidecar(
+    tmp_path: Path, kb_gating: JudgeKbGating, expected_gating: dict
+) -> None:
     writer = FileArtifactWriter()
     trial_dir = tmp_path / "trials" / "task_a" / "0"
 
-    writer.write_grade(trial_dir, _judge_grade())
+    writer.write_grade(trial_dir, _judge_grade(kb_gating))
 
     grade_path = trial_dir / "grade.yaml"
     transcript_path = trial_dir / "judge_trajectory.yaml"
@@ -109,12 +133,9 @@ def test_write_grade_emits_breakdown_usage_and_transcript_sidecar(tmp_path: Path
     assert grade["judge_usage"]["consistency_rejections"] == 2
 
     # The judge's KB gating lands inline in grade.yaml (a scalar/lists block,
-    # unlike the transcript sidecar).
-    assert grade["judge_kb_gating"] == {
-        "knowledge_search_disabled": False,
-        "offered": ["search_kb"],
-        "withheld": [],
-    }
+    # unlike the transcript sidecar) — both the offered and the disabled/withheld
+    # shapes serialize verbatim.
+    assert grade["judge_kb_gating"] == expected_gating
 
     # The transcript is NOT inlined into grade.yaml — it lives in the sidecar.
     assert "judge_transcript" not in grade
@@ -141,36 +162,6 @@ def test_write_grade_without_judge_writes_no_transcript_sidecar(tmp_path: Path) 
     # No judge ran ⇒ no gating record.
     grade = yaml.safe_load((trial_dir / "grade.yaml").read_text())
     assert grade.get("judge_kb_gating") is None
-
-
-def test_write_grade_carries_disabled_kb_gating(tmp_path: Path) -> None:
-    """A disabled-KB judge records the gating inline in grade.yaml: the
-    authoritative ``knowledge_search_disabled`` replay signal plus the withheld
-    audit list."""
-    writer = FileArtifactWriter()
-    trial_dir = tmp_path / "trials" / "task_e" / "0"
-
-    writer.write_grade(
-        trial_dir,
-        Grade(
-            binary_pass=True,
-            score=1.0,
-            components=GradeComponents(llm_judge=1.0),
-            judge_status=JudgeStatus.COMPLETED,
-            judge_kb_gating=JudgeKbGating(
-                knowledge_search_disabled=True,
-                offered=[],
-                withheld=["search_kb", "search_policy"],
-            ),
-        ),
-    )
-
-    grade = yaml.safe_load((trial_dir / "grade.yaml").read_text())
-    assert grade["judge_kb_gating"] == {
-        "knowledge_search_disabled": True,
-        "offered": [],
-        "withheld": ["search_kb", "search_policy"],
-    }
 
 
 def test_errored_judge_usage_and_partial_transcript_persist(tmp_path: Path) -> None:

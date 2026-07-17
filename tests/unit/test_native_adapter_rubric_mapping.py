@@ -161,14 +161,15 @@ def test_legacy_model_ref_in_task_grading_is_rejected(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# Judge customization: project→task layering + "attach only when set" (issue #465)
+# Judge customization: project→task layering + "attach only when set"
 # ---------------------------------------------------------------------------
 
 
 def test_customization_absent_leaves_llm_judge_config_identical(tmp_path: Path):
     """A rubric task with no customization block (and no project default) produces
-    ``customization is None`` — no wire-visible customization at all, so the config
-    is byte-identical to a pre-Stage-2 rubric task."""
+    ``customization is None`` — the parsed config is identical to one built without
+    the feature, and no nested customization object is attached (the wire carries a
+    plain ``"customization": null``)."""
     from tolokaforge.runner.models import LLMJudgeConfig
 
     adapter = _build_task(tmp_path, _rubric_grading())
@@ -178,6 +179,23 @@ def test_customization_absent_leaves_llm_judge_config_identical(tmp_path: Path):
     # No nested-null object on the wire; reconstructs identically.
     rehydrated = LLMJudgeConfig.model_validate_json(judge.model_dump_json())
     assert rehydrated.customization is None
+
+
+def test_explicit_null_llm_judge_key_loads_as_no_judge(tmp_path: Path):
+    """A grading.yaml whose ``llm_judge:`` key is explicit-null (YAML parses it to
+    ``None``) loads with ``grading.llm_judge is None`` instead of crashing the
+    customization extraction on a ``None`` block."""
+    adapter = _build_task(
+        tmp_path,
+        {
+            "combine": {"method": "weighted", "weights": {"state_checks": 1.0}},
+            "llm_judge": None,
+        },
+    )
+
+    task_desc = adapter.to_task_description("rubric_task")
+
+    assert task_desc.grading.llm_judge is None
 
 
 def test_task_customization_attached_when_set(tmp_path: Path):

@@ -598,7 +598,7 @@ def test_kb_note_surfaced_even_when_judge_errors():
 
 # ---------------------------------------------------------------------------
 # Construction-time KB gating: disable_knowledge_search withholds KB-tagged tools
-# (classification is by the declared tag, never by tool name) — issue #465
+# (classification is by the declared tag, never by tool name)
 # ---------------------------------------------------------------------------
 
 
@@ -684,7 +684,7 @@ def test_disable_flag_false_is_byte_for_byte_default():
 def test_disable_flag_true_but_no_kb_records_flag_with_empty_withheld():
     """A disabled judge over a KB-less trial records the flag True with an EMPTY
     withheld set (nothing to gate) and the plain 'none offered' note — the
-    config-disable-vs-faithful-none distinction #451 replay keys on."""
+    config-disable-vs-faithful-none distinction the gating record must preserve."""
     rubric = _binary_rubric()
     client = ScriptedClient([[("submit_report", _submit_args(refund_done=True))]])
 

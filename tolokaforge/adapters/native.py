@@ -676,8 +676,9 @@ class NativeAdapter(BaseAdapter):
         llm_judge_config = None
         llm_judge_data = (grading_data.get("llm_judge") if grading_data else None) or {}
         # ``customization`` (sibling of ``rubric``) layers project→task; attach it
-        # only when a layer actually set it, so a task with no block reconstructs an
-        # identical ``LLMJudgeConfig`` (no wire-visible customization at all).
+        # only when a layer actually set it, so a task with no block parses to an
+        # identical ``LLMJudgeConfig`` with no nested customization object attached
+        # (the wire carries a plain ``"customization": null``).
         task_customization = llm_judge_data.pop("customization", None)
         project_customization = self._project_judge_customization_defaults()
         effective_customization = None

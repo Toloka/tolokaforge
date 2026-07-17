@@ -458,7 +458,7 @@ def test_rubric_judge_live_recovers_through_forced_retry(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Judge customization acceptance — disable_knowledge_search end-to-end (#465)
+# Judge customization acceptance — disable_knowledge_search end-to-end
 # ---------------------------------------------------------------------------
 
 
@@ -530,7 +530,8 @@ def _write_live_grade(tmp_path: Path, result) -> tuple[dict, dict]:
 def test_rubric_judge_live_judge_customization_disabled(tmp_path):
     """With ``disable_knowledge_search=True`` the real judge grades end-to-end with
     NO KB tool in its surface: none offered, ``search_kb`` withheld, no KB call in
-    the trajectory, and ``grade.yaml`` records the gating (the #451 replay signal)."""
+    the trajectory, and ``grade.yaml`` records the gating (the authoritative
+    replay signal)."""
     judge = LLMJudge(
         model_config_from_ref(_MODEL_REF),
         max_turns=10,

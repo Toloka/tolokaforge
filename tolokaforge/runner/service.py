@@ -1335,7 +1335,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             )
             state_diff_text = None
 
-        # Judge-side tool gating (issue #465). The agent's tool surface is
+        # Judge-side tool gating. The agent's tool surface is
         # untouched: the runner still resolves kb_search / extra_read_tools
         # faithfully above; the judge withholds the KB-tagged ones by construction
         # when the effective customization asks for it. Absent/None → False.
@@ -2133,8 +2133,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             trial_context.clear_kb_search()
             del self.trials[trial_id]
 
-        # KNOWN PRE-EXISTING LIMITATION (issue #95, judge_kb_resolver Stage 5):
-        # the mcp_core TypeSense client handle registered by
+        # KNOWN LIMITATION: the mcp_core TypeSense client handle registered by
         # ``_init_typesense_for_trial`` (via mcp_core's
         # ``initialize_typesense_for_domain``) is NOT torn down here. mcp_core is
         # an optional, lazily-imported dependency that is not importable in this

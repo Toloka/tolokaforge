@@ -3,8 +3,8 @@
 Two contracts are locked here, both surfacing at load time (``validate`` /
 ``validate_grading_yaml``), not deferred to run time:
 
-* The pre-Stage-2 free-text ``rubric: str`` (+ ignored ``output_schema``) shape
-  is an intentional, non-back-compatible break (docs/RUBRIC_GRADING_DESIGN.md) —
+* The removed free-text ``rubric: str`` (+ ignored ``output_schema``) shape is
+  an intentional, non-back-compatible break (docs/RUBRIC_GRADING_DESIGN.md) —
   rejected with a message that names the field and shows the new shape.
 * The ``llm_judge.customization`` block (and its project-defaults twin
   ``grading_defaults.llm_judge.customization``) rejects malformed values and
@@ -183,7 +183,7 @@ def test_validate_grading_yaml_rejects_removed_output_schema(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# llm_judge.customization schema rejection (issue #465) — task + project layers
+# llm_judge.customization schema rejection — task + project layers
 # ---------------------------------------------------------------------------
 
 

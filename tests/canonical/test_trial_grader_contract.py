@@ -114,8 +114,8 @@ def _grade_dict_from_proto(grade) -> dict:
 
 
 class TestJudgeKbGatingRoundTrip:
-    """The judge's KB gating survives proto → dict → ``Grade`` intact (#465). This
-    is the record #451 replay reads: ``knowledge_search_disabled`` is authoritative,
+    """The judge's KB gating survives proto → dict → ``Grade`` intact. This is the
+    record offline re-judging reads: ``knowledge_search_disabled`` is authoritative,
     offered/withheld are audit detail."""
 
     def test_disabled_gating_round_trips(self) -> None:

@@ -312,8 +312,7 @@ the block is safe to share and stable across hosts.
 
 ## `trials/{task_id}/{trial_index}/metrics.yaml`
 
-The flat `tokens_input` / `tokens_output` pair was removed in Stage 5
-(P7) — `usage` is now a nested block that carries the full
+`usage` is a nested block that carries the full
 [`tolokaforge.core.llm.usage.Usage`](../tolokaforge/core/llm/usage.py:1)
 dataclass. Anthropic cache counters + reasoning-budget spend are
 first-class fields; a `provider_raw` dump of the litellm usage block is

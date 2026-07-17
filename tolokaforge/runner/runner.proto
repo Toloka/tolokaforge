@@ -262,7 +262,7 @@ message JudgeReport {
   int32 consistency_rejections = 8;
   // Whether the judge was constructed to withhold knowledge-search tools
   // (grading.llm_judge.customization.disable_knowledge_search). The authoritative
-  // replay signal (#451): true means config withheld KB, regardless of whether the
+  // replay signal: true means config withheld KB, regardless of whether the
   // agent had any KB tool this trial.
   bool knowledge_search_disabled = 9;
   // KB-tagged tools the judge was actually offered this trial (e.g. search_kb, a

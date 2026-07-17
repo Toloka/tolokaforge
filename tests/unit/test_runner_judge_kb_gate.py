@@ -12,6 +12,7 @@ decoupled TypeSense plane). These tests exercise that real gate.
 from __future__ import annotations
 
 import asyncio
+import json
 from unittest.mock import MagicMock
 
 import pytest
@@ -162,7 +163,7 @@ def test_search_policy_passthrough_offered_only_when_agent_had_it():
 def test_search_policy_passthrough_is_tagged_knowledge_search():
     """The service tags each ``search_policy`` passthrough as knowledge-search so the
     judge registry can gate it under ``disable_knowledge_search`` — classification is
-    by this declared tag, never by tool name (issue #465)."""
+    by this declared tag, never by tool name."""
     service = _service(None)
     try:
         tools = service._build_judge_search_policy_tools(
@@ -352,8 +353,8 @@ def test_search_policy_passthrough_skips_namespaced_non_tool_wrapper(caplog):
 
 # ---------------------------------------------------------------------------
 # _grade_llm_judge wires the effective disable_knowledge_search flag from the
-# merged llm_judge config into LLMJudge construction (issue #465). The agent's
-# tool surface is untouched; only the judge's construction flag changes.
+# merged llm_judge config into LLMJudge construction. The agent's tool surface
+# is untouched; only the judge's construction flag changes.
 # ---------------------------------------------------------------------------
 
 
@@ -421,6 +422,68 @@ def test_grade_llm_judge_constructs_with_effective_disable_flag(
         )
         fut.result(timeout=5.0)
         assert captured["disable"] is expected
+    finally:
+        service.shutdown()
+
+
+def test_grade_trial_populates_judge_report_kb_gating(monkeypatch):
+    """The ``JudgeResult`` gating fields cross into ``pb2.JudgeReport`` unswapped:
+    ``knowledge_search_disabled`` / ``kb_tools_offered`` / ``kb_tools_withheld``
+    land on ``response.grade.judge_report`` exactly as the judge reported them."""
+    from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, JudgeUsage
+    from tolokaforge.core.models import ModelConfig
+    from tolokaforge.runner import runner_pb2 as pb2
+    from tolokaforge.runner.models import GradingConfig, LLMJudgeConfig, Rubric, TaskDescription
+    from tolokaforge.runner.service import TrialContextRuntime
+
+    class _SpyJudge:
+        def __init__(self, model_config, *, disable_knowledge_search=False, **_kw):
+            pass
+
+        def run(self, **_kwargs):
+            return JudgeResult(
+                status=JudgeStatus.COMPLETED,
+                usage=JudgeUsage(),
+                reasons="ok",
+                score=1.0,
+                knowledge_search_disabled=True,
+                kb_tools_offered=(),
+                kb_tools_withheld=("search_kb",),
+            )
+
+    monkeypatch.setattr("tolokaforge.runner.service.LLMJudge", _SpyJudge)
+
+    rubric = Rubric(criteria=[{"id": "a", "description": "d", "kind": "binary", "weight": 1.0}])
+    task_desc = TaskDescription(
+        task_id="rubric_task",
+        name="rubric task",
+        category="tool_use",
+        description="rubric task",
+        adapter_type="native",
+        system_prompt="system",
+        grading=GradingConfig(weights={"llm_judge": 1.0}, llm_judge=LLMJudgeConfig(rubric=rubric)),
+    )
+
+    service = _service(None)
+    try:
+        service.trials["t:0"] = TrialContextRuntime(
+            trial_id="t:0",
+            task_description=task_desc,
+            judge_model_config=ModelConfig(provider="openai", name="gpt-4o-mini", temperature=0.0),
+        )
+        response = service.GradeTrial(
+            pb2.GradeTrialRequest(
+                trial_id="t:0",
+                llm_messages_json=json.dumps([{"role": "user", "content": "hi"}]),
+            ),
+            MagicMock(),
+        )
+
+        assert response.success is True
+        report = response.grade.judge_report
+        assert report.knowledge_search_disabled is True
+        assert list(report.kb_tools_offered) == []
+        assert list(report.kb_tools_withheld) == ["search_kb"]
     finally:
         service.shutdown()
 

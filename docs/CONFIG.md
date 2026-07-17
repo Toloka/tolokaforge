@@ -343,17 +343,17 @@ llm_judge:                                 # the judge MODEL is set once per run
 ```
 
 The rubric is a structured `Rubric` (per-criterion scoring + a required gate),
-not a free-text blob; the old `rubric: "<text>"` shape, the `output_schema`
-field, and the per-task judge-model field were all removed. The judge **model**
-is now a run-level role (`models.judge`, see above) — separate from the agent
-under test, with no default and no fallback.
+not a free-text blob; a free-text `rubric: "<text>"`, an `output_schema` field,
+or a per-task judge-model field is rejected at load with a migration message.
+The judge **model** is a run-level role (`models.judge`, see above) — separate
+from the agent under test, with no default and no fallback.
 
 `customization` is an optional block, sibling of `rubric`, holding judge-side
 tool settings. Its only field today, `disable_knowledge_search`, is tri-state
 (`unset` | `true` | `false`): `true` removes every knowledge-search tool from the
 judge's schema (rag `search_kb`, the `search_policy` passthrough, any future KB
-backend) — the *agent's* tools are untouched. Omitting the block is byte-identical
-to today. It layers project→task (a project default under
+backend) — the *agent's* tools are untouched. Omitting the block leaves the judge
+at the faithful default. It layers project→task (a project default under
 `grading_defaults.llm_judge.customization`, tri-state, task wins) — see
 [PROJECTS.md](PROJECTS.md#task-override-semantics). A malformed value or unknown
 key under `customization` is rejected loudly at load. See

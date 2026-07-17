@@ -228,10 +228,10 @@ class Metrics(BaseModel):
 
         Pydantic's native dataclass serialisation works, but wrapping it here
         keeps the output-writer contract explicit and guarantees
-        ``model_dump(mode="json")`` always yields a ``dict`` — Stage 5c of
-        the plan requires this for the trajectory writer. Per-call records
-        are emitted via :func:`dataclasses.asdict` so future
-        :class:`ProviderRawCall` fields are surfaced automatically.
+        ``model_dump(mode="json")`` always yields a ``dict``, which the
+        trajectory writer requires. Per-call records are emitted via
+        :func:`dataclasses.asdict` so future :class:`ProviderRawCall` fields
+        are surfaced automatically.
         """
         return {
             "prompt_tokens": value.prompt_tokens,
@@ -307,7 +307,7 @@ class JudgeKbGating(BaseModel):
     Kept distinct from :class:`JudgeUsage` (which stays strictly token/cost
     accounting): this is the audit + replay record of *which* KB tools the judge
     was offered and which config withheld. ``knowledge_search_disabled`` is the
-    authoritative replay signal (#451) — ``True`` means
+    authoritative replay signal — ``True`` means
     ``grading.llm_judge.customization.disable_knowledge_search`` withheld KB,
     regardless of whether the agent had a KB tool this trial. ``offered`` /
     ``withheld`` are supporting audit detail; an empty ``withheld`` on a disabled
