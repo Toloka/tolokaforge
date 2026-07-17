@@ -18,7 +18,7 @@ This ADR codifies the two patterns that already produced our best components, so
 
 - **The pattern is real, not aspirational.** ADRs 0003 – 0009 already follow it consistently. Documenting it is a matter of writing down what shipped, not of prescribing something new.
 - **Drift risk grows with component count.** The engine is going to acquire more agents, more loops, more graders, more evaluation modes. Each new component picked ad-hoc widens the divergence between subsystems.
-- **The Judge lift** (a follow-up to this ADR, tracked separately) will be the first test of the pattern's generalisability. Codifying now gives that lift a target.
+- **The Judge lift** (a follow-up to this ADR) is the first test of the pattern's generalisability — realized in ADR-0019. Codifying gave that lift a target.
 - **Retroactive documentation is cheap.** No code changes; this is a documentation-only ADR that describes existing practice.
 - **Existing seam ADRs remain the evidence base.** Contributors read this ADR alongside the concrete ADRs it references, not instead of them.
 
@@ -122,7 +122,7 @@ Introducing a Protocol has a cost — every future implementation must fulfil it
 
 Some components in the codebase pre-date this ADR and did not follow Pattern A. Each is tracked separately; each will be lifted when its swappability becomes real (or when active development pressure makes the lift cheaper than continued ad-hoc growth):
 
-- **Rubric judge → `Judge` Protocol** (tracked; see [GH #131](https://github.com/Toloka/tolokaforge/issues/131)). Actively planned; coordinated with the Judge maintainer to sequence after their in-flight follow-ups.
+- **Rubric judge → `Judge` Protocol** — realized in [ADR-0019](0019-judge-protocol.md) ([GH #131](https://github.com/Toloka/tolokaforge/issues/131)): `Judge` Protocol + `LLMJudge` production impl + `InMemoryJudge` fixture, matching Pattern A.
 - **`TrialRunner` → `AgentLoop` Protocol** (not yet filed). File when a second loop shape (deep-research, agent-debate, multi-agent) becomes realistic.
 - **User simulator → Protocol** (not yet filed). File when a second simulator shape (scripted, adversarial replay) becomes realistic.
 
@@ -143,7 +143,7 @@ Some components in the codebase pre-date this ADR and did not follow Pattern A. 
 
 ### Follow-ups
 
-- **Judge Protocol lift** — the first real test of Pattern A generalisability. Tracked in [GH #131](https://github.com/Toloka/tolokaforge/issues/131).
+- **Judge Protocol lift** — the first real test of Pattern A generalisability, realized in [ADR-0019](0019-judge-protocol.md) ([GH #131](https://github.com/Toloka/tolokaforge/issues/131)).
 - **`TrialRunner` / `UserSimulator` lifts** — file when a second variant becomes realistic.
 - **CI / lint enforcement** — deferred. Introduce only if drift returns after this ADR lands and future components still ignore the patterns.
 - **Flip this ADR's status to `Accepted`** once the first post-ADR component follows the pattern by construction (rather than being retrofit into it).

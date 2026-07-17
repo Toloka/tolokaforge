@@ -113,7 +113,7 @@ grading:
   deterministic oracle (`golden_actions`, `expected_hash`, `jsonpath_checks`) is
   **never** piped to the judge: that would cause path-matching bias and defeat
   path-independence. The judge's input surface is exactly
-  `{agent_system_prompt, transcript, rubric, read-only tools}`.
+  `{agent_system_prompt, transcript, rubric, read-only tools, state_diff}`.
 * **Harness-owned read-only tools.** The judge gets a fixed read-only allowlist —
   DB reads (`get_db_state` / `query_db`), a KB search mirroring the agent's
   (`search_kb` for rag-service or the reused `search_policy` for TypeSense — see

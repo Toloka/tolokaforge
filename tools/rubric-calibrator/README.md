@@ -1,8 +1,8 @@
 # rubric-calibrator
 
-Stage 6 of the rubric-grading work (`docs/RUBRIC_GRADING_DESIGN.md`). A rubric judge is
-**not trustworthy until it clears an agreement gate**. This tool runs the real
-runner-side judge (`tolokaforge.core.grading.judge.run_rubric_judge`) over
+A rubric judge is **not trustworthy until it clears an agreement gate**
+(`docs/RUBRIC_GRADING_DESIGN.md`). This tool runs the real
+runner-side judge (`tolokaforge.core.grading.judge.LLMJudge`) over
 human-labelled golden fixtures, measures per-criterion agreement, and applies a
 trust gate that blocks shipping an under-agreeing rubric.
 
@@ -11,7 +11,7 @@ trust gate that blocks shipping an under-agreeing rubric.
 1. Loads golden fixtures (rubric + agent transcript + optional final DB state +
    optional workspace + human per-criterion labels).
 2. Runs the real judge on each fixture, using an in-memory jsonpath-evaluating
-   `DBReader` (the Stage-4 live-test pattern) so no runner / gRPC stack is needed.
+   `DBReader` (the live-judge-test pattern) so no runner / gRPC stack is needed.
 3. Compares the judge's verdicts against the human labels and computes
    per-criterion **accuracy** and **Cohen's κ** (chance-corrected), aggregated
    across fixtures, plus a list of disagreements (with the judge's justification).

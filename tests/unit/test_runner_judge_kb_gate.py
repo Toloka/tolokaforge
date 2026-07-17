@@ -1,6 +1,6 @@
 """Runner-level gating test for the judge's per-trial KnowledgeSearch.
 
-The grading unit tests inject ``kb_search`` straight into ``run_rubric_judge``,
+The grading unit tests inject ``kb_search`` straight into ``LLMJudge.run``,
 so they bypass the runner-side gate that decides WHETHER the judge gets a KB at
 all. That gate is the faithfulness contract: the judge gets a rag-service KB
 **iff the agent got a rag ``search_kb``** (a ``RAGSearchToolWrapper`` was
