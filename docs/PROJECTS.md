@@ -665,10 +665,15 @@ default_environment:
   network_policy: "no_internet"    # closed enum: no_internet | limited_internet |
                                    # full_internet; parameterisation (e.g. egress
                                    # hosts) is finalised before the first major release
+                                   # (uppercase enum names — NO_INTERNET — are accepted
+                                   # as a legacy alias with a DeprecationWarning)
   security_context_defaults:
     run_as_user: "toloka"          # username or numeric UID (int | str); substrates
     run_as_group: "toloka"         # that require numeric IDs (k8s runAsUser) get the
                                    # resolved UID at materialisation
+                                   # (legacy `user` / `group` keys are accepted as
+                                   # aliases for run_as_user / run_as_group with a
+                                   # DeprecationWarning)
 
 # ── Task defaults — base for every task ─────────────────────────
 # Applied to every task; task.yaml deltas deep-merge on top.

@@ -9,6 +9,7 @@ from typing import Annotated, Any, Literal, Self, get_args
 
 from pydantic import BaseModel, Field, field_serializer, field_validator, model_validator
 
+from tolokaforge.core.deprecations import coerce_task_packs_alias
 from tolokaforge.core.llm.reasoning import ReasoningConfig, StructuredReasoning
 from tolokaforge.core.llm.usage import CostSource, ProviderRawCall, Usage
 
@@ -612,37 +613,7 @@ class EvaluationConfig(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _coerce_task_packs_alias(cls, values: Any) -> Any:
-        """Accept ``task_packs`` as a deprecated alias for ``projects``.
-
-        Emits a ``DeprecationWarning`` when the legacy key appears with
-        a non-empty value and no explicit ``projects`` key. When both
-        keys carry values the loader keeps ``projects`` and drops
-        ``task_packs`` (with a warning naming the collision).
-        """
-        if not isinstance(values, dict):
-            return values
-        legacy = values.get("task_packs")
-        canonical = values.get("projects")
-        if not legacy:
-            return values
-        if canonical:
-            warnings.warn(
-                "evaluation.task_packs and evaluation.projects both set; "
-                "projects wins. Drop task_packs from the run config.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            values["task_packs"] = []
-            return values
-        warnings.warn(
-            "evaluation.task_packs is deprecated; use evaluation.projects "
-            "instead. task_packs still accepted as an alias for one release.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        values["projects"] = list(legacy)
-        values["task_packs"] = []
-        return values
+        return coerce_task_packs_alias(values)
 
 
 class EngineConfig(BaseModel):

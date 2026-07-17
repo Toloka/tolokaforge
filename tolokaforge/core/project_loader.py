@@ -33,13 +33,13 @@ from __future__ import annotations
 import logging
 import os
 import re
-import warnings
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 from tolokaforge.core.assets import compute_seed_digest
+from tolokaforge.core.deprecations import warn_legacy_run_config_dir
 from tolokaforge.core.models import (
     EnvironmentManifest,
     EnvironmentPatch,
@@ -774,19 +774,3 @@ def _merge_env_patches(
         elif field in project:
             merged[field] = project[field]
     return merged
-
-
-# ── Legacy alias warnings ──────────────────────────────────────────────
-
-
-def warn_legacy_run_config_dir(config_path: Path) -> None:
-    """Emit a ``DeprecationWarning`` when a run config sits under
-    ``run_config/`` (singular) instead of ``run_configs/`` (plural).
-    """
-    warnings.warn(
-        f"Run config {config_path} sits under 'run_config/' (singular); the "
-        f"canonical directory is 'run_configs/' (plural). Rename the "
-        f"directory to remove this warning.",
-        DeprecationWarning,
-        stacklevel=2,
-    )

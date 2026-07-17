@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### Feat
+
+- **schema**: `environment_manifest.network_policy` accepts uppercase enum names (`NO_INTERNET`, `LIMITED_INTERNET`, `FULL_INTERNET`) as a legacy alias — they lowercase to the canonical enum values with a `DeprecationWarning`. `security_context_defaults` accepts `user` / `group` as aliases for `run_as_user` / `run_as_group` with a `DeprecationWarning`; declaring both a legacy and a canonical key with disagreeing values fails loud (#213).
+
 ### Fix
 
 - **config**: `orchestrator.max_turns` now defaults to unset (`None`), making the run-level turn cap opt-in. A task's `max_turns` is no longer silently clamped to 50; the effective budget is `min(task, run cap)` only when the operator sets a cap, and the engine default (50 turns) applies when neither the run nor the task declares a value (#265).
