@@ -207,6 +207,24 @@ def _build_judge_messages_json(
     return json.dumps(messages)
 
 
+def split_leading_system_message(
+    messages: list[dict[str, Any]],
+) -> tuple[str, list[dict[str, Any]]]:
+    """Split the judge wire messages into ``(agent_system_prompt, transcript)``.
+
+    Inverse of the leading-system-message prepend in
+    :func:`_build_judge_messages_json`: the agent's policy is the transcript's
+    leading ``system`` message, lifted out so it is injected as the judge's
+    view of the agent policy rather than replayed as a conversational turn.
+    Returns ``("", messages)`` unchanged when there is no leading system
+    message. Shared by the runner's grading path and the offline judge replay
+    so both reconstruct the judge's ``run()`` inputs identically.
+    """
+    if messages and str(messages[0].get("role", "")).lower() == "system":
+        return str(messages[0].get("content", "") or ""), list(messages[1:])
+    return "", list(messages)
+
+
 def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
     """Materialise a :class:`Grade` from the runner's ``grade_trial`` dict.
 
