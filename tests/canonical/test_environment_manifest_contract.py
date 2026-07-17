@@ -431,6 +431,59 @@ class TestManifestCrossFieldValidation:
 
 
 # ---------------------------------------------------------------------------
+# EnvironmentManifest — endpoint-resolution override fields
+# ---------------------------------------------------------------------------
+
+
+class TestEndpointResolutionFields:
+    def test_defaults_are_convention_sentinels(self) -> None:
+        m = EnvironmentManifest(compose_file=_fixture("safe_two_service.yaml"))
+        assert m.runner_port == 50051
+        assert m.db_service is None
+        assert m.db_port is None
+        assert m.rag_service is None
+        assert m.rag_port is None
+
+    def test_full_override_round_trips(self) -> None:
+        m = EnvironmentManifest(
+            compose_file=_fixture("safe_two_service.yaml"),
+            runner_port=9000,
+            db_service="db",
+            db_port=5433,
+            rag_service="default",
+            rag_port=8080,
+        )
+        reloaded = EnvironmentManifest.model_validate_json(m.model_dump_json())
+        assert reloaded == m
+        assert reloaded.runner_port == 9000
+        assert reloaded.db_service == "db"
+        assert reloaded.db_port == 5433
+        assert reloaded.rag_service == "default"
+        assert reloaded.rag_port == 8080
+
+    def test_unknown_db_service_fails_loud(self) -> None:
+        with pytest.raises(ValidationError, match="db_service.*not declared in the compose file"):
+            EnvironmentManifest(
+                compose_file=_fixture("safe_two_service.yaml"),
+                db_service="nonexistent",
+            )
+
+    def test_unknown_rag_service_fails_loud(self) -> None:
+        with pytest.raises(ValidationError, match="rag_service.*not declared in the compose file"):
+            EnvironmentManifest(
+                compose_file=_fixture("safe_two_service.yaml"),
+                rag_service="nonexistent",
+            )
+
+    def test_none_service_overrides_are_not_validated(self) -> None:
+        # safe_two_service.yaml declares neither `db-service` nor `rag`; the
+        # convention default (None) must construct cleanly regardless.
+        m = EnvironmentManifest(compose_file=_fixture("safe_two_service.yaml"))
+        assert m.db_service is None
+        assert m.rag_service is None
+
+
+# ---------------------------------------------------------------------------
 # Wire-shape snapshot — top-level manifest fields
 # ---------------------------------------------------------------------------
 
@@ -462,8 +515,18 @@ class TestManifestWireShape:
             "network_policy",
             "security_context_defaults",
             "services",
+            "runner_port",
+            "db_service",
+            "db_port",
+            "rag_service",
+            "rag_port",
         }
         assert wire["runner_service"] == "default"
+        assert wire["runner_port"] == 50051
+        assert wire["db_service"] is None
+        assert wire["db_port"] is None
+        assert wire["rag_service"] is None
+        assert wire["rag_port"] is None
         assert wire["network_policy"] == "no_internet"
         assert wire["services"] == {
             "db": {"isolation": "reset", "reset": {"seed": "baseline"}},

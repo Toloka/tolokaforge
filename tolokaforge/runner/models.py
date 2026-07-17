@@ -908,6 +908,19 @@ def _check_initial_state_keys(
             )
 
 
+def _check_endpoint_services_declared(
+    services: dict[str, dict[str, Any]],
+    db_service: str | None,
+    rag_service: str | None,
+) -> None:
+    for field_name, value in (("db_service", db_service), ("rag_service", rag_service)):
+        if value is not None and value not in services:
+            raise ValueError(
+                f"EnvironmentManifest.{field_name} = {value!r} is not declared in the "
+                f"compose file; declared services are {sorted(services)!r}."
+            )
+
+
 def _check_services_keys(
     compose_services: dict[str, dict[str, Any]],
     manifest_services: dict[str, ServiceSpec],
@@ -947,6 +960,27 @@ class StackPatch(BaseModel):
     """Compose-file variable substitutions scoped to ``compose_file``.
     Passed through to the runtime backend at compose-up time; the
     compose file's ``${var}`` slots resolve against this mapping."""
+
+    runner_port: int | None = None
+    """Runner gRPC container port. ``None`` in a patch means inherit;
+    :func:`resolve` leaves the manifest's convention default in place
+    when the merged patch leaves this unset."""
+
+    db_service: str | None = None
+    """Compose service backing the engine's db endpoint. ``None`` means
+    inherit; :func:`resolve` leaves the manifest's convention default in
+    place when the merged patch leaves this unset."""
+
+    db_port: int | None = None
+    """Container port for the db endpoint. ``None`` means inherit."""
+
+    rag_service: str | None = None
+    """Compose service backing the engine's rag endpoint. ``None`` means
+    inherit the candidate-scan convention."""
+
+    rag_port: int | None = None
+    """Container port for the rag endpoint. ``None`` means inherit
+    published-port auto-detect."""
 
     model_config = {"extra": "forbid"}
 
@@ -1069,6 +1103,28 @@ class EnvironmentManifest(BaseModel):
     backend selection) and by the runtime backends (for between-trial
     reset dispatch)."""
 
+    runner_port: int = 50051
+    """Runner gRPC container port. Always used — the runner always
+    resolves. Overridable via ``stack.runner_port``."""
+
+    db_service: str | None = None
+    """Compose service backing the engine's db endpoint. ``None`` resolves
+    by convention (``"db-service"``); a non-``None`` value names an exact
+    service and is validated to exist in the compose file."""
+
+    db_port: int | None = None
+    """Container port for the db endpoint. ``None`` resolves by
+    convention (8000)."""
+
+    rag_service: str | None = None
+    """Compose service backing the engine's rag endpoint. ``None`` resolves
+    by candidate-scan; a non-``None`` value names an exact service and is
+    validated to exist in the compose file."""
+
+    rag_port: int | None = None
+    """Container port for the rag endpoint. ``None`` auto-detects the first
+    published port."""
+
     model_config = {"extra": "forbid"}
 
     @property
@@ -1112,6 +1168,7 @@ class EnvironmentManifest(BaseModel):
         _check_runner_service_declared(services, self.runner_service)
         _check_initial_state_keys(services, self.initial_state)
         _check_services_keys(services, self.services)
+        _check_endpoint_services_declared(services, self.db_service, self.rag_service)
         self._compose_content = content
         return self
 

@@ -218,6 +218,10 @@ The pieces that matter:
 - **`stack.runner_service`** — which service in the compose file is the
   tolokaforge runner. The engine talks gRPC to this service to dispatch
   tool calls and grade the trial.
+- **`stack.{runner_port, db_service, db_port, rag_service, rag_port}`** —
+  optional endpoint overrides for compose files that deviate from the
+  well-known service names and ports. See
+  [endpoint overrides](#endpoint-overrides) below.
 - **`services.<name>.isolation`** — the per-service isolation treatment.
   The compose file carries **zero** isolation semantics; the `services`
   map is the single authority. See [choosing isolation](#choosing-isolation)
@@ -290,6 +294,44 @@ The engine validates a few more safety invariants when it loads the stack:
 no `network_mode: host`, no `privileged: true`, no `cap_add`, `depends_on`
 must resolve, `runner_service` must be declared in the compose file.
 Violations fail at load time with a clear error, not at trial start.
+
+### Endpoint overrides
+
+The engine addresses three services in your stack by convention: the runner
+over gRPC, an HTTP state backend (`db-service`), and an optional RAG service.
+The convention defaults cover the packs that use the engine's built-in
+service names, so most tasks set nothing here. When your compose file names a
+service differently or publishes it on a non-standard port, override the
+convention from the `stack:` block:
+
+| Field | Default | Override when… |
+| --- | --- | --- |
+| `runner_port` | `50051` | the runner service listens on a different gRPC port |
+| `db_service` | `db-service` | the HTTP state backend is a differently-named service |
+| `db_port` | `8000` | that backend publishes a different port |
+| `rag_service` | `rag` / `rag-service` (scanned) | the RAG service is named something else |
+| `rag_port` | first published port | you want to pin the RAG container port |
+
+```yaml
+default_environment:
+  stack:
+    compose_file: ./shared/environment.compose.yaml
+    runner_service: agent
+    runner_port: 6000
+    db_service: state-backend
+    db_port: 9000
+```
+
+`db_service` and `rag_service` are validated at load: naming a service that
+the compose file does not declare fails with a clear `ValidationError`, so a
+typo never silently degrades to a missing endpoint at runtime. The ports and
+the RAG scan are best-effort — an unresolved port leaves the endpoint unset,
+exactly as the convention default does. A task that swaps
+`stack.compose_file` replaces the stack atomically and clears any
+project-level endpoint overrides along with it.
+
+See [ADR-0009](adr/0009-environment-manifest.md) for the design rationale
+behind individual scalar fields over a uniform endpoint map.
 
 ## Choosing isolation
 
