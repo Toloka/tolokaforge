@@ -376,6 +376,19 @@ table):
 | `cache_read_input_tokens` | Anthropic | Tokens re-used from the ephemeral cache this call |
 | `provider_raw` | — | Best-effort dump of the *last* call's raw usage block |
 
+### `provisioning_duration_s` — wall-clock provisioning latency
+
+```yaml
+provisioning_duration_s: 5.5
+```
+
+Wall-clock seconds (monotonic-clock-measured, rounded to milliseconds) from
+`provision` start through `endpoints()` return — the full
+`provision → await_ready → endpoints` bracket, excluding the trial body and
+teardown. Recorded on every trial that provisions successfully and runs a
+conductor body. Absent when provisioning failed (no `metrics.yaml` is written on
+that path).
+
 ### `captured_service_logs` — on trial-body or graded failure
 
 When a trial is diagnostics-worthy — its body fails (`trajectory.status` is
