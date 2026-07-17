@@ -159,6 +159,21 @@ def test_search_policy_passthrough_offered_only_when_agent_had_it():
         service.shutdown()
 
 
+def test_search_policy_passthrough_is_tagged_knowledge_search():
+    """The service tags each ``search_policy`` passthrough as knowledge-search so the
+    judge registry can gate it under ``disable_knowledge_search`` — classification is
+    by this declared tag, never by tool name (issue #465)."""
+    service = _service(None)
+    try:
+        tools = service._build_judge_search_policy_tools(
+            _trial_context_with({"search_policy": _FakeReconstructedSearchPolicy()})
+        )
+        assert len(tools) == 1
+        assert tools[0].is_knowledge_search is True
+    finally:
+        service.shutdown()
+
+
 def test_search_policy_passthrough_bridges_async_execute_and_passes_args():
     """The sync judge tool drives the agent tool's ASYNC execute via _run_async."""
     service = _service(None)

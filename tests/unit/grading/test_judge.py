@@ -31,6 +31,7 @@ _LLM_JUDGE_CTOR_KEYS = (
     "max_turns",
     "episode_timeout_s",
     "submit_report_retries",
+    "disable_knowledge_search",
     "logger",
 )
 
@@ -540,6 +541,7 @@ def test_kb_observability_search_policy_offered():
         description="Search the policy KB",
         parameters=_search_policy_schema(),
         invoke=lambda args: "policy result text",
+        knowledge_search=True,
     )
     client = ScriptedClient([[("submit_report", _submit_args(refund_done=True))]])
     result = _run_llm_judge(
@@ -592,6 +594,117 @@ def test_kb_note_surfaced_even_when_judge_errors():
     assert result.status is JudgeStatus.ERRORED
     assert result.kb_tools_offered == ()
     assert "Judge KB: none offered" in result.reasons
+
+
+# ---------------------------------------------------------------------------
+# Construction-time KB gating: disable_knowledge_search withholds KB-tagged tools
+# (classification is by the declared tag, never by tool name) — issue #465
+# ---------------------------------------------------------------------------
+
+
+def _kb_tagged_passthrough(name: str = "search_policy"):
+    """A ``search_policy``-style passthrough tagged as knowledge-search (as the
+    runner tags it in ``_build_judge_search_policy_tools``)."""
+    from tolokaforge.core.grading.judge_tools import DelegatingReadTool
+
+    return DelegatingReadTool(
+        name=name,
+        description="Search the policy KB",
+        parameters=_search_policy_schema(),
+        invoke=lambda args: "policy result text",
+        knowledge_search=True,
+    )
+
+
+def test_disable_knowledge_search_withholds_kb_tagged_tools():
+    """disable_knowledge_search=True withholds EVERY KB-tagged tool from the judge's
+    schema (rag search_kb + the tagged passthrough), records them in withheld with
+    an empty offered set and the flag True, and leaves a non-KB extra read tool
+    registered."""
+    from tolokaforge.core.grading.judge_tools import DelegatingReadTool
+
+    rubric = _binary_rubric()
+    non_kb = DelegatingReadTool(
+        name="read_ledger",
+        description="Read the audit ledger",
+        parameters=_search_policy_schema(),
+        invoke=lambda args: "ledger",
+    )  # untagged → not knowledge-search → must never be gated
+    client = ScriptedClient([[("submit_report", _submit_args(refund_done=True))]])
+
+    result = _run_llm_judge(
+        rubric=rubric,
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="",
+        transcript=[],
+        db_reader=FakeDBReader(),
+        kb_search=FakeKnowledgeSearch(),
+        extra_read_tools=[_kb_tagged_passthrough(), non_kb],
+        disable_knowledge_search=True,
+        llm_client=client,
+    )
+
+    # Neither KB-tagged tool ever entered the schema handed to the LLM.
+    assert "search_kb" not in client.seen_tool_names
+    assert "search_policy" not in client.seen_tool_names
+    # The non-KB read tool is untouched — the agent-mirroring read surface stays.
+    assert "read_ledger" in client.seen_tool_names
+    assert result.kb_tools_offered == ()
+    assert result.kb_tools_withheld == ("search_kb", "search_policy")
+    assert result.knowledge_search_disabled is True
+    assert "Judge KB: none offered (disabled by config)" in result.reasons
+
+
+def test_disable_flag_false_is_byte_for_byte_default():
+    """disable_knowledge_search=False (the default) leaves the offered set, the
+    (empty) withheld set, and the reasons note identical to the ungated judge."""
+    rubric = _binary_rubric()
+    client = ScriptedClient([[("submit_report", _submit_args(refund_done=True))]])
+
+    result = _run_llm_judge(
+        rubric=rubric,
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="",
+        transcript=[],
+        db_reader=FakeDBReader(),
+        kb_search=FakeKnowledgeSearch(),
+        extra_read_tools=[_kb_tagged_passthrough()],
+        disable_knowledge_search=False,
+        llm_client=client,
+    )
+
+    assert "search_kb" in client.seen_tool_names
+    assert "search_policy" in client.seen_tool_names
+    assert result.kb_tools_offered == ("search_kb", "search_policy")
+    assert result.kb_tools_withheld == ()
+    assert result.knowledge_search_disabled is False
+    assert "Judge KB: search_kb, search_policy" in result.reasons
+
+
+def test_disable_flag_true_but_no_kb_records_flag_with_empty_withheld():
+    """A disabled judge over a KB-less trial records the flag True with an EMPTY
+    withheld set (nothing to gate) and the plain 'none offered' note — the
+    config-disable-vs-faithful-none distinction #451 replay keys on."""
+    rubric = _binary_rubric()
+    client = ScriptedClient([[("submit_report", _submit_args(refund_done=True))]])
+
+    result = _run_llm_judge(
+        rubric=rubric,
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="",
+        transcript=[],
+        db_reader=FakeDBReader(),
+        kb_search=None,
+        extra_read_tools=None,
+        disable_knowledge_search=True,
+        llm_client=client,
+    )
+
+    assert result.kb_tools_offered == ()
+    assert result.kb_tools_withheld == ()
+    assert result.knowledge_search_disabled is True
+    assert "Judge KB: none offered" in result.reasons
+    assert "(disabled by config)" not in result.reasons
 
 
 def test_db_tools_absent_when_no_reader():

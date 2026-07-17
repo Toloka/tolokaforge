@@ -203,6 +203,11 @@ class SearchKbTool(Tool):
     the backend surfaces as a tool error (never silently empty results).
     """
 
+    #: Intrinsic knowledge-search tag: this tool always reads a knowledge base, so
+    #: the judge registry gates it under ``disable_knowledge_search``. Classification
+    #: is by this declared tag, never by tool name.
+    is_knowledge_search = True
+
     def __init__(self, kb_search: KnowledgeSearch):
         super().__init__(
             name="search_kb",
@@ -310,10 +315,17 @@ class DelegatingReadTool(Tool):
         description: str,
         parameters: dict[str, Any],
         invoke: Callable[[dict[str, Any]], str],
+        *,
+        knowledge_search: bool = False,
     ):
         super().__init__(name=name, description=description, policy=_read_only_policy())
         self._parameters = parameters
         self._invoke = invoke
+        # Declared knowledge-search tag: the runner sets this True for the
+        # ``search_policy`` passthrough so the judge registry gates it under
+        # ``disable_knowledge_search``. A passthrough over a non-KB read tool leaves
+        # it False and is never gated. Classification is by this tag, never by name.
+        self.is_knowledge_search = knowledge_search
 
     def get_schema(self) -> dict[str, Any]:
         return {

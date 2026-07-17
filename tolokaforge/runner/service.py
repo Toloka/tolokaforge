@@ -1469,6 +1469,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     description=schema.description,
                     parameters=schema.parameters,
                     invoke=_make_invoke(agent_tool),
+                    knowledge_search=True,
                 )
             )
 
