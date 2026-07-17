@@ -1,6 +1,6 @@
 """Offline judge replay engine — reconstructing ``LLMJudge.run()`` inputs.
 
-Locks the Stage-2 contract of :mod:`tolokaforge.core.grading.replay`:
+Locks the contract of :mod:`tolokaforge.core.grading.replay`:
 
 * the reconstructed transcript is **byte-identical** to the live
   ``_build_judge_messages_json`` + strip path the runner uses;
@@ -14,7 +14,7 @@ Locks the Stage-2 contract of :mod:`tolokaforge.core.grading.replay`:
   and never touches the network.
 
 The bundle is written by the real :class:`FileArtifactWriter` (no hand-rolled
-YAML) so the tests exercise the same on-disk contract Stage 1 produces.
+YAML) so the tests exercise the same on-disk contract the eval writer produces.
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+import yaml
 from click.testing import CliRunner
 
 from tests.unit.grading.test_judge import ScriptedClient
@@ -49,6 +50,7 @@ from tolokaforge.core.models import (
     Grade,
     GradeComponents,
     JudgeInputs,
+    JudgeKbGating,
     JudgeStatus,
     Message,
     MessageRole,
@@ -99,6 +101,7 @@ def _write_bundle(
     judge_status: JudgeStatus,
     judge_inputs: JudgeInputs | None,
     with_rubric: bool = True,
+    kb_gating: JudgeKbGating | None = None,
 ) -> Trajectory:
     """Write a new-shape bundle via the real writer; return the source trajectory."""
     writer = FileArtifactWriter()
@@ -124,6 +127,7 @@ def _write_bundle(
             components=GradeComponents(llm_judge=1.0),
             judge_status=judge_status,
             judge_inputs=judge_inputs,
+            judge_kb_gating=kb_gating,
         ),
     )
     return trajectory
@@ -171,7 +175,6 @@ def test_reconstructed_transcript_is_byte_identical_to_live_path(tmp_path: Path)
     # New bundle → full fidelity, recorded rubric + model, and the recorded
     # read surface is offered offline.
     assert inputs.state_diff == "orders[O-1]: refunded false -> true"
-    assert inputs.provenance is not None
     assert inputs.provenance.fidelity_mode is FidelityMode.FULL
     assert inputs.provenance.rubric_source is ProvenanceSource.RECORDED
     assert inputs.provenance.judge_model_source is ProvenanceSource.RECORDED
@@ -193,25 +196,44 @@ def test_eligible_bundle_without_rubric_raises_named_missing_input(tmp_path: Pat
         read_replay_inputs(trial_dir)
 
 
-def test_not_applicable_trial_is_skip_even_with_grading_override(tmp_path: Path) -> None:
-    trial_dir = tmp_path / "trials" / "state_only" / "0"
+@pytest.mark.parametrize(
+    "grade_content", [None, "- not\n- a\n- mapping\n"], ids=["missing", "corrupt"]
+)
+def test_classify_trial_fails_loud_when_grade_yaml_unreadable(
+    tmp_path: Path, grade_content: str | None
+) -> None:
+    """A dir without a readable ``grade.yaml`` is not a judge-less trial — it is
+    not a trial bundle at all, and classifying it as NOT_APPLICABLE would silently
+    drop it from the batch."""
+    trial_dir = tmp_path / "not_a_bundle"
+    trial_dir.mkdir()
+    if grade_content is not None:
+        (trial_dir / "grade.yaml").write_text(grade_content)
+
+    with pytest.raises(MissingReplayInputError, match="not a trial bundle"):
+        classify_trial(trial_dir)
+
+
+def test_missing_prompts_yaml_fails_loud_and_null_prompt_is_faithful(tmp_path: Path) -> None:
+    """No ``prompts.yaml`` means the agent policy is unknown → named failure at
+    full fidelity, never a silent empty policy; a recorded ``system_prompt: null``
+    inside an existing file IS the faithful empty policy."""
+    trial_dir = tmp_path / "trials" / "refund_task" / "0"
     _write_bundle(
         trial_dir,
-        judge_status=JudgeStatus.UNSPECIFIED,
-        judge_inputs=None,
-        with_rubric=False,
+        judge_status=JudgeStatus.COMPLETED,
+        judge_inputs=JudgeInputs(read_tools_offered=[]),
     )
 
-    # A trial that never had a judge is not-applicable — the classification is
-    # independent of any rubric override, so the CLI skips it rather than
-    # spending tokens judging a state/transcript-only trial.
-    from tolokaforge.runner.models import Rubric
+    (trial_dir / "prompts.yaml").unlink()
+    with pytest.raises(MissingReplayInputError, match="no agent policy"):
+        read_replay_inputs(trial_dir)
 
-    override = Rubric.model_validate(_RUBRIC)
-    assert classify_trial(trial_dir) is TrialEligibility.NOT_APPLICABLE
-    # (The override would otherwise satisfy reconstruction; classification, not
-    # input availability, is what gates a not-applicable trial.)
-    assert override.criteria[0].id == "refund_amount"
+    (trial_dir / "prompts.yaml").write_text(
+        yaml.dump({"system_prompt": None, "user_system_prompt": None})
+    )
+    inputs = read_replay_inputs(trial_dir)
+    assert inputs.agent_system_prompt == ""
 
 
 def test_offline_shims_return_explicit_unavailable_marker() -> None:
@@ -233,7 +255,7 @@ def test_replay_trial_uses_injected_client_and_produces_result(tmp_path: Path) -
         judge_status=JudgeStatus.COMPLETED,
         judge_inputs=JudgeInputs(
             state_diff_text="orders[O-1]: refunded false -> true",
-            read_tools_offered=["get_db_state", "query_db"],
+            read_tools_offered=["get_db_state", "query_db", "read_file"],
         ),
     )
     inputs = read_replay_inputs(trial_dir)
@@ -245,28 +267,44 @@ def test_replay_trial_uses_injected_client_and_produces_result(tmp_path: Path) -
     assert result.score == 1.0
     # The one production judge was driven by the injected client — no network.
     assert client.calls == 1
-    # And it echoes the reconstructed state_diff + offline read surface (Stage 1
-    # contract), so a replay bundle is itself replayable.
+    # And it echoes the reconstructed state_diff + the FULL offline read surface —
+    # including read_file, which enters replay via extra_read_tools — so a replay
+    # bundle is itself re-replayable without losing tools.
     assert result.state_diff == "orders[O-1]: refunded false -> true"
-    assert result.read_tools_offered == ("get_db_state", "query_db")
+    assert result.read_tools_offered == ("get_db_state", "query_db", "read_file")
 
 
 def test_knowledge_search_override_forces_gating(tmp_path: Path) -> None:
+    """A bundle whose recorded run WITHHELD the KB (disabled gating) must still
+    yield a KB shim: ``on`` actually offers ``search_kb`` to the judge, and
+    ``recorded`` reproduces the recorded withheld surface — the tool surface, not
+    just the boolean flags."""
     trial_dir = tmp_path / "trials" / "refund_task" / "0"
     _write_bundle(
         trial_dir,
         judge_status=JudgeStatus.COMPLETED,
         judge_inputs=JudgeInputs(read_tools_offered=[]),
+        kb_gating=JudgeKbGating(knowledge_search_disabled=True, offered=[], withheld=["search_kb"]),
     )
 
     off = read_replay_inputs(trial_dir, knowledge_search=KnowledgeSearchMode.OFF)
     on = read_replay_inputs(trial_dir, knowledge_search=KnowledgeSearchMode.ON)
+    recorded = read_replay_inputs(trial_dir, knowledge_search=KnowledgeSearchMode.RECORDED)
 
     assert off.disable_knowledge_search is True
     assert on.disable_knowledge_search is False
-    assert off.provenance is not None and off.provenance.knowledge_search_mode is (
-        KnowledgeSearchMode.OFF
-    )
+    assert recorded.disable_knowledge_search is True
+    assert off.provenance.knowledge_search_mode is KnowledgeSearchMode.OFF
+
+    # Forced `on` OFFERS the offline KB shim in the judge's tool surface.
+    on_result = replay_trial(on, judge_client=_submit_report_client())
+    assert on_result.kb_tools_offered == ("search_kb",)
+    assert on_result.kb_tools_withheld == ()
+
+    # `recorded` re-withholds it, matching the original audit record.
+    recorded_result = replay_trial(recorded, judge_client=_submit_report_client())
+    assert recorded_result.kb_tools_offered == ()
+    assert recorded_result.kb_tools_withheld == ("search_kb",)
 
 
 def _completed_bundle(trial_dir: Path) -> None:
@@ -286,7 +324,8 @@ def test_discovery_finds_bundles_across_all_three_layouts(tmp_path: Path) -> Non
         [nested / "trials" / "refund_task" / "0", nested / "trials" / "AE-BDG-003_billing" / "1"]
     )
 
-    # (b) a flat collection of bundle dirs (the tarball shape, no trials/ parent).
+    # (b) a flat collection of bundle dirs (no trials/ parent — e.g. an extracted
+    # archive of bundles).
     flat = tmp_path / "flat"
     _completed_bundle(flat / "AE-BDG-002_1")
     _completed_bundle(flat / "AE-BDG-003_0")
@@ -330,6 +369,46 @@ def test_not_applicable_trial_reported_skipped_even_with_grading_override(tmp_pa
     by_name = {o.bundle.parent.name: o.status for o in outcomes}
     assert by_name["state_only"] is ReplayOutcomeStatus.SKIPPED_NOT_APPLICABLE
     assert by_name["judged"] is ReplayOutcomeStatus.WOULD_REPLAY
+
+
+def test_batch_records_unreadable_grade_as_named_failure_and_continues(tmp_path: Path) -> None:
+    """A discovered bundle whose ``grade.yaml`` turns out unreadable is a NAMED
+    per-trial FAILED, never a silent NOT_APPLICABLE skip, and the rest of the
+    batch still runs."""
+    source = tmp_path / "run"
+    _completed_bundle(source / "trials" / "good" / "0")
+    corrupt = source / "trials" / "corrupt" / "0"
+    _completed_bundle(corrupt)
+    (corrupt / "grade.yaml").write_text("- not\n- a\n- mapping\n")
+
+    outcomes = run_replay_batch(source, replay_id="r1", dry_run=True)
+
+    by_name = {o.bundle.parent.name: o for o in outcomes}
+    assert by_name["good"].status is ReplayOutcomeStatus.WOULD_REPLAY
+    failed = by_name["corrupt"]
+    assert failed.status is ReplayOutcomeStatus.FAILED
+    assert failed.reason is not None and "not a trial bundle" in failed.reason
+
+
+def test_batch_records_invalid_recorded_input_as_named_failure_and_continues(
+    tmp_path: Path,
+) -> None:
+    """A recorded input that fails validation (here a corrupt ``trajectory.yaml``)
+    is a named per-trial FAILED — it must never abort the batch after other trials
+    have already spent judge tokens."""
+    source = tmp_path / "run"
+    _completed_bundle(source / "trials" / "good" / "0")
+    corrupt = source / "trials" / "corrupt" / "0"
+    _completed_bundle(corrupt)
+    (corrupt / "trajectory.yaml").write_text(yaml.dump({"task_id": "corrupt"}))
+
+    outcomes = run_replay_batch(source, replay_id="r1", dry_run=True)
+
+    by_name = {o.bundle.parent.name: o for o in outcomes}
+    assert by_name["good"].status is ReplayOutcomeStatus.WOULD_REPLAY
+    failed = by_name["corrupt"]
+    assert failed.status is ReplayOutcomeStatus.FAILED
+    assert failed.reason is not None and "Trajectory" in failed.reason
 
 
 def _checksums(root: Path) -> dict[str, str]:

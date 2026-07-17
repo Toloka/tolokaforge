@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from tolokaforge.core.grading.judge import (
     DBReader,
@@ -109,8 +109,8 @@ class TrialEligibility(str, Enum):
 class FidelityMode(str, Enum):
     """How faithfully the judge's opening view is reconstructed.
 
-    ``FULL`` — the bundle recorded the structured ``state_diff`` (a Stage-1
-    ``judge_inputs.yaml``), so the opening message is rebuilt exactly. ``FALLBACK``
+    ``FULL`` — the bundle recorded the structured ``state_diff`` (the bundle
+    carries ``judge_inputs.yaml``), so the opening message is rebuilt exactly. ``FALLBACK``
     — an old bundle lacking structured inputs: the opening message omits the
     ``state_diff``, so it will not byte-reproduce a state-diff-influenced verdict.
     """
@@ -138,7 +138,7 @@ class OfflineDBReader:
     Every read returns an explicit "unavailable in replay" marker instead of live
     DB state — never a silent empty ``{}`` — so the judge's transcript records that
     it could not inspect the database. Reconstructing real recorded state from
-    ``env.yaml`` is deferred (issue #525); v1 declares the unavailability.
+    ``env.yaml`` is deferred (issue #525); replay declares the unavailability.
     """
 
     def get_state(self, tables: list[str] | None = None) -> dict[str, Any]:
@@ -199,7 +199,7 @@ class _OfflineReadTool(Tool):
 
 
 class ReplayProvenance(BaseModel):
-    """Stamp of how a replay's inputs were resolved, for persistence in Stage 3.
+    """Stamp of how a replay's inputs were resolved.
 
     Records the judge model actually used and, per input, whether it came from the
     recorded bundle or a CLI override, plus the fidelity mode. Consumed by the
@@ -228,11 +228,11 @@ class ReplayInputs:
     state_diff: str | None
     judge_model_config: ModelConfig
     disable_knowledge_search: bool
+    provenance: ReplayProvenance
     db_reader: DBReader | None = None
     kb_search: KnowledgeSearch | None = None
     extra_read_tools: list[Tool] = field(default_factory=list)
     workspace_dir: Path | None = None
-    provenance: ReplayProvenance | None = None
 
 
 def _load_yaml(path: Path) -> dict[str, Any] | None:
@@ -267,10 +267,16 @@ def classify_trial(trial_dir: Path) -> TrialEligibility:
 
     Eligible iff the recorded ``grade.yaml`` carried a judge stage
     (``judge_status`` not ``unspecified``). Independent of any rubric override — a
-    trial that never had a judge is never conjured into one.
+    trial that never had a judge is never conjured into one. Raises
+    :class:`MissingReplayInputError` when ``grade.yaml`` is missing or not a
+    mapping — that is not a judge-less trial, it is not a trial bundle at all.
     """
     grade = _load_yaml(trial_dir / "grade.yaml")
-    status_value = (grade or {}).get("judge_status") or JudgeStatus.UNSPECIFIED.value
+    if grade is None:
+        raise MissingReplayInputError(
+            f"not a trial bundle: {trial_dir / 'grade.yaml'} is missing or not a mapping"
+        )
+    status_value = grade.get("judge_status") or JudgeStatus.UNSPECIFIED.value
     status = JudgeStatus(status_value)
     if status is JudgeStatus.UNSPECIFIED:
         return TrialEligibility.NOT_APPLICABLE
@@ -319,8 +325,12 @@ def _offline_read_surface(
     """Reconstruct the offline read-tool surface to match the recorded one.
 
     New bundles carry the authoritative non-KB surface in ``judge_inputs.yaml``;
-    the KB surface comes from ``grade.yaml`` ``judge_kb_gating``. Old bundles lack
-    both — ``env.yaml`` presence is the only signal that the judge had DB reads.
+    the KB surface is the union of ``grade.yaml`` ``judge_kb_gating`` ``offered`` +
+    ``withheld`` — a KB the recorded run withheld must still yield a shim, so a
+    forced ``--knowledge-search on`` can offer it and a ``recorded`` replay can
+    re-withhold it (:func:`_build_judge_registry`'s disable flag does the gating).
+    Old bundles lack both — ``env.yaml`` presence is the only signal that the
+    judge had DB reads.
     """
     db_reader: DBReader | None = None
     kb_search: KnowledgeSearch | None = None
@@ -335,7 +345,8 @@ def _offline_read_surface(
     elif (trial_dir / "env.yaml").exists():
         db_reader = OfflineDBReader()
 
-    for name in (kb_gating or {}).get("offered") or []:
+    gating = kb_gating or {}
+    for name in [*(gating.get("offered") or []), *(gating.get("withheld") or [])]:
         if name == "search_kb":
             kb_search = OfflineKnowledgeSearch()
         else:
@@ -360,13 +371,18 @@ def read_replay_inputs(
 
     Raises :class:`MissingReplayInputError`, naming what is missing, when the trial
     had a judge but the bundle lacks a required input and no override fills it (no
-    rubric and no ``--grading``; no transcript; no judge model and no
-    ``--judge-model``). Callers must classify the trial first — this is only valid
+    rubric and no ``--grading``; no transcript; no agent policy; no judge model and
+    no ``--judge-model``). A missing ``prompts.yaml`` means the agent policy is
+    unknown — the writer always emits the file, recording ``system_prompt: null``
+    when no agent prompt was set, so absence is a broken bundle, not a faithful
+    empty prompt. Callers must classify the trial first — this is only valid
     for a judge-eligible trial.
     """
     task = _load_yaml(trial_dir / "task.yaml")
     grade = _load_yaml(trial_dir / "grade.yaml")
     prompts = _load_yaml(trial_dir / "prompts.yaml")
+    if prompts is None:
+        raise MissingReplayInputError(f"no agent policy: {trial_dir / 'prompts.yaml'} is missing")
     trajectory_raw = _load_yaml(trial_dir / "trajectory.yaml")
     if trajectory_raw is None:
         raise MissingReplayInputError(f"no transcript: {trial_dir / 'trajectory.yaml'} is missing")
@@ -375,7 +391,7 @@ def read_replay_inputs(
     judge_model_config, judge_model_source = _resolve_judge_model(task, judge_model_override)
 
     trajectory = Trajectory.model_validate(trajectory_raw)
-    recorded_agent_prompt = (prompts or {}).get("system_prompt") or ""
+    recorded_agent_prompt = prompts.get("system_prompt") or ""
     wire = _build_judge_messages_json(trajectory, recorded_agent_prompt)
     if wire is None:
         raise MissingReplayInputError(
@@ -463,8 +479,9 @@ class ReplayOutcomeStatus(str, Enum):
     ``REPLAYED`` — the judge ran and replay artifacts were written. ``WOULD_REPLAY``
     — a ``--dry-run`` trial that is eligible and reconstructable (nothing spent).
     ``SKIPPED_NOT_APPLICABLE`` — the trial never had a judge stage (never judged,
-    never a failure). ``FAILED`` — a judge-eligible trial that could not be
-    reconstructed; ``reason`` names the missing input (never a silent skip).
+    never a failure). ``FAILED`` — a trial that could not be classified or
+    reconstructed; ``reason`` names the missing or invalid input (never a silent
+    skip).
     """
 
     REPLAYED = "replayed"
@@ -495,7 +512,8 @@ def discover_trial_bundles(source: Path) -> list[Path]:
     A directory is a bundle iff it directly contains the marker files
     (``grade.yaml`` + ``task.yaml``). Handles the three recorded layouts uniformly:
     a run dir with a ``trials/<task>/<idx>/`` subtree, a flat collection of bundle
-    dirs (the tarball shape), or a single bundle dir. Bundles are identified by
+    dirs (no ``trials/`` parent — e.g. an extracted archive of bundles), or a
+    single bundle dir. Bundles are identified by
     directory path — never by string-splitting ``<task>_<idx>`` (task ids contain
     both hyphens and underscores). The ``replays/`` output subtree is excluded so a
     re-run never re-judges its own artifacts. Returned sorted for stable batches.
@@ -516,7 +534,7 @@ def build_replay_grade(result: JudgeResult) -> Grade:
 
     Judge-only: the ``llm_judge`` component carries the replay score; an ``ERRORED``
     judge leaves it unscored (the ``-1.0`` sentinel), never a fabricated ``0.0``.
-    Echoes the judge's own transcript, KB gating, and Stage-1 structured inputs so
+    Echoes the judge's own transcript, KB gating, and structured ``judge_inputs`` so
     the replay bundle is itself a full, re-replayable bundle.
     """
     completed = result.status is JudgeRunStatus.COMPLETED
@@ -593,9 +611,11 @@ def run_replay_batch(
 ) -> list[TrialReplayOutcome]:
     """Replay every judge-eligible trial under ``source`` sequentially.
 
-    v1 is deliberately sequential with no concurrency cap. Not-applicable trials
+    Execution is sequential with no concurrency cap. Not-applicable trials
     (no recorded judge stage) are reported skipped, never judged — even with a
-    rubric override. A judge-eligible trial that cannot be reconstructed is a named
+    rubric override. A trial that cannot be classified (no readable ``grade.yaml``)
+    or reconstructed — a missing input, or a recorded input that fails validation
+    (a corrupt ``trajectory.yaml``, rubric, or model config) — is a named
     per-trial failure and the batch continues (no silent skips). With ``dry_run``,
     classification and input resolution run (no spend) and eligible trials are
     reported ``WOULD_REPLAY``; otherwise the judge runs and artifacts are written to
@@ -608,19 +628,21 @@ def run_replay_batch(
 
     outcomes: list[TrialReplayOutcome] = []
     for bundle in bundles:
-        if classify_trial(bundle) is TrialEligibility.NOT_APPLICABLE:
-            outcomes.append(
-                TrialReplayOutcome(bundle=bundle, status=ReplayOutcomeStatus.SKIPPED_NOT_APPLICABLE)
-            )
-            continue
         try:
+            if classify_trial(bundle) is TrialEligibility.NOT_APPLICABLE:
+                outcomes.append(
+                    TrialReplayOutcome(
+                        bundle=bundle, status=ReplayOutcomeStatus.SKIPPED_NOT_APPLICABLE
+                    )
+                )
+                continue
             inputs = read_replay_inputs(
                 bundle,
                 rubric_override=rubric_override,
                 judge_model_override=judge_model_override,
                 knowledge_search=knowledge_search,
             )
-        except MissingReplayInputError as exc:
+        except (MissingReplayInputError, ValidationError) as exc:
             outcomes.append(
                 TrialReplayOutcome(
                     bundle=bundle, status=ReplayOutcomeStatus.FAILED, reason=str(exc)
@@ -820,11 +842,15 @@ def build_replay_report(
     trials only; other buckets carry the replay-side result but never affect the
     rate or the aggregate deltas.
     """
-    replayed = [o for o in outcomes if o.status is ReplayOutcomeStatus.REPLAYED and o.result]
+    replayed = [
+        (o, o.result)
+        for o in outcomes
+        if o.status is ReplayOutcomeStatus.REPLAYED and o.result is not None
+    ]
     if not replayed:
         return None
 
-    judge_model = next((o.provenance.judge_model for o in replayed if o.provenance), "unknown")
+    judge_model = next((o.provenance.judge_model for o, _ in replayed if o.provenance), "unknown")
     trials: list[TrialComparison] = []
     compared = agreed = 0
     original_scores: list[float] = []
@@ -832,9 +858,7 @@ def build_replay_report(
     calls = prompt_tokens = completion_tokens = reasoning_tokens = 0
     cost_usd = 0.0
 
-    for outcome in replayed:
-        result = outcome.result
-        assert result is not None  # narrowed by the filter above
+    for outcome, result in replayed:
         calls += result.usage.calls
         prompt_tokens += result.usage.prompt_tokens
         completion_tokens += result.usage.completion_tokens

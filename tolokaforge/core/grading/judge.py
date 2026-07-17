@@ -482,7 +482,8 @@ def _build_judge_registry(
 
     Returns ``(registry, kb_offered, kb_withheld, read_tools_offered)`` —
     ``read_tools_offered`` being the non-KB read surface (``get_db_state`` /
-    ``query_db`` / ``read_file``) an offline replay must shim. A candidate tool is
+    ``query_db`` / ``read_file`` / any non-KB ``extra_read_tools`` entry) an
+    offline replay must shim. A candidate tool is
     knowledge-search iff it carries the declared ``is_knowledge_search`` tag
     (``SearchKbTool`` intrinsically; a ``search_policy`` ``DelegatingReadTool``
     when the runner tags it) — classification is by that tag, NEVER by tool name,
@@ -506,7 +507,9 @@ def _build_judge_registry(
     * ``extra_read_tools`` — ready-made read-only tools the runner supplies for
       this trial (e.g. a passthrough wrapping the agent's reconstructed
       ``search_policy`` TypeSense tool). Registered verbatim under their own names;
-      the KB-tagged ones are withheld when disabled, non-KB ones always kept.
+      the KB-tagged ones are withheld when disabled, non-KB ones always kept and
+      recorded in ``read_tools_offered`` so a replay of the resulting bundle
+      re-offers them.
     * ``read_file`` — only when ``workspace_dir`` exists (the agent produced files).
     """
     registry = ToolRegistry()
@@ -535,6 +538,8 @@ def _build_judge_registry(
         offered.append(tool.name)
         if getattr(tool, "is_knowledge_search", False):
             kb_offered.append(tool.name)
+        else:
+            read_tools_offered.append(tool.name)
 
     if workspace_dir is not None and workspace_dir.exists():
         registry.register(ReadFileTool(workspace_dir))
@@ -821,7 +826,7 @@ def _errored(
     Carries the partial judge transcript: when the judge breaks, its messages
     so far are the most useful debugging artifact. The ``Judge KB: …`` note is
     appended even on error so a reviewer can see whether a KB-blind judge was a
-    factor in the failure (issue #95). Echoes the read-tool surface + state_diff
+    factor in the failure. Echoes the read-tool surface + state_diff
     it was handed so an offline replay of an errored trial is still reconstructable.
     """
     kb_note = _kb_note(kb_tools_offered, kb_tools_withheld, knowledge_search_disabled)

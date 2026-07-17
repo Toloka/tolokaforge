@@ -30,7 +30,7 @@ uv run tolokaforge rejudge --source <run-dir>
 
 # Re-judge with a different judge model / an overridden rubric.
 uv run tolokaforge rejudge --source <run-dir> \
-    --judge-model openai/gpt-4.1-mini \
+    --judge-model openrouter/openai/gpt-4.1-mini \
     --grading path/to/grading.yaml
 ```
 
@@ -38,13 +38,17 @@ uv run tolokaforge rejudge --source <run-dir> \
 |---|---|
 | `--source` | A run dir (`trials/<task>/<idx>/` subtree), a flat collection of bundle dirs, or a single bundle dir. A directory is a trial bundle iff it directly contains `grade.yaml` + `task.yaml`. |
 | `--trial` | Re-judge a single bundle dir instead of the whole `--source`. |
-| `--judge-model` | Override the judge model (`<provider>/<model>`, OpenRouter, temperature 0). Default: the recorded `model_config.judge`. |
+| `--judge-model` | Override the judge model as `<provider>/<model>` (e.g. `openrouter/openai/gpt-4.1-mini`), temperature 0. Default: the recorded `model_config.judge`. |
 | `--grading` | Override the rubric with a supplied `grading.yaml` (or a bare `rubric:` mapping). Required for old bundles that recorded no rubric. Default: the recorded rubric. |
 | `--knowledge-search` | `recorded` (honour the bundle's recorded gating), `on`, or `off`. Default: `recorded`. |
 | `--replay-id` | Name for the artifact subdirectory. Default: a timestamped id. |
 | `--dry-run` | Discover, classify, and resolve inputs, then report what would replay — spending nothing. |
 
-Execution is **sequential with no concurrency cap** in v1; there is no automatic
+`rejudge --judge-model` takes a full `<provider>/<model>` ref — the first path
+segment selects the provider — unlike `run --judge-model`, which takes a bare
+model name and always routes through OpenRouter.
+
+Execution is **sequential with no concurrency cap**; there is no automatic
 cost ceiling. Use `--dry-run` to inspect the eligible trial count and the resolved
 judge model before spending. API keys are resolved through `SecretManager`.
 
@@ -61,9 +65,12 @@ Each recorded trial is classified:
   on a task that was never rubric-graded).
 
 A judge-eligible trial that cannot be reconstructed (a judge ran, but the bundle
-records no rubric and no `--grading` was given; or no transcript; or no judge model
-and no `--judge-model`) is reported as a **named per-trial failure** — the batch
-continues, and no eligible trial is ever silently skipped.
+records no rubric and no `--grading` was given; or no transcript; or no
+`prompts.yaml` agent policy; or no judge model and no `--judge-model`) is reported
+as a **named per-trial failure** — the batch continues, and no eligible trial is
+ever silently skipped. The same applies to a bundle whose `grade.yaml` is missing
+or unreadable (it cannot even be classified) and to recorded inputs that fail
+validation (a corrupt `trajectory.yaml`, rubric, or model config).
 
 ## Offline read tools
 

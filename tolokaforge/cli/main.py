@@ -402,8 +402,9 @@ def _print_replay_report(report: ReplayReport) -> None:
     "--judge-model",
     default=None,
     help=(
-        "Override the judge model (e.g. openai/gpt-4.1-mini). Uses OpenRouter as "
-        "provider, temperature 0. Default: the recorded model_config.judge."
+        "Override the judge model as <provider>/<model> "
+        "(e.g. openrouter/openai/gpt-4.1-mini), temperature 0. "
+        "Default: the recorded model_config.judge."
     ),
 )
 @click.option(
@@ -448,8 +449,8 @@ def rejudge(
 
     Re-executes only the rubric judge over recorded trajectories — no agent re-run,
     no live services — so judge changes (schema, prompt, wording, model) can be
-    A/B-tested against a recorded run. Execution is sequential (no concurrency cap
-    in v1); inspect --dry-run first. See docs/JUDGE_REPLAY.md.
+    A/B-tested against a recorded run. Execution is sequential with no concurrency
+    cap; inspect --dry-run first. See docs/JUDGE_REPLAY.md.
     """
     source_path = Path(source)
     replay_id = replay_id or f"replay_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -741,7 +742,7 @@ def validate(tasks: str):
 def _collect_run_spend_and_tokens(run_dir: Path) -> tuple[float, int, int]:
     """Aggregate spend / prompt-tokens / completion-tokens from per-trial metrics.
 
-    Reads the Stage-5 ``metrics.yaml`` shape: ``usage.prompt_tokens`` /
+    Reads the ``metrics.yaml`` usage shape: ``usage.prompt_tokens`` /
     ``usage.completion_tokens`` (plus cache and reasoning counters, ignored
     here — they are surfaced by the aggregate reporter under ``tools/``).
     """

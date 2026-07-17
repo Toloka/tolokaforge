@@ -114,7 +114,7 @@ recorded trajectories with judge-only spend:
 ```bash
 uv run tolokaforge rejudge --source results/quick_start_<timestamp> --dry-run
 uv run tolokaforge rejudge --source results/quick_start_<timestamp> \
-  --judge-model openai/gpt-4.1-mini
+  --judge-model openrouter/openai/gpt-4.1-mini
 ```
 
 `--source` accepts a run dir, a flat collection of trial bundles, or a single

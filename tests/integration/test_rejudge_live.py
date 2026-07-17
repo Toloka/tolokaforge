@@ -138,7 +138,7 @@ def test_rejudge_reproduces_recorded_verdict_with_judge_only_spend(tmp_path: Pat
 
     # Judge-only spend: the judge ran its own LLM (no agent stage was re-run).
     assert result.usage.calls >= 1
-    assert result.usage.cost_usd >= 0.0
+    assert result.usage.prompt_tokens > 0
 
     # The replay bundle landed under replays/ and the original is intact.
     assert (source / "replays" / "live" / "trials" / "refund_task" / "0" / "grade.yaml").exists()

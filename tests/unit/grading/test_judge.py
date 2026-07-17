@@ -647,8 +647,10 @@ def test_disable_knowledge_search_withholds_kb_tagged_tools():
     # Neither KB-tagged tool ever entered the schema handed to the LLM.
     assert "search_kb" not in client.seen_tool_names
     assert "search_policy" not in client.seen_tool_names
-    # The non-KB read tool is untouched — the agent-mirroring read surface stays.
+    # The non-KB read tool is untouched — the agent-mirroring read surface stays —
+    # and it is recorded in the replayable read surface alongside the DB tools.
     assert "read_ledger" in client.seen_tool_names
+    assert result.read_tools_offered == ("get_db_state", "query_db", "read_ledger")
     assert result.kb_tools_offered == ()
     assert result.kb_tools_withheld == ("search_kb", "search_policy")
     assert result.knowledge_search_disabled is True

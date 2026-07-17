@@ -427,9 +427,10 @@ def test_grade_llm_judge_constructs_with_effective_disable_flag(
 
 
 def test_grade_trial_populates_judge_report_kb_gating(monkeypatch):
-    """The ``JudgeResult`` gating fields cross into ``pb2.JudgeReport`` unswapped:
+    """The ``JudgeResult`` audit fields cross into ``pb2.JudgeReport`` unswapped:
     ``knowledge_search_disabled`` / ``kb_tools_offered`` / ``kb_tools_withheld``
-    land on ``response.grade.judge_report`` exactly as the judge reported them."""
+    plus the replay inputs ``state_diff_text`` / ``read_tools_offered`` land on
+    ``response.grade.judge_report`` exactly as the judge reported them."""
     from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, JudgeUsage
     from tolokaforge.core.models import ModelConfig
     from tolokaforge.runner import runner_pb2 as pb2
@@ -449,6 +450,8 @@ def test_grade_trial_populates_judge_report_kb_gating(monkeypatch):
                 knowledge_search_disabled=True,
                 kb_tools_offered=(),
                 kb_tools_withheld=("search_kb",),
+                state_diff="orders[1]: open -> shipped",
+                read_tools_offered=("get_db_state", "query_db"),
             )
 
     monkeypatch.setattr("tolokaforge.runner.service.LLMJudge", _SpyJudge)
@@ -484,6 +487,8 @@ def test_grade_trial_populates_judge_report_kb_gating(monkeypatch):
         assert report.knowledge_search_disabled is True
         assert list(report.kb_tools_offered) == []
         assert list(report.kb_tools_withheld) == ["search_kb"]
+        assert report.state_diff_text == "orders[1]: open -> shipped"
+        assert list(report.read_tools_offered) == ["get_db_state", "query_db"]
     finally:
         service.shutdown()
 
