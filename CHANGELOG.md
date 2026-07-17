@@ -7,6 +7,7 @@ All notable changes to this project are documented in this file.
 ### Fix
 
 - **config**: `orchestrator.max_turns` now defaults to unset (`None`), making the run-level turn cap opt-in. A task's `max_turns` is no longer silently clamped to 50; the effective budget is `min(task, run cap)` only when the operator sets a cap, and the engine default (50 turns) applies when neither the run nor the task declares a value (#265).
+- **loader**: `stack: null` and `stack: {compose_file: null}` in a task's `environment_manifest` (and in a project's `default_environment`) are now rejected at load time with a `RuntimeError` naming the offending file and field, enforcing the documented full-override rule — a task cannot unset the environment (or its substrate pointer) out from under a project that declares one. Omit the key to inherit (#235).
 
 ## v0.9.0 (2026-07-17)
 

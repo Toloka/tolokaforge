@@ -204,9 +204,23 @@ def _resolve_environment_manifest_paths(task_data: dict, task_root: Path, task_p
             f"(got {type(manifest).__name__})"
         )
 
+    if "stack" in manifest and manifest["stack"] is None:
+        raise RuntimeError(
+            f"Task file {task_path}: 'environment_manifest.stack' must not be null — "
+            "a task cannot unset the environment out from under a project that declares "
+            "one. Omit the key to inherit the project's stack, or declare a stack."
+        )
+
     stack = manifest.get("stack")
     if isinstance(stack, dict) and "compose_file" in stack:
         compose_file = stack["compose_file"]
+        if compose_file is None:
+            raise RuntimeError(
+                f"Task file {task_path}: "
+                f"'environment_manifest.stack.compose_file' must not be null — "
+                "a task cannot unset the substrate pointer; there is no engine-default "
+                "compose file to fall through to. Omit the key to inherit."
+            )
         if not isinstance(compose_file, str):
             raise RuntimeError(
                 f"Task file {task_path}: "
