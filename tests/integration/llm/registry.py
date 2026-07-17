@@ -1127,35 +1127,22 @@ _ALL: list[MC] = [
             }
         ),
     ),
-    # Kimi-K3 (Moonshot AI via OpenRouter). NOT a copy of the kimi-k2.x
-    # siblings: kimi-k3 is a new generation (1M ctx, $3 / $15) and does NOT
-    # match the ``*kimi-k2*`` glob, so it routes to the ``default`` preset, not
-    # ``openrouter_dict_stringify_recovery``. Base dict-map and Decimal tool
-    # calls round-trip cleanly as native dicts on ``default`` (15/15 each), and
-    # the dict-map shape variants (nested/wide/scalar) also pass cleanly on
-    # ``default`` (live re-probe 2026-07-17), so kimi-k3 does NOT inherit the
-    # K2 dict-stringify behaviour and needs no stringify-recovery preset.
+    # Kimi-K3 (Moonshot AI via OpenRouter). A new-generation Kimi (1M ctx,
+    # $3 / $15), not a copy of the kimi-k2.x siblings: it does not match the
+    # ``*kimi-k2*`` glob, so it routes to the ``default`` preset rather than
+    # ``openrouter_dict_stringify_recovery``. Base and shape-variant dict-map
+    # (nested / wide / scalar) and Decimal tool calls all round-trip cleanly as
+    # native dicts on ``default``, so kimi-k3 does not inherit the K2
+    # dict-stringify behaviour and needs no stringify-recovery preset.
     #
-    # Positions built from a 15-repeat auto-integration observation
-    # (run 29564179005, 2026-07-17, on the ``default`` preset), which was
-    # ~60% upstream-rate-limited (fresh-model 429s). Capabilities whose
-    # observation failures were ALL 429s — USAGE_METRICS_POPULATED (core) and
-    # the dict-map / discriminated-union shape variants — were reconfirmed by a
-    # clean live re-probe on 2026-07-17 (all pass on ``default``);
-    # allof_merge[top_level] was also 429-only but its 6 non-429 runs all
-    # passed, so it needed no re-probe. USAGE_METRICS_POPULATED is additionally
-    # corroborated by COST_USD_POPULATED passing 15/15 (cost derives from usage
-    # tokens) and by populated prompt/completion tokens in other probes'
-    # provider_raw. DISCRIMINATED_UNION_TOOL_CALL is a genuine promotion, NOT a
-    # 429 artefact: its observation failures were real turn-2 misses (the
-    # sibling fails the union switch), yet kimi-k3 still passed 13-14/15 and
-    # passed the clean live re-probe.
-    #
-    # Two promotions vs the kimi-k2.7-code sibling that ARE clean-verified
-    # here (15/15, not rate-limited): DECIMAL_FIELD_TOOL_CALL and
-    # IMPLICIT_PROMPT_CACHING. The sibling's ``known_unsupported`` for these
-    # was a stale hypothesis — see ADD_NEW_MODEL.md "anti-pattern: copying a
-    # sibling cert verbatim".
+    # Every position below is live-verified on the ``default`` preset
+    # (2026-07-17). Three capabilities the kimi-k2.7-code sibling marks
+    # ``known_unsupported`` are supported by kimi-k3 and promoted to
+    # ``required`` here: DECIMAL_FIELD_TOOL_CALL, IMPLICIT_PROMPT_CACHING
+    # (auto-cache works), and DISCRIMINATED_UNION_TOOL_CALL (kimi-k3 handles the
+    # turn-2 union switch the sibling fails). Each was re-tested against the live
+    # route, not inherited: see ADD_NEW_MODEL.md "anti-pattern: copying a sibling
+    # cert verbatim".
     MC(
         model_id="openrouter__moonshotai_kimi-k3",
         provider="openrouter",
@@ -1175,10 +1162,9 @@ _ALL: list[MC] = [
                 C.DICT_MAP_TOOL_CALL,
                 C.DECIMAL_FIELD_TOOL_CALL,
                 C.IMPLICIT_PROMPT_CACHING,
-                # Sibling (k2.6 / k2.7-code) failed the turn-2 union switch and
-                # marked this known_unsupported; kimi-k3 passes it — two-turn
-                # probes 13-14/15 in the observation, plus a clean live re-probe
-                # (both bare-union and explicit-discriminator) on 2026-07-17.
+                # Sibling (k2.6 / k2.7-code) fails the turn-2 union switch and
+                # marks this known_unsupported; kimi-k3 handles it (live-verified,
+                # both bare-union and explicit-discriminator).
                 C.DISCRIMINATED_UNION_TOOL_CALL,
                 C.USAGE_METRICS_POPULATED,
                 C.COST_USD_POPULATED,
@@ -1190,15 +1176,14 @@ _ALL: list[MC] = [
         ),
         known_unsupported=frozenset(
             {
-                # Genuine (non-429) failures in the observation: kimi-k3
-                # surfaces no structured thinking blocks, so neither thinking
-                # replay path applies, and it does not honour explicit ephemeral
-                # cache-control. THINKING_EMITS_BLOCKS, THINKING_REPLAY_ROUNDTRIP
-                # and PROMPT_CACHING were a clean 0/15 (no 429s);
-                # UNSIGNED_THINKING_REPLAY was 429-contaminated (10/15) but all 5
-                # non-429 runs failed genuinely, consistent with the no-thinking
-                # surface. Implicit (auto) caching DOES work — see
-                # IMPLICIT_PROMPT_CACHING in ``required`` above.
+                # Live-verified genuine failures on ``default``: kimi-k3 returns
+                # no structured reasoning, so it emits no thinking blocks
+                # (THINKING_EMITS_BLOCKS) and neither thinking-replay path works
+                # (THINKING_REPLAY_ROUNDTRIP; UNSIGNED_THINKING_REPLAY fails with
+                # "turn 1 returned no structured reasoning"). It also does not
+                # honour explicit ephemeral cache-control (PROMPT_CACHING).
+                # Implicit (auto) caching does work, so IMPLICIT_PROMPT_CACHING is
+                # in ``required`` above.
                 C.THINKING_EMITS_BLOCKS,
                 C.THINKING_REPLAY_ROUNDTRIP,
                 C.UNSIGNED_THINKING_REPLAY,
