@@ -1,0 +1,28 @@
+# Project spec for the multi_service_advanced example.
+#
+# Single task exercising the shared-runtime + task-declared-stack path
+# (Case B in ADR-0018) with two task-specific HTTP services the agent
+# joins. The stack lives on the task's own `environment_manifest.stack`,
+# so the project declares no `default_environment`. See docs/PROJECTS.md
+# for the full Project model.
+
+name: "multi-service-advanced"
+version: 1
+description: >
+  Fetch orders and customers from two separate HTTP services, join on
+  `customer_id`, and rank the top-3 customers by paid-order total.
+  Demonstrates cross-service reads and a heterogeneous model tier (Haiku
+  agent, Sonnet user simulator).
+
+tasks:
+  discovery:
+    glob: "dataset/tasks/**/task.yaml"
+
+# ── Task defaults — base for every task ─────────────────────────
+task_defaults:
+  adapter_type: "native"
+  max_turns: 12
+  actors:
+    user:
+      mode: "llm"
+      persona: "cooperative"

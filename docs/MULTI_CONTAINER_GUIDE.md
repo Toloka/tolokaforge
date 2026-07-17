@@ -43,7 +43,7 @@ debugging investigation and an auto-dev build-and-verify loop.
 Every pack runs the same way — point `tolokaforge run` at its run config:
 
 ```bash
-scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_postgres/run_config.yaml
+scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_postgres/run_configs/dev.yaml
 scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_postgres_reset/run_configs/dev.yaml
 scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_lot_ops/run_configs/dev.yaml
 scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_helpdesk_workflow/run_configs/dev.yaml

@@ -1,6 +1,6 @@
 # Native shared-domain example — notes-app testcases that share one
 # _shared/ directory. Run with:
-#   scripts/with_env.sh uv run tolokaforge run --config examples/native/native_shared_domain/run_config.yaml
+#   scripts/with_env.sh uv run tolokaforge run --config examples/native/native_shared_domain/run_configs/dev.yaml
 #
 # Three model roles: the `agent` under test, the `user` simulator, and the
 # read-only rubric `judge` (used by the testcases that grade with llm_judge).
@@ -28,7 +28,7 @@ orchestrator:
   queue_backend: sqlite
 
 evaluation:
-  task_packs:
+  projects:
     - "examples/native/native_shared_domain/dataset"
   tasks_glob: "**/testcases/**/task.yaml"
   output_dir: "results/native_shared_domain_example"

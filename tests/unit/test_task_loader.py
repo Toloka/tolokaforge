@@ -613,6 +613,7 @@ def test_load_task_yaml_real_example(tmp_path: Path) -> None:
     case = (
         repo_root
         / "examples"
+        / "native"
         / "native_shared_domain"
         / "dataset"
         / "notes"

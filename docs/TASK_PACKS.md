@@ -111,7 +111,7 @@ Use the override generator:
 
 ```bash
 uv run python scripts/generate_task_pack_compose_override.py \
-  --config examples/native/coding/run_config.yaml \
+  --config examples/native/coding/run_configs/dev.yaml \
   --output docker-compose.taskpacks.override.yaml
 ```
 

@@ -12,9 +12,10 @@ initial_user_message: >
 initial_state:
   json_db: "initial_state.json"
 
-user_simulator:
-  backstory: >
-    You asked the assistant to save a meeting-time reminder. Once it confirms
-    the note is saved, thank it briefly and stop the conversation.
+actors:
+  user:
+    backstory: >
+      You asked the assistant to save a meeting-time reminder. Once it confirms
+      the note is saved, thank it briefly and stop the conversation.
 
 grading: "grading.yaml"

@@ -2,7 +2,6 @@ task_id: "tool_use_public_example_02"
 name: "Account State Change Checklist"
 category: "tool_use"
 description: "Use policy context and DB tools to stage an account-state transition safely with audit traceability."
-max_turns: 9
 initial_user_message: "Prepare account `A-77` for review by setting its state to `pending_review`, append an audit log entry, and write `submissions/tool_use_account_checklist.md` with verification and rollback steps."
 initial_state:
   json_db: "initial_state.json"
@@ -15,10 +14,9 @@ tools:
     enabled: ["db_query", "db_update", "read_file", "write_file"]
   user:
     enabled: []
-user_simulator:
-  mode: llm
-  persona: cooperative
-  backstory: "You are an operations reviewer ensuring tool actions, audit logging, and written handoff stay consistent with policy. Acknowledge completion and end with ###STOP### once the assistant has delivered the requested artifact(s)."
+actors:
+  user:
+    backstory: "You are an operations reviewer ensuring tool actions, audit logging, and written handoff stay consistent with policy. Acknowledge completion and end with ###STOP### once the assistant has delivered the requested artifact(s)."
 policies:
   guidance:
     - "Maintain an explicit audit trail for all account-state changes."

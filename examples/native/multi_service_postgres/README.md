@@ -53,7 +53,7 @@ uv run tolokaforge validate --tasks "examples/native/multi_service_postgres/data
 ## Run
 
 ```bash
-scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_postgres/run_config.yaml
+scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_postgres/run_configs/dev.yaml
 ```
 
 First run is ~30-45s slower than the sibling examples — postgres has to
@@ -65,7 +65,8 @@ runs from scratch (compose volumes are removed at teardown).
 
 ```
 examples/native/multi_service_postgres/
-├── run_config.yaml                # sonnet-4-6 agent + user
+├── project.yaml                   # identity + task discovery + task_defaults
+├── run_configs/dev.yaml           # sonnet-4-6 agent + user
 ├── README.md                      # this file
 └── dataset/tasks/multi_service/
     └── support_triage_01/

@@ -27,7 +27,7 @@ by adapter type.
 
 Most examples ship a `run_config.yaml`:
 
-    uv run tolokaforge run --config examples/native/coding/run_config.yaml
+    uv run tolokaforge run --config examples/native/coding/run_configs/dev.yaml
 
 Requires an LLM provider key in `.env` (or use `--provider mock` for offline
 testing). Browser and terminal-bench examples also need a running Docker daemon.

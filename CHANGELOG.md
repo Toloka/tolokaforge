@@ -13,6 +13,7 @@ All notable changes to this project are documented in this file.
 
 - **examples**: the in-tree example packs under `examples/native/` use the canonical Project-layer shape — `project.yaml` at pack root, the `stack` sub-object for the compose substrate, `actors.user` for the user simulator, `run_configs/<name>.yaml` run profiles, and `evaluation.projects`. `example-microservices-pack` is the reference exemplar (#213).
 - **examples**: the six project-bearing `multi_service_*` packs (`cache_debug`, `endpoint_add`, `helpdesk_workflow`, `lot_ops`, `postgres_reset`, `slow_start`) are canonical. Each pack's run config moved from the pack-root `run_config.yaml` to `run_configs/dev.yaml` — invoke with `--config examples/native/<pack>/run_configs/dev.yaml` (#213).
+- **examples**: the seven packs that previously shipped no `project.yaml` — `browser_task`, `coding`, `tool_use`, `multi_service`, `multi_service_advanced`, `multi_service_postgres`, `native_shared_domain` — now each ship a required `project.yaml` at pack root and load fully canonical. Their run configs moved from the pack-root `run_config.yaml` to `run_configs/dev.yaml` (`native_shared_domain` also gains `run_configs/gate_demo.yaml`) — invoke with `--config examples/native/<pack>/run_configs/<name>.yaml`. `evaluation.task_packs` became `evaluation.projects` and top-level `user_simulator` became `actors.user` throughout (#213).
 
 ### Fix
 

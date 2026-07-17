@@ -21,14 +21,14 @@ make docker-up
 ## Validate
 
 ```bash
-uv run tolokaforge validate --tasks "examples/browser_task/dataset/**/task.yaml"
+uv run tolokaforge validate --tasks "examples/native/browser_task/dataset/**/task.yaml"
 ```
 
 ## Run
 
 ```bash
-# Uses the self-contained run_config.yaml (requires API keys in .env)
-scripts/with_env.sh uv run tolokaforge run --config examples/browser_task/run_config.yaml
+# Uses the pack's run_configs/dev.yaml (requires API keys in .env)
+scripts/with_env.sh uv run tolokaforge run --config examples/native/browser_task/run_configs/dev.yaml
 ```
 
 ## Configure Browser Tool

@@ -7,13 +7,13 @@ the tool-call sequence plus the final answer.
 ## Validate
 
 ```bash
-uv run tolokaforge validate --tasks "examples/tool_use/dataset/**/task.yaml"
+uv run tolokaforge validate --tasks "examples/native/tool_use/dataset/**/task.yaml"
 ```
 
 ## Run
 
 ```bash
-scripts/with_env.sh uv run tolokaforge run --config examples/tool_use/run_config.yaml
+scripts/with_env.sh uv run tolokaforge run --config examples/native/tool_use/run_configs/dev.yaml
 ```
 
 ## Tasks included
