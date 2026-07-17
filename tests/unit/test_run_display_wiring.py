@@ -319,6 +319,7 @@ def test_provisioning_trial_executor_fires_trial_provisioned_after_await_ready()
         runtime_backend=backend,
         conductor=conductor,
         logger=MagicMock(),
+        output_dir=Path("/nonexistent-run-dir"),
         events=events,
     )
 
@@ -356,6 +357,7 @@ def test_provisioning_trial_executor_default_events_is_silent() -> None:
         runtime_backend=backend,
         conductor=InMemoryConductor(),
         logger=MagicMock(),
+        output_dir=Path("/nonexistent-run-dir"),
     )
     executor.execute(make_trial_spec(), make_task_config())
 
@@ -373,6 +375,7 @@ def test_provisioning_trial_executor_skips_trial_provisioned_on_provision_error(
         runtime_backend=backend,
         conductor=InMemoryConductor(),
         logger=MagicMock(),
+        output_dir=Path("/nonexistent-run-dir"),
         events=events,
     )
     executor.execute(make_trial_spec(), make_task_config())
@@ -674,7 +677,7 @@ def test_build_trial_executor_threads_events_into_provisioning_executor() -> Non
     executor = orch._build_trial_executor(
         runtime_backend=MagicMock(),
         conductor=MagicMock(),
-        log_capture=None,
+        output_dir=Path("/nonexistent-run-dir"),
     )
     assert executor.events is events
 

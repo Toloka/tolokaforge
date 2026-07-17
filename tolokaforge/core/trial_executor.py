@@ -46,7 +46,8 @@ from tolokaforge.core.runtime import EnvHandle, ProvisionError, RuntimeBackend
 from tolokaforge.core.trial import TrialResult, TrialSpec
 
 if TYPE_CHECKING:
-    from tolokaforge.core.compose_materialisation import LogCaptureConfig
+    from pathlib import Path
+
     from tolokaforge.core.conductor import Conductor
     from tolokaforge.core.logging import StructuredLogger
     from tolokaforge.core.trial import EnvEndpoints
@@ -88,7 +89,7 @@ class ProvisioningTrialExecutor:
     completion but grades red — it captures per-service logs via
     ``runtime_backend.capture_service_logs`` before teardown, then records the
     captured byte counts on the trial's ``metrics.yaml`` (path derived from
-    ``log_capture.output_root``; ``None`` disables the amendment).
+    ``output_dir``; the amendment is a no-op when that file is absent).
 
     Instantiated once per run by the orchestrator's
     ``_build_trial_executor`` helper and submitted to the worker pool
@@ -100,13 +101,13 @@ class ProvisioningTrialExecutor:
         runtime_backend: RuntimeBackend,
         conductor: Conductor,
         logger: StructuredLogger,
-        log_capture: LogCaptureConfig | None = None,
+        output_dir: Path,
         events: RunDisplayEvents = _NULL_EVENTS,
     ) -> None:
         self.runtime_backend = runtime_backend
         self.conductor = conductor
         self.logger = logger
-        self.log_capture = log_capture
+        self.output_dir = output_dir
         self.events = events
 
     def execute(self, spec: TrialSpec, task_config: TaskConfig) -> TrialResult:
@@ -207,16 +208,11 @@ class ProvisioningTrialExecutor:
 
         Read-add-write of the plain YAML mapping the conductor already wrote —
         the durable landing spot for host-side per-trial values
-        (``provisioning_duration_s``, ``captured_service_logs``). No-op when no
-        ``log_capture`` output root is configured or the file is absent. Logs
-        and continues on I/O failure so a diagnostic write never masks the trial
-        result.
+        (``provisioning_duration_s``, ``captured_service_logs``). No-op when the
+        file is absent. Logs and continues on I/O failure so a diagnostic write
+        never masks the trial result.
         """
-        if self.log_capture is None:
-            return
-        metrics_path = (
-            self.log_capture.output_root / "trials" / task_id / str(trial_idx) / "metrics.yaml"
-        )
+        metrics_path = self.output_dir / "trials" / task_id / str(trial_idx) / "metrics.yaml"
         if not metrics_path.exists():
             return
         try:

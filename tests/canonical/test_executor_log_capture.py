@@ -26,7 +26,6 @@ import yaml
 
 from tests.canonical._factories import make_task_config, make_trial_spec
 from tolokaforge.core import trial_executor
-from tolokaforge.core.compose_materialisation import LogCaptureConfig
 from tolokaforge.core.conductor import InMemoryConductor
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import Grade, GradeComponents, Metrics, Trajectory, TrialStatus
@@ -101,7 +100,7 @@ def _make_executor(
         runtime_backend=backend,
         conductor=InMemoryConductor(trajectory_factory=factory),
         logger=StructuredLogger("test-executor-log-capture"),
-        log_capture=LogCaptureConfig(output_root=output_root, tail=200, on_success=False),
+        output_dir=output_root,
     )
 
 
@@ -228,7 +227,10 @@ class TestProvisioningDuration:
         assert metrics["captured_service_logs"] == _BYTE_MAP
         assert metrics["cost_usd"] == 0.5
 
-    def test_no_output_root_writes_nothing(self, tmp_path: Path, monkeypatch) -> None:
+    def test_absent_metrics_file_writes_nothing(self, tmp_path: Path, monkeypatch) -> None:
+        """When no ``metrics.yaml`` exists under the executor's ``output_dir``,
+        the amendment is a silent no-op — the trial's own metrics file (written
+        elsewhere) is left untouched."""
         monkeypatch.setattr(trial_executor.time, "monotonic", _monotonic_sequence([1.0, 2.0]))
         backend = _StubCaptureBackend()
         factory = _factory_for(TrialStatus.COMPLETED, binary_pass=True)
@@ -236,7 +238,7 @@ class TestProvisioningDuration:
             runtime_backend=backend,
             conductor=InMemoryConductor(trajectory_factory=factory),
             logger=StructuredLogger("test-executor-log-capture"),
-            log_capture=None,
+            output_dir=tmp_path / "run",
         )
         metrics_path = _write_metrics(tmp_path, "task-1", 0)
 

@@ -10,6 +10,7 @@ smoke tests).
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -27,6 +28,7 @@ def _make_executor() -> ProvisioningTrialExecutor:
         runtime_backend=InMemoryRuntimeBackend(),
         conductor=InMemoryConductor(),
         logger=MagicMock(),
+        output_dir=Path("/nonexistent-run-dir"),
     )
 
 

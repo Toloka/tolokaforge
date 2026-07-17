@@ -137,7 +137,7 @@ class TestCacheDebugRedGradeCapture:
             runtime_backend=backend,
             conductor=InMemoryConductor(trajectory_factory=_completed_red_factory),
             logger=StructuredLogger("test-cache-debug-red-capture"),
-            log_capture=log_capture,
+            output_dir=tmp_path,
         )
         metrics_path = _write_metrics(tmp_path, _TASK_ID, 0)
 

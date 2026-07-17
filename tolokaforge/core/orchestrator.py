@@ -879,7 +879,7 @@ class Orchestrator:
         self,
         runtime_backend: RuntimeBackend,
         conductor: Conductor,
-        log_capture: LogCaptureConfig | None = None,
+        output_dir: Path,
     ) -> TrialExecutor:
         """Compose the per-run :class:`TrialExecutor` (ADR-0015).
 
@@ -890,9 +890,8 @@ class Orchestrator:
         ``conductor.run``; the bracket runs on the worker thread so
         provisioning parallelism equals worker count.
 
-        ``log_capture`` is the same instance the runtime backend was built
-        with, threaded so the executor can amend a failed trial's
-        ``metrics.yaml`` with the captured per-service byte counts.
+        ``output_dir`` is the run's output root, threaded so the executor can
+        amend a trial's ``metrics.yaml`` with host-side per-trial values.
         """
         from tolokaforge.core.trial_executor import ProvisioningTrialExecutor
 
@@ -900,7 +899,7 @@ class Orchestrator:
             runtime_backend=runtime_backend,
             conductor=conductor,
             logger=self.logger,
-            log_capture=log_capture,
+            output_dir=output_dir,
             events=self._events,
         )
 
@@ -1456,7 +1455,7 @@ class Orchestrator:
             request_limiter=request_limiter,
         )
         trial_executor = self._build_trial_executor(
-            runtime_backend, conductor, log_capture=log_capture
+            runtime_backend, conductor, output_dir=output_dir
         )
 
         executor_healthy = runtime_backend.health_check()
@@ -1850,7 +1849,7 @@ class Orchestrator:
             request_limiter=request_limiter,
         )
         trial_executor = self._build_trial_executor(
-            runtime_backend, conductor, log_capture=log_capture
+            runtime_backend, conductor, output_dir=output_dir
         )
 
         task_by_id = {task.task_id: task for task in self.tasks}

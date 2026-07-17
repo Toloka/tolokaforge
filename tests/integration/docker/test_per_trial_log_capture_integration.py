@@ -213,7 +213,7 @@ class TestGradedFailLogCapture:
             runtime_backend=backend,
             conductor=InMemoryConductor(trajectory_factory=_completed_red_factory),
             logger=StructuredLogger("test-graded-fail-log-capture"),
-            log_capture=log_capture,
+            output_dir=tmp_path,
         )
         metrics_path = _write_metrics(tmp_path, "task-1", 0)
 
