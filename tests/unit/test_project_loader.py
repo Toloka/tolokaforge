@@ -191,6 +191,20 @@ class TestLoadProjectConfig:
         assert project.default_environment.stack.compose_file.is_absolute()
         assert project.default_environment.stack.compose_file == rel_compose.resolve()
 
+    def test_null_default_environment_stack_raises(self, tmp_path: Path) -> None:
+        path = self._write_project(tmp_path, {"default_environment": {"stack": None}})
+        with pytest.raises(RuntimeError, match="default_environment.stack' must not be null"):
+            load_project_config(path)
+
+    def test_null_default_environment_stack_compose_file_raises(self, tmp_path: Path) -> None:
+        path = self._write_project(
+            tmp_path, {"default_environment": {"stack": {"compose_file": None}}}
+        )
+        with pytest.raises(
+            RuntimeError, match="default_environment.stack.compose_file' must not be null"
+        ):
+            load_project_config(path)
+
     def test_missing_file_raises(self, tmp_path: Path) -> None:
         with pytest.raises(FileNotFoundError):
             load_project_config(tmp_path / "nope.yaml")

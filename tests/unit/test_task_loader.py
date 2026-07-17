@@ -445,6 +445,60 @@ class TestLoadTaskYaml:
         assert task.environment_manifest.stack.compose_file.is_absolute()
         assert task.environment_manifest.stack.compose_file == rel_compose.resolve()
 
+    def _write_task_with_stack(self, tmp_path: Path, stack: object) -> Path:
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(
+            task_path,
+            {
+                "task_id": "x",
+                "name": "x",
+                "category": "x",
+                "description": "x",
+                "initial_state": {},
+                "tools": {"agent": {"enabled": []}, "user": {"enabled": []}},
+                "user_simulator": {"mode": "scripted", "scripted_flow": []},
+                "grading": "g.yaml",
+                "environment_manifest": {"stack": stack},
+            },
+        )
+        return task_path
+
+    def test_null_stack_raises(self, tmp_path: Path) -> None:
+        task_path = self._write_task_with_stack(tmp_path, None)
+        with pytest.raises(RuntimeError, match="stack' must not be null"):
+            load_task_yaml(task_path)
+
+    def test_null_stack_compose_file_raises(self, tmp_path: Path) -> None:
+        task_path = self._write_task_with_stack(tmp_path, {"compose_file": None})
+        with pytest.raises(RuntimeError, match="stack.compose_file' must not be null"):
+            load_task_yaml(task_path)
+
+    def test_empty_stack_loads(self, tmp_path: Path) -> None:
+        task_path = self._write_task_with_stack(tmp_path, {})
+        task, _ = load_task_yaml(task_path)
+        assert task.environment_manifest is not None
+
+    def test_stack_inputs_only_loads(self, tmp_path: Path) -> None:
+        task_path = self._write_task_with_stack(tmp_path, {"inputs": {"x": "1"}})
+        task, _ = load_task_yaml(task_path)
+        assert task.environment_manifest is not None
+        assert task.environment_manifest.stack is not None
+        assert task.environment_manifest.stack.inputs == {"x": "1"}
+
+    def test_stack_real_compose_file_loads(self, tmp_path: Path) -> None:
+        task_path = self._write_task_with_stack(tmp_path, {"compose_file": "env.compose.yaml"})
+        task, _ = load_task_yaml(task_path)
+        assert task.environment_manifest is not None
+        assert task.environment_manifest.stack is not None
+        assert task.environment_manifest.stack.compose_file is not None
+
+    def test_non_string_stack_compose_file_still_raises_type_error(self, tmp_path: Path) -> None:
+        task_path = self._write_task_with_stack(tmp_path, {"compose_file": 3})
+        with pytest.raises(
+            RuntimeError, match="stack.compose_file' must be a string \\(got int\\)"
+        ):
+            load_task_yaml(task_path)
+
     def test_dangling_domain_ref_raises(self, tmp_path: Path) -> None:
         task_path = tmp_path / "testcases" / "c" / "task.yaml"
         task_path.parent.mkdir(parents=True)
