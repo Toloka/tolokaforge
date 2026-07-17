@@ -7,7 +7,7 @@ The test suite is organized into **3 categories**: unit, canonical, and integrat
 | Category | Directory | Speed | External deps | Marker |
 |----------|-----------|-------|---------------|--------|
 | Unit | `tests/unit/` | Fast (< 1s each) | None | `@pytest.mark.unit` |
-| Canonical | `tests/canonical/` | Fast (< 5s each) | None (uses golden snapshots) | `@pytest.mark.canonical` |
+| Canonical | `tests/canonical/` | Fast (< 5s each), except the packaging/entry-point smoke tests that build a wheel and install it into a scratch venv (~10–25s) | Golden snapshots; the packaging/entry-point smoke tests also require the `uv` CLI (they skip loud without it) | `@pytest.mark.canonical` |
 | Integration | `tests/integration/` | Slow (5-60s each) | Docker, API keys | `@pytest.mark.integration` |
 
 Current baseline: see [BASELINE.md](BASELINE.md) for up-to-date numbers.
@@ -48,8 +48,11 @@ tests/
 ├── unit/                    # Pure-logic tests, no I/O
 │   ├── grading/             # Grading subsystem tests
 │   └── adapters/            # Adapter unit tests
-├── canonical/               # Golden snapshot tests
-│   ├── conftest.py          # --update-canon flag, canon_snapshot fixture
+├── canonical/               # Golden snapshot + packaging/discovery smoke tests
+│   ├── conftest.py          # --update-canon flag, canon_snapshot + built_wheel session fixtures
+│   ├── test_adapter_convert_packaging.py    # wheel-inspection packaging smoke
+│   ├── test_adapter_convert_entry_point.py  # entry-point discovery smoke (scratch-venv install)
+│   ├── fixtures/            # tolokaforge-adapter-demo: demo conversion adapter installed into a scratch venv
 │   └── snapshots/           # Committed golden JSON files
 ├── integration/             # Docker/API integration tests
 │   └── docker/              # Docker foundation layer tests
