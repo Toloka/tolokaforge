@@ -338,7 +338,8 @@ did not land. A `COMPLETED` trial that passes, or one with no grade, does not
 trigger capture. The `compute.capture_logs_on_success` debug flag overrides
 this and captures on success too.
 
-**Two capture surfaces.**
+**Capture surfaces.** Two are per-trial (`PerTrialRuntimeBackend`); the third is
+run-level (`SharedStackRuntimeBackend`).
 
 - **Provision-failure path** — `provision()` captures before
   `cleanup_partial_materialisation` in both failure branches (compose
@@ -358,6 +359,16 @@ this and captures on success too.
   top-level `captured_service_logs` mapping — the durable record on this path
   (the hook writes only the `.log` files). See
   [`docs/OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md:1) § `captured_service_logs`.
+- **Shared-stack materialise-failure path** — `SharedStackRuntimeBackend`
+  materialises the task-declared compose stack once at `connect` time for the
+  whole run. If it fails (compose `up --wait` failure or the declared runner
+  service never exposing its port), the run-wide per-service logs are captured
+  before `cleanup_partial_materialisation` to a **run-level** location,
+  `<output_dir>/services/<name>.log`, with a `services/_capture.yaml` durable
+  record carrying `capture_reason: "materialise_error"` (distinguishing it from
+  the per-trial `"provision_error"`). The run then aborts with the same
+  `ProvisionError`; a run with no `log_capture` configured writes no
+  `services/` dir.
 
 On every trial that provisions successfully, the executor also amends the
 trial's `metrics.yaml` with a top-level `provisioning_duration_s` — the
@@ -365,9 +376,12 @@ monotonic-clock wall-clock of the `provision → await_ready → endpoints` brac
 measured before `provision()` and stopped at `endpoints()` return. See
 [`docs/OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md:1) § `provisioning_duration_s`.
 
-Both surfaces are best-effort: capture runs *because* a failure was already
+Every surface is best-effort: capture runs *because* a failure was already
 decided, so a per-service fetch error is logged at debug and that service is
-omitted — capture never raises and never masks the original error.
+omitted — capture never raises and never masks the original error. On the
+shared-stack run-level surface the whole capture is additionally wrapped in a
+fail-safe boundary so a compose-parse or manifest-write error cannot mask the
+`ProvisionError`.
 
 **`--tail` mechanism.** Testcontainers' `DockerCompose.get_logs` has no tail
 bound, so the helper drives the compose CLI directly
@@ -376,11 +390,16 @@ deriving the base command from the `DockerCompose` instance and running the
 subprocess with `cwd=<context>` so Compose resolves the per-trial project from
 the context-dir basename. `compute.log_tail` (default 500) sets `N`.
 
-**Shared-stack no-op.** `SharedStackRuntimeBackend.capture_service_logs` returns
-`{}` unconditionally. Its stack is run-wide, not trial-scoped, and its per-trial
-`teardown` is a no-op — there is no per-trial stack to read, and capturing the
-same run-wide containers on every trial would be meaningless. Run-level capture
-on a shared-stack materialise failure is a separate, future surface.
+**Shared-stack surfaces.** `SharedStackRuntimeBackend.capture_service_logs`
+(the per-trial hook) returns `{}` unconditionally: its stack is run-wide, not
+trial-scoped, and its per-trial `teardown` is a no-op — there is no per-trial
+stack to read, and capturing the same run-wide containers on every trial would
+be meaningless. Capture on the shared stack happens once, at run scope, on the
+materialise-failure path (see the run-level surface above): if the task-declared
+compose stack fails to come up at `connect` time, the run-wide per-service logs
+are written to `<output_dir>/services/<name>.log` plus a
+`services/_capture.yaml` (`capture_reason: "materialise_error"`) before the
+partial stack is torn down.
 
 ## `SharedStackRuntimeBackend` vs `PerTrialRuntimeBackend` side-by-side
 

@@ -28,15 +28,19 @@ from testcontainers.compose import DockerCompose
 
 from tolokaforge.core.compose_materialisation import (
     RUNNER_PORT_DEFAULT,
+    LogCaptureConfig,
     apply_network_policy_to_compose_file,
+    capture_compose_service_logs,
     cleanup_partial_materialisation,
     compose_container_to_snapshot,
     copy_compose_context,
     make_project_temp_dir,
     resolve_env_endpoints,
     resolve_runner_endpoint,
+    run_services_dir,
     shutdown_compose,
     verify_network_policy_supported,
+    write_capture_manifest,
 )
 from tolokaforge.core.models import SeedRef
 from tolokaforge.core.run_display_events import ContainerSnapshot
@@ -704,6 +708,7 @@ class SharedStackRuntimeBackend:
         env_manifest: EnvironmentManifest | None = None,
         run_id: str = "run",
         seeds: dict[str, SeedRef] | None = None,
+        log_capture: LogCaptureConfig | None = None,
     ):
         """Initialize the shared-stack runtime.
 
@@ -733,6 +738,7 @@ class SharedStackRuntimeBackend:
         self._compose: DockerCompose | None = None
         self._temp_dir: Path | None = None
         self.seeds: dict[str, SeedRef] = dict(seeds or {})
+        self.log_capture = log_capture
 
         self.runner_client: GrpcRunnerClient | None
         self._endpoints: EnvEndpoints | None
@@ -844,6 +850,7 @@ class SharedStackRuntimeBackend:
             )
             compose.start()
         except Exception as exc:  # noqa: BLE001 — surface as typed ProvisionError
+            self._capture_materialise_failure_logs(compose)
             cleanup_partial_materialisation(compose, temp_dir)
             raise ProvisionError(
                 trial_id=self._run_id,
@@ -855,6 +862,7 @@ class SharedStackRuntimeBackend:
             compose, manifest.runner_service, RUNNER_PORT_DEFAULT
         )
         if runner_endpoint is None:
+            self._capture_materialise_failure_logs(compose)
             cleanup_partial_materialisation(compose, temp_dir)
             raise ProvisionError(
                 trial_id=self._run_id,
@@ -878,6 +886,41 @@ class SharedStackRuntimeBackend:
         self._temp_dir = temp_dir
         self._endpoints = endpoints
         self.runner_client = GrpcRunnerClient(runner_address=f"{runner_host}:{runner_host_port}")
+
+    def _capture_materialise_failure_logs(self, compose: DockerCompose | None) -> None:
+        """Best-effort run-level capture of the shared stack's per-service
+        compose logs on a materialise failure, before the partial stack is
+        torn down.
+
+        No-op when ``self.log_capture is None``. Writes the ``.log`` files
+        plus a ``services/_capture.yaml`` record
+        (``capture_reason: "materialise_error"``) under
+        ``<output_root>/services/`` — the run-level counterpart to
+        :class:`PerTrialRuntimeBackend`'s per-trial provision capture.
+
+        Wrapped in a fail-safe boundary: any capture error (compose parse,
+        manifest write) is logged and swallowed so it never masks the
+        :class:`ProvisionError` the caller is about to raise."""
+        if self.log_capture is None:
+            return
+        try:
+            assert self._env_manifest is not None  # narrowed by caller
+            service_names = tuple(self._env_manifest.load_compose()["services"])
+            dest_dir = run_services_dir(self.log_capture.output_root)
+            captured = capture_compose_service_logs(
+                compose, service_names, dest_dir, self.log_capture.tail
+            )
+            if captured:
+                write_capture_manifest(
+                    dest_dir,
+                    self.log_capture.tail,
+                    captured,
+                    capture_reason="materialise_error",
+                )
+        except Exception:  # noqa: BLE001 — fail-safe: must never mask the ProvisionError
+            logger.exception(
+                "SharedStackRuntimeBackend: run-level materialise-failure log capture failed"
+            )
 
     def health_check(self) -> bool:
         """Check health of Runner service"""
