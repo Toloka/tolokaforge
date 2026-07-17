@@ -65,13 +65,37 @@ if TYPE_CHECKING:
     from tolokaforge.core.logging import StructuredLogger
 
 __all__ = [
+    "DEFAULT_MAX_TURNS",
     "Conductor",
     "ConductorCallLog",
     "ConductorContext",
     "ConductorFactory",
     "InMemoryConductor",
     "InProcessConductor",
+    "resolve_max_turns",
 ]
+
+#: Engine default per-trial turn budget, applied when neither the run-level
+#: cap (``OrchestratorConfig.max_turns``) nor the task declares a value.
+DEFAULT_MAX_TURNS = 50
+
+
+def resolve_max_turns(task_max_turns: int | None, run_cap: int | None) -> int:
+    """Coalesce the task-declared budget and the optional run-level cap into a
+    concrete per-trial turn budget.
+
+    The run cap is an optional operator-side clamp; the task value is
+    authoritative for the task's own semantics. When both are set the effective
+    budget is the tighter of the two. When neither is set the engine default
+    (:data:`DEFAULT_MAX_TURNS`) applies.
+    """
+    if task_max_turns is None and run_cap is None:
+        return DEFAULT_MAX_TURNS
+    if task_max_turns is None:
+        return run_cap
+    if run_cap is None:
+        return task_max_turns
+    return min(task_max_turns, run_cap)
 
 
 # ---------------------------------------------------------------------------
@@ -543,18 +567,7 @@ class InProcessConductor:
 
         system_prompt = self._build_system_prompt(task, setup.tool_schemas, setup.task_dir)
 
-        # Effective max_turns = min(task-resolved, run-level cap). The
-        # run-level cap is optional and acts as an operator-side clamp;
-        # the task's declared value is authoritative for the semantics
-        # of the task itself.
-        task_max_turns = task.max_turns
-        run_cap = self.config.orchestrator.max_turns
-        if task_max_turns is None:
-            max_turns = run_cap
-        elif run_cap is None:
-            max_turns = task_max_turns
-        else:
-            max_turns = min(task_max_turns, run_cap)
+        max_turns = resolve_max_turns(task.max_turns, self.config.orchestrator.max_turns)
 
         # Scale turn budget for complex multi-app mobile tasks only when task max_turns
         # is not explicitly pinned.

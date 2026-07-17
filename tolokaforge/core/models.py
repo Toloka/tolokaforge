@@ -494,12 +494,12 @@ class OrchestratorConfig(BaseModel):
     Field-name migration to ``TimeoutDefaults`` (``trial_seconds`` /
     ``tool_call_seconds``) lands with the cleanup milestone."""
 
-    max_turns: int = 50
-    """Run-level cap on per-trial ``max_turns``. Effective value at
-    runtime = ``min(TaskConfig.max_turns, this)``. Unset behaviour is
-    preserved by the default (50) acting as the cap when the task
-    declares nothing higher — but authors should treat this as an
-    optional clamp rather than the authoritative value."""
+    max_turns: int | None = None
+    """Optional run-level cap on per-trial ``max_turns``. When set, the
+    effective budget is ``min(TaskConfig.max_turns, this)`` — an
+    operator-side clamp over the task-authoritative value. When unset,
+    the task-declared value stands alone. When neither the run nor the
+    task declares a value, the engine default (50 turns) applies."""
 
     auto_start_services: bool = True  # Auto-start Docker services via EngineStack
 

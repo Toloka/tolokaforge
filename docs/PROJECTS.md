@@ -500,8 +500,10 @@ copies as **caps or removes them**:
   the task-resolved `max_turns` stands alone. When set, the
   effective turn budget = `min(task-resolved max_turns,
   orchestrator.max_turns)` — a task can never raise itself above
-  the run's cap. Most projects should leave it unset; set it
-  only as an operator guard (e.g. a tight CI profile).
+  the run's cap. When neither the run nor the task declares a
+  value, the engine default (50 turns) applies. Most projects
+  should leave it unset; set it only as an operator guard (e.g. a
+  tight CI profile).
 - `orchestrator.timeouts` caps the task-resolved timeouts the
   same way, and is optional the same way. M2 unifies the two
   timeout shapes onto the task-side field names
