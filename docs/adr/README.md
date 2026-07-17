@@ -49,4 +49,5 @@ Day-to-day implementation choices that don't affect the system shape do *not* ne
 | [0017](0017-persistent-agent-shell-and-editor-tools.md) | Persistent agent shell + first-class editor tools + tool-lifecycle evolution | Proposed |
 | [0018](0018-multi-container-under-shared-runtime.md) | Multi-container capability under shared runtime (composition axis) | Accepted |
 | [0019](0019-front-end-plugin-namespace.md) | Front-end pluggability via `tolokaforge.dx` | Accepted |
+| [0020](0020-judge-protocol.md) | `Judge` Protocol — the grading-plane judge seam | Accepted |
 | [0021](0021-component-monitoring-seam.md) | Component-oriented monitoring — `ComponentSnapshot` / `component_*` events, panel widget with auto-expand-on-fail | Accepted |

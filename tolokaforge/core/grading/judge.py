@@ -1,11 +1,11 @@
-"""Read-only agentic rubric judge — Stage 4 of ``docs/RUBRIC_GRADING_DESIGN.md``.
+"""Read-only agentic rubric judge (see ``docs/RUBRIC_GRADING_DESIGN.md``).
 
 The judge is *"a solo read-only grader — the shared :class:`ToolCallingLoop`
 with no user simulator, a harness-owned read-only toolset, and a rubric-shaped
 ``submit_report`` tool — run over the live final state, failing loud on its own
 malfunction."*
 
-Design (locked decisions, see the plan):
+Design:
 
 * **Separate fixed judge model.** The judge constructs its own
   :class:`~tolokaforge.core.llm.client.LLMClient` from the run-level
@@ -17,10 +17,11 @@ Design (locked decisions, see the plan):
   filter, NO DB clone. The judge gets read-only DB tools, ``search_kb`` when the
   task is RAG-backed, file readers only when a real workspace exists, and the
   rubric-derived ``submit_report``.
-* **Narrow input surface.** :func:`run_rubric_judge` receives only
+* **Narrow input surface.** :meth:`Judge.run` receives only
   ``{agent_system_prompt, transcript, rubric (incl. reference/expected),
-  read-tools}`` — never ``golden_actions`` / ``expected_hash`` /
-  ``jsonpath_checks``.
+  read-tools, state_diff}`` — never ``golden_actions`` / ``expected_hash`` /
+  ``jsonpath_checks``. The oracle fields cannot leak in by construction: they are
+  not on the Protocol's ``run()`` surface.
 * **Fail loud.** On :class:`SubmitReportValidationError` the judge re-prompts a
   bounded number of times; on exhaustion, on budget/turn exhaustion, or on any
   judge failure it returns :data:`JudgeStatus.ERRORED` with **no numeric score**.
@@ -39,7 +40,7 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 from tolokaforge.core.grading.judge_tools import (
     GetDbStateTool,
@@ -50,6 +51,7 @@ from tolokaforge.core.grading.judge_tools import (
 )
 from tolokaforge.core.grading.kb_search import KnowledgeSearch
 from tolokaforge.core.grading.rubric import (
+    GRADED_MET_THRESHOLD,
     SUBMIT_REPORT_TOOL_NAME,
     SubmitReportValidationError,
     VerdictConsistencyError,
@@ -72,7 +74,7 @@ from tolokaforge.core.models import (
     TerminationReason,
     TrialStatus,
 )
-from tolokaforge.runner.models import CriterionResult, Rubric
+from tolokaforge.runner.models import Criterion, CriterionResult, Rubric
 from tolokaforge.tools.registry import Tool, ToolExecutor, ToolRegistry
 
 # ---------------------------------------------------------------------------
@@ -530,168 +532,215 @@ def model_config_from_ref(model_ref: str) -> ModelConfig:
 
 
 # ---------------------------------------------------------------------------
-# The judge entry point
+# The judge seam — Protocol + production impl + in-memory fixture
 # ---------------------------------------------------------------------------
 
 
-def run_rubric_judge(
-    *,
-    rubric: Rubric,
-    model_config: ModelConfig,
-    agent_system_prompt: str,
-    transcript: list[dict[str, Any]],
-    db_reader: DBReader | None = None,
-    kb_search: KnowledgeSearch | None = None,
-    extra_read_tools: list[Tool] | None = None,
-    workspace_dir: Path | None = None,
-    state_diff: str | None = None,
-    max_turns: int = DEFAULT_JUDGE_MAX_TURNS,
-    episode_timeout_s: int = DEFAULT_JUDGE_EPISODE_TIMEOUT_S,
-    submit_report_retries: int = DEFAULT_SUBMIT_REPORT_RETRIES,
-    llm_client: LLMClient | None = None,
-    logger: StructuredLogger | None = None,
-) -> JudgeResult:
-    """Run the read-only agentic rubric judge and return its verdict.
+@runtime_checkable
+class Judge(Protocol):
+    """Grade one trial's evidence into a :class:`JudgeResult`.
 
-    Narrow input surface: ``{agent_system_prompt, transcript, rubric, read-tools,
-    state_diff}`` only. Never receives the deterministic-oracle fields of
-    ``GradingConfig``. ``state_diff`` is the ``initial → final`` delta of the
-    agent's own edits (not the trial-vs-golden diff) — it reveals nothing about
-    the expected answer, so it does not bias the judge.
-
-    Fail-loud: any judge malfunction — repeated malformed ``submit_report`` past
-    ``submit_report_retries``, turn / wall-time exhaustion, or an LLM/tool error
-    classified terminal by the loop — yields :data:`JudgeStatus.ERRORED` with NO
-    numeric score. There is no path that returns ``0.0`` / ``0.5`` on failure.
-
-    ``llm_client`` may be injected for tests (a scripted ``LoopLLMClient`` /
-    fake); production passes ``None`` and the judge builds one from the
-    run-level ``model_config``.
+    The per-trial *evidence* surface only. How a judge is built — model, budgets,
+    injected client, logger — is a construction-time concern of the concrete impl,
+    NOT part of this contract, so a variant that ignores live evidence (offline
+    replay) need not accept a ``model_config``. Deliberately narrow: never the
+    deterministic-oracle fields (``golden_actions`` / ``expected_hash`` /
+    ``jsonpath_checks`` / ``grading_config``) — they cannot leak in because they
+    are not on ``run()``.
     """
-    logger = logger or get_logger("rubric_judge")
-    metrics = _JudgeMetricsSink()
 
-    client: LLMClient
-    if llm_client is not None:
-        client = llm_client  # type: ignore[assignment]
-    else:
-        client = LLMClient(model_config)
+    def run(
+        self,
+        *,
+        rubric: Rubric,
+        agent_system_prompt: str,
+        transcript: list[dict[str, Any]],
+        db_reader: DBReader | None = None,
+        kb_search: KnowledgeSearch | None = None,
+        extra_read_tools: list[Tool] | None = None,
+        workspace_dir: Path | None = None,
+        state_diff: str | None = None,
+    ) -> JudgeResult: ...
 
-    registry, kb_tools_offered = _build_judge_registry(
-        rubric,
-        db_reader=db_reader,
-        kb_search=kb_search,
-        extra_read_tools=extra_read_tools,
-        workspace_dir=workspace_dir,
-        logger=logger,
-    )
-    tool_executor = ToolExecutor(registry)
-    tool_schemas = registry.get_schemas(sanitize=False)
 
-    termination = _SubmitReportTermination()
-    loop = ToolCallingLoop(
-        llm_client=client,
-        tool_executor=tool_executor,
-        tool_schemas=tool_schemas,
-        # Bounded by max_turns + wall-time (episode_timeout_s). There is no
-        # per-turn loop timeout; the per-call LLM timeout lives in LLMClient.
-        config=LoopConfig(max_turns=max_turns, episode_timeout_s=episode_timeout_s),
-        metrics=metrics,
-        should_terminate=termination,
-        logger=logger,
-        user_turn=None,
-    )
+class LLMJudge:
+    """Production :class:`Judge`: the read-only agentic rubric judge over an LLM.
 
-    messages: list[Message] = [
-        Message(
-            role=MessageRole.USER,
-            content=_build_opening_message(agent_system_prompt, transcript, state_diff),
+    Construction-time config is *how to run the LLM judge* — the run-level
+    ``model_config``, the turn / wall-time / retry budgets, an optionally injected
+    ``llm_client`` (tests pass a scripted client; production passes ``None`` and
+    the judge builds one ``LLMClient(model_config)`` per :meth:`run`), and the
+    logger. :meth:`run` carries only the per-trial evidence.
+    """
+
+    def __init__(
+        self,
+        model_config: ModelConfig,
+        *,
+        max_turns: int = DEFAULT_JUDGE_MAX_TURNS,
+        episode_timeout_s: int = DEFAULT_JUDGE_EPISODE_TIMEOUT_S,
+        submit_report_retries: int = DEFAULT_SUBMIT_REPORT_RETRIES,
+        llm_client: LLMClient | None = None,
+        logger: StructuredLogger | None = None,
+    ) -> None:
+        self._model_config = model_config
+        self._max_turns = max_turns
+        self._episode_timeout_s = episode_timeout_s
+        self._submit_report_retries = submit_report_retries
+        self._llm_client = llm_client
+        self._logger = logger
+
+    def run(
+        self,
+        *,
+        rubric: Rubric,
+        agent_system_prompt: str,
+        transcript: list[dict[str, Any]],
+        db_reader: DBReader | None = None,
+        kb_search: KnowledgeSearch | None = None,
+        extra_read_tools: list[Tool] | None = None,
+        workspace_dir: Path | None = None,
+        state_diff: str | None = None,
+    ) -> JudgeResult:
+        """Run the read-only agentic rubric judge and return its verdict.
+
+        Narrow input surface: ``{agent_system_prompt, transcript, rubric,
+        read-tools, state_diff}`` only. Never receives the deterministic-oracle
+        fields of ``GradingConfig``. ``state_diff`` is the ``initial → final``
+        delta of the agent's own edits (not the trial-vs-golden diff) — it reveals
+        nothing about the expected answer, so it does not bias the judge.
+
+        Fail-loud: any judge malfunction — repeated malformed ``submit_report``
+        past the configured ``submit_report_retries``, turn / wall-time
+        exhaustion, or an LLM/tool error classified terminal by the loop — yields
+        :data:`JudgeStatus.ERRORED` with NO numeric score. There is no path that
+        returns ``0.0`` / ``0.5`` on failure.
+        """
+        logger = self._logger or get_logger("rubric_judge")
+        metrics = _JudgeMetricsSink()
+
+        client: LLMClient
+        if self._llm_client is not None:
+            client = self._llm_client
+        else:
+            client = LLMClient(self._model_config)
+
+        registry, kb_tools_offered = _build_judge_registry(
+            rubric,
+            db_reader=db_reader,
+            kb_search=kb_search,
+            extra_read_tools=extra_read_tools,
+            workspace_dir=workspace_dir,
+            logger=logger,
         )
-    ]
-    rubric_brief = _build_rubric_brief(rubric)
-    system_prompt = f"{_JUDGE_SYSTEM_PROMPT}\n\n{rubric_brief}"
+        tool_executor = ToolExecutor(registry)
+        tool_schemas = registry.get_schemas(sanitize=False)
 
-    attempts = 0
-    while True:
-        try:
-            outcome = loop.run(system_prompt, messages, start_time=time.time())
-        except Exception as exc:  # noqa: BLE001 — fail loud, never score on judge crash
-            logger.error("Judge loop raised", error=str(exc), error_type=type(exc).__name__)
-            return _errored(
-                metrics,
-                f"Judge loop crashed: {type(exc).__name__}: {exc}",
-                messages,
-                kb_tools_offered,
+        termination = _SubmitReportTermination()
+        loop = ToolCallingLoop(
+            llm_client=client,
+            tool_executor=tool_executor,
+            tool_schemas=tool_schemas,
+            # Bounded by max_turns + wall-time (episode_timeout_s). There is no
+            # per-turn loop timeout; the per-call LLM timeout lives in LLMClient.
+            config=LoopConfig(max_turns=self._max_turns, episode_timeout_s=self._episode_timeout_s),
+            metrics=metrics,
+            should_terminate=termination,
+            logger=logger,
+            user_turn=None,
+        )
+
+        messages: list[Message] = [
+            Message(
+                role=MessageRole.USER,
+                content=_build_opening_message(agent_system_prompt, transcript, state_diff),
             )
+        ]
+        rubric_brief = _build_rubric_brief(rubric)
+        system_prompt = f"{_JUDGE_SYSTEM_PROMPT}\n\n{rubric_brief}"
 
-        if termination.captured_args is None:
-            # Loop ended without submit_report — turn / wall-time / API error.
-            return _errored(
-                metrics,
-                f"Judge did not call submit_report "
-                f"(termination={outcome.termination_reason}, status={outcome.status}).",
-                messages,
-                kb_tools_offered,
-            )
-
-        try:
-            results = parse_submit_report(termination.captured_args, rubric)
-            aggregate = aggregate_rubric(rubric, results)
-        except SubmitReportValidationError as exc:
-            if isinstance(exc, VerdictConsistencyError):
-                metrics.consistency_rejections += 1
-            attempts += 1
-            if attempts > submit_report_retries:
-                logger.error(
-                    "Judge submit_report invalid after retries; erroring",
-                    attempts=attempts,
-                    error=str(exc),
-                )
+        attempts = 0
+        while True:
+            try:
+                outcome = loop.run(system_prompt, messages, start_time=time.time())
+            except Exception as exc:  # noqa: BLE001 — fail loud, never score on judge crash
+                logger.error("Judge loop raised", error=str(exc), error_type=type(exc).__name__)
                 return _errored(
                     metrics,
-                    f"submit_report invalid after {submit_report_retries} retries: {exc}",
+                    f"Judge loop crashed: {type(exc).__name__}: {exc}",
                     messages,
                     kb_tools_offered,
                 )
-            logger.warning(
-                "Judge submit_report invalid; re-prompting", attempt=attempts, error=str(exc)
-            )
-            if termination.captured_call_id is None:
-                raise RuntimeError(
-                    "Judge retry invariant violated: submit_report was rejected but "
-                    "no terminating call id was captured."
-                )
-            rejection = (
-                f"Your submit_report was rejected: {exc}\n"
-                "Fix the issue and call submit_report again with a verdict "
-                "and justification for every criterion."
-            )
-            _answer_terminating_submit_report(messages, termination.captured_call_id, rejection)
-            termination.captured_args = None
-            termination.captured_call_id = None
-            continue
 
-        logger.info(
-            "Judge completed",
-            score=aggregate.score,
-            gate_failed=aggregate.gate_failed,
-            failed_required=list(aggregate.failed_required_ids),
-        )
-        reasons = _build_reasons(
-            termination.captured_args, aggregate.failed_required_ids, kb_tools_offered
-        )
-        return JudgeResult(
-            status=JudgeStatus.COMPLETED,
-            usage=metrics.snapshot(),
-            reasons=reasons,
-            score=aggregate.score,
-            binary_pass=aggregate.binary_pass,
-            gate_failed=aggregate.gate_failed,
-            criterion_results=tuple(results),
-            failed_required_ids=aggregate.failed_required_ids,
-            kb_tools_offered=kb_tools_offered,
-            transcript=_serialize_judge_transcript(messages),
-        )
+            if termination.captured_args is None:
+                # Loop ended without submit_report — turn / wall-time / API error.
+                return _errored(
+                    metrics,
+                    f"Judge did not call submit_report "
+                    f"(termination={outcome.termination_reason}, status={outcome.status}).",
+                    messages,
+                    kb_tools_offered,
+                )
+
+            try:
+                results = parse_submit_report(termination.captured_args, rubric)
+                aggregate = aggregate_rubric(rubric, results)
+            except SubmitReportValidationError as exc:
+                if isinstance(exc, VerdictConsistencyError):
+                    metrics.consistency_rejections += 1
+                attempts += 1
+                if attempts > self._submit_report_retries:
+                    logger.error(
+                        "Judge submit_report invalid after retries; erroring",
+                        attempts=attempts,
+                        error=str(exc),
+                    )
+                    return _errored(
+                        metrics,
+                        f"submit_report invalid after {self._submit_report_retries} "
+                        f"retries: {exc}",
+                        messages,
+                        kb_tools_offered,
+                    )
+                logger.warning(
+                    "Judge submit_report invalid; re-prompting", attempt=attempts, error=str(exc)
+                )
+                if termination.captured_call_id is None:
+                    raise RuntimeError(
+                        "Judge retry invariant violated: submit_report was rejected but "
+                        "no terminating call id was captured."
+                    )
+                rejection = (
+                    f"Your submit_report was rejected: {exc}\n"
+                    "Fix the issue and call submit_report again with a verdict "
+                    "and justification for every criterion."
+                )
+                _answer_terminating_submit_report(messages, termination.captured_call_id, rejection)
+                termination.captured_args = None
+                termination.captured_call_id = None
+                continue
+
+            logger.info(
+                "Judge completed",
+                score=aggregate.score,
+                gate_failed=aggregate.gate_failed,
+                failed_required=list(aggregate.failed_required_ids),
+            )
+            reasons = _build_reasons(
+                termination.captured_args, aggregate.failed_required_ids, kb_tools_offered
+            )
+            return JudgeResult(
+                status=JudgeStatus.COMPLETED,
+                usage=metrics.snapshot(),
+                reasons=reasons,
+                score=aggregate.score,
+                binary_pass=aggregate.binary_pass,
+                gate_failed=aggregate.gate_failed,
+                criterion_results=tuple(results),
+                failed_required_ids=aggregate.failed_required_ids,
+                kb_tools_offered=kb_tools_offered,
+                transcript=_serialize_judge_transcript(messages),
+            )
 
 
 def _errored(
@@ -748,12 +797,118 @@ def _build_reasons(
     return " | ".join(parts)
 
 
+# ---------------------------------------------------------------------------
+# InMemoryJudge — non-LLM test fixture (records calls, returns synthetic verdicts)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class JudgeCallLog:
+    """Records what an :class:`InMemoryJudge` was asked to grade.
+
+    Tests assert on this directly instead of mocking the judge. Each entry
+    captures the rubric's criterion ids, the transcript length, and which evidence
+    seams were present on the ``run()`` call.
+    """
+
+    runs: list[dict[str, Any]] = field(default_factory=list)
+
+
+class InMemoryJudge:
+    """Non-LLM :class:`Judge` fixture — deterministic verdicts, no inference.
+
+    Records every ``run()`` on :attr:`call_log` and returns a configurable
+    :class:`JudgeResult`. By default every criterion is met with score ``1.0``,
+    aggregated through the real :func:`aggregate_rubric` so the score math is
+    authentic. Per-criterion verdicts override the default (a ``bool`` is a binary
+    met/not-met verdict; a ``float`` is a graded score); ``force_errored`` makes
+    ``run()`` return :data:`JudgeStatus.ERRORED` with no score. Production never
+    constructs this — it is a test seam only.
+    """
+
+    def __init__(
+        self,
+        *,
+        verdicts: dict[str, bool | float] | None = None,
+        force_errored: bool = False,
+        errored_reasons: str = "InMemoryJudge forced error",
+    ) -> None:
+        self._verdicts = dict(verdicts or {})
+        self._force_errored = force_errored
+        self._errored_reasons = errored_reasons
+        self.call_log = JudgeCallLog()
+
+    def run(
+        self,
+        *,
+        rubric: Rubric,
+        agent_system_prompt: str,
+        transcript: list[dict[str, Any]],
+        db_reader: DBReader | None = None,
+        kb_search: KnowledgeSearch | None = None,
+        extra_read_tools: list[Tool] | None = None,
+        workspace_dir: Path | None = None,
+        state_diff: str | None = None,
+    ) -> JudgeResult:
+        self.call_log.runs.append(
+            {
+                "criterion_ids": tuple(c.id for c in rubric.criteria),
+                "transcript_len": len(transcript),
+                "db_reader": db_reader is not None,
+                "kb_search": kb_search is not None,
+                "extra_read_tools": bool(extra_read_tools),
+                "workspace_dir": workspace_dir is not None,
+                "state_diff": state_diff is not None,
+            }
+        )
+        if self._force_errored:
+            return JudgeResult(
+                status=JudgeStatus.ERRORED,
+                usage=JudgeUsage(),
+                reasons=self._errored_reasons,
+                score=None,
+                binary_pass=None,
+            )
+
+        results = [self._criterion_result(c) for c in rubric.criteria]
+        aggregate = aggregate_rubric(rubric, results)
+        return JudgeResult(
+            status=JudgeStatus.COMPLETED,
+            usage=JudgeUsage(),
+            reasons="InMemoryJudge synthetic verdict",
+            score=aggregate.score,
+            binary_pass=aggregate.binary_pass,
+            gate_failed=aggregate.gate_failed,
+            criterion_results=tuple(results),
+            failed_required_ids=aggregate.failed_required_ids,
+        )
+
+    def _criterion_result(self, criterion: Criterion) -> CriterionResult:
+        """Map the configured (or default-``True``) verdict to a per-criterion result."""
+        verdict = self._verdicts.get(criterion.id, True)
+        if isinstance(verdict, bool):
+            met = verdict
+            score = 1.0 if verdict else 0.0
+        else:
+            score = float(verdict)
+            met = score >= GRADED_MET_THRESHOLD
+        return CriterionResult(
+            id=criterion.id,
+            met=met,
+            score=score,
+            justification=f"InMemoryJudge verdict for {criterion.id}",
+        )
+
+
 __all__ = [
     "DBReader",
     "KnowledgeSearch",
+    "Judge",
     "JudgeResult",
     "JudgeStatus",
     "JudgeUsage",
+    "JudgeCallLog",
+    "LLMJudge",
+    "InMemoryJudge",
     "model_config_from_ref",
-    "run_rubric_judge",
 ]

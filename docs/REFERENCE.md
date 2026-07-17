@@ -333,7 +333,7 @@ grade = engine.grade_trajectory(trajectory: Trajectory, final_env_state: dict)
 # Returns: Grade with binary_pass, score, components, reasons, state_diff
 # (deterministic components only — GradingEngine does NOT run the rubric judge)
 #
-# The rubric judge runs Runner-side (see core/grading/judge.run_rubric_judge),
+# The rubric judge runs Runner-side (see core/grading/judge.LLMJudge),
 # taking the run-level judge ModelConfig carried on TrialSpec.judge_model_config
 # (sourced from RunConfig.models["judge"]).
 ```

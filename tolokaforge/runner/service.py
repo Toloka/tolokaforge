@@ -33,7 +33,7 @@ from typing import Any
 import grpc
 from pydantic import ValidationError
 
-from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, run_rubric_judge
+from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, LLMJudge
 from tolokaforge.core.grading.judge_tools import DelegatingReadTool
 from tolokaforge.core.grading.kb_search import KnowledgeSearch, RagServiceKnowledgeSearch
 from tolokaforge.core.grading.state_diff import render_state_diff
@@ -1251,7 +1251,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         """Run the read-only rubric judge for one trial.
 
         Async/sync bridge: ``_grade_trial_async`` runs ON the dedicated event
-        loop thread. The judge loop (``run_rubric_judge``) is synchronous and the
+        loop thread. The judge loop (``LLMJudge.run``) is synchronous and the
         DB client is async, so we run the judge in a *thread executor*
         (``run_in_executor``) and give its read-only DB tools a ``DBReader`` that
         bridges each call back to this loop via
@@ -1340,9 +1340,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             state_diff_text = None
 
         def _run() -> JudgeResult:
-            return run_rubric_judge(
+            return LLMJudge(judge_model_config).run(
                 rubric=llm_judge_config.rubric,
-                model_config=judge_model_config,
                 agent_system_prompt=agent_system_prompt,
                 transcript=transcript,
                 db_reader=_LoopBridgeDBReader(),

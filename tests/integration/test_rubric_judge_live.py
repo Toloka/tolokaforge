@@ -1,6 +1,6 @@
 """Live end-to-end test of the read-only rubric judge against a real LLM.
 
-Runs ``run_rubric_judge`` over a small rubric + a canned transcript + a tiny
+Runs ``LLMJudge`` over a small rubric + a canned transcript + a tiny
 in-memory DB state, using a cheap real model through the agent's
 ``LLMClient`` / ``build_capabilities`` path (so tool schemas/calls are
 provider-correct). The judge is agentic and its tool-call ordering is not
@@ -23,8 +23,8 @@ import pytest
 
 from tolokaforge.core.grading.judge import (
     JudgeStatus,
+    LLMJudge,
     model_config_from_ref,
-    run_rubric_judge,
 )
 from tolokaforge.core.grading.rubric import SubmitReportValidationError, parse_submit_report
 from tolokaforge.runner.models import Rubric
@@ -141,14 +141,12 @@ def _rubric() -> Rubric:
 
 @pytest.mark.skipif(_MODEL_REF is None, reason="No OPENROUTER_API_KEY / OPENAI_API_KEY set")
 def test_rubric_judge_live_passes_good_transcript():
-    result = run_rubric_judge(
+    judge = LLMJudge(model_config_from_ref(_MODEL_REF), max_turns=10, episode_timeout_s=180)
+    result = judge.run(
         rubric=_rubric(),
-        model_config=model_config_from_ref(_MODEL_REF),
         agent_system_prompt=_AGENT_SYSTEM_PROMPT,
         transcript=_TRANSCRIPT,
         db_reader=_DictDBReader(_DB_STATE),
-        max_turns=10,
-        episode_timeout_s=180,
     )
 
     # The judge must COMPLETE (not error) and produce one result per criterion.
@@ -185,15 +183,13 @@ def test_rubric_judge_live_with_state_diff_injected():
     # Sanity: the renderer produced the transition the judge should grade on.
     assert "status:" in state_diff and "refunded" in state_diff
 
-    result = run_rubric_judge(
+    judge = LLMJudge(model_config_from_ref(_MODEL_REF), max_turns=10, episode_timeout_s=180)
+    result = judge.run(
         rubric=_rubric(),
-        model_config=model_config_from_ref(_MODEL_REF),
         agent_system_prompt=_AGENT_SYSTEM_PROMPT,
         transcript=_TRANSCRIPT,
         db_reader=_DictDBReader(_DB_STATE),
         state_diff=state_diff,
-        max_turns=10,
-        episode_timeout_s=180,
     )
 
     # Passing the diff must not break the live path: judge completes, gate holds,
@@ -214,14 +210,12 @@ def test_rubric_judge_live_gate_fails_when_refund_missing():
         {"role": "user", "content": "Cancel order o_1001 and refund me."},
         {"role": "assistant", "content": "Sorry, I cannot process that right now."},
     ]
-    result = run_rubric_judge(
+    judge = LLMJudge(model_config_from_ref(_MODEL_REF), max_turns=10, episode_timeout_s=180)
+    result = judge.run(
         rubric=_rubric(),
-        model_config=model_config_from_ref(_MODEL_REF),
         agent_system_prompt=_AGENT_SYSTEM_PROMPT,
         transcript=transcript,
         db_reader=_DictDBReader(pending_state),
-        max_turns=10,
-        episode_timeout_s=180,
     )
 
     assert result.status is JudgeStatus.COMPLETED, result.reasons
@@ -288,14 +282,12 @@ def test_rubric_judge_live_against_real_db_service(db_test_client):
     assert init.status_code == 200, init.text
 
     reader = _RealDbServiceReader(db_test_client, trial_id)
-    result = run_rubric_judge(
+    judge = LLMJudge(model_config_from_ref(_MODEL_REF), max_turns=10, episode_timeout_s=180)
+    result = judge.run(
         rubric=_rubric(),
-        model_config=model_config_from_ref(_MODEL_REF),
         agent_system_prompt=_AGENT_SYSTEM_PROMPT,
         transcript=_TRANSCRIPT,
         db_reader=reader,
-        max_turns=10,
-        episode_timeout_s=180,
     )
 
     # The judge grades correctly against the real service (o_1001 is refunded).
@@ -371,14 +363,12 @@ def test_rubric_judge_live_markers_match_verdicts(label: str, model_ref: str):
     test re-validates without spend.
     """
     rubric = _rubric()
-    result = run_rubric_judge(
+    judge = LLMJudge(model_config_from_ref(model_ref), max_turns=10, episode_timeout_s=180)
+    result = judge.run(
         rubric=rubric,
-        model_config=model_config_from_ref(model_ref),
         agent_system_prompt=_AGENT_SYSTEM_PROMPT,
         transcript=_TRANSCRIPT,
         db_reader=_DictDBReader(_DB_STATE),
-        max_turns=10,
-        episode_timeout_s=180,
     )
 
     assert result.status is JudgeStatus.COMPLETED, result.reasons
@@ -434,14 +424,12 @@ def test_rubric_judge_live_recovers_through_forced_retry(monkeypatch):
 
     monkeypatch.setattr(judge_module, "parse_submit_report", _reject_first_then_delegate)
 
-    result = run_rubric_judge(
+    judge = LLMJudge(model_config_from_ref(_MODEL_REF), max_turns=10, episode_timeout_s=180)
+    result = judge.run(
         rubric=_rubric(),
-        model_config=model_config_from_ref(_MODEL_REF),
         agent_system_prompt=_AGENT_SYSTEM_PROMPT,
         transcript=_TRANSCRIPT,
         db_reader=_DictDBReader(_DB_STATE),
-        max_turns=10,
-        episode_timeout_s=180,
     )
 
     # The first real submit_report was rejected, and a second generation reached
