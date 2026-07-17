@@ -1150,6 +1150,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     tool_calls=judge_result.usage.tool_calls,
                     consistency_rejections=judge_result.usage.consistency_rejections,
                     transcript_json=json.dumps(list(judge_result.transcript)),
+                    knowledge_search_disabled=judge_result.knowledge_search_disabled,
+                    kb_tools_offered=list(judge_result.kb_tools_offered),
+                    kb_tools_withheld=list(judge_result.kb_tools_withheld),
                 )
                 if judge_result.status is JudgeStatus.ERRORED:
                     # Fail loud: the judge component is incomplete, NOT zero. Leave

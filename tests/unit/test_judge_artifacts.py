@@ -23,6 +23,7 @@ from tolokaforge.core.models import (
     CriterionResult,
     Grade,
     GradeComponents,
+    JudgeKbGating,
     JudgeStatus,
     JudgeUsage,
 )
@@ -72,6 +73,9 @@ def _judge_grade() -> Grade:
             },
             {"role": "tool", "content": "{...}", "tool_call_id": "c1"},
         ],
+        judge_kb_gating=JudgeKbGating(
+            knowledge_search_disabled=False, offered=["search_kb"], withheld=[]
+        ),
     )
 
 
@@ -104,6 +108,14 @@ def test_write_grade_emits_breakdown_usage_and_transcript_sidecar(tmp_path: Path
     assert grade["judge_usage"]["tool_calls"] == 4
     assert grade["judge_usage"]["consistency_rejections"] == 2
 
+    # The judge's KB gating lands inline in grade.yaml (a scalar/lists block,
+    # unlike the transcript sidecar).
+    assert grade["judge_kb_gating"] == {
+        "knowledge_search_disabled": False,
+        "offered": ["search_kb"],
+        "withheld": [],
+    }
+
     # The transcript is NOT inlined into grade.yaml — it lives in the sidecar.
     assert "judge_transcript" not in grade
 
@@ -126,6 +138,39 @@ def test_write_grade_without_judge_writes_no_transcript_sidecar(tmp_path: Path) 
 
     assert (trial_dir / "grade.yaml").exists()
     assert not (trial_dir / "judge_trajectory.yaml").exists()
+    # No judge ran ⇒ no gating record.
+    grade = yaml.safe_load((trial_dir / "grade.yaml").read_text())
+    assert grade.get("judge_kb_gating") is None
+
+
+def test_write_grade_carries_disabled_kb_gating(tmp_path: Path) -> None:
+    """A disabled-KB judge records the gating inline in grade.yaml: the
+    authoritative ``knowledge_search_disabled`` replay signal plus the withheld
+    audit list."""
+    writer = FileArtifactWriter()
+    trial_dir = tmp_path / "trials" / "task_e" / "0"
+
+    writer.write_grade(
+        trial_dir,
+        Grade(
+            binary_pass=True,
+            score=1.0,
+            components=GradeComponents(llm_judge=1.0),
+            judge_status=JudgeStatus.COMPLETED,
+            judge_kb_gating=JudgeKbGating(
+                knowledge_search_disabled=True,
+                offered=[],
+                withheld=["search_kb", "search_policy"],
+            ),
+        ),
+    )
+
+    grade = yaml.safe_load((trial_dir / "grade.yaml").read_text())
+    assert grade["judge_kb_gating"] == {
+        "knowledge_search_disabled": True,
+        "offered": [],
+        "withheld": ["search_kb", "search_policy"],
+    }
 
 
 def test_errored_judge_usage_and_partial_transcript_persist(tmp_path: Path) -> None:

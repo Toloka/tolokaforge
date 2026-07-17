@@ -6,7 +6,7 @@ All notable changes to this project are documented in this file.
 
 ### Feat
 
-- **grading**: opt-in judge customization — `grading.llm_judge.customization.disable_knowledge_search` (tri-state, layered project→task under `grading_defaults.llm_judge.customization`) withholds every knowledge-search tool from the rubric judge's surface (rag `search_kb`, the `search_policy` passthrough, any future KB backend), removed from the schema rather than stubbed; judge-side only (the agent's tools are untouched). Omitting the block is byte-identical to prior behaviour (#465)
+- **grading**: opt-in judge customization — `grading.llm_judge.customization.disable_knowledge_search` (tri-state, layered project→task under `grading_defaults.llm_judge.customization`) withholds every knowledge-search tool from the rubric judge's surface (rag `search_kb`, the `search_policy` passthrough, any future KB backend), removed from the schema rather than stubbed; judge-side only (the agent's tools are untouched). Omitting the block is byte-identical to prior behaviour. The effective gating is recorded in `grade.yaml` as `judge_kb_gating` (`knowledge_search_disabled` + `offered`/`withheld`) and the `JudgeReport` proto (fields 9–11) (#465)
 
 ## v0.9.1 (2026-07-17)
 

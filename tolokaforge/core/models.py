@@ -301,6 +301,26 @@ class JudgeUsage(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class JudgeKbGating(BaseModel):
+    """The rubric judge's knowledge-search gating for this trial (host-side model).
+
+    Kept distinct from :class:`JudgeUsage` (which stays strictly token/cost
+    accounting): this is the audit + replay record of *which* KB tools the judge
+    was offered and which config withheld. ``knowledge_search_disabled`` is the
+    authoritative replay signal (#451) — ``True`` means
+    ``grading.llm_judge.customization.disable_knowledge_search`` withheld KB,
+    regardless of whether the agent had a KB tool this trial. ``offered`` /
+    ``withheld`` are supporting audit detail; an empty ``withheld`` on a disabled
+    judge means the agent had no KB tool to gate.
+    """
+
+    knowledge_search_disabled: bool
+    offered: list[str]
+    withheld: list[str]
+
+    model_config = {"extra": "forbid"}
+
+
 class CustomCheckDetail(BaseModel):
     """Detail for individual custom check result"""
 
@@ -336,6 +356,11 @@ class Grade(BaseModel):
     # so the grade stays scannable (mirrors the trajectory/prompts split). See
     # docs/OUTPUT_FORMAT.md. ``None`` when no judge ran or none was captured.
     judge_transcript: list[dict[str, Any]] | None = None
+    # The judge's knowledge-search gating for this trial (offered / withheld / whether
+    # config disabled KB). ``None`` when no judge ran. Serialized inline in
+    # ``grade.yaml`` (a scalar/lists block, unlike the transcript sidecar). Separate
+    # from ``judge_usage``, which stays token/cost only. See docs/OUTPUT_FORMAT.md.
+    judge_kb_gating: JudgeKbGating | None = None
 
 
 class Trajectory(BaseModel):
