@@ -589,10 +589,14 @@ def test_db_tools_absent_when_no_reader():
 
 
 def test_malformed_submit_report_reprompts_then_errors():
-    """Invalid submit_report → bounded re-prompt → ERRORED with NO score."""
+    """Invalid submit_report → bounded re-prompt → ERRORED with NO score.
+
+    Every retry generation — including the second, whose surgery rewrites an
+    already-rewritten message list — is handed a provider-valid tail.
+    """
     rubric = _binary_rubric()
     bad = _submit_args(refund_done="yes")  # binary expects a bool
-    client = ScriptedClient(
+    client = MessageCapturingClient(
         [
             [("submit_report", bad)],
             [("submit_report", bad)],
@@ -617,6 +621,8 @@ def test_malformed_submit_report_reprompts_then_errors():
     # A schema (type) rejection is NOT a verdict-consistency rejection: the
     # generic retry still fired, but the consistency counter stays 0.
     assert result.usage.consistency_rejections == 0
+    for snap in client.snapshots[1:]:
+        _assert_strong_adjacency(snap)
 
 
 def _contradicting_submit(refund_done: bool) -> dict:
@@ -719,7 +725,7 @@ def test_retry_messages_are_provider_valid(first_step):
     """After a rejected submit_report, the retry generation is handed a
     provider-valid sequence: the terminating assistant message's submit_report id
     is answered by an adjacent role=tool result carrying the validation error, and
-    no non-tool message interleaves. Locks the #515 fix for both rejection classes.
+    no non-tool message interleaves. Locked for both rejection classes.
     """
     rubric = _binary_rubric()
     client = MessageCapturingClient(
@@ -753,8 +759,8 @@ def test_retry_messages_are_provider_valid(first_step):
 def test_retry_answers_sibling_tool_call_ids():
     """A judge that emits a sibling read/search call alongside submit_report in the
     terminating turn must, on retry, have BOTH ids answered by adjacent role=tool
-    results — the finding-1 lock. A single-id fix leaves the sibling unanswered and
-    a real provider 400s.
+    results. A single-id fix leaves the sibling unanswered and a real provider
+    400s.
     """
     rubric = _binary_rubric()
     client = MessageCapturingClient(
