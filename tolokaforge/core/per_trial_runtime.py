@@ -50,7 +50,6 @@ from tolokaforge.core.compose_materialisation import (
     resolve_runner_endpoint,
     shutdown_compose,
     trial_services_dir,
-    verify_network_policy_supported,
     write_capture_manifest,
 )
 from tolokaforge.core.models import SeedRef
@@ -125,6 +124,7 @@ class PerTrialRuntimeBackend:
             "reset_recipes:redis_dump",
             "reset_recipes:bare",
             "network_isolation:no_internet",
+            "network_isolation:limited_internet",
         }
     )
     """Local-docker per-trial capability advertisement. Read by
@@ -213,7 +213,6 @@ class PerTrialRuntimeBackend:
                 ),
             )
 
-        verify_network_policy_supported(manifest.network_policy)
         service_names = tuple(manifest.load_compose()["services"])
         temp_dir = make_project_temp_dir(spec.trial_id)
         compose: DockerCompose | None = None
@@ -223,6 +222,7 @@ class PerTrialRuntimeBackend:
                 temp_dir / manifest.compose_file.name,
                 manifest.network_policy,
                 manifest.runner_service,
+                manifest.limited_internet_allowlist,
             )
             compose = DockerCompose(
                 context=str(temp_dir),

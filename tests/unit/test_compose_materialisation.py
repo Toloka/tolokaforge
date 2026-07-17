@@ -23,8 +23,10 @@ from testcontainers.compose.compose import ComposeContainer, PublishedPortModel
 from tolokaforge.core.compose_materialisation import (
     NETPOLICY_EDGE_NETWORK,
     NETPOLICY_INTERNAL_NETWORK,
+    NETPOLICY_PROXY_IMAGE,
+    NETPOLICY_PROXY_PORT,
+    NETPOLICY_PROXY_SERVICE,
     RUNNER_PORT_DEFAULT,
-    NetworkPolicyError,
     apply_network_policy_to_compose_file,
     cleanup_partial_materialisation,
     compose_container_to_snapshot,
@@ -32,12 +34,12 @@ from tolokaforge.core.compose_materialisation import (
     enforce_network_policy,
     first_published_port,
     make_project_temp_dir,
+    render_squid_config,
     resolve_env_endpoints,
     resolve_host_port,
     resolve_rag_url,
     resolve_runner_endpoint,
     shutdown_compose,
-    verify_network_policy_supported,
 )
 from tolokaforge.core.trial import NetworkPolicy
 
@@ -455,52 +457,30 @@ def _minimal_compose() -> dict:
     }
 
 
-class TestVerifyNetworkPolicySupported:
-    def test_limited_internet_raises(self) -> None:
-        with pytest.raises(NetworkPolicyError, match="limited_internet"):
-            verify_network_policy_supported(NetworkPolicy.LIMITED_INTERNET)
-
-    def test_error_names_323_and_alternatives(self) -> None:
-        with pytest.raises(NetworkPolicyError) as excinfo:
-            verify_network_policy_supported(NetworkPolicy.LIMITED_INTERNET)
-        message = str(excinfo.value)
-        assert "#323" in message
-        assert "no_internet" in message
-        assert "full_internet" in message
-
-    @pytest.mark.parametrize("policy", [NetworkPolicy.NO_INTERNET, NetworkPolicy.FULL_INTERNET])
-    def test_enforceable_policies_return_cleanly(self, policy: NetworkPolicy) -> None:
-        assert verify_network_policy_supported(policy) is None
-
-
 class TestEnforceNetworkPolicy:
     def test_full_internet_is_identity(self) -> None:
         doc = _minimal_compose()
-        result = enforce_network_policy(doc, NetworkPolicy.FULL_INTERNET, "runner")
+        result = enforce_network_policy(doc, NetworkPolicy.FULL_INTERNET, "runner", [])
         assert result is doc
-
-    def test_limited_internet_raises_belt_and_suspenders(self) -> None:
-        with pytest.raises(NetworkPolicyError):
-            enforce_network_policy(_minimal_compose(), NetworkPolicy.LIMITED_INTERNET, "runner")
 
     def test_no_internet_does_not_mutate_input(self) -> None:
         doc = _minimal_compose()
-        enforce_network_policy(doc, NetworkPolicy.NO_INTERNET, "runner")
+        enforce_network_policy(doc, NetworkPolicy.NO_INTERNET, "runner", [])
         assert "networks" not in doc
         assert "networks" not in doc["services"]["runner"]
 
     def test_no_internet_injects_internal_and_edge_networks(self) -> None:
-        result = enforce_network_policy(_minimal_compose(), NetworkPolicy.NO_INTERNET, "runner")
+        result = enforce_network_policy(_minimal_compose(), NetworkPolicy.NO_INTERNET, "runner", [])
         assert result["networks"][NETPOLICY_INTERNAL_NETWORK] == {"internal": True}
         assert result["networks"][NETPOLICY_EDGE_NETWORK] == {}
 
     def test_no_internet_attaches_every_service_to_internal(self) -> None:
-        result = enforce_network_policy(_minimal_compose(), NetworkPolicy.NO_INTERNET, "runner")
+        result = enforce_network_policy(_minimal_compose(), NetworkPolicy.NO_INTERNET, "runner", [])
         for service in result["services"].values():
             assert NETPOLICY_INTERNAL_NETWORK in service["networks"]
 
     def test_no_internet_runner_additionally_on_edge(self) -> None:
-        result = enforce_network_policy(_minimal_compose(), NetworkPolicy.NO_INTERNET, "runner")
+        result = enforce_network_policy(_minimal_compose(), NetworkPolicy.NO_INTERNET, "runner", [])
         assert NETPOLICY_EDGE_NETWORK in result["services"]["runner"]["networks"]
         assert NETPOLICY_EDGE_NETWORK not in result["services"]["app-service"]["networks"]
 
@@ -514,7 +494,7 @@ class TestEnforceNetworkPolicy:
             },
             "networks": {"backplane": {"driver": "bridge"}},
         }
-        result = enforce_network_policy(doc, NetworkPolicy.NO_INTERNET, "runner")
+        result = enforce_network_policy(doc, NetworkPolicy.NO_INTERNET, "runner", [])
 
         assert result["networks"]["backplane"]["internal"] is True
         assert result["networks"]["backplane"]["driver"] == "bridge"
@@ -536,7 +516,7 @@ class TestEnforceNetworkPolicy:
             },
             "networks": {"backplane": {}},
         }
-        result = enforce_network_policy(doc, NetworkPolicy.NO_INTERNET, "runner")
+        result = enforce_network_policy(doc, NetworkPolicy.NO_INTERNET, "runner", [])
         nets = result["services"]["runner"]["networks"]
         assert isinstance(nets, dict)
         assert nets["backplane"] == {"aliases": ["r"]}
@@ -544,12 +524,100 @@ class TestEnforceNetworkPolicy:
         assert NETPOLICY_EDGE_NETWORK in nets
 
 
+class TestEnforceLimitedInternet:
+    ALLOWLIST = ["api.openai.com", "*.example.com"]
+
+    def _transform(self) -> dict:
+        return enforce_network_policy(
+            _minimal_compose(), NetworkPolicy.LIMITED_INTERNET, "runner", self.ALLOWLIST
+        )
+
+    def test_empty_allowlist_raises(self) -> None:
+        with pytest.raises(ValueError, match="non-empty allowlist"):
+            enforce_network_policy(_minimal_compose(), NetworkPolicy.LIMITED_INTERNET, "runner", [])
+
+    def test_injects_digest_pinned_proxy_on_both_networks(self) -> None:
+        proxy = self._transform()["services"][NETPOLICY_PROXY_SERVICE]
+        assert proxy["image"] == NETPOLICY_PROXY_IMAGE
+        assert proxy["networks"] == [NETPOLICY_INTERNAL_NETWORK, NETPOLICY_EDGE_NETWORK]
+        assert proxy["volumes"] == ["./squid.conf:/etc/squid/squid.conf:ro"]
+        assert "healthcheck" in proxy
+
+    def test_injects_internal_and_edge_networks(self) -> None:
+        result = self._transform()
+        assert result["networks"][NETPOLICY_INTERNAL_NETWORK] == {"internal": True}
+        assert result["networks"][NETPOLICY_EDGE_NETWORK] == {}
+
+    def test_app_service_internal_only_with_proxy_env(self) -> None:
+        app = self._transform()["services"]["app-service"]
+        assert app["networks"] == [NETPOLICY_INTERNAL_NETWORK]
+        proxy_url = f"http://{NETPOLICY_PROXY_SERVICE}:{NETPOLICY_PROXY_PORT}"
+        assert app["environment"]["HTTP_PROXY"] == proxy_url
+        assert app["environment"]["HTTPS_PROXY"] == proxy_url
+        assert app["environment"]["http_proxy"] == proxy_url
+        assert app["environment"]["https_proxy"] == proxy_url
+        no_proxy = app["environment"]["NO_PROXY"]
+        assert "runner" in no_proxy.split(",")
+        assert "localhost" in no_proxy.split(",")
+        assert "127.0.0.1" in no_proxy.split(",")
+
+    def test_runner_on_both_networks_and_not_proxied(self) -> None:
+        runner = self._transform()["services"]["runner"]
+        assert runner["networks"] == [NETPOLICY_INTERNAL_NETWORK, NETPOLICY_EDGE_NETWORK]
+        assert "environment" not in runner
+
+    def test_merges_proxy_env_into_existing_mapping(self) -> None:
+        doc = {
+            "services": {
+                "runner": {"image": "r:local"},
+                "app-service": {"image": "nginx", "environment": {"EXISTING": "1"}},
+            }
+        }
+        app = enforce_network_policy(doc, NetworkPolicy.LIMITED_INTERNET, "runner", self.ALLOWLIST)[
+            "services"
+        ]["app-service"]
+        assert app["environment"]["EXISTING"] == "1"
+        assert "HTTP_PROXY" in app["environment"]
+
+
+class TestRenderSquidConfig:
+    def test_exact_host_emits_bare_dstdomain(self) -> None:
+        config = render_squid_config(["api.openai.com"], ["runner"])
+        assert "acl allowed_dsts dstdomain api.openai.com" in config
+
+    def test_wildcard_emits_suffix_dstdomain(self) -> None:
+        config = render_squid_config(["*.example.com"], ["runner"])
+        assert "acl allowed_dsts dstdomain .example.com" in config
+        assert "acl allowed_dsts dstdomain *.example.com" not in config
+
+    def test_service_names_allowed_as_internal_dsts(self) -> None:
+        config = render_squid_config(["api.openai.com"], ["runner", "app-service"])
+        assert "acl internal_dsts dstdomain runner" in config
+        assert "acl internal_dsts dstdomain app-service" in config
+
+    def test_default_deny_is_terminal(self) -> None:
+        config = render_squid_config(["api.openai.com"], ["runner"])
+        assert config.rstrip().splitlines()[-1] == "cache deny all"
+        access_lines = [line for line in config.splitlines() if line.startswith("http_access")]
+        assert access_lines[-1] == "http_access deny all"
+
+    def test_connect_restricted_to_443(self) -> None:
+        config = render_squid_config(["api.openai.com"], ["runner"])
+        assert "acl SSL_ports port 443" in config
+        assert "http_access deny CONNECT !SSL_ports" in config
+
+    @pytest.mark.parametrize("entry", ["http://x", "x:443", "a/b", "*.*.x", "ev*l.com"])
+    def test_malformed_entry_raises(self, entry: str) -> None:
+        with pytest.raises(ValueError, match="allowlist entry"):
+            render_squid_config([entry], ["runner"])
+
+
 class TestApplyNetworkPolicyToComposeFile:
     def test_full_internet_leaves_file_byte_identical(self, tmp_path: Path) -> None:
         compose = tmp_path / "compose.yaml"
         original = "services:\n  runner:\n    image: r:local  # keep this comment\n"
         compose.write_text(original)
-        apply_network_policy_to_compose_file(compose, NetworkPolicy.FULL_INTERNET, "runner")
+        apply_network_policy_to_compose_file(compose, NetworkPolicy.FULL_INTERNET, "runner", [])
         assert compose.read_text() == original
 
     def test_no_internet_rewrites_file_with_injected_networks(self, tmp_path: Path) -> None:
@@ -557,8 +625,23 @@ class TestApplyNetworkPolicyToComposeFile:
 
         compose = tmp_path / "compose.yaml"
         compose.write_text("services:\n  runner:\n    image: r:local\n")
-        apply_network_policy_to_compose_file(compose, NetworkPolicy.NO_INTERNET, "runner")
+        apply_network_policy_to_compose_file(compose, NetworkPolicy.NO_INTERNET, "runner", [])
 
         doc = yaml.safe_load(compose.read_text())
         assert doc["networks"][NETPOLICY_INTERNAL_NETWORK] == {"internal": True}
         assert NETPOLICY_EDGE_NETWORK in doc["services"]["runner"]["networks"]
+
+    def test_limited_internet_writes_squid_conf_beside_compose(self, tmp_path: Path) -> None:
+        import yaml
+
+        compose = tmp_path / "compose.yaml"
+        compose.write_text("services:\n  runner:\n    image: r:local\n  app:\n    image: nginx\n")
+        apply_network_policy_to_compose_file(
+            compose, NetworkPolicy.LIMITED_INTERNET, "runner", ["api.openai.com"]
+        )
+
+        squid_conf = compose.parent / "squid.conf"
+        assert squid_conf.is_file()
+        assert "acl allowed_dsts dstdomain api.openai.com" in squid_conf.read_text()
+        doc = yaml.safe_load(compose.read_text())
+        assert doc["services"][NETPOLICY_PROXY_SERVICE]["image"] == NETPOLICY_PROXY_IMAGE
