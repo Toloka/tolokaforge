@@ -196,6 +196,7 @@ def _sum_usage(outcomes: list[FixtureOutcome]) -> JudgeUsage:
         reasoning_tokens=sum(o.judge_result.usage.reasoning_tokens for o in outcomes),
         cost_usd=sum(o.judge_result.usage.cost_usd for o in outcomes),
         tool_calls=sum(o.judge_result.usage.tool_calls for o in outcomes),
+        consistency_rejections=sum(o.judge_result.usage.consistency_rejections for o in outcomes),
     )
 
 

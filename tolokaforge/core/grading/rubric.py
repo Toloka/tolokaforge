@@ -1,9 +1,9 @@
 """Pure rubric-grading helpers — schema generation, validation, aggregation.
 
-Stage 3 of the rubric-grading plan (``docs/RUBRIC_GRADING_DESIGN.md``). These functions
-are deliberately free of any LLM / loop / IO so they are unit-testable in
-isolation; Stage 4 wires them into the runner-side judge that runs on the shared
-loop.
+Design reference: ``docs/RUBRIC_GRADING_DESIGN.md``. These functions are
+deliberately free of any LLM / loop / IO so they are unit-testable in
+isolation; the judge loop (``judge.py``) wires them into the runner-side judge
+that runs on the shared loop.
 
 Three pieces:
 
@@ -17,10 +17,12 @@ Three pieces:
 
 Fail-loud contract (AGENTS.md rule 1): :func:`parse_submit_report` raises
 :class:`SubmitReportValidationError` on ANY bad judge output. It never returns a
-default / placeholder score. Stage 4 catches this exception on bounded-retry
-exhaustion and emits an *errored* judge status — never ``0.0`` / ``0.5``.
+default / placeholder score. The judge loop (``judge.py``) catches this
+exception on bounded-retry exhaustion and emits an *errored* judge status —
+never ``0.0`` / ``0.5``.
 """
 
+import re
 from dataclasses import dataclass
 
 from tolokaforge.runner.models import Criterion, CriterionResult, Rubric
@@ -43,6 +45,23 @@ _JUSTIFICATION_SUFFIX = "_justification"
 #: Key for the overall free-text reasons field.
 _REASONS_KEY = "reasons"
 
+#: Max absolute gap between a graded criterion's ``SCORE:`` marker value and the
+#: submitted ``score`` before the two are treated as contradictory.
+GRADED_MARKER_TOLERANCE = 0.05
+
+#: Trailing verdict marker parsers. Searched within the justification's final
+#: non-empty line only (anchoring — a "NOT MET" discussed on an earlier line must
+#: not false-match), taking the LAST occurrence on that line so the marker may be
+#: appended inline to the closing sentence (``"...refund was issued. VERDICT:
+#: MET"``) as real models emit it, not only on a line of its own. The
+#: ``VERDICT:`` / ``SCORE:`` prefix is required, so a bare "NOT MET" phrase never
+#: matches. The negative lookbehind rejects a letter immediately before the
+#: keyword, so an embedded suffix ("subscore: 0.7", "the underscore: 1") never
+#: false-matches. Whitespace-tolerant and case-insensitive; ``not met`` is
+#: spelled ahead of ``met`` in the alternation so it wins the match.
+_BINARY_MARKER_RE = re.compile(r"(?<![a-zA-Z])verdict\s*:\s*(not\s+met|met)", re.IGNORECASE)
+_GRADED_MARKER_RE = re.compile(r"(?<![a-zA-Z])score\s*:\s*([0-9]*\.?[0-9]+)", re.IGNORECASE)
+
 
 # ---------------------------------------------------------------------------
 # Exceptions
@@ -55,8 +74,22 @@ class SubmitReportValidationError(ValueError):
     Raised on ANY mismatch — missing criterion, unknown/extra criterion id,
     wrong field type, ``score`` out of ``[0, 1]``, or a missing required field.
     Carries an actionable message naming the offending criterion / field so the
-    bounded-retry re-prompt (Stage 4) can surface it to the judge, and so the
-    eventual errored-grade status (on retry exhaustion) is diagnosable.
+    judge loop's bounded-retry re-prompt (``judge.py``) can surface it to the
+    judge, and so the eventual errored-grade status (on retry exhaustion) is
+    diagnosable.
+    """
+
+
+class VerdictConsistencyError(SubmitReportValidationError):
+    """A criterion's submitted verdict disagrees with its own justification.
+
+    Raised when a justification's trailing ``VERDICT:`` / ``SCORE:`` marker is
+    missing / unparseable, or contradicts the submitted ``met`` boolean (binary)
+    / differs from the submitted ``score`` beyond :data:`GRADED_MARKER_TOLERANCE`
+    (graded). A subclass of :class:`SubmitReportValidationError` so the judge's
+    ``except SubmitReportValidationError`` retry path keeps catching it, while
+    callers that need to distinguish consistency rejections from schema
+    rejections can test for this type.
     """
 
 
@@ -78,14 +111,15 @@ class RubricAggregate:
 
     ``binary_pass`` is INDICATIVE only — the judge component's own coarse pass
     signal (``not gate_failed`` and ``score >= GRADED_MET_THRESHOLD``, the 0.5
-    bar). It is NOT the authoritative pass verdict: the combine layer (Stage 4)
-    decides pass by applying the real ``pass_threshold`` to ``score`` AND
-    requiring ``not gate_failed``. Do not mistake the 0.5 bar here for the
-    configured pass bar.
+    bar). It is NOT the authoritative pass verdict: the runner grading layer
+    (``runner/grading.py`` + ``runner/service.py``) decides pass by applying the
+    real ``pass_threshold`` to the weighted score and forcing a fail when
+    ``gate_failed``. Do not mistake the 0.5 bar here for the configured pass bar.
 
-    ``gate_failed`` is the explicit required-gate signal Stage 4 feeds into the
-    top-level combine layer: when ``True`` the rubric failed outright regardless
-    of the weighted ``score`` and the ``pass_threshold``. ``failed_required_ids``
+    ``gate_failed`` is the explicit required-gate signal the judge feeds into the
+    runner grading layer (``runner/service.py``): when ``True`` the rubric failed
+    outright regardless of the weighted ``score`` and the ``pass_threshold``.
+    ``failed_required_ids``
     lists which required criteria tripped the gate, for reasons / diagnostics.
     """
 
@@ -114,13 +148,35 @@ def _criterion_verdict_property(criterion: Criterion) -> dict:
     if criterion.kind == "binary":
         return {
             "type": "boolean",
-            "description": f"Whether this criterion is met: {inline}",
+            "description": (
+                f"Whether this criterion is met: {inline} Must match the "
+                f"'VERDICT:' marker line ending this criterion's justification."
+            ),
         }
     return {
         "type": "number",
         "minimum": 0.0,
         "maximum": 1.0,
-        "description": f"Score in [0,1] for this criterion: {inline}",
+        "description": (
+            f"Score in [0,1] for this criterion: {inline} Must match the "
+            f"'SCORE:' marker line ending this criterion's justification."
+        ),
+    }
+
+
+def _criterion_justification_property(criterion: Criterion) -> dict:
+    """The per-criterion justification field, carrying the trailing-marker contract."""
+    if criterion.kind == "binary":
+        marker = "end with a final line 'VERDICT: MET' or 'VERDICT: NOT MET'"
+    else:
+        marker = "end with a final line 'SCORE: <value in [0,1]>'"
+    return {
+        "type": "string",
+        "description": (
+            f"Evidence-based justification for criterion '{criterion.id}'. "
+            f"Reason through the evidence first, then {marker} stating the verdict "
+            f"the reasoning leads to."
+        ),
     }
 
 
@@ -131,12 +187,19 @@ def build_submit_report_tool(rubric: Rubric) -> dict:
     (``{"type": "function", "function": {...}}``) — the same shape every other
     judge read-tool (``judge_tools.py``) uses, so the LLM layer accepts it directly.
 
-    Argument schema (all fields required):
+    Argument schema (all fields required). Per criterion, the
+    ``<criterion.id>_justification`` string is emitted **before** its verdict
+    field in both ``properties`` insertion order and the ``required`` list, so a
+    provider that generates tool arguments in schema order writes the reasoning
+    before committing the verdict token (reason-then-answer):
 
+    - one ``<criterion.id>_justification`` string per criterion, which must end
+      with a ``VERDICT: MET`` / ``VERDICT: NOT MET`` (binary) or ``SCORE: <value>``
+      (graded) marker line;
     - one verdict field keyed by ``criterion.id`` — ``met`` (boolean) for a
-      ``binary`` criterion, ``score`` (number in ``[0,1]``) for a ``graded`` one;
-    - one ``<criterion.id>_justification`` string per criterion;
-    - one overall ``reasons`` string.
+      ``binary`` criterion, ``score`` (number in ``[0,1]``) for a ``graded`` one,
+      which must match the justification's marker line;
+    - one overall ``reasons`` string, last.
 
     Each verdict field embeds the criterion's ``description`` (and ``expected``,
     when set) inline so the judge has the pass-condition without extra context.
@@ -152,14 +215,11 @@ def build_submit_report_tool(rubric: Rubric) -> dict:
     required: list[str] = []
 
     for criterion in rubric.criteria:
-        properties[criterion.id] = _criterion_verdict_property(criterion)
         justification_key = f"{criterion.id}{_JUSTIFICATION_SUFFIX}"
-        properties[justification_key] = {
-            "type": "string",
-            "description": f"Evidence-based justification for criterion '{criterion.id}'.",
-        }
-        required.append(criterion.id)
+        properties[justification_key] = _criterion_justification_property(criterion)
+        properties[criterion.id] = _criterion_verdict_property(criterion)
         required.append(justification_key)
+        required.append(criterion.id)
 
     properties[_REASONS_KEY] = {
         "type": "string",
@@ -224,8 +284,73 @@ def _coerce_graded_score(value: object, criterion_id: str) -> float:
     return score
 
 
+def _final_nonempty_line(text: str) -> str:
+    """The last line of ``text`` that has non-whitespace content, stripped."""
+    for line in reversed(text.splitlines()):
+        stripped = line.strip()
+        if stripped:
+            return stripped
+    return ""
+
+
+def _last_match(regex: re.Pattern[str], line: str) -> re.Match[str] | None:
+    """The last occurrence of ``regex`` in ``line``, or None."""
+    matches = list(regex.finditer(line))
+    return matches[-1] if matches else None
+
+
+def _check_verdict_marker(
+    criterion: Criterion, justification: str, met: bool, score: float
+) -> None:
+    """Reject a criterion whose trailing marker is missing or contradicts its verdict.
+
+    The marker is read from the justification's final non-empty line only, so a
+    "NOT MET" discussed on an earlier line cannot false-match; within that line
+    the last ``VERDICT:`` / ``SCORE:`` occurrence wins, so a marker appended
+    inline to the closing sentence is accepted. The rejection message names the
+    criterion and quotes both the marker line and the submitted verdict, so the
+    bounded-retry re-prompt and the eventual errored-grade diagnostic show both
+    sides of the disagreement.
+    """
+    final_line = _final_nonempty_line(justification)
+    if criterion.kind == "binary":
+        marker = _last_match(_BINARY_MARKER_RE, final_line)
+        if marker is None:
+            raise VerdictConsistencyError(
+                f"Criterion '{criterion.id}' justification is missing the required "
+                f"trailing verdict marker; its final line must end with 'VERDICT: MET' "
+                f"or 'VERDICT: NOT MET'. Final line was: {final_line!r}. Submitted "
+                f"met={met}."
+            )
+        marker_met = "not" not in marker.group(1).lower()
+        if marker_met != met:
+            raise VerdictConsistencyError(
+                f"Criterion '{criterion.id}' verdict contradicts its justification: "
+                f"the justification's final line says {final_line!r} but the "
+                f"submitted met={met}. They must agree."
+            )
+        return
+
+    marker = _last_match(_GRADED_MARKER_RE, final_line)
+    if marker is None:
+        raise VerdictConsistencyError(
+            f"Criterion '{criterion.id}' justification is missing the required "
+            f"trailing score marker; its final line must end with 'SCORE: <value in "
+            f"[0,1]>'. Final line was: {final_line!r}. Submitted score={score}."
+        )
+    marker_value = float(marker.group(1))
+    # The epsilon absorbs binary float noise so a nominal |Δ| == 0.05 pair
+    # (e.g. 0.65 vs 0.6) lands inside the tolerance instead of rejecting.
+    if abs(marker_value - score) > GRADED_MARKER_TOLERANCE + 1e-9:
+        raise VerdictConsistencyError(
+            f"Criterion '{criterion.id}' score contradicts its justification: the "
+            f"justification's final line says {final_line!r} but the submitted "
+            f"score={score} (tolerance {GRADED_MARKER_TOLERANCE}). They must agree."
+        )
+
+
 def _criterion_result(criterion: Criterion, tool_args: dict) -> CriterionResult:
-    """Build one CriterionResult, failing loud on type / range mismatch."""
+    """Build one CriterionResult, failing loud on type / range / marker mismatch."""
     raw_verdict = _require_present(tool_args, criterion.id, criterion.id, "verdict")
     justification_key = f"{criterion.id}{_JUSTIFICATION_SUFFIX}"
     raw_justification = _require_present(
@@ -244,6 +369,8 @@ def _criterion_result(criterion: Criterion, tool_args: dict) -> CriterionResult:
         score = _coerce_graded_score(raw_verdict, criterion.id)
         met = score >= GRADED_MET_THRESHOLD
 
+    _check_verdict_marker(criterion, raw_justification, met, score)
+
     return CriterionResult(id=criterion.id, met=met, score=score, justification=raw_justification)
 
 
@@ -260,7 +387,12 @@ def parse_submit_report(tool_args: dict, rubric: Rubric) -> list[CriterionResult
 
     Raises :class:`SubmitReportValidationError` (fail loud, never coerce) on:
     missing criterion verdict / justification, unknown / extra criterion id,
-    wrong field type, or ``score`` out of ``[0, 1]``.
+    wrong field type, or ``score`` out of ``[0, 1]``. After those presence /
+    type / range checks pass, each criterion's justification is checked for a
+    trailing ``VERDICT:`` / ``SCORE:`` marker that matches the submitted verdict;
+    a missing / unparseable / contradicting marker raises
+    :class:`VerdictConsistencyError` (a subclass). ``CriterionResult.justification``
+    stores the judge's text verbatim, marker included, for audit fidelity.
     """
     known_ids = {c.id for c in rubric.criteria}
 
@@ -298,8 +430,8 @@ def aggregate_rubric(rubric: Rubric, results: list[CriterionResult]) -> RubricAg
 
     Raises :class:`SubmitReportValidationError` if ``results`` does not line up
     one-to-one with the rubric's criteria, or if there are non-required criteria
-    but their total weight is not positive (defensive — Stage 4 always feeds the
-    output of :func:`parse_submit_report`).
+    but their total weight is not positive (defensive — the judge loop always
+    feeds the output of :func:`parse_submit_report`).
     """
     by_id = {r.id: r for r in results}
     if by_id.keys() != {c.id for c in rubric.criteria} or len(by_id) != len(results):

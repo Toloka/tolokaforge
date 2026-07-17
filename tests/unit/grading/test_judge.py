@@ -109,12 +109,26 @@ def _two_criteria_rubric(required: bool = False) -> Rubric:
     )
 
 
+def _verdict_marker(verdict) -> str:
+    """The trailing marker line a well-formed justification must carry.
+
+    A ``bool`` verdict is a binary criterion (VERDICT: MET / NOT MET); a real
+    number is graded (SCORE: <value>). Any other type is a deliberately malformed
+    verdict whose type check fires before the marker check, so no marker matters.
+    """
+    if isinstance(verdict, bool):
+        return "VERDICT: MET" if verdict else "VERDICT: NOT MET"
+    if isinstance(verdict, (int, float)):
+        return f"SCORE: {verdict}"
+    return ""
+
+
 def _submit_args(**criteria) -> dict:
     """Build a well-formed submit_report payload from {id: verdict} kwargs."""
     args: dict = {"reasons": "overall summary"}
     for cid, verdict in criteria.items():
         args[cid] = verdict
-        args[f"{cid}_justification"] = f"because {cid}"
+        args[f"{cid}_justification"] = f"because {cid}\n{_verdict_marker(verdict)}"
     return args
 
 
@@ -559,6 +573,76 @@ def test_malformed_submit_report_reprompts_then_errors():
     assert result.score is None
     assert result.binary_pass is None
     assert client.calls == 3  # initial + 2 retries
+    # A schema (type) rejection is NOT a verdict-consistency rejection: the
+    # generic retry still fired, but the consistency counter stays 0.
+    assert result.usage.consistency_rejections == 0
+
+
+def _contradicting_submit(refund_done: bool) -> dict:
+    """A submit_report whose marker line contradicts the submitted verdict."""
+    opposite = "VERDICT: NOT MET" if refund_done else "VERDICT: MET"
+    return {
+        "refund_done": refund_done,
+        "refund_done_justification": f"reasoning about the refund\n{opposite}",
+        "reasons": "overall summary",
+    }
+
+
+def _missing_marker_submit(refund_done: bool) -> dict:
+    """A well-typed submit_report whose justification has no trailing marker."""
+    return {
+        "refund_done": refund_done,
+        "refund_done_justification": "reasoning with no verdict marker line",
+        "reasons": "overall summary",
+    }
+
+
+@pytest.mark.parametrize(
+    "bad_submit",
+    [_contradicting_submit, _missing_marker_submit],
+    ids=["contradicting_marker", "missing_marker"],
+)
+def test_consistency_rejection_reprompts_and_counts_per_attempt_then_errors(bad_submit):
+    """Consistency-rejected payload → re-prompt; counter increments per rejected
+    attempt; after retry exhaustion the result is ERRORED with the count
+    reflecting attempts."""
+    rubric = _binary_rubric()
+    client = ScriptedClient([[("submit_report", bad_submit(refund_done=True))]] * 3)
+    result = run_rubric_judge(
+        rubric=rubric,
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="",
+        transcript=[],
+        db_reader=FakeDBReader(),
+        submit_report_retries=2,
+        llm_client=client,
+    )
+    assert result.status is JudgeStatus.ERRORED
+    assert result.score is None
+    assert client.calls == 3  # initial + 2 retries, each rejected
+    assert result.usage.consistency_rejections == 3
+
+
+def test_consistency_rejection_then_valid_recovers_with_count_preserved():
+    rubric = _binary_rubric()
+    client = ScriptedClient(
+        [
+            [("submit_report", _contradicting_submit(refund_done=True))],  # rejected
+            [("submit_report", _submit_args(refund_done=True))],  # corrected
+        ]
+    )
+    result = run_rubric_judge(
+        rubric=rubric,
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="",
+        transcript=[],
+        db_reader=FakeDBReader(),
+        submit_report_retries=2,
+        llm_client=client,
+    )
+    assert result.status is JudgeStatus.COMPLETED
+    assert result.score == pytest.approx(1.0)
+    assert result.usage.consistency_rejections == 1
 
 
 def test_malformed_then_valid_recovers():
@@ -640,6 +724,8 @@ def test_usage_is_recorded():
     # the real read-tool (get_db_state) is counted.
     assert result.usage.tool_calls == 1
     assert result.usage.cost_usd == pytest.approx(0.002)
+    # A clean run records zero verdict-consistency rejections.
+    assert result.usage.consistency_rejections == 0
 
 
 def test_turn_exhaustion_without_submit_report_errors():

@@ -52,6 +52,7 @@ from tolokaforge.core.grading.kb_search import KnowledgeSearch
 from tolokaforge.core.grading.rubric import (
     SUBMIT_REPORT_TOOL_NAME,
     SubmitReportValidationError,
+    VerdictConsistencyError,
     aggregate_rubric,
     build_submit_report_tool,
     parse_submit_report,
@@ -132,7 +133,12 @@ class JudgeStatus(str, Enum):
 
 @dataclass(frozen=True)
 class JudgeUsage:
-    """The judge's own accounting — recorded to the output bundle (plan: judge cost)."""
+    """The judge's own accounting — recorded to the output bundle (plan: judge cost).
+
+    ``consistency_rejections`` counts ``submit_report`` attempts rejected for a
+    verdict/justification marker mismatch (a :class:`VerdictConsistencyError`) on
+    this trial — distinct from generic schema rejections, which are not counted.
+    """
 
     calls: int = 0
     prompt_tokens: int = 0
@@ -140,6 +146,7 @@ class JudgeUsage:
     reasoning_tokens: int = 0
     cost_usd: float = 0.0
     tool_calls: int = 0
+    consistency_rejections: int = 0
 
 
 @dataclass(frozen=True)
@@ -190,6 +197,7 @@ class _JudgeMetricsSink(MetricsSink):
     reasoning_tokens: int = 0
     cost_usd: float = 0.0
     tool_calls: int = 0
+    consistency_rejections: int = 0
 
     def record_generation(self, result: GenerationResult) -> None:
         self.calls += 1
@@ -210,6 +218,7 @@ class _JudgeMetricsSink(MetricsSink):
             reasoning_tokens=self.reasoning_tokens,
             cost_usd=self.cost_usd,
             tool_calls=self.tool_calls,
+            consistency_rejections=self.consistency_rejections,
         )
 
 
@@ -257,7 +266,9 @@ _JUDGE_SYSTEM_PROMPT = (
     "reference where given. When you have enough evidence, call submit_report "
     "exactly once with a verdict and an evidence-based justification for every "
     "criterion. Do not call submit_report before you have inspected the relevant "
-    "state."
+    "state. End every criterion's justification with a final line 'VERDICT: MET' "
+    "or 'VERDICT: NOT MET' (binary) / 'SCORE: <value in [0,1]>' (graded), and make "
+    "that criterion's verdict field match it."
 )
 
 
@@ -578,6 +589,8 @@ def run_rubric_judge(
             results = parse_submit_report(termination.captured_args, rubric)
             aggregate = aggregate_rubric(rubric, results)
         except SubmitReportValidationError as exc:
+            if isinstance(exc, VerdictConsistencyError):
+                metrics.consistency_rejections += 1
             attempts += 1
             if attempts > submit_report_retries:
                 logger.error(

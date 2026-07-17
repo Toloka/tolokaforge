@@ -173,6 +173,7 @@ class TestRunnerRPCBranch:
                         "reasoning_tokens": 10,
                         "cost_usd": 0.001,
                         "tool_calls": 1,
+                        "consistency_rejections": 1,
                     },
                     "judge_status": 1,
                 },
@@ -187,6 +188,7 @@ class TestRunnerRPCBranch:
         assert grade.judge_usage.calls == 2
         assert grade.judge_usage.prompt_tokens == 100
         assert grade.judge_usage.cost_usd == 0.001
+        assert grade.judge_usage.consistency_rejections == 1
         assert grade.judge_status == JudgeStatus.from_proto(1)
 
     def test_state_diff_json_parses(self) -> None:

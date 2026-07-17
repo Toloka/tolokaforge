@@ -1,0 +1,41 @@
+{
+  "function": {
+    "description": "Submit your final per-criterion rubric verdict. Provide a verdict and a justification for every criterion, plus overall reasons. Call this exactly once when you have finished evaluating.",
+    "name": "submit_report",
+    "parameters": {
+      "properties": {
+        "reasons": {
+          "description": "Overall summary of the evaluation across all criteria.",
+          "type": "string"
+        },
+        "refund_amount": {
+          "description": "Whether this criterion is met: Reply quotes the correct refund amount Expected: $328.50 Must match the 'VERDICT:' marker line ending this criterion's justification.",
+          "type": "boolean"
+        },
+        "refund_amount_justification": {
+          "description": "Evidence-based justification for criterion 'refund_amount'. Reason through the evidence first, then end with a final line 'VERDICT: MET' or 'VERDICT: NOT MET' stating the verdict the reasoning leads to.",
+          "type": "string"
+        },
+        "tone": {
+          "description": "Score in [0,1] for this criterion: Reply is polite and professional Must match the 'SCORE:' marker line ending this criterion's justification.",
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        "tone_justification": {
+          "description": "Evidence-based justification for criterion 'tone'. Reason through the evidence first, then end with a final line 'SCORE: <value in [0,1]>' stating the verdict the reasoning leads to.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "refund_amount_justification",
+        "refund_amount",
+        "tone_justification",
+        "tone",
+        "reasons"
+      ],
+      "type": "object"
+    }
+  },
+  "type": "function"
+}
