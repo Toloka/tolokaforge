@@ -49,7 +49,7 @@ The `Orchestrator._build_conductor` helper constructs `RunnerRPCTrialGrader(runt
 
 **Forward-looking.** The Protocol is what future variants slot into:
 
-- **Judge Protocol lift (GH #131 / ADR-0011 Follow-ups).** The rubric judge is currently coupled to the runner-side `grade_trial` implementation; extracting it as a first-class Judge component means a `JudgeBackedTrialGrader` becomes a natural `TrialGrader` variant.
+- **`JudgeBackedTrialGrader` (ADR-0019 / GH #131).** The rubric judge is now a first-class `Judge` component (ADR-0019: `Judge` Protocol + `LLMJudge` + `InMemoryJudge`), so a `JudgeBackedTrialGrader` that delegates to a `Judge` is a natural `TrialGrader` variant — noted there, not yet built.
 - **Multi-container / remote grading (CLOUD_RUNTIME §6.4).** When grading moves into the runner sandbox pod, a `RemoteTrialGrader` (gRPC client to a pod-hosted grader service) replaces `RunnerRPCTrialGrader` behind the same Protocol; Conductor is unchanged.
 - **Rule-only / custom / hybrid graders.** Task packs that skip the LLM judge entirely (deterministic state-check tasks) can inject a lighter `TrialGrader` and save the cost.
 
@@ -73,4 +73,4 @@ The `Orchestrator._build_conductor` helper constructs `RunnerRPCTrialGrader(runt
 - ADR-0013 (`RuntimeBackend` owns per-trial RPC methods) — `grade_trial` still lives there; `TrialGrader` is the caller.
 - GH #103 — Conductor decomposition (parent PR).
 - GH #160 — Design ticket for this ADR.
-- GH #131 — Judge Protocol lift (future `TrialGrader` variant).
+- ADR-0019 (`Judge` Protocol) / GH #131 — Judge Protocol lift, realized; a `JudgeBackedTrialGrader` remains a future `TrialGrader` variant.
