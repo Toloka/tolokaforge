@@ -1,0 +1,25 @@
+# Grading for sent_mut_001 – Dispense Schedule III controlled substance (valid DEA)
+# scenario_id: sent_mut_001
+# family_id: controlled_dispense
+# outcome_mode: mutation
+#
+# Policy clauses under test:
+#   pol_dea_registration_required – DEA credential must exist
+#   pol_dea_registration_expired  – DEA credential must be non-expired
+#   pol_controlled_dispense_log   – immutable log entry created on success
+#
+# Required outcomes:
+#   1. dispense_request dreq_001 → status=dispensed
+#   2. pharmacy_item item_buprenorphine → quantity_on_hand=40 (50-10)
+#   3. controlled_substance_log entry: dispense_request_id=dreq_001,
+#      pharmacy_item_id=item_buprenorphine, quantity_dispensed=10,
+#      dispensing_vet_id=vet_dr_hayes, dea_schedule=III
+#   4. audit_log entry: operation_id=dispense_controlled_substance,
+#      outcome=allowed, related_entity_id=dreq_001
+
+state_checks:
+  hash:
+    golden_actions:
+      - name: dispense_controlled_substance
+        kwargs:
+          dispense_request_id: dreq_001

@@ -15,6 +15,10 @@ from pydantic import BaseModel, Field, computed_field
 
 from tolokaforge.adapters._task_loader import load_task_yaml
 from tolokaforge.adapters.native import NativeAdapter, _load_json_list_reference
+from tolokaforge.adapters.native_consumer_checks import (
+    GradingComponentSurvival,
+    check_consumer_surfaces,
+)
 from tolokaforge.runner.models import InitialStateConfig as RunnerInitialStateConfig
 from tolokaforge.runner.tool_factory import MCPServerProcess
 from tolokaforge.runner.tool_result import tool_error_message
@@ -35,6 +39,10 @@ class NativeCaseVerification(BaseModel):
     task_file: str
     case_digest: str
     checks: list[NativeVerificationCheck] = Field(default_factory=list)
+    #: Per-component active-weight survival findings (present/dropped/why),
+    #: populated by the consumer-surface pass. Additive: absent/empty for
+    #: cases that failed before the consumer surfaces could run.
+    grading_components: list[GradingComponentSurvival] = Field(default_factory=list)
 
     @computed_field
     @property
@@ -179,7 +187,43 @@ def _verify_case(task_file: Path) -> NativeCaseVerification:
             check_name = "tool_schemas_or_golden"
         case.checks.append(_failed(check_name, exc))
 
+    _append_consumer_surface_checks(case, task_file)
     return case
+
+
+def _append_consumer_surface_checks(case: NativeCaseVerification, task_file: Path) -> None:
+    """Exercise every real consumer surface and record structured findings.
+
+    A golden replay that succeeds proves the MCP machinery, not the grading
+    contract: trial registration (``to_task_description``), artifact
+    persistence (core ``get_grading_config``), and the adapter load path each
+    parse the same YAML with different schemas — the D16 class of defect only
+    exists at those boundaries. All findings land as ordinary report checks;
+    the helper itself never raises.
+    """
+    report = check_consumer_surfaces(task_file)
+    for surface in report.surfaces:
+        case.checks.append(
+            NativeVerificationCheck(
+                name=f"consumer_{surface.surface}",
+                passed=surface.passed,
+                detail=surface.detail,
+            )
+        )
+    case.grading_components = report.components
+    dropped = report.dropped_components()
+    detail = "; ".join(
+        f"{component.component} (weight={component.weight:g}, "
+        f"{'present' if component.present else 'dropped'}): {component.reason}"
+        for component in report.components
+    )
+    case.checks.append(
+        NativeVerificationCheck(
+            name="grading_component_survival",
+            passed=not dropped,
+            detail=detail or "no positively weighted grading components declared",
+        )
+    )
 
 
 def _materialize_active_case(

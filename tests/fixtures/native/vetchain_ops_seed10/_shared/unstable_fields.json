@@ -1,0 +1,16 @@
+[
+  {"table_name": "controlled_substance_log", "field_name": "id",           "reason": "auto_id"},
+  {"table_name": "controlled_substance_log", "field_name": "dispensed_at", "reason": "timestamp"},
+  {"table_name": "audit_log",                "field_name": "id",           "reason": "auto_id"},
+  {"table_name": "audit_log",                "field_name": "timestamp",    "reason": "timestamp"},
+  {"table_name": "escalation_record",        "field_name": "id",           "reason": "auto_id"},
+  {"table_name": "escalation_record",        "field_name": "created_at",   "reason": "timestamp"},
+  {"table_name": "repair_order",             "field_name": "opened_at",    "reason": "timestamp"},
+  {"table_name": "repair_order",             "field_name": "assigned_at",  "reason": "timestamp"},
+  {"table_name": "lab_order",                "field_name": "ordered_at",   "reason": "timestamp"},
+  {"table_name": "specimen_log",             "field_name": "collected_at", "reason": "timestamp"},
+  {"table_name": "client_notification_task", "field_name": "created_at",   "reason": "timestamp"},
+  {"table_name": "vaccine_recall_record",    "field_name": "initiated_at", "reason": "timestamp"},
+  {"table_name": "system_access_grant",      "field_name": "granted_at",   "reason": "timestamp"},
+  {"table_name": "appointment",              "field_name": "id",           "reason": "auto_id"}
+]

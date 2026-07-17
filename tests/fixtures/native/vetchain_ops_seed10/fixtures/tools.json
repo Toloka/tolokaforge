@@ -1,0 +1,82 @@
+[
+  {
+    "name": "_tolokaforge_get_state_",
+    "description": "Internal: get state snapshot",
+    "parameters": {
+      "properties": {},
+      "title": "_tolokaforge_get_state_Arguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "_tolokaforge_set_state_",
+    "description": "Internal: replace state",
+    "parameters": {
+      "properties": {
+        "state_json": {
+          "title": "State Json",
+          "type": "string"
+        }
+      },
+      "required": [
+        "state_json"
+      ],
+      "title": "_tolokaforge_set_state_Arguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "dispense_controlled_substance",
+    "description": "Process a controlled substance dispense from central pharmacy to a clinic, enforcing DEA validity, schedule-class witness requirements, and creating the controlled substance log. Policy: pol_dea_registration_required, pol_dea_registration_expired, pol_schedule_ii_witness_required, pol_controlled_dispense_log, pol_staff_suspended_blocked",
+    "parameters": {
+      "properties": {
+        "dispense_request_id": {
+          "description": "ID of the dispense_request record (must have status=pending)",
+          "title": "Dispense Request Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "dispense_request_id"
+      ],
+      "title": "dispense_controlled_substanceArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "log_controlled_dispense",
+    "description": "Create an immutable controlled_substance_log entry for a completed dispense event. Requires dispense_request.status=dispensed. For Schedule II drugs witness_staff_id must be present. Policy: pol_controlled_dispense_log, pol_schedule_ii_witness_required",
+    "parameters": {
+      "properties": {
+        "dispense_request_id": {
+          "description": "ID of the already-dispensed dispense_request record",
+          "title": "Dispense Request Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "dispense_request_id"
+      ],
+      "title": "log_controlled_dispenseArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "verify_dea_registration",
+    "description": "Verify that a veterinarian holds a valid (active, non-expired) DEA registration credential before allowing a controlled substance dispense. Returns {valid: bool, failure_code: str|null}. Writes audit_log on failure. Policy: pol_dea_registration_required, pol_dea_registration_expired",
+    "parameters": {
+      "properties": {
+        "vet_id": {
+          "description": "Staff member ID of the requesting veterinarian",
+          "title": "Vet Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "vet_id"
+      ],
+      "title": "verify_dea_registrationArguments",
+      "type": "object"
+    }
+  }
+]
