@@ -2105,6 +2105,131 @@ _ALL: list[MC] = [
             }
         ),
     ),
+    # -----------------------------------------------------------------
+    # Meta Muse Spark 1.1 — sole OpenRouter endpoint is Meta (the
+    # /endpoints list has one entry, so there is no provider pin to
+    # route around Meta behaviour) and the model is US-region-locked (a
+    # non-US call returns 403 "This model is only available in the
+    # United States"), so the capability suite must run from a US
+    # runner. Postures below were established by a full live
+    # characterisation run from US Codespaces on 2026-07-17 — every
+    # capability tentatively flipped to `required` per ADD_NEW_MODEL.md
+    # §3, then moved back only where it failed live. This SUPERSEDES the
+    # 2026-07-17 observe run (PR #474, Actions run 29562351690), which
+    # was infra-dirty and mis-characterised discriminated-union as ~50%
+    # (8/15, 6/15) whereas the clean live re-test passed ~84%. The
+    # `-k muse` suite output is pasted in PR #474 per ADD_NEW_MODEL.md §4.
+    # -----------------------------------------------------------------
+    MC(
+        model_id="openrouter__meta_muse-spark-1.1",
+        provider="openrouter",
+        name="meta/muse-spark-1.1",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.DICT_MAP_TOOL_CALL,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+                # Two-turn discriminated union is supported with a residual
+                # turn-2 flake: live 2026-07-17 both params passed 32/38
+                # full runs (~84%), and 12/12 in a dedicated decisive round
+                # + 12/12 per-param in isolation. The misses cluster in
+                # degraded-provider windows (one round went 5/10 alongside a
+                # 288s latency outlier); healthy windows run ~96-100%. When
+                # it fails, turn 2 answers in prose instead of emitting the
+                # union call. ~84% clears the ~73% floor the other flaky-but-
+                # required caps (re2 ~85%, required_fields ~73%) sit at, so
+                # this is `required`. The observe run's ~50% (bare 8/15,
+                # explicit 6/15) was its documented infra-dirty window, not
+                # the steady-state rate — so this is NOT the copied-sibling
+                # `known_unsupported` posture. Like re2/required_fields this
+                # probe may need a re-run to go green (ADD_NEW_MODEL.md §4).
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # allOf merge works on 2 of 3 shapes (top_level + three_way
+                # PASS live) — the model CAN populate both merged
+                # subschemas. The `nested` shape (envelope.payload)
+                # deterministically trips Meta's content-management filter
+                # (content_policy_violation 400, param:prompt) on a benign
+                # order/inventory prompt: 0/6 live 2026-07-17 (5× step-4
+                # loop + all-required run) + 0/15 observe. A provider-filter
+                # false-positive, not a merge-capability gap, and Meta is
+                # the sole endpoint so there is no route around it. Ratchet
+                # target: flip to required when Meta stops filtering it.
+                C.ALLOF_MERGE_TOOL_CALL,
+                # API-layer 400 "Recursive JSON schemas are not currently
+                # supported" (param:parameters) on every recursive_ref
+                # shape — simple / deep_chain / wide_tree / nested_in_object
+                # all 0/1 live 2026-07-17 + 0/15 observe. Provider
+                # limitation, not a sanitiser gap. Ratchet target.
+                C.RECURSIVE_REF_TOOL_CALL,
+                # Reasoning is done internally (provider_raw carries
+                # reasoning_tokens; reasoning_details is
+                # type="reasoning.encrypted") but never surfaced as
+                # structured blocks over the OpenRouter route — the tests
+                # fail with "StructuredReasoning should be surfaced" /
+                # "turn 1 returned no structured reasoning" (all three 0/1
+                # live 2026-07-17 + 0/15 observe).
+                C.THINKING_EMITS_BLOCKS,
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.UNSIGNED_THINKING_REPLAY,
+                # Explicit Anthropic-style ephemeral cache_control is not
+                # wired for non-Anthropic OpenRouter routes: no cold-write
+                # cache-creation event (cache_creation_input_tokens=0,
+                # cache_write_tokens=0), so test_prompt_caching's
+                # creation assertion fails live 2026-07-17. Distinct from
+                # the auto-cache surface (IMPLICIT_PROMPT_CACHING, also
+                # known_unsupported — see the entry below). Same
+                # explicit-cache posture as the gpt-oss-120b sibling.
+                C.PROMPT_CACHING,
+                # IMPLICIT_PROMPT_CACHING — known_unsupported because we
+                # cannot verify GENUINE auto-caching on this route and its
+                # cached-token reporting is not trustworthy as a caching
+                # signal. Observed live 2026-07-17 (US Codespaces):
+                #  * A price discount IS applied — OpenRouter bills cached
+                #    input at the cache_read rate: a call with 8703 cached +
+                #    4 uncached prompt tokens costs 0.00131045 ==
+                #    8703*0.15e-6 + 4*1.25e-6 (vs 0.0109 at full input rate).
+                #  * BUT ~all input is reported `cached` on EVERY call,
+                #    including a genuinely cold one: a 19,585-token,
+                #    never-before-sent unique prompt returned cached=19,581
+                #    on call 1. A real first-call cross-request cache HIT is
+                #    impossible, so this counter does not reflect a
+                #    verifiable prior-call hit — it tracks the discounted
+                #    billing tier (or is a provider mis-report), not caching
+                #    we can certify.
+                #  * The standard test_implicit_prompt_caching fails 3/3
+                #    (cost call1 == call2: with no cold baseline the
+                #    "call 2 < call 1" delta cannot exist).
+                # Net: the classic cold->warm reuse we would credit as
+                # caching is unverifiable here, so we do not claim it. NB:
+                # the observable cached_tokens would make the auto-cache
+                # ratchet (test_known_unsupported_routes_do_not_auto_cache)
+                # fire on this route, so muse is excluded there
+                # (_UNRELIABLE_COLD_CACHE_REPORT_NAMES) carrying this same
+                # rationale — the counter is not a reliable real-caching
+                # signal here. That exclusion is a targeted stopgap, not a
+                # real fix; follow-up #484 will teach the ratchet to send a
+                # cold probe before trusting cached_tokens.
+                C.IMPLICIT_PROMPT_CACHING,
+            }
+        ),
+    ),
 ]
 
 

@@ -657,6 +657,11 @@
       "input": 0.18,
       "output": 0.18
     },
+    "meta/muse-spark-1.1": {
+      "input": 1.25,
+      "output": 4.25,
+      "cache_read": 0.15
+    },
     "microsoft/phi-4": {
       "input": 0.065,
       "output": 0.14
