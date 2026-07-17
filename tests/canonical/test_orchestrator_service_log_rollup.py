@@ -4,7 +4,7 @@ Drives :meth:`Orchestrator._generate_reports` against a minimal orchestrator
 plus a synthetic on-disk capture tree, capturing the written aggregate via
 :class:`InMemoryAggregateWriter`. Asserts the stamped
 ``aggregate["captured_service_logs"]`` equals the collector's own output and
-that the full aggregate validates against :class:`RunAggregate`.
+validates as a :class:`CapturedServiceLogsRollup`.
 """
 
 from __future__ import annotations
