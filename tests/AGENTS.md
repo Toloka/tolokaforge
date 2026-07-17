@@ -5,7 +5,7 @@
 | Category | Directory | Marker | Speed | External Deps |
 |----------|-----------|--------|-------|---------------|
 | Unit | `tests/unit/` | `@pytest.mark.unit` | < 1s each | None |
-| Canonical | `tests/canonical/` | `@pytest.mark.canonical` | < 5s each | None (golden snapshots) |
+| Canonical | `tests/canonical/` | `@pytest.mark.canonical` | < 5s each, except the packaging/entry-point smoke tests that build a wheel and install it into a scratch venv (~10–25s) | Golden snapshots; the packaging/entry-point smoke tests also require the `uv` CLI (they skip loud without it) |
 | Integration | `tests/integration/` | `@pytest.mark.integration` | 5–60s each | Docker, API keys |
 
 ## Commands
