@@ -40,7 +40,7 @@ uv run tolokaforge rejudge --source <run-dir> \
 | `--trial` | Re-judge a single bundle dir instead of the whole `--source`. |
 | `--judge-model` | Override the judge model as `<provider>/<model>` (e.g. `openrouter/openai/gpt-4.1-mini`), temperature 0. Default: the recorded `model_config.judge`. |
 | `--grading` | Override the rubric with a supplied `grading.yaml` (or a bare `rubric:` mapping). Required for old bundles that recorded no rubric. Default: the recorded rubric. |
-| `--knowledge-search` | `recorded` (honour the bundle's recorded gating), `on`, or `off`. Default: `recorded`. |
+| `--knowledge-search` | `recorded` (honour the bundle's recorded gating), `on`, or `off`. Default: `recorded`. Forcing `on` for a bundle with no recorded KB gating cannot conjure a KB tool: the replay grade records `offered: []` and the provenance records the mode — observable, not silent. |
 | `--replay-id` | Name for the artifact subdirectory. Default: a timestamped id. |
 | `--dry-run` | Discover, classify, and resolve inputs, then report what would replay — spending nothing. |
 
@@ -70,7 +70,10 @@ records no rubric and no `--grading` was given; or no transcript; or no
 as a **named per-trial failure** — the batch continues, and no eligible trial is
 ever silently skipped. The same applies to a bundle whose `grade.yaml` is missing
 or unreadable (it cannot even be classified) and to recorded inputs that fail
-validation (a corrupt `trajectory.yaml`, rubric, or model config).
+validation (a corrupt `trajectory.yaml`, rubric, or model config). When any trial
+fails, `rejudge` still writes the comparison report for the replayed subset and
+then **exits non-zero**, so a scripted caller never reads a partially-failed
+replay as clean.
 
 ## Offline read tools
 

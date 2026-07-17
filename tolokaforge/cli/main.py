@@ -450,7 +450,9 @@ def rejudge(
     Re-executes only the rubric judge over recorded trajectories — no agent re-run,
     no live services — so judge changes (schema, prompt, wording, model) can be
     A/B-tested against a recorded run. Execution is sequential with no concurrency
-    cap; inspect --dry-run first. See docs/JUDGE_REPLAY.md.
+    cap; inspect --dry-run first. Exits non-zero when any trial fails to classify
+    or reconstruct (the report for the replayed subset is still written). See
+    docs/JUDGE_REPLAY.md.
     """
     source_path = Path(source)
     replay_id = replay_id or f"replay_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -472,6 +474,9 @@ def rejudge(
         report = emit_replay_report(outcomes, source=source_path, replay_id=replay_id)
         if report is not None:
             _print_replay_report(report)
+
+    if any(o.status is ReplayOutcomeStatus.FAILED for o in outcomes):
+        raise SystemExit(1)
 
 
 @cli.command(name="prepare")

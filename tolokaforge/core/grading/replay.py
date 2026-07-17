@@ -171,7 +171,8 @@ class _OfflineReadTool(Tool):
     """A read tool offered to match the recorded surface but backed offline.
 
     Any call returns the explicit "unavailable in replay" marker. Used for the
-    ``read_file`` workspace reader and any non-``search_kb`` KB passthrough (e.g.
+    ``read_file`` workspace reader, any other recorded non-KB read tool the DB
+    shims don't cover, and any non-``search_kb`` KB passthrough (e.g.
     ``search_policy``) the judge was recorded to have been offered.
     """
 
@@ -238,7 +239,10 @@ class ReplayInputs:
 def _load_yaml(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
-    loaded = yaml.safe_load(path.read_text())
+    try:
+        loaded = yaml.safe_load(path.read_text())
+    except yaml.YAMLError as exc:
+        raise MissingReplayInputError(f"unreadable YAML at {path}: {exc}") from exc
     return loaded if isinstance(loaded, dict) else None
 
 
@@ -337,11 +341,13 @@ def _offline_read_surface(
     extra: list[Tool] = []
 
     if judge_inputs is not None:
-        offered = set(judge_inputs.read_tools_offered)
-        if offered & {"get_db_state", "query_db"}:
+        if set(judge_inputs.read_tools_offered) & {"get_db_state", "query_db"}:
             db_reader = OfflineDBReader()
-        if "read_file" in offered:
-            extra.append(_OfflineReadTool("read_file", "workspace"))
+        for name in judge_inputs.read_tools_offered:
+            if name == "read_file":
+                extra.append(_OfflineReadTool(name, "workspace"))
+            elif name not in ("get_db_state", "query_db"):
+                extra.append(_OfflineReadTool(name, name))
     elif (trial_dir / "env.yaml").exists():
         db_reader = OfflineDBReader()
 
@@ -382,7 +388,9 @@ def read_replay_inputs(
     grade = _load_yaml(trial_dir / "grade.yaml")
     prompts = _load_yaml(trial_dir / "prompts.yaml")
     if prompts is None:
-        raise MissingReplayInputError(f"no agent policy: {trial_dir / 'prompts.yaml'} is missing")
+        raise MissingReplayInputError(
+            f"no agent policy: {trial_dir / 'prompts.yaml'} is missing or not a mapping"
+        )
     trajectory_raw = _load_yaml(trial_dir / "trajectory.yaml")
     if trajectory_raw is None:
         raise MissingReplayInputError(f"no transcript: {trial_dir / 'trajectory.yaml'} is missing")

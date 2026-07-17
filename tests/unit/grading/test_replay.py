@@ -255,7 +255,7 @@ def test_replay_trial_uses_injected_client_and_produces_result(tmp_path: Path) -
         judge_status=JudgeStatus.COMPLETED,
         judge_inputs=JudgeInputs(
             state_diff_text="orders[O-1]: refunded false -> true",
-            read_tools_offered=["get_db_state", "query_db", "read_file"],
+            read_tools_offered=["get_db_state", "query_db", "read_file", "fetch_ticket"],
         ),
     )
     inputs = read_replay_inputs(trial_dir)
@@ -268,10 +268,12 @@ def test_replay_trial_uses_injected_client_and_produces_result(tmp_path: Path) -
     # The one production judge was driven by the injected client — no network.
     assert client.calls == 1
     # And it echoes the reconstructed state_diff + the FULL offline read surface —
-    # including read_file, which enters replay via extra_read_tools — so a replay
+    # including read_file and the recorded name outside the known set
+    # (fetch_ticket), which enter replay via generic non-KB shims — so a replay
     # bundle is itself re-replayable without losing tools.
     assert result.state_diff == "orders[O-1]: refunded false -> true"
-    assert result.read_tools_offered == ("get_db_state", "query_db", "read_file")
+    assert result.read_tools_offered == ("get_db_state", "query_db", "read_file", "fetch_ticket")
+    assert result.kb_tools_offered == ()
 
 
 def test_knowledge_search_override_forces_gating(tmp_path: Path) -> None:
@@ -371,15 +373,26 @@ def test_not_applicable_trial_reported_skipped_even_with_grading_override(tmp_pa
     assert by_name["judged"] is ReplayOutcomeStatus.WOULD_REPLAY
 
 
-def test_batch_records_unreadable_grade_as_named_failure_and_continues(tmp_path: Path) -> None:
-    """A discovered bundle whose ``grade.yaml`` turns out unreadable is a NAMED
-    per-trial FAILED, never a silent NOT_APPLICABLE skip, and the rest of the
-    batch still runs."""
+@pytest.mark.parametrize(
+    ("grade_content", "reason_match"),
+    [
+        ("- not\n- a\n- mapping\n", "not a trial bundle"),
+        ('{"a": [', "unreadable YAML"),
+    ],
+    ids=["not_mapping", "syntax_corrupt"],
+)
+def test_batch_records_unreadable_grade_as_named_failure_and_continues(
+    tmp_path: Path, grade_content: str, reason_match: str
+) -> None:
+    """A discovered bundle whose ``grade.yaml`` turns out unreadable — wrong shape
+    or YAML syntax that does not even parse — is a NAMED per-trial FAILED, never a
+    silent NOT_APPLICABLE skip and never a batch-aborting raw parser traceback,
+    and the rest of the batch still runs."""
     source = tmp_path / "run"
     _completed_bundle(source / "trials" / "good" / "0")
     corrupt = source / "trials" / "corrupt" / "0"
     _completed_bundle(corrupt)
-    (corrupt / "grade.yaml").write_text("- not\n- a\n- mapping\n")
+    (corrupt / "grade.yaml").write_text(grade_content)
 
     outcomes = run_replay_batch(source, replay_id="r1", dry_run=True)
 
@@ -387,7 +400,7 @@ def test_batch_records_unreadable_grade_as_named_failure_and_continues(tmp_path:
     assert by_name["good"].status is ReplayOutcomeStatus.WOULD_REPLAY
     failed = by_name["corrupt"]
     assert failed.status is ReplayOutcomeStatus.FAILED
-    assert failed.reason is not None and "not a trial bundle" in failed.reason
+    assert failed.reason is not None and reason_match in failed.reason
 
 
 def test_batch_records_invalid_recorded_input_as_named_failure_and_continues(
@@ -452,3 +465,21 @@ def test_rejudge_cli_dry_run_spends_nothing(tmp_path: Path) -> None:
     assert "1 eligible" in result.output
     # Dry-run spends nothing and writes nothing.
     assert not (source / "replays").exists()
+
+
+def test_rejudge_cli_exits_nonzero_when_a_trial_fails(tmp_path: Path) -> None:
+    """A batch with a FAILED trial must not exit 0 — a scripted caller (CI, sweep)
+    would otherwise read a partially-failed replay as a clean one."""
+    from tolokaforge.cli.main import cli
+
+    source = tmp_path / "run"
+    _completed_bundle(source / "trials" / "refund_task" / "0")
+    non_bundle = tmp_path / "not_a_bundle"
+    non_bundle.mkdir()
+
+    result = CliRunner().invoke(
+        cli, ["rejudge", "--source", str(source), "--trial", str(non_bundle)]
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "failed" in result.output
