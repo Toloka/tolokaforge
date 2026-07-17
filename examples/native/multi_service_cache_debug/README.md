@@ -143,8 +143,8 @@ examples/native/multi_service_cache_debug/
 
 - [`../multi_service_postgres_reset/README.md`](../multi_service_postgres_reset/README.md)
   — the `sql_dump` reset-recipe reference (postgres side).
-- [`docs/architecture/RESET_RECIPES.md`](../../../docs/architecture/RESET_RECIPES.md)
+- [`docs/RESET_RECIPES.md`](../../../docs/RESET_RECIPES.md)
   — the reset-recipe reference, including `redis_dump`.
-- [`docs/multi_container_tasks.md`](../../../docs/multi_container_tasks.md)
+- [`docs/MULTI_CONTAINER_GUIDE.md`](../../../docs/MULTI_CONTAINER_GUIDE.md)
   — authoring guide for multi-container tasks.
 ```

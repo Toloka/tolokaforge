@@ -8,7 +8,7 @@
 # the agent's `/work` — so `repeats: 2` starts each trial from clean source. See
 # README.md.
 #
-# See docs/architecture/PROJECTS.md for the full Project model.
+# See docs/PROJECTS.md for the full Project model.
 
 name: "multi-service-endpoint-add"
 version: 1

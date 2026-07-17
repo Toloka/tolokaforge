@@ -4,7 +4,7 @@ A **task-declared multi-service** example. The task ships its own
 `environment.compose.yaml` declaring three services (runner + db-service +
 a task-specific `app-service`), and the engine materialises them **once at
 run start** under `--runtime shared` (Case B in
-[ADR-0018](../../../docs/architecture/adr/0018-multi-container-under-shared-runtime.md)).
+[ADR-0018](../../../docs/adr/0018-multi-container-under-shared-runtime.md)).
 
 The agent's job is to query the running product-catalog HTTP service and
 write a short executive summary of the top-3 most expensive in-stock
@@ -23,7 +23,7 @@ products.
 - The `:local` engine-image alias pattern the engine applies at run start,
   so task compose files can reference `tolokaforge-runner:local` and
   `tolokaforge-db-service:local` regardless of the underlying content-hash
-  tag (see `docs/architecture/RUNTIME_BACKENDS.md`).
+  tag (see `docs/RUNTIME_BACKENDS.md`).
 
 ## Validate
 
@@ -67,6 +67,6 @@ examples/native/multi_service/
 
 ## Related
 
-- [ADR-0018](../../../docs/architecture/adr/0018-multi-container-under-shared-runtime.md) — Case matrix + sequence diagrams for each supported case
-- [ADR-0016](../../../docs/architecture/adr/0016-runtime-backend-comparison.md) — shared vs per_trial (lifecycle axis)
-- [docs/architecture/RUNTIME_BACKENDS.md](../../../docs/architecture/RUNTIME_BACKENDS.md) — mechanics deep-dive
+- [ADR-0018](../../../docs/adr/0018-multi-container-under-shared-runtime.md) — Case matrix + sequence diagrams for each supported case
+- [ADR-0016](../../../docs/adr/0016-runtime-backend-comparison.md) — shared vs per_trial (lifecycle axis)
+- [docs/RUNTIME_BACKENDS.md](../../../docs/RUNTIME_BACKENDS.md) — mechanics deep-dive

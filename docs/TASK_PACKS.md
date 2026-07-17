@@ -4,7 +4,7 @@
 > "task pack" is being renamed to **Project** (with related new
 > terms: **Actor**, **Service**, **Backend**). The Project doc
 > explains the two-vocabulary split — see
-> [`architecture/PROJECTS.md` § Naming — "Project" vs "task pack"](architecture/PROJECTS.md#naming--project-vs-task-pack).
+> [`PROJECTS.md` § Naming — "Project" vs "task pack"](PROJECTS.md#naming--project-vs-task-pack).
 > In short: "Project" is the abstraction (schemas, docs, CLI);
 > "task pack" survives as a *filesystem-layout* term in
 > implementation plumbing (adapter parameters, Docker-mount
@@ -16,7 +16,7 @@
 >   The single-file run-config format described below is what the
 >   current CLI loads; the Project format is not runnable yet.
 > - **Reading or contributing to the target design** — see
->   [`architecture/PROJECTS.md`](architecture/PROJECTS.md), a
+>   [`PROJECTS.md`](PROJECTS.md), a
 >   proposal implemented across milestones #211–#214.
 >
 > The `evaluation.task_packs` field below is scheduled for rename
@@ -74,7 +74,7 @@ Minimum task directory contract:
 A task can also declare an `environment_manifest` to ship its own
 docker-compose stack (a real database, a custom API), with per-service
 isolation (`services.<name>.isolation: shared | reset | ephemeral`). See
-the [multi-container tasks guide](multi_container_tasks.md).
+the [multi-container tasks guide](MULTI_CONTAINER_GUIDE.md).
 
 Recommended scorer patterns:
 

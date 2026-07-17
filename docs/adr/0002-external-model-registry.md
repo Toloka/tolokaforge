@@ -31,7 +31,7 @@ Two engine releases per new model becomes common when custom patterns appear.
 
 The same kind of seam was just opened for **task adapters** by
 [ADR 0001's broader project context — entry-point plugin discovery in
-`tolokaforge.adapters`](../../ADAPTER_ARCHITECTURE.md) and validated at the
+`tolokaforge.adapters`](../ADAPTER_ARCHITECTURE.md) and validated at the
 host boundary with `ensure_registered_adapter()`
 (`tolokaforge/adapters/__init__.py:86`). The LLM preset layer is the next
 natural seam.

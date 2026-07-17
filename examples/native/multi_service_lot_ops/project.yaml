@@ -6,7 +6,7 @@
 # `environment_manifest` (all four services `isolation: shared`), so this
 # project only supplies discovery + native defaults. See README.md.
 #
-# See docs/architecture/PROJECTS.md for the full Project model.
+# See docs/PROJECTS.md for the full Project model.
 
 name: "multi-service-lot-ops"
 version: 1

@@ -469,8 +469,8 @@ flowchart TB
   - `tolokaforge/core/env_identity.py` — `resolve_environment_identity`
   - `tolokaforge/runtime/reset_recipes/` — per-kind reset dispatchers
 - Related docs:
-  - `docs/architecture/RUNTIME_BACKENDS.md` — mechanics deep-dive
-  - `docs/architecture/PROJECTS.md` — `services.<name>.isolation` + `reset.seed` surface
+  - `docs/RUNTIME_BACKENDS.md` — mechanics deep-dive
+  - `docs/PROJECTS.md` — `services.<name>.isolation` + `reset.seed` surface
 - Case B examples (all under `examples/native/`):
   - `multi_service/` — minimum Case B: one task-specific HTTP service (nginx + static JSON)
   - `multi_service_advanced/` — multi-endpoint join across two task-specific HTTP services + smaller-model tier (Haiku)

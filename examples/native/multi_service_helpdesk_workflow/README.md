@@ -169,7 +169,7 @@ examples/native/multi_service_helpdesk_workflow/
 
 ## Related
 
-- [`docs/multi_container_tasks.md`](../../../docs/multi_container_tasks.md)
+- [`docs/MULTI_CONTAINER_GUIDE.md`](../../../docs/MULTI_CONTAINER_GUIDE.md)
   — authoring guide for multi-container tasks
 - [`docs/GRADING.md`](../../../docs/GRADING.md) — grading families, including
   `state_checks.db_probes`

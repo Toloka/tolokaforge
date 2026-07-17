@@ -13,7 +13,7 @@ postgres schema and generates REST endpoints automatically. All the task
 authoring lives in one file: the SQL that defines the schema and seeds
 the data (`app-db/init.sql`).
 
-Case B in [ADR-0018](../../../docs/architecture/adr/0018-multi-container-under-shared-runtime.md).
+Case B in [ADR-0018](../../../docs/adr/0018-multi-container-under-shared-runtime.md).
 
 ## What this example demonstrates
 
@@ -103,4 +103,4 @@ examples/native/multi_service_postgres/
   B (nginx + static JSON)
 - [`../multi_service_advanced/README.md`](../multi_service_advanced/README.md) —
   multi-endpoint join over two nginx services
-- [ADR-0018](../../../docs/architecture/adr/0018-multi-container-under-shared-runtime.md) — case matrix + sequence diagrams
+- [ADR-0018](../../../docs/adr/0018-multi-container-under-shared-runtime.md) — case matrix + sequence diagrams

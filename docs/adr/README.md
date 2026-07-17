@@ -6,7 +6,7 @@ This directory records architecturally significant decisions about Tolokaforge. 
 
 Write one when a decision:
 
-- changes a boundary in the [Building Block View](../README.md#5-building-block-view-c4-level-2--container),
+- changes a boundary in the [Building Block View](../ARCHITECTURE.md#5-building-block-view-c4-level-2--container),
 - introduces or removes a cross-cutting rule,
 - locks in a quality trade-off (e.g. determinism vs. flexibility, isolation vs. simplicity),
 - or replaces an earlier ADR.

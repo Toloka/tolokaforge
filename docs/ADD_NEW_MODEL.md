@@ -106,7 +106,7 @@ tolokaforge run --config run.yaml --presets-file my_overlay.yaml
 Or set the overlay declaratively in `run.yaml` under `engine.presets_file`.
 Precedence is CLI > config field. See
 [`docs/CONFIG.md`](CONFIG.md#preset-overlay-file-no-engine-release-required)
-and [ADR 0002 — External model registry](architecture/adr/0002-external-model-registry.md).
+and [ADR 0002 — External model registry](adr/0002-external-model-registry.md).
 
 A few rules the overlay enforces (loud-fail at engine startup, naming the
 overlay path and the offending key):

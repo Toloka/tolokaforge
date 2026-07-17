@@ -213,7 +213,7 @@ presets:
 For models that reuse existing policy classes, you don't need to release the
 engine to add or adjust a preset. Point TolokaForge at a second YAML file that
 gets merged onto the bundled `model_presets.yaml` at startup. See
-[ADR 0002 — External model registry](architecture/adr/0002-external-model-registry.md)
+[ADR 0002 — External model registry](adr/0002-external-model-registry.md)
 for the rationale and [`docs/ADD_NEW_MODEL.md`](ADD_NEW_MODEL.md) for a
 walkthrough.
 

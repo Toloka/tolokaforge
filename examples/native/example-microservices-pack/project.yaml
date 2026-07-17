@@ -1,5 +1,5 @@
 # Project spec — the top-level abstraction for this project.
-# See docs/architecture/PROJECTS.md for the full model.
+# See docs/PROJECTS.md for the full model.
 #
 # NOTE: this project is authored against the PROPOSED Project schema
 # (PROJECTS.md § "Delta from current implementation"). It is not
