@@ -12,6 +12,7 @@ decoupled TypeSense plane). These tests exercise that real gate.
 from __future__ import annotations
 
 import asyncio
+import json
 from unittest.mock import MagicMock
 
 import pytest
@@ -155,6 +156,21 @@ def test_search_policy_passthrough_offered_only_when_agent_had_it():
             service._build_judge_search_policy_tools(_trial_context_with({"query_db": MagicMock()}))
             == []
         )
+    finally:
+        service.shutdown()
+
+
+def test_search_policy_passthrough_is_tagged_knowledge_search():
+    """The service tags each ``search_policy`` passthrough as knowledge-search so the
+    judge registry can gate it under ``disable_knowledge_search`` — classification is
+    by this declared tag, never by tool name."""
+    service = _service(None)
+    try:
+        tools = service._build_judge_search_policy_tools(
+            _trial_context_with({"search_policy": _FakeReconstructedSearchPolicy()})
+        )
+        assert len(tools) == 1
+        assert tools[0].is_knowledge_search is True
     finally:
         service.shutdown()
 
@@ -331,6 +347,143 @@ def test_search_policy_passthrough_skips_namespaced_non_tool_wrapper(caplog):
             "connectors_typesense_search_policy in agent_tools is not a ToolWrapper" in rec.message
             for rec in caplog.records
         )
+    finally:
+        service.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# _grade_llm_judge wires the effective disable_knowledge_search flag from the
+# merged llm_judge config into LLMJudge construction. The agent's tool surface
+# is untouched; only the judge's construction flag changes.
+# ---------------------------------------------------------------------------
+
+
+class _FakeTaskDesc:
+    """Minimal task description: no workspace, no initial state (so the judge
+    state-diff and workspace-file paths degrade to None without a DB)."""
+
+    initial_state = None
+
+
+class _JudgeCtx:
+    """A lightweight trial context exposing only what ``_grade_llm_judge`` reads."""
+
+    def __init__(self, model_config) -> None:
+        self.judge_model_config = model_config
+        self.agent_tools: dict = {}
+        self.task_description = _FakeTaskDesc()
+
+    def resolve_kb_search(self):
+        return None
+
+
+@pytest.mark.parametrize(
+    "customization, expected",
+    [
+        (None, False),
+        ({"disable_knowledge_search": None}, False),
+        ({"disable_knowledge_search": False}, False),
+        ({"disable_knowledge_search": True}, True),
+    ],
+    ids=["absent", "unset", "explicit_false", "explicit_true"],
+)
+def test_grade_llm_judge_constructs_with_effective_disable_flag(
+    monkeypatch, customization, expected
+):
+    from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, JudgeUsage
+    from tolokaforge.core.models import ModelConfig
+    from tolokaforge.runner.models import JudgeCustomization, LLMJudgeConfig, Rubric
+
+    captured: dict = {}
+
+    class _SpyJudge:
+        def __init__(self, model_config, *, disable_knowledge_search=False, **_kw):
+            captured["disable"] = disable_knowledge_search
+
+        def run(self, **_kwargs):
+            return JudgeResult(
+                status=JudgeStatus.COMPLETED, usage=JudgeUsage(), reasons="ok", score=1.0
+            )
+
+    monkeypatch.setattr("tolokaforge.runner.service.LLMJudge", _SpyJudge)
+
+    service = _service(None)
+    try:
+        rubric = Rubric(criteria=[{"id": "a", "description": "d", "kind": "binary", "weight": 1.0}])
+        cfg = LLMJudgeConfig(
+            rubric=rubric,
+            customization=(
+                JudgeCustomization(**customization) if customization is not None else None
+            ),
+        )
+        ctx = _JudgeCtx(ModelConfig(provider="openai", name="gpt-4o-mini", temperature=0.0))
+        fut = asyncio.run_coroutine_threadsafe(
+            service._grade_llm_judge("t:0", cfg, [], ctx), service._loop
+        )
+        fut.result(timeout=5.0)
+        assert captured["disable"] is expected
+    finally:
+        service.shutdown()
+
+
+def test_grade_trial_populates_judge_report_kb_gating(monkeypatch):
+    """The ``JudgeResult`` gating fields cross into ``pb2.JudgeReport`` unswapped:
+    ``knowledge_search_disabled`` / ``kb_tools_offered`` / ``kb_tools_withheld``
+    land on ``response.grade.judge_report`` exactly as the judge reported them."""
+    from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, JudgeUsage
+    from tolokaforge.core.models import ModelConfig
+    from tolokaforge.runner import runner_pb2 as pb2
+    from tolokaforge.runner.models import GradingConfig, LLMJudgeConfig, Rubric, TaskDescription
+    from tolokaforge.runner.service import TrialContextRuntime
+
+    class _SpyJudge:
+        def __init__(self, model_config, *, disable_knowledge_search=False, **_kw):
+            pass
+
+        def run(self, **_kwargs):
+            return JudgeResult(
+                status=JudgeStatus.COMPLETED,
+                usage=JudgeUsage(),
+                reasons="ok",
+                score=1.0,
+                knowledge_search_disabled=True,
+                kb_tools_offered=(),
+                kb_tools_withheld=("search_kb",),
+            )
+
+    monkeypatch.setattr("tolokaforge.runner.service.LLMJudge", _SpyJudge)
+
+    rubric = Rubric(criteria=[{"id": "a", "description": "d", "kind": "binary", "weight": 1.0}])
+    task_desc = TaskDescription(
+        task_id="rubric_task",
+        name="rubric task",
+        category="tool_use",
+        description="rubric task",
+        adapter_type="native",
+        system_prompt="system",
+        grading=GradingConfig(weights={"llm_judge": 1.0}, llm_judge=LLMJudgeConfig(rubric=rubric)),
+    )
+
+    service = _service(None)
+    try:
+        service.trials["t:0"] = TrialContextRuntime(
+            trial_id="t:0",
+            task_description=task_desc,
+            judge_model_config=ModelConfig(provider="openai", name="gpt-4o-mini", temperature=0.0),
+        )
+        response = service.GradeTrial(
+            pb2.GradeTrialRequest(
+                trial_id="t:0",
+                llm_messages_json=json.dumps([{"role": "user", "content": "hi"}]),
+            ),
+            MagicMock(),
+        )
+
+        assert response.success is True
+        report = response.grade.judge_report
+        assert report.knowledge_search_disabled is True
+        assert list(report.kb_tools_offered) == []
+        assert list(report.kb_tools_withheld) == ["search_kb"]
     finally:
         service.shutdown()
 

@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Feat
+
+- **grading**: opt-in judge customization — `grading.llm_judge.customization.disable_knowledge_search` (tri-state, layered project→task under `grading_defaults.llm_judge.customization`) withholds every knowledge-search tool from the rubric judge's surface (rag `search_kb`, the `search_policy` passthrough, any future KB backend), removed from the schema rather than stubbed; judge-side only (the agent's tools are untouched). Omitting the block is byte-identical to prior behaviour. The effective gating is recorded in `grade.yaml` as `judge_kb_gating` (`knowledge_search_disabled` + `offered`/`withheld`) and the `JudgeReport` proto (fields 9–11) (#465)
+
+### Fix
+
+- **grading**: rubric judge — order each criterion's `submit_report` justification before its verdict and reject a verdict that contradicts (or lacks) the justification's trailing `VERDICT:`/`SCORE:` marker; surface the per-trial count as an additive `judge_usage.consistency_rejections` field (default 0) in `grade.yaml` and the `JudgeReport` proto (#449)
+- **grading**: rubric judge `submit_report` re-prompt now returns the rejection as the tool result for the rejected call (every `tool_call_id` on the terminating turn answered by an adjacent `role=tool` result), so OpenAI/Azure-family judge models recover on retry instead of erroring with a 400 (#515)
+
 ## v0.10.0 (2026-07-23)
 
 ### Feat
@@ -98,11 +109,6 @@ Additional fixes landed this release:
 - **tools**: advertise PATCH requests (#463)
 
 ## v0.9.1 (2026-07-17)
-
-### Fix
-
-- **grading**: rubric judge — order each criterion's `submit_report` justification before its verdict and reject a verdict that contradicts (or lacks) the justification's trailing `VERDICT:`/`SCORE:` marker; surface the per-trial count as an additive `judge_usage.consistency_rejections` field (default 0) in `grade.yaml` and the `JudgeReport` proto (#449)
-- **grading**: rubric judge `submit_report` re-prompt now returns the rejection as the tool result for the rejected call (every `tool_call_id` on the terminating turn answered by an adjacent `role=tool` result), so OpenAI/Azure-family judge models recover on retry instead of erroring with a 400 (#515)
 
 ## v0.9.0 (2026-07-17)
 

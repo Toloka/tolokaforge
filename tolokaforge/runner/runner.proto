@@ -260,6 +260,17 @@ message JudgeReport {
   // mismatch on this trial (distinct from generic schema rejections). 0 when the
   // judge's verdicts all matched their justifications.
   int32 consistency_rejections = 8;
+  // Whether the judge was constructed to withhold knowledge-search tools
+  // (grading.llm_judge.customization.disable_knowledge_search). The authoritative
+  // replay signal: true means config withheld KB, regardless of whether the
+  // agent had any KB tool this trial.
+  bool knowledge_search_disabled = 9;
+  // KB-tagged tools the judge was actually offered this trial (e.g. search_kb, a
+  // search_policy passthrough). Audit detail.
+  repeated string kb_tools_offered = 10;
+  // KB-tagged tools the agent had this trial that the judge withheld by config.
+  // Empty when nothing was gated (flag off, or agent had no KB). Audit detail.
+  repeated string kb_tools_withheld = 11;
 }
 
 // Outcome of running the rubric judge. Keeps a judge malfunction distinct from a

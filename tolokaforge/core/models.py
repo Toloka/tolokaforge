@@ -26,6 +26,7 @@ from tolokaforge.runner.models import Criterion as Criterion
 from tolokaforge.runner.models import CriterionResult as CriterionResult
 from tolokaforge.runner.models import EnvironmentManifest as EnvironmentManifest
 from tolokaforge.runner.models import EnvironmentPatch as EnvironmentPatch
+from tolokaforge.runner.models import JudgeCustomization as JudgeCustomization
 from tolokaforge.runner.models import LLMJudgeConfig as LLMJudgeConfig
 from tolokaforge.runner.models import ResetSpec as ResetSpec
 from tolokaforge.runner.models import Rubric as Rubric
@@ -232,10 +233,10 @@ class Metrics(BaseModel):
 
         Pydantic's native dataclass serialisation works, but wrapping it here
         keeps the output-writer contract explicit and guarantees
-        ``model_dump(mode="json")`` always yields a ``dict`` — Stage 5c of
-        the plan requires this for the trajectory writer. Per-call records
-        are emitted via :func:`dataclasses.asdict` so future
-        :class:`ProviderRawCall` fields are surfaced automatically.
+        ``model_dump(mode="json")`` always yields a ``dict``, which the
+        trajectory writer requires. Per-call records are emitted via
+        :func:`dataclasses.asdict` so future :class:`ProviderRawCall` fields
+        are surfaced automatically.
         """
         return {
             "prompt_tokens": value.prompt_tokens,
@@ -305,6 +306,26 @@ class JudgeUsage(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class JudgeKbGating(BaseModel):
+    """The rubric judge's knowledge-search gating for this trial (host-side model).
+
+    Kept distinct from :class:`JudgeUsage` (which stays strictly token/cost
+    accounting): this is the audit + replay record of *which* KB tools the judge
+    was offered and which config withheld. ``knowledge_search_disabled`` is the
+    authoritative replay signal — ``True`` means
+    ``grading.llm_judge.customization.disable_knowledge_search`` withheld KB,
+    regardless of whether the agent had a KB tool this trial. ``offered`` /
+    ``withheld`` are supporting audit detail; an empty ``withheld`` on a disabled
+    judge means the agent had no KB tool to gate.
+    """
+
+    knowledge_search_disabled: bool
+    offered: list[str]
+    withheld: list[str]
+
+    model_config = {"extra": "forbid"}
+
+
 class CustomCheckDetail(BaseModel):
     """Detail for individual custom check result"""
 
@@ -340,6 +361,11 @@ class Grade(BaseModel):
     # so the grade stays scannable (mirrors the trajectory/prompts split). See
     # docs/OUTPUT_FORMAT.md. ``None`` when no judge ran or none was captured.
     judge_transcript: list[dict[str, Any]] | None = None
+    # The judge's knowledge-search gating for this trial (offered / withheld / whether
+    # config disabled KB). ``None`` when no judge ran. Serialized inline in
+    # ``grade.yaml`` (a scalar/lists block, unlike the transcript sidecar). Separate
+    # from ``judge_usage``, which stays token/cost only. See docs/OUTPUT_FORMAT.md.
+    judge_kb_gating: JudgeKbGating | None = None
 
 
 class Trajectory(BaseModel):
@@ -1405,6 +1431,19 @@ class GradingConfig(BaseModel):
     custom_checks: dict[str, Any] | None = None  # CustomChecksConfig as dict for flexibility
 
 
+class LLMJudgeDefaults(BaseModel):
+    """Project-level judge defaults under ``grading_defaults.llm_judge``.
+
+    Carries only ``customization`` — a project default never carries a rubric
+    (that is required per-task on :class:`LLMJudgeConfig`). ``customization``
+    deep-merges under each task's own ``llm_judge.customization``, tri-state
+    preserved (an unset task key never overrides a set project key)."""
+
+    customization: JudgeCustomization | None = None
+
+    model_config = {"extra": "forbid"}
+
+
 class GradingDefaults(BaseModel):
     """Grading defaults applied to every task via ``task_defaults``. A
     task's own ``grading.yaml.combine`` deep-merges on top."""
@@ -1412,6 +1451,7 @@ class GradingDefaults(BaseModel):
     model_config = {"extra": "ignore"}
 
     combine: GradingCombineConfig | None = None
+    llm_judge: LLMJudgeDefaults | None = None
 
 
 class TaskDefaults(BaseModel):

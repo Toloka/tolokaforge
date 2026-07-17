@@ -348,8 +348,7 @@ the block is safe to share and stable across hosts.
 
 ## `trials/{task_id}/{trial_index}/metrics.yaml`
 
-The flat `tokens_input` / `tokens_output` pair was removed in Stage 5
-(P7) — `usage` is now a nested block that carries the full
+`usage` is a nested block that carries the full
 [`tolokaforge.core.llm.usage.Usage`](../tolokaforge/core/llm/usage.py:1)
 dataclass. Anthropic cache counters + reasoning-budget spend are
 first-class fields; a `provider_raw` dump of the litellm usage block is
@@ -554,6 +553,10 @@ judge_usage:                    # the judge's OWN token spend; null unless an LL
   cost_usd: 0.0142
   tool_calls: 4
   consistency_rejections: 0    # submit_report attempts rejected for a verdict/justification mismatch
+judge_kb_gating:                # the judge's knowledge-search gating; null unless an LLM judge ran
+  knowledge_search_disabled: false  # config withheld the judge's KB tools (authoritative replay signal)
+  offered: [search_kb]         # KB-tagged tools the judge was offered (audit detail)
+  withheld: []                 # KB-tagged tools withheld by config (audit detail)
 ```
 
 Score scale: `0.0` ≤ `score` ≤ `1.0`. `binary_pass` is the harness-level
@@ -562,10 +565,10 @@ credit).
 
 ### Rubric-judge fields
 
-`criterion_results`, `judge_status`, and `judge_usage` are populated only
-when an LLM rubric judge ran (`grading.llm_judge` configured). See
-[`docs/GRADING.md`](GRADING.md) for the rubric mechanism and the two
-weighting layers.
+`criterion_results`, `judge_status`, `judge_usage`, and `judge_kb_gating`
+are populated only when an LLM rubric judge ran (`grading.llm_judge`
+configured). See [`docs/GRADING.md`](GRADING.md) for the rubric mechanism
+and the two weighting layers.
 
 * `criterion_results` — one entry per rubric criterion: `id`, `met`
   (binary verdict; for graded criteria, whether it cleared the author's
@@ -586,6 +589,15 @@ weighting layers.
   was rejected for a verdict/justification mismatch (marker missing or
   marker/verdict conflict) on this trial — distinct from generic schema
   rejections, and `0` when every verdict matched its justification.
+* `judge_kb_gating` — the judge's knowledge-search gating for this trial,
+  kept separate from `judge_usage` (which stays strictly token/cost).
+  `knowledge_search_disabled` is the **authoritative signal**:
+  `true` means `grading.llm_judge.customization.disable_knowledge_search`
+  withheld the judge's KB tools, regardless of whether the agent had any KB
+  tool. `offered` and `withheld` are supporting audit detail — the KB-tagged
+  tools the judge actually got, and those config withheld. An empty
+  `withheld` on a disabled judge means the agent had no KB tool to gate. See
+  [`docs/GRADING.md`](GRADING.md#judge-kb-faithfulness).
 
 ## `trials/{task_id}/{trial_index}/judge_trajectory.yaml`
 
