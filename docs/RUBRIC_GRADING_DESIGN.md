@@ -32,7 +32,7 @@ rules; its aggregated score feeds the existing `weights.llm_judge` slot.
 orchestrator ──RegisterTrial──▶ runner            (TaskDescription incl. grading.llm_judge.rubric)
 orchestrator ──GradeTrial─────▶ runner._grade_trial_async
                                   ├─ state checks / transcript rules
-                                  └─ rubric judge:  run_rubric_judge(...)
+                                  └─ rubric judge:  LLMJudge(...).run(...)
                                         ├─ LLMClient(judge_model_config) via build_capabilities  (run-level models.judge)
                                         ├─ ToolCallingLoop (no user sim; stop on submit_report; max_turns + wall-time)
                                         │     read-only tools: get_db_state/query_db, search_kb, read_file, submit_report
@@ -60,7 +60,7 @@ bridge back to the runner event loop with `run_coroutine_threadsafe(...)`.
 | `build_submit_report_tool` | `core/grading/rubric.py` | Generates the terminal tool schema from the rubric |
 | `parse_submit_report` | `core/grading/rubric.py` | Validates judge output → `CriterionResult` (fail loud) |
 | `aggregate_rubric` | `core/grading/rubric.py` | Weighted score + required-gate |
-| `run_rubric_judge` | `core/grading/judge.py` | Builds the client + read-only tools, runs the loop |
+| `Judge` / `LLMJudge` | `core/grading/judge.py` | `Judge` Protocol (grading-plane seam); `LLMJudge` builds the client + read-only tools and runs the loop |
 | read-only judge tools | `core/grading/judge_tools.py` | `get_db_state`/`query_db`/`search_kb`/`read_file` |
 | `JudgeStatus` / `JudgeReport` | proto + `core/models.py` | Errored status + judge usage/transcript |
 | calibrator | `tools/rubric-calibrator` | Agreement metrics + trust gate over golden fixtures |
@@ -78,7 +78,7 @@ bridge back to the runner event loop with `run_coroutine_threadsafe(...)`.
 | **Structured output via `submit_report`** | The tool's arg schema is generated from the rubric and validated fail-loud (bounded re-prompt, then ERRORED). The rejection is returned to the judge as the `submit_report` call's **tool result** (every `tool_call_id` on the terminating turn answered by an adjacent `role=tool` result), so the re-prompt is a provider-valid tool-call/tool-result cycle. No MCP — the loop is in-process. A flat arg object (per-criterion keyed by id) avoids nested-schema dialect gaps. |
 | **Justification before verdict + consistency marker** | Each criterion's `<id>_justification` field is emitted **before** its verdict field (`met` / `score`) in both `properties` order and the `required` list: providers generate tool arguments in schema order, so the verdict token is produced *conditioned on* the written reasoning (reason-then-answer / autoregressive generation), not thousands of tokens before it. Because JSON-Schema property order is non-normative, a backstop rides on top: every justification must end with a `VERDICT: MET` / `VERDICT: NOT MET` (binary) or `SCORE: <value>` (graded) marker line, and `parse_submit_report` rejects any call whose trailing marker is missing or disagrees with the submitted verdict — a `VerdictConsistencyError` that rides the same bounded re-prompt to ERRORED on exhaustion. The marker requirement is stated on **both** surfaces the judge sees — the per-field schema descriptions (the machine contract) and one sentence in the judge system prompt — so a provider that truncates or reorders schema descriptions still gets the instruction. The marker is matched against the justification's final non-empty line, taking the last `VERDICT:` / `SCORE:` occurrence, so real models may append it inline to the closing sentence. |
 | **Author-written reference channel** (`rubric.reference`, `criterion.expected`) | The judge needs the correct answer to grade reference-dependent criteria — but it is given an author-written reference, **not** the deterministic oracle (`golden_actions`/`expected_hash`/`jsonpath_checks`), which would bias toward the golden path and double-count state checks. |
-| **Narrow input surface** | `run_rubric_judge` accepts only `{agent_system_prompt, transcript, rubric, read-tools}` — oracle fields cannot leak by construction. Agent system prompts are policy-only by convention. |
+| **Narrow input surface** | The `Judge` Protocol's `run()` accepts only `{agent_system_prompt, transcript, rubric, read-tools}` — oracle fields (`golden_actions`/`expected_hash`/`jsonpath_checks`/`grading_config`) cannot leak because they are not on the surface. Agent system prompts are policy-only by convention. |
 | **Calibration gates trust** | A rubric is not trustworthy until it clears an agreement threshold against human-labeled fixtures. |
 
 ## Scoring semantics

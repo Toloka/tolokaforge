@@ -2,7 +2,7 @@
 
 Stage 6 of ``docs/RUBRIC_GRADING_DESIGN.md``. A fixture is the human-authored ground
 truth a rubric judge is calibrated against. It bundles everything
-``run_rubric_judge`` needs to grade one episode plus the human's per-criterion
+``LLMJudge`` needs to grade one episode plus the human's per-criterion
 labels to compare against:
 
 * ``rubric`` — the structured :class:`~tolokaforge.runner.models.Rubric` under test;

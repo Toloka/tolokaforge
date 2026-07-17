@@ -1,6 +1,6 @@
 """Live end-to-end test of the read-only rubric judge against a real LLM.
 
-Runs ``run_rubric_judge`` over a small rubric + a canned transcript + a tiny
+Runs ``LLMJudge`` over a small rubric + a canned transcript + a tiny
 in-memory DB state, using a cheap real model through the agent's
 ``LLMClient`` / ``build_capabilities`` path (so tool schemas/calls are
 provider-correct). The judge is agentic and its tool-call ordering is not
@@ -23,11 +23,34 @@ import pytest
 
 from tolokaforge.core.grading.judge import (
     JudgeStatus,
+    LLMJudge,
     model_config_from_ref,
-    run_rubric_judge,
 )
 from tolokaforge.core.grading.rubric import SubmitReportValidationError, parse_submit_report
 from tolokaforge.runner.models import Rubric
+
+#: Construction-time kwargs of ``LLMJudge`` — everything else is per-trial evidence.
+_LLM_JUDGE_CTOR_KEYS = (
+    "model_config",
+    "llm_client",
+    "max_turns",
+    "episode_timeout_s",
+    "submit_report_retries",
+    "logger",
+)
+
+
+def _run_llm_judge(**kwargs):
+    """Drive ``LLMJudge`` from one flat kwargs dict.
+
+    Splits the construction-time config (``model_config``, injected ``llm_client``,
+    the budgets) from the per-trial evidence surface so each test keeps a single
+    call and the behaviour under test is identical to the driven ``LLMJudge.run``.
+    """
+    ctor_kwargs = {k: kwargs.pop(k) for k in _LLM_JUDGE_CTOR_KEYS if k in kwargs}
+    model_config = ctor_kwargs.pop("model_config")
+    return LLMJudge(model_config, **ctor_kwargs).run(**kwargs)
+
 
 pytestmark = [
     pytest.mark.integration,
@@ -141,7 +164,7 @@ def _rubric() -> Rubric:
 
 @pytest.mark.skipif(_MODEL_REF is None, reason="No OPENROUTER_API_KEY / OPENAI_API_KEY set")
 def test_rubric_judge_live_passes_good_transcript():
-    result = run_rubric_judge(
+    result = _run_llm_judge(
         rubric=_rubric(),
         model_config=model_config_from_ref(_MODEL_REF),
         agent_system_prompt=_AGENT_SYSTEM_PROMPT,
@@ -185,7 +208,7 @@ def test_rubric_judge_live_with_state_diff_injected():
     # Sanity: the renderer produced the transition the judge should grade on.
     assert "status:" in state_diff and "refunded" in state_diff
 
-    result = run_rubric_judge(
+    result = _run_llm_judge(
         rubric=_rubric(),
         model_config=model_config_from_ref(_MODEL_REF),
         agent_system_prompt=_AGENT_SYSTEM_PROMPT,
@@ -214,7 +237,7 @@ def test_rubric_judge_live_gate_fails_when_refund_missing():
         {"role": "user", "content": "Cancel order o_1001 and refund me."},
         {"role": "assistant", "content": "Sorry, I cannot process that right now."},
     ]
-    result = run_rubric_judge(
+    result = _run_llm_judge(
         rubric=_rubric(),
         model_config=model_config_from_ref(_MODEL_REF),
         agent_system_prompt=_AGENT_SYSTEM_PROMPT,
@@ -288,7 +311,7 @@ def test_rubric_judge_live_against_real_db_service(db_test_client):
     assert init.status_code == 200, init.text
 
     reader = _RealDbServiceReader(db_test_client, trial_id)
-    result = run_rubric_judge(
+    result = _run_llm_judge(
         rubric=_rubric(),
         model_config=model_config_from_ref(_MODEL_REF),
         agent_system_prompt=_AGENT_SYSTEM_PROMPT,
@@ -371,7 +394,7 @@ def test_rubric_judge_live_markers_match_verdicts(label: str, model_ref: str):
     test re-validates without spend.
     """
     rubric = _rubric()
-    result = run_rubric_judge(
+    result = _run_llm_judge(
         rubric=rubric,
         model_config=model_config_from_ref(model_ref),
         agent_system_prompt=_AGENT_SYSTEM_PROMPT,
@@ -434,7 +457,7 @@ def test_rubric_judge_live_recovers_through_forced_retry(monkeypatch):
 
     monkeypatch.setattr(judge_module, "parse_submit_report", _reject_first_then_delegate)
 
-    result = run_rubric_judge(
+    result = _run_llm_judge(
         rubric=_rubric(),
         model_config=model_config_from_ref(_MODEL_REF),
         agent_system_prompt=_AGENT_SYSTEM_PROMPT,

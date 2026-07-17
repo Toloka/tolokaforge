@@ -2,7 +2,7 @@
 
 Stage 6 of the rubric-grading work (`docs/RUBRIC_GRADING_DESIGN.md`). A rubric judge is
 **not trustworthy until it clears an agreement gate**. This tool runs the real
-runner-side judge (`tolokaforge.core.grading.judge.run_rubric_judge`) over
+runner-side judge (`tolokaforge.core.grading.judge.LLMJudge`) over
 human-labelled golden fixtures, measures per-criterion agreement, and applies a
 trust gate that blocks shipping an under-agreeing rubric.
 
