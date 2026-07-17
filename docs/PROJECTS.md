@@ -1724,7 +1724,7 @@ roadmap.
 
 ---
 
-*Return to [`docs/architecture/`](.) for the ADR index and the
-canonical runtime-backends documentation. For the example pack,
-see
-[`examples/native/example-microservices-pack/`](../../examples/native/example-microservices-pack/).*
+*See the [ADR index](adr/) for decision history and
+[`RUNTIME_BACKENDS.md`](RUNTIME_BACKENDS.md) for the canonical
+runtime-backends documentation. For the example pack, see
+[`examples/native/example-microservices-pack/`](../examples/native/example-microservices-pack/).*

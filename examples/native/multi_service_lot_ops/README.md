@@ -112,11 +112,11 @@ examples/native/multi_service_lot_ops/
 
 ## Related
 
-- [`docs/multi_container_tasks.md`](../../../docs/multi_container_tasks.md)
+- [`docs/MULTI_CONTAINER_GUIDE.md`](../../../docs/MULTI_CONTAINER_GUIDE.md)
   — authoring guide for multi-container tasks
 - [`docs/GRADING.md`](../../../docs/GRADING.md) — grading families, including
   `state_checks.db_probes`
 - [`../multi_service_postgres/README.md`](../multi_service_postgres/README.md)
   — a three-tier stack (PostgREST + postgres) that grades the agent's file
-- [ADR-0018](../../../docs/architecture/adr/0018-multi-container-under-shared-runtime.md)
+- [ADR-0018](../../../docs/adr/0018-multi-container-under-shared-runtime.md)
   — multi-container case matrix

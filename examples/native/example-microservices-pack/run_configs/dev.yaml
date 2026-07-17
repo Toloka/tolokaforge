@@ -5,7 +5,7 @@
 # Add more profiles (ci.yaml, nightly.yaml, ...) alongside this
 # file. Each declares only its own deltas.
 #
-# See docs/architecture/PROJECTS.md for the full model.
+# See docs/PROJECTS.md for the full model.
 
 # ── Models — vary per invocation, declared here in full. ────────
 models:

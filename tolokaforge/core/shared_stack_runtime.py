@@ -947,7 +947,7 @@ class SharedStackRuntimeBackend:
         stack to read and would capture the same run-wide containers on
         every trial. Run-level capture on a shared-stack materialise
         failure is a separate surface (see
-        ``docs/architecture/RUNTIME_BACKENDS.md``)."""
+        ``docs/RUNTIME_BACKENDS.md``)."""
         return {}
 
     def get_infrastructure_snapshot(

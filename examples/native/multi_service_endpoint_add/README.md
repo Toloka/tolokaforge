@@ -133,8 +133,8 @@ examples/native/multi_service_endpoint_add/
   — the `sql_dump` reset-recipe reference.
 - [`../multi_service_cache_debug/README.md`](../multi_service_cache_debug/README.md)
   — the `redis_dump` reset-recipe reference.
-- [`docs/architecture/RESET_RECIPES.md`](../../../docs/architecture/RESET_RECIPES.md)
+- [`docs/RESET_RECIPES.md`](../../../docs/RESET_RECIPES.md)
   — the reset-recipe reference, including `filesystem_dir`.
-- [`docs/multi_container_tasks.md`](../../../docs/multi_container_tasks.md)
+- [`docs/MULTI_CONTAINER_GUIDE.md`](../../../docs/MULTI_CONTAINER_GUIDE.md)
   — authoring guide for multi-container tasks.
 ```

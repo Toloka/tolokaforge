@@ -401,7 +401,7 @@ Capture on a successful trial is off by default; enable it with
 
 Per-service compose logs, written on a trial-body or graded failure and only on
 the per-trial runtime backend (see
-[`docs/architecture/RUNTIME_BACKENDS.md`](architecture/RUNTIME_BACKENDS.md:1)
+[`docs/RUNTIME_BACKENDS.md`](RUNTIME_BACKENDS.md:1)
 § "Per-service log capture on failure"). The shared-stack backend never writes
 this directory.
 

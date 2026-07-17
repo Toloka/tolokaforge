@@ -86,7 +86,7 @@ informs the rows above but hasn't crystallised into ADRs yet:
   as a Proposed ADR before code, and is marked Accepted once shipped.
 - **Open work:** [GitHub issues](https://github.com/Toloka/tolokaforge/issues)
   tagged `architecture` and the project board.
-- **Released changes:** [`CHANGELOG.md`](../../CHANGELOG.md) at repo
+- **Released changes:** [`CHANGELOG.md`](../CHANGELOG.md) at repo
   root.
 
 ## Updating this doc

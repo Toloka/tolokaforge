@@ -147,5 +147,5 @@ Logging, metrics, and artifact writes do **not** vary by mode:
   - `tolokaforge/runner/service.py` (GradeTrial handler)
   - `tolokaforge/core/orchestrator.py` — backend selection + isolation guard
 - Related docs:
-  - `docs/architecture/RUNTIME_BACKENDS.md` — mechanics deep-dive
-  - `docs/architecture/ROADMAP.md`
+  - `docs/RUNTIME_BACKENDS.md` — mechanics deep-dive
+  - `docs/ROADMAP.md`

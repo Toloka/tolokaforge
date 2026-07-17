@@ -7,7 +7,7 @@
 # into redis, pre-loading `order:4021` with a STALE cached value while postgres
 # holds the fresh truth. See README.md.
 #
-# See docs/architecture/PROJECTS.md for the full Project model.
+# See docs/PROJECTS.md for the full Project model.
 
 name: "multi-service-cache-debug"
 version: 1

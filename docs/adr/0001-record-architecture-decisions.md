@@ -21,16 +21,16 @@ We need a low-friction, durable place to capture *why* an architectural choice w
 
 ## Considered Options
 
-1. **In-repo Markdown ADRs (MADR-style).** One file per decision under `docs/architecture/adr/`, numbered, kept forever.
+1. **In-repo Markdown ADRs (MADR-style).** One file per decision under `docs/adr/`, numbered, kept forever.
 2. **Wiki / Notion / Confluence.** Centralised, searchable — but lives outside the repo, drifts from code, hostile to agents reading the codebase.
 3. **Long-form `ARCHITECTURE.md`.** Everything in one file. Simple, but conflates the *current* shape with the *history* of how we got there; status transitions are awkward.
 4. **No formal record.** Continue relying on `AGENTS.md` and commit messages.
 
 ## Decision
 
-We will adopt **Option 1: in-repo MADR-style ADRs** under [`docs/architecture/adr/`](.), using the template in [`0000-template.md`](0000-template.md).
+We will adopt **Option 1: in-repo MADR-style ADRs** under [`docs/adr/`](.), using the template in [`0000-template.md`](0000-template.md).
 
-Each ADR is a single Markdown file with a monotonically increasing four-digit prefix, never renumbered. Status moves through `Proposed → Accepted → (Deprecated | Superseded by ADR-NNNN)`. The current-state architecture continues to live in [`docs/architecture/README.md`](../README.md); ADRs capture the *transitions and rationale*.
+Each ADR is a single Markdown file with a monotonically increasing four-digit prefix, never renumbered. Status moves through `Proposed → Accepted → (Deprecated | Superseded by ADR-NNNN)`. The current-state architecture continues to live in [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md); ADRs capture the *transitions and rationale*.
 
 ## Consequences
 
@@ -43,17 +43,17 @@ Each ADR is a single Markdown file with a monotonically increasing four-digit pr
 
 ### Negative / Trade-offs
 
-- Discipline cost: someone has to remember to write the ADR when a significant decision is made. Mitigated by listing the prompt in `docs/architecture/adr/README.md` and in PR review checklists.
+- Discipline cost: someone has to remember to write the ADR when a significant decision is made. Mitigated by listing the prompt in `docs/adr/README.md` and in PR review checklists.
 - ADRs can drift from reality if not maintained — but so can any documentation, and the in-repo location makes drift easier to catch in code review.
 
 ### Follow-ups
 
 - Code changes required: none.
-- Documentation to update: link `docs/architecture/README.md` from the top-level `README.md` Documentation table.
+- Documentation to update: link `docs/ARCHITECTURE.md` from the top-level `README.md` Documentation table.
 - Tests to add: none.
 - Backfill: significant existing decisions (adapter plugin model, gRPC decomposition, secret abstraction) should be written up as ADRs over time — but not in this PR, to keep this one reviewable.
 
 ## Links
 
 - Format reference: [adr.github.io/madr](https://adr.github.io/madr/)
-- Architecture overview: [`docs/architecture/README.md`](../README.md)
+- Architecture overview: [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md)

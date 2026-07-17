@@ -141,7 +141,7 @@ _DEFAULT_PRESET_DATA: dict[str, Any] = {"default": {}, "presets": {}, "providers
 # registrations to the engine release cadence. An operator-supplied overlay
 # file (CLI ``--presets-file`` / ``RunConfig.engine.presets_file``) lifts that
 # constraint: the engine merges the overlay onto the bundled data at startup.
-# See [ADR 0002](../../../docs/architecture/adr/0002-external-model-registry.md).
+# See [ADR 0002](../../../docs/adr/0002-external-model-registry.md).
 #
 # Validation runs at load time and is loud (``ValueError``) on any policy-name
 # string that does not resolve in the in-engine registries — mirrors the

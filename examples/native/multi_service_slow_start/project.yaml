@@ -7,7 +7,7 @@
 # agent's first API call must not fire — until the chain reports healthy.
 # See README.md.
 #
-# See docs/architecture/PROJECTS.md for the full Project model.
+# See docs/PROJECTS.md for the full Project model.
 
 name: "multi-service-slow-start"
 version: 1

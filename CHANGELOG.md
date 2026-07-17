@@ -28,6 +28,7 @@ All notable changes to this project are documented in this file.
 
 ### Docs
 
+- **layout**: flatten `docs/architecture/*` → `docs/*` (matching the earlier `docs/guides/*` flatten): `PROJECTS.md`, `RUNTIME_BACKENDS.md`, `RESET_RECIPES.md`, `ROADMAP.md` move to `docs/`; the arc42 overview moves to `docs/ARCHITECTURE.md`; `docs/adr/` kept as a subfolder. Also renames `docs/multi_container_tasks.md` → `docs/MULTI_CONTAINER_GUIDE.md` and prominently links it from `README.md` so multi-container onboarding has one obvious entry point.
 - **multi-container**: guided "Running the examples" walkthrough in `docs/multi_container_tasks.md` — pack catalog, the end-to-end run command + cost expectations per pack, and how to read the trial output (`grade.yaml` incl. the `DB probes:` reason, `env.yaml` environment identity, per-service logs); fixes the broken `guides/multi_container_tasks.md` cross-links across the docs tree
 
 ## v0.8.4 (2026-07-15)

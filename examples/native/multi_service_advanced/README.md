@@ -11,7 +11,7 @@ things beyond the basic Case B demonstration:
    Haiku 4.5 (smaller, cheaper) while the user simulator stays on Sonnet 4.6.
    Useful for comparing multi-service handling across model classes.
 
-Case B in [ADR-0018](../../../docs/architecture/adr/0018-multi-container-under-shared-runtime.md).
+Case B in [ADR-0018](../../../docs/adr/0018-multi-container-under-shared-runtime.md).
 
 ## What this example demonstrates
 
@@ -65,4 +65,4 @@ examples/native/multi_service_advanced/
 
 - [`../multi_service/README.md`](../multi_service/README.md) — the basic
   Case B example (single task-specific service, Sonnet 4.6 agent)
-- [ADR-0018](../../../docs/architecture/adr/0018-multi-container-under-shared-runtime.md) — case matrix + sequence diagrams
+- [ADR-0018](../../../docs/adr/0018-multi-container-under-shared-runtime.md) — case matrix + sequence diagrams

@@ -61,7 +61,7 @@ uv run tolokaforge docker status
 When a task declares its own `environment_manifest`, the runner runs
 alongside those task-declared services for the duration of each trial,
 provisioning them per the manifest's isolation rules. See
-[architecture/RUNTIME_BACKENDS.md](architecture/RUNTIME_BACKENDS.md) for
+[RUNTIME_BACKENDS.md](RUNTIME_BACKENDS.md) for
 the backend lifecycle.
 
 ## Local Queue Run (SQLite)

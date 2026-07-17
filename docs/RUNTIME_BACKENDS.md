@@ -357,7 +357,7 @@ this and captures on success too.
   summary log line and amends the trial's existing `metrics.yaml` with a
   top-level `captured_service_logs` mapping — the durable record on this path
   (the hook writes only the `.log` files). See
-  [`docs/OUTPUT_FORMAT.md`](../OUTPUT_FORMAT.md:1) § `captured_service_logs`.
+  [`docs/OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md:1) § `captured_service_logs`.
 
 Both surfaces are best-effort: capture runs *because* a failure was already
 decided, so a per-service fetch error is logged at debug and that service is
@@ -490,4 +490,4 @@ Forward-looking: when the runner image ships to a public registry, task composes
 - `tolokaforge/core/shared_stack_runtime.py` — `SharedStackRuntimeBackend` + `RunnerClient` Protocol + `GrpcRunnerClient`.
 - `tests/canonical/test_per_trial_runtime_backend.py` — the unit tests exercise every lifecycle branch documented above with fakes.
 - `tests/integration/docker/test_per_trial_runtime_backend_integration.py` — the real-daemon lifecycle smoke.
-- `docs/architecture/adr/0010-runtime-backend-provisioning-contract.md` — the contract this document implements.
+- `docs/adr/0010-runtime-backend-provisioning-contract.md` — the contract this document implements.

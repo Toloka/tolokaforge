@@ -14,7 +14,7 @@ and `default_environment`).
 ## Seed kinds
 
 A seed's `kind` selects how its bytes are applied. Four kinds ship
-(`SeedKind` in [`tolokaforge/core/models.py`](../../tolokaforge/core/models.py)):
+(`SeedKind` in [`tolokaforge/core/models.py`](../tolokaforge/core/models.py)):
 
 | Kind | Applied by | Typical file |
 |---|---|---|
@@ -66,7 +66,7 @@ still forces per-trial selection.
 
 `PerTrialRuntimeBackend.provision` brings up a fresh compose stack per
 trial and calls `_apply_reset_recipes`
-([`tolokaforge/core/per_trial_runtime.py`](../../tolokaforge/core/per_trial_runtime.py))
+([`tolokaforge/core/per_trial_runtime.py`](../tolokaforge/core/per_trial_runtime.py))
 immediately after `docker compose up` returns. For every service labelled
 `reset`, it resolves `reset.seed` against the backend's seed registry
 (populated from `project.assets.seeds`) and calls
@@ -120,7 +120,7 @@ Three runnable packs ship as end-to-end references, one per stateful seed kind.
 
 ### `sql_dump` — `multi_service_postgres_reset`
 
-[`examples/native/multi_service_postgres_reset`](../../examples/native/multi_service_postgres_reset)
+[`examples/native/multi_service_postgres_reset`](../examples/native/multi_service_postgres_reset)
 is the `sql_dump` reference. Its compose `init.sql` seeds a widget
 row `name = 'factory_default'`; the `postgres_baseline` seed
 (`sql_dump`) overwrites it to `name = 'baseline'` at every provision. The
@@ -134,7 +134,7 @@ trials observe `baseline`.
 
 ### `redis_dump` — `multi_service_cache_debug`
 
-[`examples/native/multi_service_cache_debug`](../../examples/native/multi_service_cache_debug)
+[`examples/native/multi_service_cache_debug`](../examples/native/multi_service_cache_debug)
 is the `redis_dump` reference. Its `redis` service is labelled
 `isolation: reset` and bound to the `cache_poisoned` seed (`redis_dump`),
 an RDB snapshot that pre-loads `order:4021` with a **stale** value
@@ -148,7 +148,7 @@ carries an RDB-load signature — the restart that reloaded `dump.rdb` — so th
 
 ### `filesystem_dir` — `multi_service_endpoint_add`
 
-[`examples/native/multi_service_endpoint_add`](../../examples/native/multi_service_endpoint_add)
+[`examples/native/multi_service_endpoint_add`](../examples/native/multi_service_endpoint_add)
 is the `filesystem_dir` reference. Its `pristine_source` seed is a **directory
 tree** — a small FastAPI orders service (`app.py` plus a `tests/` suite) — bound
 to a `testrunner` service labelled `isolation: reset`. The novel piece is the

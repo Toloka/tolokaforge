@@ -190,7 +190,7 @@ def _activate_presets_overlay(
         "'shared' (default) uses one docker-compose stack across every trial; "
         "'per_trial' materialises an isolated stack per trial via Testcontainers "
         "(required by tasks whose environment_manifest declares "
-        "isolation: per_trial). See docs/architecture/RUNTIME_BACKENDS.md."
+        "isolation: per_trial). See docs/RUNTIME_BACKENDS.md."
     ),
 )
 @click.option(

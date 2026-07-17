@@ -44,7 +44,7 @@ Tolokaforge is a benchmarking harness for evaluating tool-using LLM agents. It r
 ### Organisational
 
 - **Open source**: this repository is Apache-2.0; nothing committed here may reference internal-only systems by name.
-- **Secrets**: only `SecretManager` reads credentials. Direct `os.environ` access for any secret is forbidden and CI-enforced. See [AGENTS.md § Secrets](../../AGENTS.md#secrets--single-abstraction).
+- **Secrets**: only `SecretManager` reads credentials. Direct `os.environ` access for any secret is forbidden and CI-enforced. See [AGENTS.md § Secrets](../AGENTS.md#secrets--single-abstraction).
 - **Task packs are external**: benchmark task definitions live in separate repositories (public examples ship under `examples/`; production task packs are loaded via adapter glob from any directory the operator points at).
 
 ---
@@ -75,7 +75,7 @@ flowchart TB
 
 - **LLM providers** — out of scope; accessed via LiteLLM.
 - **Task content** — out of scope; lives in task pack repos. Tolokaforge defines the *contract* (task schema, tool interface, grading config), not the content.
-- **Result analysis UI** — out of scope; result artifacts are stable YAML/JSON, consumed by downstream tooling (see [`tools/benchmark-analyzer`](../../tools/benchmark-analyzer/)).
+- **Result analysis UI** — out of scope; result artifacts are stable YAML/JSON, consumed by downstream tooling (see [`tools/benchmark-analyzer`](../tools/benchmark-analyzer/)).
 
 ---
 
@@ -83,11 +83,11 @@ flowchart TB
 
 | Decision | Rationale | Detail |
 |---|---|---|
-| **Adapter plugin architecture for benchmark formats** | Lets external task formats (`native` built-in, `terminal_bench` and other plugins) plug in without forking the core. | [`docs/ADAPTER_ARCHITECTURE.md`](../ADAPTER_ARCHITECTURE.md) |
-| **In-process agent–user loop, Docker-delegated tools/state/grading** | The trial control flow (agent prompt assembly, LLM calls, user simulator, message accumulation) stays in the orchestrator process so it can be debugged and instrumented with normal Python tooling. Everything that touches task state — tool execution, env services, grading — runs inside a Docker stack reached over gRPC, giving sandbox isolation and the same code path on every host. | [`docs/RUNNER.md`](../RUNNER.md) · [`docs/GRPC_PROTOCOL.md`](../GRPC_PROTOCOL.md) |
-| **Provider-agnostic LLM layer with per-preset capability policies** | LiteLLM normalises envelopes, but providers diverge on schema dialects, reasoning encodings, caching, and tool naming. A preset registry keeps the quirks out of the orchestrator. | [`docs/LLM_LAYER.md`](../LLM_LAYER.md) |
-| **Single secret abstraction** | One audited code path for every credential read; CI-enforced via static grep. | [AGENTS.md § Secrets](../../AGENTS.md#secrets--single-abstraction) |
-| **Deterministic grading by default; LLM judges opt-in** | Deterministic verdicts are reproducible and cheap; judge calls are reserved for cases that genuinely need them. | [`docs/GRADING.md`](../GRADING.md) |
+| **Adapter plugin architecture for benchmark formats** | Lets external task formats (`native` built-in, `terminal_bench` and other plugins) plug in without forking the core. | [`docs/ADAPTER_ARCHITECTURE.md`](ADAPTER_ARCHITECTURE.md) |
+| **In-process agent–user loop, Docker-delegated tools/state/grading** | The trial control flow (agent prompt assembly, LLM calls, user simulator, message accumulation) stays in the orchestrator process so it can be debugged and instrumented with normal Python tooling. Everything that touches task state — tool execution, env services, grading — runs inside a Docker stack reached over gRPC, giving sandbox isolation and the same code path on every host. | [`docs/RUNNER.md`](RUNNER.md) · [`docs/GRPC_PROTOCOL.md`](GRPC_PROTOCOL.md) |
+| **Provider-agnostic LLM layer with per-preset capability policies** | LiteLLM normalises envelopes, but providers diverge on schema dialects, reasoning encodings, caching, and tool naming. A preset registry keeps the quirks out of the orchestrator. | [`docs/LLM_LAYER.md`](LLM_LAYER.md) |
+| **Single secret abstraction** | One audited code path for every credential read; CI-enforced via static grep. | [AGENTS.md § Secrets](../AGENTS.md#secrets--single-abstraction) |
+| **Deterministic grading by default; LLM judges opt-in** | Deterministic verdicts are reproducible and cheap; judge calls are reserved for cases that genuinely need them. | [`docs/GRADING.md`](GRADING.md) |
 | **Durable attempt queue (SQLite / Postgres) with worker leases** | Lets long runs survive crashes and lets `prepare` + `worker` commands split a run across hosts. | `tolokaforge/core/run_queue.py` |
 
 ---
@@ -120,14 +120,14 @@ Component-level detail (CLI commands, the run-queue client, SecretManager, indiv
 | Block | Responsibility | Source | Detail |
 |---|---|---|---|
 | **CLI** | User-facing commands. `run` executes locally end-to-end; `prepare` + `worker` split a run for distributed execution. | `tolokaforge/cli` | — |
-| **Orchestrator + Core** | Loads run config, instantiates the adapter, builds the task list, manages the attempt queue, runs trials, aggregates grades and metrics, writes artifacts. | `tolokaforge/core` (`orchestrator.py`, `grading/`, `metrics.py`, `search/`) | [`docs/RUNNER.md`](../RUNNER.md) |
+| **Orchestrator + Core** | Loads run config, instantiates the adapter, builds the task list, manages the attempt queue, runs trials, aggregates grades and metrics, writes artifacts. | `tolokaforge/core` (`orchestrator.py`, `grading/`, `metrics.py`, `search/`) | [`docs/RUNNER.md`](RUNNER.md) |
 | **TrialRunner** | One instance per trial. Owns the agent–user message loop, calls the LLM for both agent and user simulator turns, and dispatches every tool call as a gRPC `ExecuteTool` RPC to the Runner service. | `tolokaforge/core/runner.py` | — |
-| **Adapter Layer** | Resolves a benchmark format into `(TaskConfig, tools, grading, environment, docker_stack_requirements, task_description)`. Built-in `native` plus plugins discovered via the `tolokaforge.adapters` entry-point group. | `tolokaforge/adapters` + `external_adapters/` | [`docs/ADAPTER_ARCHITECTURE.md`](../ADAPTER_ARCHITECTURE.md) |
-| **LLM Layer** | Provider-agnostic completion API on top of LiteLLM. Per-provider presets carry capability policies for schema dialect, reasoning encoding, parameter handling, caching, tool-name discipline. Used by both agent and user-simulator turns. | `tolokaforge/core/llm` | [`docs/LLM_LAYER.md`](../LLM_LAYER.md) |
-| **Runner Service (gRPC)** | The sole tool-execution path. Owns per-trial state, reconstructs tools from a `TaskDescription`, executes tool calls, runs grading. A single service — not split into separate "agent" and "executor" services. Auto-started by the orchestrator (`auto_start_services: true`). | `tolokaforge/runner` | [`docs/RUNNER.md`](../RUNNER.md) · [`docs/GRPC_PROTOCOL.md`](../GRPC_PROTOCOL.md) |
+| **Adapter Layer** | Resolves a benchmark format into `(TaskConfig, tools, grading, environment, docker_stack_requirements, task_description)`. Built-in `native` plus plugins discovered via the `tolokaforge.adapters` entry-point group. | `tolokaforge/adapters` + `external_adapters/` | [`docs/ADAPTER_ARCHITECTURE.md`](ADAPTER_ARCHITECTURE.md) |
+| **LLM Layer** | Provider-agnostic completion API on top of LiteLLM. Per-provider presets carry capability policies for schema dialect, reasoning encoding, parameter handling, caching, tool-name discipline. Used by both agent and user-simulator turns. | `tolokaforge/core/llm` | [`docs/LLM_LAYER.md`](LLM_LAYER.md) |
+| **Runner Service (gRPC)** | The sole tool-execution path. Owns per-trial state, reconstructs tools from a `TaskDescription`, executes tool calls, runs grading. A single service — not split into separate "agent" and "executor" services. Auto-started by the orchestrator (`auto_start_services: true`). | `tolokaforge/runner` | [`docs/RUNNER.md`](RUNNER.md) · [`docs/GRPC_PROTOCOL.md`](GRPC_PROTOCOL.md) |
 | **db-service** | JSON state DB accessed by the Runner over HTTP. Namespaced per `(task_id, trial_index)` for parallel isolation. | `tolokaforge/env/json_db_service` | — |
-| **rag-service / mock-web** | Optional support services for RAG tasks and browser-style tasks. | `tolokaforge/env/rag_service`, `tolokaforge/env/mock_web_service` | [`docs/BROWSER_TOOLS.md`](../BROWSER_TOOLS.md) |
-| **SecretManager** | Single read path for every credential (API keys, DB URLs, OAuth, signing keys). Subprocess export is the only sanctioned `os.environ` mutation, scoped narrowly. | `tolokaforge/secrets` | [AGENTS.md § Secrets](../../AGENTS.md#secrets--single-abstraction) |
+| **rag-service / mock-web** | Optional support services for RAG tasks and browser-style tasks. | `tolokaforge/env/rag_service`, `tolokaforge/env/mock_web_service` | [`docs/BROWSER_TOOLS.md`](BROWSER_TOOLS.md) |
+| **SecretManager** | Single read path for every credential (API keys, DB URLs, OAuth, signing keys). Subprocess export is the only sanctioned `os.environ` mutation, scoped narrowly. | `tolokaforge/secrets` | [AGENTS.md § Secrets](../AGENTS.md#secrets--single-abstraction) |
 | **Run-queue client** | Durable attempt queue. SQLite for single-host runs, Postgres for distributed worker pools. | `tolokaforge/core/run_queue.py` | — |
 
 ### Adapter plugin shape (zoom on the Adapter Layer)
@@ -204,7 +204,7 @@ flowchart TB
     Orch <-->|gRPC + HTTP| Stack
 ```
 
-The orchestrator process and the Docker stack live on the same host. There is no in-process tool path — Docker is always required. **Distributed runs** share the attempt queue across hosts: one host runs `tolokaforge prepare` to populate a Postgres queue; one or more hosts run `tolokaforge worker`, each instantiating a full orchestrator + Docker stack. There is no central scheduler — coordination is entirely through the queue. See [`docs/RUNNER.md`](../RUNNER.md) for the distributed contract.
+The orchestrator process and the Docker stack live on the same host. There is no in-process tool path — Docker is always required. **Distributed runs** share the attempt queue across hosts: one host runs `tolokaforge prepare` to populate a Postgres queue; one or more hosts run `tolokaforge worker`, each instantiating a full orchestrator + Docker stack. There is no central scheduler — coordination is entirely through the queue. See [`docs/RUNNER.md`](RUNNER.md) for the distributed contract.
 
 ---
 
@@ -212,14 +212,14 @@ The orchestrator process and the Docker stack live on the same host. There is no
 
 | Concern | Where to look |
 |---|---|
-| **Secrets handling** | [AGENTS.md § Secrets — single abstraction](../../AGENTS.md#secrets--single-abstraction) · `tolokaforge/secrets` |
-| **Determinism & state hashing** | [`docs/GRADING.md`](../GRADING.md) · [`docs/GOLDEN_TRIALS.md`](../GOLDEN_TRIALS.md) |
+| **Secrets handling** | [AGENTS.md § Secrets — single abstraction](../AGENTS.md#secrets--single-abstraction) · `tolokaforge/secrets` |
+| **Determinism & state hashing** | [`docs/GRADING.md`](GRADING.md) · [`docs/GOLDEN_TRIALS.md`](GOLDEN_TRIALS.md) |
 | **Per-trial isolation & reset recipes** | [`RUNTIME_BACKENDS.md`](RUNTIME_BACKENDS.md) · [`RESET_RECIPES.md`](RESET_RECIPES.md) |
-| **Per-provider capability handling** | [`docs/LLM_LAYER.md`](../LLM_LAYER.md) · [AGENTS.md § Known Gotchas](../../AGENTS.md#known-gotchas) |
-| **Tool isolation & sandboxing** | [`docs/SECURITY.md`](../SECURITY.md) · [`docs/BROWSER_TOOLS.md`](../BROWSER_TOOLS.md) |
-| **Telemetry & metrics** | [`docs/LOGGING.md`](../LOGGING.md) · [`docs/ANALYTICS.md`](../ANALYTICS.md) |
-| **Result artifact layout** | [`docs/OUTPUT_FORMAT.md`](../OUTPUT_FORMAT.md) |
-| **Configuration reference** | [`docs/CONFIG.md`](../CONFIG.md) · [`docs/REFERENCE.md`](../REFERENCE.md) |
+| **Per-provider capability handling** | [`docs/LLM_LAYER.md`](LLM_LAYER.md) · [AGENTS.md § Known Gotchas](../AGENTS.md#known-gotchas) |
+| **Tool isolation & sandboxing** | [`docs/SECURITY.md`](SECURITY.md) · [`docs/BROWSER_TOOLS.md`](BROWSER_TOOLS.md) |
+| **Telemetry & metrics** | [`docs/LOGGING.md`](LOGGING.md) · [`docs/ANALYTICS.md`](ANALYTICS.md) |
+| **Result artifact layout** | [`docs/OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md) |
+| **Configuration reference** | [`docs/CONFIG.md`](CONFIG.md) · [`docs/REFERENCE.md`](REFERENCE.md) |
 
 ---
 
@@ -237,8 +237,8 @@ For the phase ladder and which release delivers which phase, see [`ROADMAP.md`](
 
 | Area | Note |
 |---|---|
-| **Provider drift** | Tool-schema dialects and reasoning encodings change without notice. Mitigated by capability tests per preset (see [`docs/LLM_LAYER.md`](../LLM_LAYER.md)) and explicit `ModelCertificate` declarations. |
-| **Multi-turn vs single-turn behaviour gap** | Some model failures only surface in long-context multi-turn runs and pass synthetic single-turn probes. Tracked in [AGENTS.md § Known Gotchas](../../AGENTS.md#known-gotchas) #22. |
+| **Provider drift** | Tool-schema dialects and reasoning encodings change without notice. Mitigated by capability tests per preset (see [`docs/LLM_LAYER.md`](LLM_LAYER.md)) and explicit `ModelCertificate` declarations. |
+| **Multi-turn vs single-turn behaviour gap** | Some model failures only surface in long-context multi-turn runs and pass synthetic single-turn probes. Tracked in [AGENTS.md § Known Gotchas](../AGENTS.md#known-gotchas) #22. |
 | **Container resource accounting** | Sandboxed Runner shares the host; resource accounting is per-process, not cgroup-bounded. |
 
 ---

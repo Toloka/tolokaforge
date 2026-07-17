@@ -1446,7 +1446,7 @@ class ProjectConfig(BaseModel):
     Holds identity, task discovery, the default environment every task
     inherits, and two labelled base blocks: ``task_defaults`` (base for
     tasks) and ``run_defaults`` (base for run configs). See
-    ``docs/architecture/PROJECTS.md``.
+    ``docs/PROJECTS.md``.
     """
 
     name: str
