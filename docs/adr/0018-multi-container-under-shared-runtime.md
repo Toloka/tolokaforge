@@ -5,6 +5,9 @@
 - **Amended:** 2026-07-14 — isolation is per-service in the manifest;
   backend selection is task-driven; `orchestrator.runtime` is a
   deprecated override.
+- **Amended:** 2026-07-17 — record Case A network posture: the built-in
+  `EngineStack` path is `full_internet` by construction and carries no
+  `network_policy` surface (#324).
 - **Deciders:** @CiroGamboa
 - **Supersedes:** ADR-0009 (isolation surface only)
 - **Superseded by:** —
@@ -216,7 +219,7 @@ sequenceDiagram
   O->>S: destroy_all()
 ```
 
-Everything about this path is documented in [ADR-0016](0016-runtime-backend-comparison.md) and `RUNTIME_BACKENDS.md`. Untouched by this ADR.
+The lifecycle of this path is documented in [ADR-0016](0016-runtime-backend-comparison.md) and `RUNTIME_BACKENDS.md`. Its network posture is `full_internet` by construction — see [Case A network posture](#case-a-network-posture-324) below.
 
 ### Case B — `shared` + task-declared stack (new)
 
@@ -355,6 +358,38 @@ so materialisation fails loud until #323 lands. Task authors declare
 The `network_isolation:no_internet` backend capability (advertised by both
 docker backends, admitted by the capability gate at run start) reflects this
 enforcement.
+
+### Case A network posture (#324)
+
+Case A (the built-in `EngineStack` path) is `full_internet` **by
+construction**, and deliberately carries no `network_policy` surface.
+
+`network_policy` exists to isolate *task-declared* services — the arbitrary
+compose stacks of Case B/C. Case A materialises only first-party engine
+services (`core_stack` = runner + db-service; `full_stack` adds mock-web +
+rag-service), so there is no untrusted compose to constrain. `EngineStack`
+attaches every built-in service to `runner-net`, a bridge network that is not
+`internal` (`EngineStack.create_networks()` never sets `internal=True`).
+
+The runner is the only built-in service that egresses, and it must: when a task
+declares an `llm_judge` grading component, `RunnerService.GradeTrial` runs the
+rubric judge inside the runner container and reaches the LLM provider. The
+other built-in services never egress by design. Applying a Case-B/C-style
+`no_internet` posture here would internalise services that never egress while
+the runner — the actual agent-driven tool-execution surface — keeps its edge
+network anyway: near-zero isolation gain for real machinery cost.
+
+The impossible combination is prevented structurally, not by a runtime guard:
+`network_policy` is a field on `EnvironmentManifest`, and a Case A run has no
+manifest. "Built-in stack under `no_internet`" is therefore unrepresentable, so
+there is nothing to guard against.
+
+Egress of tools the agent runs *inside* the runner shares the runner's edge
+access and is out of scope for any container-network posture — tracked
+separately in #325. The `internal=True` primitive on `Network` /
+`to_docker_network_config()` is retained as a faithful docker-py serialiser
+(it drives the Case B/C edge/internal split) and locked, together with the
+built-in non-internal invariant, by `tests/unit/test_network_internal.py`.
 
 ## Choosing a case — decision flow
 
