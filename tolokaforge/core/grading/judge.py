@@ -231,13 +231,15 @@ class _JudgeMetricsSink(MetricsSink):
 class _SubmitReportTermination:
     """Terminate the judge loop the moment ``submit_report`` is in the tool calls.
 
-    Captures the *first* ``submit_report`` call's arguments so the caller can
-    parse them after the loop returns. The loop appends the assistant message
-    before consulting this policy, so the call is already recorded in
+    Captures the *first* ``submit_report`` call's arguments and its call id so the
+    caller can parse the arguments and — on a validation rejection — answer that
+    call with a ``role=tool`` result on the retry. The loop appends the assistant
+    message before consulting this policy, so the call is already recorded in
     ``messages`` for the audit transcript.
     """
 
     captured_args: dict[str, Any] | None = field(default=None, init=False)
+    captured_call_id: str | None = field(default=None, init=False)
 
     def __call__(
         self, result: GenerationResult, turn: int, messages: list[Message]
@@ -245,12 +247,59 @@ class _SubmitReportTermination:
         for tc in result.tool_calls:
             if tc.name == SUBMIT_REPORT_TOOL_NAME:
                 self.captured_args = dict(tc.arguments or {})
+                self.captured_call_id = tc.id
                 return TerminationDecision(
                     reason=TerminationReason.AGENT_DONE,
                     system_message="submit_report received; judge terminating.",
                     status=TrialStatus.COMPLETED,
                 )
         return None
+
+
+#: Tool result for a non-``submit_report`` call that shared the terminating turn.
+#: Termination fires the instant ``submit_report`` appears, before any tool runs
+#: (``loop.py``: ``should_terminate`` precedes ``_execute_tool_calls``), so the
+#: sibling genuinely never executed — this is an honest "not run" note, not a
+#: fabricated tool output, and it nudges the judge to read before submitting.
+_SIBLING_NOT_EXECUTED = (
+    "not executed: submit_report ended the turn; gather evidence with your read "
+    "tools *before* calling submit_report."
+)
+
+
+def _answer_terminating_submit_report(
+    messages: list[Message], captured_call_id: str, rejection: str
+) -> None:
+    """Rewrite the retry tail into a provider-valid tool-call/tool-result cycle.
+
+    Locates the assistant message bearing ``captured_call_id`` (the terminating
+    ``submit_report`` turn), drops the loop's trailing ``"submit_report received;
+    judge terminating."`` system message (false on a continued run and what
+    breaks tool-result adjacency), then answers **every** ``tool_call_id`` on that
+    turn with an adjacent ``role=tool`` result: the ``submit_report`` id carries
+    ``rejection``; each sibling id carries :data:`_SIBLING_NOT_EXECUTED`. No
+    non-tool message separates the assistant call from its (contiguous) results,
+    which is what OpenAI/Azure-family providers require.
+    """
+    asst_idx = next(
+        (
+            i
+            for i in range(len(messages) - 1, -1, -1)
+            if messages[i].tool_calls
+            and any(tc.id == captured_call_id for tc in messages[i].tool_calls)
+        ),
+        None,
+    )
+    if asst_idx is None:
+        raise RuntimeError(
+            "Judge retry invariant violated: no assistant message bears the "
+            f"terminating submit_report call id {captured_call_id!r}."
+        )
+    terminating = messages[asst_idx]
+    del messages[asst_idx + 1 :]
+    for tc in terminating.tool_calls or []:
+        content = rejection if tc.id == captured_call_id else _SIBLING_NOT_EXECUTED
+        messages.append(Message(role=MessageRole.TOOL, tool_call_id=tc.id, content=content))
 
 
 # ---------------------------------------------------------------------------
@@ -607,19 +656,19 @@ def run_rubric_judge(
             logger.warning(
                 "Judge submit_report invalid; re-prompting", attempt=attempts, error=str(exc)
             )
-            # Re-prompt: keep the audit trail (assistant + the termination system
-            # message the loop appended) and add a corrective user turn.
-            messages.append(
-                Message(
-                    role=MessageRole.USER,
-                    content=(
-                        f"Your submit_report was rejected: {exc}\n"
-                        "Fix the issue and call submit_report again with a verdict "
-                        "and justification for every criterion."
-                    ),
+            if termination.captured_call_id is None:
+                raise RuntimeError(
+                    "Judge retry invariant violated: submit_report was rejected but "
+                    "no terminating call id was captured."
                 )
+            rejection = (
+                f"Your submit_report was rejected: {exc}\n"
+                "Fix the issue and call submit_report again with a verdict "
+                "and justification for every criterion."
             )
+            _answer_terminating_submit_report(messages, termination.captured_call_id, rejection)
             termination.captured_args = None
+            termination.captured_call_id = None
             continue
 
         logger.info(

@@ -14,7 +14,7 @@ import pytest
 from tolokaforge.core.grading.judge import JudgeStatus, run_rubric_judge
 from tolokaforge.core.llm.client import GenerationResult
 from tolokaforge.core.llm.usage import Usage
-from tolokaforge.core.models import ModelConfig, ToolCall
+from tolokaforge.core.models import Message, MessageRole, ModelConfig, ToolCall
 from tolokaforge.runner.models import Rubric
 
 pytestmark = pytest.mark.unit
@@ -78,6 +78,47 @@ class FakeDBReader:
 
     def query(self, jsonpath):
         return {"results": [self.state]}
+
+
+class MessageCapturingClient(ScriptedClient):
+    """A ``ScriptedClient`` that snapshots the ``messages`` list of each call.
+
+    Each snapshot is a shallow copy taken at generation time; the judge only
+    del/appends whole ``Message`` objects (never mutates one in place) on the
+    retry path, so a per-call shallow copy faithfully freezes what that
+    generation was handed. ``snapshots[1]`` is the list fed to the first retry.
+    """
+
+    def __init__(self, script: list):
+        super().__init__(script)
+        self.snapshots: list[list[Message]] = []
+
+    def generate(self, system, messages, tools, tool_choice="auto", observation=None):
+        self.snapshots.append(list(messages))
+        return super().generate(system, messages, tools, tool_choice, observation)
+
+
+def _assert_strong_adjacency(messages: list[Message]) -> None:
+    """Every ``tool_call_id`` on every assistant message is answered by a
+    ``role=tool`` result in the contiguous block immediately following it.
+
+    This is the provider wire contract (OpenAI/Azure 400 otherwise): no non-tool
+    message may sit between an assistant tool-call message and the tool results
+    answering its ids.
+    """
+    for i, msg in enumerate(messages):
+        if msg.role is not MessageRole.ASSISTANT or not msg.tool_calls:
+            continue
+        answered: list[str] = []
+        j = i + 1
+        while j < len(messages) and messages[j].role is MessageRole.TOOL:
+            answered.append(messages[j].tool_call_id)
+            j += 1
+        for tc in msg.tool_calls:
+            assert tc.id in answered, (
+                f"tool_call_id {tc.id!r} on assistant message {i} is not answered by "
+                f"an adjacent role=tool result (adjacent tool ids: {answered})"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -664,6 +705,116 @@ def test_malformed_then_valid_recovers():
     )
     assert result.status is JudgeStatus.COMPLETED
     assert result.score == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize(
+    "first_step",
+    [
+        [("submit_report", _submit_args(refund_done="yes"))],  # schema (met not a bool)
+        [("submit_report", _contradicting_submit(refund_done=True))],  # consistency marker
+    ],
+    ids=["schema_rejection", "consistency_rejection"],
+)
+def test_retry_messages_are_provider_valid(first_step):
+    """After a rejected submit_report, the retry generation is handed a
+    provider-valid sequence: the terminating assistant message's submit_report id
+    is answered by an adjacent role=tool result carrying the validation error, and
+    no non-tool message interleaves. Locks the #515 fix for both rejection classes.
+    """
+    rubric = _binary_rubric()
+    client = MessageCapturingClient(
+        [first_step, [("submit_report", _submit_args(refund_done=True))]]
+    )
+    result = run_rubric_judge(
+        rubric=rubric,
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="",
+        transcript=[],
+        db_reader=FakeDBReader(),
+        submit_report_retries=2,
+        llm_client=client,
+    )
+
+    assert result.status is JudgeStatus.COMPLETED
+    retry_messages = client.snapshots[1]
+    _assert_strong_adjacency(retry_messages)
+    # The submit_report id's tool result carries the validation error + corrective.
+    submit_id = "call_1_0"
+    submit_results = [
+        m for m in retry_messages if m.role is MessageRole.TOOL and m.tool_call_id == submit_id
+    ]
+    assert len(submit_results) == 1
+    content = submit_results[0].content
+    assert "rejected" in content
+    assert "refund_done" in content  # the validation error names the criterion
+    assert "call submit_report again" in content
+
+
+def test_retry_answers_sibling_tool_call_ids():
+    """A judge that emits a sibling read/search call alongside submit_report in the
+    terminating turn must, on retry, have BOTH ids answered by adjacent role=tool
+    results — the finding-1 lock. A single-id fix leaves the sibling unanswered and
+    a real provider 400s.
+    """
+    rubric = _binary_rubric()
+    client = MessageCapturingClient(
+        [
+            [
+                ("query_db", {"jsonpath": "$.orders"}),
+                ("submit_report", _submit_args(refund_done="yes")),
+            ],
+            [("submit_report", _submit_args(refund_done=True))],
+        ]
+    )
+    result = run_rubric_judge(
+        rubric=rubric,
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="",
+        transcript=[],
+        db_reader=FakeDBReader(),
+        submit_report_retries=2,
+        llm_client=client,
+    )
+
+    assert result.status is JudgeStatus.COMPLETED
+    retry_messages = client.snapshots[1]
+    _assert_strong_adjacency(retry_messages)
+    sibling_id, submit_id = "call_1_0", "call_1_1"
+    answered = {m.tool_call_id: m.content for m in retry_messages if m.role is MessageRole.TOOL}
+    assert sibling_id in answered and submit_id in answered
+    # The sibling never ran (termination fired first) — an honest note, not output.
+    assert "not executed" in answered[sibling_id]
+    assert "rejected" in answered[submit_id]
+
+
+def test_retry_rejection_appears_in_audit_transcript():
+    """After a reject→recover run, the serialized transcript keeps the injected
+    rejection role=tool entry — the audit crumb for the retry cycle.
+    """
+    rubric = _binary_rubric()
+    client = ScriptedClient(
+        [
+            [("submit_report", _submit_args(refund_done="yes"))],  # rejected
+            [("submit_report", _submit_args(refund_done=True))],  # corrected
+        ]
+    )
+    result = run_rubric_judge(
+        rubric=rubric,
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="",
+        transcript=[],
+        db_reader=FakeDBReader(),
+        submit_report_retries=2,
+        llm_client=client,
+    )
+    assert result.status is JudgeStatus.COMPLETED
+    tool_entries = [
+        m
+        for m in result.transcript
+        if m["role"] == "tool" and "rejected" in (m.get("content") or "")
+    ]
+    assert len(tool_entries) == 1
+    assert tool_entries[0]["tool_call_id"] == "call_1_0"
 
 
 def test_weighted_score_and_criterion_results():
