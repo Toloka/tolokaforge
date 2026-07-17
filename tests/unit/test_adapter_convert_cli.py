@@ -40,7 +40,11 @@ class _StubConversionAdapter(NativeAdapter):
 
     def convert_to_native(self, task_id: str) -> NativeTaskBundle:
         return NativeTaskBundle(
-            task_config={"name": f"Task {task_id}", "category": "tool_use"},
+            task_config={
+                "name": f"Task {task_id}",
+                "category": "tool_use",
+                "description": "A valid converted task.",
+            },
             grading_config={"combine": {"method": "weighted", "pass_threshold": 1.0}},
             fixtures={"tools": [{"name": "noop"}]},
             metadata={"source_adapter": "stub"},
@@ -59,6 +63,16 @@ class _NoSharedAdapter(_StubConversionAdapter):
     """Conversion adapter that does NOT emit shared resources (default no-op)."""
 
     write_shared_resources = BaseAdapter.write_shared_resources
+
+
+class _InvalidConversionAdapter(_StubConversionAdapter):
+    """Conversion adapter that produces one invalid native task bundle."""
+
+    def convert_to_native(self, task_id: str) -> NativeTaskBundle:
+        bundle = super().convert_to_native(task_id)
+        if task_id == "t2":
+            bundle.task_config.pop("description")
+        return bundle
 
 
 @pytest.fixture
@@ -88,6 +102,30 @@ def test_convert_writes_native_bundles(runner, tmp_path, monkeypatch):
     # shared-resources hook runs exactly once (with the first bundle)
     assert len(stub.shared_calls) == 1
     assert (out / "_shared_marker").exists()
+
+
+def test_convert_with_invalid_validation_output_exits_nonzero(runner, tmp_path, monkeypatch):
+    stub = _InvalidConversionAdapter()
+    monkeypatch.setattr(adapters_pkg, "get_adapter", lambda name, params: stub)
+
+    out = tmp_path / "out"
+    result = runner.invoke(
+        cli,
+        [
+            "adapter",
+            "convert",
+            "--name",
+            "stub",
+            "--tasks-glob",
+            "x/**",
+            "--output",
+            str(out),
+            "--validate",
+        ],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "Validation: 1 valid, 1 invalid" in result.output
 
 
 def test_convert_works_without_shared_resources(runner, tmp_path, monkeypatch):
