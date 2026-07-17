@@ -47,8 +47,9 @@ logger = logging.getLogger(__name__)
 
 RUNNER_PORT_DEFAULT = 50051
 """gRPC port the tolokaforge runner container listens on. Matches
-``GrpcRunnerClient``'s default ``runner:50051``. Task-pack authors that
-need to override this will get a manifest field in a follow-up PR."""
+``GrpcRunnerClient``'s default ``runner:50051``. Convention default for
+``manifest.runner_port``, which task-pack authors override via
+``stack.runner_port``."""
 
 DB_SERVICE_DEFAULT = "db-service"
 """Compose service name convention for the HTTP JSON state backend the
@@ -274,12 +275,23 @@ def first_published_port(container: Any) -> int | None:
     return None
 
 
-def resolve_rag_url(compose: DockerCompose) -> str | None:
-    """Best-effort ``rag_url`` — resolve the first RAG service found in
-    the compose stack. Returns ``None`` when no such service is
-    declared or its port is not exposed. Lookup failures are treated
-    as "no rag" but ``logger.debug``-logged for diagnosability."""
-    for candidate in RAG_SERVICE_CANDIDATES:
+def resolve_rag_url(
+    compose: DockerCompose,
+    *,
+    rag_service: str | None = None,
+    rag_port: int | None = None,
+) -> str | None:
+    """Best-effort ``rag_url`` — resolve a RAG service from the compose
+    stack. Returns ``None`` when no such service is declared or its port
+    is not exposed. Lookup failures are treated as "no rag" but
+    ``logger.debug``-logged for diagnosability.
+
+    ``rag_service`` scans only that named service; ``None`` scans the
+    :data:`RAG_SERVICE_CANDIDATES` convention (first match wins).
+    ``rag_port`` pins the container port; ``None`` auto-detects the first
+    published port."""
+    candidates = (rag_service,) if rag_service is not None else RAG_SERVICE_CANDIDATES
+    for candidate in candidates:
         try:
             container = compose.get_container(service_name=candidate)
         except Exception as exc:  # noqa: BLE001 — service not declared
@@ -289,10 +301,10 @@ def resolve_rag_url(compose: DockerCompose) -> str | None:
                 exc,
             )
             continue
-        published = first_published_port(container)
-        if published is None:
+        container_port = rag_port if rag_port is not None else first_published_port(container)
+        if container_port is None:
             continue
-        host, port = resolve_host_port(compose, candidate, published)
+        host, port = resolve_host_port(compose, candidate, container_port)
         if host is None or port is None:
             continue
         return f"http://{host}:{port}"
@@ -321,6 +333,8 @@ def resolve_env_endpoints(
     *,
     db_service: str = DB_SERVICE_DEFAULT,
     db_port: int = DB_SERVICE_PORT_DEFAULT,
+    rag_service: str | None = None,
+    rag_port: int | None = None,
 ) -> EnvEndpoints:
     """Resolve the :class:`EnvEndpoints` triple (runner_url, db_url,
     rag_url) from a running compose stack.
@@ -346,7 +360,7 @@ def resolve_env_endpoints(
         db_url = f"http://{db_host}:{db_host_port}"
     return EnvEndpoints(
         db_url=db_url,
-        rag_url=resolve_rag_url(compose),
+        rag_url=resolve_rag_url(compose, rag_service=rag_service, rag_port=rag_port),
         runner_url=f"http://{runner_host}:{runner_port}",
     )
 

@@ -434,13 +434,6 @@ flowchart TB
 
 ### Follow-ups
 
-- **Task-declared `db_service` / `db_port` overrides** — the well-known
-  endpoint convention now looks for `db-service` at port 8000, matching
-  the HTTP JSON state backend the engine ships (and dropping the earlier
-  phantom `db:5432` postgres requirement). Task compose files that name
-  their state backend differently would need optional manifest fields
-  to override the defaults. Not needed for any current task; deferred
-  until a real use case surfaces.
 - **TypeSense + task-declared substrates** — a dedicated follow-up ticket
   tracks the unblock (design options: task-declared TypeSense in the
   compose file, per-run bridge to the task-declared network, per-trial

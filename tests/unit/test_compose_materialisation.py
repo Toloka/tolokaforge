@@ -171,6 +171,34 @@ class TestResolveRagUrl:
 
         assert resolve_rag_url(compose) == "http://localhost:60080"
 
+    def test_rag_service_override_scans_only_named_service(self) -> None:
+        """A set ``rag_service`` narrows the scan to that single service
+        instead of the ``RAG_SERVICE_CANDIDATES`` convention."""
+        container = MagicMock()
+        container.Publishers = [MagicMock(TargetPort=8080)]
+        compose = MagicMock()
+        compose.get_container.return_value = container
+        compose.get_service_host_and_port.return_value = ("localhost", 59090)
+
+        assert resolve_rag_url(compose, rag_service="myrag") == "http://localhost:59090"
+        compose.get_container.assert_called_once_with(service_name="myrag")
+
+    def test_rag_port_override_bypasses_auto_detect(self) -> None:
+        """A set ``rag_port`` is the container port used directly — the
+        first-published-port auto-detect is skipped, so a differing
+        published port is ignored."""
+        container = MagicMock()
+        container.Publishers = [MagicMock(TargetPort=9999)]
+        compose = MagicMock()
+        compose.get_container.return_value = container
+        compose.get_service_host_and_port.return_value = ("localhost", 58080)
+
+        assert (
+            resolve_rag_url(compose, rag_service="rag", rag_port=8080) == "http://localhost:58080"
+        )
+        _, kwargs = compose.get_service_host_and_port.call_args
+        assert kwargs["port"] == 8080
+
 
 class TestResolveRunnerEndpoint:
     def test_returns_host_port_tuple(self) -> None:
@@ -256,6 +284,45 @@ class TestResolveEnvEndpoints:
 
         assert endpoints.db_url == "http://localhost:68000"
         assert endpoints.rag_url is None
+
+    def test_db_service_and_port_overrides_resolve_named_endpoint(self) -> None:
+        """Non-``None`` ``db_service`` / ``db_port`` resolve that exact
+        service+port instead of the ``db-service:8000`` convention."""
+        compose = MagicMock()
+
+        def _host_port(service_name: str, port: int) -> tuple[str | None, int | None]:
+            if service_name == "mydb" and port == 5433:
+                return ("localhost", 65433)
+            return (None, None)
+
+        compose.get_service_host_and_port.side_effect = lambda service_name, port: _host_port(
+            service_name, port
+        )
+        compose.get_container.side_effect = KeyError("no rag")
+
+        endpoints = resolve_env_endpoints(
+            compose, "localhost", 60051, db_service="mydb", db_port=5433
+        )
+
+        assert endpoints.db_url == "http://localhost:65433"
+
+    def test_rag_overrides_are_forwarded_to_resolve_rag_url(self) -> None:
+        """``rag_service`` / ``rag_port`` reach ``resolve_rag_url`` — the
+        named service is scanned at the pinned port."""
+        compose = MagicMock()
+        compose.get_service_host_and_port.side_effect = lambda service_name, port: (
+            ("localhost", 58080) if (service_name == "myrag" and port == 8080) else (None, None)
+        )
+        container = MagicMock()
+        container.Publishers = [MagicMock(TargetPort=9999)]
+        compose.get_container.return_value = container
+
+        endpoints = resolve_env_endpoints(
+            compose, "localhost", 60051, rag_service="myrag", rag_port=8080
+        )
+
+        assert endpoints.rag_url == "http://localhost:58080"
+        compose.get_container.assert_called_once_with(service_name="myrag")
 
 
 class TestShutdownCompose:
