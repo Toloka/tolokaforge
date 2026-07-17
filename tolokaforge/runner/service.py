@@ -1148,6 +1148,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     reasoning_tokens=judge_result.usage.reasoning_tokens,
                     cost_usd=judge_result.usage.cost_usd,
                     tool_calls=judge_result.usage.tool_calls,
+                    consistency_rejections=judge_result.usage.consistency_rejections,
                     transcript_json=json.dumps(list(judge_result.transcript)),
                 )
                 if judge_result.status is JudgeStatus.ERRORED:

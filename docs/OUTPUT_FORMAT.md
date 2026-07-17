@@ -461,6 +461,7 @@ judge_usage:                    # the judge's OWN token spend; null unless an LL
   reasoning_tokens: 0
   cost_usd: 0.0142
   tool_calls: 4
+  consistency_rejections: 0    # submit_report attempts rejected for a verdict/justification mismatch
 ```
 
 Score scale: `0.0` ≤ `score` ≤ `1.0`. `binary_pass` is the harness-level
@@ -489,6 +490,10 @@ weighting layers.
   agent's `metrics.yaml` `usage`. The judge runs a separate LLM inside
   the Runner; this records what *grading* cost. Populated for both
   `completed` and `errored` runs (an errored judge still spent tokens).
+  `consistency_rejections` counts how many times the judge's `submit_report`
+  was rejected for a verdict/justification mismatch (marker missing or
+  marker/verdict conflict) on this trial — distinct from generic schema
+  rejections, and `0` when every verdict matched its justification.
 
 ## `trials/{task_id}/{trial_index}/judge_trajectory.yaml`
 

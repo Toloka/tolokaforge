@@ -256,6 +256,10 @@ message JudgeReport {
   // recorded transcript is the source of truth for "what did the judge see /
   // do". Empty string when no transcript was captured.
   string transcript_json = 7;
+  // Number of submit_report attempts rejected for a verdict/justification marker
+  // mismatch on this trial (distinct from generic schema rejections). 0 when the
+  // judge's verdicts all matched their justifications.
+  int32 consistency_rejections = 8;
 }
 
 // Outcome of running the rubric judge. Keeps a judge malfunction distinct from a

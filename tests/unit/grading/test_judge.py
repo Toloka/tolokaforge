@@ -573,6 +573,102 @@ def test_malformed_submit_report_reprompts_then_errors():
     assert result.score is None
     assert result.binary_pass is None
     assert client.calls == 3  # initial + 2 retries
+    # A schema (type) rejection is NOT a verdict-consistency rejection: the
+    # generic retry still fired, but the consistency counter stays 0.
+    assert result.usage.consistency_rejections == 0
+
+
+def _contradicting_submit(refund_done: bool) -> dict:
+    """A submit_report whose marker line contradicts the submitted verdict."""
+    opposite = "VERDICT: NOT MET" if refund_done else "VERDICT: MET"
+    return {
+        "refund_done": refund_done,
+        "refund_done_justification": f"reasoning about the refund\n{opposite}",
+        "reasons": "overall summary",
+    }
+
+
+def _missing_marker_submit(refund_done: bool) -> dict:
+    """A well-typed submit_report whose justification has no trailing marker."""
+    return {
+        "refund_done": refund_done,
+        "refund_done_justification": "reasoning with no verdict marker line",
+        "reasons": "overall summary",
+    }
+
+
+def test_clean_run_reports_zero_consistency_rejections():
+    rubric = _binary_rubric()
+    client = ScriptedClient([[("submit_report", _submit_args(refund_done=True))]])
+    result = run_rubric_judge(
+        rubric=rubric,
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="",
+        transcript=[],
+        db_reader=FakeDBReader(),
+        llm_client=client,
+    )
+    assert result.status is JudgeStatus.COMPLETED
+    assert result.usage.consistency_rejections == 0
+
+
+def test_consistency_rejection_reprompts_and_counts_per_attempt_then_errors():
+    """Contradicting marker → re-prompt; counter increments per rejected attempt;
+    after retry exhaustion the result is ERRORED with the count reflecting attempts."""
+    rubric = _binary_rubric()
+    bad = _contradicting_submit(refund_done=True)  # verdict MET, marker NOT MET
+    client = ScriptedClient([[("submit_report", bad)]] * 3)
+    result = run_rubric_judge(
+        rubric=rubric,
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="",
+        transcript=[],
+        db_reader=FakeDBReader(),
+        submit_report_retries=2,
+        llm_client=client,
+    )
+    assert result.status is JudgeStatus.ERRORED
+    assert result.score is None
+    assert client.calls == 3  # initial + 2 retries, each rejected
+    assert result.usage.consistency_rejections == 3
+
+
+def test_missing_marker_counts_as_consistency_rejection():
+    rubric = _binary_rubric()
+    client = ScriptedClient([[("submit_report", _missing_marker_submit(refund_done=True))]] * 3)
+    result = run_rubric_judge(
+        rubric=rubric,
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="",
+        transcript=[],
+        db_reader=FakeDBReader(),
+        submit_report_retries=2,
+        llm_client=client,
+    )
+    assert result.status is JudgeStatus.ERRORED
+    assert result.usage.consistency_rejections == 3
+
+
+def test_consistency_rejection_then_valid_recovers_with_count_preserved():
+    rubric = _binary_rubric()
+    client = ScriptedClient(
+        [
+            [("submit_report", _contradicting_submit(refund_done=True))],  # rejected
+            [("submit_report", _submit_args(refund_done=True))],  # corrected
+        ]
+    )
+    result = run_rubric_judge(
+        rubric=rubric,
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="",
+        transcript=[],
+        db_reader=FakeDBReader(),
+        submit_report_retries=2,
+        llm_client=client,
+    )
+    assert result.status is JudgeStatus.COMPLETED
+    assert result.score == pytest.approx(1.0)
+    assert result.usage.consistency_rejections == 1
 
 
 def test_malformed_then_valid_recovers():

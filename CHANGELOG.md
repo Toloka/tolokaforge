@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## v0.9.1 (2026-07-17)
 
+### Fix
+
+- **grading**: rubric judge — order each criterion's `submit_report` justification before its verdict and reject a verdict that contradicts (or lacks) the justification's trailing `VERDICT:`/`SCORE:` marker; surface the per-trial count as an additive `judge_usage.consistency_rejections` field (default 0) in `grade.yaml` and the `JudgeReport` proto (#449)
+
 ## v0.9.0 (2026-07-17)
 
 ### Feat

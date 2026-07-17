@@ -458,6 +458,7 @@ class GrpcRunnerClient:
                             "reasoning_tokens": grade.judge_report.reasoning_tokens,
                             "cost_usd": grade.judge_report.cost_usd,
                             "tool_calls": grade.judge_report.tool_calls,
+                            "consistency_rejections": grade.judge_report.consistency_rejections,
                             "transcript_json": grade.judge_report.transcript_json,
                         }
                         if grade.HasField("judge_report")
