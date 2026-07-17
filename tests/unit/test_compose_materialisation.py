@@ -606,6 +606,12 @@ class TestRenderSquidConfig:
         assert "acl SSL_ports port 443" in config
         assert "http_access deny CONNECT !SSL_ports" in config
 
+    def test_safe_ports_restricts_non_connect_requests(self) -> None:
+        config = render_squid_config(["api.openai.com"], ["runner"])
+        assert "acl Safe_ports port 80 443" in config
+        assert "http_access deny !Safe_ports" in config
+        assert config.index("http_access deny !Safe_ports") < config.index("http_access allow")
+
     @pytest.mark.parametrize("entry", ["http://x", "x:443", "a/b", "*.*.x", "ev*l.com"])
     def test_malformed_entry_raises(self, entry: str) -> None:
         with pytest.raises(ValueError, match="allowlist entry"):

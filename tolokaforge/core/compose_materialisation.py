@@ -235,8 +235,9 @@ def render_squid_config(allowlist: list[str], service_names: list[str]) -> str:
     Egress is permitted only to ``allowlist`` hosts (exact ``api.host`` →
     ``dstdomain api.host``; leading-wildcard ``*.host`` → squid domain-suffix
     ``dstdomain .host``) and, as inter-service defence-in-depth, the compose
-    ``service_names``. CONNECT tunnels are restricted to port 443; every other
-    destination hits the terminal ``http_access deny all``. Raises
+    ``service_names``. CONNECT tunnels are restricted to port 443 and non-CONNECT
+    requests to ports 80 and 443; every other destination hits the terminal
+    ``http_access deny all``. Raises
     ``ValueError`` on an allowlist entry that is not an exact or single
     leading-wildcard hostname (unreachable after manifest validation)."""
     lines = [
@@ -246,6 +247,7 @@ def render_squid_config(allowlist: list[str], service_names: list[str]) -> str:
         f"http_port {NETPOLICY_PROXY_PORT}",
         "",
         "acl SSL_ports port 443",
+        "acl Safe_ports port 80 443",
         "acl CONNECT method CONNECT",
         "",
     ]
@@ -254,6 +256,7 @@ def render_squid_config(allowlist: list[str], service_names: list[str]) -> str:
     lines += [
         "",
         "http_access deny CONNECT !SSL_ports",
+        "http_access deny !Safe_ports",
         "http_access allow allowed_dsts",
         "http_access allow internal_dsts",
         "http_access deny all",
