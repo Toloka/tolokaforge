@@ -1,11 +1,6 @@
 # Project spec — the top-level abstraction for this project.
 # See docs/PROJECTS.md for the full model.
 #
-# NOTE: this project is authored against the PROPOSED Project schema
-# (PROJECTS.md § "Delta from current implementation"). It is not
-# runnable until the M2 loader (#211) lands; it exists as the
-# reference example the milestones implement against.
-#
 # The Project holds identity, task discovery, and the shared bases
 # for tasks (task_defaults) and runs (run_defaults). Per-item
 # deltas live in tasks/<name>/task.yaml and run_configs/<name>.yaml.
@@ -76,7 +71,7 @@ task_defaults:
     user:                          # the conventional counterpart actor
       mode: "llm"
       persona: "curious engineer"
-      # No backstory_template here → tasks need no per-task scenario.
+      # No backstory here → every task inherits the same user actor.
   policies:
     max_tool_calls_per_turn: 10
   metadata: {}
