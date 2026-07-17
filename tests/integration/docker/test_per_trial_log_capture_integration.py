@@ -45,6 +45,7 @@ from tolokaforge.core.models import (
     Trajectory,
     TrialStatus,
 )
+from tolokaforge.core.output.artifacts import InMemoryArtifactWriter
 from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
 from tolokaforge.core.runtime import ProvisionError
 from tolokaforge.core.trial import EnvEndpoints, EnvironmentManifest, TrialSpec
@@ -214,6 +215,7 @@ class TestGradedFailLogCapture:
             conductor=InMemoryConductor(trajectory_factory=_completed_red_factory),
             logger=StructuredLogger("test-graded-fail-log-capture"),
             output_dir=tmp_path,
+            artifact_writer=InMemoryArtifactWriter(),
         )
         metrics_path = _write_metrics(tmp_path, "task-1", 0)
 

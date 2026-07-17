@@ -29,6 +29,7 @@ from tolokaforge.core import trial_executor
 from tolokaforge.core.conductor import InMemoryConductor
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import Grade, GradeComponents, Metrics, Trajectory, TrialStatus
+from tolokaforge.core.output.artifacts import InMemoryArtifactWriter
 from tolokaforge.core.runtime import EnvHandle, InMemoryRuntimeBackend
 from tolokaforge.core.trial_executor import ProvisioningTrialExecutor
 
@@ -101,6 +102,7 @@ def _make_executor(
         conductor=InMemoryConductor(trajectory_factory=factory),
         logger=StructuredLogger("test-executor-log-capture"),
         output_dir=output_root,
+        artifact_writer=InMemoryArtifactWriter(),
     )
 
 
@@ -239,6 +241,7 @@ class TestProvisioningDuration:
             conductor=InMemoryConductor(trajectory_factory=factory),
             logger=StructuredLogger("test-executor-log-capture"),
             output_dir=tmp_path / "run",
+            artifact_writer=InMemoryArtifactWriter(),
         )
         metrics_path = _write_metrics(tmp_path, "task-1", 0)
 

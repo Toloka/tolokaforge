@@ -16,6 +16,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from tolokaforge.core.conductor import InMemoryConductor
+from tolokaforge.core.output.artifacts import InMemoryArtifactWriter
 from tolokaforge.core.runtime import InMemoryRuntimeBackend
 from tolokaforge.core.trial import TrialResult
 from tolokaforge.core.trial_executor import ProvisioningTrialExecutor, TrialExecutor
@@ -29,6 +30,7 @@ def _make_executor() -> ProvisioningTrialExecutor:
         conductor=InMemoryConductor(),
         logger=MagicMock(),
         output_dir=Path("/nonexistent-run-dir"),
+        artifact_writer=InMemoryArtifactWriter(),
     )
 
 

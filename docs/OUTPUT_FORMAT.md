@@ -386,8 +386,41 @@ Wall-clock seconds (monotonic-clock-measured, rounded to milliseconds) from
 `provision` start through `endpoints()` return — the full
 `provision → await_ready → endpoints` bracket, excluding the trial body and
 teardown. Recorded on every trial that provisions successfully and runs a
-conductor body. Absent when provisioning failed (no `metrics.yaml` is written on
-that path).
+conductor body. Omitted from the provision-failure `metrics.yaml` (see
+[Provision-failure bundle](#provision-failure-bundle)) because no
+`provision → await_ready → endpoints` bracket completed.
+
+### Provision-failure bundle
+
+When a trial fails during substrate provisioning (`provision` / `reset_recipe`
+raises, or `await_ready` times out), the conductor body never runs, so the
+executor writes the trial directory itself. Only three files land —
+`trajectory.yaml`, `metrics.yaml`, and `grade.yaml` — plus the
+[`services/`](#trialstask_idtrial_indexservices) bundle when per-service capture
+fired inside `provision`. `task.yaml`, `env.yaml`, and `logs.yaml` are **not**
+written (no resolved model config, no environment state, no per-trial logger for
+a run that never happened).
+
+* `trajectory.yaml` — `status: error`, `termination_reason: provision_error`,
+  empty `messages`.
+* `metrics.yaml` — the default-`Metrics` shape (`cost_usd: null`,
+  `schema_version: 1`, empty `tool_usage`) plus two top-level failure-signal
+  keys:
+
+  ```yaml
+  error: provision_error
+  error_reason: "partial startup — failed after service 'db'"
+  ```
+
+  `error` is the `TerminationReason.PROVISION_ERROR` value, so the failure
+  vocabulary matches `trajectory.yaml`'s `termination_reason`; `error_reason`
+  carries the underlying `ProvisionError` reason string. `provisioning_duration_s`
+  and `captured_service_logs` are absent on this path.
+* `grade.yaml` — `binary_pass: false`, `score: 0.0`, `reasons` carrying the
+  provisioning failure stage and reason.
+
+Writing this bundle is best-effort: an I/O failure while writing it is logged
+and does not change the trial's failed result.
 
 ### `captured_service_logs` — on trial-body or graded failure
 
@@ -422,8 +455,9 @@ this directory.
   service (`N` = `compute.log_tail`, default 500). One file per compose
   service that produced output. No parsing, no format changes.
 * **`_capture.yaml`** — manifest written **only on the provision-failure
-  path** (compose-up or reset-recipe failure), where no `metrics.yaml` exists
-  to amend:
+  path** (compose-up or reset-recipe failure). The backend captures per-service
+  logs inside `provision` and writes this manifest before it raises, so it holds
+  the byte counts on this path:
 
   ```yaml
   tail: 500
@@ -435,7 +469,10 @@ this directory.
 
   On the trial-body path the durable record is the
   [`metrics.yaml` `captured_service_logs`](#captured_service_logs--on-trial-body-or-graded-failure)
-  field instead, so the two surfaces never both write a record.
+  field instead. The provision-failure
+  [`metrics.yaml`](#provision-failure-bundle) the executor writes does **not**
+  carry `captured_service_logs`, so the two surfaces never both hold the byte
+  counts.
 
 ## `trials/{task_id}/{trial_index}/grade.yaml`
 

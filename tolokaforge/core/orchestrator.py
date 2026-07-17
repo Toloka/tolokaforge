@@ -900,6 +900,7 @@ class Orchestrator:
             conductor=conductor,
             logger=self.logger,
             output_dir=output_dir,
+            artifact_writer=self._artifact_writer,
             events=self._events,
         )
 

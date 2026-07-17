@@ -23,6 +23,7 @@ from tests.canonical._factories import (
 )
 from tolokaforge.core.conductor import InMemoryConductor
 from tolokaforge.core.models import TerminationReason, TrialStatus
+from tolokaforge.core.output.artifacts import InMemoryArtifactWriter
 from tolokaforge.core.runtime import InMemoryRuntimeBackend, ProvisionError
 from tolokaforge.core.trial_executor import (
     ProvisioningTrialExecutor,
@@ -42,7 +43,11 @@ def _make_executor(
     conductor = conductor or InMemoryConductor()
     logger = MagicMock()
     executor = ProvisioningTrialExecutor(
-        runtime_backend=backend, conductor=conductor, logger=logger, output_dir=output_dir
+        runtime_backend=backend,
+        conductor=conductor,
+        logger=logger,
+        output_dir=output_dir,
+        artifact_writer=InMemoryArtifactWriter(),
     )
     return executor, backend, conductor, logger
 
