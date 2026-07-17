@@ -14,12 +14,19 @@ from unittest.mock import MagicMock
 import pytest
 
 from tolokaforge.core.conductor import (
+    DEFAULT_MAX_TURNS,
     ConductorCallLog,
     InMemoryConductor,
     InProcessConductor,
     _default_success_trajectory,
+    resolve_max_turns,
 )
-from tolokaforge.core.models import ModelConfig, ResetSpec, ServiceSpec
+from tolokaforge.core.models import (
+    ModelConfig,
+    OrchestratorConfig,
+    ResetSpec,
+    ServiceSpec,
+)
 from tolokaforge.core.trial import EnvEndpoints, EnvironmentManifest, TrialSpec
 from tolokaforge.runner.models import TaskDescription
 
@@ -290,3 +297,26 @@ class TestCaptureFinalStateEnvironmentBlock:
         self._conductor()._capture_final_state(spec, self._setup(), trajectory)
 
         assert "environment" not in trajectory.final_env_state
+
+
+class TestResolveMaxTurns:
+    def test_orchestrator_default_is_unset(self) -> None:
+        assert OrchestratorConfig().max_turns is None
+
+    def test_default_config_leaves_task_value_uncapped(self) -> None:
+        assert resolve_max_turns(100, OrchestratorConfig().max_turns) == 100
+
+    def test_both_unset_falls_back_to_engine_default(self) -> None:
+        assert resolve_max_turns(None, None) == DEFAULT_MAX_TURNS == 50
+
+    def test_run_cap_clamps_higher_task_value(self) -> None:
+        assert resolve_max_turns(100, 30) == 30
+
+    def test_task_value_stands_when_run_cap_unset(self) -> None:
+        assert resolve_max_turns(30, None) == 30
+
+    def test_run_cap_stands_when_task_value_unset(self) -> None:
+        assert resolve_max_turns(None, 30) == 30
+
+    def test_tighter_of_two_set_values_wins(self) -> None:
+        assert resolve_max_turns(100, 200) == 100
