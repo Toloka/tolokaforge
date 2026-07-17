@@ -159,7 +159,7 @@ def test_validate_accepts_customization_block(tmp_path: Path):
     )
 
     result = CliRunner(mix_stderr=False).invoke(cli, ["validate", "--tasks", str(task_file)])
-    assert "1 valid, 0 invalid" in result.output
+    assert "1 valid, 0 invalid" in result.stderr
 
 
 def test_validate_grading_yaml_rejects_removed_output_schema(tmp_path: Path):

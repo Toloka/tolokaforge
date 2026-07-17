@@ -184,6 +184,16 @@ class JudgeResult:
     # ``knowledge_search_disabled=True`` with an empty ``kb_tools_withheld``.
     kb_tools_withheld: tuple[str, ...] = ()
     knowledge_search_disabled: bool = False
+    # Non-KB read-only tools the judge was offered this trial: ``get_db_state`` /
+    # ``query_db`` (a DB reader was supplied), ``read_file`` (a workspace existed).
+    # The KB surface is ``kb_tools_offered`` / ``kb_tools_withheld``. Recorded so an
+    # offline replay knows which live backends to shim.
+    read_tools_offered: tuple[str, ...] = ()
+    # The ``initial → final`` state-delta string handed to the judge as its primary
+    # outcome view (``None`` when no diff was built). Echoed from the ``run()`` input
+    # so an offline replay can rebuild the judge's opening message from this exact
+    # string rather than re-reading a live DB.
+    state_diff: str | None = None
     # The judge's own message transcript (role / content / tool_calls dicts),
     # captured for audit/reproducibility (plan open question #2). Populated for
     # both COMPLETED and ERRORED runs — an errored judge's partial transcript is
@@ -467,10 +477,13 @@ def _build_judge_registry(
     workspace_dir: Path | None,
     disable_knowledge_search: bool,
     logger: StructuredLogger,
-) -> tuple[ToolRegistry, tuple[str, ...], tuple[str, ...]]:
+) -> tuple[ToolRegistry, tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
     """Build the read-only tool registry offered to the judge.
 
-    Returns ``(registry, kb_offered, kb_withheld)``. A candidate tool is
+    Returns ``(registry, kb_offered, kb_withheld, read_tools_offered)`` —
+    ``read_tools_offered`` being the non-KB read surface (``get_db_state`` /
+    ``query_db`` / ``read_file`` / any non-KB ``extra_read_tools`` entry) an
+    offline replay must shim. A candidate tool is
     knowledge-search iff it carries the declared ``is_knowledge_search`` tag
     (``SearchKbTool`` intrinsically; a ``search_policy`` ``DelegatingReadTool``
     when the runner tags it) — classification is by that tag, NEVER by tool name,
@@ -494,17 +507,21 @@ def _build_judge_registry(
     * ``extra_read_tools`` — ready-made read-only tools the runner supplies for
       this trial (e.g. a passthrough wrapping the agent's reconstructed
       ``search_policy`` TypeSense tool). Registered verbatim under their own names;
-      the KB-tagged ones are withheld when disabled, non-KB ones always kept.
+      the KB-tagged ones are withheld when disabled, non-KB ones always kept and
+      recorded in ``read_tools_offered`` so a replay of the resulting bundle
+      re-offers them.
     * ``read_file`` — only when ``workspace_dir`` exists (the agent produced files).
     """
     registry = ToolRegistry()
     registry.register(SubmitReportTool(build_submit_report_tool(rubric)))
 
     offered = [SUBMIT_REPORT_TOOL_NAME]
+    read_tools_offered: list[str] = []
     if db_reader is not None:
         registry.register(GetDbStateTool(db_reader))
         registry.register(QueryDbTool(db_reader))
         offered += ["get_db_state", "query_db"]
+        read_tools_offered += ["get_db_state", "query_db"]
 
     kb_candidates: list[Tool] = []
     if kb_search is not None:
@@ -521,10 +538,13 @@ def _build_judge_registry(
         offered.append(tool.name)
         if getattr(tool, "is_knowledge_search", False):
             kb_offered.append(tool.name)
+        else:
+            read_tools_offered.append(tool.name)
 
     if workspace_dir is not None and workspace_dir.exists():
         registry.register(ReadFileTool(workspace_dir))
         offered.append("read_file")
+        read_tools_offered.append("read_file")
 
     logger.info(
         "Judge read-only tools assembled",
@@ -532,7 +552,7 @@ def _build_judge_registry(
         kb_tools=kb_offered,
         kb_withheld=kb_withheld,
     )
-    return registry, tuple(kb_offered), tuple(kb_withheld)
+    return registry, tuple(kb_offered), tuple(kb_withheld), tuple(read_tools_offered)
 
 
 def model_config_from_ref(model_ref: str) -> ModelConfig:
@@ -652,7 +672,7 @@ class LLMJudge:
         else:
             client = LLMClient(self._model_config)
 
-        registry, kb_tools_offered, kb_tools_withheld = _build_judge_registry(
+        registry, kb_tools_offered, kb_tools_withheld, read_tools_offered = _build_judge_registry(
             rubric,
             db_reader=db_reader,
             kb_search=kb_search,
@@ -700,6 +720,8 @@ class LLMJudge:
                     kb_tools_offered,
                     kb_tools_withheld,
                     self._disable_knowledge_search,
+                    read_tools_offered,
+                    state_diff,
                 )
 
             if termination.captured_args is None:
@@ -712,6 +734,8 @@ class LLMJudge:
                     kb_tools_offered,
                     kb_tools_withheld,
                     self._disable_knowledge_search,
+                    read_tools_offered,
+                    state_diff,
                 )
 
             try:
@@ -735,6 +759,8 @@ class LLMJudge:
                         kb_tools_offered,
                         kb_tools_withheld,
                         self._disable_knowledge_search,
+                        read_tools_offered,
+                        state_diff,
                     )
                 logger.warning(
                     "Judge submit_report invalid; re-prompting", attempt=attempts, error=str(exc)
@@ -779,6 +805,8 @@ class LLMJudge:
                 kb_tools_offered=kb_tools_offered,
                 kb_tools_withheld=kb_tools_withheld,
                 knowledge_search_disabled=self._disable_knowledge_search,
+                read_tools_offered=read_tools_offered,
+                state_diff=state_diff,
                 transcript=_serialize_judge_transcript(messages),
             )
 
@@ -790,13 +818,16 @@ def _errored(
     kb_tools_offered: tuple[str, ...],
     kb_tools_withheld: tuple[str, ...],
     knowledge_search_disabled: bool,
+    read_tools_offered: tuple[str, ...],
+    state_diff: str | None,
 ) -> JudgeResult:
     """Build a fail-loud ERRORED result — no score, no criterion results.
 
     Carries the partial judge transcript: when the judge breaks, its messages
     so far are the most useful debugging artifact. The ``Judge KB: …`` note is
     appended even on error so a reviewer can see whether a KB-blind judge was a
-    factor in the failure (issue #95).
+    factor in the failure. Echoes the read-tool surface + state_diff
+    it was handed so an offline replay of an errored trial is still reconstructable.
     """
     kb_note = _kb_note(kb_tools_offered, kb_tools_withheld, knowledge_search_disabled)
     return JudgeResult(
@@ -808,6 +839,8 @@ def _errored(
         kb_tools_offered=kb_tools_offered,
         kb_tools_withheld=kb_tools_withheld,
         knowledge_search_disabled=knowledge_search_disabled,
+        read_tools_offered=read_tools_offered,
+        state_diff=state_diff,
         transcript=_serialize_judge_transcript(messages),
     )
 

@@ -39,6 +39,7 @@ from tolokaforge.core.grading.kb_search import KnowledgeSearch, RagServiceKnowle
 from tolokaforge.core.grading.state_diff import render_state_diff
 from tolokaforge.core.models import CriterionResult, LLMJudgeConfig, ModelConfig
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, TrialSpec
+from tolokaforge.core.trial_grader import split_leading_system_message
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner import runner_pb2_grpc
 from tolokaforge.runner.db_client import (
@@ -1160,6 +1161,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     knowledge_search_disabled=judge_result.knowledge_search_disabled,
                     kb_tools_offered=list(judge_result.kb_tools_offered),
                     kb_tools_withheld=list(judge_result.kb_tools_withheld),
+                    state_diff_text=judge_result.state_diff or "",
+                    read_tools_offered=list(judge_result.read_tools_offered),
                 )
                 if judge_result.status is JudgeStatus.ERRORED:
                     # Fail loud: the judge component is incomplete, NOT zero. Leave
@@ -1280,13 +1283,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 return {"results": fut.result(timeout=30.0).results}
 
         # Agent policy comes from the transcript's leading system message (the
-        # only oracle-free policy signal the runner has). Stripped from the
+        # only oracle-free policy signal the runner has). Split from the
         # transcript so it is injected as policy, not replayed as a turn.
-        agent_system_prompt = ""
-        transcript = list(llm_messages)
-        if transcript and str(transcript[0].get("role", "")).lower() == "system":
-            agent_system_prompt = str(transcript[0].get("content", "") or "")
-            transcript = transcript[1:]
+        agent_system_prompt, transcript = split_leading_system_message(list(llm_messages))
 
         # search_kb only when a KnowledgeSearch was resolved for THIS trial at
         # setup — the SAME per-trial index the agent's KB tool searched. Faithful

@@ -121,6 +121,19 @@ Per trial (`docs/OUTPUT_FORMAT.md`):
 - `judge_trajectory.yaml` — the judge's own message transcript (tool calls +
   `submit_report`), written only when present. This is the audit/reproducibility
   channel; the agentic judge is not bit-reproducible even at temperature 0.
+- `judge_inputs.yaml` — the judge's non-derivable `run()` inputs (the `state_diff`
+  string it saw + its non-KB read-tool surface), written only when a judge ran.
+  This is what offline replay reads to re-execute the judge without live services.
+
+## Replay
+
+`tolokaforge rejudge` re-executes only the rubric-judge stage over a recorded run,
+reconstructing `LLMJudge.run()` inputs from the bundle (transcript, agent policy,
+rubric, judge model, `state_diff`) and re-running the *same* `LLMJudge` — a caller,
+not a second judge. Live read tools become offline shims that return an explicit
+"unavailable in replay" marker. It exists to validate a judge change (schema,
+prompt, wording, model) against recorded trajectories with judge-only spend. See
+[`docs/JUDGE_REPLAY.md`](JUDGE_REPLAY.md).
 
 ## Calibration
 

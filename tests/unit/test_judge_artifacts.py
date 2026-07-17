@@ -23,6 +23,7 @@ from tolokaforge.core.models import (
     CriterionResult,
     Grade,
     GradeComponents,
+    JudgeInputs,
     JudgeKbGating,
     JudgeStatus,
     JudgeUsage,
@@ -80,6 +81,10 @@ def _judge_grade(kb_gating: JudgeKbGating = _KB_OFFERED) -> Grade:
             {"role": "tool", "content": "{...}", "tool_call_id": "c1"},
         ],
         judge_kb_gating=kb_gating,
+        judge_inputs=JudgeInputs(
+            state_diff_text="orders[1]: status open -> shipped",
+            read_tools_offered=["get_db_state", "query_db"],
+        ),
     )
 
 
@@ -146,6 +151,16 @@ def test_write_grade_emits_breakdown_usage_and_transcript_sidecar(
     assert msgs[1]["tool_calls"][0]["name"] == "get_db_state"
     assert msgs[2]["tool_call_id"] == "c1"
 
+    # The judge's structured inputs are NOT inlined into grade.yaml (the state-diff
+    # can be large) — they land in their own judge_inputs.yaml sidecar and
+    # round-trip through the Pydantic model verbatim.
+    assert "judge_inputs" not in grade
+    inputs_path = trial_dir / "judge_inputs.yaml"
+    assert inputs_path.exists()
+    inputs = JudgeInputs(**yaml.safe_load(inputs_path.read_text()))
+    assert inputs.state_diff_text == "orders[1]: status open -> shipped"
+    assert inputs.read_tools_offered == ["get_db_state", "query_db"]
+
 
 def test_write_grade_without_judge_writes_no_transcript_sidecar(tmp_path: Path) -> None:
     """No judge ⇒ grade.yaml only, no judge_trajectory.yaml sidecar."""
@@ -159,6 +174,8 @@ def test_write_grade_without_judge_writes_no_transcript_sidecar(tmp_path: Path) 
 
     assert (trial_dir / "grade.yaml").exists()
     assert not (trial_dir / "judge_trajectory.yaml").exists()
+    # No judge ran ⇒ no inputs sidecar either.
+    assert not (trial_dir / "judge_inputs.yaml").exists()
     # No judge ran ⇒ no gating record.
     grade = yaml.safe_load((trial_dir / "grade.yaml").read_text())
     assert grade.get("judge_kb_gating") is None

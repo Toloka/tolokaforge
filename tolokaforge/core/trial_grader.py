@@ -34,6 +34,7 @@ from tolokaforge.core.models import (
     CriterionResult,
     Grade,
     GradeComponents,
+    JudgeInputs,
     JudgeKbGating,
     JudgeStatus,
     JudgeUsage,
@@ -206,6 +207,24 @@ def _build_judge_messages_json(
     return json.dumps(messages)
 
 
+def split_leading_system_message(
+    messages: list[dict[str, Any]],
+) -> tuple[str, list[dict[str, Any]]]:
+    """Split the judge wire messages into ``(agent_system_prompt, transcript)``.
+
+    Inverse of the leading-system-message prepend in
+    :func:`_build_judge_messages_json`: the agent's policy is the transcript's
+    leading ``system`` message, lifted out so it is injected as the judge's
+    view of the agent policy rather than replayed as a conversational turn.
+    Returns ``("", messages)`` unchanged when there is no leading system
+    message. Shared by the runner's grading path and the offline judge replay
+    so both reconstruct the judge's ``run()`` inputs identically.
+    """
+    if messages and str(messages[0].get("role", "")).lower() == "system":
+        return str(messages[0].get("content", "") or ""), list(messages[1:])
+    return "", list(messages)
+
+
 def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
     """Materialise a :class:`Grade` from the runner's ``grade_trial`` dict.
 
@@ -229,6 +248,7 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
     judge_usage: JudgeUsage | None = None
     judge_transcript: list[dict[str, Any]] | None = None
     judge_kb_gating: JudgeKbGating | None = None
+    judge_inputs: JudgeInputs | None = None
     raw_report = raw_grade.get("judge_report")
     if raw_report:
         judge_usage = JudgeUsage(
@@ -244,6 +264,12 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
             knowledge_search_disabled=raw_report.get("knowledge_search_disabled", False),
             offered=list(raw_report.get("kb_tools_offered", [])),
             withheld=list(raw_report.get("kb_tools_withheld", [])),
+        )
+        # The judge's non-derivable run() inputs. An empty state_diff_text is the
+        # wire encoding of "no diff was built" — map it back to None.
+        judge_inputs = JudgeInputs(
+            state_diff_text=raw_report.get("state_diff_text") or None,
+            read_tools_offered=list(raw_report.get("read_tools_offered", [])),
         )
         raw_transcript = raw_report.get("transcript_json")
         if raw_transcript:
@@ -270,4 +296,5 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
         judge_usage=judge_usage,
         judge_transcript=judge_transcript,
         judge_kb_gating=judge_kb_gating,
+        judge_inputs=judge_inputs,
     )
