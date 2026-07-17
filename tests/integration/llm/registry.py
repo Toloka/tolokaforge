@@ -2129,9 +2129,9 @@ _ALL: list[MC] = [
                 # cache-creation event (cache_creation_input_tokens=0,
                 # cache_write_tokens=0), so test_prompt_caching's
                 # creation assertion fails live 2026-07-17. Distinct from
-                # the auto-cache surface (IMPLICIT_PROMPT_CACHING, left
-                # undeclared — see header). Same explicit-cache posture as
-                # the gpt-oss-120b sibling.
+                # the auto-cache surface (IMPLICIT_PROMPT_CACHING, also
+                # known_unsupported — see the entry below). Same
+                # explicit-cache posture as the gpt-oss-120b sibling.
                 C.PROMPT_CACHING,
                 # IMPLICIT_PROMPT_CACHING — known_unsupported because we
                 # cannot verify GENUINE auto-caching on this route and its
