@@ -63,11 +63,16 @@ __all__ = [
     "ReplayInputs",
     "ReplayOutcomeStatus",
     "ReplayProvenance",
+    "ReplayReport",
+    "TrialComparison",
+    "TrialComparisonBucket",
     "TrialEligibility",
     "TrialReplayOutcome",
     "build_replay_grade",
+    "build_replay_report",
     "classify_trial",
     "discover_trial_bundles",
+    "emit_replay_report",
     "load_grading_rubric",
     "read_replay_inputs",
     "replay_trial",
@@ -646,3 +651,253 @@ def run_replay_batch(
             )
         )
     return outcomes
+
+
+# ---------------------------------------------------------------------------
+# Per-run comparison report — original-vs-replay
+# ---------------------------------------------------------------------------
+
+_CARRIED_COMPONENTS_NOTE = (
+    "Non-judge grade components (state checks, transcript rules, db-probes) are "
+    "carried from the recorded grade, not recomputed by replay."
+)
+
+
+class TrialComparisonBucket(str, Enum):
+    """How a replayed trial enters the comparison report.
+
+    ``COMPARABLE`` — both the recorded and the replay judge produced per-criterion
+    verdicts; only these count toward the agreement rate. ``ORIGINAL_ERRORED`` /
+    ``ORIGINAL_NO_VERDICT`` — the recorded judge errored, or produced no criteria,
+    so there is nothing to diff against: the replay-side result is listed but never
+    counted. ``REPLAY_ERRORED`` — the replay judge errored; recorded as its own
+    bucket, never a fabricated ``0`` verdict.
+    """
+
+    COMPARABLE = "comparable"
+    ORIGINAL_ERRORED = "original_errored"
+    ORIGINAL_NO_VERDICT = "original_no_verdict"
+    REPLAY_ERRORED = "replay_errored"
+
+
+class CriterionComparison(BaseModel):
+    """One criterion's recorded-vs-replay verdict."""
+
+    id: str
+    original_met: bool
+    original_score: float
+    replay_met: bool
+    replay_score: float
+    met_agrees: bool
+    score_delta: float
+
+    model_config = {"extra": "forbid"}
+
+
+class TrialComparison(BaseModel):
+    """One replayed trial's comparison against its recorded grade."""
+
+    bundle: str
+    bucket: TrialComparisonBucket
+    original_llm_judge: float | None
+    replay_llm_judge: float | None
+    llm_judge_delta: float | None
+    criteria: list[CriterionComparison]
+
+    model_config = {"extra": "forbid"}
+
+
+class ReplayUsageTotals(BaseModel):
+    """Judge-only token usage + cost summed across the replayed trials."""
+
+    calls: int
+    prompt_tokens: int
+    completion_tokens: int
+    reasoning_tokens: int
+    cost_usd: float
+
+    model_config = {"extra": "forbid"}
+
+
+class ReplayReport(BaseModel):
+    """Per-run comparison of a replay against the recorded originals.
+
+    The agreement rate is defined over criteria in ``COMPARABLE`` trials only —
+    trials whose recorded judge errored or produced no verdict, and trials whose
+    replay judge errored, are declared in their own buckets and excluded from the
+    denominator (never counted as a disagreement or a fabricated ``0``).
+    """
+
+    replay_id: str
+    judge_model: str
+    trials: list[TrialComparison]
+    criteria_compared: int
+    criteria_agreed: int
+    agreement_rate: float | None
+    aggregate_original_llm_judge: float | None
+    aggregate_replay_llm_judge: float | None
+    aggregate_llm_judge_delta: float | None
+    replay_usage: ReplayUsageTotals
+    carried_components: str = _CARRIED_COMPONENTS_NOTE
+
+    model_config = {"extra": "forbid"}
+
+
+def _mean(values: list[float]) -> float | None:
+    return sum(values) / len(values) if values else None
+
+
+def _bundle_key(bundle: Path, source: Path) -> str:
+    try:
+        return str(bundle.relative_to(source))
+    except ValueError:
+        return bundle.name
+
+
+def _optional_component(value: Any) -> float | None:
+    """A recorded ``components.llm_judge`` value, or ``None`` for the -1 sentinel."""
+    return value if isinstance(value, (int, float)) and value >= 0 else None
+
+
+def _compare_trial(
+    bundle_key: str, original: dict[str, Any], result: JudgeResult
+) -> TrialComparison:
+    replay_completed = result.status is JudgeRunStatus.COMPLETED
+    replay_score = result.score if (replay_completed and result.score is not None) else None
+    original_component = _optional_component((original.get("components") or {}).get("llm_judge"))
+    original_criteria = original.get("criterion_results")
+
+    if not replay_completed:
+        bucket = TrialComparisonBucket.REPLAY_ERRORED
+    elif original.get("judge_status") == JudgeStatus.ERRORED.value:
+        bucket = TrialComparisonBucket.ORIGINAL_ERRORED
+    elif not original_criteria:
+        bucket = TrialComparisonBucket.ORIGINAL_NO_VERDICT
+    else:
+        bucket = TrialComparisonBucket.COMPARABLE
+
+    criteria: list[CriterionComparison] = []
+    if bucket is TrialComparisonBucket.COMPARABLE:
+        original_by_id = {c["id"]: c for c in original_criteria}
+        replay_by_id = {c.id: c for c in result.criterion_results}
+        for cid in sorted(set(original_by_id) & set(replay_by_id)):
+            oc, rc = original_by_id[cid], replay_by_id[cid]
+            criteria.append(
+                CriterionComparison(
+                    id=cid,
+                    original_met=bool(oc["met"]),
+                    original_score=oc["score"],
+                    replay_met=rc.met,
+                    replay_score=rc.score,
+                    met_agrees=bool(oc["met"]) == rc.met,
+                    score_delta=rc.score - oc["score"],
+                )
+            )
+
+    llm_delta = (
+        replay_score - original_component
+        if (bucket is TrialComparisonBucket.COMPARABLE and original_component is not None)
+        else None
+    )
+    return TrialComparison(
+        bundle=bundle_key,
+        bucket=bucket,
+        original_llm_judge=original_component,
+        replay_llm_judge=replay_score,
+        llm_judge_delta=llm_delta,
+        criteria=criteria,
+    )
+
+
+def build_replay_report(
+    outcomes: list[TrialReplayOutcome], *, source: Path, replay_id: str
+) -> ReplayReport | None:
+    """Build the per-run comparison report from a batch's replayed outcomes.
+
+    Returns ``None`` when nothing was replayed. Only ``REPLAYED`` outcomes enter
+    the report — skipped-not-applicable and failed-to-reconstruct trials are batch
+    console concerns, not comparisons. Agreement is computed over ``COMPARABLE``
+    trials only; other buckets carry the replay-side result but never affect the
+    rate or the aggregate deltas.
+    """
+    replayed = [o for o in outcomes if o.status is ReplayOutcomeStatus.REPLAYED and o.result]
+    if not replayed:
+        return None
+
+    judge_model = next((o.provenance.judge_model for o in replayed if o.provenance), "unknown")
+    trials: list[TrialComparison] = []
+    compared = agreed = 0
+    original_scores: list[float] = []
+    replay_scores: list[float] = []
+    calls = prompt_tokens = completion_tokens = reasoning_tokens = 0
+    cost_usd = 0.0
+
+    for outcome in replayed:
+        result = outcome.result
+        assert result is not None  # narrowed by the filter above
+        calls += result.usage.calls
+        prompt_tokens += result.usage.prompt_tokens
+        completion_tokens += result.usage.completion_tokens
+        reasoning_tokens += result.usage.reasoning_tokens
+        cost_usd += result.usage.cost_usd
+
+        original = _load_yaml(outcome.bundle / "grade.yaml") or {}
+        comparison = _compare_trial(_bundle_key(outcome.bundle, source), original, result)
+        trials.append(comparison)
+
+        if comparison.bucket is TrialComparisonBucket.COMPARABLE:
+            compared += len(comparison.criteria)
+            agreed += sum(c.met_agrees for c in comparison.criteria)
+            if (
+                comparison.original_llm_judge is not None
+                and comparison.replay_llm_judge is not None
+            ):
+                original_scores.append(comparison.original_llm_judge)
+                replay_scores.append(comparison.replay_llm_judge)
+
+    aggregate_original = _mean(original_scores)
+    aggregate_replay = _mean(replay_scores)
+    return ReplayReport(
+        replay_id=replay_id,
+        judge_model=judge_model,
+        trials=trials,
+        criteria_compared=compared,
+        criteria_agreed=agreed,
+        agreement_rate=(agreed / compared if compared else None),
+        aggregate_original_llm_judge=aggregate_original,
+        aggregate_replay_llm_judge=aggregate_replay,
+        aggregate_llm_judge_delta=(
+            aggregate_replay - aggregate_original
+            if aggregate_original is not None and aggregate_replay is not None
+            else None
+        ),
+        replay_usage=ReplayUsageTotals(
+            calls=calls,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            reasoning_tokens=reasoning_tokens,
+            cost_usd=cost_usd,
+        ),
+    )
+
+
+def emit_replay_report(
+    outcomes: list[TrialReplayOutcome], *, source: Path, replay_id: str
+) -> ReplayReport | None:
+    """Build the comparison report and write it to
+    ``<source>/replays/<replay_id>/replay_report.yaml``; return it (``None`` when
+    nothing was replayed, so no file is written)."""
+    report = build_replay_report(outcomes, source=source, replay_id=replay_id)
+    if report is None:
+        return None
+    report_dir = source / REPLAYS_DIRNAME / replay_id
+    report_dir.mkdir(parents=True, exist_ok=True)
+    with open(report_dir / "replay_report.yaml", "w") as f:
+        yaml.dump(
+            report.model_dump(mode="json"),
+            f,
+            default_flow_style=False,
+            allow_unicode=True,
+            sort_keys=False,
+        )
+    return report

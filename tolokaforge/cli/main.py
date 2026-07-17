@@ -13,7 +13,9 @@ from tolokaforge.core.engine_run_state import read_persisted_presets_file
 from tolokaforge.core.grading.replay import (
     KnowledgeSearchMode,
     ReplayOutcomeStatus,
+    ReplayReport,
     TrialReplayOutcome,
+    emit_replay_report,
     load_grading_rubric,
     run_replay_batch,
 )
@@ -358,6 +360,27 @@ def _print_rejudge_summary(
         console.print(f"Replay artifacts: {source / 'replays' / replay_id}")
 
 
+def _print_replay_report(report: ReplayReport) -> None:
+    """Print the per-run comparison summary (agreement + deltas + judge spend)."""
+    rate = "n/a" if report.agreement_rate is None else f"{report.agreement_rate:.1%}"
+    delta = (
+        "n/a"
+        if report.aggregate_llm_judge_delta is None
+        else f"{report.aggregate_llm_judge_delta:+.3f}"
+    )
+    console.print(
+        f"[bold]Agreement:[/bold] {rate} "
+        f"({report.criteria_agreed}/{report.criteria_compared} criteria); "
+        f"[bold]aggregate llm_judge delta:[/bold] {delta}"
+    )
+    usage = report.replay_usage
+    console.print(
+        f"[bold]Judge spend:[/bold] ${usage.cost_usd:.4f} "
+        f"({usage.calls} calls, {usage.prompt_tokens}+{usage.completion_tokens} tokens)"
+    )
+    console.print(f"[dim]{report.carried_components}[/dim]")
+
+
 @cli.command(name="rejudge")
 @click.option(
     "--source",
@@ -443,6 +466,11 @@ def rejudge(
         dry_run=dry_run,
     )
     _print_rejudge_summary(outcomes, replay_id=replay_id, source=source_path, dry_run=dry_run)
+
+    if not dry_run:
+        report = emit_replay_report(outcomes, source=source_path, replay_id=replay_id)
+        if report is not None:
+            _print_replay_report(report)
 
 
 @cli.command(name="prepare")

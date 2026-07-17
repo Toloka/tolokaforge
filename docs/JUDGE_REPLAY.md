@@ -98,6 +98,32 @@ trial:
   model / rubric / KB-gating came from the bundle or an override, and the fidelity
   mode.
 
+The batch also writes one `replays/<replay_id>/replay_report.yaml` — the per-run
+comparison against the recorded originals.
+
+## Reading the comparison report
+
+`replay_report.yaml` (and its console summary) reports:
+
+- **Per-criterion** `original` vs `replay` `met`/`score` per trial, with the
+  per-criterion `met_agrees` and `score_delta`.
+- **Agreement rate** — the fraction of criteria whose `met` matches, computed over
+  **`comparable`** trials only (both sides produced per-criterion verdicts).
+- **Aggregate `llm_judge` delta** — mean replay score minus mean recorded
+  `llm_judge` component, over comparable trials. Non-judge components (state
+  checks, transcript rules) are **carried** from the recorded grade, not
+  recomputed — the report says so.
+- **Judge-only usage + cost** — summed across the replayed trials.
+
+Trials are bucketed, and only `comparable` trials count toward the agreement rate:
+
+| Bucket | Meaning |
+|---|---|
+| `comparable` | Both the recorded and the replay judge produced verdicts — counted. |
+| `original_errored` | The recorded judge errored — nothing to diff; replay side listed, not counted. |
+| `original_no_verdict` | The recorded judge produced no criteria — nothing to diff; not counted. |
+| `replay_errored` | The replay judge errored — its own bucket, never a fabricated `0`. |
+
 The judge loop is agentic and not bit-reproducible even at temperature 0, so
 reproduction is a **verdict-level** expectation on unambiguous criteria, not a
 byte-level one. See [`docs/RUBRIC_GRADING_DESIGN.md`](RUBRIC_GRADING_DESIGN.md) and
