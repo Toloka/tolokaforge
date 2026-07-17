@@ -167,6 +167,12 @@ to the agent model. See [GRADING.md](GRADING.md#llm-judge-rubric-grading) for th
 judge mechanism, the two weighting layers, the required-gate semantics, and the
 fail-loud ERRORED status.
 
+Authors write **only criteria** (never justifications). The judge, on the output
+side, ends every per-criterion justification with a trailing `VERDICT: MET` /
+`VERDICT: NOT MET` (binary) or `SCORE: <value>` (graded) marker line that must
+match its verdict; the marker is kept verbatim in each `criterion_results`
+justification in `grade.yaml`.
+
 ### Environment Variables
 
 | Variable | Description |

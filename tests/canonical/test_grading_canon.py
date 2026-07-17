@@ -2,9 +2,11 @@
 
 import pytest
 
+from tolokaforge.core.grading.rubric import build_submit_report_tool
 from tolokaforge.core.grading.state_checks import StateChecker
 from tolokaforge.core.grading.transcript import TranscriptChecker
 from tolokaforge.core.models import Message, MessageRole
+from tolokaforge.runner.models import Criterion, Rubric
 
 pytestmark = pytest.mark.canonical
 
@@ -129,3 +131,32 @@ class TestTranscriptCheckerCanon:
 
         snap = canon_snapshot("grading_transcript_calc")
         snap.assert_match({"score": score, "reasons": reasons}, "fail_result.json")
+
+
+class TestSubmitReportToolCanon:
+    """Pin the submit_report tool schema: justification-before-verdict ordering
+    plus the trailing VERDICT/SCORE marker descriptions are the schema contract."""
+
+    def test_submit_report_schema_mixed_rubric(self, canon_snapshot):
+        rubric = Rubric(
+            reference="The correct refund is $328.50.",
+            criteria=[
+                Criterion(
+                    id="refund_amount",
+                    description="Reply quotes the correct refund amount",
+                    expected="$328.50",
+                    kind="binary",
+                    required=True,
+                    weight=2.0,
+                ),
+                Criterion(
+                    id="tone",
+                    description="Reply is polite and professional",
+                    kind="graded",
+                    weight=1.0,
+                ),
+            ],
+        )
+        tool = build_submit_report_tool(rubric)
+        snap = canon_snapshot("grading_submit_report")
+        snap.assert_match(tool, "mixed_rubric_tool.json")

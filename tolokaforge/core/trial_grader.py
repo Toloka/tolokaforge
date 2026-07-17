@@ -236,6 +236,7 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
             reasoning_tokens=raw_report.get("reasoning_tokens", 0),
             cost_usd=raw_report.get("cost_usd", 0.0),
             tool_calls=raw_report.get("tool_calls", 0),
+            consistency_rejections=raw_report.get("consistency_rejections", 0),
         )
         raw_transcript = raw_report.get("transcript_json")
         if raw_transcript:

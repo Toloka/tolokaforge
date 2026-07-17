@@ -300,6 +300,7 @@ class JudgeUsage(BaseModel):
     reasoning_tokens: int = 0
     cost_usd: float = 0.0
     tool_calls: int = 0
+    consistency_rejections: int = 0
 
     model_config = {"extra": "forbid"}
 

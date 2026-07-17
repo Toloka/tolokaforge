@@ -75,7 +75,8 @@ bridge back to the runner event loop with `run_coroutine_threadsafe(...)`.
 | **Harness-owned read-only tools** (not the agent's tools filtered by `category`) | `category` is stamped `"compute"` for all native task tools, so a filter excludes nothing — untrustworthy. A fixed read-only allowlist is safe and modality-correct without a DB clone. |
 | **Run-level judge model via `build_capabilities`** | An agentic tool-calling judge needs the preset/policy machinery (schema sanitizers, reasoning codecs) — raw `litellm.completion` mangles tool calls for Gemini/GPT-5/etc. The model is a run-level role (`RunConfig.models["judge"]`, carried on `TrialSpec.judge_model_config`), separate from the agent under test to avoid self-grading bias, with no default and no fallback — a fleet-wide provider switch is a one-line run-config edit. |
 | **Fail loud → `JudgeStatus.ERRORED`** | Any judge malfunction (no `submit_report`, retry exhaustion, budget/turn exhaustion, crash) yields ERRORED with **no score**; the `llm_judge` component stays at the `-1.0` sentinel (excluded from the combine), never 0.0/0.5. |
-| **Structured output via `submit_report`** | The tool's arg schema is generated from the rubric and validated with Pydantic (bounded re-prompt, then ERRORED). No MCP — the loop is in-process. A flat arg object (per-criterion keyed by id) avoids nested-schema dialect gaps. |
+| **Structured output via `submit_report`** | The tool's arg schema is generated from the rubric and validated fail-loud (bounded re-prompt, then ERRORED). No MCP — the loop is in-process. A flat arg object (per-criterion keyed by id) avoids nested-schema dialect gaps. |
+| **Justification before verdict + consistency marker** | Each criterion's `<id>_justification` field is emitted **before** its verdict field (`met` / `score`) in both `properties` order and the `required` list: providers generate tool arguments in schema order, so the verdict token is produced *conditioned on* the written reasoning (reason-then-answer / autoregressive generation), not thousands of tokens before it. Because JSON-Schema property order is non-normative, a backstop rides on top: every justification must end with a `VERDICT: MET` / `VERDICT: NOT MET` (binary) or `SCORE: <value>` (graded) marker line, and `parse_submit_report` rejects any call whose trailing marker is missing or disagrees with the submitted verdict — a `VerdictConsistencyError` that rides the same bounded re-prompt to ERRORED on exhaustion. The marker requirement is stated on **both** surfaces the judge sees — the per-field schema descriptions (the machine contract) and one sentence in the judge system prompt — so a provider that truncates or reorders schema descriptions still gets the instruction. The marker is matched against the justification's final non-empty line, taking the last `VERDICT:` / `SCORE:` occurrence, so real models may append it inline to the closing sentence. |
 | **Author-written reference channel** (`rubric.reference`, `criterion.expected`) | The judge needs the correct answer to grade reference-dependent criteria — but it is given an author-written reference, **not** the deterministic oracle (`golden_actions`/`expected_hash`/`jsonpath_checks`), which would bias toward the golden path and double-count state checks. |
 | **Narrow input surface** | `run_rubric_judge` accepts only `{agent_system_prompt, transcript, rubric, read-tools}` — oracle fields cannot leak by construction. Agent system prompts are policy-only by convention. |
 | **Calibration gates trust** | A rubric is not trustworthy until it clears an agreement threshold against human-labeled fixtures. |
@@ -84,7 +85,19 @@ bridge back to the runner event loop with `run_coroutine_threadsafe(...)`.
 
 A criterion is `binary` (judge reports `met`) or `graded` (judge reports a
 `score` in [0,1]); a graded criterion's `met` is derived at the 0.5 threshold for
-gating only.
+gating only. The judge writes each criterion's justification first, then its
+verdict, and ends the justification with a `VERDICT: MET` / `VERDICT: NOT MET`
+(binary) or `SCORE: <value>` (graded) marker line.
+
+- **Verdict/justification consistency:** the submitted verdict must agree with
+  the justification's trailing marker — the marker is read from the final
+  non-empty line only (whitespace-tolerant, case-insensitive; `NOT MET` matched
+  ahead of `MET`), so reasoning that discusses "NOT MET" mid-text cannot
+  false-match. For a graded criterion the marker value must be within `0.05` of
+  the submitted `score`. A missing / unparseable / contradicting marker is a
+  hard reject (unverifiable is not acceptable) that rides the bounded re-prompt
+  to ERRORED on exhaustion — never a silently wrong grade. The marker is kept
+  **verbatim** in `criterion_results[].justification` for audit fidelity.
 
 - **Required-gate:** any `required` criterion with `met=false` fails the rubric
   outright (`gate_failed`) — `binary_pass=false` and the `llm_judge` component is
