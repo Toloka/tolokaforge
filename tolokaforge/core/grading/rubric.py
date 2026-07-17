@@ -1,9 +1,9 @@
 """Pure rubric-grading helpers — schema generation, validation, aggregation.
 
-Stage 3 of the rubric-grading plan (``docs/RUBRIC_GRADING_DESIGN.md``). These functions
-are deliberately free of any LLM / loop / IO so they are unit-testable in
-isolation; Stage 4 wires them into the runner-side judge that runs on the shared
-loop.
+Design reference: ``docs/RUBRIC_GRADING_DESIGN.md``. These functions are
+deliberately free of any LLM / loop / IO so they are unit-testable in
+isolation; the judge loop (``judge.py``) wires them into the runner-side judge
+that runs on the shared loop.
 
 Three pieces:
 
@@ -17,8 +17,9 @@ Three pieces:
 
 Fail-loud contract (AGENTS.md rule 1): :func:`parse_submit_report` raises
 :class:`SubmitReportValidationError` on ANY bad judge output. It never returns a
-default / placeholder score. Stage 4 catches this exception on bounded-retry
-exhaustion and emits an *errored* judge status — never ``0.0`` / ``0.5``.
+default / placeholder score. The judge loop (``judge.py``) catches this
+exception on bounded-retry exhaustion and emits an *errored* judge status —
+never ``0.0`` / ``0.5``.
 """
 
 import re
@@ -54,10 +55,12 @@ GRADED_MARKER_TOLERANCE = 0.05
 #: appended inline to the closing sentence (``"...refund was issued. VERDICT:
 #: MET"``) as real models emit it, not only on a line of its own. The
 #: ``VERDICT:`` / ``SCORE:`` prefix is required, so a bare "NOT MET" phrase never
-#: matches. Whitespace-tolerant and case-insensitive; ``not met`` is spelled
-#: ahead of ``met`` in the alternation so it wins the match.
-_BINARY_MARKER_RE = re.compile(r"verdict\s*:\s*(not\s+met|met)", re.IGNORECASE)
-_GRADED_MARKER_RE = re.compile(r"score\s*:\s*([0-9]*\.?[0-9]+)", re.IGNORECASE)
+#: matches. The negative lookbehind rejects a letter immediately before the
+#: keyword, so an embedded suffix ("subscore: 0.7", "the underscore: 1") never
+#: false-matches. Whitespace-tolerant and case-insensitive; ``not met`` is
+#: spelled ahead of ``met`` in the alternation so it wins the match.
+_BINARY_MARKER_RE = re.compile(r"(?<![a-zA-Z])verdict\s*:\s*(not\s+met|met)", re.IGNORECASE)
+_GRADED_MARKER_RE = re.compile(r"(?<![a-zA-Z])score\s*:\s*([0-9]*\.?[0-9]+)", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -71,8 +74,9 @@ class SubmitReportValidationError(ValueError):
     Raised on ANY mismatch — missing criterion, unknown/extra criterion id,
     wrong field type, ``score`` out of ``[0, 1]``, or a missing required field.
     Carries an actionable message naming the offending criterion / field so the
-    bounded-retry re-prompt (Stage 4) can surface it to the judge, and so the
-    eventual errored-grade status (on retry exhaustion) is diagnosable.
+    judge loop's bounded-retry re-prompt (``judge.py``) can surface it to the
+    judge, and so the eventual errored-grade status (on retry exhaustion) is
+    diagnosable.
     """
 
 
@@ -107,12 +111,12 @@ class RubricAggregate:
 
     ``binary_pass`` is INDICATIVE only — the judge component's own coarse pass
     signal (``not gate_failed`` and ``score >= GRADED_MET_THRESHOLD``, the 0.5
-    bar). It is NOT the authoritative pass verdict: the combine layer (Stage 4)
-    decides pass by applying the real ``pass_threshold`` to ``score`` AND
-    requiring ``not gate_failed``. Do not mistake the 0.5 bar here for the
-    configured pass bar.
+    bar). It is NOT the authoritative pass verdict: the combine layer
+    (``combine.py``) decides pass by applying the real ``pass_threshold`` to
+    ``score`` AND requiring ``not gate_failed``. Do not mistake the 0.5 bar here
+    for the configured pass bar.
 
-    ``gate_failed`` is the explicit required-gate signal Stage 4 feeds into the
+    ``gate_failed`` is the explicit required-gate signal the judge feeds into the
     top-level combine layer: when ``True`` the rubric failed outright regardless
     of the weighted ``score`` and the ``pass_threshold``. ``failed_required_ids``
     lists which required criteria tripped the gate, for reasons / diagnostics.
@@ -334,7 +338,9 @@ def _check_verdict_marker(
             f"[0,1]>'. Final line was: {final_line!r}. Submitted score={score}."
         )
     marker_value = float(marker.group(1))
-    if abs(marker_value - score) > GRADED_MARKER_TOLERANCE:
+    # The epsilon absorbs binary float noise so a nominal |Δ| == 0.05 pair
+    # (e.g. 0.65 vs 0.6) lands inside the tolerance instead of rejecting.
+    if abs(marker_value - score) > GRADED_MARKER_TOLERANCE + 1e-9:
         raise VerdictConsistencyError(
             f"Criterion '{criterion.id}' score contradicts its justification: the "
             f"justification's final line says {final_line!r} but the submitted "
@@ -423,8 +429,8 @@ def aggregate_rubric(rubric: Rubric, results: list[CriterionResult]) -> RubricAg
 
     Raises :class:`SubmitReportValidationError` if ``results`` does not line up
     one-to-one with the rubric's criteria, or if there are non-required criteria
-    but their total weight is not positive (defensive — Stage 4 always feeds the
-    output of :func:`parse_submit_report`).
+    but their total weight is not positive (defensive — the judge loop always
+    feeds the output of :func:`parse_submit_report`).
     """
     by_id = {r.id: r for r in results}
     if by_id.keys() != {c.id for c in rubric.criteria} or len(by_id) != len(results):

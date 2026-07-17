@@ -597,27 +597,17 @@ def _missing_marker_submit(refund_done: bool) -> dict:
     }
 
 
-def test_clean_run_reports_zero_consistency_rejections():
+@pytest.mark.parametrize(
+    "bad_submit",
+    [_contradicting_submit, _missing_marker_submit],
+    ids=["contradicting_marker", "missing_marker"],
+)
+def test_consistency_rejection_reprompts_and_counts_per_attempt_then_errors(bad_submit):
+    """Consistency-rejected payload → re-prompt; counter increments per rejected
+    attempt; after retry exhaustion the result is ERRORED with the count
+    reflecting attempts."""
     rubric = _binary_rubric()
-    client = ScriptedClient([[("submit_report", _submit_args(refund_done=True))]])
-    result = run_rubric_judge(
-        rubric=rubric,
-        model_config=_JUDGE_MODEL,
-        agent_system_prompt="",
-        transcript=[],
-        db_reader=FakeDBReader(),
-        llm_client=client,
-    )
-    assert result.status is JudgeStatus.COMPLETED
-    assert result.usage.consistency_rejections == 0
-
-
-def test_consistency_rejection_reprompts_and_counts_per_attempt_then_errors():
-    """Contradicting marker → re-prompt; counter increments per rejected attempt;
-    after retry exhaustion the result is ERRORED with the count reflecting attempts."""
-    rubric = _binary_rubric()
-    bad = _contradicting_submit(refund_done=True)  # verdict MET, marker NOT MET
-    client = ScriptedClient([[("submit_report", bad)]] * 3)
+    client = ScriptedClient([[("submit_report", bad_submit(refund_done=True))]] * 3)
     result = run_rubric_judge(
         rubric=rubric,
         model_config=_JUDGE_MODEL,
@@ -630,22 +620,6 @@ def test_consistency_rejection_reprompts_and_counts_per_attempt_then_errors():
     assert result.status is JudgeStatus.ERRORED
     assert result.score is None
     assert client.calls == 3  # initial + 2 retries, each rejected
-    assert result.usage.consistency_rejections == 3
-
-
-def test_missing_marker_counts_as_consistency_rejection():
-    rubric = _binary_rubric()
-    client = ScriptedClient([[("submit_report", _missing_marker_submit(refund_done=True))]] * 3)
-    result = run_rubric_judge(
-        rubric=rubric,
-        model_config=_JUDGE_MODEL,
-        agent_system_prompt="",
-        transcript=[],
-        db_reader=FakeDBReader(),
-        submit_report_retries=2,
-        llm_client=client,
-    )
-    assert result.status is JudgeStatus.ERRORED
     assert result.usage.consistency_rejections == 3
 
 
@@ -750,6 +724,8 @@ def test_usage_is_recorded():
     # the real read-tool (get_db_state) is counted.
     assert result.usage.tool_calls == 1
     assert result.usage.cost_usd == pytest.approx(0.002)
+    # A clean run records zero verdict-consistency rejections.
+    assert result.usage.consistency_rejections == 0
 
 
 def test_turn_exhaustion_without_submit_report_errors():

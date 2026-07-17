@@ -46,6 +46,7 @@ def _grade_from_dict(g: dict) -> Grade:
             reasoning_tokens=report.get("reasoning_tokens", 0),
             cost_usd=report.get("cost_usd", 0.0),
             tool_calls=report.get("tool_calls", 0),
+            consistency_rejections=report.get("consistency_rejections", 0),
         )
         if report.get("transcript_json"):
             parsed = json.loads(report["transcript_json"])
@@ -165,6 +166,7 @@ def test_proto_grade_judge_report_round_trip():
             reasoning_tokens=0,
             cost_usd=0.0142,
             tool_calls=4,
+            consistency_rejections=2,
             transcript_json=json.dumps(transcript),
         ),
     )
@@ -181,6 +183,7 @@ def test_proto_grade_judge_report_round_trip():
     assert report["prompt_tokens"] == 4120
     assert report["cost_usd"] == pytest.approx(0.0142)
     assert report["tool_calls"] == 4
+    assert report["consistency_rejections"] == 2
 
     grade = _grade_from_dict(result["grade"])
     assert grade.judge_status is JudgeStatus.COMPLETED
@@ -189,6 +192,7 @@ def test_proto_grade_judge_report_round_trip():
     assert grade.judge_usage.prompt_tokens == 4120
     assert grade.judge_usage.cost_usd == pytest.approx(0.0142)
     assert grade.judge_usage.tool_calls == 4
+    assert grade.judge_usage.consistency_rejections == 2
     assert grade.judge_transcript is not None
     assert len(grade.judge_transcript) == 3
     assert grade.judge_transcript[1]["tool_calls"][0]["name"] == "get_db_state"

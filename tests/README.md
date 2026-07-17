@@ -46,8 +46,8 @@ scripts/with_env.sh uv run pytest tests/ -v
 well-formed `submit_report` payload (markers matching their verdicts). The unit
 test `tests/unit/grading/test_rubric.py::TestWellFormedLivePayload` re-validates
 it with no spend. To recapture it from a live judge run (real provider, small
-spend), set `TF_CAPTURE_JUDGE_PAYLOAD=1` — the strong-model case of the marker
-acceptance test writes the fixture:
+spend), set `TF_CAPTURE_JUDGE_PAYLOAD=1` — the mid-tier (gpt-4.1-mini) case of
+the marker acceptance test writes the fixture:
 
 ```bash
 TF_CAPTURE_JUDGE_PAYLOAD=1 scripts/with_env.sh uv run pytest \

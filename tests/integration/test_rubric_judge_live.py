@@ -320,41 +320,53 @@ def test_rubric_judge_live_against_real_db_service(db_test_client):
 
 
 # ---------------------------------------------------------------------------
-# Marker-consistency acceptance — real providers, strong + weak judge models
+# Marker-consistency acceptance — real providers across judge tiers/families
 # ---------------------------------------------------------------------------
 
 
 def _acceptance_models() -> list[tuple[str, str]]:
     """(label, model_ref) pairs for the marker-acceptance run, gated on keys.
 
-    Strong: a GPT-class model that reliably terminates the agentic grading loop.
-    Weak: a smaller, different-family OpenRouter model that stresses the marker
-    format instruction. Both routed via OpenRouter so a single key covers them.
+    Mid: a mid-tier GPT-class model that reliably terminates the agentic
+    grading loop — also the golden-fixture capture source. Weak: a smaller,
+    different-family OpenRouter model that stresses the marker format
+    instruction. Strong: the Anthropic judge model the committed rejection
+    fixtures came from (``tests/unit/grading/data/README.md``). It is routed
+    via OpenRouter because the judge pins ``temperature=0.0`` and the native
+    Anthropic API rejects sampling params on Opus 4.8, while OpenRouter strips
+    them. All three ride a single OpenRouter key.
     """
     if not os.environ.get("OPENROUTER_API_KEY"):
         return []
     return [
-        ("strong", "openrouter/openai/gpt-4.1-mini"),
+        ("mid", "openrouter/openai/gpt-4.1-mini"),
         ("weak", "openrouter/meta-llama/llama-3.3-70b-instruct"),
+        ("strong", "openrouter/anthropic/claude-opus-4.8"),
     ]
 
 
 def _extract_submit_args(result) -> dict | None:
-    """The real submit_report arguments the judge emitted, from its transcript."""
+    """The LAST submit_report arguments the judge emitted, from its transcript.
+
+    On a retried run earlier submit_report calls are the REJECTED payloads; the
+    final one is the accepted, well-formed payload the golden fixture wants.
+    """
+    args = None
     for msg in result.transcript:
         for tc in msg.get("tool_calls") or []:
             if tc.get("name") == "submit_report":
-                return tc.get("arguments")
-    return None
+                args = tc.get("arguments")
+    return args
 
 
 @pytest.mark.skipif(not _acceptance_models(), reason="No OPENROUTER_API_KEY set")
 @pytest.mark.parametrize("label,model_ref", _acceptance_models(), ids=lambda v: v)
 def test_rubric_judge_live_markers_match_verdicts(label: str, model_ref: str):
     """A well-formed transcript → COMPLETED with every justification's marker
-    matching its verdict and no consistency rejections, on strong + weak models.
+    matching its verdict and no consistency rejections, across judge tiers and
+    families (mid GPT-class, weak open-weights, strong Anthropic-family).
 
-    Set ``TF_CAPTURE_JUDGE_PAYLOAD=1`` to (re)capture the strong model's real
+    Set ``TF_CAPTURE_JUDGE_PAYLOAD=1`` to (re)capture the mid model's real
     well-formed submit_report payload into the golden fixture the unit acceptance
     test re-validates without spend.
     """
@@ -383,7 +395,7 @@ def test_rubric_judge_live_markers_match_verdicts(label: str, model_ref: str):
         replay[cr.id] = cr.met if kinds[cr.id] == "binary" else cr.score
     parse_submit_report(replay, rubric)  # must not raise
 
-    if label == "strong" and os.environ.get("TF_CAPTURE_JUDGE_PAYLOAD") == "1":
+    if label == "mid" and os.environ.get("TF_CAPTURE_JUDGE_PAYLOAD") == "1":
         captured = _extract_submit_args(result)
         assert captured is not None, "no submit_report call found in transcript"
         _WELLFORMED_FIXTURE.write_text(json.dumps(captured, indent=2, ensure_ascii=False) + "\n")

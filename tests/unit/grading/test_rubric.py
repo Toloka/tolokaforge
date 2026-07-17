@@ -267,6 +267,22 @@ class TestVerdictConsistency:
         assert "tone" in str(exc.value)
         assert "SCORE: 0.80" in str(exc.value)
 
+    def test_graded_marker_at_tolerance_boundary_accepted(self) -> None:
+        # Nominal |0.65 - 0.6| == 0.05 sits exactly on the tolerance; binary
+        # float noise must not tip it over into a rejection.
+        args = _valid_args(tone_score=0.6)
+        args["tone_justification"] = "Mostly courteous, a little curt.\nSCORE: 0.65"
+        parse_submit_report(args, _mixed_rubric())
+
+    def test_embedded_keyword_is_not_a_marker(self) -> None:
+        # "subscore: 0.7" must not match the SCORE: marker — the keyword needs
+        # a non-letter boundary on its left, so this is a missing-marker reject.
+        args = _valid_args(tone_score=0.7)
+        args["tone_justification"] = "Reads well.\nOverall subscore: 0.7"
+        with pytest.raises(VerdictConsistencyError) as exc:
+            parse_submit_report(args, _mixed_rubric())
+        assert "missing" in str(exc.value).lower()
+
     def test_marker_read_from_final_line_only_anchoring(self) -> None:
         # A "NOT MET" phrase mid-text must not false-match: the marker is the
         # final non-empty line, which here says MET and matches met=True.
