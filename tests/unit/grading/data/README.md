@@ -1,9 +1,11 @@
 # Rubric judge verdict-consistency fixtures — FROZEN HISTORICAL CAPTURES
 
 `ae_bdg_002_1_submit_report.json` and `ae_bdg_003_0_submit_report.json` are the
-verbatim per-criterion `submit_report` payloads from two trials of GitHub Actions
-run **29240785466** (2026-07-13), judge `anthropic/claude-opus-4.8` @ temp 0.0,
-tolokaforge **v0.7.0**. In both, the `no_internal_references` criterion was
+verbatim `submit_report` tool-call arguments logged in each trial's
+`judge_trajectory.yaml` from the 2026-07-13 field report (GitHub Actions run
+**29240785466**, judge `anthropic/claude-opus-4.8` @ temp 0.0, tolokaforge
+**v0.7.0**) — extracted directly from the judge transcripts, not reconstructed.
+In both, the `no_internal_references` criterion was
 submitted `met: false` while its justification concludes the criterion **is**
 met — the exact verdict/justification contradiction that motivates the
 verdict-consistency check.
