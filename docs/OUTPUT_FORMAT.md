@@ -14,6 +14,9 @@ bumped and this document is updated in the same commit.
 
 ```
 {output_dir}/
+├── services/                              ← run-level per-service compose logs (shared-stack materialise failure only)
+│   ├── {service}.log
+│   └── _capture.yaml                      ← manifest (capture_reason: materialise_error)
 └── trials/
     └── {task_id}/
         └── {trial_index}/
@@ -30,6 +33,10 @@ bumped and this document is updated in the same commit.
                 ├── {service}.log
                 └── _capture.yaml           ← manifest (provision-failure path only)
 ```
+
+Byte counts from every `services/` bundle above — per-trial and run-level — are
+rolled up run-wide in `aggregate.json` → `captured_service_logs` (see
+[`docs/ANALYTICS.md`](ANALYTICS.md:1) § `aggregate.json` → `captured_service_logs`).
 
 * `{output_dir}` = the orchestrator's run output root. The naming
   convention differs by entry point:
@@ -443,6 +450,9 @@ The key is present only when at least one service produced output. A
 Capture on a successful trial is off by default; enable it with
 `compute.capture_logs_on_success: true` (see [`docs/CONFIG.md`](CONFIG.md:1)).
 
+These byte counts are rolled up across the run in `aggregate.json` →
+`captured_service_logs` (see [`docs/ANALYTICS.md`](ANALYTICS.md:1)).
+
 ## `trials/{task_id}/{trial_index}/services/`
 
 Per-service compose logs, written on a trial-body or graded failure and only on
@@ -473,6 +483,9 @@ this directory.
   [`metrics.yaml`](#provision-failure-bundle) the executor writes does **not**
   carry `captured_service_logs`, so the two surfaces never both hold the byte
   counts.
+
+  Byte counts from this manifest are rolled up across the run in `aggregate.json`
+  → `captured_service_logs` (see [`docs/ANALYTICS.md`](ANALYTICS.md:1)).
 
 ## `trials/{task_id}/{trial_index}/grade.yaml`
 
