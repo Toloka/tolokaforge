@@ -163,8 +163,8 @@ Nine steps, in order. Failure at any step raises `ProvisionError(stage="provisio
 3. **Copy the compose context.** Everything in the compose file's parent directory (compose YAML, adjacent bind-mount source files, initial-state fixtures) copies into the temp dir. Bind mounts declared as relative paths resolve inside the copied context; safety validators (ADR-0009) already reject `..` and absolute paths, so the copy is closed and complete.
 4. **Construct `DockerCompose`** with `context=<temp_dir>`, `compose_file_name=<manifest.compose_file.name>`, `pull=False`, `build=False`, `wait=True`.
 5. **`compose.start()`.** Runs `docker compose up -d --wait`. Blocks until every service's compose `healthcheck:` reports healthy. On failure, raise `ProvisionError` and rmtree the temp dir.
-6. **Construct the runner client** — `GrpcRunnerClient(runner_address="<host>:<port>")`. Host + port come from `compose.get_service_host_and_port(manifest.runner_service, 50051)`. **The client is not connected here** — `connect()` is deferred to first RPC use (see next section).
-7. **Snapshot endpoints on the handle.** `_resolve_endpoints(...)` looks up `runner_service` at 50051 (required) and, best-effort, the conventional `db-service` at 8000 and `rag` service. Missing `db-service` leaves `EnvEndpoints.db_url = None`; the runner-side `DBServiceClient` binds to `DB_SERVICE_URL` from its container env and `db_json.py` tools fall back to the same env var, so a missing `db_url` is not a provisioning failure. Runner-missing still raises `ProvisionError`.
+6. **Construct the runner client** — `GrpcRunnerClient(runner_address="<host>:<port>")`. Host + port come from `compose.get_service_host_and_port(manifest.runner_service, manifest.runner_port)`. **The client is not connected here** — `connect()` is deferred to first RPC use (see next section).
+7. **Snapshot endpoints on the handle.** `_resolve_endpoints(...)` looks up `runner_service` at `manifest.runner_port` (required) and, best-effort, the db and rag services. Missing `db-service` leaves `EnvEndpoints.db_url = None`; the runner-side `DBServiceClient` binds to `DB_SERVICE_URL` from its container env and `db_json.py` tools fall back to the same env var, so a missing `db_url` is not a provisioning failure. Runner-missing still raises `ProvisionError`.
 8. **Cache the client** — `self._clients[spec.trial_id] = client`. This is the map every per-trial RPC method reads from.
 9. **Return `_LocalEnvHandle`** carrying the trial_id (public), the compose stack, the runner service name + port, the temp dir, and the endpoints snapshot. All except `trial_id` are backend-private; callers treat the handle as an opaque token.
 
@@ -180,11 +180,13 @@ The `examples/native/multi_service_slow_start` pack stress-covers this against a
 
 Where each URL comes from:
 
-| Field | Source | Port | Required? |
+| Field | Service (manifest override) | Port (manifest override) | Required? |
 |---|---|---|---|
-| `runner_url` | `manifest.runner_service` (default `"default"`) | `50051` | Yes — missing raises `ProvisionError` |
-| `db_url` | compose service named `db-service` | `8000` | Best-effort — absent leaves `db_url = None` |
-| `rag_url` | compose service named `rag` or `rag-service`; else `None` | service's declared port | Best-effort |
+| `runner_url` | `runner_service` (default `"default"`) | `50051` (`runner_port`) | Yes — missing raises `ProvisionError` |
+| `db_url` | `db-service` (`db_service`) | `8000` (`db_port`) | Best-effort — absent leaves `db_url = None` |
+| `rag_url` | `rag` or `rag-service` (`rag_service`) | first published port (`rag_port`) | Best-effort |
+
+Each source and port is a **convention default the task author overrides from the manifest's `stack:` block** — `runner_port`, `db_service`, `db_port`, `rag_service`, `rag_port`. A task whose runner listens on a non-standard port, or whose state backend is a differently-named service, points the engine at it without touching this backend. An explicitly-set `db_service` or `rag_service` naming a service absent from the compose file raises `ValidationError` at manifest load. See [`MULTI_CONTAINER_GUIDE.md`](MULTI_CONTAINER_GUIDE.md#endpoint-overrides) for the authoring surface and [ADR-0009](adr/0009-environment-manifest.md) for the design.
 
 `db_url` is best-effort because the runner-side `DBServiceClient` binds to `DB_SERVICE_URL` from its own container env (task compose files set it on the `runner` service), and `db_json.py` tools fall back to the same env var when constructed without a URL. A task compose file that omits `db-service` still provisions; the `db_url` field on the wire is populated only for callers that need to reach the state backend from outside the runner container.
 
@@ -513,7 +515,6 @@ Forward-looking: when the runner image ships to a public registry, task composes
 
 - **Terminal-bench + `per_trial`.** The `terminal_bench` adapter today materialises each task's own compose stack inside the tool-invocation path (see "Adapter compatibility with `per_trial`" above). Lifting that into the orchestrator's substrate seam — either by having the adapter synthesise an `environment_manifest` from the task's `docker-compose.yaml`, or by defining a second manifest kind that reads `adapter_settings.compose_file` — would let terminal-bench tasks use `--runtime per_trial` and pick up `TrialExecutor`'s bracket, per-trial network isolation, and `PROVISION_ERROR` attribution. The manifest-synthesis path aligns better with the "one substrate primitive, adapters produce a manifest" direction — the alternative couples `PerTrialRuntimeBackend` to adapter-specific fields.
 - **No runner image publication.** The `tolokaforge/runner` and `tolokaforge/db-service` images are still local builds — the `:local` alias described above is the sole reference path today. Publishing to a registry (`ghcr.io/toloka/…`) is future work; task compose files switch to the published tag then, `:local` stays as the local-dev alias.
-- **No endpoint customisation.** The `runner_service` / `db` service / `rag` service conventions in the manifest are still hardcoded (see `PerTrialRuntimeBackend`). `runner_port` / `db_service` / `db_port` / `rag_service` / `rag_port` manifest fields remain a follow-up ticket.
 - **No perf optimisations.** Image pre-pull, postgres template-DB, container pool, orphan sweep, resource caps, benchmark harness — all filed as a follow-up umbrella ticket.
 
 ## Where to read next
