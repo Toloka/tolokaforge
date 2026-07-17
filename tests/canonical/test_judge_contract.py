@@ -62,13 +62,18 @@ class TestProtocolRuntimeCheck:
 
 
 class TestRunMethodSignature:
-    """All three surfaces expose the same ``run()`` parameter names (drop-in
-    substitutability), and none of them carry a deterministic-oracle field."""
+    """All three surfaces expose the same ``run()`` parameter names AND defaults
+    (drop-in substitutability — an impl that drops an ``=None`` default would
+    force callers to pass evidence they don't have), and none of them carry a
+    deterministic-oracle field."""
 
     def test_run_signatures_match_across_protocol_and_impls(self) -> None:
-        protocol_params = list(inspect.signature(Judge.run).parameters)
-        assert protocol_params == list(inspect.signature(LLMJudge.run).parameters)
-        assert protocol_params == list(inspect.signature(InMemoryJudge.run).parameters)
+        def _shape(fn) -> list[tuple[str, object]]:
+            return [(p.name, p.default) for p in inspect.signature(fn).parameters.values()]
+
+        protocol_shape = _shape(Judge.run)
+        assert protocol_shape == _shape(LLMJudge.run)
+        assert protocol_shape == _shape(InMemoryJudge.run)
 
     def test_run_surface_excludes_oracle_fields(self) -> None:
         params = set(inspect.signature(Judge.run).parameters)

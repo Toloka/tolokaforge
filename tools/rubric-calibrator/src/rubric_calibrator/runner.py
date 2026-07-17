@@ -1,9 +1,9 @@
 """Calibration runner — drives the REAL rubric judge over golden fixtures.
 
-Stage 6 of ``docs/RUBRIC_GRADING_DESIGN.md``. For each fixture this:
+For each fixture this:
 
 1. builds an in-memory, jsonpath-evaluating :class:`DictDBReader` over the
-   fixture's ``final_db_state`` (the exact Stage-4 live-test pattern, reused so
+   fixture's ``final_db_state`` (the exact live-judge-test pattern, reused so
    calibration runs the real judge with no runner / gRPC stack);
 2. calls :meth:`tolokaforge.core.grading.judge.LLMJudge.run`;
 3. on COMPLETED, pairs each criterion's judge verdict against the fixture's human
@@ -13,7 +13,7 @@ Stage 6 of ``docs/RUBRIC_GRADING_DESIGN.md``. For each fixture this:
 
 The LLM call is confined here; the metric maths lives in ``metrics.py`` and is
 tested without inference. A scripted ``llm_client`` may be injected (the same
-``LoopLLMClient`` shape the Stage-4 tests use) to exercise this plumbing
+``LoopLLMClient`` shape the judge unit tests use) to exercise this plumbing
 deterministically.
 """
 

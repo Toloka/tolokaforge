@@ -1,4 +1,4 @@
-"""Deterministic orchestration tests for the read-only rubric judge (Stage 4).
+"""Deterministic orchestration tests for the read-only rubric judge.
 
 These drive the REAL ``LLMJudge`` / ``ToolCallingLoop`` / ``rubric.py``
 with a SCRIPTED ``LoopLLMClient`` — a fake that returns pre-set tool calls. That
@@ -219,8 +219,8 @@ def test_terminates_on_submit_report_and_scores():
     assert result.criterion_results[0].id == "refund_done"
     assert result.criterion_results[0].met is True
     assert client.calls == 1
-    # Stage 5: the judge captures its own transcript for the audit bundle, incl.
-    # the submit_report tool call.
+    # The judge captures its own transcript for the audit bundle, incl. the
+    # submit_report tool call.
     assert result.transcript
     roles = [m["role"] for m in result.transcript]
     assert "user" in roles and "assistant" in roles
@@ -922,8 +922,8 @@ def test_turn_exhaustion_without_submit_report_errors():
     assert result.status is JudgeStatus.ERRORED
     assert result.score is None
     assert client.calls == 3
-    # Stage 5: an ERRORED judge still carries its partial transcript — the key
-    # artifact for debugging WHY it failed.
+    # An ERRORED judge still carries its partial transcript — the key artifact
+    # for debugging WHY it failed.
     assert result.transcript
 
 
@@ -990,54 +990,3 @@ def test_state_diff_injected_into_opening_context():
         llm_client=client,
     )
     assert "STATE-DIFF-MARKER" in captured["first_user"]
-
-
-def test_input_surface_excludes_oracle_fields():
-    """Narrow input surface: there is no parameter through which golden_actions /
-    expected_hash / jsonpath_checks could leak into the judge."""
-    import inspect
-
-    params = set(inspect.signature(LLMJudge.run).parameters)
-    for forbidden in ("golden_actions", "expected_hash", "jsonpath_checks", "grading_config"):
-        assert forbidden not in params
-
-
-# ---------------------------------------------------------------------------
-# InMemoryJudge — non-LLM fixture (fuller semantics pinned in the canonical test)
-# ---------------------------------------------------------------------------
-
-
-def test_in_memory_judge_default_success_and_records_call():
-    """Default: every criterion met/1.0 via the real aggregate, call recorded."""
-    from tolokaforge.core.grading.judge import InMemoryJudge
-
-    judge = InMemoryJudge()
-    result = judge.run(
-        rubric=_two_criteria_rubric(),
-        agent_system_prompt="",
-        transcript=[{"role": "user", "content": "hi"}],
-        db_reader=FakeDBReader(),
-    )
-    assert result.status is JudgeStatus.COMPLETED
-    assert result.score == pytest.approx(1.0)
-    assert {cr.id for cr in result.criterion_results} == {"refund_done", "tone"}
-    assert len(judge.call_log.runs) == 1
-    entry = judge.call_log.runs[0]
-    assert entry["criterion_ids"] == ("refund_done", "tone")
-    assert entry["transcript_len"] == 1
-    assert entry["db_reader"] is True
-
-
-def test_in_memory_judge_configurable_verdict_aggregates():
-    """A per-criterion verdict map produces the matching aggregated score."""
-    from tolokaforge.core.grading.judge import InMemoryJudge
-
-    judge = InMemoryJudge(verdicts={"refund_done": True, "tone": 0.4})
-    result = judge.run(
-        rubric=_two_criteria_rubric(),
-        agent_system_prompt="",
-        transcript=[],
-    )
-    assert result.status is JudgeStatus.COMPLETED
-    # (2*1.0 + 1*0.4) / 3 = 0.8 — same aggregate the LLM judge would compute.
-    assert result.score == pytest.approx(0.8)

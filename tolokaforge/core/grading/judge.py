@@ -1,11 +1,11 @@
-"""Read-only agentic rubric judge — Stage 4 of ``docs/RUBRIC_GRADING_DESIGN.md``.
+"""Read-only agentic rubric judge (see ``docs/RUBRIC_GRADING_DESIGN.md``).
 
 The judge is *"a solo read-only grader — the shared :class:`ToolCallingLoop`
 with no user simulator, a harness-owned read-only toolset, and a rubric-shaped
 ``submit_report`` tool — run over the live final state, failing loud on its own
 malfunction."*
 
-Design (locked decisions, see the plan):
+Design:
 
 * **Separate fixed judge model.** The judge constructs its own
   :class:`~tolokaforge.core.llm.client.LLMClient` from the run-level
@@ -19,7 +19,7 @@ Design (locked decisions, see the plan):
   rubric-derived ``submit_report``.
 * **Narrow input surface.** :meth:`Judge.run` receives only
   ``{agent_system_prompt, transcript, rubric (incl. reference/expected),
-  read-tools}`` — never ``golden_actions`` / ``expected_hash`` /
+  read-tools, state_diff}`` — never ``golden_actions`` / ``expected_hash`` /
   ``jsonpath_checks``. The oracle fields cannot leak in by construction: they are
   not on the Protocol's ``run()`` surface.
 * **Fail loud.** On :class:`SubmitReportValidationError` the judge re-prompts a
