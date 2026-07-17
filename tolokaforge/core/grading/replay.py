@@ -17,6 +17,7 @@ real tokens on a task that never had a judge stage.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from dataclasses import dataclass, field
 from enum import Enum
@@ -32,9 +33,21 @@ from tolokaforge.core.grading.judge import (
     LLMJudge,
     model_config_from_ref,
 )
+from tolokaforge.core.grading.judge import JudgeStatus as JudgeRunStatus
 from tolokaforge.core.grading.kb_search import KnowledgeSearch, SearchHit
 from tolokaforge.core.llm.client import LLMClient
-from tolokaforge.core.models import JudgeInputs, JudgeStatus, ModelConfig, Trajectory
+from tolokaforge.core.models import (
+    CriterionResult,
+    Grade,
+    GradeComponents,
+    JudgeInputs,
+    JudgeKbGating,
+    JudgeStatus,
+    JudgeUsage,
+    ModelConfig,
+    Trajectory,
+)
+from tolokaforge.core.output.artifacts import FileArtifactWriter, TrialArtifactWriter
 from tolokaforge.core.trial_grader import _build_judge_messages_json, split_leading_system_message
 from tolokaforge.runner.models import LLMJudgeConfig, Rubric
 from tolokaforge.tools.registry import Tool, ToolCategory, ToolPolicy, ToolResult
@@ -48,12 +61,17 @@ __all__ = [
     "OfflineKnowledgeSearch",
     "ProvenanceSource",
     "ReplayInputs",
+    "ReplayOutcomeStatus",
     "ReplayProvenance",
     "TrialEligibility",
+    "TrialReplayOutcome",
+    "build_replay_grade",
     "classify_trial",
+    "discover_trial_bundles",
     "load_grading_rubric",
     "read_replay_inputs",
     "replay_trial",
+    "run_replay_batch",
 ]
 
 #: Prefix of the marker every offline read tool returns in place of live data.
@@ -422,3 +440,209 @@ def replay_trial(inputs: ReplayInputs, *, judge_client: LLMClient | None = None)
         workspace_dir=inputs.workspace_dir,
         state_diff=inputs.state_diff,
     )
+
+
+# ---------------------------------------------------------------------------
+# Batch replay — discovery, artifact writing, and per-trial orchestration
+# ---------------------------------------------------------------------------
+
+_BUNDLE_MARKERS = ("grade.yaml", "task.yaml")
+#: Subdirectory replay artifacts are written under; excluded from discovery so a
+#: re-run never re-judges its own previous output.
+REPLAYS_DIRNAME = "replays"
+
+
+class ReplayOutcomeStatus(str, Enum):
+    """Per-trial disposition in a batch replay.
+
+    ``REPLAYED`` — the judge ran and replay artifacts were written. ``WOULD_REPLAY``
+    — a ``--dry-run`` trial that is eligible and reconstructable (nothing spent).
+    ``SKIPPED_NOT_APPLICABLE`` — the trial never had a judge stage (never judged,
+    never a failure). ``FAILED`` — a judge-eligible trial that could not be
+    reconstructed; ``reason`` names the missing input (never a silent skip).
+    """
+
+    REPLAYED = "replayed"
+    WOULD_REPLAY = "would_replay"
+    SKIPPED_NOT_APPLICABLE = "skipped_not_applicable"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class TrialReplayOutcome:
+    """Outcome of one trial in a batch replay."""
+
+    bundle: Path
+    status: ReplayOutcomeStatus
+    reason: str | None = None
+    provenance: ReplayProvenance | None = None
+    result: JudgeResult | None = None
+    artifacts_dir: Path | None = None
+
+
+def _is_bundle(path: Path) -> bool:
+    return path.is_dir() and all((path / marker).exists() for marker in _BUNDLE_MARKERS)
+
+
+def discover_trial_bundles(source: Path) -> list[Path]:
+    """Discover trial bundle directories under ``source``, layout-agnostic.
+
+    A directory is a bundle iff it directly contains the marker files
+    (``grade.yaml`` + ``task.yaml``). Handles the three recorded layouts uniformly:
+    a run dir with a ``trials/<task>/<idx>/`` subtree, a flat collection of bundle
+    dirs (the tarball shape), or a single bundle dir. Bundles are identified by
+    directory path — never by string-splitting ``<task>_<idx>`` (task ids contain
+    both hyphens and underscores). The ``replays/`` output subtree is excluded so a
+    re-run never re-judges its own artifacts. Returned sorted for stable batches.
+    """
+    source = Path(source)
+    if _is_bundle(source):
+        return [source]
+    bundles = {
+        marker.parent
+        for marker in source.rglob("grade.yaml")
+        if REPLAYS_DIRNAME not in marker.relative_to(source).parts and _is_bundle(marker.parent)
+    }
+    return sorted(bundles)
+
+
+def build_replay_grade(result: JudgeResult) -> Grade:
+    """Materialise a persistable :class:`Grade` from a replay :class:`JudgeResult`.
+
+    Judge-only: the ``llm_judge`` component carries the replay score; an ``ERRORED``
+    judge leaves it unscored (the ``-1.0`` sentinel), never a fabricated ``0.0``.
+    Echoes the judge's own transcript, KB gating, and Stage-1 structured inputs so
+    the replay bundle is itself a full, re-replayable bundle.
+    """
+    completed = result.status is JudgeRunStatus.COMPLETED
+    score = result.score if (completed and result.score is not None) else 0.0
+    return Grade(
+        binary_pass=bool(result.binary_pass) if completed else False,
+        score=score,
+        components=GradeComponents(llm_judge=score if completed else -1.0),
+        reasons=result.reasons,
+        criterion_results=(
+            [
+                CriterionResult(id=c.id, met=c.met, score=c.score, justification=c.justification)
+                for c in result.criterion_results
+            ]
+            if result.criterion_results
+            else None
+        ),
+        judge_status=JudgeStatus(result.status.value),
+        judge_usage=JudgeUsage(**dataclasses.asdict(result.usage)),
+        judge_transcript=list(result.transcript) or None,
+        judge_kb_gating=JudgeKbGating(
+            knowledge_search_disabled=result.knowledge_search_disabled,
+            offered=list(result.kb_tools_offered),
+            withheld=list(result.kb_tools_withheld),
+        ),
+        judge_inputs=JudgeInputs(
+            state_diff_text=result.state_diff,
+            read_tools_offered=list(result.read_tools_offered),
+        ),
+    )
+
+
+def _replay_destination(source: Path, bundle: Path, replay_id: str) -> Path:
+    """The write destination for a bundle's replay artifacts, preserving the
+    discovered path structure under ``<source>/replays/<replay_id>/``."""
+    try:
+        rel = bundle.relative_to(source)
+    except ValueError:
+        rel = Path(bundle.name)
+    if rel == Path("."):
+        rel = Path(bundle.name)
+    return source / REPLAYS_DIRNAME / replay_id / rel
+
+
+def _write_replay_artifacts(
+    dest: Path,
+    result: JudgeResult,
+    provenance: ReplayProvenance,
+    writer: TrialArtifactWriter,
+) -> None:
+    dest.mkdir(parents=True, exist_ok=True)
+    writer.write_grade(dest, build_replay_grade(result))
+    with open(dest / "replay_provenance.yaml", "w") as f:
+        yaml.dump(
+            provenance.model_dump(mode="json"),
+            f,
+            default_flow_style=False,
+            allow_unicode=True,
+            sort_keys=False,
+        )
+
+
+def run_replay_batch(
+    source: Path,
+    *,
+    replay_id: str,
+    trial: Path | None = None,
+    rubric_override: Rubric | None = None,
+    judge_model_override: str | None = None,
+    knowledge_search: KnowledgeSearchMode = KnowledgeSearchMode.RECORDED,
+    dry_run: bool = False,
+    judge_client: LLMClient | None = None,
+    writer: TrialArtifactWriter | None = None,
+) -> list[TrialReplayOutcome]:
+    """Replay every judge-eligible trial under ``source`` sequentially.
+
+    v1 is deliberately sequential with no concurrency cap. Not-applicable trials
+    (no recorded judge stage) are reported skipped, never judged — even with a
+    rubric override. A judge-eligible trial that cannot be reconstructed is a named
+    per-trial failure and the batch continues (no silent skips). With ``dry_run``,
+    classification and input resolution run (no spend) and eligible trials are
+    reported ``WOULD_REPLAY``; otherwise the judge runs and artifacts are written to
+    ``<source>/replays/<replay_id>/…`` — originals are never opened for write.
+    ``judge_client`` injects a scripted client for tests (no network).
+    """
+    source = Path(source)
+    bundles = [Path(trial)] if trial is not None else discover_trial_bundles(source)
+    writer = writer or FileArtifactWriter()
+
+    outcomes: list[TrialReplayOutcome] = []
+    for bundle in bundles:
+        if classify_trial(bundle) is TrialEligibility.NOT_APPLICABLE:
+            outcomes.append(
+                TrialReplayOutcome(bundle=bundle, status=ReplayOutcomeStatus.SKIPPED_NOT_APPLICABLE)
+            )
+            continue
+        try:
+            inputs = read_replay_inputs(
+                bundle,
+                rubric_override=rubric_override,
+                judge_model_override=judge_model_override,
+                knowledge_search=knowledge_search,
+            )
+        except MissingReplayInputError as exc:
+            outcomes.append(
+                TrialReplayOutcome(
+                    bundle=bundle, status=ReplayOutcomeStatus.FAILED, reason=str(exc)
+                )
+            )
+            continue
+
+        if dry_run:
+            outcomes.append(
+                TrialReplayOutcome(
+                    bundle=bundle,
+                    status=ReplayOutcomeStatus.WOULD_REPLAY,
+                    provenance=inputs.provenance,
+                )
+            )
+            continue
+
+        result = replay_trial(inputs, judge_client=judge_client)
+        dest = _replay_destination(source, bundle, replay_id)
+        _write_replay_artifacts(dest, result, inputs.provenance, writer)
+        outcomes.append(
+            TrialReplayOutcome(
+                bundle=bundle,
+                status=ReplayOutcomeStatus.REPLAYED,
+                provenance=inputs.provenance,
+                result=result,
+                artifacts_dir=dest,
+            )
+        )
+    return outcomes

@@ -10,6 +10,13 @@ import yaml
 from rich.console import Console
 
 from tolokaforge.core.engine_run_state import read_persisted_presets_file
+from tolokaforge.core.grading.replay import (
+    KnowledgeSearchMode,
+    ReplayOutcomeStatus,
+    TrialReplayOutcome,
+    load_grading_rubric,
+    run_replay_batch,
+)
 from tolokaforge.core.llm.presets import (
     resolve_overlay_path,
     set_overlay_path,
@@ -314,6 +321,128 @@ def run(
 
     console.print("[bold green]✓ Run complete![/bold green]")
     console.print(f"Results saved to: {run_config.evaluation.output_dir}")
+
+
+def _print_rejudge_summary(
+    outcomes: list[TrialReplayOutcome], *, replay_id: str, source: Path, dry_run: bool
+) -> None:
+    """Print the batch disposition per trial + the aggregate counts."""
+    label = "Would re-judge" if dry_run else "Re-judged"
+    for outcome in outcomes:
+        rel = outcome.bundle
+        if outcome.status is ReplayOutcomeStatus.SKIPPED_NOT_APPLICABLE:
+            console.print(f"[yellow]skip (not applicable)[/yellow] {rel}")
+        elif outcome.status is ReplayOutcomeStatus.FAILED:
+            console.print(f"[red]failed[/red] {rel} — {outcome.reason}")
+        else:
+            prov = outcome.provenance
+            model = prov.judge_model if prov else "?"
+            console.print(
+                f"[green]{label.lower()}[/green] {rel} "
+                f"[dim](judge={model}, rubric={prov.rubric_source.value if prov else '?'}, "
+                f"kb={prov.knowledge_search_mode.value if prov else '?'}, "
+                f"fidelity={prov.fidelity_mode.value if prov else '?'})[/dim]"
+            )
+
+    eligible = sum(
+        o.status in (ReplayOutcomeStatus.REPLAYED, ReplayOutcomeStatus.WOULD_REPLAY)
+        for o in outcomes
+    )
+    skipped = sum(o.status is ReplayOutcomeStatus.SKIPPED_NOT_APPLICABLE for o in outcomes)
+    failed = sum(o.status is ReplayOutcomeStatus.FAILED for o in outcomes)
+    console.print(
+        f"\n[bold]{label}:[/bold] {eligible} eligible, "
+        f"{skipped} skipped-not-applicable, {failed} failed-with-reason"
+    )
+    if not dry_run and eligible:
+        console.print(f"Replay artifacts: {source / 'replays' / replay_id}")
+
+
+@cli.command(name="rejudge")
+@click.option(
+    "--source",
+    required=True,
+    type=click.Path(exists=True, file_okay=False),
+    help=(
+        "Recorded run dir (trials/<task>/<idx> subtree), a flat collection of trial "
+        "bundle dirs, or a single bundle dir. A directory is a bundle iff it contains "
+        "grade.yaml + task.yaml."
+    ),
+)
+@click.option(
+    "--trial",
+    default=None,
+    type=click.Path(exists=True, file_okay=False),
+    help="Re-judge a single bundle dir instead of the whole --source (default: whole source).",
+)
+@click.option(
+    "--judge-model",
+    default=None,
+    help=(
+        "Override the judge model (e.g. openai/gpt-4.1-mini). Uses OpenRouter as "
+        "provider, temperature 0. Default: the recorded model_config.judge."
+    ),
+)
+@click.option(
+    "--grading",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False),
+    help=(
+        "Override the rubric with a supplied grading.yaml (or a bare rubric mapping). "
+        "Required for old bundles that did not record a rubric. Default: the recorded rubric."
+    ),
+)
+@click.option(
+    "--knowledge-search",
+    "knowledge_search",
+    type=click.Choice([m.value for m in KnowledgeSearchMode]),
+    default=KnowledgeSearchMode.RECORDED.value,
+    help=(
+        "Judge knowledge-search gating: 'recorded' honours the bundle's recorded "
+        "gating, 'on'/'off' force it. Default: recorded."
+    ),
+)
+@click.option(
+    "--replay-id",
+    default=None,
+    help="Name for this replay's artifact subdirectory (default: timestamped id).",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Discover + classify + resolve inputs and print what would replay, spending nothing.",
+)
+def rejudge(
+    source: str,
+    trial: str | None,
+    judge_model: str | None,
+    grading: str | None,
+    knowledge_search: str,
+    replay_id: str | None,
+    dry_run: bool,
+):
+    """Re-judge the rubric stage of recorded trials offline (judge-only spend).
+
+    Re-executes only the rubric judge over recorded trajectories — no agent re-run,
+    no live services — so judge changes (schema, prompt, wording, model) can be
+    A/B-tested against a recorded run. Execution is sequential (no concurrency cap
+    in v1); inspect --dry-run first. See docs/JUDGE_REPLAY.md.
+    """
+    source_path = Path(source)
+    replay_id = replay_id or f"replay_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    rubric_override = load_grading_rubric(Path(grading)) if grading else None
+
+    console.print(f"[bold blue]Re-judging trials under {source_path}...[/bold blue]")
+    outcomes = run_replay_batch(
+        source_path,
+        replay_id=replay_id,
+        trial=Path(trial) if trial else None,
+        rubric_override=rubric_override,
+        judge_model_override=judge_model,
+        knowledge_search=KnowledgeSearchMode(knowledge_search),
+        dry_run=dry_run,
+    )
+    _print_rejudge_summary(outcomes, replay_id=replay_id, source=source_path, dry_run=dry_run)
 
 
 @cli.command(name="prepare")

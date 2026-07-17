@@ -1,0 +1,104 @@
+# Judge Replay — offline re-judging of a recorded run
+
+`tolokaforge rejudge` re-executes **only** the rubric-judge stage over a recorded
+run, producing new replay grade artifacts and leaving the originals untouched. It
+does not re-run the agent or any environment service, so it spends judge tokens
+only.
+
+## When to use it
+
+- **Validate a judge change.** After editing the `submit_report` schema, the judge
+  prompt, or rubric wording, re-judge a recorded run and compare verdicts instead
+  of paying for a full agent re-run (which also confounds agent variance with
+  judge variance).
+- **Compare judge models.** Re-judge the same trajectories under a different
+  `--judge-model` to A/B two judges on identical evidence.
+- **Post-hoc audit.** Re-derive per-criterion verdicts for a run whose grades are
+  under question, with the judge's transcript recorded for inspection.
+
+Calibration against hand-authored golden labels is a different tool
+(`tools/rubric-calibrator`); replay re-judges a *recorded run*, not a fixture set.
+
+## Usage
+
+```bash
+# Preview: discover + classify + resolve inputs, spend nothing.
+uv run tolokaforge rejudge --source <run-or-bundle-dir> --dry-run
+
+# Re-judge with the recorded rubric + judge model.
+uv run tolokaforge rejudge --source <run-dir>
+
+# Re-judge with a different judge model / an overridden rubric.
+uv run tolokaforge rejudge --source <run-dir> \
+    --judge-model openai/gpt-4.1-mini \
+    --grading path/to/grading.yaml
+```
+
+| Flag | Meaning |
+|---|---|
+| `--source` | A run dir (`trials/<task>/<idx>/` subtree), a flat collection of bundle dirs, or a single bundle dir. A directory is a trial bundle iff it directly contains `grade.yaml` + `task.yaml`. |
+| `--trial` | Re-judge a single bundle dir instead of the whole `--source`. |
+| `--judge-model` | Override the judge model (`<provider>/<model>`, OpenRouter, temperature 0). Default: the recorded `model_config.judge`. |
+| `--grading` | Override the rubric with a supplied `grading.yaml` (or a bare `rubric:` mapping). Required for old bundles that recorded no rubric. Default: the recorded rubric. |
+| `--knowledge-search` | `recorded` (honour the bundle's recorded gating), `on`, or `off`. Default: `recorded`. |
+| `--replay-id` | Name for the artifact subdirectory. Default: a timestamped id. |
+| `--dry-run` | Discover, classify, and resolve inputs, then report what would replay — spending nothing. |
+
+Execution is **sequential with no concurrency cap** in v1; there is no automatic
+cost ceiling. Use `--dry-run` to inspect the eligible trial count and the resolved
+judge model before spending. API keys are resolved through `SecretManager`.
+
+## What gets re-judged
+
+Each recorded trial is classified:
+
+- **Judge-eligible** — the recorded `grade.yaml` carried a judge stage
+  (`judge_status` is `completed` or `errored`). These are re-judged.
+- **Not-applicable** — the trial never had a judge stage (`judge_status:
+  unspecified`, a state/transcript-only trial). These are **skipped and never
+  judged**, even when `--grading` supplies a rubric — a rubric override never
+  conjures a judge stage onto a trial that never had one (that would spend tokens
+  on a task that was never rubric-graded).
+
+A judge-eligible trial that cannot be reconstructed (a judge ran, but the bundle
+records no rubric and no `--grading` was given; or no transcript; or no judge model
+and no `--judge-model`) is reported as a **named per-trial failure** — the batch
+continues, and no eligible trial is ever silently skipped.
+
+## Offline read tools
+
+The live run's judge could read the database, a knowledge base, or the agent's
+workspace. Replay has no live services, so those read tools are offered to match
+the recorded surface but backed by **offline shims** that return an explicit
+`unavailable in replay: <backend>` marker — never a silent empty result. The
+judge therefore grades knowing what it could not inspect, and the marker is
+visible in the replay's `judge_trajectory.yaml`. Reconstructing real recorded
+state so the offline judge can inspect it is tracked separately (issue #525).
+
+## New-vs-old bundle replayability
+
+- **New bundles** (recorded with a `judge_inputs.yaml`) replay at **full
+  fidelity**: the judge's opening message is rebuilt from the exact recorded
+  `state_diff` string, so the reconstruction matches what the live judge saw.
+- **Old bundles** (predating the structured inputs) replay in a declared
+  **fallback**: the opening message omits the `state_diff` (it was never
+  persisted structurally), so a `state_diff`-influenced verdict may not reproduce.
+  The fallback is stamped in `replay_provenance.yaml` (`fidelity_mode: fallback`),
+  never applied silently.
+
+## Output
+
+Replay artifacts are written under `<source>/replays/<replay_id>/`, mirroring the
+discovered bundle path. **Originals are never opened for write.** Per replayed
+trial:
+
+- `grade.yaml`, `judge_trajectory.yaml`, `judge_inputs.yaml` — the same formats as
+  a normal trial bundle (so a replay bundle is itself replayable).
+- `replay_provenance.yaml` — the judge model used, whether each of the judge
+  model / rubric / KB-gating came from the bundle or an override, and the fidelity
+  mode.
+
+The judge loop is agentic and not bit-reproducible even at temperature 0, so
+reproduction is a **verdict-level** expectation on unambiguous criteria, not a
+byte-level one. See [`docs/RUBRIC_GRADING_DESIGN.md`](RUBRIC_GRADING_DESIGN.md) and
+[`docs/OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md).

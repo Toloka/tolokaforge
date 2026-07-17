@@ -105,6 +105,22 @@ Check run progress/cost at any time:
 uv run tolokaforge status --run-dir results/quick_start_<timestamp>
 ```
 
+## Re-judging a Recorded Run
+
+Re-run only the rubric-judge stage over a recorded run — no agent re-run, no live
+services — to validate a judge change (schema, prompt, wording, or model) against
+recorded trajectories with judge-only spend:
+
+```bash
+uv run tolokaforge rejudge --source results/quick_start_<timestamp> --dry-run
+uv run tolokaforge rejudge --source results/quick_start_<timestamp> \
+  --judge-model openai/gpt-4.1-mini
+```
+
+`--source` accepts a run dir, a flat collection of trial bundles, or a single
+bundle. Replay artifacts land under `<source>/replays/<replay_id>/`; originals are
+never modified. See [`docs/JUDGE_REPLAY.md`](JUDGE_REPLAY.md).
+
 ## External Task Packs
 
 You can load tasks from external benchmark packs without copying them into this repo:

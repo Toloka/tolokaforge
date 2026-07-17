@@ -19,11 +19,13 @@ YAML) so the tests exercise the same on-disk contract Stage 1 produces.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from click.testing import CliRunner
 
 from tests.unit.grading.test_judge import ScriptedClient
 from tolokaforge.core.grading.judge import JudgeStatus as JudgeRunStatus
@@ -35,10 +37,13 @@ from tolokaforge.core.grading.replay import (
     OfflineDBReader,
     OfflineKnowledgeSearch,
     ProvenanceSource,
+    ReplayOutcomeStatus,
     TrialEligibility,
     classify_trial,
+    discover_trial_bundles,
     read_replay_inputs,
     replay_trial,
+    run_replay_batch,
 )
 from tolokaforge.core.models import (
     Grade,
@@ -262,3 +267,109 @@ def test_knowledge_search_override_forces_gating(tmp_path: Path) -> None:
     assert off.provenance is not None and off.provenance.knowledge_search_mode is (
         KnowledgeSearchMode.OFF
     )
+
+
+def _completed_bundle(trial_dir: Path) -> None:
+    _write_bundle(
+        trial_dir,
+        judge_status=JudgeStatus.COMPLETED,
+        judge_inputs=JudgeInputs(read_tools_offered=["get_db_state", "query_db"]),
+    )
+
+
+def test_discovery_finds_bundles_across_all_three_layouts(tmp_path: Path) -> None:
+    # (a) a run dir with a trials/<task>/<idx> subtree.
+    nested = tmp_path / "nested"
+    _completed_bundle(nested / "trials" / "refund_task" / "0")
+    _completed_bundle(nested / "trials" / "AE-BDG-003_billing" / "1")
+    assert discover_trial_bundles(nested) == sorted(
+        [nested / "trials" / "refund_task" / "0", nested / "trials" / "AE-BDG-003_billing" / "1"]
+    )
+
+    # (b) a flat collection of bundle dirs (the tarball shape, no trials/ parent).
+    flat = tmp_path / "flat"
+    _completed_bundle(flat / "AE-BDG-002_1")
+    _completed_bundle(flat / "AE-BDG-003_0")
+    assert discover_trial_bundles(flat) == sorted([flat / "AE-BDG-002_1", flat / "AE-BDG-003_0"])
+
+    # (c) a single bundle dir.
+    single = tmp_path / "single"
+    _completed_bundle(single)
+    assert discover_trial_bundles(single) == [single]
+
+
+def test_discovery_excludes_the_replays_output_subtree(tmp_path: Path) -> None:
+    source = tmp_path / "run"
+    _completed_bundle(source / "trials" / "refund_task" / "0")
+
+    run_replay_batch(source, replay_id="r1", judge_client=_submit_report_client())
+
+    # A second discovery must not pick up the replay bundle written under replays/.
+    assert discover_trial_bundles(source) == [source / "trials" / "refund_task" / "0"]
+
+
+def test_not_applicable_trial_reported_skipped_even_with_grading_override(tmp_path: Path) -> None:
+    from tolokaforge.runner.models import Rubric
+
+    source = tmp_path / "run"
+    _completed_bundle(source / "trials" / "judged" / "0")
+    _write_bundle(
+        source / "trials" / "state_only" / "0",
+        judge_status=JudgeStatus.UNSPECIFIED,
+        judge_inputs=None,
+        with_rubric=False,
+    )
+
+    outcomes = run_replay_batch(
+        source,
+        replay_id="r1",
+        rubric_override=Rubric.model_validate(_RUBRIC),
+        dry_run=True,
+    )
+
+    by_name = {o.bundle.parent.name: o.status for o in outcomes}
+    assert by_name["state_only"] is ReplayOutcomeStatus.SKIPPED_NOT_APPLICABLE
+    assert by_name["judged"] is ReplayOutcomeStatus.WOULD_REPLAY
+
+
+def _checksums(root: Path) -> dict[str, str]:
+    return {
+        str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
+        for p in sorted(root.rglob("*"))
+        if p.is_file()
+    }
+
+
+def test_replay_writes_artifacts_and_leaves_originals_byte_identical(tmp_path: Path) -> None:
+    source = tmp_path / "run"
+    bundle = source / "trials" / "refund_task" / "0"
+    _completed_bundle(bundle)
+
+    before = _checksums(bundle)
+
+    outcomes = run_replay_batch(source, replay_id="r1", judge_client=_submit_report_client())
+
+    assert len(outcomes) == 1 and outcomes[0].status is ReplayOutcomeStatus.REPLAYED
+    replay_dir = source / "replays" / "r1" / "trials" / "refund_task" / "0"
+    assert (replay_dir / "grade.yaml").exists()
+    assert (replay_dir / "judge_trajectory.yaml").exists()
+    assert (replay_dir / "judge_inputs.yaml").exists()
+    assert (replay_dir / "replay_provenance.yaml").exists()
+
+    # Every original file is byte-identical, and no new file was written into the
+    # original bundle — replay never opens an original for write.
+    assert _checksums(bundle) == before
+
+
+def test_rejudge_cli_dry_run_spends_nothing(tmp_path: Path) -> None:
+    from tolokaforge.cli.main import cli
+
+    source = tmp_path / "run"
+    _completed_bundle(source / "trials" / "refund_task" / "0")
+
+    result = CliRunner().invoke(cli, ["rejudge", "--source", str(source), "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert "1 eligible" in result.output
+    # Dry-run spends nothing and writes nothing.
+    assert not (source / "replays").exists()
