@@ -53,6 +53,7 @@ from typing import Any
 
 import yaml
 
+from tolokaforge.core.deprecations import canonicalize_actor_config
 from tolokaforge.core.models import TaskConfig
 from tolokaforge.core.project_loader import deep_merge
 
@@ -155,6 +156,17 @@ def load_task_yaml(
     # which sits below `task.yaml`. Later layers win on conflict.
     domain_data = _load_domain_dict(task_path, task_data, task_root)
     task_data.pop("domain", None)
+
+    # Lift each layer's legacy ``user_simulator`` into ``actors.user`` before
+    # the merge, so a legacy layer and a canonical layer both speak
+    # ``actors.user`` and ``deep_merge`` composes them field-by-field. Run
+    # per-layer: a post-merge coercer sees both keys deposited by different
+    # layers and could not tell a cross-layer override from a same-source
+    # conflict.
+    canonicalize_actor_config(task_data)
+    canonicalize_actor_config(domain_data)
+    if project_task_defaults:
+        project_task_defaults = canonicalize_actor_config(dict(project_task_defaults))
 
     # Build the precedence chain from lowest to highest. ``deep_merge``
     # is delta-wins, so the second argument overrides the first on conflict.

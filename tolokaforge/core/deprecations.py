@@ -147,6 +147,43 @@ def coerce_security_context_aliases(data: Any) -> Any:
     return data
 
 
+def canonicalize_actor_config(data: Any) -> Any:
+    """Lift a legacy top-level ``user_simulator`` block into ``actors.user``.
+
+    The user simulator is configured under ``actors.user``; top-level
+    ``user_simulator`` is the legacy alias. Renames and warns. Run on **each
+    config layer independently before the project→task merge** so that a
+    canonical project layer and a legacy task layer both speak ``actors.user``
+    and ``deep_merge`` composes them field-by-field (task wins) — a
+    post-merge coercer would see both keys deposited by different layers and
+    could not tell an override from a conflict.
+
+    A single source declaring both top-level ``user_simulator`` and
+    ``actors.user`` fails loud — that is an author error decidable only here,
+    per-file, before the merge.
+    """
+    if not isinstance(data, dict) or "user_simulator" not in data:
+        return data
+    actors = data.get("actors")
+    if actors is not None and not isinstance(actors, dict):
+        return data
+    if actors and "user" in actors:
+        raise ValueError(
+            "A single config source declares both top-level 'user_simulator' "
+            "and 'actors.user'; 'user_simulator' is the legacy alias — declare "
+            "only 'actors.user'."
+        )
+    actors = dict(actors or {})
+    actors["user"] = data.pop("user_simulator")
+    data["actors"] = actors
+    warn_deprecated(
+        legacy="Top-level 'user_simulator'",
+        canonical="'actors.user'",
+        detail="The user simulator is configured under actors.user.",
+    )
+    return data
+
+
 def warn_legacy_run_config_dir(config_path: Path) -> None:
     """Emit a ``DeprecationWarning`` when a run config sits under
     ``run_config/`` (singular) instead of ``run_configs/`` (plural).

@@ -682,14 +682,11 @@ class NativeAdapter(BaseAdapter):
         )
 
         # Build user simulator config
+        sim = task.resolve_user_simulator()
         user_simulator = RunnerUserSimulatorConfig(
-            mode=task.user_simulator.mode if task.user_simulator else "llm",
-            persona=task.user_simulator.persona if task.user_simulator else "cooperative",
-            backstory=(
-                task.user_simulator.backstory
-                if task.user_simulator and task.user_simulator.backstory
-                else ""
-            ),
+            mode=sim.mode,
+            persona=sim.persona,
+            backstory=sim.backstory or "",
         )
 
         # Build filesystem state from initial_state.filesystem.copy so the

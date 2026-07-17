@@ -39,7 +39,7 @@ from typing import Any
 import yaml
 
 from tolokaforge.core.assets import compute_seed_digest
-from tolokaforge.core.deprecations import warn_legacy_run_config_dir
+from tolokaforge.core.deprecations import canonicalize_actor_config, warn_legacy_run_config_dir
 from tolokaforge.core.models import (
     EnvironmentManifest,
     EnvironmentPatch,
@@ -137,6 +137,9 @@ def load_project_config(path: Path) -> ProjectConfig:
     # Resolve default_environment.compose_file relative to the project dir
     # so EnvironmentManifest's validator can locate it regardless of CWD.
     _resolve_project_paths(data, path.parent)
+    task_defaults = data.get("task_defaults")
+    if isinstance(task_defaults, dict):
+        canonicalize_actor_config(task_defaults)
     project = ProjectConfig(**data)
     _verify_seed_digests(project, path)
     return project
@@ -603,15 +606,19 @@ def validate_actor_roster_subset_of_models(
     that's the only point where a project-side actor roster and the
     run-side model roster are both visible.
 
-    Scope: this check covers ``project.task_defaults.actors`` only.
-    Task-level ``TaskConfig.actors`` overrides bypass it — enforcement
-    for task-level actors will land alongside the runtime binding
-    (the ``actors.user`` ↔ user-simulator rename milestone).
+    Scope: this check covers ``project.task_defaults.actors`` — the
+    roster every task inherits, declared opt-in by the project author.
+    A task-level ``TaskConfig.actors`` override is not re-checked here:
+    individual ``task.yaml`` files are not loaded at run-config-resolve
+    time, and the loader lifts every task's ``user_simulator`` into
+    ``actors.user`` (``mode=llm`` by default), so a per-task roster gate
+    would fire for tasks that simply rely on the run's ``models.user``.
+    The user model each task's simulator uses is resolved from the run's
+    ``models`` at trial build.
 
     A ``None`` roster (project sets no ``actors``) is a no-op. Actor
     entries without ``mode == "llm"`` are ignored — scripted actors
-    don't need a model. This is a schema-time cross-check; runtime
-    binding lives in the actor rename milestone.
+    don't need a model.
     """
     actors = project.task_defaults.actors
     if not actors:

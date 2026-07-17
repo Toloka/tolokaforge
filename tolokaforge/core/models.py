@@ -1068,11 +1068,12 @@ meantime."""
 class ActorSpec(BaseModel):
     """Single entry inside the ``actors`` map.
 
-    Fields mirror the shape :class:`UserSimulatorConfig` carries today —
-    binding ``actors.user`` to the simulator's config lands with the
-    canonical rename. Sub-keys ``tools`` and ``service`` are reserved
-    by the design for future actor types; using them today is a load
-    error (``extra="forbid"``).
+    ``actors.user`` configures the user simulator; its fields mirror
+    :class:`UserSimulatorConfig`. Any field left unset resolves to the
+    simulator default (``mode=llm``, ``persona=cooperative``) via
+    :meth:`TaskConfig.resolve_user_simulator`. Sub-keys ``tools`` and
+    ``service`` are reserved by the design for future actor types; using
+    them is a load error (``extra="forbid"``).
     """
 
     mode: Literal["scripted", "llm"] | None = None
@@ -1144,11 +1145,11 @@ class TaskConfig(BaseModel):
     initial_user_message: str | None = None  # If provided, sent directly as first user message
     initial_state: InitialStateConfig = Field(default_factory=InitialStateConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
-    user_simulator: UserSimulatorConfig = Field(default_factory=UserSimulatorConfig)
     actors: dict[str, ActorSpec] | None = None
-    """Task-level actor overrides. Reserved at the parse layer; runtime
-    binding lands with the canonical rename. Reserved actor names
-    (``agent``, ``judge``) rejected at load time — same rule as
+    """Named actor map. ``actors.user`` configures the user simulator
+    (:meth:`resolve_user_simulator`); the loader lifts a legacy top-level
+    ``user_simulator`` block into it. Reserved actor names (``agent``,
+    ``judge``) are rejected at load time — same rule as
     :class:`TaskDefaults`."""
     metadata: TaskMetadata = Field(default_factory=TaskMetadata)
     policies: dict[str, Any] = Field(
@@ -1188,6 +1189,23 @@ class TaskConfig(BaseModel):
         cls, value: dict[str, ActorSpec] | None
     ) -> dict[str, ActorSpec] | None:
         return _validate_actors_map(value)
+
+    def resolve_user_simulator(self) -> UserSimulatorConfig:
+        """Return the effective user-simulator config from ``actors.user``.
+
+        Unset actor fields resolve to the simulator defaults (``mode=llm``,
+        ``persona=cooperative``). A task with no ``actors.user`` gets the
+        default simulator.
+        """
+        spec = (self.actors or {}).get("user")
+        if spec is None:
+            return UserSimulatorConfig()
+        return UserSimulatorConfig(
+            mode=spec.mode or "llm",
+            persona=spec.persona or "cooperative",
+            backstory=spec.backstory,
+            scripted_flow=spec.scripted_flow,
+        )
 
 
 # Grading Configuration Models
@@ -1282,12 +1300,11 @@ class TaskDefaults(BaseModel):
     adapter_type: str | None = None
     max_turns: int | None = Field(default=None, ge=1)
     system_prompt: str | None = None
-    user_simulator: UserSimulatorConfig | None = None
     actors: dict[str, ActorSpec] | None = None
-    """Named actor map. ``actors.user`` is the counterpart actor today
-    (co-existing with ``user_simulator`` until the canonical rename);
-    ``actors.agent`` and ``actors.judge`` are reserved and rejected at
-    load time. Runtime binding lands with the rename milestone."""
+    """Named actor map inherited by every task. ``actors.user`` configures
+    the user simulator; the loader lifts a legacy top-level
+    ``user_simulator`` block into it. ``actors.agent`` and ``actors.judge``
+    are reserved and rejected at load time."""
 
     policies: dict[str, Any] = Field(default_factory=dict)
     metadata: TaskMetadata | None = None
