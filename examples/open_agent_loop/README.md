@@ -5,8 +5,9 @@ copilot participant in the same process. Demonstrates the full flow.
 
 For the design behind what this exercises, see
 [`docs/OPEN_AGENT_LOOP.md`](../../docs/OPEN_AGENT_LOOP.md). For the
-participant contract, see
-[`tools/intervener/README.md`](../../tools/intervener/README.md).
+intervener package design (sinks, controllers, tools, decoupling contract),
+see [`docs/INTERVENER.md`](../../docs/INTERVENER.md). For install/CLI
+details, see [`tools/intervener/README.md`](../../tools/intervener/README.md).
 
 ---
 
@@ -131,7 +132,8 @@ no new tasks are introduced. This example is purely about the gate wiring.
 
 ## Next steps
 
-- Read [`docs/OPEN_AGENT_LOOP.md`](../../docs/OPEN_AGENT_LOOP.md) end to end for the full design.
-- Write your own participant — see the [author guide in `tools/intervener/README.md`](../../tools/intervener/README.md#writing-your-own-participant).
+- Read [`docs/OPEN_AGENT_LOOP.md`](../../docs/OPEN_AGENT_LOOP.md) end to end for the gate's design.
+- Read [`docs/INTERVENER.md`](../../docs/INTERVENER.md) for the peer package's design — sinks, controllers, tools, decoupling contract, and how to build a custom driver (see §7).
 - Flip `auto_inject=True` in `run_with_copilot.py` and watch the trial actually receive the copilot's suggestions.
 - Attach a `HumanIntervener` alongside the LLM one — two participants on the same session, role-priority resolution recorded in the trace.
+- Build a live-attach human driver using the compositional layer — `ComposedParticipant(sinks=[RichConsoleSink()], controllers=[KeyboardController(tools=…, llm_call=…)])`. See [`docs/INTERVENER.md`](../../docs/INTERVENER.md) §7 for the end-to-end pattern.

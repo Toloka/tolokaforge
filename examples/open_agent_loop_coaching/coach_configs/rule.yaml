@@ -1,0 +1,24 @@
+# Pure event-pattern coach. No LLM calls; deterministic; $0 coach cost.
+# Fires when the agent calls the same tool 3× in a row OR when the last
+# 3 tool results all returned empty payloads.
+participant_id: "workflow-reviewer-rule"
+role: "participant"
+
+detector:
+  type: "rule"
+  params:
+    same_tool_repeat_threshold: 3
+    same_args_repeat_threshold: 2
+    empty_result_threshold: 3
+    consecutive_errors_threshold: 3
+
+intervener:
+  type: "hint"
+  params:
+    hint: >-
+      You appear to be stuck ({reason}). Take a step back:
+      re-read the initial state carefully, and if you're querying data
+      that seems missing, try a broader query (e.g. drop filters, list
+      the top-level keys) before assuming the record does not exist.
+
+cooldown_turns: 2

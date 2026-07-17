@@ -82,7 +82,7 @@ class LLMIntervener(Participant):
 
     def _is_intervention_seam(self, event: TrialEvent) -> bool:
         return isinstance(
-            event, (AssistantMessage, ToolResultObserved, ToolCallEmitted, TerminalReached)
+            event, AssistantMessage | ToolResultObserved | ToolCallEmitted | TerminalReached
         )
 
     def _draft(self, trial_id: str, at_seq: int) -> InterventionSuggestion:

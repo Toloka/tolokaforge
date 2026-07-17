@@ -81,7 +81,7 @@ class HumanIntervener(Participant):
         )
 
     def _is_prompt_seam(self, event: TrialEvent) -> bool:
-        return isinstance(event, (AssistantMessage, ToolResultObserved, TerminalReached))
+        return isinstance(event, AssistantMessage | ToolResultObserved | TerminalReached)
 
     def _prompt(self) -> str:
         if self._script is not None:

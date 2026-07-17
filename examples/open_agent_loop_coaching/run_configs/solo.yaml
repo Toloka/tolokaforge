@@ -1,0 +1,33 @@
+# Solo arm — sealed baseline. Byte-identical to a pre-OAL run.
+# Runs the `tool_use_public_example_01` ticket task, whose empirical
+# failure mode (agent loops on JSONPath queries returning []) sets up
+# the coach demo. Same models / seed / max_turns / workers as the other
+# arms — the only differences are `open_agent_loop.enabled: false` and
+# `evaluation.output_dir`.
+models:
+  agent:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4.6"
+    temperature: 0.0
+    max_tokens: 4096
+    seed: 42
+  user:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4.6"
+    temperature: 0.2
+    seed: 42
+
+orchestrator:
+  workers: 1
+  repeats: 4
+  max_turns: 9
+  queue_backend: sqlite
+
+evaluation:
+  projects:
+    - "examples/native/tool_use/dataset"
+  tasks_glob: "**/tool_use_public_example_01/task.yaml"
+  output_dir: "results/coaching_ab/solo"
+
+open_agent_loop:
+  enabled: false

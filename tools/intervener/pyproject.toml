@@ -16,6 +16,10 @@ anthropic = ["anthropic>=0.40"]
 [project.scripts]
 intervener-demo = "intervener.demo.attach_recorded:main"
 
+[project.entry-points."intervener.tools"]
+context = "intervener.tools.reference:ContextTool"
+analyze = "intervener.tools.reference:AnalyzeTool"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

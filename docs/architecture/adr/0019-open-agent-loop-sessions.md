@@ -6,6 +6,20 @@
 - **Supersedes:** —
 - **Superseded by:** —
 
+## TL;DR
+
+Add a `TrialSession` bus (`TrialEvents` out, `TrialInterventions` in) and
+two Protocol seams on `ToolCallingLoop` (`LoopObserver`,
+`InterventionHandler`). A run-scoped `OpenAgentLoopManager` supplies the
+concrete session-bound implementations via generic provider callables
+threaded through `ConductorContext`. Sealed mode (default) hits null
+implementations — byte-identical to pre-OAL benchmarks. Open mode
+(`config.open_agent_loop.enabled: true`) activates the bus and lets any
+number of participants — LLM copilots, humans, safety monitors,
+cross-trial orchestrators — attach through the same contract.
+Transport-orthogonal by construction; every wire type is a Pydantic
+`extra="forbid"` discriminated union so additions are schema-safe.
+
 ## Context and Problem Statement
 
 Every current eval harness — Inspect, Weave, Braintrust, Promptfoo, DeepEval,
@@ -74,6 +88,39 @@ Three concrete constraints made the shape non-obvious:
 `OpenAgentLoopManager` that supplies session-bound implementations of those
 seams via generic provider callables threaded through `ConductorContext`.
 
+```mermaid
+flowchart TB
+    subgraph Loop["ToolCallingLoop (session-agnostic)"]
+        direction TB
+        Turn["top of turn"]
+        Dispatch["before tool dispatch"]
+        ObsSeam["LoopObserver seam<br/>(outbound)"]
+        HandlerSeam["InterventionHandler seam<br/>(inbound)"]
+        Turn --> HandlerSeam
+        Dispatch --> HandlerSeam
+        Turn --> ObsSeam
+    end
+
+    subgraph Ctx["ConductorContext (per-trial)"]
+        ObsProv["observer_provider(trial_id) → LoopObserver | None"]
+        HandProv["intervention_handler_provider(trial_id) → InterventionHandler | None"]
+    end
+
+    subgraph Manager["OpenAgentLoopManager (run-scoped)"]
+        Reg["SessionRegistry<br/>trial_id → InProcessTrialSession"]
+        MkObs["makes SessionLoopObserver"]
+        MkHand["makes SessionInterventionHandler"]
+    end
+
+    ObsProv --> ObsSeam
+    HandProv --> HandlerSeam
+    Manager --> Ctx
+    Reg --> MkObs
+    Reg --> MkHand
+    MkObs --> ObsProv
+    MkHand --> HandProv
+```
+
 Concretely:
 
 - **`tolokaforge.session`** — a new module. `TrialEvents`,
@@ -117,6 +164,30 @@ The session bus rules:
 ## Consequences
 
 ### Positive
+
+```mermaid
+flowchart LR
+    subgraph Sealed["Sealed mode (default)"]
+        direction TB
+        S_Loop["ToolCallingLoop"]
+        S_Obs["_NullLoopObserver"]
+        S_Hand["_NULL_INTERVENTION_HANDLER"]
+        S_Loop --> S_Obs
+        S_Loop --> S_Hand
+    end
+
+    subgraph Open["Open mode (open_agent_loop.enabled: true)"]
+        direction TB
+        O_Loop["ToolCallingLoop"]
+        O_Obs["SessionLoopObserver"]
+        O_Hand["SessionInterventionHandler"]
+        O_Sess["InProcessTrialSession"]
+        O_Loop --> O_Obs
+        O_Loop --> O_Hand
+        O_Obs --> O_Sess
+        O_Hand --> O_Sess
+    end
+```
 
 - **Sealed mode is byte-identical.** With no manager wired and the config
   flag off, the loop's observer and handler are the null defaults and the
@@ -205,10 +276,41 @@ package adds a parallel compositional shape:
   every sink, sets a shared terminal event on `TerminalReached`, tears
   down cleanly.
 
+```mermaid
+flowchart LR
+    Binding["SessionBinding<br/>attach + submit"]
+
+    subgraph Composed["ComposedParticipant"]
+        direction TB
+        Drain["drain loop"]
+        subgraph Sinks["Sinks"]
+            S1["RichConsoleSink"]
+            S2["JsonlSink"]
+            S3["RollingEventsSink"]
+        end
+        subgraph Ctrls["Controllers"]
+            C1["Keyboard<br/>(own thread)"]
+            C2["EventReactive<br/>(reads + submits)"]
+            C3["Timer<br/>(own thread)"]
+        end
+    end
+
+    Drain --> S1
+    Drain --> S2
+    Drain --> S3
+    Drain --> C2
+
+    C1 -->|submit| Binding
+    C2 -->|submit| Binding
+    C3 -->|submit| Binding
+    Binding --> Drain
+```
+
 Reference implementations that ship: sinks — `RichConsoleSink`,
-`PlainLineSink`, `JsonlSink`, `SilentSink`, `CompoundSink`; controllers —
-`KeyboardController`, `ScriptedController` (line-triggered *and* timed
-modes), `EventReactiveController`, `TimerController`.
+`PlainLineSink`, `JsonlSink`, `SilentSink`, `CompoundSink`,
+`RollingEventsSink`; controllers — `KeyboardController`,
+`ScriptedController` (line-triggered *and* timed modes),
+`EventReactiveController`, `TimerController`.
 
 The existing `Participant`, `HumanIntervener`, and `LLMIntervener` are
 unchanged. Purely additive; existing callers keep working; the new layer
@@ -218,6 +320,90 @@ Both shapes participate in the same session bus, the same trace, and the
 same role priority — they are interchangeable from the OAL gate's
 perspective. The choice is a callsite-ergonomics decision, not an
 architectural boundary.
+
+## Addendum — interactive tools plug-in surface (2026-07-17)
+
+Building the first live human-attach demo (the keyboard REPL) surfaced a
+recurring need: consumers attached to a session want to invoke shared
+utilities — inspect the trial's context, summarise the last N turns, run
+a retrieval query, call a safety monitor. Baking these into
+`KeyboardController` alone would repeat the same buttons in every future
+consumer (LLM controller, HTTP webhook, canned-scenario runner,
+post-hoc script).
+
+`intervener.tools` adds a **consumer-agnostic** plug-in surface:
+
+- `InteractiveTool` Protocol — `name`, `description`, `run(args, context)`.
+- `ToolContext` — every field optional; caller populates what it has.
+- `ToolResult` — text output + optional structured `data` + intervention
+  bookkeeping.
+- `ToolRegistry` — explicit registration or auto-discovery via
+  `importlib.metadata.entry_points(group="intervener.tools")`.
+
+`ToolRegistry.with_discovered()` picks up every tool any installed
+package registers under the `intervener.tools` entry-point group — the
+"install a tool" story is `pip install <package>`. Reference tools
+(`ContextTool`, `AnalyzeTool`) are registered in the intervener package's
+own `pyproject.toml`, so `with_discovered()` returns them by default.
+
+```mermaid
+flowchart TB
+    Reg["ToolRegistry<br/>with_discovered()"]
+
+    subgraph Consumers["Consumers (all share the same tool contract)"]
+        direction LR
+        Kbd["KeyboardController<br/>/name args"]
+        LLM["LLM controller<br/>tool.run(...)"]
+        HTTP["HTTP webhook<br/>POST /tools/name"]
+        Script["Post-hoc script<br/>tool.run(...)"]
+    end
+
+    Tool["InteractiveTool.run(args, ToolContext) → ToolResult"]
+
+    Reg --> Kbd
+    Reg --> LLM
+    Reg --> HTTP
+    Reg --> Script
+    Kbd --> Tool
+    LLM --> Tool
+    HTTP --> Tool
+    Script --> Tool
+
+    Backend["ToolContext.llm_call<br/>caller-supplied LLMCallable<br/>(no tolokaforge import in intervener)"]
+    Tool -.->|if agentic| Backend
+```
+
+The keyboard REPL is one consumer; the design pattern is consumer-shape
+independent. `KeyboardController(tools=…)` dispatches slash-commands to
+the registry. Any other controller/participant/script that has (or can
+build) a `ToolContext` invokes tools the same way:
+`registry.get(name).run(args, ctx)`.
+
+Tools MAY submit interventions via `context.binding.submit(…)` — same
+authority as the participant that instantiated them. A safety-monitor
+tool that calls `Kill` on demand is a valid design. `ToolResult.submitted_interventions`
+bookkeeps the count so callers can surface "the tool submitted N
+interventions" to a human.
+
+**Decoupling constraint (critical):** the intervener package must not
+import from `tolokaforge.core.llm` or any other stack-specific LLM
+client. The conductor/runner side owns credentials, provider selection,
+preset resolution, and secret loading for anything that runs *inside*
+the trial. Tools that need an LLM receive one through
+`ToolContext.llm_call`: a `Callable[[str, str], str]` supplied by the
+caller. Callers wrap `tolokaforge.core.llm.LLMClient` (or any other
+provider) into a two-line adapter and pass it in.
+
+This means the same tool code runs identically whether the caller has
+credentials from `SecretManager`, from an environment variable it
+loaded itself, from an HTTP proxy, or from a test stub. Tools that get
+`llm_call=None` fall back to a non-LLM path (heuristic summary, "not
+available" message — the tool's choice).
+
+No new architectural seam: tools reuse the same `SessionBinding` façade
+introduced by the compositional layer, plus a narrow `LLMCallable`
+type alias. This addendum documents an opt-in surface on top of what's
+already there.
 
 ## Links
 
