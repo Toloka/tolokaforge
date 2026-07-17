@@ -491,6 +491,15 @@ def trial_services_dir(output_root: Path, trial_id: str) -> Path:
     return output_root / "trials" / task_id / trial_index / "services"
 
 
+def run_services_dir(output_root: Path) -> Path:
+    """Return the run-level ``services/`` capture dir under ``output_root``.
+
+    The run-scoped counterpart to :func:`trial_services_dir`: where a
+    shared-stack materialise failure writes the run-wide stack's per-service
+    logs, one level up from the per-trial bundles."""
+    return output_root / "services"
+
+
 def write_capture_manifest(
     dest_dir: Path,
     tail: int,

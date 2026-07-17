@@ -796,6 +796,7 @@ class Orchestrator:
                 env_manifest=env_manifest,
                 run_id=run_id,
                 seeds=seeds,
+                log_capture=log_capture,
             )
         return SharedStackRuntimeBackend(
             runner_address=runner_address,
