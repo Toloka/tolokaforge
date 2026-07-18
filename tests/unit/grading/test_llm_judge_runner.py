@@ -191,6 +191,43 @@ def test_test_execution_reward_combines_with_small_judge_weight():
     assert passed
 
 
+def test_weighted_grade_enforces_configured_component_minimums():
+    components = {
+        "custom_checks_score": 1.0,
+        "llm_judge_score": 0.49,
+    }
+    cfg = {
+        "grading_method": "test_execution",
+        "combine_method": "weighted",
+        "weights": {"custom_checks": 0.70, "llm_judge": 0.30},
+        "component_minimums": {"llm_judge": 0.50},
+        "pass_threshold": 0.70,
+        "llm_judge": {"model_ref": "x"},
+    }
+
+    score, passed = combine_grade_components(components, cfg)
+
+    assert score == pytest.approx(0.847)
+    assert not passed
+
+
+def test_component_minimum_fails_when_component_was_not_evaluated():
+    components = {"custom_checks_score": 1.0, "llm_judge_score": -1.0}
+    cfg = {
+        "grading_method": "test_execution",
+        "combine_method": "weighted",
+        "weights": {"custom_checks": 0.70, "llm_judge": 0.30},
+        "component_minimums": {"llm_judge": 0.50},
+        "pass_threshold": 0.70,
+        "llm_judge": {"model_ref": "x"},
+    }
+
+    score, passed = combine_grade_components(components, cfg)
+
+    assert score == pytest.approx(1.0)
+    assert not passed
+
+
 def test_test_execution_reward_without_judge_preserves_deterministic_score():
     components = {"custom_checks_score": 0.83, "llm_judge_score": -1.0}
     cfg = {
@@ -232,6 +269,7 @@ def test_native_adapter_serializes_llm_judge():
     cfg = GradingConfig(
         combine_method="weighted",
         weights={"llm_judge": 1.0},
+        component_minimums={"llm_judge": 0.5},
         llm_judge=LLMJudgeConfig(
             model_ref="openai/gpt-4o-mini",
             rubric="rubric text",
@@ -246,6 +284,7 @@ def test_native_adapter_serializes_llm_judge():
     reconstructed = GradingConfig.model_validate(payload)
     assert reconstructed.llm_judge is not None
     assert reconstructed.llm_judge.model_ref == "openai/gpt-4o-mini"
+    assert reconstructed.component_minimums == {"llm_judge": 0.5}
 
 
 def test_evaluate_judge_uses_secret_manager_for_keys(monkeypatch):

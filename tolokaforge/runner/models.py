@@ -319,6 +319,7 @@ class GradingConfig(BaseModel):
 
     combine_method: Literal["weighted", "all_pass", "any_pass", "all"] = "weighted"
     weights: dict[str, float] = Field(default_factory=lambda: {"state_checks": 1.0})
+    component_minimums: dict[str, float] = Field(default_factory=dict)
     pass_threshold: float = 0.8
 
     # Declarative grading dispatch — adapters tell the runner *how* to grade in data,

@@ -699,6 +699,7 @@ class GradingCombineConfig(BaseModel):
 
     method: str = "weighted"
     weights: dict[str, float]
+    minimums: dict[str, float] = Field(default_factory=dict)
     pass_threshold: float = 0.8
 
 

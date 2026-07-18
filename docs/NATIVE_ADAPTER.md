@@ -182,6 +182,8 @@ combine:
   weights:
     state_checks: 0.70
     transcript_rules: 0.30
+  minimums:                              # optional per-component pass floors
+    transcript_rules: 0.50
   pass_threshold: 0.75                   # score ≥ threshold → trial passes
 
 state_checks:
@@ -231,6 +233,7 @@ grading_method: test_execution
 combine:
   method: weighted
   weights: {custom_checks: 1.0}
+  minimums: {}
   pass_threshold: 0.5
 ```
 
@@ -247,7 +250,7 @@ validation rather than falling through to normal Runner grading.
 | `hash` | Replays `golden_actions` on a fresh DB copy, hashes the result, compares to agent's final state. All-or-nothing. |
 | `jsonpaths` | Per-assertion checks against the agent's final DB state. Partial credit. |
 | `transcript_rules` | Checks tool call sequence and agent messages in the conversation transcript. |
-| `combine` | Weighted blend of component scores. Pass when result ≥ `pass_threshold`. |
+| `combine` | Weighted blend of component scores. Pass when the result meets `pass_threshold` and every configured component meets its optional `minimums` floor. |
 
 ---
 

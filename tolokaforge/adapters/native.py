@@ -684,6 +684,7 @@ class NativeAdapter(BaseAdapter):
         grading_config = RunnerGradingConfig(
             combine_method=combine_data.get("method", "weighted"),
             weights=combine_data.get("weights", {"state_checks": 1.0}),
+            component_minimums=combine_data.get("minimums", {}),
             pass_threshold=combine_data.get("pass_threshold", 1.0),
             grading_method=grading_data.get("grading_method"),
             state_checks=state_checks,

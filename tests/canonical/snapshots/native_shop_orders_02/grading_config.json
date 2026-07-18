@@ -1,6 +1,7 @@
 {
   "combine": {
     "method": "weighted",
+    "minimums": {},
     "pass_threshold": 0.75,
     "weights": {
       "state_checks": 0.7,

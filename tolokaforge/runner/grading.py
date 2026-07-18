@@ -737,6 +737,7 @@ def combine_grade_components(
     """
     method = grading_config.get("combine_method", "all")
     weights = grading_config.get("weights", {})
+    component_minimums = grading_config.get("component_minimums", {})
     threshold = grading_config.get("pass_threshold", 1.0)
 
     # Extract component scores
@@ -795,12 +796,24 @@ def combine_grade_components(
         # Truly no grading configured at all — pass by default
         return 1.0, True
 
+    minimums_pass = True
+    for component_name, minimum in component_minimums.items():
+        score = active_components.get(component_name)
+        if score is None or score < float(minimum):
+            minimums_pass = False
+            logger.info(
+                "Grading component %s=%s did not meet its minimum %.3f",
+                component_name,
+                "not evaluated" if score is None else f"{score:.3f}",
+                float(minimum),
+            )
+
     if method == "all":
         # All components must pass (score >= threshold)
         all_pass = all(score >= threshold for score in active_components.values())
         # Score is minimum of all component scores
         final_score = min(active_components.values())
-        return final_score, all_pass
+        return final_score, all_pass and minimums_pass
 
     elif method == "weighted":
         # Weighted average of component scores
@@ -817,7 +830,7 @@ def combine_grade_components(
         else:
             final_score = 1.0
 
-        binary_pass = final_score >= threshold
+        binary_pass = final_score >= threshold and minimums_pass
         return final_score, binary_pass
 
     elif method == "any":
@@ -825,14 +838,14 @@ def combine_grade_components(
         any_pass = any(score >= threshold for score in active_components.values())
         # Score is maximum of all component scores
         final_score = max(active_components.values())
-        return final_score, any_pass
+        return final_score, any_pass and minimums_pass
 
     else:
         # Unknown method - default to "all" behavior
         logger.warning(f"Unknown combine_method '{method}', defaulting to 'all'")
         all_pass = all(score >= threshold for score in active_components.values())
         final_score = min(active_components.values())
-        return final_score, all_pass
+        return final_score, all_pass and minimums_pass
 
 
 def build_grade_reasons(
