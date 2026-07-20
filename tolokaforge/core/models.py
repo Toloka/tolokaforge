@@ -7,7 +7,14 @@ from enum import Enum
 from pathlib import Path
 from typing import Annotated, Any, Literal, Self, get_args
 
-from pydantic import BaseModel, Field, field_serializer, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    PrivateAttr,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from tolokaforge.core.deprecations import (
     canonicalize_actor_config,
@@ -1276,6 +1283,19 @@ class TaskConfig(BaseModel):
     inherit the project default (or run on the shared stack when the
     project sets no default either). ``stack.compose_file`` is
     task-relative and anchored by the loader before construction."""
+
+    _source_dir: Path | None = PrivateAttr(default=None)
+    """On-disk pack directory this config was loaded from, or ``None`` for a
+    hand-built in-memory config. An in-process locator, not a schema field:
+    absent from ``model_dump()`` / ``model_json_schema()`` / the YAML
+    round-trip. Stamped by :func:`tolokaforge.adapters._task_loader.load_task_yaml`
+    and read via :attr:`source_dir` so a pre-loaded task resolves its assets
+    without re-globbing the filesystem."""
+
+    @property
+    def source_dir(self) -> Path | None:
+        """Directory this task was loaded from (see :attr:`_source_dir`)."""
+        return self._source_dir
 
     @model_validator(mode="before")
     @classmethod
