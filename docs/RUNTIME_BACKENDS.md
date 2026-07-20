@@ -497,7 +497,7 @@ The three orchestrator seams — `RuntimeBackend`, `TrialGrader`, and `Conductor
 | `tolokaforge.trial_graders` | `Callable[[TrialGraderContext], TrialGrader]` | `runtime_backend`, `logger` |
 | `tolokaforge.conductors` | `Callable[[ConductorContext], Conductor]` | per-run deps (adapter, writer, config, agent client, runtime backend, grader, …) |
 
-A factory is free to ignore context fields it does not need. Import the context/factory types from `tolokaforge.core.plugin_registry`; keep the factory module free of any `tolokaforge.core.orchestrator` import so `.load()` stays independent of the orchestration engine.
+A factory is free to ignore context fields it does not need. The runtime-backend and trial-grader context/factory types are imported from `tolokaforge.core.plugin_registry`; the conductor context is imported from `tolokaforge.core.conductor` (as shown in the conductor example below) since it reuses the pre-existing `ConductorContext` seam. Keep the factory module free of any `tolokaforge.core.orchestrator` import so `.load()` stays independent of the orchestration engine.
 
 **Runtime backend** — `mypkg/runtime.py`:
 

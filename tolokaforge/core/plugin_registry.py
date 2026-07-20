@@ -32,7 +32,7 @@ from __future__ import annotations
 import importlib.metadata
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from tolokaforge.core.conductor import ConductorFactory
 from tolokaforge.core.runtime import RuntimeBackend
@@ -69,7 +69,7 @@ CONDUCTORS_GROUP = "tolokaforge.conductors"
 
 
 # ---------------------------------------------------------------------------
-# Fail-loud error surface (#537 imports these as "the Surface 1 registry error")
+# Fail-loud error surface
 # ---------------------------------------------------------------------------
 
 
@@ -116,8 +116,7 @@ class DuplicateRegistrationError(RegistryError):
 
 
 # ---------------------------------------------------------------------------
-# Seam types — per-group contexts + factory aliases (AGENTS.md type table:
-# internal in-process value object → frozen dataclass; callable seam → alias)
+# Seam types — per-group contexts + factory aliases
 # ---------------------------------------------------------------------------
 
 
@@ -216,17 +215,17 @@ def _clear_discovery_cache() -> None:
 
 def load_runtime_backend(name: str) -> RuntimeBackendFactory:
     """Resolve a registered runtime-backend name to its factory callable."""
-    return _load(RUNTIME_BACKENDS_GROUP, name)
+    return cast(RuntimeBackendFactory, _load(RUNTIME_BACKENDS_GROUP, name))
 
 
 def load_trial_grader(name: str) -> TrialGraderFactory:
     """Resolve a registered trial-grader name to its factory callable."""
-    return _load(TRIAL_GRADERS_GROUP, name)
+    return cast(TrialGraderFactory, _load(TRIAL_GRADERS_GROUP, name))
 
 
 def load_conductor(name: str) -> ConductorFactory:
     """Resolve a registered conductor name to its factory callable."""
-    return _load(CONDUCTORS_GROUP, name)
+    return cast(ConductorFactory, _load(CONDUCTORS_GROUP, name))
 
 
 def available_runtime_backends() -> list[str]:
