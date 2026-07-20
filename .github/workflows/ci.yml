@@ -235,7 +235,7 @@ jobs:
     - name: Run integration tests
       if: (github.event_name == 'schedule' || github.event_name == 'push') && steps.docker-build-full.outcome == 'success'
       run: |
-        uv run pytest tests/integration/ -v --tb=short
+        uv run pytest tests/integration/ -v --tb=short -n auto
 
     - name: Generate coverage XML for Codecov
       if: github.event_name == 'schedule'
@@ -321,7 +321,7 @@ jobs:
     - name: Run integration tests
       if: steps.docker-build.outcome == 'success'
       run: |
-        uv run pytest tests/integration/ -v --tb=short
+        uv run pytest tests/integration/ -v --tb=short -n auto
 
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v3

@@ -311,6 +311,7 @@ dev = [
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.0.0",
     "pytest-docker>=2.0.0",
+    "pytest-xdist>=3.5.0",
     "psutil>=5.9.0",
     "black==26.3.1",
     "ruff==0.14.4",

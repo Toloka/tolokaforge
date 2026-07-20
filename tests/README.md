@@ -30,15 +30,17 @@ uv run pytest tests/ -v -m canonical
 uv run pytest tests/canonical/ --update-canon -v
 ```
 
-Integration tests need `.env` variables (API keys, service URLs) — use `scripts/with_env.sh`:
+Integration tests need `.env` variables (API keys, service URLs) — use `scripts/with_env.sh`. They run in parallel with `-n auto` (pytest-xdist):
 
 ```bash
 # Integration tests (needs Docker + API keys in .env)
-scripts/with_env.sh uv run pytest tests/ -v -m integration
+scripts/with_env.sh uv run pytest tests/ -v -m integration -n auto
 
 # Full suite
 scripts/with_env.sh uv run pytest tests/ -v
 ```
+
+Under `-n auto`, `tests/integration/conftest.py` assigns each xdist worker a unique `COMPOSE_PROJECT_NAME`, so concurrent Docker Compose stacks stay in disjoint project namespaces and never collide on container/network names. A single test that boots two mutually-isolated stacks at once must set its own per-stack `COMPOSE_PROJECT_NAME`.
 
 ## Directory Structure
 
