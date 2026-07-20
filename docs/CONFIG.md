@@ -54,7 +54,7 @@ orchestrator:
   stuck_heuristics:
     max_repeated_tool_calls: 5
     max_idle_turns: 8
-  runtime: "docker"       # Docker-based tool execution (only supported mode)
+  runtime: "shared"       # deprecated override; any registered backend name
 
 evaluation:
   # Optional: external task-pack roots (local paths)
@@ -74,7 +74,7 @@ Notes:
 - `models.judge` is the optional run-level read-only rubric judge model (no default); the run fails loud up front if a selected task grades with `llm_judge` but `models.judge` is absent.
 - `models.agent.capabilities` overrides auto-detected model capabilities. Auto-detection (via `ModelCapabilities.for_model()`) covers most models; use overrides for A/B comparisons or to fix edge cases. Available fields: `dict_map_prompt_hints` (inject system prompt hints for dict-map parameters), `supports_typed_dict_maps`, `supports_schema_extras`, `fixed_temperature`, `supports_seed`, `unwrap_input_key`, `reasoning_via_extra_body`. See [Model Capability Presets](#model-capability-presets) below.
 - PyPI wheels exclude `tasks/**`; configure benchmark content via `evaluation.task_packs`.
-- `runtime: docker` is the only supported runtime; it uses the runner gRPC service and environment containers.
+- `orchestrator.runtime` is a deprecated operator override for backend selection; when unset, selection is task-driven. It accepts any name registered in the `tolokaforge.runtime_backends` entry-point group (built-in `shared` / `per_trial` / `in_memory`, or a plug-in's name), resolved at run start with an actionable error listing the known names on a typo. Legacy `docker` is a retained alias for `shared`. See [RUNTIME_BACKENDS.md](RUNTIME_BACKENDS.md).
 - `max_budget_usd` pauses scheduling new trials when cumulative spend reaches the budget.
 - `max_requests_per_second` applies a global limiter across worker threads.
 - `max_attempt_retries` retries transient failures (`rate_limit`, `api_error`, `timeout`) before marking a trial failed.

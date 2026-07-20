@@ -1009,3 +1009,21 @@ Try to be helpful and always follow the policy."""
                 )
 
         return "\n".join(parts)
+
+
+def in_process_conductor_factory(ctx: ConductorContext) -> InProcessConductor:
+    """Build an :class:`InProcessConductor` from a conductor context.
+
+    :class:`InProcessConductor`'s keyword-only constructor mirrors
+    :class:`ConductorContext`'s fields 1:1, so the context unpacks directly.
+    """
+    return InProcessConductor(**vars(ctx))
+
+
+def in_memory_conductor_factory(ctx: ConductorContext) -> InMemoryConductor:
+    """Build an :class:`InMemoryConductor` from a conductor context.
+
+    The recording fixture executes no trial, so it reads none of the
+    per-run dependencies the context carries.
+    """
+    return InMemoryConductor()

@@ -48,13 +48,13 @@ graph TB
     LRB -->|"one client per trial<br/>keyed by trial_id"| T2
 ```
 
-Selection is a run-level choice with two knobs and a safety enforcement:
+Backend names resolve through the `tolokaforge.runtime_backends` entry-point registry: a name is looked up against the registered factories at run start, and an unknown name raises an actionable error listing the registered names (see "Plug-in extension points"). Selection is a run-level choice with two knobs and a safety enforcement:
 
-- **Config**: `orchestrator.runtime: shared | per_trial` in the run config YAML. Default `shared`.
-- **CLI override**: `tolokaforge run --runtime {shared,per_trial}` overrides the config for a single invocation. The banner printed at run start names the backend and the source (`cli-flag` vs `config` vs `default`) so operators can see what actually got chosen.
+- **Config**: `orchestrator.runtime: <name>` in the run config YAML — any registered backend name (built-in `shared`, `per_trial`, `in_memory`, or a plug-in's name). Deprecated: when unset, selection is task-driven (below).
+- **CLI override**: `tolokaforge run --runtime <name>` overrides the config for a single invocation, accepting any registered backend name. The banner printed at run start names the backend and the source (`cli-flag` vs `config` vs `default`) so operators can see what actually got chosen.
 - **Task-side enforcement**: every task's `environment_manifest.services.<name>.isolation` declares its per-service posture (`shared` / `reset` / `ephemeral`; unlabelled services default to `ephemeral`). Backend selection is task-driven: any `reset` or `ephemeral` service routes the run to `PerTrialRuntimeBackend` automatically. An explicit `orchestrator.runtime` override is refused at startup if it contradicts per-service semantics — silent cross-trial state contamination is what this guard prevents. See "Isolation enforcement" below.
 
-Legacy `orchestrator.runtime: docker` is accepted as a deprecated alias for `shared` with a `DeprecationWarning` at config load.
+Legacy `orchestrator.runtime: docker` is accepted as a deprecated alias for `shared` with a `DeprecationWarning` at config load; it is coerced to `shared` before the registry lookup, since the registry has no `docker` name.
 
 ## Concrete backends
 
@@ -483,9 +483,71 @@ Concretely, when the next substrate lands (e.g. Kubernetes):
 - Write a new class that satisfies the ten-method `RuntimeBackend` Protocol.
 - Inside `provision`, translate `manifest.load_compose()` into that substrate's shape (a k8s backend would use `kompose` or a small owned translator to render Pod / Service specs, then `kubectl apply`; a Modal / E2B backend would render into its SDK's spec type).
 - Advertise the backend's isolation posture by setting the class-level `isolation_mode: IsolationMode` attribute — `SHARED_STACK` if trials share one materialisation, `PER_TRIAL_STACK` if each trial gets its own. The orchestrator's isolation-compatibility check reads this attribute, not the class name, so a `KubernetesPerTrialRuntimeBackend` (or whatever it's called) slots into the enforcement path with zero orchestrator changes.
-- Wire the backend into config: extend the `orchestrator.runtime` selector so operators can pick between the shipped backends.
+- Register the backend under a name in the `tolokaforge.runtime_backends` entry-point group in your package's `pyproject.toml`; the orchestrator discovers it after `pip install`, with no in-tree edit. See "Plug-in extension points" for the factory + group-table shape.
 
 The isolation axis (shared vs per-trial) and the substrate axis (docker compose vs kubernetes vs hosted sandbox) are orthogonal — a substrate can support either isolation mode, or specialise in one. Class names today collapse the substrate axis (both current backends are docker-compose-based) because there is only one substrate; when a second substrate arrives, the naming can grow to make the substrate explicit alongside the mode.
+
+## Plug-in extension points
+
+The three orchestrator seams — `RuntimeBackend`, `TrialGrader`, and `Conductor` — are each exposed as an `importlib.metadata` entry-point group. A downstream package registers an implementation under a name in its own `pyproject.toml`; the orchestrator discovers it after `pip install`, with no edit to tolokaforge. Each entry point resolves to a **factory callable** `Callable[[<Context>], <Impl>]` — not the raw class — so divergent constructors are adapted behind a per-group context object. tolokaforge's own six built-ins register through the same mechanism.
+
+| Group | Factory type | Context |
+| --- | --- | --- |
+| `tolokaforge.runtime_backends` | `Callable[[RuntimeBackendBuildContext], RuntimeBackend]` | `runner_address`, `env_manifest`, `run_id`, `seeds`, `log_capture` |
+| `tolokaforge.trial_graders` | `Callable[[TrialGraderContext], TrialGrader]` | `runtime_backend`, `logger` |
+| `tolokaforge.conductors` | `Callable[[ConductorContext], Conductor]` | per-run deps (adapter, writer, config, agent client, runtime backend, grader, …) |
+
+A factory is free to ignore context fields it does not need. The runtime-backend and trial-grader context/factory types are imported from `tolokaforge.core.plugin_registry`; the conductor context is imported from `tolokaforge.core.conductor` (as shown in the conductor example below) since it reuses the pre-existing `ConductorContext` seam. Keep the factory module free of any `tolokaforge.core.orchestrator` import so `.load()` stays independent of the orchestration engine.
+
+**Runtime backend** — `mypkg/runtime.py`:
+
+```python
+from tolokaforge.core.plugin_registry import RuntimeBackendBuildContext
+
+def my_backend_factory(ctx: RuntimeBackendBuildContext) -> "MyRuntimeBackend":
+    return MyRuntimeBackend(run_id=ctx.run_id, seeds=ctx.seeds)
+```
+
+```toml
+[project.entry-points."tolokaforge.runtime_backends"]
+my_backend = "mypkg.runtime:my_backend_factory"
+```
+
+Selectable afterwards via `tolokaforge run --runtime my_backend` or `orchestrator.runtime: my_backend`.
+
+**Trial grader** — `mypkg/grading.py`:
+
+```python
+from tolokaforge.core.plugin_registry import TrialGraderContext
+
+def my_grader_factory(ctx: TrialGraderContext) -> "MyTrialGrader":
+    return MyTrialGrader(runtime_backend=ctx.runtime_backend, logger=ctx.logger)
+```
+
+```toml
+[project.entry-points."tolokaforge.trial_graders"]
+my_grader = "mypkg.grading:my_grader_factory"
+```
+
+**Conductor** — `mypkg/conductor.py`:
+
+```python
+from tolokaforge.core.conductor import ConductorContext
+
+def my_conductor_factory(ctx: ConductorContext) -> "MyConductor":
+    return MyConductor(**vars(ctx))
+```
+
+```toml
+[project.entry-points."tolokaforge.conductors"]
+my_conductor = "mypkg.conductor:my_conductor_factory"
+```
+
+**Fail-loud resolution.** Names resolve lazily and are cached per group. Discovery enumerates names and distributions **without importing any target**, which gives the policy two distinct shapes:
+
+- **Unknown name** — a lookup for an unregistered name raises `UnknownImplementationError`, whose message lists every known registered name in the group.
+- **Duplicate name** — two entry points sharing a name within one group are an unresolvable ambiguity, so *any* lookup into that group raises `DuplicateRegistrationError` naming both providing distributions. Uninstall or rename one to resolve it.
+- **Broken import** — a target that raises on import fails **only when its own name is requested**; a broken third-party plug-in never breaks resolution of a healthy sibling (including a built-in), and the import error propagates loudly rather than being swallowed.
 
 ## Per-trial substrate bracket (`TrialExecutor`)
 

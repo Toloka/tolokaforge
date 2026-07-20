@@ -112,6 +112,18 @@ Issues = "https://github.com/Toloka/tolokaforge/issues"
 [project.scripts]
 tolokaforge = "tolokaforge.cli.main:cli"
 
+[project.entry-points."tolokaforge.runtime_backends"]
+shared = "tolokaforge.core.shared_stack_runtime:shared_runtime_backend_factory"
+per_trial = "tolokaforge.core.per_trial_runtime:per_trial_runtime_backend_factory"
+in_memory = "tolokaforge.core.runtime:in_memory_runtime_backend_factory"
+
+[project.entry-points."tolokaforge.trial_graders"]
+runner_rpc = "tolokaforge.core.trial_grader:runner_rpc_trial_grader_factory"
+
+[project.entry-points."tolokaforge.conductors"]
+in_process = "tolokaforge.core.conductor:in_process_conductor_factory"
+in_memory = "tolokaforge.core.conductor:in_memory_conductor_factory"
+
 [tool.hatch.build]
 exclude = [
     "tasks/**",

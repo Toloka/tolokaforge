@@ -17,7 +17,6 @@ from tolokaforge.core.conductor import (
     Conductor,
     ConductorContext,
     ConductorFactory,
-    InProcessConductor,
 )
 from tolokaforge.core.engine_run_state import (
     read_persisted_run_id,
@@ -52,6 +51,13 @@ from tolokaforge.core.models import (
 from tolokaforge.core.output.aggregates import FileAggregateWriter, RunAggregateWriter
 from tolokaforge.core.output.artifacts import FileArtifactWriter, TrialArtifactWriter
 from tolokaforge.core.output.service_log_rollup import collect_service_log_captures
+from tolokaforge.core.plugin_registry import (
+    RuntimeBackendBuildContext,
+    TrialGraderContext,
+    load_conductor,
+    load_runtime_backend,
+    load_trial_grader,
+)
 from tolokaforge.core.rate_limiter import GlobalRateLimiter
 from tolokaforge.core.resume import RunStateManager
 from tolokaforge.core.run_display_events import (
@@ -164,21 +170,6 @@ def _run_needs_full_stack(tasks: list[Any], stack_requirements: Any) -> bool:
     return _tasks_need_full_stack(tasks)
 
 
-_DEFAULT_DB_SERVICE_URL = "http://tolokaforge-db-service:8000"
-"""Runner-perspective DB service URL the docker stack injects into the runner
-container at start (`tolokaforge/docker/stacks/core.py`). The orchestrator
-mirrors the value on ``TrialSpec.env_endpoints`` so a future out-of-process
-runner reads its service URLs from the spec instead of its own env."""
-
-
-def _normalise_runner_url(runner_address: str) -> str:
-    """Prepend ``http://`` to a bare ``host:port`` runner address, leaving
-    fully-qualified URLs untouched."""
-    if runner_address.startswith(("http://", "https://")):
-        return runner_address
-    return f"http://{runner_address}"
-
-
 def _declared_engine_service_snapshots(service_stack: Any) -> list[ServiceSnapshot]:
     """Return one ``ServiceSnapshot`` per declared engine service.
 
@@ -217,32 +208,6 @@ def _engine_service_snapshots(service_stack: Any) -> list[ServiceSnapshot]:
             )
         )
     return snapshots
-
-
-def _build_env_endpoints(runner_address: str) -> EnvEndpoints:
-    """Resolve the per-trial service URLs for inclusion in :class:`TrialSpec`.
-
-    Field semantics:
-
-    * ``runner_url`` — derived from the orchestrator's known runner
-      address (the value passed to :class:`SharedStackRuntimeBackend`). Always set.
-    * ``db_url`` — populated in built-in-stack mode from
-      ``DB_SERVICE_URL`` in the environment (or the default the docker
-      stack injects, ``_DEFAULT_DB_SERVICE_URL``). Env_manifest mode
-      resolves it best-effort from the task-declared compose stack; a
-      missing ``db-service`` leaves it ``None`` — see
-      :class:`EnvEndpoints`.
-    * ``rag_url`` — optional. Reads ``RAG_SERVICE_URL`` from the
-      environment if set, otherwise stays ``None``. ``rag-service``
-      ships in ``full_stack`` only, so a ``core_stack`` run with no
-      override resolves to ``None`` — carrying a hardcoded RAG URL
-      would point at a service that isn't running.
-    """
-    return EnvEndpoints(
-        db_url=os.environ.get("DB_SERVICE_URL", _DEFAULT_DB_SERVICE_URL),
-        rag_url=os.environ.get("RAG_SERVICE_URL"),
-        runner_url=_normalise_runner_url(runner_address),
-    )
 
 
 @dataclass(frozen=True)
@@ -465,9 +430,9 @@ class Orchestrator:
                 "Conductor cannot be built before the adapter is loaded. "
                 "Ensure load_tasks() has run successfully."
             )
-        from tolokaforge.core.trial_grader import RunnerRPCTrialGrader
-
-        trial_grader = RunnerRPCTrialGrader(runtime_backend=runtime_backend, logger=self.logger)
+        trial_grader = load_trial_grader("runner_rpc")(
+            TrialGraderContext(runtime_backend=runtime_backend, logger=self.logger)
+        )
 
         ctx = ConductorContext(
             adapter=self.adapter,
@@ -483,14 +448,8 @@ class Orchestrator:
             request_limiter=request_limiter,
             events=self._events,
         )
-        if self._conductor_factory is not None:
-            return self._conductor_factory(ctx)
-        # ``ConductorContext`` fields are a 1:1 match for
-        # ``InProcessConductor.__init__`` kwargs. Shallow-unpack via
-        # ``vars`` (``dataclasses.asdict`` would deep-copy) so a new
-        # field on the context surfaces as a loud unexpected-kwarg
-        # error here instead of a silent omission.
-        return InProcessConductor(**vars(ctx))
+        factory = self._conductor_factory or load_conductor("in_process")
+        return factory(ctx)
 
     def _build_trial_spec(
         self,
@@ -775,36 +734,22 @@ class Orchestrator:
             runtime_choice = self._select_backend_from_tasks()
             source = "tasks"
 
-        seeds = self._project_seed_registry()
-        if runtime_choice == "per_trial":
-            from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
-
-            self.logger.info(
-                "runtime.backend.selected",
-                backend="PerTrialRuntimeBackend",
-                source=source,
-            )
-            return PerTrialRuntimeBackend(seeds=seeds, log_capture=log_capture)
-        from tolokaforge.core.shared_stack_runtime import SharedStackRuntimeBackend
-
-        self.logger.info(
-            "runtime.backend.selected",
-            backend="SharedStackRuntimeBackend",
-            source=source,
-            env_manifest_present=env_manifest is not None,
-        )
-        if env_manifest is not None:
-            return SharedStackRuntimeBackend(
+        factory = load_runtime_backend(runtime_choice)
+        backend = factory(
+            RuntimeBackendBuildContext(
+                runner_address=runner_address,
                 env_manifest=env_manifest,
                 run_id=run_id,
-                seeds=seeds,
+                seeds=self._project_seed_registry(),
                 log_capture=log_capture,
             )
-        return SharedStackRuntimeBackend(
-            runner_address=runner_address,
-            endpoints=_build_env_endpoints(runner_address),
-            seeds=seeds,
         )
+        self.logger.info(
+            "runtime.backend.selected",
+            backend=type(backend).__name__,
+            source=source,
+        )
+        return backend
 
     def _project_seed_registry(self) -> dict[str, Any]:
         """Return the project's ``assets.seeds`` map for backend
@@ -1432,6 +1377,8 @@ class Orchestrator:
         self._admit_capabilities(runtime_backend)
         self._emit_environment_identities()
 
+        from tolokaforge.core.shared_stack_runtime import _build_env_endpoints
+
         env_endpoints = _build_env_endpoints(runner_address)
         if self._resolve_effective_runtime_choice() == "per_trial" or run_env_manifest is not None:
             # Per-trial backend resolves fresh endpoints per trial via
@@ -1836,6 +1783,8 @@ class Orchestrator:
         self._verify_isolation_compatibility(runtime_backend)
         self._admit_capabilities(runtime_backend)
         self._emit_environment_identities()
+
+        from tolokaforge.core.shared_stack_runtime import _build_env_endpoints
 
         env_endpoints = _build_env_endpoints(runner_address)
         self.logger.info(

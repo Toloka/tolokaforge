@@ -644,11 +644,21 @@ def _build_orch_for_seam_threading(events: Any) -> Any:
     return orch
 
 
-def test_build_conductor_threads_events_into_context(tmp_path: Path) -> None:
+def test_build_conductor_threads_events_into_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """``_build_conductor`` writes the orchestrator's ``self._events`` onto
     :class:`ConductorContext.events` — the conductor factory sees the
     same sink the orchestrator holds."""
     from tolokaforge.core.conductor import ConductorContext
+    from tolokaforge.core.trial_grader import runner_rpc_trial_grader_factory
+
+    # Grader resolves through the registry; bind the built-in factory directly
+    # so the test needs no installed entry-point metadata.
+    monkeypatch.setattr(
+        "tolokaforge.core.orchestrator.load_trial_grader",
+        lambda name: runner_rpc_trial_grader_factory,
+    )
 
     events = _RecordingEvents()
     orch = _build_orch_for_seam_threading(events)

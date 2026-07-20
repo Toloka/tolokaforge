@@ -182,14 +182,16 @@ def _activate_presets_overlay(
 @click.option(
     "--runtime",
     "runtime",
-    type=click.Choice(["shared", "per_trial"]),
+    type=str,
     default=None,
     help=(
-        "Runtime backend. Overrides orchestrator.runtime in the run config. "
-        "'shared' (default) uses one docker-compose stack across every trial; "
-        "'per_trial' materialises an isolated stack per trial via Testcontainers "
-        "(required by tasks whose environment_manifest declares "
-        "isolation: per_trial). See docs/RUNTIME_BACKENDS.md."
+        "Runtime backend name. Overrides orchestrator.runtime in the run config. "
+        "Any name registered in the tolokaforge.runtime_backends entry-point group: "
+        "built-in 'shared' (one docker-compose stack across every trial), 'per_trial' "
+        "(an isolated stack per trial via Testcontainers, required by tasks whose "
+        "environment_manifest declares isolation: per_trial), 'in_memory', or a "
+        "plug-in's registered name. Validated at run start with an actionable error "
+        "listing the known names. See docs/RUNTIME_BACKENDS.md."
     ),
 )
 @click.option(
