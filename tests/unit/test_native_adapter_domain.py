@@ -17,6 +17,7 @@ import pytest
 
 from tests.canonical._factories import write_yaml_file
 from tolokaforge.adapters.native import NativeAdapter
+from tolokaforge.adapters.native_active_bundle import materialize_active_native_case
 
 pytestmark = pytest.mark.unit
 
@@ -227,3 +228,23 @@ def test_flat_layout_get_task_dir_is_task_parent(tmp_path: Path) -> None:
     # Flat layout: paths stay verbatim from task.yaml.
     assert task.system_prompt == "system_prompt.md"
     assert task.grading == "grading.yaml"
+
+
+def test_public_active_case_materializer_reuses_adapter_state_and_bundle(
+    tmp_path: Path,
+) -> None:
+    fixture = Path(__file__).parents[1] / "fixtures" / "native" / "vetchain_ops_seed10"
+    task_file = fixture / "testcases" / "sent_mut_001" / "task.yaml"
+
+    materialized = materialize_active_native_case(task_file, tmp_path / "active")
+
+    expected_state = (task_file.parent / "initial_state.json").read_bytes()
+    assert (materialized.server_path.parent / "initial_state.json").read_bytes() == expected_state
+    assert materialized.server_path.name == "mcp_server.py"
+    case_artifacts = [
+        path.relative_to(materialized.root).as_posix()
+        for path in materialized.root.rglob("*")
+        if path.is_file() and "testcases" in path.parts
+    ]
+    assert case_artifacts
+    assert all(path.startswith("testcases/sent_mut_001/") for path in case_artifacts)

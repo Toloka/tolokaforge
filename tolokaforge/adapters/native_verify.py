@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import glob
 import hashlib
 import json
@@ -14,7 +13,8 @@ import yaml
 from pydantic import BaseModel, Field, computed_field
 
 from tolokaforge.adapters._task_loader import load_task_yaml
-from tolokaforge.adapters.native import NativeAdapter, _load_json_list_reference
+from tolokaforge.adapters.native import _load_json_list_reference
+from tolokaforge.adapters.native_active_bundle import materialize_active_native_case
 from tolokaforge.adapters.native_consumer_checks import (
     GradingComponentSurvival,
     check_consumer_surfaces,
@@ -150,9 +150,6 @@ def _verify_case(task_file: Path) -> NativeCaseVerification:
         with tempfile.TemporaryDirectory(prefix="tolokaforge-native-verify-") as temp_dir:
             server_path = _materialize_active_case(
                 task_file=task_file,
-                task_root=task_root,
-                mcp_ref=mcp_ref,
-                initial_tables=initial_tables,
                 destination=Path(temp_dir),
             )
             process = MCPServerProcess(script_path=str(server_path))
@@ -229,35 +226,9 @@ def _append_consumer_surface_checks(case: NativeCaseVerification, task_file: Pat
 def _materialize_active_case(
     *,
     task_file: Path,
-    task_root: Path,
-    mcp_ref: str,
-    initial_tables: dict[str, list[dict[str, Any]]],
     destination: Path,
 ) -> Path:
-    adapter = NativeAdapter(
-        {
-            "base_dir": str(task_file.parent),
-            "tasks_glob": task_file.name,
-        }
-    )
-    task_ids = adapter.get_task_ids()
-    if len(task_ids) != 1:
-        raise RuntimeError(f"expected exactly one task while materializing {task_file}")
-    adapter.get_task(task_ids[0])
-    artifacts = adapter._bundle_task_artifacts(task_root, task_path=task_file)
-    for relative, encoded in artifacts.items():
-        output = destination / relative
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_bytes(base64.b64decode(encoded))
-
-    server_path = destination / mcp_ref
-    if not server_path.is_file():
-        raise RuntimeError(f"MCP server was not bundled: {mcp_ref}")
-    state_path = server_path.parent / "initial_state.json"
-    state_path.write_text(
-        json.dumps(initial_tables, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
-    return server_path
+    return materialize_active_native_case(task_file, destination).server_path
 
 
 def _load_initial_tables(
