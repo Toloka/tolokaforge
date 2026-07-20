@@ -17,7 +17,6 @@ from tolokaforge.core.conductor import (
     Conductor,
     ConductorContext,
     ConductorFactory,
-    InProcessConductor,
 )
 from tolokaforge.core.engine_run_state import (
     read_persisted_run_id,
@@ -52,6 +51,13 @@ from tolokaforge.core.models import (
 from tolokaforge.core.output.aggregates import FileAggregateWriter, RunAggregateWriter
 from tolokaforge.core.output.artifacts import FileArtifactWriter, TrialArtifactWriter
 from tolokaforge.core.output.service_log_rollup import collect_service_log_captures
+from tolokaforge.core.plugin_registry import (
+    RuntimeBackendBuildContext,
+    TrialGraderContext,
+    load_conductor,
+    load_runtime_backend,
+    load_trial_grader,
+)
 from tolokaforge.core.rate_limiter import GlobalRateLimiter
 from tolokaforge.core.resume import RunStateManager
 from tolokaforge.core.run_display_events import (
@@ -424,9 +430,9 @@ class Orchestrator:
                 "Conductor cannot be built before the adapter is loaded. "
                 "Ensure load_tasks() has run successfully."
             )
-        from tolokaforge.core.trial_grader import RunnerRPCTrialGrader
-
-        trial_grader = RunnerRPCTrialGrader(runtime_backend=runtime_backend, logger=self.logger)
+        trial_grader = load_trial_grader("runner_rpc")(
+            TrialGraderContext(runtime_backend=runtime_backend, logger=self.logger)
+        )
 
         ctx = ConductorContext(
             adapter=self.adapter,
@@ -442,14 +448,8 @@ class Orchestrator:
             request_limiter=request_limiter,
             events=self._events,
         )
-        if self._conductor_factory is not None:
-            return self._conductor_factory(ctx)
-        # ``ConductorContext`` fields are a 1:1 match for
-        # ``InProcessConductor.__init__`` kwargs. Shallow-unpack via
-        # ``vars`` (``dataclasses.asdict`` would deep-copy) so a new
-        # field on the context surfaces as a loud unexpected-kwarg
-        # error here instead of a silent omission.
-        return InProcessConductor(**vars(ctx))
+        factory = self._conductor_factory or load_conductor("in_process")
+        return factory(ctx)
 
     def _build_trial_spec(
         self,
@@ -734,39 +734,22 @@ class Orchestrator:
             runtime_choice = self._select_backend_from_tasks()
             source = "tasks"
 
-        seeds = self._project_seed_registry()
-        if runtime_choice == "per_trial":
-            from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
-
-            self.logger.info(
-                "runtime.backend.selected",
-                backend="PerTrialRuntimeBackend",
-                source=source,
-            )
-            return PerTrialRuntimeBackend(seeds=seeds, log_capture=log_capture)
-        from tolokaforge.core.shared_stack_runtime import (
-            SharedStackRuntimeBackend,
-            _build_env_endpoints,
-        )
-
-        self.logger.info(
-            "runtime.backend.selected",
-            backend="SharedStackRuntimeBackend",
-            source=source,
-            env_manifest_present=env_manifest is not None,
-        )
-        if env_manifest is not None:
-            return SharedStackRuntimeBackend(
+        factory = load_runtime_backend(runtime_choice)
+        backend = factory(
+            RuntimeBackendBuildContext(
+                runner_address=runner_address,
                 env_manifest=env_manifest,
                 run_id=run_id,
-                seeds=seeds,
+                seeds=self._project_seed_registry(),
                 log_capture=log_capture,
             )
-        return SharedStackRuntimeBackend(
-            runner_address=runner_address,
-            endpoints=_build_env_endpoints(runner_address),
-            seeds=seeds,
         )
+        self.logger.info(
+            "runtime.backend.selected",
+            backend=type(backend).__name__,
+            source=source,
+        )
+        return backend
 
     def _project_seed_registry(self) -> dict[str, Any]:
         """Return the project's ``assets.seeds`` map for backend

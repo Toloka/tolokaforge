@@ -27,8 +27,15 @@ from tolokaforge.core.models import (
     ServiceSpec,
 )
 from tolokaforge.core.orchestrator import Orchestrator
-from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
-from tolokaforge.core.shared_stack_runtime import SharedStackRuntimeBackend
+from tolokaforge.core.per_trial_runtime import (
+    PerTrialRuntimeBackend,
+    per_trial_runtime_backend_factory,
+)
+from tolokaforge.core.plugin_registry import UnknownImplementationError
+from tolokaforge.core.shared_stack_runtime import (
+    SharedStackRuntimeBackend,
+    shared_runtime_backend_factory,
+)
 from tolokaforge.core.trial import EnvironmentManifest
 from tolokaforge.runner.models import TaskDescription
 
@@ -142,6 +149,24 @@ class TestSelectBackendFromTasks:
 
 
 class TestConstructRuntimeBackend:
+    @pytest.fixture(autouse=True)
+    def _stub_runtime_loader(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Resolve backend names to the real built-in factories directly,
+        bypassing entry-point discovery.
+
+        Patches the loader at its orchestrator-module binding so these stay
+        unit tests of dispatch wiring — the name the orchestrator selects and
+        the factory it invokes — decoupled from installed package metadata.
+        """
+        factories = {
+            "shared": shared_runtime_backend_factory,
+            "per_trial": per_trial_runtime_backend_factory,
+        }
+        monkeypatch.setattr(
+            "tolokaforge.core.orchestrator.load_runtime_backend",
+            lambda name: factories[name],
+        )
+
     def test_task_driven_all_shared_picks_shared(self) -> None:
         tasks = [_task_stub("t1")]
         task_descs = {
@@ -207,3 +232,37 @@ class TestConstructRuntimeBackend:
             run_id="test-run",
         )
         assert isinstance(backend, SharedStackRuntimeBackend)
+
+
+class TestUnknownRuntimeName:
+    def test_unknown_override_raises_listing_known_names(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unknown ``orchestrator.runtime`` override propagates the loader's
+        actionable error (listing the known names) out of run start rather than
+        being swallowed."""
+        known = ["in_memory", "per_trial", "shared"]
+
+        def _raise(name: str):
+            raise UnknownImplementationError(name, "tolokaforge.runtime_backends", known)
+
+        monkeypatch.setattr("tolokaforge.core.orchestrator.load_runtime_backend", _raise)
+
+        tasks = [_task_stub("t1")]
+        task_descs = {
+            "t1": make_task_description(task_id="t1", environment_manifest=_manifest_all_shared())
+        }
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            orch = _make_orchestrator(tasks, task_descs, run_config_kwargs={"runtime": "bogus"})
+
+        with pytest.raises(UnknownImplementationError) as excinfo:
+            orch._construct_runtime_backend(
+                runner_address="sentinel:50051",
+                env_manifest=None,
+                run_id="test-run",
+            )
+        message = str(excinfo.value)
+        assert "bogus" in message
+        for name in known:
+            assert name in message

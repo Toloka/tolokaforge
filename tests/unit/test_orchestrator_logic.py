@@ -1488,7 +1488,30 @@ class TestRuntimeBackendInjection:
 # ===================================================================
 
 
+@pytest.fixture
+def _builtin_registry_loaders(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Patch the grader/conductor loaders at their orchestrator-module binding
+    to the real built-in factories.
+
+    Keeps ``_build_conductor`` tests decoupled from installed entry-point
+    metadata (no ``uv sync`` required to run them under ``-m unit``) while
+    still exercising the real dispatch wiring.
+    """
+    from tolokaforge.core.conductor import in_process_conductor_factory
+    from tolokaforge.core.trial_grader import runner_rpc_trial_grader_factory
+
+    monkeypatch.setattr(
+        "tolokaforge.core.orchestrator.load_trial_grader",
+        lambda name: runner_rpc_trial_grader_factory,
+    )
+    monkeypatch.setattr(
+        "tolokaforge.core.orchestrator.load_conductor",
+        lambda name: in_process_conductor_factory,
+    )
+
+
 @pytest.mark.unit
+@pytest.mark.usefixtures("_builtin_registry_loaders")
 class TestArtifactWriterInjection:
     """``OrchestratorDeps.artifact_writer`` accepts any
     :class:`TrialArtifactWriter` impl. The orchestrator stores the
@@ -1549,6 +1572,7 @@ class TestArtifactWriterInjection:
 
 
 @pytest.mark.unit
+@pytest.mark.usefixtures("_builtin_registry_loaders")
 class TestConductorInjection:
     """``OrchestratorDeps.conductor_factory`` accepts a
     ``Callable[[ConductorContext], Conductor]`` that the orchestrator
@@ -1573,11 +1597,13 @@ class TestConductorInjection:
         assert orch._conductor_factory is factory
 
     def test_default_factory_builds_in_process_conductor(self, tmp_path: Path) -> None:
-        """When no factory is injected, ``_build_conductor`` returns an
-        :class:`InProcessConductor` wired against the orchestrator's
-        per-run dependencies."""
+        """When no factory is injected, ``_build_conductor`` resolves the
+        built-in ``in_process`` conductor and ``runner_rpc`` grader through the
+        registry — yielding an :class:`InProcessConductor` holding a
+        :class:`RunnerRPCTrialGrader`."""
         from tolokaforge.core.conductor import InProcessConductor
         from tolokaforge.core.orchestrator import Orchestrator
+        from tolokaforge.core.trial_grader import RunnerRPCTrialGrader
 
         orch = Orchestrator(_make_run_config())
         orch.adapter = MagicMock()  # _build_conductor raises if adapter is unset
@@ -1589,6 +1615,7 @@ class TestConductorInjection:
             request_limiter=MagicMock(),
         )
         assert isinstance(conductor, InProcessConductor)
+        assert isinstance(conductor.trial_grader, RunnerRPCTrialGrader)
 
     def test_build_conductor_raises_when_adapter_is_unset(self, tmp_path: Path) -> None:
         """Fail-fast: building a conductor before ``load_tasks()`` ran (so

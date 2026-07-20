@@ -479,6 +479,15 @@ class TypeSenseConfig(BaseModel):
     cleanup_on_exit: bool = True  # Remove container on exit (local mode)
 
 
+LEGACY_DOCKER_RUNTIME_ALIAS = "docker"
+"""Legacy ``orchestrator.runtime`` value accepted as an alias for the
+``shared`` runtime backend. Coerced before any registry lookup — the registry
+has no ``docker`` name."""
+
+DOCKER_RUNTIME_ALIAS_TARGET = "shared"
+"""Registered runtime-backend name :data:`LEGACY_DOCKER_RUNTIME_ALIAS` maps to."""
+
+
 class OrchestratorConfig(BaseModel):
     """Orchestrator configuration"""
 
@@ -535,7 +544,7 @@ class OrchestratorConfig(BaseModel):
     for backward compatibility; a ``DeprecationWarning`` fires when
     the field is explicitly set."""
 
-    runtime: Literal["shared", "per_trial"] | None = None
+    runtime: str | None = None
     """Deprecated operator override for backend selection.
 
     Backend selection is task-driven — the orchestrator picks
@@ -543,6 +552,11 @@ class OrchestratorConfig(BaseModel):
     per-trial materialisation, otherwise :class:`SharedStackRuntimeBackend`.
     Setting this field bypasses that signal and emits a
     ``DeprecationWarning``. Retired in a future release.
+
+    Any name registered in the ``tolokaforge.runtime_backends`` entry-point
+    group is accepted (built-in ``shared`` / ``per_trial`` / ``in_memory``, or
+    a plug-in's name); the name is resolved against the registry at run start,
+    which raises an actionable error listing the known names on a typo.
 
     Legacy value ``docker`` is accepted as an alias for ``shared`` with
     the same deprecation warning; drop both from configs going forward.
@@ -555,14 +569,14 @@ class OrchestratorConfig(BaseModel):
         deprecation warning for any explicit setting."""
         if value is None:
             return value
-        if value == "docker":
+        if value == LEGACY_DOCKER_RUNTIME_ALIAS:
             warnings.warn(
                 "OrchestratorConfig.runtime = 'docker' is a deprecated alias "
                 "for 'shared'; update your run config.",
                 DeprecationWarning,
                 stacklevel=2,
             )
-            value = "shared"
+            value = DOCKER_RUNTIME_ALIAS_TARGET
         warnings.warn(
             "OrchestratorConfig.runtime is deprecated; backend selection is "
             "now task-driven (any task requiring per-trial isolation forces "
