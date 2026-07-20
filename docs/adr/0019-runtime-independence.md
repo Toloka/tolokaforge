@@ -45,13 +45,18 @@ The five downstream sub-issues (#536–#540) each need to cite one section of a 
 1. **`importlib.metadata` entry points** — declare group tables in `pyproject.toml`; discover with `entry_points(group=…)`.
 2. **A homegrown in-process registry** — a module-level dict populated by decorators or explicit registration calls.
 
-(Stage 2 adds the `run_trial` selection-model option row — explicit-name-only vs. an `"auto"` sentinel with explicit override.)
+**`run_trial` backend selection: explicit-name-only vs. `"auto"` sentinel + explicit override.**
+
+1. **`runtime="auto"` sentinel (default) + explicit override** — `"auto"` delegates to the orchestrator's task-driven selection; an explicit registry name forces a backend.
+2. **Explicit-name-only** — `runtime` is required and always a registry name; the caller must choose `shared` / `per_trial` / `in_memory` itself.
 
 ## Decision
 
 We adopt **one ADR** (Option 1 above) covering all four surfaces. A single keystone gives the four seams one coherent versioning story and one place a reader or a downstream ticket can cite, instead of four documents that would each have to restate the shared compatibility rules and risk drifting apart. Each surface is contracted by exactly one sub-issue.
 
 We adopt **`importlib.metadata` entry points** (Option 1 above) for discovery, with **no homegrown registry**. Entry points are the standard Python extension idiom: a third-party distribution declares a group table in its own `pyproject.toml`, and after `pip install` the orchestrator discovers it with no in-tree edit. A homegrown dict would require the plugin to import a tolokaforge module at the right time and would reinvent conflict handling that `importlib.metadata` already models.
+
+We adopt the **`runtime="auto"` sentinel with explicit override** (Option 1 above) for `run_trial` backend selection. Explicit-name-only would re-couple the name-based selection that the `orchestrator.runtime` deprecation is retiring — a harness wanting the orchestrator's task-driven choice would have to hard-code `shared` / `per_trial`. `"auto"` mirrors the CLI and keeps the library consistent with the codebase's task-driven direction; the full rationale is in [Surface 2](#surface-2--tolokaforgerun_trial-537).
 
 This ADR locks four surfaces:
 
@@ -93,11 +98,73 @@ The registry has **no `docker` name.** `docker` is a legacy alias for `shared` t
 
 ### Surface 2 — `tolokaforge.run_trial(...)` (#537)
 
-The frozen `tolokaforge.run_trial(...)` signature, its `TrialResult` return contract, its named error types, and the `runtime="auto"` selection model that reconciles the library surface with the codebase's task-driven backend selection.
+A top-level library entry runs one trial in-process without the caller reconstructing the orchestrator's wiring. The signature is keyword-only and frozen as the contract:
+
+```python
+def run_trial(
+    *,
+    task: TaskConfig,
+    models: dict[str, ModelConfig | dict[str, Any]],   # role -> model config; widens RunConfig.models
+                                                       #   (dict[str, ModelConfig]) to also accept raw dicts
+    runtime: str = "auto",                             # "auto" -> task-driven selection; else registry name
+    grader: str = "runner_rpc",
+    conductor: str = "in_process",
+    output_dir: Path | str | None = None,              # None -> no artifacts written to disk
+    trial_index: int = 0,
+) -> TrialResult: ...
+```
+
+**Return.** The existing `TrialResult` ([ADR-0003](0003-trial-spec-and-trial-result.md)) — the typed wrapper carrying the `Trajectory`, the `Grade`, and termination metadata. `run_trial` reuses the wire type; it does not introduce a new wrapper.
+
+**Error types.** No exception is swallowed; each failure mode maps to a named type:
+
+- An unknown `runtime` / `grader` / `conductor` name → the [Surface 1](#surface-1--entry-point-protocol-registries-536) registry error (lists the known registered names for that group).
+- An invalid `task` or `models` value → Pydantic `ValidationError`.
+- A substrate-provisioning failure → `ProvisionError` ([ADR-0010](0010-runtime-backend-provisioning-contract.md)).
+
+**`runtime="auto"` reconciliation.** Backend selection in the codebase is task-driven by default: `_select_backend_from_tasks` (`orchestrator.py:644`) picks `per_trial` when a task requires per-trial isolation, else `shared`. The name-based `orchestrator.runtime` config field (`models.py:560–574`) is a deprecated, retiring override. A required name-only `run_trial(runtime=…)` would re-couple exactly what that deprecation removes — a harness wanting the orchestrator's auto-selection would have to hard-code `shared` / `per_trial`. So `"auto"` is the default and mirrors the CLI: it inspects `task.environment_manifest` and picks `per_trial` when the task requires per-trial isolation, else `shared`. An explicit registry name (`"shared"` / `"per_trial"` / `"in_memory"` / a plug-in name) forces that backend via the Surface 1 registry.
+
+`auto` is a **reserved parameter value, not a registrable backend name.** The sentinel is intercepted before the registry lookup, so a plug-in cannot register a backend under the name `auto` — Surface 1's fail-loud policy is preserved, and there is no ambiguity between the sentinel and a discovered name.
 
 ### Surface 3 — `tolokaforge agent` subprocess wire format (#538)
 
-The JSON-Lines framing on stdin/stdout, the `"v":1` protocol version independent of the package version, the `start` request shape, the `event` / `result` / `error` response shapes, the termination signals and exit codes, and the stable-vs-experimental split.
+`tolokaforge agent` runs one trial as a subprocess a harness in any language drives over a pipe.
+
+**Framing.** JSON Lines — UTF-8, `\n`-delimited, one JSON object per line, on both stdin and stdout. Language-agnostic, streamable, and debuggable by piping; chosen over a length-prefixed binary framing for exactly those properties.
+
+**Protocol version.** Every message carries `"v": 1`. The wire-protocol version is **independent of the tolokaforge package version** — this field is the mechanism behind "no CLI change breaks the contract without a version bump": any breaking change to the envelope or a required field bumps `v`, and additive changes stay within the current `v`.
+
+**stdin (request).** One `start` message, then EOF — one trial per invocation. `task` and `models` mirror the `run_trial` arguments; `runtime` / `grader` / `conductor` are registry names:
+
+```json
+{"v":1,"type":"start","task":{},"models":{},"runtime":"shared","grader":"runner_rpc","conductor":"in_process"}
+```
+
+An optional `cancel` control message may precede completion:
+
+```json
+{"v":1,"type":"cancel"}
+```
+
+**stdout (response).** One JSON object per line, discriminated by `type`:
+
+```json
+{"v":1,"type":"event","event":"provisioned"}
+{"v":1,"type":"result","result":{}}
+{"v":1,"type":"error","error_type":"ProvisionError","message":"stack failed to become ready","fatal":true}
+```
+
+- `event` — progress notification; the `event` field names the subtype, and subtypes are additive/experimental.
+- `result` — terminal success; `result` is the serialised `TrialResult` (Surface 2).
+- `error` — a typed error, never a raw traceback; `error_type` is the named error class, `message` is human-readable, `fatal` is a boolean.
+
+**Termination and exit codes.**
+
+- Natural end → a `result` message, then exit 0.
+- Error → an `error` message, then a non-zero exit.
+- External cancel (SIGTERM, or premature stdin EOF, or a `cancel` message) → clean teardown, then an `error` message with `error_type` `"cancelled"`, then a non-zero exit.
+
+**Stable vs. experimental.** The envelope (`v`, `type`, the JSON-Lines framing) and the `start` / `result` / `error` message shapes are **stable** — changing any of them requires a `v` bump. `event` subtypes are **experimental**: new subtypes may be added within the current `v` without a bump, so a harness must tolerate unknown `event` values.
 
 ### Surface 4 — versioning, slim-image budget, and lifecycle
 
