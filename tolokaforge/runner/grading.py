@@ -167,16 +167,19 @@ def _records_might_match(record1: dict[str, Any], record2: dict[str, Any]) -> bo
     common_keys = set(record1.keys()) & set(record2.keys())
     id_fields = sorted(f for f in common_keys if f == "id" or f.endswith("_id"))
 
-    # Match on the first shared ID field (most specific)
+    # Match on the first shared ID field (most specific). Compare via the same
+    # canonical form as the record hashing so a numeric id "123" pairs with 123.
     for field in id_fields:
         if record1[field] is not None and record2[field] is not None:
-            return record1[field] == record2[field]
+            return _make_hashable(record1[field]) == _make_hashable(record2[field])
 
     # Fallback: check if they share at least 50% of fields with same values
     if not common_keys:
         return False
 
-    matching_values = sum(1 for f in common_keys if record1[f] == record2[f])
+    matching_values = sum(
+        1 for f in common_keys if _make_hashable(record1[f]) == _make_hashable(record2[f])
+    )
     return matching_values >= len(common_keys) * 0.5
 
 

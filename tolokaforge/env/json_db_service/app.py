@@ -105,12 +105,61 @@ except ImportError:
     def compute_stable_hash(
         state: dict[str, Any],
         unstable_fields: list[str] | None = None,
+        *,
+        canonicalize_numbers: bool = True,
     ) -> str:
-        """Compute a stable SHA-256 hash of the state dictionary."""
+        """Compute a stable SHA-256 hash of the state dictionary.
+
+        Standalone fallback — mirrors tolokaforge.core.hash.compute_stable_hash,
+        including the numeric canonicalization. Keep the two in sync.
+        """
+        from decimal import Decimal, InvalidOperation
+
+        def _canon(v: Any) -> Any:
+            if isinstance(v, bool):
+                return v
+            if isinstance(v, (int, float, Decimal)):
+                try:
+                    d = Decimal(str(v)).normalize()
+                    return "\x00tf-num:" + format(abs(d) if d.is_zero() else d, "f")
+                except (InvalidOperation, ValueError):
+                    return v
+            if isinstance(v, str):
+                s = v.strip()
+                body = s[1:] if s[:1] in ("+", "-") else s
+                ip, dot, fp = body.partition(".")
+                if dot:
+                    numeric = fp.isascii() and fp.isdigit() and (
+                        not ip or (ip.isascii() and ip.isdigit())
+                    )
+                else:
+                    numeric = ip.isascii() and ip.isdigit()
+                numeric = numeric and not (len(ip) > 1 and ip[0] == "0")
+                if 0 < len(s) <= 64 and numeric:
+                    try:
+                        d = Decimal(s).normalize()
+                        return "\x00tf-num:" + format(abs(d) if d.is_zero() else d, "f")
+                    except InvalidOperation:
+                        pass
+                if v.startswith("\x00"):
+                    return "\x00tf-esc:" + v
+            return v
+
+        def _walk(data: Any) -> Any:
+            if isinstance(data, dict):
+                return {k: _walk(x) for k, x in data.items()}
+            if isinstance(data, list):
+                return [_walk(x) for x in data]
+            if isinstance(data, tuple):
+                return tuple(_walk(x) for x in data)
+            return _canon(data)
+
         if unstable_fields:
             state = filter_unstable_fields(state, unstable_fields)
 
         serializable_state = _convert_datetime_to_str(state)
+        if canonicalize_numbers:
+            serializable_state = _walk(serializable_state)
         json_str = json.dumps(
             serializable_state, sort_keys=True, separators=(",", ":"), default=str
         )
