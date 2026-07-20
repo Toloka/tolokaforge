@@ -40,6 +40,7 @@ orchestrator:
   auto_start_services: true
   preload_task_images: true    # preload host-pinned task images into DinD
   preload_images: []           # additional host image tags to attempt
+  retain_anonymous_volumes: false # debugging opt-out for stack volume cleanup
   continue_prompt: "Please proceed to the next step."
   timeouts:
     turn_s: 60
@@ -72,6 +73,7 @@ Notes:
 - `max_attempt_retries` retries transient failures (`rate_limit`, `api_error`, `timeout`) before marking a trial failed.
 - `preload_task_images` discovers top-level service `image` tags in native-task Compose files and streams host-present images into the DinD sidecar at stack startup. Missing images and preload failures warn and retain the normal build-on-use behavior.
 - `preload_images` adds explicit image tags to that preload set. It has no effect when `preload_task_images` is false or the stack has no DinD sidecar.
+- `retain_anonymous_volumes` defaults to false, so stack teardown reclaims image-declared anonymous volumes such as DinD's `/var/lib/docker` storage. Set it to true only when retaining those volumes for debugging; explicitly named volumes are always preserved.
 - `queue_backend: postgres` enables distributed queue/state using Postgres; set `queue_postgres_dsn`.
 - If `evaluation.task_packs` is empty, `tasks_glob` is resolved relative to the working directory.
 - If `evaluation.task_packs` is set, relative `tasks_glob` patterns are resolved under each task-pack root and merged.

@@ -41,12 +41,15 @@ orchestrator:
   auto_start_services: true       # auto-start Docker services via ServiceStack (default)
   preload_task_images: true       # preload host-pinned task images into DinD (default)
   preload_images: []              # additional host image tags to attempt
+  retain_anonymous_volumes: false # reclaim image-declared volumes on teardown (default)
 ```
 
 For native Compose tasks, stack startup reads each validated task Compose file's
 top-level service `image` tags. Images already present on the host daemon are
 streamed into DinD after its daemon becomes healthy. Missing images or transfer
 failures are warnings; Docker Compose retains its normal build-on-use fallback.
+Auto-started stack teardown preserves declared named volumes and reclaims anonymous
+volumes by default, including DinD storage at `/var/lib/docker`.
 
 ## Docker Service Management
 

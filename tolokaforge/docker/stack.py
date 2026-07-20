@@ -39,7 +39,7 @@ from tolokaforge.docker.config import DockerConfig
 from tolokaforge.docker.container import Container, ContainerStatus
 from tolokaforge.docker.health import HealthProbe, HealthProbeError
 from tolokaforge.docker.image import Image
-from tolokaforge.docker.mount import Mount
+from tolokaforge.docker.mount import Mount, MountType
 from tolokaforge.docker.network import Network
 from tolokaforge.docker.policy import ResourcePolicy
 from tolokaforge.docker.ports import PortConfig, resolve_ports
@@ -614,6 +614,11 @@ class ServiceStack(BaseModel):
                             current_status=ContainerStatus.RUNNING,
                         )
                         container._client = client  # noqa: SLF001
+                        container._declared_named_volume_sources = frozenset(  # noqa: SLF001
+                            mount.source
+                            for mount in svc.mounts
+                            if mount.mount_type == MountType.VOLUME
+                        )
                         return container
                 except Exception:
                     pass  # Health check failed — fall through to removal
@@ -626,6 +631,9 @@ class ServiceStack(BaseModel):
                     current_status=ContainerStatus.RUNNING,
                 )
                 container._client = client  # noqa: SLF001
+                container._declared_named_volume_sources = frozenset(  # noqa: SLF001
+                    mount.source for mount in svc.mounts if mount.mount_type == MountType.VOLUME
+                )
                 return container
 
         # Container exists but isn't healthy — remove it

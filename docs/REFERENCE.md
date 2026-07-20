@@ -41,6 +41,7 @@ orchestrator:
   auto_start_services: true         # manage the Docker service stack automatically
   preload_task_images: true         # preload host-pinned task images into DinD
   preload_images: []                # additional host image tags to attempt
+  retain_anonymous_volumes: false   # retain image-declared volumes for debugging
 
   timeouts:
     turn_s: 60                      # Per-turn timeout

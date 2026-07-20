@@ -9,7 +9,7 @@ from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from tolokaforge.adapters import BaseAdapter, ensure_registered_adapter, get_adapter
 from tolokaforge.adapters.native import NativeAdapter
@@ -50,6 +50,9 @@ from tolokaforge.core.run_queue import AttemptLease, create_run_queue
 from tolokaforge.core.runner import TrialRunner
 from tolokaforge.core.stuck import StuckDetector
 from tolokaforge.runner.models import AdapterType
+
+if TYPE_CHECKING:
+    from tolokaforge.docker.stack import ServiceStack
 
 # Tools that need Playwright + Chromium baked into the runner image. The
 # orchestrator scans the task list before starting the docker stack and
@@ -162,6 +165,8 @@ class Orchestrator:
         self.results: list[Trajectory] = []
         self.state_manager: RunStateManager | None = None
         self.adapter: BaseAdapter | None = None
+        self._service_stack: ServiceStack | None = None
+        self._service_teardown_complete = False
         # Shared artifact writer — every per-trial write goes through it
         # so the orchestrator stays decoupled from filesystem details and
         # alternative writers (in-memory tests, remote stores) can plug in.
@@ -460,6 +465,41 @@ class Orchestrator:
         self.logger.info("Tasks loaded", count=len(self.tasks), adapter=type(self.adapter).__name__)
 
     def run(self) -> None:
+        """Execute all tasks and always tear down auto-started services."""
+        self._service_stack = None
+        self._service_teardown_complete = False
+        try:
+            self._run()
+        finally:
+            self._teardown_auto_started_services()
+
+    def _teardown_auto_started_services(self) -> None:
+        """Stop TypeSense and the auto-started stack exactly once."""
+        if self._service_teardown_complete:
+            return
+
+        # TypeSense is connected to runner-net, so stop it before the stack
+        # removes that network.
+        if hasattr(self, "_typesense_server") and self._typesense_server:
+            try:
+                self._typesense_server.stop()
+                self.logger.info("TypeSense server stopped")
+            except Exception as e:
+                self.logger.warning(f"Failed to stop TypeSense server: {e}")
+
+        if self._service_stack is not None:
+            try:
+                self._service_stack.destroy(
+                    remove_volumes=not self.config.orchestrator.retain_anonymous_volumes
+                )
+                self.logger.info("ServiceStack destroyed")
+            except Exception as e:
+                self.logger.warning("Failed to destroy ServiceStack", error=str(e))
+
+        self._service_stack = None
+        self._service_teardown_complete = True
+
+    def _run(self) -> None:
         """Execute all tasks with configured trials"""
         # Add timestamp to output directory for unique runs
         base_output_dir = self.config.evaluation.output_dir
@@ -622,6 +662,7 @@ class Orchestrator:
                     self.logger.info("Creating service stack (db-service + runner)")
                     stack_factory = core_stack
                 service_stack = stack_factory(**core_stack_kwargs)
+                self._service_stack = service_stack
                 self.logger.info(
                     "Building Docker images and starting containers "
                     "(this may take a few minutes on first run)..."
@@ -902,23 +943,7 @@ class Orchestrator:
         if harness_network_runtime is not None:
             harness_network_runtime.close()
 
-        # Stop TypeSense BEFORE destroying the ServiceStack.
-        # TypeSense is connected to runner-net (via _connect_typesense_to_runner_network),
-        # so it must be removed from that network before the stack can tear it down.
-        if hasattr(self, "_typesense_server") and self._typesense_server:
-            try:
-                self._typesense_server.stop()
-                self.logger.info("TypeSense server stopped")
-            except Exception as e:
-                self.logger.warning(f"Failed to stop TypeSense server: {e}")
-
-        # Cleanup ServiceStack if auto-started
-        if service_stack is not None:
-            try:
-                service_stack.destroy()
-                self.logger.info("ServiceStack destroyed")
-            except Exception as e:
-                self.logger.warning("Failed to destroy ServiceStack", error=str(e))
+        self._teardown_auto_started_services()
 
         # Generate reports
         self._generate_reports(output_dir)

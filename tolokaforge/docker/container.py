@@ -28,7 +28,7 @@ from pydantic import BaseModel, Field, PrivateAttr, field_validator
 from tolokaforge.docker.health import HealthProbe, HealthProbeError, ProbeResult
 from tolokaforge.docker.image import Image
 from tolokaforge.docker.logging import LogRouter
-from tolokaforge.docker.mount import Mount
+from tolokaforge.docker.mount import Mount, MountType
 from tolokaforge.docker.network import Network
 from tolokaforge.docker.policy import ResourcePolicy
 from tolokaforge.docker.ports import PortConfig, ports_to_docker_format, resolve_ports
@@ -139,6 +139,9 @@ class Container(BaseModel):
     _client: DockerClient | None = PrivateAttr(default=None)
     # Private attribute for LogRouter (not serialized)
     _log_router: LogRouter | None = PrivateAttr(default=None)
+    # Volume names explicitly declared by the caller. Docker image-declared
+    # anonymous volumes are discovered from live inspect data during teardown.
+    _declared_named_volume_sources: frozenset[str] = PrivateAttr(default_factory=frozenset)
 
     model_config = {
         "extra": "forbid",
@@ -389,6 +392,9 @@ class Container(BaseModel):
             current_status=ContainerStatus.CREATED,
         )
         container._client = client
+        container._declared_named_volume_sources = frozenset(
+            mount.source for mount in mounts or [] if mount.mount_type == MountType.VOLUME
+        )
         return container
 
     def start(
@@ -527,10 +533,59 @@ class Container(BaseModel):
         client = self._get_client()
         try:
             docker_container = client.containers.get(self.container_id)
+            anonymous_volume_names: list[str] = []
+            if remove_volumes:
+                try:
+                    live_mounts = docker_container.attrs["Mounts"]
+                    if not isinstance(live_mounts, list):
+                        raise TypeError("container inspect field 'Mounts' is not a list")
+                    for mount in live_mounts:
+                        if not isinstance(mount, dict) or mount.get("Type") != "volume":
+                            continue
+                        volume_name = mount.get("Name")
+                        if not isinstance(volume_name, str) or not volume_name:
+                            raise ValueError("volume mount is missing a non-empty 'Name'")
+                        if (
+                            volume_name not in self._declared_named_volume_sources
+                            and volume_name not in anonymous_volume_names
+                        ):
+                            anonymous_volume_names.append(volume_name)
+                except Exception as e:
+                    logger.warning(
+                        "Could not inspect anonymous volumes for container '%s': %s",
+                        self.name,
+                        e,
+                    )
+
             # Force remove to handle running containers
             docker_container.remove(force=True, v=remove_volumes)
             self.current_status = ContainerStatus.DESTROYED
             logger.info("Container '%s' destroyed", self.name)
+
+            cleanup_statuses: list[str] = []
+            for volume_name in anonymous_volume_names:
+                try:
+                    client.volumes.get(volume_name).remove()
+                    cleanup_statuses.append(f"{volume_name}=reclaimed")
+                except NotFound:
+                    # ``v=True`` may have reclaimed it atomically with the
+                    # container. The explicit lookup confirms it is gone.
+                    cleanup_statuses.append(f"{volume_name}=reclaimed")
+                except Exception as e:
+                    cleanup_statuses.append(f"{volume_name}=failed, kept")
+                    logger.warning(
+                        "Failed to reclaim anonymous volume '%s' for container '%s': %s",
+                        volume_name,
+                        self.name,
+                        e,
+                    )
+
+            if cleanup_statuses:
+                logger.info(
+                    "Anonymous volume cleanup for container '%s': %s",
+                    self.name,
+                    ", ".join(cleanup_statuses),
+                )
 
         except NotFound:
             logger.info("Container '%s' already destroyed or doesn't exist", self.name)
