@@ -47,14 +47,17 @@ This module composes existing types only — :class:`Path`, :mod:`yaml`,
 from __future__ import annotations
 
 import os
-import warnings
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from tolokaforge.core.deprecations import canonicalize_actor_config, source_context
+from tolokaforge.core.deprecations import (
+    canonicalize_actor_config,
+    source_context,
+    warn_deprecated,
+)
 from tolokaforge.core.models import TaskConfig, TaskDefaults
 from tolokaforge.core.project_loader import construct_config, deep_merge
 
@@ -241,14 +244,17 @@ def _resolve_environment_manifest_paths(task_data: dict, task_root: Path, task_p
         )
 
     if "stack" in manifest and manifest["stack"] is None:
-        warnings.warn(
-            f"Task file {task_path}: 'environment_manifest.stack: null' is deprecated — "
-            "a task cannot unset the environment out from under a project that declares "
-            "one. Omit the key entirely to inherit the project's stack, or declare a "
-            "stack sub-object explicitly. Strict rejection deferred to a future release.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
+        with source_context(task_path):
+            warn_deprecated(
+                legacy="'environment_manifest.stack: null'",
+                canonical="omit the key or declare a stack sub-object",
+                detail=(
+                    "A task cannot unset the environment out from under a project "
+                    "that declares one. Omit the key entirely to inherit the project's "
+                    "stack, or declare a stack sub-object explicitly."
+                ),
+                stacklevel=2,
+            )
         # Drop the null key so the loader treats it as unset (inherit-from-project).
         manifest.pop("stack")
 
@@ -256,15 +262,17 @@ def _resolve_environment_manifest_paths(task_data: dict, task_root: Path, task_p
     if isinstance(stack, dict) and "compose_file" in stack:
         compose_file = stack["compose_file"]
         if compose_file is None:
-            warnings.warn(
-                f"Task file {task_path}: 'environment_manifest.stack.compose_file: null' "
-                "is deprecated — a task cannot unset the substrate pointer; there is no "
-                "engine-default compose file to fall through to. Omit the key entirely "
-                "to inherit the project's compose_file. Strict rejection deferred to a "
-                "future release.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
+            with source_context(task_path):
+                warn_deprecated(
+                    legacy="'environment_manifest.stack.compose_file: null'",
+                    canonical="omit the key or declare a compose_file path",
+                    detail=(
+                        "A task cannot unset the substrate pointer; there is no "
+                        "engine-default compose file to fall through to. Omit the "
+                        "key entirely to inherit the project's compose_file."
+                    ),
+                    stacklevel=2,
+                )
             # Drop the null key so the loader treats it as unset (inherit-from-project).
             stack.pop("compose_file")
         else:

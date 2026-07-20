@@ -121,7 +121,7 @@ class TestProjectAwareLoad:
         )
         # No project.yaml — the loader synthesises a default so the pack still
         # loads, and warns the author to add one.
-        with pytest.warns(DeprecationWarning, match="No project.yaml found"):
+        with pytest.warns(DeprecationWarning, match="Missing project.yaml"):
             run_config = _drive_cli_loader(tmp_path / "run_configs" / "dev.yaml")
         assert run_config.orchestrator.repeats == 3
         assert run_config.compute is None  # nothing to inject

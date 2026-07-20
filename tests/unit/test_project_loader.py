@@ -193,7 +193,7 @@ class TestLoadProjectConfig:
     def test_null_default_environment_stack_warns_and_drops(self, tmp_path: Path) -> None:
         path = self._write_project(tmp_path, {"default_environment": {"stack": None}})
         with pytest.warns(
-            DeprecationWarning, match="default_environment.stack: null' is deprecated"
+            DeprecationWarning, match=r"default_environment\.stack: null'.*is deprecated"
         ):
             project = load_project_config(path)
         # Null key is dropped so the project loads as if the stack were unset.
@@ -208,7 +208,7 @@ class TestLoadProjectConfig:
         )
         with pytest.warns(
             DeprecationWarning,
-            match="default_environment.stack.compose_file: null' is deprecated",
+            match=r"default_environment\.stack\.compose_file: null'.*is deprecated",
         ):
             project = load_project_config(path)
         # Null compose_file is dropped; stack subobject survives.

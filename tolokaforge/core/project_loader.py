@@ -44,6 +44,7 @@ from tolokaforge.core.deprecations import (
     POST_M9_STRICT_FLIP_ISSUE,
     canonicalize_actor_config,
     source_context,
+    warn_deprecated,
     warn_legacy_run_config_dir,
 )
 from tolokaforge.core.models import (
@@ -213,14 +214,21 @@ def synthesize_default_project(
     Emits a ``DeprecationWarning`` naming the searched root and
     recommending the author add a ``project.yaml``; the pack still loads.
     """
-    warnings.warn(
-        f"No project.yaml found under {project_root}; using a synthesised "
-        f"default. Add a `project.yaml` at the pack root (`name: {project_root.name}` "
-        "alone suffices) to remove this warning. A future release will require "
-        f"project.yaml at load time. (tracked in #{POST_M9_STRICT_FLIP_ISSUE})",
-        DeprecationWarning,
-        stacklevel=2,
-    )
+    # Route through warn_deprecated for uniform message shape (in <file> +
+    # (tracked in #NNN)); pack-root basename is what the user recognises,
+    # and it keeps this consistent with the basename-only policy the rest of
+    # M9's warnings follow.
+    with source_context(project_root):
+        warn_deprecated(
+            legacy="Missing project.yaml",
+            canonical="a project.yaml at the pack root",
+            detail=(
+                f"Add a `project.yaml` at the pack root (`name: {project_root.name}` "
+                "alone suffices) to remove this warning. A future release will require "
+                "project.yaml at load time."
+            ),
+            stacklevel=2,
+        )
     return ProjectConfig(
         name=project_root.name or "synthesised",
         description=None,
@@ -259,31 +267,38 @@ def _warn_null_stack(data: dict, path: Path) -> None:
     """Warn (and drop) when ``default_environment.stack`` (or its
     ``compose_file``) is present but explicitly null. A project omits the
     key to declare no environment default; explicit-null is deprecated and
-    silently drops the field. Pre-Pydantic so the message carries the
-    ``project.yaml`` path. Strict rejection deferred to a future release.
+    silently drops the field. Pre-Pydantic so the warning carries the
+    ``project.yaml`` basename via :func:`source_context`. Strict rejection
+    deferred to a future release (tracked in #533).
     """
     env = data.get("default_environment")
     if not isinstance(env, dict):
         return
     if "stack" in env and env["stack"] is None:
-        warnings.warn(
-            f"project.yaml at {path}: 'default_environment.stack: null' is deprecated — "
-            "omit the key entirely to declare no environment default, or declare a stack "
-            "sub-object explicitly. Strict rejection deferred to a future release.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
+        with source_context(path):
+            warn_deprecated(
+                legacy="'default_environment.stack: null'",
+                canonical="omit the key or declare a stack sub-object",
+                detail=(
+                    "A project.yaml cannot unset the environment via null — omit the "
+                    "key entirely to declare no environment default, or declare a "
+                    "stack sub-object explicitly."
+                ),
+                stacklevel=2,
+            )
         env.pop("stack")
     stack = env.get("stack")
     if isinstance(stack, dict) and "compose_file" in stack and stack["compose_file"] is None:
-        warnings.warn(
-            f"project.yaml at {path}: 'default_environment.stack.compose_file: null' is "
-            "deprecated — there is no engine-default compose file to fall through to. "
-            "Omit the key entirely to declare no substrate pointer, or declare one. "
-            "Strict rejection deferred to a future release.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
+        with source_context(path):
+            warn_deprecated(
+                legacy="'default_environment.stack.compose_file: null'",
+                canonical="omit the key or declare a compose_file path",
+                detail=(
+                    "There is no engine-default compose file to fall through to. Omit "
+                    "the key entirely to declare no substrate pointer, or declare one."
+                ),
+                stacklevel=2,
+            )
         stack.pop("compose_file")
 
 

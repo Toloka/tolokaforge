@@ -95,5 +95,5 @@ class TestRelocatedAliasesUnchanged:
         assert out["stack"]["compose_file"] == "./environment.compose.yaml"
 
     def test_run_config_dir_alias_message_unchanged(self) -> None:
-        with pytest.warns(DeprecationWarning, match="sits under 'run_config/' \\(singular\\)"):
+        with pytest.warns(DeprecationWarning, match=r"Legacy 'run_config/' \(singular\) directory"):
             warn_legacy_run_config_dir(Path("run_config/dev.yaml"))

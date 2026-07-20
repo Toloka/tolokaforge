@@ -465,7 +465,7 @@ class TestLoadTaskYaml:
 
     def test_null_stack_warns_and_drops(self, tmp_path: Path) -> None:
         task_path = self._write_task_with_stack(tmp_path, None)
-        with pytest.warns(DeprecationWarning, match="stack: null' is deprecated"):
+        with pytest.warns(DeprecationWarning, match=r"stack: null'.*is deprecated"):
             task, _ = load_task_yaml(task_path)
         # The null key is dropped so the loader treats it as unset (inherit-from-project).
         assert task.environment_manifest is not None
@@ -473,7 +473,7 @@ class TestLoadTaskYaml:
 
     def test_null_stack_compose_file_warns_and_drops(self, tmp_path: Path) -> None:
         task_path = self._write_task_with_stack(tmp_path, {"compose_file": None})
-        with pytest.warns(DeprecationWarning, match="stack.compose_file: null' is deprecated"):
+        with pytest.warns(DeprecationWarning, match=r"stack\.compose_file: null'.*is deprecated"):
             task, _ = load_task_yaml(task_path)
         # The null compose_file key is dropped; stack subobject survives.
         assert task.environment_manifest is not None

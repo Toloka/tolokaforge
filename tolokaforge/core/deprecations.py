@@ -80,14 +80,26 @@ def warn_deprecated(
     canonical: str,
     detail: str = "",
     follow_up_issue: str | None = POST_M9_STRICT_FLIP_ISSUE,
+    stacklevel: int = 3,
 ) -> None:
     """Emit a uniform ``DeprecationWarning`` for a legacy→canonical rename.
 
     Message shape: ``"{legacy} in <file> is deprecated; use {canonical} instead.
     {detail} (tracked in #<n>)"``. The ``in <file>`` clause is added when a
     loader is in the stack (see :func:`source_context`); ``detail`` and the
-    tracker suffix are added only when set. ``stacklevel=3`` targets the
-    coercer's caller so IDE warnings point at user code, not this module.
+    tracker suffix are added only when set.
+
+    ``stacklevel`` defaults to ``3`` — accurate when this helper is called
+    directly from a loader (three frames: user code → loader → coercer →
+    ``warn_deprecated``). When invoked from a Pydantic ``mode="before"``
+    validator (e.g. via ``coerce_task_packs_alias`` on ``EvaluationConfig``)
+    the real stack is deeper because Pydantic inserts wrapper frames; the
+    warning surfaces at the model class rather than user code. Callers that
+    know their exact depth (e.g. a direct raw-``warnings.warn`` inline
+    branch converted to route through this helper) can pass an explicit
+    ``stacklevel`` to target user code precisely. Message content is what
+    tests assert on, so the frame target is a nice-to-have, not a
+    correctness property.
 
     ``follow_up_issue`` defaults to :data:`POST_M9_STRICT_FLIP_ISSUE` (the
     umbrella tracking every warn-only path M9 introduced). Pass a different
@@ -100,7 +112,7 @@ def warn_deprecated(
         message = f"{message} {detail}"
     if follow_up_issue:
         message = f"{message} (tracked in #{follow_up_issue})"
-    warnings.warn(message, DeprecationWarning, stacklevel=3)
+    warnings.warn(message, DeprecationWarning, stacklevel=stacklevel)
 
 
 def coerce_task_packs_alias(values: Any) -> Any:
@@ -117,13 +129,14 @@ def coerce_task_packs_alias(values: Any) -> Any:
     canonical = values.get("projects")
     if not legacy:
         return values
-    source_hint = _current_source_hint()
     if canonical:
-        warnings.warn(
-            f"evaluation.task_packs and evaluation.projects both set{source_hint}; "
-            "projects wins. Drop task_packs from the run config. "
-            f"(tracked in #{POST_M9_STRICT_FLIP_ISSUE})",
-            DeprecationWarning,
+        warn_deprecated(
+            legacy="evaluation.task_packs (both keys set)",
+            canonical="evaluation.projects",
+            detail=(
+                "evaluation.task_packs and evaluation.projects are both set; "
+                "projects wins. Drop task_packs from the run config."
+            ),
             stacklevel=2,
         )
         values["task_packs"] = []
@@ -275,12 +288,17 @@ def canonicalize_actor_config(data: Any) -> Any:
 def warn_legacy_run_config_dir(config_path: Path) -> None:
     """Emit a ``DeprecationWarning`` when a run config sits under
     ``run_config/`` (singular) instead of ``run_configs/`` (plural).
+    Routes through :func:`warn_deprecated` for uniform message shape,
+    threading the config file's basename via :func:`source_context` so the
+    ``in <file>`` clause matches the rest of the warn-only surface.
     """
-    warnings.warn(
-        f"Run config {config_path} sits under 'run_config/' (singular); the "
-        f"canonical directory is 'run_configs/' (plural). Rename the "
-        f"directory: `mv run_config run_configs`. "
-        f"(tracked in #{POST_M9_STRICT_FLIP_ISSUE})",
-        DeprecationWarning,
-        stacklevel=2,
-    )
+    with source_context(config_path):
+        warn_deprecated(
+            legacy="Legacy 'run_config/' (singular) directory",
+            canonical="'run_configs/' (plural)",
+            detail=(
+                f"Rename the directory: `mv {config_path.parent} "
+                f"{config_path.parent.parent / 'run_configs'}`."
+            ),
+            stacklevel=2,
+        )
