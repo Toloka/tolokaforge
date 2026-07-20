@@ -150,3 +150,61 @@ class TestActorsUserDrivesSimulator:
         assert sim.persona == "curious engineer"
         assert sim.backstory == "I just joined the ops team."
         assert len(deprecations) == 1
+
+
+class TestDirectPythonUserSimulatorKwargShim:
+    """External Python callers doing ``TaskConfig(user_simulator=…)`` continue
+    to work: a ``mode="before"`` shim on ``TaskConfig`` and ``TaskDefaults``
+    lifts the legacy kwarg into ``actors["user"]`` with a
+    ``DeprecationWarning``. YAML loads use the loader-side
+    :func:`canonicalize_actor_config` on the same code path; this class covers
+    the Python-only construction case.
+    """
+
+    def test_task_config_accepts_user_simulator_kwarg_with_warning(self) -> None:
+        from tolokaforge.core.models import TaskConfig, UserSimulatorConfig
+
+        with pytest.warns(DeprecationWarning, match="user_simulator"):
+            task = TaskConfig(
+                task_id="t1",
+                description="d",
+                user_simulator=UserSimulatorConfig(mode="llm", persona="curious"),
+            )
+        sim = task.resolve_user_simulator()
+        assert sim.mode == "llm"
+        assert sim.persona == "curious"
+        # Legacy field is gone; canonical home is actors.user.
+        assert task.actors is not None
+        assert task.actors["user"].persona == "curious"
+
+    def test_task_defaults_accepts_user_simulator_kwarg_with_warning(self) -> None:
+        from tolokaforge.core.models import TaskDefaults, UserSimulatorConfig
+
+        with pytest.warns(DeprecationWarning, match="user_simulator"):
+            defaults = TaskDefaults(
+                user_simulator=UserSimulatorConfig(mode="llm", persona="terse"),
+            )
+        assert defaults.actors is not None
+        assert defaults.actors["user"].persona == "terse"
+
+    def test_task_config_accepts_user_simulator_dict_kwarg(self) -> None:
+        # A raw dict works too — same coercion path.
+        from tolokaforge.core.models import TaskConfig
+
+        with pytest.warns(DeprecationWarning, match="user_simulator"):
+            task = TaskConfig(
+                task_id="t1",
+                description="d",
+                user_simulator={"mode": "llm", "persona": "polite"},
+            )
+        assert task.actors is not None
+        assert task.actors["user"].persona == "polite"
+
+    def test_task_config_without_user_simulator_kwarg_no_warning(self) -> None:
+        # No legacy kwarg → no warning fires.
+        from tolokaforge.core.models import TaskConfig
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")  # any DeprecationWarning becomes an error
+            task = TaskConfig(task_id="t1", description="d")
+        assert task.actors is None

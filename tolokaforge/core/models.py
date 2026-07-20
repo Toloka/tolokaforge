@@ -9,7 +9,10 @@ from typing import Annotated, Any, Literal, Self, get_args
 
 from pydantic import BaseModel, Field, field_serializer, field_validator, model_validator
 
-from tolokaforge.core.deprecations import coerce_task_packs_alias
+from tolokaforge.core.deprecations import (
+    canonicalize_actor_config,
+    coerce_task_packs_alias,
+)
 from tolokaforge.core.llm.reasoning import ReasoningConfig, StructuredReasoning
 from tolokaforge.core.llm.usage import CostSource, ProviderRawCall, Usage
 
@@ -381,7 +384,7 @@ class OpenRouterConfig(BaseModel):
     is how a model pins around a rate-limited default provider.
     """
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
     provider_order: list[str] | None = None
     allow_fallbacks: bool = True
@@ -390,7 +393,7 @@ class OpenRouterConfig(BaseModel):
 class ModelConfig(BaseModel):
     """LLM model configuration"""
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
     provider: str
     name: str
@@ -437,7 +440,7 @@ class ModelConfig(BaseModel):
 class TimeoutConfig(BaseModel):
     """Timeout configuration"""
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
     turn_s: int = 60
     episode_s: int = 1800
@@ -446,7 +449,7 @@ class TimeoutConfig(BaseModel):
 class StuckHeuristics(BaseModel):
     """Stuck detection configuration"""
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
     enabled: bool = True
     max_repeated_tool_calls: int = 10
@@ -462,7 +465,7 @@ class TypeSenseConfig(BaseModel):
     - disabled: TypeSense is disabled, search_policy returns empty results
     """
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
     enabled: bool = True  # Whether TypeSense is enabled
     mode: Literal["local", "remote", "disabled"] = "local"  # Server mode
@@ -479,7 +482,7 @@ class TypeSenseConfig(BaseModel):
 class OrchestratorConfig(BaseModel):
     """Orchestrator configuration"""
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
     workers: int = 8
     repeats: int = 5
@@ -507,12 +510,13 @@ class OrchestratorConfig(BaseModel):
     Field-name migration to ``TimeoutDefaults`` (``trial_seconds`` /
     ``tool_call_seconds``) lands with the cleanup milestone."""
 
-    max_turns: int | None = None
-    """Optional run-level cap on per-trial ``max_turns``. When set, the
-    effective budget is ``min(TaskConfig.max_turns, this)`` — an
-    operator-side clamp over the task-authoritative value. When unset,
-    the task-declared value stands alone. When neither the run nor the
-    task declares a value, the engine default (50 turns) applies."""
+    max_turns: int = 50
+    """Run-level cap on per-trial ``max_turns`` — an always-on operator
+    clamp. Effective budget at runtime is ``min(TaskConfig.max_turns, this)``:
+    a task authoring a higher value is clamped down to this cap. To let a
+    task's value stand uncapped, set this above the task's declared value.
+    A future release will flip this to an opt-in cap (default ``None``);
+    tracked as a post-M9 follow-up."""
 
     auto_start_services: bool = True  # Auto-start Docker services via EngineStack
 
@@ -601,7 +605,7 @@ class OrchestratorConfig(BaseModel):
 class HarnessAdapterConfig(BaseModel):
     """Configuration for external harness adapters (e.g., Tau-bench)"""
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
     type: str = "native"  # "native", "tau", etc.
     params: dict[str, Any] = Field(default_factory=dict)
@@ -617,7 +621,7 @@ class EvaluationConfig(BaseModel):
     and coerced with a ``DeprecationWarning``.
     """
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
     tasks_glob: str = "**/task.yaml"
     projects: list[str] = Field(default_factory=list)
@@ -640,7 +644,7 @@ class EngineConfig(BaseModel):
     execution semantics) and ``ModelConfig`` (per-model overrides).
     """
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
     presets_file: str | None = Field(
         default=None,
@@ -657,7 +661,7 @@ class EngineConfig(BaseModel):
 class LocalDockerComputeConfig(BaseModel):
     """Configuration for the ``local-docker`` compute provider."""
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
 
 class ComputeConfig(BaseModel):
@@ -669,7 +673,7 @@ class ComputeConfig(BaseModel):
     ``Literal`` value on ``provider`` plus its own sub-block.
     """
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
     provider: Literal["local-docker"] = "local-docker"
     workers: int | None = Field(default=None, ge=1)
@@ -767,7 +771,7 @@ class QueueStorageConfig(BaseModel):
     instead of falling back silently.
     """
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
     backend: Literal["sqlite", "postgres"] = "sqlite"
     postgres_dsn: str | None = None
@@ -782,7 +786,7 @@ class QueueStorageConfig(BaseModel):
 class StorageConfig(BaseModel):
     """Where a run's artifacts, logs, and queue state live."""
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
     artifacts: StorageBackend | None = None
     logs: StorageBackend | None = None
@@ -796,7 +800,7 @@ class TracingConfig(BaseModel):
     default) does not.
     """
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
     exporter: Literal["none", "otlp"] = "none"
     endpoint: str | None = None
@@ -815,7 +819,7 @@ class MetricsConfig(BaseModel):
     default) does not.
     """
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
     exporter: Literal["none", "prometheus"] = "none"
     endpoint: str | None = None
@@ -834,7 +838,7 @@ class LoggingConfig(BaseModel):
     default) does not.
     """
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
     level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     exporter: Literal["stdout", "otlp"] = "stdout"
@@ -850,7 +854,7 @@ class LoggingConfig(BaseModel):
 class ObservabilityConfig(BaseModel):
     """Tracing, metrics, and logging exporters for a run."""
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
     tracing: TracingConfig | None = None
     metrics: MetricsConfig | None = None
@@ -879,7 +883,7 @@ don't (the ``queue`` sub-block is the namespace)."""
 class RunConfig(BaseModel):
     """Complete run configuration"""
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
     models: dict[str, ModelConfig]
     orchestrator: OrchestratorConfig
@@ -1061,7 +1065,7 @@ def _lift_alias(
 class InitializationAction(BaseModel):
     """One-time environment mutation executed before a trial starts."""
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
     env_type: Literal["assistant", "user"]
     func_name: str
@@ -1071,7 +1075,7 @@ class InitializationAction(BaseModel):
 class InitialStateConfig(BaseModel):
     """Initial environment state configuration"""
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
     json_db: str | dict[str, Any] | None = None  # JSON DB initial state
     device_overrides: dict[str, Any] | None = None  # Per-task device state overrides
@@ -1085,7 +1089,7 @@ class InitialStateConfig(BaseModel):
 class ToolsConfig(BaseModel):
     """Tools configuration for task"""
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
     agent: dict[str, Any] = Field(default_factory=lambda: {"enabled": []})
     user: dict[str, Any] = Field(default_factory=lambda: {"enabled": []})
@@ -1094,7 +1098,7 @@ class ToolsConfig(BaseModel):
 class UserSimulatorConfig(BaseModel):
     """User simulator configuration"""
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
     mode: Literal["scripted", "llm"] = "llm"
     persona: str = "cooperative"
@@ -1116,8 +1120,10 @@ class ActorSpec(BaseModel):
     :class:`UserSimulatorConfig`. Any field left unset resolves to the
     simulator default (``mode=llm``, ``persona=cooperative``) via
     :meth:`TaskConfig.resolve_user_simulator`. Sub-keys ``tools`` and
-    ``service`` are reserved by the design for future actor types; using
-    them is a load error (``extra="forbid"``).
+    ``service`` are reserved by the design for future actor types; a
+    future strict flip will reject them, but today they surface as a
+    ``DeprecationWarning`` via :func:`construct_config` (matching the
+    broader Project-layer warn-on-unknown policy).
     """
 
     mode: Literal["scripted", "llm"] | None = None
@@ -1125,7 +1131,7 @@ class ActorSpec(BaseModel):
     backstory: str | None = None
     scripted_flow: list[dict[str, str]] | None = None
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
 
 def _validate_actors_map(
@@ -1146,7 +1152,7 @@ def _validate_actors_map(
 class TaskMetadata(BaseModel):
     """Optional metadata used for analytics slicing."""
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
     complexity: str | None = None
     expected_failure_modes: list[str] = Field(default_factory=list)
@@ -1159,7 +1165,7 @@ class TimeoutDefaults(BaseModel):
     is a run-level cap that clamps these via the min rule at read
     time."""
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
     trial_seconds: int = Field(default=600, ge=1)
     tool_call_seconds: int = Field(default=60, ge=1)
@@ -1171,17 +1177,39 @@ class StuckHeuristicsDefaults(BaseModel):
     ``OrchestratorConfig.stuck_heuristics`` is deprecated and no longer
     read by the conductor."""
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
     enabled: bool = True
     max_repeated_tool_calls: int = Field(default=5, ge=1)
     max_idle_turns: int = Field(default=3, ge=1)
 
 
+def _lift_user_simulator_kwarg(data: Any) -> Any:
+    """Direct-Python shim: accept a legacy ``user_simulator=...`` kwarg and
+    lift it into ``actors["user"]`` with a ``DeprecationWarning``.
+
+    The YAML load path already runs :func:`canonicalize_actor_config` per
+    layer pre-merge; this covers the case where a caller constructs
+    ``TaskConfig(user_simulator=UserSimulatorConfig(...))`` directly in
+    Python. A ``UserSimulatorConfig`` instance is model-dumped so Pydantic
+    can re-parse the fields as :class:`ActorSpec`.
+    """
+    if not isinstance(data, dict) or "user_simulator" not in data:
+        return data
+    value = data["user_simulator"]
+    if value is None:
+        data.pop("user_simulator")
+        return data
+    if isinstance(value, BaseModel):
+        value = value.model_dump(exclude_unset=True)
+    data_for_coerce = {**data, "user_simulator": value}
+    return canonicalize_actor_config(data_for_coerce)
+
+
 class TaskConfig(BaseModel):
     """Task specification"""
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
     task_id: str
     name: str | None = None
@@ -1235,6 +1263,16 @@ class TaskConfig(BaseModel):
     project sets no default either). ``stack.compose_file`` is
     task-relative and anchored by the loader before construction."""
 
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_user_simulator_kwarg(cls, data: Any) -> Any:
+        """Direct-Python compat shim: lift a legacy ``user_simulator=...``
+        constructor kwarg into ``actors["user"]`` with a
+        ``DeprecationWarning``. YAML loads already handle this via
+        :func:`canonicalize_actor_config` per layer pre-merge; this covers
+        the ``TaskConfig(user_simulator=...)`` direct-construction case."""
+        return _lift_user_simulator_kwarg(data)
+
     @field_validator("actors")
     @classmethod
     def _reject_reserved_actor_names(
@@ -1266,7 +1304,7 @@ class TaskConfig(BaseModel):
 class EnvAssertion(BaseModel):
     """Environment assertion - runs a check function on agent or user environment"""
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
     env_type: Literal["assistant", "user"]  # which environment to check
     func_name: str  # assertion function name
@@ -1278,7 +1316,7 @@ class EnvAssertion(BaseModel):
 class RequiredAction(BaseModel):
     """Required tool call that must appear in trajectory"""
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
     action_id: str  # unique identifier for this action
     requestor: Literal["assistant", "user"]  # who should make the call
@@ -1290,7 +1328,7 @@ class RequiredAction(BaseModel):
 class StateChecksConfig(BaseModel):
     """State checks configuration"""
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
     jsonpaths: list[dict[str, Any]] = Field(default_factory=list)
     hash: dict[str, Any] | None = None
@@ -1302,7 +1340,7 @@ class StateChecksConfig(BaseModel):
 class CommunicateInfo(BaseModel):
     """Information that should be communicated to user"""
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
     info: str  # information text to check for
     required: bool = True  # whether this info is required
@@ -1311,7 +1349,7 @@ class CommunicateInfo(BaseModel):
 class TranscriptRulesConfig(BaseModel):
     """Transcript rules configuration"""
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
     must_contain: list[str] = Field(default_factory=list)
     disallow_regex: list[str] = Field(default_factory=list)
@@ -1329,7 +1367,7 @@ class GradingCombineConfig(BaseModel):
     Consumers that require weights validate presence at use-site.
     """
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
     method: str = "weighted"
     weights: dict[str, float] = Field(default_factory=dict)
@@ -1339,7 +1377,7 @@ class GradingCombineConfig(BaseModel):
 class GradingConfig(BaseModel):
     """Grading specification"""
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
     combine: GradingCombineConfig
     state_checks: StateChecksConfig | None = None
@@ -1352,7 +1390,7 @@ class GradingDefaults(BaseModel):
     """Grading defaults applied to every task via ``task_defaults``. A
     task's own ``grading.yaml.combine`` deep-merges on top."""
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
     combine: GradingCombineConfig | None = None
 
@@ -1365,7 +1403,7 @@ class TaskDefaults(BaseModel):
     field means the engine default (or an adapter default) applies.
     """
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
     adapter_type: str | None = None
     max_turns: int | None = Field(default=None, ge=1)
@@ -1385,6 +1423,16 @@ class TaskDefaults(BaseModel):
     stuck_heuristics: StuckHeuristicsDefaults | None = None
     continue_prompt: str | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_user_simulator_kwarg(cls, data: Any) -> Any:
+        """Direct-Python compat shim: lift a legacy ``user_simulator=...``
+        constructor kwarg into ``actors["user"]`` with a
+        ``DeprecationWarning``. YAML loads handle this via
+        :func:`canonicalize_actor_config` per layer pre-merge; this covers
+        the ``TaskDefaults(user_simulator=...)`` direct-construction case."""
+        return _lift_user_simulator_kwarg(data)
+
     @field_validator("actors")
     @classmethod
     def _reject_reserved_actor_names(
@@ -1401,7 +1449,7 @@ class RunDefaults(BaseModel):
     as if every run config were a standalone declaration.
     """
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
     compute: ComputeConfig | None = None
     storage: StorageConfig | None = None
@@ -1453,7 +1501,7 @@ class SeedRef(BaseModel):
     bytes at load time by :func:`tolokaforge.core.project_loader.load_project_config`
     so a swap without re-stamping fails loud."""
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
     @model_validator(mode="before")
     @classmethod
@@ -1485,13 +1533,13 @@ class AssetsConfig(BaseModel):
 
     seeds: dict[str, SeedRef] = Field(default_factory=dict)
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
 
 class TaskDiscoveryConfig(BaseModel):
     """Where the loader finds task files under the project directory."""
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
     glob: str = "tasks/**/task.yaml"
 
@@ -1499,7 +1547,7 @@ class TaskDiscoveryConfig(BaseModel):
 class TaskInventoryConfig(BaseModel):
     """Task discovery configuration on the Project."""
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
     discovery: TaskDiscoveryConfig = Field(default_factory=TaskDiscoveryConfig)
 
@@ -1513,7 +1561,7 @@ class ProjectConfig(BaseModel):
     ``docs/PROJECTS.md``.
     """
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
     name: str
     version: int = 1

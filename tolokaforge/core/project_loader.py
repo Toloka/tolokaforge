@@ -11,6 +11,8 @@ Public helpers:
 - :func:`find_project_yaml` — walk up from a start path looking for
   ``project.yaml``.
 - :func:`load_project_config` — read + validate a ``project.yaml`` file.
+- :func:`synthesize_default_project` — build a minimal ``ProjectConfig``
+  for a pack that ships no ``project.yaml``.
 - :func:`deep_merge` — recursive dict merge; delta wins on conflict.
 - :func:`resolve_effective_run_config_data` — apply ``project.run_defaults``
   under a run-config dict.
@@ -30,23 +32,30 @@ from __future__ import annotations
 import difflib
 import os
 import re
+import warnings
 from pathlib import Path
-from typing import Any, TypeVar, get_args
+from typing import Any, TypeVar
 
 import yaml
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from tolokaforge.core.assets import compute_seed_digest
-from tolokaforge.core.deprecations import canonicalize_actor_config, warn_legacy_run_config_dir
+from tolokaforge.core.deprecations import (
+    POST_M9_STRICT_FLIP_ISSUE,
+    canonicalize_actor_config,
+    source_context,
+    warn_legacy_run_config_dir,
+)
 from tolokaforge.core.models import (
     EnvironmentManifest,
     EnvironmentPatch,
     GradingCombineConfig,
     ProjectConfig,
     ServiceSpec,
+    TaskDefaults,
 )
 
-# ── Strict-schema construction ──────────────────────────────────────────
+# ── Config construction ─────────────────────────────────────────────────
 
 _ConfigT = TypeVar("_ConfigT", bound=BaseModel)
 
@@ -54,69 +63,47 @@ _ConfigT = TypeVar("_ConfigT", bound=BaseModel)
 def construct_config(
     model: type[_ConfigT], data: dict[str, Any], *, source: Path, section: str = ""
 ) -> _ConfigT:
-    """Construct a Project-layer config model, turning an unknown-key
-    rejection into a load error that names the file, the offending key
-    path, and the closest schema match.
+    """Construct a Project-layer config model, warning on each unknown
+    top-level key before the model's ``extra="ignore"`` config drops it.
 
-    Only ``extra_forbidden`` errors are rewritten; a validation failure
-    that carries any other kind of error re-raises unchanged so a genuine
-    type or constraint error is never hidden behind the friendly message.
+    A key in *data* that is not a field of *model* raises a
+    ``DeprecationWarning`` naming the file basename, the key, the closest
+    schema match (via :func:`difflib.get_close_matches`), and a
+    ``(tracked in #<n>)`` suffix pointing at the strict-flip follow-up
+    issue so users can plan against a concrete retirement schedule. The
+    key is then silently dropped. A genuine validation failure (type
+    mismatch, missing required field) propagates unchanged.
+
+    Scope: only top-level keys are checked. An unknown key nested inside a
+    sub-model is dropped without a warning — restoring the recursive scan
+    is deferred to the strict-flip follow-up (see the tracker suffix).
     """
-    try:
+    known = set(model.model_fields)
+    for key in data:
+        if key not in known:
+            warnings.warn(
+                _unknown_key_line(model, key, source, section),
+                DeprecationWarning,
+                stacklevel=2,
+            )
+    with source_context(source):
         return model(**data)
-    except ValidationError as exc:
-        errors = exc.errors()
-        extra = [e for e in errors if e["type"] == "extra_forbidden"]
-        if not extra or len(extra) != len(errors):
-            raise
-        lines = [_unknown_key_line(model, e["loc"], source, section) for e in extra]
-        raise RuntimeError("\n".join(lines)) from exc
 
 
-def _unknown_key_line(
-    model: type[BaseModel], loc: tuple[Any, ...], source: Path, section: str
-) -> str:
-    key_path = ".".join(str(part) for part in loc)
-    leaf = str(loc[-1])
-    suggestion = difflib.get_close_matches(leaf, _fields_at_loc(model, loc), n=1)
+def _unknown_key_line(model: type[BaseModel], key: str, source: Path, section: str) -> str:
+    suggestion = difflib.get_close_matches(key, list(model.model_fields), n=1)
     where = source.name + (f" ({section})" if section else "")
-    line = f"unknown key '{key_path}' in {where}"
+    line = f"unknown key '{key}' in {where}"
     if suggestion:
-        line += f" — did you mean '{suggestion[0]}'?"
+        line += f" — did you mean '{suggestion[0]}'? "
+        line += f"Rename `{key}` to `{suggestion[0]}` (or remove it if unused). "
+    else:
+        line += (
+            f" — no close match on {model.__name__}. Remove the key or "
+            f"check the schema for the correct name. "
+        )
+    line += f"(tracked in #{POST_M9_STRICT_FLIP_ISSUE})"
     return line
-
-
-def _fields_at_loc(model: type[BaseModel], loc: tuple[Any, ...]) -> list[str]:
-    """Field names of the model the offending key (``loc[-1]``) should have
-    matched, walking BaseModel fields and container value types along the
-    path. Empty when the path can't be resolved to a model."""
-    current: Any = model
-    for part in loc[:-1]:
-        fields = getattr(current, "model_fields", None)
-        if fields is not None and part in fields:
-            current = _model_from_annotation(fields[part].annotation)
-            if current is None:
-                return []
-    fields = getattr(current, "model_fields", None)
-    return list(fields) if fields is not None else []
-
-
-def _model_from_annotation(annotation: Any) -> type[BaseModel] | None:
-    """The ``BaseModel`` subclass an annotation resolves to, unwrapping
-    ``Optional`` / ``Union`` and ``dict`` / ``list`` containers. ``None``
-    for scalar or non-model annotations."""
-    args = get_args(annotation)
-    if not args:
-        return annotation if _is_model(annotation) else None
-    for arg in args:
-        found = _model_from_annotation(arg)
-        if found is not None:
-            return found
-    return None
-
-
-def _is_model(obj: Any) -> bool:
-    return isinstance(obj, type) and issubclass(obj, BaseModel)
 
 
 # ── Filesystem discovery ────────────────────────────────────────────────
@@ -200,16 +187,45 @@ def load_project_config(path: Path) -> ProjectConfig:
         raise RuntimeError(
             f"project.yaml at {path} is not a YAML mapping (got {type(data).__name__})"
         )
-    _reject_null_stack(data, path)
+    _warn_null_stack(data, path)
     # Resolve default_environment.compose_file relative to the project dir
     # so EnvironmentManifest's validator can locate it regardless of CWD.
     _resolve_project_paths(data, path.parent)
     task_defaults = data.get("task_defaults")
     if isinstance(task_defaults, dict):
-        canonicalize_actor_config(task_defaults)
+        with source_context(path):
+            canonicalize_actor_config(task_defaults)
     project = construct_config(ProjectConfig, data, source=path)
     _verify_seed_digests(project, path)
     return project
+
+
+def synthesize_default_project(
+    *,
+    project_root: Path,
+    task_defaults: TaskDefaults | None = None,
+) -> ProjectConfig:
+    """Return a minimal ``ProjectConfig`` for a pack that ships no
+    ``project.yaml``.
+
+    Loaders route through here whenever :func:`find_project_yaml` returns
+    ``None`` so downstream code always has a ``ProjectConfig`` to consume.
+    Emits a ``DeprecationWarning`` naming the searched root and
+    recommending the author add a ``project.yaml``; the pack still loads.
+    """
+    warnings.warn(
+        f"No project.yaml found under {project_root}; using a synthesised "
+        f"default. Add a `project.yaml` at the pack root (`name: {project_root.name}` "
+        "alone suffices) to remove this warning. A future release will require "
+        f"project.yaml at load time. (tracked in #{POST_M9_STRICT_FLIP_ISSUE})",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return ProjectConfig(
+        name=project_root.name or "synthesised",
+        description=None,
+        task_defaults=task_defaults or TaskDefaults(),
+    )
 
 
 def _verify_seed_digests(project: ProjectConfig, project_yaml_path: Path) -> None:
@@ -239,28 +255,36 @@ def _verify_seed_digests(project: ProjectConfig, project_yaml_path: Path) -> Non
             )
 
 
-def _reject_null_stack(data: dict, path: Path) -> None:
-    """Fail loud when ``default_environment.stack`` (or its
+def _warn_null_stack(data: dict, path: Path) -> None:
+    """Warn (and drop) when ``default_environment.stack`` (or its
     ``compose_file``) is present but explicitly null. A project omits the
-    key to declare no environment default; explicit-null is nonsense and
-    would otherwise be silently dropped by Pydantic's optional handling.
-    Pre-Pydantic so the message carries the ``project.yaml`` path.
+    key to declare no environment default; explicit-null is deprecated and
+    silently drops the field. Pre-Pydantic so the message carries the
+    ``project.yaml`` path. Strict rejection deferred to a future release.
     """
     env = data.get("default_environment")
     if not isinstance(env, dict):
         return
     if "stack" in env and env["stack"] is None:
-        raise RuntimeError(
-            f"project.yaml at {path}: 'default_environment.stack' must not be null — "
-            "omit the key to declare no environment default, or declare a stack."
+        warnings.warn(
+            f"project.yaml at {path}: 'default_environment.stack: null' is deprecated — "
+            "omit the key entirely to declare no environment default, or declare a stack "
+            "sub-object explicitly. Strict rejection deferred to a future release.",
+            DeprecationWarning,
+            stacklevel=2,
         )
+        env.pop("stack")
     stack = env.get("stack")
     if isinstance(stack, dict) and "compose_file" in stack and stack["compose_file"] is None:
-        raise RuntimeError(
-            f"project.yaml at {path}: 'default_environment.stack.compose_file' must not "
-            "be null — there is no engine-default compose file to fall through to. "
-            "Omit the key to declare no substrate pointer, or declare one."
+        warnings.warn(
+            f"project.yaml at {path}: 'default_environment.stack.compose_file: null' is "
+            "deprecated — there is no engine-default compose file to fall through to. "
+            "Omit the key entirely to declare no substrate pointer, or declare one. "
+            "Strict rejection deferred to a future release.",
+            DeprecationWarning,
+            stacklevel=2,
         )
+        stack.pop("compose_file")
 
 
 def _resolve_project_paths(data: dict, project_dir: Path) -> None:
@@ -597,8 +621,8 @@ def load_effective_run_config(
     - ``config_data`` is the merged dict, ready to feed into
       ``RunConfig(**config_data)``.
     - ``project`` is the enclosing ``ProjectConfig`` loaded from the
-      discovered ``project.yaml``. A run config with no discoverable
-      ``project.yaml`` raises ``RuntimeError``.
+      discovered ``project.yaml``, or a synthesised default (with a
+      ``DeprecationWarning``) for a pack that ships none.
 
     Emits a ``DeprecationWarning`` when the run config sits under the
     legacy ``run_config/`` (singular) directory.
@@ -620,13 +644,10 @@ def load_effective_run_config(
     project_root, used_legacy_dir = detect_project_layout(config_path)
     if used_legacy_dir:
         warn_legacy_run_config_dir(config_path)
-    if project_root is None:
-        raise RuntimeError(
-            f"No project.yaml found for run config {config_path}. "
-            f"Searched upward from {config_path.parent} to the filesystem root. "
-            f"Add a project.yaml at the pack root."
-        )
-    project = load_project_config(project_root / PROJECT_FILENAME)
+    if project_root is not None:
+        project = load_project_config(project_root / PROJECT_FILENAME)
+    else:
+        project = synthesize_default_project(project_root=config_path.parent)
     merged = resolve_effective_run_config_data(project, config_data)
     merged = _interpolate_env_vars(merged, source_path=config_path)
     validate_actor_roster_subset_of_models(project, merged)

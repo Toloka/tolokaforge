@@ -1,10 +1,11 @@
-"""Pins the loader's unknown-key error message shape across the four
+"""Pins the loader's unknown-key warning message shape across the four
 Project-layer YAML roots so a regression that drops the file name, the
-offending key path, or the difflib closest-match suggestion fails loud.
+offending key, or the difflib closest-match suggestion fails loud.
 
 The message renders the source as its **basename** — the snapshot must be
 machine-independent, so a fixed filename is passed for ``source`` rather
-than a ``tmp_path`` absolute path.
+than a ``tmp_path`` absolute path. Only top-level keys are checked; a
+nested unknown key is dropped without a warning (see the unit suite).
 """
 
 from pathlib import Path
@@ -17,37 +18,34 @@ from tolokaforge.core.project_loader import construct_config
 pytestmark = pytest.mark.canonical
 
 
-def _error(model, data: dict, source: str, section: str = "") -> str:
-    with pytest.raises(RuntimeError) as excinfo:
+def _warning(model, data: dict, source: str, section: str = "") -> str:
+    with pytest.warns(DeprecationWarning) as record:
         construct_config(model, data, source=Path(source), section=section)
-    return str(excinfo.value)
+    messages = [str(w.message) for w in record if str(w.message).startswith("unknown key")]
+    assert messages, "expected an unknown-key DeprecationWarning"
+    return messages[0]
 
 
-def test_unknown_key_error_message_shape(canon_snapshot) -> None:
+def test_unknown_key_warning_message_shape(canon_snapshot) -> None:
     messages = {
-        "run_config_top_level": _error(
+        "run_config": _warning(
             RunConfig,
             {"models": {}, "orchestrator": {}, "evaluation": {"output_dir": "x"}, "computee": {}},
             "run_configs/dev.yaml",
         ),
-        "run_config_nested": _error(
-            RunConfig,
-            {"models": {}, "orchestrator": {"mox_turns": 5}, "evaluation": {"output_dir": "x"}},
-            "run_configs/dev.yaml",
-        ),
-        "project": _error(
+        "project": _warning(
             ProjectConfig,
             {"name": "demo", "discription": "typo"},
             "project.yaml",
         ),
-        "task": _error(
+        "task": _warning(
             TaskConfig,
             {"task_id": "t", "description": "d", "max_turnss": 5},
             "task.yaml",
         ),
-        "grading": _error(
+        "grading": _warning(
             GradingConfig,
-            {"combine": {}, "transcript_rules": {"must_contain_phrase": ["x"]}},
+            {"combine": {}, "transcript_ruless": {"must_contain": ["x"]}},
             "grading.yaml",
             section="grading",
         ),

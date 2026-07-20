@@ -300,11 +300,15 @@ class TestCaptureFinalStateEnvironmentBlock:
 
 
 class TestResolveMaxTurns:
-    def test_orchestrator_default_is_unset(self) -> None:
-        assert OrchestratorConfig().max_turns is None
+    def test_orchestrator_default_is_50(self) -> None:
+        # Pre-M9 semantic: run-level cap is always-on, defaults to 50.
+        # A future release will flip this to opt-in (default None).
+        assert OrchestratorConfig().max_turns == 50
 
-    def test_default_config_leaves_task_value_uncapped(self) -> None:
-        assert resolve_max_turns(100, OrchestratorConfig().max_turns) == 100
+    def test_default_config_clamps_task_value_to_run_cap(self) -> None:
+        # A task authoring max_turns=100 clamps to the run cap default (50).
+        # To let a higher task value stand, an operator must raise the run cap.
+        assert resolve_max_turns(100, OrchestratorConfig().max_turns) == 50
 
     def test_both_unset_falls_back_to_engine_default(self) -> None:
         assert resolve_max_turns(None, None) == DEFAULT_MAX_TURNS == 50

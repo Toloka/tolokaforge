@@ -1068,7 +1068,7 @@ class EnvironmentPatch(BaseModel):
     :class:`EnvironmentManifest` output type.
     """
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}
 
     stack: StackPatch | None = None
     """Substrate slot — see :class:`StackPatch`. A task patch that sets

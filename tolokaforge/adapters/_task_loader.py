@@ -47,13 +47,14 @@ This module composes existing types only — :class:`Path`, :mod:`yaml`,
 from __future__ import annotations
 
 import os
+import warnings
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from tolokaforge.core.deprecations import canonicalize_actor_config
+from tolokaforge.core.deprecations import canonicalize_actor_config, source_context
 from tolokaforge.core.models import TaskConfig, TaskDefaults
 from tolokaforge.core.project_loader import construct_config, deep_merge
 
@@ -172,11 +173,19 @@ def load_task_yaml(
     # ``actors.user`` and ``deep_merge`` composes them field-by-field. Run
     # per-layer: a post-merge coercer sees both keys deposited by different
     # layers and could not tell a cross-layer override from a same-source
-    # conflict.
-    canonicalize_actor_config(task_data)
-    canonicalize_actor_config(domain_data)
-    if project_task_defaults:
-        project_task_defaults = canonicalize_actor_config(dict(project_task_defaults))
+    # conflict. The task-side ``source_context`` names task.yaml so any
+    # emitted ``DeprecationWarning`` carries the right basename; domain-
+    # side coercion runs inside ``_load_domain_dict`` where the domain
+    # file path is in scope; project-side coercion already ran in
+    # ``load_project_config`` (this second call is idempotent).
+    with source_context(task_path):
+        canonicalize_actor_config(task_data)
+    # domain_data already canonicalised inside _load_domain_dict (with the
+    # domain file path in source_context); project_task_defaults already
+    # canonicalised inside load_project_config. Both calls here were
+    # redundant duplicates that could re-fire warnings without source
+    # context — removed.
+    _ = project_task_defaults  # no-op: canonicalisation happens upstream
 
     # Build the precedence chain from lowest to highest. ``deep_merge``
     # is delta-wins, so the second argument overrides the first on conflict.
@@ -232,32 +241,43 @@ def _resolve_environment_manifest_paths(task_data: dict, task_root: Path, task_p
         )
 
     if "stack" in manifest and manifest["stack"] is None:
-        raise RuntimeError(
-            f"Task file {task_path}: 'environment_manifest.stack' must not be null — "
+        warnings.warn(
+            f"Task file {task_path}: 'environment_manifest.stack: null' is deprecated — "
             "a task cannot unset the environment out from under a project that declares "
-            "one. Omit the key to inherit the project's stack, or declare a stack."
+            "one. Omit the key entirely to inherit the project's stack, or declare a "
+            "stack sub-object explicitly. Strict rejection deferred to a future release.",
+            DeprecationWarning,
+            stacklevel=2,
         )
+        # Drop the null key so the loader treats it as unset (inherit-from-project).
+        manifest.pop("stack")
 
     stack = manifest.get("stack")
     if isinstance(stack, dict) and "compose_file" in stack:
         compose_file = stack["compose_file"]
         if compose_file is None:
-            raise RuntimeError(
-                f"Task file {task_path}: "
-                f"'environment_manifest.stack.compose_file' must not be null — "
-                "a task cannot unset the substrate pointer; there is no engine-default "
-                "compose file to fall through to. Omit the key to inherit."
+            warnings.warn(
+                f"Task file {task_path}: 'environment_manifest.stack.compose_file: null' "
+                "is deprecated — a task cannot unset the substrate pointer; there is no "
+                "engine-default compose file to fall through to. Omit the key entirely "
+                "to inherit the project's compose_file. Strict rejection deferred to a "
+                "future release.",
+                DeprecationWarning,
+                stacklevel=2,
             )
-        if not isinstance(compose_file, str):
-            raise RuntimeError(
-                f"Task file {task_path}: "
-                f"'environment_manifest.stack.compose_file' must be a string "
-                f"(got {type(compose_file).__name__})"
-            )
-        resolved = Path(compose_file)
-        if not resolved.is_absolute():
-            resolved = (task_root / resolved).resolve()
-        stack["compose_file"] = str(resolved)
+            # Drop the null key so the loader treats it as unset (inherit-from-project).
+            stack.pop("compose_file")
+        else:
+            if not isinstance(compose_file, str):
+                raise RuntimeError(
+                    f"Task file {task_path}: "
+                    f"'environment_manifest.stack.compose_file' must be a string "
+                    f"(got {type(compose_file).__name__})"
+                )
+            resolved = Path(compose_file)
+            if not resolved.is_absolute():
+                resolved = (task_root / resolved).resolve()
+            stack["compose_file"] = str(resolved)
 
     if "compose_file" in manifest:
         compose_file = manifest["compose_file"]
@@ -323,6 +343,12 @@ def _load_domain_dict(task_path: Path, task_data: dict, task_root: Path) -> dict
         )
 
     _rewrite_task_paths(domain_data, domain_path.parent, task_root)
+    # Lift legacy top-level ``user_simulator`` inside the domain layer to
+    # ``actors.user`` here (rather than at the caller) so any
+    # ``DeprecationWarning`` names this domain file, not the referring
+    # task.yaml. Idempotent: a canonical layer is left untouched.
+    with source_context(domain_path):
+        canonicalize_actor_config(domain_data)
     return domain_data
 
 

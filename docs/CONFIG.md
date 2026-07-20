@@ -45,7 +45,8 @@ orchestrator:
   max_attempt_retries: 1      # optional retries for transient infra failures
   queue_backend: "sqlite"     # "sqlite" (default) or "postgres"
   queue_postgres_dsn: null    # required when queue_backend="postgres"
-  # max_turns: 60             # optional run-level cap; omit for none
+  # max_turns: 60             # run-level cap (default 50); raise to let
+                              # task-authored max_turns above 50 stand
   continue_prompt: "Please proceed to the next step."
   timeouts:
     turn_s: 60

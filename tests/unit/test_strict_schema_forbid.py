@@ -1,13 +1,14 @@
-"""Unit tests for strict ``extra="forbid"`` on the Project-layer models and
-the ``construct_config`` loader error surface.
+"""Unit tests for the ``construct_config`` unknown-key warning surface and
+the schema-shape aliases that survive it.
 
 Two contracts:
 
-* Every Project-layer root rejects an unknown key — a stray field is a load
-  error, not a silently-dropped value.
-* The schema-shape aliases still resolve under strict validation: they are
-  lifted / renamed at the parse boundary *before* the extra-key check, so a
-  legacy key never reaches the model as an unknown field.
+* An unknown top-level key on a Project-layer root emits a
+  ``DeprecationWarning`` naming the file, the key, and the closest schema
+  match — then the key is dropped so the pack still loads.
+* The schema-shape aliases still resolve: they are lifted / renamed at the
+  parse boundary before construction, so a legacy key never surfaces as an
+  unknown field.
 """
 
 from __future__ import annotations
@@ -35,46 +36,66 @@ def _run_config_base(**extra) -> dict:
     return {"models": {}, "orchestrator": {}, "evaluation": {"output_dir": "x"}, **extra}
 
 
-class TestUnknownKeysRejected:
-    """A representative model from each YAML root refuses a stray field."""
+class TestUnknownKeyWarnings:
+    """A representative model from each YAML root warns on a stray top-level
+    key and then drops it rather than failing the load."""
 
-    def test_run_config_rejects_unknown_key(self) -> None:
-        with pytest.raises(ValidationError, match="extra_forbidden"):
-            RunConfig(**_run_config_base(bogus=1))
+    def test_run_config_warns_on_unknown_key(self) -> None:
+        with pytest.warns(DeprecationWarning, match="unknown key 'bogus'"):
+            cfg = construct_config(
+                RunConfig, _run_config_base(bogus=1), source=Path("run_configs/dev.yaml")
+            )
+        assert not hasattr(cfg, "bogus")
 
-    def test_project_config_rejects_unknown_key(self) -> None:
-        with pytest.raises(ValidationError, match="extra_forbidden"):
-            ProjectConfig(name="p", bogus=1)
+    def test_project_config_warns_on_unknown_key(self) -> None:
+        with pytest.warns(DeprecationWarning, match="unknown key 'bogus'"):
+            construct_config(ProjectConfig, {"name": "p", "bogus": 1}, source=Path("project.yaml"))
 
-    def test_task_config_rejects_unknown_key(self) -> None:
-        with pytest.raises(ValidationError, match="extra_forbidden"):
-            TaskConfig(task_id="t", description="d", bogus=1)
+    def test_task_config_warns_on_unknown_key(self) -> None:
+        with pytest.warns(DeprecationWarning, match="unknown key 'bogus'"):
+            construct_config(
+                TaskConfig,
+                {"task_id": "t", "description": "d", "bogus": 1},
+                source=Path("task.yaml"),
+            )
 
-    def test_grading_config_rejects_unknown_key(self) -> None:
-        with pytest.raises(ValidationError, match="extra_forbidden"):
-            GradingConfig(combine={}, bogus=1)
+    def test_grading_config_warns_on_unknown_key(self) -> None:
+        with pytest.warns(DeprecationWarning, match="unknown key 'bogus'"):
+            construct_config(
+                GradingConfig, {"combine": {}, "bogus": 1}, source=Path("grading.yaml")
+            )
 
-    def test_environment_patch_rejects_unknown_key(self) -> None:
-        with pytest.raises(ValidationError, match="extra_forbidden"):
-            EnvironmentPatch(bogus=1)
+    def test_environment_patch_warns_on_unknown_key(self) -> None:
+        with pytest.warns(DeprecationWarning, match="unknown key 'bogus'"):
+            construct_config(EnvironmentPatch, {"bogus": 1}, source=Path("task.yaml"))
+
+    def test_warning_names_file_key_and_suggestion(self) -> None:
+        with pytest.warns(DeprecationWarning) as record:
+            construct_config(
+                RunConfig, _run_config_base(computee={}), source=Path("run_configs/dev.yaml")
+            )
+        message = str(record[0].message)
+        assert "dev.yaml" in message
+        assert "computee" in message
+        assert "compute" in message
+
+    def test_nested_unknown_key_dropped_without_warning(self, recwarn) -> None:
+        # Only top-level keys are checked; an unknown key nested inside a
+        # sub-model is dropped silently — a future strict flip restores the
+        # recursive scan.
+        construct_config(
+            RunConfig,
+            _run_config_base(orchestrator={"mox_turns": 5}),
+            source=Path("run_configs/dev.yaml"),
+        )
+        assert not [w for w in recwarn if "unknown key" in str(w.message)]
 
 
 class TestConstructConfigErrorSurface:
-    def test_unknown_key_names_file_key_and_suggestion(self) -> None:
-        with pytest.raises(RuntimeError) as excinfo:
-            construct_config(
-                RunConfig,
-                _run_config_base(orchestrator={"mox_turns": 5}),
-                source=Path("run_configs/dev.yaml"),
-            )
-        message = str(excinfo.value)
-        assert "dev.yaml" in message
-        assert "orchestrator.mox_turns" in message
-        assert "max_turns" in message
-
     def test_non_extra_error_re_raises_unchanged(self) -> None:
-        # A missing required field is not an extra-key error; the loader must
-        # surface pydantic's own ValidationError, never the friendly message.
+        # A missing required field is not an unknown-key case; the loader must
+        # surface pydantic's own ValidationError, never swallow it behind the
+        # warn-and-drop path.
         with pytest.raises(ValidationError):
             construct_config(
                 RunConfig,
@@ -83,9 +104,9 @@ class TestConstructConfigErrorSurface:
             )
 
 
-class TestAliasesSurviveStrictValidation:
-    """The critical interaction: legacy aliases are lifted before the extra
-    check, so strict validation accepts them while an unknown key fails."""
+class TestAliasesSurviveConstruction:
+    """The critical interaction: legacy aliases are lifted before the model
+    sees the data, so construction accepts them while an unknown key warns."""
 
     def test_task_packs_alias_accepted(self) -> None:
         cfg = EvaluationConfig(task_packs=["./pack_a"], output_dir="x")
@@ -99,11 +120,11 @@ class TestAliasesSurviveStrictValidation:
         ctx = SecurityContext(user=1000)
         assert ctx.run_as_user == 1000
 
-    def test_user_simulator_alias_lifted_before_forbid(self) -> None:
+    def test_user_simulator_alias_lifted_before_construction(self) -> None:
         # ``user_simulator`` is canonicalised into ``actors.user`` at the
         # loader boundary (per-layer, pre-merge) — the same lift the task
-        # loader runs before constructing TaskConfig. Strict validation then
-        # sees only ``actors.user`` and accepts it.
+        # loader runs before constructing TaskConfig. Construction then sees
+        # only ``actors.user`` and accepts it.
         data = canonicalize_actor_config(
             {"task_id": "t", "description": "d", "user_simulator": {"mode": "scripted"}}
         )

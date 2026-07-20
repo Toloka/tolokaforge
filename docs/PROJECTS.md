@@ -495,15 +495,15 @@ Four task-shape knobs currently exist on both sides — `max_turns`,
 task chain canonical for task shape and redefines the run-side
 copies as **caps or removes them**:
 
-- `orchestrator.max_turns` is a run-level hard cap, not a value,
-  and it is **optional**: unset (the default) means no cap and
-  the task-resolved `max_turns` stands alone. When set, the
-  effective turn budget = `min(task-resolved max_turns,
-  orchestrator.max_turns)` — a task can never raise itself above
-  the run's cap. When neither the run nor the task declares a
-  value, the engine default (50 turns) applies. Most projects
-  should leave it unset; set it only as an operator guard (e.g. a
-  tight CI profile).
+- `orchestrator.max_turns` is a run-level hard cap, not a value.
+  Today it defaults to `50` — an always-on cap that clamps every
+  task's declared `max_turns` down to at most 50. Effective turn
+  budget = `min(task-resolved max_turns, orchestrator.max_turns)`;
+  a task can never raise itself above the run's cap. To let a task
+  ship a higher `max_turns`, raise `orchestrator.max_turns` in the
+  run config to match. A future release (tracked in #534) will flip
+  the default to unset (opt-in), so this cap will only apply when
+  the operator sets it explicitly.
 - `orchestrator.timeouts` caps the task-resolved timeouts the
   same way, and is optional the same way. M2 unifies the two
   timeout shapes onto the task-side field names
@@ -740,8 +740,10 @@ run_defaults:
     logging: { level: "INFO", exporter: "stdout" }
   orchestrator:
     repeats: 1
-    # max_turns: 60      # optional run-level hard cap: effective =
-    #                    # min(task, this); omit (default) for no cap
+    # max_turns: 60      # run-level hard cap (default 50): effective =
+    #                    # min(task, this). Raise above a task's declared
+    #                    # max_turns to let it stand uncapped. #534 will
+    #                    # flip the default to unset (opt-in cap).
     auto_start_services: true
     shuffle_trials: false
 ```

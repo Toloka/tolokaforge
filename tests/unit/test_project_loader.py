@@ -190,19 +190,31 @@ class TestLoadProjectConfig:
         assert project.default_environment.stack.compose_file.is_absolute()
         assert project.default_environment.stack.compose_file == rel_compose.resolve()
 
-    def test_null_default_environment_stack_raises(self, tmp_path: Path) -> None:
+    def test_null_default_environment_stack_warns_and_drops(self, tmp_path: Path) -> None:
         path = self._write_project(tmp_path, {"default_environment": {"stack": None}})
-        with pytest.raises(RuntimeError, match="default_environment.stack' must not be null"):
-            load_project_config(path)
+        with pytest.warns(
+            DeprecationWarning, match="default_environment.stack: null' is deprecated"
+        ):
+            project = load_project_config(path)
+        # Null key is dropped so the project loads as if the stack were unset.
+        assert project.default_environment is not None
+        assert project.default_environment.stack is None
 
-    def test_null_default_environment_stack_compose_file_raises(self, tmp_path: Path) -> None:
+    def test_null_default_environment_stack_compose_file_warns_and_drops(
+        self, tmp_path: Path
+    ) -> None:
         path = self._write_project(
             tmp_path, {"default_environment": {"stack": {"compose_file": None}}}
         )
-        with pytest.raises(
-            RuntimeError, match="default_environment.stack.compose_file' must not be null"
+        with pytest.warns(
+            DeprecationWarning,
+            match="default_environment.stack.compose_file: null' is deprecated",
         ):
-            load_project_config(path)
+            project = load_project_config(path)
+        # Null compose_file is dropped; stack subobject survives.
+        assert project.default_environment is not None
+        assert project.default_environment.stack is not None
+        assert project.default_environment.stack.compose_file is None
 
     def test_missing_file_raises(self, tmp_path: Path) -> None:
         with pytest.raises(FileNotFoundError):

@@ -40,13 +40,17 @@ class TestActorSpec:
         assert spec.backstory is None
         assert spec.scripted_flow is None
 
-    def test_forbids_unknown_sub_keys(self) -> None:
-        # `tools` and `service` are reserved by the design; using them
-        # today is a load error so a pack cannot repurpose the name.
-        with pytest.raises(ValidationError):
-            ActorSpec(tools=["bash"])  # type: ignore[call-arg]
-        with pytest.raises(ValidationError):
-            ActorSpec(service="runner")  # type: ignore[call-arg]
+    def test_unknown_sub_keys_are_dropped(self) -> None:
+        # `tools` and `service` are reserved by the design; today they are
+        # silently dropped from the model (``extra="ignore"``) — a future
+        # strict flip (tracked in #533) will reject them via
+        # ``construct_config``'s file+key+suggestion warning that becomes an
+        # error. The soft-drop keeps external packs authored against the
+        # pre-M9 schema loading unchanged.
+        spec = ActorSpec(tools=["bash"])  # type: ignore[call-arg]
+        assert not hasattr(spec, "tools")
+        spec = ActorSpec(service="runner")  # type: ignore[call-arg]
+        assert not hasattr(spec, "service")
 
     def test_accepts_documented_fields(self) -> None:
         spec = ActorSpec(mode="llm", persona="curious engineer", backstory="…")
@@ -166,16 +170,22 @@ class TestSeedRef:
         with pytest.raises(ValidationError, match="digest"):
             SeedRef.model_validate({"path": "/x/y.sql", "kind": "sql_dump"})
 
-    def test_extra_keys_rejected(self) -> None:
-        with pytest.raises(ValidationError):
-            SeedRef.model_validate(
-                {
-                    "path": "/x/y.sql",
-                    "kind": "sql_dump",
-                    "digest": "sha256:aaaa",
-                    "unknown": 1,
-                }
-            )
+    def test_extra_keys_are_dropped(self) -> None:
+        # Extra keys silently drop (``extra="ignore"``) — a future strict
+        # flip (tracked in #533) will reject them via ``construct_config``'s
+        # file+key+suggestion warning that becomes an error. The soft-drop
+        # keeps external packs authored against the pre-M9 schema loading
+        # unchanged.
+        seed = SeedRef.model_validate(
+            {
+                "path": "/x/y.sql",
+                "kind": "sql_dump",
+                "digest": "sha256:aaaa",
+                "unknown": 1,
+            }
+        )
+        assert str(seed.path) == "/x/y.sql"
+        assert not hasattr(seed, "unknown")
 
     @pytest.mark.parametrize(
         "kind",
@@ -204,9 +214,13 @@ class TestAssetsConfig:
         ac = AssetsConfig()
         assert ac.seeds == {}
 
-    def test_extra_keys_rejected(self) -> None:
-        with pytest.raises(ValidationError):
-            AssetsConfig(seeds={}, unknown_field=1)  # type: ignore[call-arg]
+    def test_extra_keys_are_dropped(self) -> None:
+        # Extra keys silently drop (``extra="ignore"``) — a future strict
+        # flip (tracked in #533) will reject them via ``construct_config``'s
+        # file+key+suggestion warning that becomes an error.
+        ac = AssetsConfig(seeds={}, unknown_field=1)  # type: ignore[call-arg]
+        assert ac.seeds == {}
+        assert not hasattr(ac, "unknown_field")
 
 
 class TestProjectConfigAssets:
