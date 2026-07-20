@@ -45,7 +45,8 @@ orchestrator:
   max_attempt_retries: 1      # optional retries for transient infra failures
   queue_backend: "sqlite"     # "sqlite" (default) or "postgres"
   queue_postgres_dsn: null    # required when queue_backend="postgres"
-  max_turns: 50
+  # max_turns: 60             # run-level cap (default 50); raise to let
+                              # task-authored max_turns above 50 stand
   continue_prompt: "Please proceed to the next step."
   timeouts:
     turn_s: 60
@@ -87,14 +88,14 @@ Notes:
   - `TASK_PACKS_DIRS` for orchestrator-visible pack roots
   - `TASKS_DIRS` for mock-web task roots (category directories)
 - Recommended: generate compose override from config via
-  `uv run python scripts/generate_task_pack_compose_override.py --config examples/native/coding/run_config.yaml --output docker-compose.taskpacks.override.yaml`
+  `uv run python scripts/generate_task_pack_compose_override.py --config examples/native/coding/run_configs/dev.yaml --output docker-compose.taskpacks.override.yaml`
 - For long runs, inspect progress with:
   `tolokaforge status --run-dir <output_dir_timestamped>`
 - For Postgres queue status (no local `run_queue.sqlite`):
-  `tolokaforge status --run-dir <any_existing_dir> --config examples/native/coding/run_config.yaml`
+  `tolokaforge status --run-dir <any_existing_dir> --config examples/native/coding/run_configs/dev.yaml`
 - For distributed worker mode:
-  `tolokaforge prepare --config examples/native/coding/run_config.yaml --run-dir <run_dir> --reset-queue`
-  `tolokaforge worker --config examples/native/coding/run_config.yaml --run-dir <run_dir>`
+  `tolokaforge prepare --config examples/native/coding/run_configs/dev.yaml --run-dir <run_dir> --reset-queue`
+  `tolokaforge worker --config examples/native/coding/run_configs/dev.yaml --run-dir <run_dir>`
 - For multi-runner distributed execution (e.g., GitHub Actions matrix), use
   `queue_backend: postgres` with a shared `queue_postgres_dsn`.
 

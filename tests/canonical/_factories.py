@@ -14,6 +14,7 @@ from pathlib import Path
 import yaml
 
 from tolokaforge.core.models import (
+    ActorSpec,
     InitialStateConfig,
     Metrics,
     ModelConfig,
@@ -22,7 +23,6 @@ from tolokaforge.core.models import (
     ToolsConfig,
     Trajectory,
     TrialStatus,
-    UserSimulatorConfig,
 )
 from tolokaforge.core.trial import EnvEndpoints, EnvironmentManifest, TrialSpec
 from tolokaforge.runner.models import TaskDescription
@@ -73,7 +73,7 @@ def make_task_config(
         description=description,
         initial_state=InitialStateConfig(),
         tools=ToolsConfig(),
-        user_simulator=UserSimulatorConfig(mode="scripted"),
+        actors={"user": ActorSpec(mode="scripted")},
         grading=grading,
     )
 

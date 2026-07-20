@@ -46,7 +46,7 @@ See [Python Package Guide](docs/PYTHON_PACKAGE.md) for all extras and programmat
 cp .env.example .env
 
 # 2. Run one of the included examples
-uv run tolokaforge run --config examples/native/coding/run_config.yaml
+uv run tolokaforge run --config examples/native/coding/run_configs/dev.yaml
 
 # 3. Check results
 uv run tolokaforge status --run-dir results/coding_example
@@ -58,7 +58,7 @@ That's it. Docker services for browser / mobile / RAG tasks start automatically 
 
 ### What is a run config?
 
-A run config (e.g. `examples/native/coding/run_config.yaml`) is a single YAML file
+A run config (e.g. `examples/native/coding/run_configs/dev.yaml`) is a single YAML file
 that fully specifies an evaluation. The harness reads it and runs the benchmark:
 
 ```yaml
@@ -81,7 +81,7 @@ evaluation:                   # what to evaluate
 To write your own benchmark, copy a working example as a starting point:
 
 ```bash
-cp examples/native/coding/run_config.yaml my_run.yaml
+cp examples/native/coding/run_configs/dev.yaml my_run.yaml
 $EDITOR my_run.yaml         # change model, tasks_glob, output_dir
 uv run tolokaforge run --config my_run.yaml
 ```

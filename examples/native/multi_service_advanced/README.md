@@ -35,14 +35,15 @@ uv run tolokaforge validate --tasks "examples/native/multi_service_advanced/data
 ## Run
 
 ```bash
-scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_advanced/run_config.yaml
+scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_advanced/run_configs/dev.yaml
 ```
 
 ## Layout
 
 ```
 examples/native/multi_service_advanced/
-├── run_config.yaml                # haiku-4.5 agent, sonnet-4.6 user
+├── project.yaml                   # identity + task discovery + task_defaults
+├── run_configs/dev.yaml           # haiku-4.5 agent, sonnet-4.6 user
 ├── README.md                      # this file
 └── dataset/tasks/multi_service/
     └── orders_customers_join_01/

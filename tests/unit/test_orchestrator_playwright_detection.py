@@ -31,7 +31,7 @@ def _task(enabled_tools: list[str]) -> TaskConfig:
         initial_user_message="x",
         initial_state={},
         tools={"agent": {"enabled": enabled_tools}, "user": {"enabled": []}},
-        user_simulator={"mode": "scripted"},
+        actors={"user": {"mode": "scripted"}},
         grading="grading.yaml",
     )
 

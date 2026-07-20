@@ -35,7 +35,7 @@ orchestrator:
   queue_backend: sqlite
 
 evaluation:
-  task_packs:
+  projects:
     - "examples/native/multi_service_lot_ops/dataset"
   tasks_glob: "tasks/lot_ops_01/task.yaml"
   output_dir: "results/multi_service_lot_ops_example"

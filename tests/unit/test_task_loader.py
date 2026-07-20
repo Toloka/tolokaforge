@@ -445,6 +445,67 @@ class TestLoadTaskYaml:
         assert task.environment_manifest.stack.compose_file.is_absolute()
         assert task.environment_manifest.stack.compose_file == rel_compose.resolve()
 
+    def _write_task_with_stack(self, tmp_path: Path, stack: object) -> Path:
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(
+            task_path,
+            {
+                "task_id": "x",
+                "name": "x",
+                "category": "x",
+                "description": "x",
+                "initial_state": {},
+                "tools": {"agent": {"enabled": []}, "user": {"enabled": []}},
+                "user_simulator": {"mode": "scripted", "scripted_flow": []},
+                "grading": "g.yaml",
+                "environment_manifest": {"stack": stack},
+            },
+        )
+        return task_path
+
+    def test_null_stack_warns_and_drops(self, tmp_path: Path) -> None:
+        task_path = self._write_task_with_stack(tmp_path, None)
+        with pytest.warns(DeprecationWarning, match=r"stack: null'.*is deprecated"):
+            task, _ = load_task_yaml(task_path)
+        # The null key is dropped so the loader treats it as unset (inherit-from-project).
+        assert task.environment_manifest is not None
+        assert task.environment_manifest.stack is None
+
+    def test_null_stack_compose_file_warns_and_drops(self, tmp_path: Path) -> None:
+        task_path = self._write_task_with_stack(tmp_path, {"compose_file": None})
+        with pytest.warns(DeprecationWarning, match=r"stack\.compose_file: null'.*is deprecated"):
+            task, _ = load_task_yaml(task_path)
+        # The null compose_file key is dropped; stack subobject survives.
+        assert task.environment_manifest is not None
+        assert task.environment_manifest.stack is not None
+        assert task.environment_manifest.stack.compose_file is None
+
+    def test_empty_stack_loads(self, tmp_path: Path) -> None:
+        task_path = self._write_task_with_stack(tmp_path, {})
+        task, _ = load_task_yaml(task_path)
+        assert task.environment_manifest is not None
+
+    def test_stack_inputs_only_loads(self, tmp_path: Path) -> None:
+        task_path = self._write_task_with_stack(tmp_path, {"inputs": {"x": "1"}})
+        task, _ = load_task_yaml(task_path)
+        assert task.environment_manifest is not None
+        assert task.environment_manifest.stack is not None
+        assert task.environment_manifest.stack.inputs == {"x": "1"}
+
+    def test_stack_real_compose_file_loads(self, tmp_path: Path) -> None:
+        task_path = self._write_task_with_stack(tmp_path, {"compose_file": "env.compose.yaml"})
+        task, _ = load_task_yaml(task_path)
+        assert task.environment_manifest is not None
+        assert task.environment_manifest.stack is not None
+        assert task.environment_manifest.stack.compose_file is not None
+
+    def test_non_string_stack_compose_file_still_raises_type_error(self, tmp_path: Path) -> None:
+        task_path = self._write_task_with_stack(tmp_path, {"compose_file": 3})
+        with pytest.raises(
+            RuntimeError, match="stack.compose_file' must be a string \\(got int\\)"
+        ):
+            load_task_yaml(task_path)
+
     def test_dangling_domain_ref_raises(self, tmp_path: Path) -> None:
         task_path = tmp_path / "testcases" / "c" / "task.yaml"
         task_path.parent.mkdir(parents=True)
@@ -559,6 +620,7 @@ def test_load_task_yaml_real_example(tmp_path: Path) -> None:
     case = (
         repo_root
         / "examples"
+        / "native"
         / "native_shared_domain"
         / "dataset"
         / "notes"

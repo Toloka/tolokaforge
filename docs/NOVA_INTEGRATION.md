@@ -48,7 +48,7 @@ The following Nova models are supported (as of November 2025):
 ## Configuration Example
 
 ```yaml
-# examples/native/coding/run_config.yaml
+# examples/native/coding/run_configs/dev.yaml
 models:
   agent:
     provider: "nova"
@@ -81,7 +81,7 @@ Run evaluations with Nova models:
 
 ```bash
 # Run with Nova configuration
-uv run tolokaforge run --config examples/native/coding/run_config.yaml
+uv run tolokaforge run --config examples/native/coding/run_configs/dev.yaml
 ```
 
 ## Model Capabilities

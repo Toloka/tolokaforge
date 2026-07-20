@@ -30,15 +30,17 @@ uv run pytest tests/ -v -m canonical
 uv run pytest tests/canonical/ --update-canon -v
 ```
 
-Integration tests need `.env` variables (API keys, service URLs) — use `scripts/with_env.sh`:
+Integration tests need `.env` variables (API keys, service URLs) — use `scripts/with_env.sh`. They run in parallel with `-n auto` (pytest-xdist):
 
 ```bash
 # Integration tests (needs Docker + API keys in .env)
-scripts/with_env.sh uv run pytest tests/ -v -m integration
+scripts/with_env.sh uv run pytest tests/ -v -m integration -n auto
 
 # Full suite
 scripts/with_env.sh uv run pytest tests/ -v
 ```
+
+Under `-n auto`, `tests/integration/reset_recipes/conftest.py` assigns each xdist worker a unique `COMPOSE_PROJECT_NAME` for the reset-recipe suite, whose stacks all share the `compose` basename and would otherwise collide across workers. The rest of the integration suite derives per-test project names from slug-encoded `make_project_temp_dir` basenames, so it stays in disjoint namespaces without the env pin.
 
 ## Directory Structure
 

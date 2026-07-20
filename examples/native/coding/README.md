@@ -7,13 +7,13 @@ on the file content via JSONPath state checks plus a transcript rule.
 ## Validate
 
 ```bash
-uv run tolokaforge validate --tasks "examples/coding/dataset/**/task.yaml"
+uv run tolokaforge validate --tasks "examples/native/coding/dataset/**/task.yaml"
 ```
 
 ## Run
 
 ```bash
-scripts/with_env.sh uv run tolokaforge run --config examples/coding/run_config.yaml
+scripts/with_env.sh uv run tolokaforge run --config examples/native/coding/run_configs/dev.yaml
 ```
 
 ## Tasks included

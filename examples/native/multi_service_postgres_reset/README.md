@@ -42,7 +42,7 @@ uv run tolokaforge validate --tasks "examples/native/multi_service_postgres_rese
 ## Run
 
 ```bash
-scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_postgres_reset/run_config.yaml
+scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_postgres_reset/run_configs/dev.yaml
 ```
 
 First run is slower than the JSON examples — postgres has to initialise
@@ -55,7 +55,7 @@ before the reset seed applies.
 ```
 examples/native/multi_service_postgres_reset/
 ├── project.yaml                       # Project spec: assets.seeds + default_environment (app-db: reset)
-├── run_config.yaml                    # haiku agent + user, repeats: 2
+├── run_configs/dev.yaml               # haiku agent + user, repeats: 2
 ├── README.md                          # this file
 ├── assets/
 │   └── postgres_baseline.sql          # the reset seed (data-only, overwrites the row with `baseline`)

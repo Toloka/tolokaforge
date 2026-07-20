@@ -1,7 +1,7 @@
 # Reset-recipe example — run config.
 #
-# Sits next to project.yaml so discovery resolves the enclosing project
-# (and its `assets.seeds` + `default_environment`). Exercises the reset
+# The loader walks up to the enclosing project.yaml so discovery resolves
+# its `assets.seeds` + `default_environment`. Exercises the reset
 # code path via `tolokaforge run`: `repeats: 2` provisions the stack
 # twice, so the `postgres_baseline` seed is applied on each of the two
 # trials.

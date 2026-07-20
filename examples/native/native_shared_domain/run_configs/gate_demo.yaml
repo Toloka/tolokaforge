@@ -12,7 +12,7 @@
 # grading (gpt-4o-mini loops and never submits; 4.1-mini terminates).
 #
 # Run with:
-#   scripts/with_env.sh uv run tolokaforge run --config examples/native/native_shared_domain/run_config_gate_demo.yaml
+#   scripts/with_env.sh uv run tolokaforge run --config examples/native/native_shared_domain/run_configs/gate_demo.yaml
 models:
   agent:
     provider: "openrouter"
@@ -35,7 +35,7 @@ orchestrator:
   queue_backend: sqlite
 
 evaluation:
-  task_packs:
+  projects:
     - "examples/native/native_shared_domain/dataset"
   tasks_glob: "**/testcases/add_note_duplicate_check_gated/task.yaml"
   output_dir: "results/native_shared_domain_gate_demo"

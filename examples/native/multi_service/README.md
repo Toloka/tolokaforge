@@ -34,14 +34,15 @@ uv run tolokaforge validate --tasks "examples/native/multi_service/dataset/**/ta
 ## Run
 
 ```bash
-scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service/run_config.yaml
+scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service/run_configs/dev.yaml
 ```
 
 ## Layout
 
 ```
 examples/native/multi_service/
-├── run_config.yaml                # models + orchestrator + evaluation
+├── project.yaml                   # identity + task discovery + task_defaults
+├── run_configs/dev.yaml           # models + orchestrator + evaluation
 ├── README.md                      # this file
 └── dataset/tasks/multi_service/
     └── multi_service_example_01/

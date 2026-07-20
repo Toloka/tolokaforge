@@ -123,14 +123,16 @@ uv run pytest tests/ -v -m unit
 # Canonical tests — snapshot/contract tests, no external services
 uv run pytest tests/ -v -m canonical
 
-# Integration tests — require API keys and/or services
-scripts/with_env.sh uv run pytest tests/ -v -m integration
+# Integration tests — require API keys and/or services; run in parallel
+scripts/with_env.sh uv run pytest tests/ -v -m integration -n auto
 
 # Validate task definitions (tasks/ must be cloned locally or use a custom TASKS_GLOB)
 uv run tolokaforge validate --tasks "tasks/**/task.yaml"
 ```
 
 **`scripts/with_env.sh` convention:** Use `scripts/with_env.sh uv run ...` when you need `.env` variables (API keys, service URLs). Use plain `uv run ...` for tasks that don't need environment variables (unit tests, linting).
+
+**Parallel integration tests:** `-n auto` (pytest-xdist) spreads the integration lane across worker processes. `tests/integration/reset_recipes/conftest.py` gives each worker a unique `COMPOSE_PROJECT_NAME` for the reset-recipe suite, whose stacks all share the `compose` basename and would otherwise collide across workers. The rest of the integration suite derives per-test project names from slug-encoded `make_project_temp_dir` basenames, so it stays disjoint without the env pin.
 
 ### Local Services
 

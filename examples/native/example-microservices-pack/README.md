@@ -15,9 +15,8 @@ inheritance and override patterns. Read alongside
 > auto-generates a REST API from the postgres schema — the pack ships
 > no application code. The compose stack materialises and serves the
 > seeded schema; the loader and per-task manifest resolution work
-> end-to-end. Running individual tasks via `tolokaforge run` needs
-> task-schema relaxation (#366) to land first, since these tasks use
-> the minimal `task_id` + `description` shape PROJECTS.md documents.
+> end-to-end. The tasks use the minimal `task_id` + `description`
+> shape PROJECTS.md documents.
 
 ## Layout
 
@@ -157,7 +156,7 @@ Which scope contributes each field for each task.
 The project's `run_configs/dev.yaml` is slim by design: it
 declares only `models` and `evaluation.output_dir`. Everything
 else (`compute`, `storage`, `observability`, `orchestrator`)
-comes from `project.run_defaults`. Invoke (post-M2) with
+comes from `project.run_defaults`. Invoke with
 `tolokaforge run --config run_configs/dev.yaml`.
 
 To run the same project under a different configuration — more

@@ -17,7 +17,7 @@ distinct behaviours:
   **proving multi-service capture on a completed-but-red grade**. No LLM
   key, no agent loop; only the trial outcome is deterministic.
 * **Test B — runnable + two-layer inspection (one Haiku run, ~$0.50-1.50).**
-  Runs the pack's ``run_config.yaml`` through ``tolokaforge run`` as a
+  Runs the pack's ``run_configs/dev.yaml`` through ``tolokaforge run`` as a
   subprocess and asserts *infrastructure + traces, not agent correctness*: the
   run exits 0, the per-trial backend was selected (the reset seam ran), the
   agent reached both the app layer (``orders-api:8000``) and the cache layer
@@ -62,7 +62,7 @@ from tolokaforge.core.trial_executor import ProvisioningTrialExecutor
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PACK = "examples/native/multi_service_cache_debug"
 _PROJECT_YAML = _REPO_ROOT / _PACK / "project.yaml"
-_RUN_CONFIG = f"{_PACK}/run_config.yaml"
+_RUN_CONFIG = f"{_PACK}/run_configs/dev.yaml"
 _TASK_ID = "cache_debug"
 
 # Redis logs one of these when it loads an RDB snapshot at startup — the

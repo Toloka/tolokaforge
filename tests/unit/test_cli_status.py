@@ -65,6 +65,7 @@ def test_status_reads_postgres_queue_from_config_when_sqlite_missing(
 ) -> None:
     run_dir = tmp_path / "run"
     run_dir.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "project.yaml").write_text(yaml.safe_dump({"name": "test"}), encoding="utf-8")
     config_path = tmp_path / "run.yaml"
     _write_run_config(
         config_path,

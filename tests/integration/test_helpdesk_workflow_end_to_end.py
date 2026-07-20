@@ -61,7 +61,7 @@ pytestmark = [
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PACK = "examples/native/multi_service_helpdesk_workflow"
-_RUN_CONFIG = f"{_PACK}/run_config.yaml"
+_RUN_CONFIG = f"{_PACK}/run_configs/dev.yaml"
 _TASK_ID = "helpdesk_01"
 
 # The five FastAPI app services the agent reaches over the internal compose
