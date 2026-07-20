@@ -9,6 +9,7 @@ from typing import Any, Union
 
 from jsonpath_ng.ext import parse
 
+from tolokaforge.core.hash import canonical_number
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.utils.diff import calculate_state_diff, format_diff_summary
 
@@ -18,7 +19,12 @@ Hashable = Union[str, int, float, tuple["Hashable"], tuple[tuple[str, "Hashable"
 
 
 def to_hashable(item: ToHashable) -> Hashable:
-    """Convert item to hashable representation (tau-bench compatible)"""
+    """Convert item to hashable representation (tau-bench compatible).
+
+    Scalar values pass through :func:`canonical_number` so numerically-equal
+    representations (``"130.00"`` / ``"130.0"`` / ``130``) hash identically and
+    a pure decimal-formatting difference is not graded as a state change.
+    """
     if isinstance(item, dict):
         return tuple((key, to_hashable(value)) for key, value in sorted(item.items()))
     elif isinstance(item, list):
@@ -26,7 +32,7 @@ def to_hashable(item: ToHashable) -> Hashable:
     elif isinstance(item, set):
         return tuple(sorted(to_hashable(element) for element in item))
     else:
-        return item
+        return canonical_number(item)
 
 
 def consistent_hash(value: Hashable) -> str:

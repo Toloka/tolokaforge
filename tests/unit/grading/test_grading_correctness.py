@@ -871,3 +871,53 @@ class TestStableHashComputation:
 
         assert hash1 == hash2
         assert len(hash1) == 64
+
+
+class TestNumericCanonicalization:
+    """Numerically-equal state values must not be graded as a state change.
+
+    Regression: the DB round-trips ``Decimal`` columns through strings, so the
+    same amount surfaces as ``"130.00"`` on one side and ``"130.0"`` (or an
+    ``int``) on the other. The naive hash / diff treated that pure formatting
+    difference as a mismatch and false-failed correct trials (observed on the
+    OTS ``custom_refund_amount`` / payroll ``amount`` fields).
+    """
+
+    def test_decimal_format_hashes_equal(self):
+        """to_hashable/consistent_hash collapse trailing-zero decimal formats."""
+        assert consistent_hash(to_hashable("130.00")) == consistent_hash(to_hashable("130.0"))
+        assert consistent_hash(to_hashable("72.00")) == consistent_hash(to_hashable(72))
+        assert consistent_hash(to_hashable("0.0")) == consistent_hash(to_hashable("0.00"))
+        assert consistent_hash(to_hashable("-5.50")) == consistent_hash(to_hashable("-5.5"))
+
+    def test_state_hash_matches_across_decimal_format(self):
+        """A whole state differing only by decimal format hashes identically."""
+        golden = {"d365_api_cases": [{"case_id": "CAS-1", "custom_refund_amount": "130.00"}]}
+        trial = {"d365_api_cases": [{"case_id": "CAS-1", "custom_refund_amount": "130.0"}]}
+        assert consistent_hash(to_hashable(trial)) == consistent_hash(to_hashable(golden))
+
+    def test_genuine_numeric_difference_still_differs(self):
+        """A real value difference (790.00 vs 0.0) must remain a mismatch."""
+        assert consistent_hash(to_hashable("790.00")) != consistent_hash(to_hashable("0.0"))
+
+    def test_leading_zero_identifier_not_collapsed(self):
+        """Leading-zero id-like strings must not be numerically equated."""
+        assert consistent_hash(to_hashable("00123")) != consistent_hash(to_hashable("123"))
+
+    def test_bool_not_collapsed_to_int(self):
+        """bool stays distinct from its int twin (True == 1 in Python)."""
+        assert consistent_hash(to_hashable(True)) != consistent_hash(to_hashable(1))
+
+    def test_compute_state_diff_ignores_decimal_format(self):
+        """compute_state_diff reports no change when only decimal format differs."""
+        golden = {"d365_api_cases": [{"case_id": "CAS-1", "custom_refund_amount": "130.00"}]}
+        trial = {"d365_api_cases": [{"case_id": "CAS-1", "custom_refund_amount": "130.0"}]}
+        diff = compute_state_diff(trial, golden)
+        assert diff.summary == "States match", f"expected match, got: {diff.summary}"
+
+    def test_compute_state_diff_flags_genuine_amount_difference(self):
+        """A real refund difference is still reported as a mismatch."""
+        golden = {"d365_api_cases": [{"case_id": "CAS-1", "custom_refund_amount": "790.00"}]}
+        trial = {"d365_api_cases": [{"case_id": "CAS-1", "custom_refund_amount": "0.0"}]}
+        diff = compute_state_diff(trial, golden)
+        assert diff.summary != "States match"

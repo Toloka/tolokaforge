@@ -4,6 +4,7 @@ import pytest
 
 from tolokaforge.core.grading.state_checks import (
     StateChecker,
+    canonical_number,
     consistent_hash,
     to_hashable,
 )
@@ -16,30 +17,40 @@ class TestHashFunctions:
     """Test hash normalization and computation"""
 
     def test_to_hashable_dict(self):
-        """Test dict normalization"""
+        """Test dict normalization (scalars pass through canonical_number)."""
         data = {"b": 2, "a": 1, "c": 3}
         result = to_hashable(data)
-        assert result == (("a", 1), ("b", 2), ("c", 3))
+        assert result == (
+            ("a", canonical_number(1)),
+            ("b", canonical_number(2)),
+            ("c", canonical_number(3)),
+        )
 
     def test_to_hashable_list(self):
         """Test list normalization"""
         data = [3, 1, 2]
         result = to_hashable(data)
-        assert result == (3, 1, 2)
+        assert result == (canonical_number(3), canonical_number(1), canonical_number(2))
 
     def test_to_hashable_set(self):
         """Test set normalization"""
         data = {3, 1, 2}
         result = to_hashable(data)
-        assert result == (1, 2, 3)
+        assert result == (canonical_number(1), canonical_number(2), canonical_number(3))
 
     def test_to_hashable_nested(self):
         """Test nested structure normalization"""
         data = {"users": [{"id": 2, "name": "bob"}, {"id": 1, "name": "alice"}], "count": 2}
         result = to_hashable(data)
         expected = (
-            ("count", 2),
-            ("users", ((("id", 2), ("name", "bob")), (("id", 1), ("name", "alice")))),
+            ("count", canonical_number(2)),
+            (
+                "users",
+                (
+                    (("id", canonical_number(2)), ("name", "bob")),
+                    (("id", canonical_number(1)), ("name", "alice")),
+                ),
+            ),
         )
         assert result == expected
 

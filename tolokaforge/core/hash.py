@@ -10,10 +10,66 @@ to ensure consistent results.
 import hashlib
 import json
 import logging
+import re
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# A plain decimal / integer literal with NO leading zeros on the integer part.
+# Leading zeros ("00123", "007") smell like a string identifier and must never be
+# collapsed to a number. Matches e.g. "130", "130.00", "-5.50", "0", "0.0", ".5".
+_DECIMAL_LITERAL_RE = re.compile(r"[+-]?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$|[+-]?\.[0-9]+$")
+_NUMERIC_TAG = "\x00tf-num:"
+
+
+def canonical_number(value: Any) -> Any:
+    """Collapse numerically-equal representations of a value to one token.
+
+    State grading compares field values for equality — via this module's
+    :func:`compute_stable_hash` and via
+    :func:`tolokaforge.core.grading.state_checks.to_hashable`. Databases
+    round-trip ``Decimal`` columns through strings, so the *same* amount
+    surfaces as ``"130.00"`` on one side and ``"130.0"`` (or ``130``) on the
+    other; a naive string/JSON comparison then treats a pure formatting
+    difference as a state change — a grading false-fail.
+
+    This maps every representation of one number to a single canonical token so
+    those format-only differences compare equal, while preserving correctness:
+
+    * ``bool`` is left untouched (``True == 1`` in Python, undesirable here);
+    * identifier-like strings with leading zeros (``"00123"``) are left untouched
+      so two distinct ids are never numerically equated;
+    * genuinely different numbers (``"790.00"`` vs ``"0.0"``) stay different;
+    * non-numeric values pass through unchanged.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float, Decimal)):
+        try:
+            return _NUMERIC_TAG + format(Decimal(str(value)).normalize(), "f")
+        except (InvalidOperation, ValueError):
+            return value
+    if isinstance(value, str):
+        s = value.strip()
+        if s and _DECIMAL_LITERAL_RE.match(s):
+            try:
+                return _NUMERIC_TAG + format(Decimal(s).normalize(), "f")
+            except InvalidOperation:
+                return value
+    return value
+
+
+def _canonicalize_numbers(data: Any) -> Any:
+    """Recursively apply :func:`canonical_number` to every scalar in a state."""
+    if isinstance(data, dict):
+        return {key: _canonicalize_numbers(value) for key, value in data.items()}
+    if isinstance(data, list):
+        return [_canonicalize_numbers(item) for item in data]
+    if isinstance(data, tuple):
+        return tuple(_canonicalize_numbers(item) for item in data)
+    return canonical_number(data)
 
 
 def _convert_datetime_to_str(data: Any) -> Any:
@@ -115,6 +171,8 @@ def filter_unstable_fields(
 def compute_stable_hash(
     state: dict[str, Any],
     unstable_fields: list[str] | None = None,
+    *,
+    canonicalize_numbers: bool = True,
 ) -> str:
     """
     Compute a stable SHA-256 hash of the state dictionary.
@@ -131,6 +189,11 @@ def compute_stable_hash(
     Args:
         state: State dictionary to hash
         unstable_fields: Optional list of field names to exclude from hash
+        canonicalize_numbers: When True (default), collapse numerically-equal
+            representations ("130.00" == "130.0" == 130) before hashing so a
+            pure decimal-formatting difference is not a spurious state mismatch.
+            Pass False to reproduce the legacy byte-for-byte
+            mcp_core.calculate_database_hash() output.
 
     Returns:
         Hexadecimal string of the SHA-256 hash
@@ -150,6 +213,11 @@ def compute_stable_hash(
 
     # Convert datetime objects to strings
     serializable_state = _convert_datetime_to_str(state)
+
+    # Collapse numerically-equal representations ("130.00" == "130.0" == 130) so
+    # a pure decimal-formatting difference is not graded as a state change.
+    if canonicalize_numbers:
+        serializable_state = _canonicalize_numbers(serializable_state)
 
     # Serialize with canonical format matching mcp_core
     json_str = json.dumps(serializable_state, sort_keys=True, separators=(",", ":"), default=str)

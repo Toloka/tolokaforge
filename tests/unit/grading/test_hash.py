@@ -142,3 +142,46 @@ class TestComputeStableHash:
         filter_unstable_fields(state, ["tickets.subject"])
 
         assert state == original, "filter_unstable_fields must not mutate the original dict"
+
+
+class TestComputeStableHashNumericCanonicalization:
+    """Numerically-equal state values must hash identically (grading false-fail fix).
+
+    Regression: the DB round-trips ``Decimal`` columns through strings, so the
+    same amount surfaces as ``"130.00"`` on one side and ``"130.0"`` on the
+    other; the old JSON hash treated that pure formatting difference as a state
+    change and false-failed correct trials (OTS ``custom_refund_amount`` etc.).
+    """
+
+    def test_decimal_trailing_zeros_hash_equal(self):
+        a = {"cases": [{"id": "C1", "refund": "130.00"}]}
+        b = {"cases": [{"id": "C1", "refund": "130.0"}]}
+        assert compute_stable_hash(a) == compute_stable_hash(b)
+
+    def test_int_vs_decimal_string_hash_equal(self):
+        a = {"cases": [{"id": "C1", "qty": 72}]}
+        b = {"cases": [{"id": "C1", "qty": "72.00"}]}
+        assert compute_stable_hash(a) == compute_stable_hash(b)
+
+    def test_genuine_numeric_difference_hashes_differently(self):
+        a = {"cases": [{"id": "C1", "refund": "790.00"}]}
+        b = {"cases": [{"id": "C1", "refund": "0.0"}]}
+        assert compute_stable_hash(a) != compute_stable_hash(b)
+
+    def test_leading_zero_identifier_not_collapsed(self):
+        a = {"cases": [{"code": "00123"}]}
+        b = {"cases": [{"code": "123"}]}
+        assert compute_stable_hash(a) != compute_stable_hash(b)
+
+    def test_bool_not_collapsed_to_int(self):
+        a = {"flags": [{"active": True}]}
+        b = {"flags": [{"active": 1}]}
+        assert compute_stable_hash(a) != compute_stable_hash(b)
+
+    def test_opt_out_preserves_legacy_byte_exact_behavior(self):
+        a = {"cases": [{"id": "C1", "refund": "130.00"}]}
+        b = {"cases": [{"id": "C1", "refund": "130.0"}]}
+        # Legacy mcp_core-exact behavior: without canonicalization the strings differ.
+        assert compute_stable_hash(a, canonicalize_numbers=False) != compute_stable_hash(
+            b, canonicalize_numbers=False
+        )
