@@ -10,18 +10,37 @@ to ensure consistent results.
 import hashlib
 import json
 import logging
-import re
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# A plain decimal / integer literal with NO leading zeros on the integer part.
-# Leading zeros ("00123", "007") smell like a string identifier and must never be
-# collapsed to a number. Matches e.g. "130", "130.00", "-5.50", "0", "0.0", ".5".
-_DECIMAL_LITERAL_RE = re.compile(r"[+-]?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$|[+-]?\.[0-9]+$")
+# Cap the work spent deciding whether a string is a number: no real amount,
+# quantity, or id is this long, and it bounds pathological inputs.
+_MAX_NUMERIC_LEN = 64
 _NUMERIC_TAG = "\x00tf-num:"
+
+
+def _looks_like_plain_decimal(s: str) -> bool:
+    """Whether ``s`` is a plain decimal / integer literal we should canonicalize.
+
+    Linear-time and regex-free (so it cannot backtrack). Accepts ``"130"``,
+    ``"130.00"``, ``"-5.50"``, ``"0"``, ``"0.0"``, ``".5"``; rejects leading-zero
+    integer parts (``"00123"``, ``"007"`` — they smell like string identifiers),
+    scientific notation (``"1e3"``), and anything non-ASCII or non-numeric.
+    """
+    body = s[1:] if s[:1] in ("+", "-") else s
+    int_part, dot, frac_part = body.partition(".")
+    if dot:  # exactly one '.'; the fractional side must be >= 1 ASCII digit
+        if not (frac_part.isascii() and frac_part.isdigit()):
+            return False
+        if int_part and not (int_part.isascii() and int_part.isdigit()):
+            return False
+    elif not (int_part.isascii() and int_part.isdigit()):
+        return False
+    # Reject leading-zero integer parts; allow a lone "0" and "0.x".
+    return not (len(int_part) > 1 and int_part[0] == "0")
 
 
 def canonical_number(value: Any) -> Any:
@@ -53,7 +72,7 @@ def canonical_number(value: Any) -> Any:
             return value
     if isinstance(value, str):
         s = value.strip()
-        if s and _DECIMAL_LITERAL_RE.match(s):
+        if 0 < len(s) <= _MAX_NUMERIC_LEN and _looks_like_plain_decimal(s):
             try:
                 return _NUMERIC_TAG + format(Decimal(s).normalize(), "f")
             except InvalidOperation:
