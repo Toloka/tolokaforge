@@ -12,8 +12,8 @@ from tolokaforge.adapters._task_loader import _detect_task_root, load_task_yaml
 from tolokaforge.adapters.base import AdapterEnvironment, BaseAdapter
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import EnvironmentPatch, GradingConfig, TaskConfig
+from tolokaforge.core.project_loader import construct_config, resolve_effective_grading_combine
 from tolokaforge.core.project_loader import resolve as resolve_environment
-from tolokaforge.core.project_loader import resolve_effective_grading_combine
 
 if TYPE_CHECKING:
     from tolokaforge.runner.models import TaskDescription
@@ -330,7 +330,12 @@ class NativeAdapter(BaseAdapter):
             combine = resolve_effective_grading_combine(
                 self._project_combine_defaults(), task_combine
             )
-            return GradingConfig(**grading_data, combine=combine)
+            return construct_config(
+                GradingConfig,
+                {**grading_data, "combine": combine},
+                source=grading_path,
+                section="grading",
+            )
 
         raise ValueError(f"Grading config not found: {grading_path}")
 

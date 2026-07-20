@@ -30,13 +30,15 @@ task-yaml delta.
 
 from __future__ import annotations
 
+import difflib
 import logging
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar, get_args
 
 import yaml
+from pydantic import BaseModel, ValidationError
 
 from tolokaforge.core.assets import compute_seed_digest
 from tolokaforge.core.deprecations import canonicalize_actor_config, warn_legacy_run_config_dir
@@ -50,6 +52,79 @@ from tolokaforge.core.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ── Strict-schema construction ──────────────────────────────────────────
+
+_ConfigT = TypeVar("_ConfigT", bound=BaseModel)
+
+
+def construct_config(
+    model: type[_ConfigT], data: dict[str, Any], *, source: Path, section: str = ""
+) -> _ConfigT:
+    """Construct a Project-layer config model, turning an unknown-key
+    rejection into a load error that names the file, the offending key
+    path, and the closest schema match.
+
+    Only ``extra_forbidden`` errors are rewritten; a validation failure
+    that carries any other kind of error re-raises unchanged so a genuine
+    type or constraint error is never hidden behind the friendly message.
+    """
+    try:
+        return model(**data)
+    except ValidationError as exc:
+        errors = exc.errors()
+        extra = [e for e in errors if e["type"] == "extra_forbidden"]
+        if not extra or len(extra) != len(errors):
+            raise
+        lines = [_unknown_key_line(model, e["loc"], source, section) for e in extra]
+        raise RuntimeError("\n".join(lines)) from exc
+
+
+def _unknown_key_line(
+    model: type[BaseModel], loc: tuple[Any, ...], source: Path, section: str
+) -> str:
+    key_path = ".".join(str(part) for part in loc)
+    leaf = str(loc[-1])
+    suggestion = difflib.get_close_matches(leaf, _fields_at_loc(model, loc), n=1)
+    where = source.name + (f" ({section})" if section else "")
+    line = f"unknown key '{key_path}' in {where}"
+    if suggestion:
+        line += f" — did you mean '{suggestion[0]}'?"
+    return line
+
+
+def _fields_at_loc(model: type[BaseModel], loc: tuple[Any, ...]) -> list[str]:
+    """Field names of the model the offending key (``loc[-1]``) should have
+    matched, walking BaseModel fields and container value types along the
+    path. Empty when the path can't be resolved to a model."""
+    current: Any = model
+    for part in loc[:-1]:
+        fields = getattr(current, "model_fields", None)
+        if fields is not None and part in fields:
+            current = _model_from_annotation(fields[part].annotation)
+            if current is None:
+                return []
+    fields = getattr(current, "model_fields", None)
+    return list(fields) if fields is not None else []
+
+
+def _model_from_annotation(annotation: Any) -> type[BaseModel] | None:
+    """The ``BaseModel`` subclass an annotation resolves to, unwrapping
+    ``Optional`` / ``Union`` and ``dict`` / ``list`` containers. ``None``
+    for scalar or non-model annotations."""
+    args = get_args(annotation)
+    if not args:
+        return annotation if _is_model(annotation) else None
+    for arg in args:
+        found = _model_from_annotation(arg)
+        if found is not None:
+            return found
+    return None
+
+
+def _is_model(obj: Any) -> bool:
+    return isinstance(obj, type) and issubclass(obj, BaseModel)
 
 
 # ── Filesystem discovery ────────────────────────────────────────────────
@@ -140,7 +215,7 @@ def load_project_config(path: Path) -> ProjectConfig:
     task_defaults = data.get("task_defaults")
     if isinstance(task_defaults, dict):
         canonicalize_actor_config(task_defaults)
-    project = ProjectConfig(**data)
+    project = construct_config(ProjectConfig, data, source=path)
     _verify_seed_digests(project, path)
     return project
 

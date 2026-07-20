@@ -55,7 +55,7 @@ import yaml
 
 from tolokaforge.core.deprecations import canonicalize_actor_config
 from tolokaforge.core.models import TaskConfig
-from tolokaforge.core.project_loader import deep_merge
+from tolokaforge.core.project_loader import construct_config, deep_merge
 
 
 def validate_grading_yaml(grading_path: Path) -> None:
@@ -190,7 +190,7 @@ def load_task_yaml(
     # No-op if the manifest is absent or the path is already absolute.
     _resolve_environment_manifest_paths(task_data, task_root, task_path)
 
-    return TaskConfig(**task_data), task_root
+    return construct_config(TaskConfig, task_data, source=task_path), task_root
 
 
 def _resolve_environment_manifest_paths(task_data: dict, task_root: Path, task_path: Path) -> None:

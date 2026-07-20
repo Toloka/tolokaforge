@@ -974,6 +974,8 @@ class EnvironmentPatch(BaseModel):
     :class:`EnvironmentManifest` output type.
     """
 
+    model_config = {"extra": "forbid"}
+
     stack: StackPatch | None = None
     """Substrate slot — see :class:`StackPatch`. A task patch that sets
     ``stack.compose_file`` replaces the project's whole ``stack``

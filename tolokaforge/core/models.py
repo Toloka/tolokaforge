@@ -381,12 +381,16 @@ class OpenRouterConfig(BaseModel):
     is how a model pins around a rate-limited default provider.
     """
 
+    model_config = {"extra": "forbid"}
+
     provider_order: list[str] | None = None
     allow_fallbacks: bool = True
 
 
 class ModelConfig(BaseModel):
     """LLM model configuration"""
+
+    model_config = {"extra": "forbid"}
 
     provider: str
     name: str
@@ -433,12 +437,16 @@ class ModelConfig(BaseModel):
 class TimeoutConfig(BaseModel):
     """Timeout configuration"""
 
+    model_config = {"extra": "forbid"}
+
     turn_s: int = 60
     episode_s: int = 1800
 
 
 class StuckHeuristics(BaseModel):
     """Stuck detection configuration"""
+
+    model_config = {"extra": "forbid"}
 
     enabled: bool = True
     max_repeated_tool_calls: int = 10
@@ -454,6 +462,8 @@ class TypeSenseConfig(BaseModel):
     - disabled: TypeSense is disabled, search_policy returns empty results
     """
 
+    model_config = {"extra": "forbid"}
+
     enabled: bool = True  # Whether TypeSense is enabled
     mode: Literal["local", "remote", "disabled"] = "local"  # Server mode
     host: str = "127.0.0.1"  # TypeSense server host
@@ -468,6 +478,8 @@ class TypeSenseConfig(BaseModel):
 
 class OrchestratorConfig(BaseModel):
     """Orchestrator configuration"""
+
+    model_config = {"extra": "forbid"}
 
     workers: int = 8
     repeats: int = 5
@@ -589,6 +601,8 @@ class OrchestratorConfig(BaseModel):
 class HarnessAdapterConfig(BaseModel):
     """Configuration for external harness adapters (e.g., Tau-bench)"""
 
+    model_config = {"extra": "forbid"}
+
     type: str = "native"  # "native", "tau", etc.
     params: dict[str, Any] = Field(default_factory=dict)
 
@@ -602,6 +616,8 @@ class EvaluationConfig(BaseModel):
     ``task_packs`` — it is accepted here as an alias for ``projects``
     and coerced with a ``DeprecationWarning``.
     """
+
+    model_config = {"extra": "forbid"}
 
     tasks_glob: str = "**/task.yaml"
     projects: list[str] = Field(default_factory=list)
@@ -624,6 +640,8 @@ class EngineConfig(BaseModel):
     execution semantics) and ``ModelConfig`` (per-model overrides).
     """
 
+    model_config = {"extra": "forbid"}
+
     presets_file: str | None = Field(
         default=None,
         description=(
@@ -639,6 +657,8 @@ class EngineConfig(BaseModel):
 class LocalDockerComputeConfig(BaseModel):
     """Configuration for the ``local-docker`` compute provider."""
 
+    model_config = {"extra": "forbid"}
+
 
 class ComputeConfig(BaseModel):
     """Compute substrate + parallelism + budget selection for a run.
@@ -648,6 +668,8 @@ class ComputeConfig(BaseModel):
     settings. When another provider is registered it shows up as a new
     ``Literal`` value on ``provider`` plus its own sub-block.
     """
+
+    model_config = {"extra": "forbid"}
 
     provider: Literal["local-docker"] = "local-docker"
     workers: int | None = Field(default=None, ge=1)
@@ -745,6 +767,8 @@ class QueueStorageConfig(BaseModel):
     instead of falling back silently.
     """
 
+    model_config = {"extra": "forbid"}
+
     backend: Literal["sqlite", "postgres"] = "sqlite"
     postgres_dsn: str | None = None
 
@@ -758,6 +782,8 @@ class QueueStorageConfig(BaseModel):
 class StorageConfig(BaseModel):
     """Where a run's artifacts, logs, and queue state live."""
 
+    model_config = {"extra": "forbid"}
+
     artifacts: StorageBackend | None = None
     logs: StorageBackend | None = None
     queue: QueueStorageConfig | None = None
@@ -769,6 +795,8 @@ class TracingConfig(BaseModel):
     A non-default ``exporter`` requires an ``endpoint``; ``none`` (the
     default) does not.
     """
+
+    model_config = {"extra": "forbid"}
 
     exporter: Literal["none", "otlp"] = "none"
     endpoint: str | None = None
@@ -787,6 +815,8 @@ class MetricsConfig(BaseModel):
     default) does not.
     """
 
+    model_config = {"extra": "forbid"}
+
     exporter: Literal["none", "prometheus"] = "none"
     endpoint: str | None = None
 
@@ -804,6 +834,8 @@ class LoggingConfig(BaseModel):
     default) does not.
     """
 
+    model_config = {"extra": "forbid"}
+
     level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     exporter: Literal["stdout", "otlp"] = "stdout"
     endpoint: str | None = None
@@ -817,6 +849,8 @@ class LoggingConfig(BaseModel):
 
 class ObservabilityConfig(BaseModel):
     """Tracing, metrics, and logging exporters for a run."""
+
+    model_config = {"extra": "forbid"}
 
     tracing: TracingConfig | None = None
     metrics: MetricsConfig | None = None
@@ -844,6 +878,8 @@ don't (the ``queue`` sub-block is the namespace)."""
 
 class RunConfig(BaseModel):
     """Complete run configuration"""
+
+    model_config = {"extra": "forbid"}
 
     models: dict[str, ModelConfig]
     orchestrator: OrchestratorConfig
@@ -1025,6 +1061,8 @@ def _lift_alias(
 class InitializationAction(BaseModel):
     """One-time environment mutation executed before a trial starts."""
 
+    model_config = {"extra": "forbid"}
+
     env_type: Literal["assistant", "user"]
     func_name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
@@ -1032,6 +1070,8 @@ class InitializationAction(BaseModel):
 
 class InitialStateConfig(BaseModel):
     """Initial environment state configuration"""
+
+    model_config = {"extra": "forbid"}
 
     json_db: str | dict[str, Any] | None = None  # JSON DB initial state
     device_overrides: dict[str, Any] | None = None  # Per-task device state overrides
@@ -1045,12 +1085,16 @@ class InitialStateConfig(BaseModel):
 class ToolsConfig(BaseModel):
     """Tools configuration for task"""
 
+    model_config = {"extra": "forbid"}
+
     agent: dict[str, Any] = Field(default_factory=lambda: {"enabled": []})
     user: dict[str, Any] = Field(default_factory=lambda: {"enabled": []})
 
 
 class UserSimulatorConfig(BaseModel):
     """User simulator configuration"""
+
+    model_config = {"extra": "forbid"}
 
     mode: Literal["scripted", "llm"] = "llm"
     persona: str = "cooperative"
@@ -1102,6 +1146,8 @@ def _validate_actors_map(
 class TaskMetadata(BaseModel):
     """Optional metadata used for analytics slicing."""
 
+    model_config = {"extra": "forbid"}
+
     complexity: str | None = None
     expected_failure_modes: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
@@ -1113,6 +1159,8 @@ class TimeoutDefaults(BaseModel):
     is a run-level cap that clamps these via the min rule at read
     time."""
 
+    model_config = {"extra": "forbid"}
+
     trial_seconds: int = Field(default=600, ge=1)
     tool_call_seconds: int = Field(default=60, ge=1)
 
@@ -1123,6 +1171,8 @@ class StuckHeuristicsDefaults(BaseModel):
     ``OrchestratorConfig.stuck_heuristics`` is deprecated and no longer
     read by the conductor."""
 
+    model_config = {"extra": "forbid"}
+
     enabled: bool = True
     max_repeated_tool_calls: int = Field(default=5, ge=1)
     max_idle_turns: int = Field(default=3, ge=1)
@@ -1130,6 +1180,8 @@ class StuckHeuristicsDefaults(BaseModel):
 
 class TaskConfig(BaseModel):
     """Task specification"""
+
+    model_config = {"extra": "forbid"}
 
     task_id: str
     name: str | None = None
@@ -1214,6 +1266,8 @@ class TaskConfig(BaseModel):
 class EnvAssertion(BaseModel):
     """Environment assertion - runs a check function on agent or user environment"""
 
+    model_config = {"extra": "forbid"}
+
     env_type: Literal["assistant", "user"]  # which environment to check
     func_name: str  # assertion function name
     arguments: dict[str, Any] = Field(default_factory=dict)  # function arguments
@@ -1223,6 +1277,8 @@ class EnvAssertion(BaseModel):
 
 class RequiredAction(BaseModel):
     """Required tool call that must appear in trajectory"""
+
+    model_config = {"extra": "forbid"}
 
     action_id: str  # unique identifier for this action
     requestor: Literal["assistant", "user"]  # who should make the call
@@ -1234,6 +1290,8 @@ class RequiredAction(BaseModel):
 class StateChecksConfig(BaseModel):
     """State checks configuration"""
 
+    model_config = {"extra": "forbid"}
+
     jsonpaths: list[dict[str, Any]] = Field(default_factory=list)
     hash: dict[str, Any] | None = None
     env_assertions: list[EnvAssertion] = Field(default_factory=list)  # NEW
@@ -1244,12 +1302,16 @@ class StateChecksConfig(BaseModel):
 class CommunicateInfo(BaseModel):
     """Information that should be communicated to user"""
 
+    model_config = {"extra": "forbid"}
+
     info: str  # information text to check for
     required: bool = True  # whether this info is required
 
 
 class TranscriptRulesConfig(BaseModel):
     """Transcript rules configuration"""
+
+    model_config = {"extra": "forbid"}
 
     must_contain: list[str] = Field(default_factory=list)
     disallow_regex: list[str] = Field(default_factory=list)
@@ -1267,6 +1329,8 @@ class GradingCombineConfig(BaseModel):
     Consumers that require weights validate presence at use-site.
     """
 
+    model_config = {"extra": "forbid"}
+
     method: str = "weighted"
     weights: dict[str, float] = Field(default_factory=dict)
     pass_threshold: float = 0.8
@@ -1274,6 +1338,8 @@ class GradingCombineConfig(BaseModel):
 
 class GradingConfig(BaseModel):
     """Grading specification"""
+
+    model_config = {"extra": "forbid"}
 
     combine: GradingCombineConfig
     state_checks: StateChecksConfig | None = None
@@ -1286,6 +1352,8 @@ class GradingDefaults(BaseModel):
     """Grading defaults applied to every task via ``task_defaults``. A
     task's own ``grading.yaml.combine`` deep-merges on top."""
 
+    model_config = {"extra": "forbid"}
+
     combine: GradingCombineConfig | None = None
 
 
@@ -1296,6 +1364,8 @@ class TaskDefaults(BaseModel):
     task fields winning on conflict. Every field is optional — omitting a
     field means the engine default (or an adapter default) applies.
     """
+
+    model_config = {"extra": "forbid"}
 
     adapter_type: str | None = None
     max_turns: int | None = Field(default=None, ge=1)
@@ -1330,6 +1400,8 @@ class RunDefaults(BaseModel):
     top. Every field is optional — a project without ``run_defaults`` acts
     as if every run config were a standalone declaration.
     """
+
+    model_config = {"extra": "forbid"}
 
     compute: ComputeConfig | None = None
     storage: StorageConfig | None = None
@@ -1419,11 +1491,15 @@ class AssetsConfig(BaseModel):
 class TaskDiscoveryConfig(BaseModel):
     """Where the loader finds task files under the project directory."""
 
+    model_config = {"extra": "forbid"}
+
     glob: str = "tasks/**/task.yaml"
 
 
 class TaskInventoryConfig(BaseModel):
     """Task discovery configuration on the Project."""
+
+    model_config = {"extra": "forbid"}
 
     discovery: TaskDiscoveryConfig = Field(default_factory=TaskDiscoveryConfig)
 
@@ -1436,6 +1512,8 @@ class ProjectConfig(BaseModel):
     tasks) and ``run_defaults`` (base for run configs). See
     ``docs/PROJECTS.md``.
     """
+
+    model_config = {"extra": "forbid"}
 
     name: str
     version: int = 1

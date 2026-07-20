@@ -183,7 +183,6 @@ class TestTaskLoaderWithProjectDefaults:
         project_defaults = {
             "adapter_type": "native",
             "max_turns": 20,
-            "continue_prompt": "Continue.",
         }
         task, task_dir_out = load_task_yaml(
             task_dir / "task.yaml",
