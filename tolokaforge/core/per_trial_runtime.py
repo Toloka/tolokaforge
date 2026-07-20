@@ -60,6 +60,7 @@ from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, EnvEndpoints
 from tolokaforge.runner.models import EnvironmentManifest
 
 if TYPE_CHECKING:
+    from tolokaforge.core.plugin_registry import RuntimeBackendBuildContext
     from tolokaforge.core.trial import TrialSpec
     from tolokaforge.tools.registry import ToolResult
 
@@ -539,3 +540,10 @@ class PerTrialRuntimeBackend:
             )
             self._connected_trials.add(trial_id)
         return client
+
+
+def per_trial_runtime_backend_factory(
+    ctx: RuntimeBackendBuildContext,
+) -> PerTrialRuntimeBackend:
+    """Build a :class:`PerTrialRuntimeBackend` from a build context."""
+    return PerTrialRuntimeBackend(seeds=ctx.seeds, log_capture=ctx.log_capture)

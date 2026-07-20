@@ -164,21 +164,6 @@ def _run_needs_full_stack(tasks: list[Any], stack_requirements: Any) -> bool:
     return _tasks_need_full_stack(tasks)
 
 
-_DEFAULT_DB_SERVICE_URL = "http://tolokaforge-db-service:8000"
-"""Runner-perspective DB service URL the docker stack injects into the runner
-container at start (`tolokaforge/docker/stacks/core.py`). The orchestrator
-mirrors the value on ``TrialSpec.env_endpoints`` so a future out-of-process
-runner reads its service URLs from the spec instead of its own env."""
-
-
-def _normalise_runner_url(runner_address: str) -> str:
-    """Prepend ``http://`` to a bare ``host:port`` runner address, leaving
-    fully-qualified URLs untouched."""
-    if runner_address.startswith(("http://", "https://")):
-        return runner_address
-    return f"http://{runner_address}"
-
-
 def _declared_engine_service_snapshots(service_stack: Any) -> list[ServiceSnapshot]:
     """Return one ``ServiceSnapshot`` per declared engine service.
 
@@ -217,32 +202,6 @@ def _engine_service_snapshots(service_stack: Any) -> list[ServiceSnapshot]:
             )
         )
     return snapshots
-
-
-def _build_env_endpoints(runner_address: str) -> EnvEndpoints:
-    """Resolve the per-trial service URLs for inclusion in :class:`TrialSpec`.
-
-    Field semantics:
-
-    * ``runner_url`` — derived from the orchestrator's known runner
-      address (the value passed to :class:`SharedStackRuntimeBackend`). Always set.
-    * ``db_url`` — populated in built-in-stack mode from
-      ``DB_SERVICE_URL`` in the environment (or the default the docker
-      stack injects, ``_DEFAULT_DB_SERVICE_URL``). Env_manifest mode
-      resolves it best-effort from the task-declared compose stack; a
-      missing ``db-service`` leaves it ``None`` — see
-      :class:`EnvEndpoints`.
-    * ``rag_url`` — optional. Reads ``RAG_SERVICE_URL`` from the
-      environment if set, otherwise stays ``None``. ``rag-service``
-      ships in ``full_stack`` only, so a ``core_stack`` run with no
-      override resolves to ``None`` — carrying a hardcoded RAG URL
-      would point at a service that isn't running.
-    """
-    return EnvEndpoints(
-        db_url=os.environ.get("DB_SERVICE_URL", _DEFAULT_DB_SERVICE_URL),
-        rag_url=os.environ.get("RAG_SERVICE_URL"),
-        runner_url=_normalise_runner_url(runner_address),
-    )
 
 
 @dataclass(frozen=True)
@@ -785,7 +744,10 @@ class Orchestrator:
                 source=source,
             )
             return PerTrialRuntimeBackend(seeds=seeds, log_capture=log_capture)
-        from tolokaforge.core.shared_stack_runtime import SharedStackRuntimeBackend
+        from tolokaforge.core.shared_stack_runtime import (
+            SharedStackRuntimeBackend,
+            _build_env_endpoints,
+        )
 
         self.logger.info(
             "runtime.backend.selected",
@@ -1432,6 +1394,8 @@ class Orchestrator:
         self._admit_capabilities(runtime_backend)
         self._emit_environment_identities()
 
+        from tolokaforge.core.shared_stack_runtime import _build_env_endpoints
+
         env_endpoints = _build_env_endpoints(runner_address)
         if self._resolve_effective_runtime_choice() == "per_trial" or run_env_manifest is not None:
             # Per-trial backend resolves fresh endpoints per trial via
@@ -1836,6 +1800,8 @@ class Orchestrator:
         self._verify_isolation_compatibility(runtime_backend)
         self._admit_capabilities(runtime_backend)
         self._emit_environment_identities()
+
+        from tolokaforge.core.shared_stack_runtime import _build_env_endpoints
 
         env_endpoints = _build_env_endpoints(runner_address)
         self.logger.info(

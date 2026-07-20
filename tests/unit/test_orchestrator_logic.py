@@ -1102,7 +1102,7 @@ class TestBuildEnvEndpoints:
         """With no env override, ``db_url`` falls back to the URL the docker
         stack injects into the runner container — so the wire value matches
         what the runner already sees today."""
-        from tolokaforge.core.orchestrator import _build_env_endpoints
+        from tolokaforge.core.shared_stack_runtime import _build_env_endpoints
 
         monkeypatch.delenv("DB_SERVICE_URL", raising=False)
         monkeypatch.delenv("RAG_SERVICE_URL", raising=False)
@@ -1114,7 +1114,7 @@ class TestBuildEnvEndpoints:
         assert endpoints.runner_url == "http://executor:50051"
 
     def test_env_overrides_take_precedence(self, monkeypatch: Any) -> None:
-        from tolokaforge.core.orchestrator import _build_env_endpoints
+        from tolokaforge.core.shared_stack_runtime import _build_env_endpoints
 
         monkeypatch.setenv("DB_SERVICE_URL", "http://db.example:8000")
         monkeypatch.setenv("RAG_SERVICE_URL", "http://rag.example:8001")
@@ -1126,13 +1126,13 @@ class TestBuildEnvEndpoints:
         assert endpoints.runner_url == "http://runner.example:50051"
 
     def test_runner_address_with_scheme_passes_through(self) -> None:
-        from tolokaforge.core.orchestrator import _build_env_endpoints
+        from tolokaforge.core.shared_stack_runtime import _build_env_endpoints
 
         endpoints = _build_env_endpoints("http://runner.example:50051")
         assert endpoints.runner_url == "http://runner.example:50051"
 
     def test_runner_address_https_passes_through(self) -> None:
-        from tolokaforge.core.orchestrator import _build_env_endpoints
+        from tolokaforge.core.shared_stack_runtime import _build_env_endpoints
 
         endpoints = _build_env_endpoints("https://runner.example:50051")
         assert endpoints.runner_url == "https://runner.example:50051"
