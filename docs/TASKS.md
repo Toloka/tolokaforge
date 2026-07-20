@@ -116,7 +116,8 @@ Field reference:
 | `runner_service` | no | `"default"` | Which compose service is the tolokaforge runner. Must be a service declared in the compose file. |
 | `services.<name>.isolation` | no | `"ephemeral"` | Per-service posture: `"shared"` (long-lived across trials), `"reset"` (fresh container per trial + `reset.seed` recipe reapplied at each provision), `"ephemeral"` (fresh container per trial, no seed). Backend selection is task-driven — any `reset`/`ephemeral` service routes the run to `PerTrialRuntimeBackend` automatically. See the [multi-container guide](MULTI_CONTAINER_GUIDE.md#choosing-isolation) for how to pick. |
 | `services.<name>.reset.seed` | when `isolation: reset` | — | Name of the seed to apply on each provision. Must exist in the project's `assets.seeds` registry. See [`docs/RESET_RECIPES.md`](RESET_RECIPES.md) for the four seed kinds (`sql_dump` / `filesystem_dir` / `redis_dump` / `bare`). |
-| `network_policy` | no | `"no_internet"` | Public-egress posture for the task's application services. `no_internet` (default) attaches every task service to an `internal` docker network so no service can reach the public internet; `full_internet` runs the compose file unchanged. `limited_internet` is refused at materialisation (needs an egress-allowlist proxy — #323). See below. |
+| `network_policy` | no | `"no_internet"` | Public-egress posture for the task's application services. `no_internet` (default) attaches every task service to an `internal` docker network so no service can reach the public internet; `full_internet` runs the compose file unchanged; `limited_internet` permits egress only to the hosts in `limited_internet_allowlist` via an injected forward proxy. See below. |
+| `limited_internet_allowlist` | when `network_policy: limited_internet` | `[]` | Hosts application services may egress to under `limited_internet`. Each entry is a DNS hostname — exact (`api.openai.com`) or leading-wildcard subdomain (`*.openai.com`). Non-empty iff `network_policy` is `limited_internet` (validated at load). See below. |
 
 `network_policy` enforcement (docker backends):
 
@@ -129,11 +130,17 @@ Field reference:
   *inside* the runner is not blocked (#325).
 - `full_internet` — the compose file runs verbatim; every service keeps
   whatever egress its networks allow.
-- `limited_internet` — refused before any container starts (raises
-  `NetworkPolicyError`). A per-host allowlist needs an egress-proxy sidecar,
-  tracked in #323; refusing is the only honest option since docker's
-  `internal` flag is binary. Declare `no_internet` or `full_internet`
-  explicitly.
+- `limited_internet` — application services join the injected `internal: true`
+  network with no direct egress and are pointed at an injected digest-pinned
+  `ubuntu/squid` forward-proxy sidecar (via `HTTP(S)_PROXY`). The proxy is
+  default-deny and forwards only to the hosts in `limited_internet_allowlist`
+  (bare hostname → exact match; `*.host` → subdomain suffix match); everything
+  else is refused with HTTP 403. HTTPS goes through the proxy via CONNECT with
+  no TLS interception, so pinned certificates keep working and no CA plumbing is
+  needed. The `runner_service` joins the edge network directly (not proxied),
+  keeping its grading egress, exactly as under `no_internet`. Entries are DNS
+  hostnames only — schemes, ports, paths, IP literals, and duplicates are
+  rejected at manifest load.
 
 Fields declared on the model but **not yet enforced by the provisioner** —
 declaring them is accepted for forward-compatibility but has no runtime

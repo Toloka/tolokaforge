@@ -218,6 +218,10 @@ The pieces that matter:
 - **`stack.runner_service`** — which service in the compose file is the
   tolokaforge runner. The engine talks gRPC to this service to dispatch
   tool calls and grade the trial.
+- **`stack.{runner_port, db_service, db_port, rag_service, rag_port}`** —
+  optional endpoint overrides for compose files that deviate from the
+  well-known service names and ports. See
+  [endpoint overrides](#endpoint-overrides) below.
 - **`services.<name>.isolation`** — the per-service isolation treatment.
   The compose file carries **zero** isolation semantics; the `services`
   map is the single authority. See [choosing isolation](#choosing-isolation)
@@ -291,6 +295,44 @@ no `network_mode: host`, no `privileged: true`, no `cap_add`, `depends_on`
 must resolve, `runner_service` must be declared in the compose file.
 Violations fail at load time with a clear error, not at trial start.
 
+### Endpoint overrides
+
+The engine addresses three services in your stack by convention: the runner
+over gRPC, an HTTP state backend (`db-service`), and an optional RAG service.
+The convention defaults cover the packs that use the engine's built-in
+service names, so most tasks set nothing here. When your compose file names a
+service differently or publishes it on a non-standard port, override the
+convention from the `stack:` block:
+
+| Field | Default | Override when… |
+| --- | --- | --- |
+| `runner_port` | `50051` | the runner service listens on a different gRPC port |
+| `db_service` | `db-service` | the HTTP state backend is a differently-named service |
+| `db_port` | `8000` | that backend publishes a different port |
+| `rag_service` | `rag` / `rag-service` (scanned) | the RAG service is named something else |
+| `rag_port` | first published port | you want to pin the RAG container port |
+
+```yaml
+default_environment:
+  stack:
+    compose_file: ./shared/environment.compose.yaml
+    runner_service: agent
+    runner_port: 6000
+    db_service: state-backend
+    db_port: 9000
+```
+
+`db_service` and `rag_service` are validated at load: naming a service that
+the compose file does not declare fails with a clear `ValidationError`, so a
+typo never silently degrades to a missing endpoint at runtime. The ports and
+the RAG scan are best-effort — an unresolved port leaves the endpoint unset,
+exactly as the convention default does. A task that swaps
+`stack.compose_file` replaces the stack atomically and clears any
+project-level endpoint overrides along with it.
+
+See [ADR-0009](adr/0009-environment-manifest.md) for the design rationale
+behind individual scalar fields over a uniform endpoint map.
+
 ## Choosing isolation
 
 Isolation is declared **per service**, under
@@ -333,10 +375,49 @@ is applied, extension inference, and failure modes), see
 an edge network so LLM-judge grading can still reach model providers.
 
 `full_internet` is the explicit opt-in for a task that legitimately needs
-egress (fetching a remote resource, calling a third-party API under test).
-`limited_internet` fails loud today — the egress-proxy sidecar it needs is
-not yet shipped — so declaring it is a load-time error, not a silent
-degrade.
+unrestricted egress (fetching an arbitrary remote resource, calling any
+third-party API under test).
+
+`limited_internet` sits between the two: application services may reach a
+declared allowlist of hosts and nothing else. Declaring it requires a
+`limited_internet_allowlist` on the same `stack:` block; the two are validated
+together at load time — `limited_internet` with an empty allowlist is a load
+error, and a non-empty allowlist under any other policy is a load error.
+
+```yaml
+default_environment:
+  stack:
+    compose_file: ./shared/environment.compose.yaml
+    runner_service: runner
+    limited_internet_allowlist:
+      - api.openai.com        # exact host — only this hostname
+      - "*.githubusercontent.com"  # wildcard — any subdomain of githubusercontent.com
+  network_policy: limited_internet
+```
+
+Allowlist entry syntax:
+
+- **Bare hostname** (`api.openai.com`) — exact match. Only that hostname is
+  reachable; subdomains are not.
+- **Leading wildcard** (`*.example.com`) — subdomain suffix match: any host
+  ending in `.example.com` (e.g. `raw.example.com`, `cdn.assets.example.com`).
+  The bare apex `example.com` is *not* matched by `*.example.com` — list it
+  separately if you need it.
+
+Entries are DNS hostnames only. Schemes (`http://…`), embedded ports
+(`host:443`), URL paths, IP literals (`10.0.0.1`), and duplicate entries are
+all rejected at manifest load.
+
+How it is enforced: the provisioner injects a digest-pinned `ubuntu/squid`
+forward-proxy sidecar and points every application service's `HTTP(S)_PROXY`
+at it. The proxy is default-deny and forwards only to allowlisted hosts;
+everything else is refused with HTTP 403. HTTPS egress goes through the proxy
+via CONNECT tunnelling with no TLS interception — the allowlist matches on the
+target hostname, so pinned certificates keep working and there is no CA to
+install in the service's trust store. The `runner_service` is not proxied: it
+keeps direct edge egress for LLM-judge grading, exactly as under `no_internet`.
+For the full design see
+[ADR-0018](adr/0018-multi-container-under-shared-runtime.md#network-policy-enforcement).
 
 ## Adding another service
 

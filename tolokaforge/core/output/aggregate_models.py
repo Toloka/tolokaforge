@@ -9,7 +9,11 @@ writer surface these payloads flow through.
 * :class:`AggregateMetrics` — the shared body of ``aggregate.json`` (via
   :class:`RunAggregate`) and every slice inside ``metadata_slices.json``.
 * :class:`RunAggregate` — ``AggregateMetrics`` + the ``schema_version``
-  envelope field that ``aggregate.json`` carries at the top level.
+  envelope and the ``captured_service_logs`` roll-up that ``aggregate.json``
+  carries at the top level.
+* :class:`CapturedServiceLogsRollup`, :class:`ServiceLogCaptureEntry`,
+  :class:`ServiceLogCaptureSource` — the run-level roll-up of the per-trial
+  and run-level captured compose-log bundles.
 * :class:`MetadataSlices` — the four ``by_*`` slice dictionaries.
 * :class:`FailureAttribution`, :class:`FailureSummary`,
   :class:`FailureRecord` — the ``failure_attribution.json`` envelope.
@@ -53,18 +57,22 @@ Two wire-format invariants pinned by the canonical tests:
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
 __all__ = [
     "AggregateMetrics",
+    "CapturedServiceLogsRollup",
     "FailureAttribution",
     "FailureRecord",
     "FailureSummary",
     "MetadataSlices",
     "PerTaskMetrics",
     "RunAggregate",
+    "ServiceLogCaptureEntry",
+    "ServiceLogCaptureSource",
 ]
 
 
@@ -215,6 +223,59 @@ class AggregateMetrics(BaseModel):
     latency_p99_s_macro: int | float = 0
 
 
+class ServiceLogCaptureSource(str, Enum):
+    """Which failure stage produced a captured-service-log bundle.
+
+    Closed 3-value classification of the run's on-disk capture surfaces:
+    the per-trial provision-failure ``services/_capture.yaml``, the
+    per-trial trial-body/graded-red ``metrics.yaml.captured_service_logs``,
+    and the run-level shared-stack materialise-failure
+    ``<output_dir>/services/_capture.yaml``.
+    """
+
+    PROVISION_FAILURE = "provision_failure"
+    TRIAL_BODY = "trial_body"
+    SHARED_STACK_MATERIALISE = "shared_stack_materialise"
+
+
+class ServiceLogCaptureEntry(BaseModel):
+    """One captured-service-log bundle rolled up into ``aggregate.json``.
+
+    ``task_id`` / ``trial_index`` are ``None`` for the run-level
+    shared-stack surface (there is no owning trial). ``capture_reason`` is
+    ``None`` on the trial-body surface, whose durable record
+    (``metrics.yaml.captured_service_logs``) carries no manifest reason.
+    ``services`` maps compose-service name to captured byte count.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str | None = None
+    trial_index: int | None = None
+    source: ServiceLogCaptureSource
+    capture_reason: str | None = None
+    total_bytes: int
+    services: dict[str, int] = Field(default_factory=dict)
+
+
+class CapturedServiceLogsRollup(BaseModel):
+    """Run-level roll-up of every captured-service-log bundle on disk.
+
+    ``per_service_bytes`` sums each service's bytes across every entry;
+    ``total_bytes`` is the grand total. A run that captured nothing rolls
+    up to a zero envelope (``captures=0``, empty maps/lists), which is
+    distinguishable from a pre-feature ``aggregate.json`` that omits the
+    field entirely.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    captures: int
+    total_bytes: int
+    per_service_bytes: dict[str, int] = Field(default_factory=dict)
+    entries: list[ServiceLogCaptureEntry] = Field(default_factory=list)
+
+
 class RunAggregate(AggregateMetrics):
     """The top-level ``aggregate.json`` shape — :class:`AggregateMetrics`
     plus the ``schema_version`` envelope field every downstream consumer
@@ -235,6 +296,8 @@ class RunAggregate(AggregateMetrics):
     """
 
     schema_version: int = 1
+
+    captured_service_logs: CapturedServiceLogsRollup | None = None
 
     @model_serializer(mode="wrap")
     def _always_include_schema_version(self, handler: Any) -> dict[str, Any]:

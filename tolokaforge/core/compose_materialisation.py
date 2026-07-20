@@ -47,8 +47,9 @@ logger = logging.getLogger(__name__)
 
 RUNNER_PORT_DEFAULT = 50051
 """gRPC port the tolokaforge runner container listens on. Matches
-``GrpcRunnerClient``'s default ``runner:50051``. Task-pack authors that
-need to override this will get a manifest field in a follow-up PR."""
+``GrpcRunnerClient``'s default ``runner:50051``. Convention default for
+``manifest.runner_port``, which task-pack authors override via
+``stack.runner_port``."""
 
 DB_SERVICE_DEFAULT = "db-service"
 """Compose service name convention for the HTTP JSON state backend the
@@ -82,57 +83,70 @@ NETPOLICY_EDGE_NETWORK = "tolokaforge_netpolicy_edge"
 under ``no_internet``, so its published gRPC port stays host-reachable and
 it retains egress for in-container LLM-as-judge grading."""
 
+NETPOLICY_PROXY_SERVICE = "tolokaforge_netpolicy_proxy"
+"""Injected forward-proxy sidecar under ``limited_internet``. Sits on both
+the internal and edge networks; every application service's HTTP(S) egress is
+routed through it, and it forwards only to the declared allowlist."""
 
-class NetworkPolicyError(ValueError):
-    """A declared ``network_policy`` has no docker enforcement available."""
+NETPOLICY_PROXY_PORT = 3128
+"""Port the injected squid proxy listens on. Application services'
+``HTTP(S)_PROXY`` env vars point here."""
 
+NETPOLICY_PROXY_IMAGE = (
+    "ubuntu/squid@sha256:6a097f68bae708cedbabd6188d68c7e2e7a38cedd05a176e1cc0ba29e3bbe029"
+)
+"""Digest-pinned squid image (Canonical ``ubuntu/squid:6.6-24.04_beta``).
+Pinned by digest, not tag, because Canonical's tag channels are mutable."""
 
-def verify_network_policy_supported(policy: NetworkPolicy) -> None:
-    """Raise :class:`NetworkPolicyError` if ``policy`` cannot be enforced by
-    the docker provisioner. ``limited_internet`` needs an egress-allowlist
-    proxy sidecar (#323); refusing to run is the only honest option —
-    silently granting full or no internet would under/over-enforce a
-    declared security posture. ``no_internet`` and ``full_internet`` return
-    cleanly. Reads only ``policy`` — no compose I/O — so callers can hoist it
-    before any temp-dir creation or docker work."""
-    if policy is NetworkPolicy.LIMITED_INTERNET:
-        raise NetworkPolicyError(
-            "network_policy 'limited_internet' is not enforceable yet: it needs an "
-            "egress-allowlist proxy sidecar (#323). Declare 'no_internet' or "
-            "'full_internet' explicitly."
-        )
+SQUID_CONFIG_FILENAME = "squid.conf"
+"""Basename of the generated squid config written into the copied project
+context dir; the proxy service bind-mounts it read-only."""
+
+SQUID_CONFIG_CONTAINER_PATH = "/etc/squid/squid.conf"
+"""Absolute path the generated config is mounted at inside the proxy — a
+complete config replacing the image default, so the effective ``http_access``
+ordering does not depend on the image's ``conf.d`` include order."""
 
 
 def enforce_network_policy(
     compose_doc: dict[str, Any],
     policy: NetworkPolicy,
     runner_service: str,
+    allowlist: list[str],
 ) -> dict[str, Any]:
     """Return a compose doc rewritten to enforce ``policy``.
 
-    ``full_internet`` returns ``compose_doc`` unchanged (same object).
-    ``no_internet`` returns a deep copy in which (1) every service joins the
-    injected :data:`NETPOLICY_INTERNAL_NETWORK` (``internal: true`` — no
-    egress), any network the task already declared is forced ``internal:
-    true`` too, and (2) ``runner_service`` additionally joins the non-internal
-    :data:`NETPOLICY_EDGE_NETWORK`. ``limited_internet`` raises
-    :class:`NetworkPolicyError` (belt-and-suspenders — the enforcement point
-    is :func:`verify_network_policy_supported`; reaching here with it is a
-    wiring bug and must fail loud rather than return an egress-capable doc).
+    ``full_internet`` returns ``compose_doc`` unchanged (same object);
+    ``allowlist`` is ignored. ``no_internet`` returns a deep copy in which
+    every service joins the injected :data:`NETPOLICY_INTERNAL_NETWORK`
+    (``internal: true`` — no egress), any task-declared network is forced
+    ``internal: true`` too, and ``runner_service`` additionally joins the
+    non-internal :data:`NETPOLICY_EDGE_NETWORK`; ``allowlist`` is ignored.
+
+    ``limited_internet`` returns a deep copy that keeps the same internal/edge
+    topology but additionally injects the :data:`NETPOLICY_PROXY_SERVICE`
+    forward proxy (on both networks) and points every application service's
+    ``HTTP(S)_PROXY`` at it; the runner keeps direct edge egress and is not
+    proxied. The proxy's squid config — which encodes ``allowlist`` — is
+    written separately by :func:`apply_network_policy_to_compose_file` /
+    :func:`render_squid_config`; this function only rewrites topology.
 
     ``runner_service`` is guaranteed present in ``services`` by
     :class:`EnvironmentManifest` validation.
     """
     if policy is NetworkPolicy.FULL_INTERNET:
         return compose_doc
-    if policy is NetworkPolicy.LIMITED_INTERNET:
-        raise NetworkPolicyError(
-            "enforce_network_policy reached with 'limited_internet'; this value has no "
-            "docker enforcement (#323) and must be refused by verify_network_policy_supported "
-            "before any compose rewrite."
-        )
-
     doc = copy.deepcopy(compose_doc)
+    if policy is NetworkPolicy.LIMITED_INTERNET:
+        return _enforce_limited_internet(doc, runner_service, allowlist)
+    return _enforce_no_internet(doc, runner_service)
+
+
+def _inject_isolation_networks(doc: dict[str, Any]) -> None:
+    """Force every task-declared network ``internal: true`` and inject the
+    internal (no-egress) + edge (egress) networks. Shared by ``no_internet``
+    and ``limited_internet`` — both isolate app services on the internal net
+    and reserve edge egress for the runner (plus, under limited, the proxy)."""
     networks: dict[str, Any] = doc.setdefault("networks", {})
     for name, config in networks.items():
         merged = dict(config) if isinstance(config, dict) else {}
@@ -141,6 +155,9 @@ def enforce_network_policy(
     networks[NETPOLICY_INTERNAL_NETWORK] = {"internal": True}
     networks[NETPOLICY_EDGE_NETWORK] = {}
 
+
+def _enforce_no_internet(doc: dict[str, Any], runner_service: str) -> dict[str, Any]:
+    _inject_isolation_networks(doc)
     services: dict[str, Any] = doc["services"]
     for service_name, service in services.items():
         attachments = [NETPOLICY_INTERNAL_NETWORK]
@@ -148,6 +165,123 @@ def enforce_network_policy(
             attachments.append(NETPOLICY_EDGE_NETWORK)
         service["networks"] = _merge_service_networks(service.get("networks"), attachments)
     return doc
+
+
+def _enforce_limited_internet(
+    doc: dict[str, Any], runner_service: str, allowlist: list[str]
+) -> dict[str, Any]:
+    if not allowlist:
+        raise ValueError(
+            "limited_internet enforcement requires a non-empty allowlist; "
+            "EnvironmentManifest validation guarantees one is present."
+        )
+    _inject_isolation_networks(doc)
+    services: dict[str, Any] = doc["services"]
+    no_proxy = ",".join([*services, NETPOLICY_PROXY_SERVICE, "localhost", "127.0.0.1"])
+    proxy_url = f"http://{NETPOLICY_PROXY_SERVICE}:{NETPOLICY_PROXY_PORT}"
+    for service_name, service in services.items():
+        if service_name == runner_service:
+            service["networks"] = _merge_service_networks(
+                service.get("networks"), [NETPOLICY_INTERNAL_NETWORK, NETPOLICY_EDGE_NETWORK]
+            )
+            continue
+        service["networks"] = _merge_service_networks(
+            service.get("networks"), [NETPOLICY_INTERNAL_NETWORK]
+        )
+        service["environment"] = _merge_proxy_env(service.get("environment"), proxy_url, no_proxy)
+    services[NETPOLICY_PROXY_SERVICE] = _proxy_service_definition()
+    return doc
+
+
+def _proxy_service_definition() -> dict[str, Any]:
+    """Compose definition for the injected squid forward proxy: digest-pinned
+    image, the generated config bind-mounted read-only, both isolation
+    networks, and a TCP-liveness health probe so ``docker compose up --wait``
+    blocks until squid is listening on :data:`NETPOLICY_PROXY_PORT`."""
+    return {
+        "image": NETPOLICY_PROXY_IMAGE,
+        "volumes": [f"./{SQUID_CONFIG_FILENAME}:{SQUID_CONFIG_CONTAINER_PATH}:ro"],
+        "networks": [NETPOLICY_INTERNAL_NETWORK, NETPOLICY_EDGE_NETWORK],
+        "healthcheck": {
+            "test": ["CMD", "bash", "-c", f"echo > /dev/tcp/127.0.0.1/{NETPOLICY_PROXY_PORT}"],
+            "interval": "2s",
+            "timeout": "3s",
+            "retries": 30,
+            "start_period": "3s",
+        },
+    }
+
+
+_PROXY_ENV_KEYS = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
+_NO_PROXY_KEYS = ("NO_PROXY", "no_proxy")
+
+
+def _merge_proxy_env(existing: Any, proxy_url: str, no_proxy: str) -> Any:
+    """Add the proxy env vars to a service-level ``environment:`` value,
+    preserving its declared shape (mapping or ``KEY=value`` list). Absent
+    ``existing`` yields a mapping."""
+    values = dict.fromkeys(_PROXY_ENV_KEYS, proxy_url)
+    values.update(dict.fromkeys(_NO_PROXY_KEYS, no_proxy))
+    if isinstance(existing, list):
+        return [*existing, *(f"{key}={value}" for key, value in values.items())]
+    if isinstance(existing, dict):
+        return {**existing, **values}
+    return values
+
+
+def render_squid_config(allowlist: list[str], service_names: list[str]) -> str:
+    """Render a complete, default-deny ``squid.conf`` for the forward proxy.
+
+    Egress is permitted only to ``allowlist`` hosts (exact ``api.host`` →
+    ``dstdomain api.host``; leading-wildcard ``*.host`` → squid domain-suffix
+    ``dstdomain .host``) and, as inter-service defence-in-depth, the compose
+    ``service_names``. CONNECT tunnels are restricted to port 443 and non-CONNECT
+    requests to ports 80 and 443; every other destination hits the terminal
+    ``http_access deny all``. Raises
+    ``ValueError`` on an allowlist entry that is not an exact or single
+    leading-wildcard hostname (unreachable after manifest validation)."""
+    lines = [
+        "# Generated by tolokaforge network_policy=limited_internet enforcement.",
+        "# Default-deny forward proxy: egress permitted only to the declared allowlist.",
+        f"visible_hostname {NETPOLICY_PROXY_SERVICE}",
+        f"http_port {NETPOLICY_PROXY_PORT}",
+        "",
+        "acl SSL_ports port 443",
+        "acl Safe_ports port 80 443",
+        "acl CONNECT method CONNECT",
+        "",
+    ]
+    lines += [f"acl allowed_dsts dstdomain {_squid_dstdomain(entry)}" for entry in allowlist]
+    lines += [f"acl internal_dsts dstdomain {name}" for name in service_names]
+    lines += [
+        "",
+        "http_access deny CONNECT !SSL_ports",
+        "http_access deny !Safe_ports",
+        "http_access allow allowed_dsts",
+        "http_access allow internal_dsts",
+        "http_access deny all",
+        "",
+        "cache deny all",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _squid_dstdomain(entry: str) -> str:
+    """Map one validated allowlist entry to its squid ``dstdomain`` argument.
+    Defensive: rejects schemes, ports, paths, whitespace, and interior
+    wildcards that manifest validation should already have excluded."""
+    if not entry or any(char in entry for char in " \t/:") or "://" in entry:
+        raise ValueError(f"limited_internet allowlist entry not a bare hostname: {entry!r}")
+    if entry.startswith("*."):
+        suffix = entry[2:]
+        if not suffix or "*" in suffix:
+            raise ValueError(
+                f"limited_internet allowlist entry has a malformed wildcard: {entry!r}"
+            )
+        return f".{suffix}"
+    if "*" in entry:
+        raise ValueError(f"limited_internet allowlist entry has a non-leading wildcard: {entry!r}")
+    return entry
 
 
 def _merge_service_networks(existing: Any, additions: list[str]) -> Any:
@@ -169,18 +303,26 @@ def _merge_service_networks(existing: Any, additions: list[str]) -> Any:
 
 
 def apply_network_policy_to_compose_file(
-    compose_file: Path, policy: NetworkPolicy, runner_service: str
+    compose_file: Path, policy: NetworkPolicy, runner_service: str, allowlist: list[str]
 ) -> None:
     """Read ``compose_file``, apply :func:`enforce_network_policy`, and write
     the result back in place. ``full_internet`` leaves the file byte-identical
-    (the transform is identity), so its comments and formatting survive."""
+    (the transform is identity), so its comments and formatting survive.
+
+    For ``limited_internet`` the rendered ``squid.conf`` is written alongside
+    the compose file (into ``compose_file.parent`` — the copied project
+    context dir), so the injected proxy service's relative bind mount
+    resolves."""
     with compose_file.open() as f:
         doc = yaml.safe_load(f)
-    transformed = enforce_network_policy(doc, policy, runner_service)
+    transformed = enforce_network_policy(doc, policy, runner_service, allowlist)
     if transformed is doc:
         return
     with compose_file.open("w") as f:
         yaml.safe_dump(transformed, f, sort_keys=False)
+    if policy is NetworkPolicy.LIMITED_INTERNET:
+        squid_conf = render_squid_config(allowlist, list(doc["services"]))
+        (compose_file.parent / SQUID_CONFIG_FILENAME).write_text(squid_conf)
 
 
 # ---------------------------------------------------------------------------
@@ -274,12 +416,23 @@ def first_published_port(container: Any) -> int | None:
     return None
 
 
-def resolve_rag_url(compose: DockerCompose) -> str | None:
-    """Best-effort ``rag_url`` — resolve the first RAG service found in
-    the compose stack. Returns ``None`` when no such service is
-    declared or its port is not exposed. Lookup failures are treated
-    as "no rag" but ``logger.debug``-logged for diagnosability."""
-    for candidate in RAG_SERVICE_CANDIDATES:
+def resolve_rag_url(
+    compose: DockerCompose,
+    *,
+    rag_service: str | None = None,
+    rag_port: int | None = None,
+) -> str | None:
+    """Best-effort ``rag_url`` — resolve a RAG service from the compose
+    stack. Returns ``None`` when no such service is declared or its port
+    is not exposed. Lookup failures are treated as "no rag" but
+    ``logger.debug``-logged for diagnosability.
+
+    ``rag_service`` scans only that named service; ``None`` scans the
+    :data:`RAG_SERVICE_CANDIDATES` convention (first match wins).
+    ``rag_port`` pins the container port; ``None`` auto-detects the first
+    published port."""
+    candidates = (rag_service,) if rag_service is not None else RAG_SERVICE_CANDIDATES
+    for candidate in candidates:
         try:
             container = compose.get_container(service_name=candidate)
         except Exception as exc:  # noqa: BLE001 — service not declared
@@ -289,10 +442,10 @@ def resolve_rag_url(compose: DockerCompose) -> str | None:
                 exc,
             )
             continue
-        published = first_published_port(container)
-        if published is None:
+        container_port = rag_port if rag_port is not None else first_published_port(container)
+        if container_port is None:
             continue
-        host, port = resolve_host_port(compose, candidate, published)
+        host, port = resolve_host_port(compose, candidate, container_port)
         if host is None or port is None:
             continue
         return f"http://{host}:{port}"
@@ -321,6 +474,8 @@ def resolve_env_endpoints(
     *,
     db_service: str = DB_SERVICE_DEFAULT,
     db_port: int = DB_SERVICE_PORT_DEFAULT,
+    rag_service: str | None = None,
+    rag_port: int | None = None,
 ) -> EnvEndpoints:
     """Resolve the :class:`EnvEndpoints` triple (runner_url, db_url,
     rag_url) from a running compose stack.
@@ -346,7 +501,7 @@ def resolve_env_endpoints(
         db_url = f"http://{db_host}:{db_host_port}"
     return EnvEndpoints(
         db_url=db_url,
-        rag_url=resolve_rag_url(compose),
+        rag_url=resolve_rag_url(compose, rag_service=rag_service, rag_port=rag_port),
         runner_url=f"http://{runner_host}:{runner_port}",
     )
 
@@ -489,6 +644,15 @@ def trial_services_dir(output_root: Path, trial_id: str) -> Path:
     """
     task_id, trial_index = trial_id.rsplit(":", 1)
     return output_root / "trials" / task_id / trial_index / "services"
+
+
+def run_services_dir(output_root: Path) -> Path:
+    """Return the run-level ``services/`` capture dir under ``output_root``.
+
+    The run-scoped counterpart to :func:`trial_services_dir`: where a
+    shared-stack materialise failure writes the run-wide stack's per-service
+    logs, one level up from the per-trial bundles."""
+    return output_root / "services"
 
 
 def write_capture_manifest(

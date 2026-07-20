@@ -35,6 +35,13 @@ PUBLIC_IP_URL = "http://1.1.1.1"
 PUBLIC_DNS_URL = "http://example.com"
 """DNS-name public target — probes egress including name resolution."""
 
+ALLOWLISTED_HOST = "example.com"
+"""Stable IANA-reserved host used as the ``limited_internet`` allowlist entry."""
+
+ALLOWLISTED_URL = f"http://{ALLOWLISTED_HOST}"
+DENIED_URL = "http://example.org"
+"""Stable host deliberately *absent* from the allowlist — proxy must deny it."""
+
 INTER_SERVICE_URL = f"http://{RUNNER_SERVICE}:{RUNNER_PORT_DEFAULT}/"
 RUNNER_OK_BODY = "runner-ok"
 
@@ -63,10 +70,14 @@ _COMPOSE_TEMPLATE = f"""
 COMPOSE = textwrap.dedent(_COMPOSE_TEMPLATE).strip()
 
 
-def write_manifest(compose_dir: Path, policy: NetworkPolicy) -> EnvironmentManifest:
+def write_manifest(
+    compose_dir: Path, policy: NetworkPolicy, allowlist: list[str] | None = None
+) -> EnvironmentManifest:
     """Write :data:`COMPOSE` into ``compose_dir`` and return a manifest that
     binds it under ``policy``. The manifest validators parse the compose file
-    at construction, so the file is written first."""
+    at construction, so the file is written first. ``allowlist`` threads the
+    egress allowlist for ``limited_internet`` (empty for the other policies;
+    the manifest's cross-field validator enforces the pairing)."""
     compose_dir.mkdir(parents=True, exist_ok=True)
     compose_file = compose_dir / "docker-compose.yml"
     compose_file.write_text(COMPOSE + "\n")
@@ -74,6 +85,7 @@ def write_manifest(compose_dir: Path, policy: NetworkPolicy) -> EnvironmentManif
         compose_file=compose_file,
         runner_service=RUNNER_SERVICE,
         network_policy=policy,
+        limited_internet_allowlist=allowlist or [],
     )
 
 
@@ -118,6 +130,37 @@ def run_curl(
         url,
     ]
     return subprocess.run(cmd, capture_output=True, text=True, cwd=compose.context, check=False)
+
+
+CURL_TRANSPORT_FAILURE = "000"
+"""``%{http_code}`` sentinel curl emits when no HTTP response was received
+(DNS failure, connection refused, timeout) — distinct from a proxy's 403."""
+
+
+def run_curl_status(compose: DockerCompose, url: str, *, max_time: int = 15) -> str:
+    """Exec ``curl`` inside the ``app`` service and return the HTTP status code
+    as a string. Under ``limited_internet`` the app's egress is proxied, so a
+    denied request still completes the proxy connection and returns ``403``
+    (squid access-denied) rather than a transport failure — the status code is
+    what distinguishes allowed (``200``) from denied (``403``). A genuine
+    transport failure yields :data:`CURL_TRANSPORT_FAILURE`."""
+    cmd = [
+        *compose.docker_compose_command(),
+        "exec",
+        "-T",
+        APP_SERVICE,
+        "curl",
+        "--max-time",
+        str(max_time),
+        "-o",
+        "/dev/null",
+        "-sS",
+        "-w",
+        "%{http_code}",
+        url,
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, cwd=compose.context, check=False)
+    return result.stdout.strip()
 
 
 def docker_container_ids() -> set[str]:

@@ -2,6 +2,26 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Feat
+
+- **runtime**: `network_policy: limited_internet` enforcement via a squid forward-proxy sidecar. Declare `stack.limited_internet_allowlist: [host, ...]` (bare hostnames or `*.domain` wildcards); the provisioner injects a digest-pinned `ubuntu/squid` sidecar on a dual internal/edge network, points app services' `HTTP(S)_PROXY` at it, and default-denies non-allowlisted egress with HTTP 403. Runner retains direct edge egress for `llm_judge` grading (#323).
+- **manifest**: five endpoint-resolution override fields on `stack:` — `runner_port`, `db_service`, `db_port`, `rag_service`, `rag_port` — let task-pack authors point the engine at non-convention service names and ports without touching the runtime backend. Defaults reproduce prior behaviour byte-identically; unknown service overrides fail loud at manifest load (#144).
+- **observability**: `aggregate.json` gains an additive `captured_service_logs` roll-up on `RunAggregate` — a run-level view (`captures`, `total_bytes`, `per_service_bytes`, per-bundle `entries`) of the per-trial and run-level captured compose-log surfaces, with a closed `source` vocabulary (`provision_failure` / `trial_body` / `shared_stack_materialise`). Produced at report generation by scanning the on-disk capture tree (per-trial `services/_capture.yaml` and `metrics.yaml`, plus the run-level shared-stack `services/_capture.yaml`); fail-safe — a corrupt capture artifact is skipped, never breaking report generation. Always emitted (zero envelope on clean runs); no `schema_version` bump (#337).
+- **runtime**: `SharedStackRuntimeBackend._materialise_manifest` now captures per-service compose logs to `<output_dir>/services/<name>.log` + `_capture.yaml` (with `capture_reason: "materialise_error"`) before cleanup on the failure path — mirroring #302's per-trial pattern for run-level materialise failures (#339).
+- **observability**: per-trial `provisioning_duration_s` recorded in `metrics.yaml` — wall-clock seconds around the `provision → await_ready → endpoints` bracket, monotonic-clock-measured, additive to the existing metrics shape (#354).
+- **runtime**: provision-failed trials now write a minimal trial bundle (`trajectory.yaml` + `metrics.yaml` with `error: "provision_error"` + `grade.yaml`) to `<output_dir>/trials/<task>/<idx>/`, making cost aggregation and post-mortem tooling see a consistent trial-directory shape whether the trial completed or failed to provision (#338).
+
+### Docs
+
+- **guide**: task-pack image-layering guide covering the 3-tier base/environment/instance pattern from SWE-bench, with Dockerfile snippets and compose-file references (#146).
+- **security/runtime**: document the built-in (Case A) `EngineStack` as `full_internet` by construction — the built-in `runner-net` is non-internal and the runner retains egress for in-container LLM-as-judge grading; task-declared stacks remain the only path with an enforceable `network_policy`. Recorded in ADR-0018 + `RUNTIME_BACKENDS.md`, and locks the `Network.internal` foundation primitive + the `EngineStack.create_networks` non-internal invariant with a unit test (#324).
+
+### Fix
+
+- **docs/security**: rewrite `SECURITY.md`'s architecture overview, threat table, testing, and checklist to reflect the actual `runner-net` (non-internal, docker-py `EngineStack`) model. The doc previously described a vanished `env-net` (`internal: true`) network and `docker-compose.yaml`, and listed "executor reaching external internet — addressed by `env-net internal:true`" as an addressed threat that no longer holds (#324).
+
 ## v0.9.1 (2026-07-17)
 
 ## v0.9.0 (2026-07-17)

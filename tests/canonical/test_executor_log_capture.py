@@ -17,6 +17,7 @@ per-service ``.log`` capture is locked by the Docker integration test.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -24,16 +25,22 @@ import pytest
 import yaml
 
 from tests.canonical._factories import make_task_config, make_trial_spec
-from tolokaforge.core.compose_materialisation import LogCaptureConfig
+from tolokaforge.core import trial_executor
 from tolokaforge.core.conductor import InMemoryConductor
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import Grade, GradeComponents, Metrics, Trajectory, TrialStatus
+from tolokaforge.core.output.artifacts import InMemoryArtifactWriter
 from tolokaforge.core.runtime import EnvHandle, InMemoryRuntimeBackend
 from tolokaforge.core.trial_executor import ProvisioningTrialExecutor
 
 pytestmark = pytest.mark.canonical
 
 _BYTE_MAP = {"db": 128, "runner": 64}
+
+
+def _monotonic_sequence(ticks: list[float]) -> Callable[[], float]:
+    it = iter(ticks)
+    return lambda: next(it)
 
 
 class _StubCaptureBackend(InMemoryRuntimeBackend):
@@ -94,7 +101,8 @@ def _make_executor(
         runtime_backend=backend,
         conductor=InMemoryConductor(trajectory_factory=factory),
         logger=StructuredLogger("test-executor-log-capture"),
-        log_capture=LogCaptureConfig(output_root=output_root, tail=200, on_success=False),
+        output_dir=output_root,
+        artifact_writer=InMemoryArtifactWriter(),
     )
 
 
@@ -186,3 +194,58 @@ class TestUngradedCompletedIsNotCapture:
 
         metrics = yaml.safe_load(metrics_path.read_text())
         assert "captured_service_logs" not in metrics
+
+
+class TestProvisioningDuration:
+    def test_records_on_passing_trial(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.setattr(trial_executor.time, "monotonic", _monotonic_sequence([10.0, 11.5]))
+        backend = _StubCaptureBackend()
+        factory = _factory_for(TrialStatus.COMPLETED, binary_pass=True)
+        executor = _make_executor(backend, factory, tmp_path)
+        metrics_path = _write_metrics(tmp_path, "task-1", 0)
+
+        executor.execute(make_trial_spec(trial_id="task-1:0"), make_task_config(task_id="task-1"))
+
+        metrics = yaml.safe_load(metrics_path.read_text())
+        assert metrics["provisioning_duration_s"] == 1.5
+        assert isinstance(metrics["provisioning_duration_s"], float)
+        # Pre-existing keys survive; a passing trial is not capture-worthy.
+        assert metrics["cost_usd"] == 0.5
+        assert "captured_service_logs" not in metrics
+
+    def test_coexists_with_captured_service_logs_on_red_trial(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(trial_executor.time, "monotonic", _monotonic_sequence([100.0, 105.5]))
+        backend = _StubCaptureBackend()
+        factory = _factory_for(TrialStatus.ERROR, binary_pass=False)
+        executor = _make_executor(backend, factory, tmp_path)
+        metrics_path = _write_metrics(tmp_path, "task-1", 0)
+
+        executor.execute(make_trial_spec(trial_id="task-1:0"), make_task_config(task_id="task-1"))
+
+        metrics = yaml.safe_load(metrics_path.read_text())
+        assert metrics["provisioning_duration_s"] == 5.5
+        assert metrics["captured_service_logs"] == _BYTE_MAP
+        assert metrics["cost_usd"] == 0.5
+
+    def test_absent_metrics_file_writes_nothing(self, tmp_path: Path, monkeypatch) -> None:
+        """When no ``metrics.yaml`` exists under the executor's ``output_dir``,
+        the amendment is a silent no-op — the trial's own metrics file (written
+        elsewhere) is left untouched."""
+        monkeypatch.setattr(trial_executor.time, "monotonic", _monotonic_sequence([1.0, 2.0]))
+        backend = _StubCaptureBackend()
+        factory = _factory_for(TrialStatus.COMPLETED, binary_pass=True)
+        executor = ProvisioningTrialExecutor(
+            runtime_backend=backend,
+            conductor=InMemoryConductor(trajectory_factory=factory),
+            logger=StructuredLogger("test-executor-log-capture"),
+            output_dir=tmp_path / "run",
+            artifact_writer=InMemoryArtifactWriter(),
+        )
+        metrics_path = _write_metrics(tmp_path, "task-1", 0)
+
+        executor.execute(make_trial_spec(trial_id="task-1:0"), make_task_config(task_id="task-1"))
+
+        metrics = yaml.safe_load(metrics_path.read_text())
+        assert "provisioning_duration_s" not in metrics

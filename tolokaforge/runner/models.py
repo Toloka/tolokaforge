@@ -13,6 +13,7 @@ All models use Pydantic v2 BaseModel for validation and serialization.
 
 from __future__ import annotations
 
+import ipaddress
 import re
 import warnings
 from datetime import datetime
@@ -627,8 +628,10 @@ class NetworkPolicy(str, Enum):
     to the public internet, no reachability across per-trial projects."""
 
     LIMITED_INTERNET = "limited_internet"
-    """Egress permitted for a provisioner-defined allowlist. No cross-trial
-    reachability. The allowlist is a provisioner concern, not a schema one."""
+    """Egress permitted only to the hostnames declared in
+    :attr:`EnvironmentManifest.limited_internet_allowlist`. No cross-trial
+    reachability. The allowlist is required (non-empty) under this policy and
+    forbidden under the others."""
 
     FULL_INTERNET = "full_internet"
     """Unrestricted egress. Still no cross-trial reachability."""
@@ -908,6 +911,19 @@ def _check_initial_state_keys(
             )
 
 
+def _check_endpoint_services_declared(
+    services: dict[str, dict[str, Any]],
+    db_service: str | None,
+    rag_service: str | None,
+) -> None:
+    for field_name, value in (("db_service", db_service), ("rag_service", rag_service)):
+        if value is not None and value not in services:
+            raise ValueError(
+                f"EnvironmentManifest.{field_name} = {value!r} is not declared in the "
+                f"compose file; declared services are {sorted(services)!r}."
+            )
+
+
 def _check_services_keys(
     compose_services: dict[str, dict[str, Any]],
     manifest_services: dict[str, ServiceSpec],
@@ -948,7 +964,85 @@ class StackPatch(BaseModel):
     Passed through to the runtime backend at compose-up time; the
     compose file's ``${var}`` slots resolve against this mapping."""
 
+    runner_port: int | None = None
+    """Runner gRPC container port. ``None`` in a patch means inherit;
+    :func:`resolve` leaves the manifest's convention default in place
+    when the merged patch leaves this unset."""
+
+    db_service: str | None = None
+    """Compose service backing the engine's db endpoint. ``None`` means
+    inherit; :func:`resolve` leaves the manifest's convention default in
+    place when the merged patch leaves this unset."""
+
+    db_port: int | None = None
+    """Container port for the db endpoint. ``None`` means inherit."""
+
+    rag_service: str | None = None
+    """Compose service backing the engine's rag endpoint. ``None`` means
+    inherit the candidate-scan convention."""
+
+    rag_port: int | None = None
+    """Container port for the rag endpoint. ``None`` means inherit
+    published-port auto-detect."""
+
     model_config = {"extra": "forbid"}
+
+
+_HOSTNAME_LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+_HOSTNAME_RE = re.compile(rf"^{_HOSTNAME_LABEL}(?:\.{_HOSTNAME_LABEL})*$")
+
+
+def _is_ip_literal(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
+
+
+def _validate_allowlist_entry(entry: str) -> str:
+    """Return the lowercased entry when it is a bare DNS hostname or a single
+    leading ``*.`` wildcard domain; raise ``ValueError`` naming the entry
+    otherwise.
+
+    Rejects schemes, ports, paths, IP literals, multiple wildcards, and any
+    label that is not DNS-valid — the allowlist maps onto squid ``dstdomain``
+    ACLs, which match on host only.
+    """
+    if not entry:
+        raise ValueError(
+            "limited_internet_allowlist: entries must be non-empty hostnames; got an empty string"
+        )
+    lowered = entry.lower()
+    if "://" in lowered:
+        raise ValueError(
+            f"limited_internet_allowlist entry {entry!r} must not carry a scheme; "
+            "declare a bare hostname (e.g. 'api.openai.com' or '*.openai.com')"
+        )
+    if "/" in lowered:
+        raise ValueError(
+            f"limited_internet_allowlist entry {entry!r} must not carry a path; "
+            "declare a bare hostname (e.g. 'api.openai.com' or '*.openai.com')"
+        )
+    if ":" in lowered:
+        raise ValueError(
+            f"limited_internet_allowlist entry {entry!r} must not carry a port; "
+            "squid dstdomain matches on host only"
+        )
+    if lowered.count("*") > 1 or ("*" in lowered and not lowered.startswith("*.")):
+        raise ValueError(
+            f"limited_internet_allowlist entry {entry!r} may use at most one leading "
+            "'*.' wildcard label (e.g. '*.openai.com')"
+        )
+    host = lowered[2:] if lowered.startswith("*.") else lowered
+    if _is_ip_literal(host):
+        raise ValueError(
+            f"limited_internet_allowlist entry {entry!r} is an IP literal; "
+            "the allowlist accepts DNS hostnames only"
+        )
+    if not _HOSTNAME_RE.match(host):
+        raise ValueError(f"limited_internet_allowlist entry {entry!r} is not a valid DNS hostname")
+    return lowered
 
 
 class EnvironmentPatch(BaseModel):
@@ -979,6 +1073,14 @@ class EnvironmentPatch(BaseModel):
     network_policy: NetworkPolicy | None = None
     """Network posture the provisioner is asked to enforce. Survives
     atomic ``stack`` replacement (policy request, substrate-neutral)."""
+
+    limited_internet_allowlist: list[str] | None = None
+    """Hostnames egress is permitted to under ``network_policy:
+    limited_internet``. Survives atomic ``stack`` replacement (policy
+    request, substrate-neutral); the task list replaces the project list
+    outright on merge. Per-entry syntax and the cross-field invariant are
+    validated on :class:`EnvironmentManifest`, not here — the patch is a
+    pure input shape."""
 
     security_context_defaults: SecurityContext | None = None
     """Security defaults applied to services that do not override them.
@@ -1056,6 +1158,14 @@ class EnvironmentManifest(BaseModel):
     network_policy: NetworkPolicy = NetworkPolicy.NO_INTERNET
     """Network posture the provisioner is asked to enforce."""
 
+    limited_internet_allowlist: list[str] = Field(default_factory=list)
+    """Hostnames egress is permitted to under ``network_policy:
+    limited_internet``. Each entry is a bare DNS hostname
+    (``api.openai.com``) or a single leading ``*.`` wildcard domain
+    (``*.openai.com``); entries are lowercase-normalised. Required
+    (non-empty) under ``limited_internet`` and forbidden under the other
+    policies — see :meth:`_check_allowlist_matches_policy`."""
+
     security_context_defaults: SecurityContext | None = None
     """Applied by the provisioner to every service that does not override
     the equivalent settings in the compose file."""
@@ -1068,6 +1178,28 @@ class EnvironmentManifest(BaseModel):
     ``ephemeral`` default. Consumed by :attr:`requires_per_trial` (for
     backend selection) and by the runtime backends (for between-trial
     reset dispatch)."""
+
+    runner_port: int = 50051
+    """Runner gRPC container port. Always used — the runner always
+    resolves. Overridable via ``stack.runner_port``."""
+
+    db_service: str | None = None
+    """Compose service backing the engine's db endpoint. ``None`` resolves
+    by convention (``"db-service"``); a non-``None`` value names an exact
+    service and is validated to exist in the compose file."""
+
+    db_port: int | None = None
+    """Container port for the db endpoint. ``None`` resolves by
+    convention (8000)."""
+
+    rag_service: str | None = None
+    """Compose service backing the engine's rag endpoint. ``None`` resolves
+    by candidate-scan; a non-``None`` value names an exact service and is
+    validated to exist in the compose file."""
+
+    rag_port: int | None = None
+    """Container port for the rag endpoint. ``None`` auto-detects the first
+    published port."""
 
     model_config = {"extra": "forbid"}
 
@@ -1087,6 +1219,33 @@ class EnvironmentManifest(BaseModel):
     _compose_content: dict[str, Any] = PrivateAttr(default_factory=dict)
     """Parsed compose file contents cached at construction time. Populated
     by the model_validator; returned verbatim from :meth:`load_compose`."""
+
+    @field_validator("limited_internet_allowlist")
+    @classmethod
+    def _validate_allowlist(cls, value: list[str]) -> list[str]:
+        normalised = [_validate_allowlist_entry(entry) for entry in value]
+        duplicates = sorted({entry for entry in normalised if normalised.count(entry) > 1})
+        if duplicates:
+            raise ValueError(f"limited_internet_allowlist contains duplicate entries: {duplicates}")
+        return normalised
+
+    @model_validator(mode="after")
+    def _check_allowlist_matches_policy(self) -> EnvironmentManifest:
+        if self.network_policy is NetworkPolicy.LIMITED_INTERNET:
+            if not self.limited_internet_allowlist:
+                raise ValueError(
+                    "network_policy 'limited_internet' requires a non-empty "
+                    "limited_internet_allowlist; declare the hostnames egress is "
+                    "permitted to."
+                )
+            return self
+        if self.limited_internet_allowlist:
+            raise ValueError(
+                f"limited_internet_allowlist is only valid under network_policy "
+                f"'limited_internet'; got policy '{self.network_policy.value}' with "
+                "a non-empty allowlist."
+            )
+        return self
 
     @model_validator(mode="after")
     def _load_and_validate_compose(self) -> EnvironmentManifest:
@@ -1112,6 +1271,7 @@ class EnvironmentManifest(BaseModel):
         _check_runner_service_declared(services, self.runner_service)
         _check_initial_state_keys(services, self.initial_state)
         _check_services_keys(services, self.services)
+        _check_endpoint_services_declared(services, self.db_service, self.rag_service)
         self._compose_content = content
         return self
 

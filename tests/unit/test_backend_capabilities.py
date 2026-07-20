@@ -30,6 +30,7 @@ class TestRegistryVocabulary:
             "reset_recipes:redis_dump",
             "reset_recipes:bare",
             "network_isolation:no_internet",
+            "network_isolation:limited_internet",
         }
         assert expected.issubset(CAPABILITY_REGISTRY.keys())
 
@@ -51,6 +52,11 @@ class TestBackendAdvertisements:
 
     def test_per_trial_advertises_reset_recipes(self) -> None:
         assert "reset_recipes:sql_dump" in PerTrialRuntimeBackend.advertised_capabilities
+
+    def test_both_docker_backends_advertise_network_isolation(self) -> None:
+        for backend in (PerTrialRuntimeBackend, SharedStackRuntimeBackend):
+            assert "network_isolation:no_internet" in backend.advertised_capabilities
+            assert "network_isolation:limited_internet" in backend.advertised_capabilities
 
 
 class TestAdmissionGate:

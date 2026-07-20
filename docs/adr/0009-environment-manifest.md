@@ -97,6 +97,25 @@ class EnvironmentManifest(BaseModel):
     refuses to run a per-trial task on `SharedStackRuntimeBackend`.
     Set to `shared_ok` to opt out for stateless tasks that tolerate
     a shared stack."""
+
+    runner_port: int = 50051
+    """Runner gRPC container port. Convention default; override via
+    `stack.runner_port`."""
+
+    db_service: str | None = None
+    """Compose service backing the db endpoint. `None` → convention
+    `"db-service"`; a set value names an exact service, validated to exist."""
+
+    db_port: int | None = None
+    """Container port for the db endpoint. `None` → convention `8000`."""
+
+    rag_service: str | None = None
+    """Compose service backing the rag endpoint. `None` → candidate-scan;
+    a set value names an exact service, validated to exist."""
+
+    rag_port: int | None = None
+    """Container port for the rag endpoint. `None` → auto-detect the first
+    published port."""
 ```
 
 ### `TaskIsolation` — declares per-task isolation intent
@@ -131,7 +150,7 @@ Three literal states, following METR task-standard's permission-string conventio
 | Value | Semantics |
 |---|---|
 | `no_internet` (default) | Services reach each other on the per-trial network only. No egress to the public internet; no reachability across per-trial projects. |
-| `limited_internet` | Egress permitted for a provisioner-defined allowlist. No cross-trial reachability. The allowlist is a provisioner concern, not a schema concern. |
+| `limited_internet` | Egress permitted only to the hosts in `limited_internet_allowlist` (a manifest field — DNS hostnames, exact or `*.` leading-wildcard). No cross-trial reachability. Enforced by an injected forward-proxy sidecar; see [ADR-0018](0018-multi-container-under-shared-runtime.md#network-policy-enforcement). |
 | `full_internet` | Unrestricted egress. Still no cross-trial reachability. |
 
 Extending to a fourth mode (e.g. `dns_only`) is a permission-string addition; no consumer breaks.
@@ -153,6 +172,18 @@ class InitialStateRef(BaseModel):
 - `script` — executed inside the service's container.
 
 Applied by the provisioner before `await_ready` returns.
+
+### Endpoint resolution — convention with per-manifest overrides
+
+The provisioner resolves the `EnvEndpoints` triple (`runner_url`, `db_url`, `rag_url`) from the running compose stack. Each endpoint has a convention default the task author overrides from the manifest's `stack:` block:
+
+| Endpoint | Manifest field(s) | Convention default | Semantics |
+|---|---|---|---|
+| runner | `runner_port` | gRPC port `50051` on `runner_service` | Always resolved; a missing runner service or port raises `ProvisionError`. |
+| db | `db_service`, `db_port` | service `db-service` at port `8000` | Best-effort — an absent service leaves `db_url = None` and the runner reads `DB_SERVICE_URL` from its own container env. |
+| rag | `rag_service`, `rag_port` | candidate-scan `rag` / `rag-service`, first published port auto-detected | Best-effort. |
+
+`None` on the four optional fields means "resolve by convention". A non-`None` service name is an author assertion that the service exists — a typo would otherwise resolve to `None` and surface as a confusing runtime tool failure — so any explicitly-set `db_service` / `rag_service` is validated against the compose file's declared services at load time and raises `ValidationError` if absent. `runner_port` is a concrete port because the runner always resolves and a mis-set port already fails loud at provision.
 
 ### Two-file task authoring model
 
@@ -242,7 +273,6 @@ SWE-bench's harness uses a 3-tier image hierarchy (base → environment → inst
 ### Follow-ups
 
 - **`PerTrialRuntimeBackend`** — the first concrete provisioner. Consumes `manifest.compose_file` directly via `testcontainers.compose.DockerCompose`.
-- **Endpoint-resolution conventions** — `PerTrialRuntimeBackend` resolves `EnvEndpoints` from the compose file via convention: `runner_service` (default `"default"`) at gRPC port `50051` → `runner_url`; a compose service named `db` at port `5432` → `db_url`; a compose service named `rag` or `rag-service` at its declared port → `rag_url`. Task packs whose services deviate from these names or ports will get manifest-level overrides (`runner_port`, `db_service`, `db_port`, `rag_service`, `rag_port`) in a follow-up PR — the current shape prioritises simplicity for the common case.
 - **`NetworkPolicy.LIMITED_INTERNET` allowlist mechanism** — provisioner-defined; separate ADR when the first workload requires it.
 - **`K8sRuntimeBackend` design ADR** — filed when the K8s backend becomes concrete work.
 
