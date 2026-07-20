@@ -88,7 +88,7 @@ def _make_task(root: Path) -> tuple[NativeAdapter, Path]:
 
 
 def test_native_compose_builds_lifecycle_tool_and_bundles_artifacts(tmp_path: Path) -> None:
-    adapter, _ = _make_task(tmp_path)
+    adapter, task_dir = _make_task(tmp_path)
 
     description = adapter.to_task_description("compose_task")
     tool = description.agent_tools[0]
@@ -113,7 +113,11 @@ def test_native_compose_builds_lifecycle_tool_and_bundles_artifacts(tmp_path: Pa
     }
     assert "environment/solution/oracle.sh" not in description.tool_artifacts
     assert base64.b64decode(description.tool_artifacts["tests/test.sh"]).startswith(b"mkdir")
-    assert adapter.docker_stack_requirements().enable_dind is True
+    stack_requirements = adapter.docker_stack_requirements()
+    assert stack_requirements.enable_dind is True
+    assert stack_requirements.task_compose_files == [
+        (task_dir / "environment" / "docker-compose.yaml").resolve()
+    ]
 
 
 def test_native_task_can_mix_compose_builtin_and_mcp_tools(tmp_path: Path) -> None:

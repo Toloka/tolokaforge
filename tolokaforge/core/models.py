@@ -449,6 +449,8 @@ class OrchestratorConfig(BaseModel):
     timeouts: TimeoutConfig = Field(default_factory=TimeoutConfig)
     max_turns: int = 50
     auto_start_services: bool = True  # Auto-start Docker services via ServiceStack
+    preload_task_images: bool = True
+    preload_images: list[str] = Field(default_factory=list)
     continue_prompt: str = "Please proceed to the next step."
     stuck_heuristics: StuckHeuristics = Field(default_factory=StuckHeuristics)
     runtime: Literal["docker"] = "docker"  # Runtime mode (docker only; in-process was removed)

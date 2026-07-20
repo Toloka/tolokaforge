@@ -39,7 +39,14 @@ orchestrator:
   max_budget_usd: 50.0             # hard spend cap for the run
   runtime: "docker"               # Docker-based execution (required)
   auto_start_services: true       # auto-start Docker services via ServiceStack (default)
+  preload_task_images: true       # preload host-pinned task images into DinD (default)
+  preload_images: []              # additional host image tags to attempt
 ```
+
+For native Compose tasks, stack startup reads each validated task Compose file's
+top-level service `image` tags. Images already present on the host daemon are
+streamed into DinD after its daemon becomes healthy. Missing images or transfer
+failures are warnings; Docker Compose retains its normal build-on-use fallback.
 
 ## Docker Service Management
 

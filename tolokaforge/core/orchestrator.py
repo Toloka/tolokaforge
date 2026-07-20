@@ -572,6 +572,10 @@ class Orchestrator:
                 core_stack_kwargs = (
                     stack_requirements.to_core_stack_kwargs() if stack_requirements else {}
                 )
+                core_stack_kwargs["preload_task_images"] = (
+                    self.config.orchestrator.preload_task_images
+                )
+                core_stack_kwargs["preload_images"] = list(self.config.orchestrator.preload_images)
                 if harness_config is not None:
                     workspace_root = (output_dir / "workspaces").resolve()
                     extra_binds = list(core_stack_kwargs.get("extra_runner_binds", []))

@@ -36,12 +36,15 @@ class DockerStackRequirements:
             Runner so it can drive the host Docker daemon directly.
         enable_dind: Add a Docker-in-Docker sidecar so the Runner can manage
             Docker Compose stacks without touching the host daemon.
+        task_compose_files: Validated task Docker Compose files whose pinned
+            service images should be preloaded into Docker-in-Docker.
     """
 
     task_pack_mounts: list[Path] = field(default_factory=list)
     extra_runner_binds: list[tuple[Path, str]] = field(default_factory=list)
     mount_docker_socket: bool = False
     enable_dind: bool = False
+    task_compose_files: list[Path] = field(default_factory=list)
 
     def to_core_stack_kwargs(self) -> dict[str, Any]:
         """Render to ``core_stack()`` kwargs, omitting empty defaults.
@@ -58,6 +61,8 @@ class DockerStackRequirements:
             kwargs["mount_docker_socket"] = True
         if self.enable_dind:
             kwargs["enable_dind"] = True
+        if self.task_compose_files:
+            kwargs["task_compose_files"] = list(self.task_compose_files)
         return kwargs
 
 

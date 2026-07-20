@@ -37,6 +37,9 @@ orchestrator:
   queue_backend: "sqlite"     # "sqlite" (default) or "postgres"
   queue_postgres_dsn: null    # required when queue_backend="postgres"
   max_turns: 50
+  auto_start_services: true
+  preload_task_images: true    # preload host-pinned task images into DinD
+  preload_images: []           # additional host image tags to attempt
   continue_prompt: "Please proceed to the next step."
   timeouts:
     turn_s: 60
@@ -67,6 +70,8 @@ Notes:
 - `max_budget_usd` pauses scheduling new trials when cumulative spend reaches the budget.
 - `max_requests_per_second` applies a global limiter across worker threads.
 - `max_attempt_retries` retries transient failures (`rate_limit`, `api_error`, `timeout`) before marking a trial failed.
+- `preload_task_images` discovers top-level service `image` tags in native-task Compose files and streams host-present images into the DinD sidecar at stack startup. Missing images and preload failures warn and retain the normal build-on-use behavior.
+- `preload_images` adds explicit image tags to that preload set. It has no effect when `preload_task_images` is false or the stack has no DinD sidecar.
 - `queue_backend: postgres` enables distributed queue/state using Postgres; set `queue_postgres_dsn`.
 - If `evaluation.task_packs` is empty, `tasks_glob` is resolved relative to the working directory.
 - If `evaluation.task_packs` is set, relative `tasks_glob` patterns are resolved under each task-pack root and merged.

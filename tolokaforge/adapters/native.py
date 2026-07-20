@@ -238,13 +238,20 @@ class NativeAdapter(BaseAdapter):
     def docker_stack_requirements(self) -> DockerStackRequirements:
         """Enable the shared DinD workspace when any native task uses Compose."""
 
+        compose_files: list[Path] = []
         for task_id in self.get_task_ids():
             task = self.get_task(task_id)
             task_dir = self.get_task_dir(task_id)
             grading_data = load_grading_data(task, task_dir)
-            if validate_native_compose_contract(task, task_dir, grading_data):
-                return DockerStackRequirements(enable_dind=True)
-        return DockerStackRequirements()
+            declarations = validate_native_compose_contract(task, task_dir, grading_data)
+            for _, source in declarations:
+                compose_path = (task_dir / source.compose_file).resolve()
+                if compose_path not in compose_files:
+                    compose_files.append(compose_path)
+        return DockerStackRequirements(
+            enable_dind=bool(compose_files),
+            task_compose_files=compose_files,
+        )
 
     def create_environment(self, task_id: str) -> AdapterEnvironment:
         """Create environment from task's initial_state config.

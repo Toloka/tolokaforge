@@ -37,6 +37,9 @@ def full_stack(
     task_pack_mounts: list[Path] | None = None,
     extra_runner_binds: list[tuple[Path, str]] | None = None,
     mount_docker_socket: bool = False,
+    task_compose_files: list[Path] | None = None,
+    preload_task_images: bool = True,
+    preload_images: list[str] | None = None,
 ) -> ServiceStack:
     """Create a full service stack with all services.
 
@@ -57,6 +60,9 @@ def full_stack(
         task_pack_mounts: Forwarded to ``core_stack``.
         extra_runner_binds: Forwarded to ``core_stack``.
         mount_docker_socket: Forwarded to ``core_stack``.
+        task_compose_files: Forwarded to ``core_stack``.
+        preload_task_images: Forwarded to ``core_stack``.
+        preload_images: Forwarded to ``core_stack``.
 
     Returns:
         ServiceStack configured with all services.
@@ -70,6 +76,9 @@ def full_stack(
         task_pack_mounts=task_pack_mounts,
         extra_runner_binds=extra_runner_binds,
         mount_docker_socket=mount_docker_socket,
+        task_compose_files=task_compose_files,
+        preload_task_images=preload_task_images,
+        preload_images=preload_images,
     )
 
     # RAG Service — hybrid BM25 + FAISS search

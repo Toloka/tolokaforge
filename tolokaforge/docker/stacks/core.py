@@ -33,6 +33,9 @@ def core_stack(
     task_pack_mounts: list[Path] | None = None,
     extra_runner_binds: list[tuple[Path, str]] | None = None,
     mount_docker_socket: bool = False,
+    task_compose_files: list[Path] | None = None,
+    preload_task_images: bool = True,
+    preload_images: list[str] | None = None,
 ) -> ServiceStack:
     """Create a core service stack with DB service and Runner.
 
@@ -57,11 +60,20 @@ def core_stack(
             Runner so ``docker compose`` inside the Runner can talk to the
             host Docker daemon. Relaxes the default cap-drop policy because
             Docker socket access needs additional capabilities.
+        task_compose_files: Validated task Compose files used to discover
+            pinned service images for DinD preloading.
+        preload_task_images: Preload host task images into DinD at startup.
+        preload_images: Additional image tags to attempt to preload.
 
     Returns:
         ServiceStack configured with db-service and runner.
     """
-    stack = ServiceStack(config=config or DockerConfig())
+    stack = ServiceStack(
+        config=config or DockerConfig(),
+        task_compose_files=list(task_compose_files or []),
+        preload_task_images=preload_task_images,
+        preload_images=list(preload_images or []),
+    )
 
     # Build health probe only when the host port is known upfront.
     # When auto-allocated, _start_service will construct the probe

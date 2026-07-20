@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field, PrivateAttr
@@ -198,6 +199,9 @@ class ServiceStack(BaseModel):
         config: Docker configuration.
         services: Dictionary of service name to ServiceDefinition.
         prefix: Prefix for container and network names.
+        task_compose_files: Validated task Compose files used for image discovery.
+        preload_task_images: Whether to preload task images into DinD.
+        preload_images: Additional image tags to try to preload.
 
     Example:
         >>> stack = ServiceStack()
@@ -219,6 +223,18 @@ class ServiceStack(BaseModel):
     prefix: str = Field(
         default="tolokaforge",
         description="Prefix for container/network names",
+    )
+    task_compose_files: list[Path] = Field(
+        default_factory=list,
+        description="Task Compose files used to discover images for DinD preloading",
+    )
+    preload_task_images: bool = Field(
+        default=True,
+        description="Preload host task images into DinD when the sidecar starts",
+    )
+    preload_images: list[str] = Field(
+        default_factory=list,
+        description="Additional image tags to attempt to preload into DinD",
     )
 
     # Private runtime state (not serialized)
@@ -485,6 +501,48 @@ class ServiceStack(BaseModel):
         for name in order:
             svc = active_services[name]
             self._start_service(svc, wait=wait)
+            if name == "dind":
+                self._preload_images_into_dind()
+
+    def _preload_images_into_dind(self) -> None:
+        """Best-effort preload of task images after the DinD sidecar starts."""
+        if not self.preload_task_images or "dind" not in self.services:
+            return
+
+        dind_container = self._containers.get("dind")
+        if dind_container is None:
+            logger.warning("Skipping task image preload: DinD container is not running")
+            return
+
+        runner = self.services.get("runner")
+        dind_endpoint = runner.environment.get("DOCKER_HOST") if runner else None
+        if not dind_endpoint:
+            logger.warning("Skipping task image preload: Runner has no DOCKER_HOST endpoint")
+            return
+
+        try:
+            from tolokaforge.docker.image_preload import (
+                discover_image_tags,
+                preload_images_into_dind,
+                wait_for_dind_daemon,
+            )
+
+            tags = discover_image_tags(self.task_compose_files, self.preload_images)
+            if not tags:
+                return
+            wait_for_dind_daemon(
+                dind_container,
+                dind_endpoint,
+                timeout_s=min(self.config.wait_timeout_s, 30.0),
+                interval_s=min(self.config.wait_poll_s, 1.0),
+            )
+            preload_images_into_dind(
+                tags,
+                dind_container_name=dind_container.name,
+                dind_endpoint=dind_endpoint,
+            )
+        except Exception as exc:
+            logger.warning("Task image preload failed; continuing stack startup: %s", exc)
 
     def _filter_by_profiles(self, profiles: list[str] | None) -> dict[str, ServiceDefinition]:
         """Filter services by profile tags.

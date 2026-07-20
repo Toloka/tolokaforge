@@ -38,6 +38,9 @@ orchestrator:
   queue_backend: "sqlite"           # or "postgres" for distributed workers
   queue_postgres_dsn: null          # required when queue_backend="postgres"
   max_turns: 50
+  auto_start_services: true         # manage the Docker service stack automatically
+  preload_task_images: true         # preload host-pinned task images into DinD
+  preload_images: []                # additional host image tags to attempt
 
   timeouts:
     turn_s: 60                      # Per-turn timeout
