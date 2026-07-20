@@ -33,13 +33,14 @@ def apply_compose_project_isolation() -> str:
     return name
 
 
-@pytest.fixture(scope="session", autouse=True)
-def isolate_compose_project_per_worker() -> None:
-    """Pin one ``COMPOSE_PROJECT_NAME`` per xdist worker so concurrent
-    reset-recipe stacks on different workers never share a Compose project
-    namespace.
-
-    Per-worker uniqueness suffices because a worker runs its tests
-    sequentially and each reset-recipe test boots a single stack.
+@pytest.fixture(autouse=True)
+def isolate_compose_project_per_worker(monkeypatch) -> None:
+    """Pin one ``COMPOSE_PROJECT_NAME`` per xdist worker for the duration
+    of a reset-recipe test only. Function-scoped monkeypatch restores the
+    prior env after each test so downstream tests on the same worker
+    (notably ``test_per_trial_isolation_across_concurrent_instances``, which
+    boots two mutually-isolated stacks) still get their own basename-derived
+    project names.
     """
-    apply_compose_project_isolation()
+    worker = os.environ.get("PYTEST_XDIST_WORKER", "main")
+    monkeypatch.setenv("COMPOSE_PROJECT_NAME", f"tolokaforge-it-{worker}")
