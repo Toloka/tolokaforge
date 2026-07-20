@@ -6,6 +6,19 @@
       "properties": {},
       "title": "_tolokaforge_get_state_Arguments",
       "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "result": {
+          "title": "Result",
+          "type": "string"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "title": "_tolokaforge_get_state_Output",
+      "type": "object"
     }
   },
   {
@@ -23,6 +36,19 @@
       ],
       "title": "_tolokaforge_set_state_Arguments",
       "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "result": {
+          "title": "Result",
+          "type": "string"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "title": "_tolokaforge_set_state_Output",
+      "type": "object"
     }
   },
   {
@@ -31,6 +57,23 @@
     "parameters": {
       "properties": {},
       "title": "list_notesArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "result": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Result",
+          "type": "array"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "title": "list_notesOutput",
       "type": "object"
     }
   },

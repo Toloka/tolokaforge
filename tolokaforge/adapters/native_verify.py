@@ -260,10 +260,24 @@ def _validate_primary_keys(state: RunnerInitialStateConfig) -> None:
         records = state.tables.get(schema.table_name)
         if records is None:
             raise RuntimeError(f"schema references missing table {schema.table_name!r}")
+        observed: set[Any] = set()
         for index, record in enumerate(records):
             if schema.primary_key not in record:
                 raise RuntimeError(
                     f"{schema.table_name}[{index}] lacks primary key {schema.primary_key!r}"
+                )
+            value = record[schema.primary_key]
+            try:
+                duplicate = value in observed
+                observed.add(value)
+            except TypeError as exc:
+                raise RuntimeError(
+                    f"{schema.table_name}[{index}] primary key is not hashable"
+                ) from exc
+            if value is None or duplicate:
+                raise RuntimeError(
+                    f"{schema.table_name} primary key {schema.primary_key!r} must be "
+                    f"unique and non-null; invalid value at index {index}: {value!r}"
                 )
 
 
@@ -272,21 +286,30 @@ def _live_tools(process: MCPServerProcess) -> list[dict[str, Any]]:
     tools = result.get("tools")
     if not isinstance(tools, list) or any(not isinstance(tool, dict) for tool in tools):
         raise RuntimeError("MCP tools/list did not return a tool list")
-    return sorted((_normalize_tool(tool) for tool in tools), key=lambda tool: tool["name"])
+    return sorted((normalize_native_tool(tool) for tool in tools), key=lambda tool: tool["name"])
 
 
-def _normalize_tool(tool: dict[str, Any]) -> dict[str, Any]:
+def normalize_native_tool(tool: dict[str, Any]) -> dict[str, Any]:
+    """Return a lossless canonical fixture representation of one MCP tool.
+
+    MCP calls the input schema ``inputSchema`` while historical TolokaForge
+    fixtures call it ``parameters``.  That spelling difference is the only
+    normalization performed: output schemas, annotations, and any future MCP
+    schema fields remain equality-significant.
+    """
     name = tool.get("name")
     if not isinstance(name, str) or not name:
         raise RuntimeError("tool schema lacks a non-empty name")
+    if "parameters" in tool and "inputSchema" in tool:
+        raise RuntimeError(f"tool {name!r} declares both parameters and inputSchema")
     parameters = tool.get("parameters", tool.get("inputSchema"))
     if not isinstance(parameters, dict):
         raise RuntimeError(f"tool {name!r} lacks an object input schema")
-    return {
-        "name": name,
-        "description": tool.get("description", ""),
-        "parameters": parameters,
-    }
+    normalized = dict(tool)
+    normalized.pop("inputSchema", None)
+    normalized["parameters"] = parameters
+    normalized.setdefault("description", "")
+    return normalized
 
 
 def _verify_tool_fixture(task_root: Path, live_tools: list[dict[str, Any]]) -> None:
@@ -296,7 +319,9 @@ def _verify_tool_fixture(task_root: Path, live_tools: list[dict[str, Any]]) -> N
     fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
     if not isinstance(fixture, list) or any(not isinstance(tool, dict) for tool in fixture):
         raise RuntimeError(f"tool fixture must be a JSON list of objects: {fixture_path}")
-    normalized = sorted((_normalize_tool(tool) for tool in fixture), key=lambda tool: tool["name"])
+    normalized = sorted(
+        (normalize_native_tool(tool) for tool in fixture), key=lambda tool: tool["name"]
+    )
     if normalized != live_tools:
         raise RuntimeError("fixtures/tools.json does not exactly match live MCP tools/list")
 
@@ -316,7 +341,18 @@ def _replay(
     initial_tables: dict[str, list[dict[str, Any]]],
     actions: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    process.reset_state(initial_tables)
+    reset = process.send_request(
+        "tools/call",
+        {
+            "name": "_tolokaforge_set_state_",
+            "arguments": {"state_json": json.dumps(initial_tables)},
+        },
+    )
+    reset_error = tool_error_message(reset)
+    if reset_error is not None:
+        raise RuntimeError(f"golden replay reset returned an error: {reset_error}")
+    if process.get_state() != initial_tables:
+        raise RuntimeError("golden replay reset did not restore the exact initial state")
     outputs: list[dict[str, Any]] = []
     for index, action in enumerate(actions):
         if not isinstance(action, dict):
