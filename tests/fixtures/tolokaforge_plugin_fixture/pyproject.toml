@@ -1,0 +1,15 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tolokaforge_plugin_fixture"
+version = "0.1.0"
+description = "Out-of-tree RuntimeBackend plug-in fixture for tolokaforge's plugin-discovery integration test."
+requires-python = ">=3.10"
+
+[project.entry-points."tolokaforge.runtime_backends"]
+fixture_backend = "tolokaforge_plugin_fixture:fixture_backend_factory"
+
+[tool.hatch.build.targets.wheel]
+packages = ["tolokaforge_plugin_fixture"]

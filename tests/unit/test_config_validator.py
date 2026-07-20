@@ -100,6 +100,32 @@ class TestSchemaValidation:
         cfg["orchestrator"]["runtime"] = "in-process"
         result = validate_run_config(cfg)
         assert not result.ok
+        runtime_errors = [
+            i
+            for i in result.errors
+            if i.path == "orchestrator.runtime" and "in-process" in i.message
+        ]
+        assert runtime_errors, "expected an actionable orchestrator.runtime error"
+        message = runtime_errors[0].message
+        for known in ("shared", "per_trial", "in_memory"):
+            assert known in message
+
+    @pytest.mark.parametrize("runtime", ["shared", "per_trial", "in_memory"])
+    def test_valid_builtin_runtime(self, runtime: str):
+        cfg = _make_config()
+        cfg["orchestrator"]["runtime"] = runtime
+        result = validate_run_config(cfg)
+        assert result.ok
+
+    def test_docker_alias_validates(self):
+        """``runtime: docker`` is a retained legacy alias for ``shared`` — it
+        must still pass validation even though the registry has no ``docker``
+        name."""
+        cfg = _make_config()
+        cfg["orchestrator"]["runtime"] = "docker"
+        result = validate_run_config(cfg)
+        assert result.ok
+        assert not [i for i in result.errors if i.path == "orchestrator.runtime"]
 
 
 # ---------------------------------------------------------------------------

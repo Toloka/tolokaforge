@@ -45,6 +45,7 @@ from tolokaforge.core.trial import TrialSpec
 
 if TYPE_CHECKING:
     from tolokaforge.core.logging import StructuredLogger
+    from tolokaforge.core.plugin_registry import TrialGraderContext
 
 __all__ = [
     "RunnerRPCTrialGrader",
@@ -262,3 +263,8 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
         judge_usage=judge_usage,
         judge_transcript=judge_transcript,
     )
+
+
+def runner_rpc_trial_grader_factory(ctx: TrialGraderContext) -> RunnerRPCTrialGrader:
+    """Build a :class:`RunnerRPCTrialGrader` from a grader context."""
+    return RunnerRPCTrialGrader(runtime_backend=ctx.runtime_backend, logger=ctx.logger)
