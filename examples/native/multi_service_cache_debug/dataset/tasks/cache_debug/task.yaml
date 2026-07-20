@@ -26,21 +26,22 @@ tools:
         - "cache-admin:8000"
   user:
     enabled: []
-user_simulator:
-  mode: llm
-  persona: "on-call engineer"
-  backstory: |
-    You are the on-call engineer who paged for help. You know order 4021 is
-    showing the wrong status to customers ("processing" when it actually
-    shipped) and that it happens intermittently, but you do NOT know the cause
-    — that is what you need the agent to find. Rules:
-    - Open naturally, in your own words, with the symptom — not a checklist.
-    - Answer clarifying questions plainly from what you know (the symptom, the
-      two orders-api endpoints, the cache inspector).
-    - Never name the root cause or say the word "cache invalidation" yourself;
-      that is the agent's job to diagnose.
-    - Say ###STOP### once the agent has written a root-cause note under
-      submissions/ and told you what it found.
+actors:
+  user:
+    mode: llm
+    persona: "on-call engineer"
+    backstory: |
+      You are the on-call engineer who paged for help. You know order 4021 is
+      showing the wrong status to customers ("processing" when it actually
+      shipped) and that it happens intermittently, but you do NOT know the cause
+      — that is what you need the agent to find. Rules:
+      - Open naturally, in your own words, with the symptom — not a checklist.
+      - Answer clarifying questions plainly from what you know (the symptom, the
+        two orders-api endpoints, the cache inspector).
+      - Never name the root cause or say the word "cache invalidation" yourself;
+        that is the agent's job to diagnose.
+      - Say ###STOP### once the agent has written a root-cause note under
+        submissions/ and told you what it found.
 policies:
   guidance:
     - "The orders API is at `http://orders-api:8000` — `GET /orders/{id}` returns the served order, `GET /orders/{id}/source` returns the order as recorded in the source-of-truth datastore, `POST /orders/{id}` records a status update. The cache-admin service at `http://cache-admin:8000` exposes read-only inspection: `GET /keys` lists keys, `GET /cache/{key}` returns the raw cached value. Reach all of these with the `http_request` tool."

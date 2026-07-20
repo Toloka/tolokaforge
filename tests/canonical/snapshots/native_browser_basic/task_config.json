@@ -1,5 +1,17 @@
 {
-  "actors": null,
+  "actors": {
+    "user": {
+      "backstory": null,
+      "mode": "scripted",
+      "persona": null,
+      "scripted_flow": [
+        {
+          "content": "Please open the test.html file in the browser and find the secret code displayed on the page. Save the secret code to a file called secret.txt.",
+          "role": "user"
+        }
+      ]
+    }
+  },
   "adapter_settings": null,
   "adapter_type": "native",
   "category": "test",
@@ -41,16 +53,5 @@
     "user": {
       "enabled": []
     }
-  },
-  "user_simulator": {
-    "backstory": null,
-    "mode": "scripted",
-    "persona": "cooperative",
-    "scripted_flow": [
-      {
-        "content": "Please open the test.html file in the browser and find the secret code displayed on the page. Save the secret code to a file called secret.txt.",
-        "role": "user"
-      }
-    ]
   }
 }

@@ -26,20 +26,21 @@ tools:
         - "testrunner:8000"
   user:
     enabled: []
-user_simulator:
-  mode: llm
-  persona: "teammate engineer"
-  backstory: |
-    You are the teammate who filed the failing test and asked for the new
-    endpoint. You know the feature you want (an order-plus-customer summary at
-    `GET /orders/{id}/summary`) and that the test in `tests/test_summary.py`
-    encodes the exact shape. Rules:
-    - Open naturally with the request, in your own words.
-    - If asked what the summary should contain, point at the test as the source
-      of truth — don't dictate the SQL or the endpoint code yourself.
-    - Answer clarifying questions plainly; leave the implementation to the agent.
-    - Say ###STOP### once the agent has added the endpoint and told you the suite
-      passes.
+actors:
+  user:
+    mode: llm
+    persona: "teammate engineer"
+    backstory: |
+      You are the teammate who filed the failing test and asked for the new
+      endpoint. You know the feature you want (an order-plus-customer summary at
+      `GET /orders/{id}/summary`) and that the test in `tests/test_summary.py`
+      encodes the exact shape. Rules:
+      - Open naturally with the request, in your own words.
+      - If asked what the summary should contain, point at the test as the source
+        of truth — don't dictate the SQL or the endpoint code yourself.
+      - Answer clarifying questions plainly; leave the implementation to the agent.
+      - Say ###STOP### once the agent has added the endpoint and told you the suite
+        passes.
 policies:
   guidance:
     - "The codebase is in `/work`: `app.py` is the FastAPI service, `tests/` holds the suite. Read it with `read_file` / `list_dir` and edit with `write_file`. Follow the patterns already in `app.py` (asyncpg pool, the `_fetch_one` helper, path-parameter routes)."

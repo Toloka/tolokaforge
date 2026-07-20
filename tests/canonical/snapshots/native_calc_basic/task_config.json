@@ -1,5 +1,17 @@
 {
-  "actors": null,
+  "actors": {
+    "user": {
+      "backstory": null,
+      "mode": "scripted",
+      "persona": null,
+      "scripted_flow": [
+        {
+          "content": "Please calculate 17 times 23 and save the answer to a file called result.txt.",
+          "role": "user"
+        }
+      ]
+    }
+  },
   "adapter_settings": null,
   "adapter_type": "native",
   "category": "test",
@@ -40,16 +52,5 @@
     "user": {
       "enabled": []
     }
-  },
-  "user_simulator": {
-    "backstory": null,
-    "mode": "scripted",
-    "persona": "cooperative",
-    "scripted_flow": [
-      {
-        "content": "Please calculate 17 times 23 and save the answer to a file called result.txt.",
-        "role": "user"
-      }
-    ]
   }
 }

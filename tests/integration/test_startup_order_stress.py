@@ -54,7 +54,7 @@ pytestmark = [
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PACK = "examples/native/multi_service_slow_start"
-_RUN_CONFIG = f"{_PACK}/run_config.yaml"
+_RUN_CONFIG = f"{_PACK}/run_configs/dev.yaml"
 
 _MIN_PROVISION_SECONDS = 20.0
 

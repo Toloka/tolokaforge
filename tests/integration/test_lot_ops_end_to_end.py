@@ -54,7 +54,7 @@ pytestmark = [
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PACK = "examples/native/multi_service_lot_ops"
-_RUN_CONFIG = f"{_PACK}/run_config.yaml"
+_RUN_CONFIG = f"{_PACK}/run_configs/dev.yaml"
 _TASK_ID = "lot_ops_01"
 _APP_SERVICE = "app-service:8000"
 

@@ -1,6 +1,6 @@
-# Coding example — small dataset of two public coding tasks. Requires a real
-# LLM provider key in .env (OPENROUTER_API_KEY by default). Run via
-#   scripts/with_env.sh uv run tolokaforge run --config examples/native/coding/run_config.yaml
+# Tool-use example — two public tool-use tasks driving the calculator
+# and helper tools. Requires a real LLM provider key in .env. Run via
+#   scripts/with_env.sh uv run tolokaforge run --config examples/native/tool_use/run_configs/dev.yaml
 models:
   agent:
     provider: "openrouter"
@@ -19,7 +19,7 @@ orchestrator:
   queue_backend: sqlite
 
 evaluation:
-  task_packs:
-    - "examples/native/coding/dataset"
+  projects:
+    - "examples/native/tool_use/dataset"
   tasks_glob: "**/task.yaml"
-  output_dir: "results/coding_example"
+  output_dir: "results/tool_use_example"

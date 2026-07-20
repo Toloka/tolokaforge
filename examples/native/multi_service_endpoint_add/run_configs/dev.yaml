@@ -44,7 +44,7 @@ compute:
   capture_logs_on_success: true
 
 evaluation:
-  task_packs:
+  projects:
     - "examples/native/multi_service_endpoint_add/dataset"
   tasks_glob: "tasks/endpoint_add/task.yaml"
   output_dir: "results/multi_service_endpoint_add_example"

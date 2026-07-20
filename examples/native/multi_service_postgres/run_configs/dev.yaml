@@ -35,7 +35,7 @@ orchestrator:
   queue_backend: sqlite
 
 evaluation:
-  task_packs:
+  projects:
     - "examples/native/multi_service_postgres/dataset"
   tasks_glob: "tasks/multi_service/support_triage_01/task.yaml"
   output_dir: "results/multi_service_postgres_example"

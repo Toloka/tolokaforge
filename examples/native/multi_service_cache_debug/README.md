@@ -56,7 +56,7 @@ agent  ──http──▶ │                     └──▶ postgres:16   (a
   declared service's logs to `results/<run>/trials/<task>/<idx>/services/<svc>.log`.
   `redis.log` carries the RDB-load signature (`Loading RDB` / `Done loading RDB`
   / `DB loaded from disk`) from the recipe's restart — provable evidence the
-  `redis_dump` recipe fired. `run_config.yaml` sets
+  `redis_dump` recipe fired. `run_configs/dev.yaml` sets
   `compute.capture_logs_on_success: true` so these logs land on a green run too.
 
 ## Why per-trial (not shared)
@@ -90,7 +90,7 @@ uv run tolokaforge validate --tasks "examples/native/multi_service_cache_debug/d
 ## Run
 
 ```bash
-scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_cache_debug/run_config.yaml
+scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_cache_debug/run_configs/dev.yaml
 ```
 
 Needs a running Docker daemon and `OPENROUTER_API_KEY` in `.env`. The first run
@@ -102,7 +102,7 @@ task's docker network, so the agent reaches each service by name.
 ```
 examples/native/multi_service_cache_debug/
 ├── project.yaml                        # assets.seeds (redis_dump) + default_environment (redis: reset)
-├── run_config.yaml                     # haiku agent + user, sonnet judge, per_trial, capture on success
+├── run_configs/dev.yaml                # haiku agent + user, sonnet judge, per_trial, capture on success
 ├── README.md                           # this file
 ├── assets/
 │   ├── cache_poisoned.rdb              # the redis_dump seed (order:4021 = stale "processing")

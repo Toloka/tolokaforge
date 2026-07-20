@@ -98,7 +98,7 @@ uv run tolokaforge validate --tasks "examples/native/multi_service_endpoint_add/
 ## Run
 
 ```bash
-scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_endpoint_add/run_config.yaml
+scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_endpoint_add/run_configs/dev.yaml
 ```
 
 Needs a running Docker daemon and `OPENROUTER_API_KEY` in `.env`. The first run
@@ -110,7 +110,7 @@ docker network, so the agent reaches `testrunner` by name.
 ```
 examples/native/multi_service_endpoint_add/
 ├── project.yaml                        # assets.seeds (filesystem_dir) + default_environment (testrunner: reset)
-├── run_config.yaml                     # haiku agent + user, sonnet judge, per_trial, repeats: 2
+├── run_configs/dev.yaml                # haiku agent + user, sonnet judge, per_trial, repeats: 2
 ├── README.md                           # this file
 ├── assets/
 │   └── source/                         # the filesystem_dir seed — pristine FastAPI source (the ONLY copy)

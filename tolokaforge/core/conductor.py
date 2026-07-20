@@ -539,13 +539,14 @@ class InProcessConductor:
         user_tool_executor = None
         user_tool_schemas: list[dict[str, Any]] = []
 
-        user_llm_config = user_config if task.user_simulator.mode == "llm" else None
+        sim = task.resolve_user_simulator()
+        user_llm_config = user_config if sim.mode == "llm" else None
         user_simulator = UserSimulator(
-            mode=task.user_simulator.mode,
+            mode=sim.mode,
             llm_config=user_llm_config,
-            persona=task.user_simulator.persona,
-            backstory=task.user_simulator.backstory,
-            scripted_flow=task.user_simulator.scripted_flow,
+            persona=sim.persona,
+            backstory=sim.backstory,
+            scripted_flow=sim.scripted_flow,
             tool_schemas=user_tool_schemas if user_tool_executor else None,
         )
 

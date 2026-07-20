@@ -64,7 +64,7 @@ uv run tolokaforge validate --tasks "examples/native/multi_service_lot_ops/datas
 ## Run
 
 ```bash
-scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_lot_ops/run_config.yaml
+scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_lot_ops/run_configs/dev.yaml
 ```
 
 Needs a running Docker daemon and `OPENROUTER_API_KEY` in `.env`. The first run
@@ -75,7 +75,7 @@ task's docker network, so at grade time it reaches `app-db:5432` directly.
 
 ```
 examples/native/multi_service_lot_ops/
-├── run_config.yaml               # haiku agent + user, sonnet judge
+├── run_configs/dev.yaml          # haiku agent + user, sonnet judge
 ├── project.yaml                  # discovery glob + native defaults
 ├── README.md                     # this file
 ├── shared/

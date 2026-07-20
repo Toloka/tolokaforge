@@ -1,7 +1,7 @@
 # Cross-service startup-order stress example — run config.
 #
-# Sits next to project.yaml so discovery resolves the enclosing project
-# (and its `default_environment`). `repeats: 1` provisions the stack once,
+# The loader walks up to the enclosing project.yaml so discovery resolves
+# its `default_environment`. `repeats: 1` provisions the stack once,
 # so the single trial produces exactly one provision log pair — an
 # unambiguous target for the slow-start latency assertion.
 #

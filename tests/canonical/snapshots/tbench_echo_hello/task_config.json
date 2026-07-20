@@ -45,11 +45,5 @@
     "user": {
       "enabled": []
     }
-  },
-  "user_simulator": {
-    "backstory": null,
-    "mode": "scripted",
-    "persona": "cooperative",
-    "scripted_flow": []
   }
 }

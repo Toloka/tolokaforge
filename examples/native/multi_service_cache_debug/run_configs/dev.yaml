@@ -47,7 +47,7 @@ compute:
   capture_logs_on_success: true
 
 evaluation:
-  task_packs:
+  projects:
     - "examples/native/multi_service_cache_debug/dataset"
   tasks_glob: "tasks/cache_debug/task.yaml"
   output_dir: "results/multi_service_cache_debug_example"

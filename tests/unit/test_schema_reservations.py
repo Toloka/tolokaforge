@@ -23,7 +23,6 @@ from tolokaforge.core.models import (
     TaskConfig,
     TaskDefaults,
     ToolsConfig,
-    UserSimulatorConfig,
 )
 from tolokaforge.runner.models import SecurityContext
 
@@ -76,28 +75,24 @@ class TestActorsMapReservation:
                 description="y",
                 initial_state=InitialStateConfig(),
                 tools=ToolsConfig(),
-                user_simulator=UserSimulatorConfig(),
                 grading="grading.yaml",
                 actors={"agent": ActorSpec(mode="llm")},
             )
 
     def test_task_config_accepts_user_actor(self) -> None:
-        # Positive counterpart to the reserved-name rejection — a task
-        # override with a non-reserved actor name parses cleanly. The
-        # runtime binding of ``actors.user`` back to today's simulator
-        # lives in the actor-rename milestone; here we only pin that
-        # the shape parses at the task layer, matching TaskDefaults.
+        # A task override with the non-reserved ``user`` actor parses and
+        # drives the resolved simulator.
         t = TaskConfig(
             task_id="x",
             description="y",
             initial_state=InitialStateConfig(),
             tools=ToolsConfig(),
-            user_simulator=UserSimulatorConfig(),
             grading="grading.yaml",
             actors={"user": ActorSpec(mode="llm", persona="task-local")},
         )
         assert t.actors is not None
         assert t.actors["user"].persona == "task-local"
+        assert t.resolve_user_simulator().persona == "task-local"
 
 
 # ── ComputeConfig.capabilities ──────────────────────────────────
@@ -245,15 +240,16 @@ class TestTaskConfigMinimal:
         assert t.task_id == "x"
         assert t.name is None
         assert t.category is None
-        # Three of the four relaxed fields default to model instances (not
-        # None) so the unguarded live consumers in conductor.py / native.py
-        # keep working; grading defaults to None (path field, guarded fail-
-        # loud where dereferenced).
+        # The relaxed fields default to model instances (not None) so the
+        # unguarded live consumers in conductor.py / native.py keep working;
+        # grading defaults to None (path field, guarded fail-loud where
+        # dereferenced). With no ``actors.user`` the resolved simulator is
+        # the default (mode=llm, persona=cooperative).
         assert isinstance(t.initial_state, InitialStateConfig)
         assert isinstance(t.tools, ToolsConfig)
-        assert isinstance(t.user_simulator, UserSimulatorConfig)
-        assert t.user_simulator.mode == "llm"
-        assert t.user_simulator.persona == "cooperative"
+        assert t.actors is None
+        assert t.resolve_user_simulator().mode == "llm"
+        assert t.resolve_user_simulator().persona == "cooperative"
         assert t.grading is None
 
     def test_name_still_set_when_provided(self) -> None:
@@ -264,7 +260,6 @@ class TestTaskConfigMinimal:
             description="y",
             initial_state=InitialStateConfig(),
             tools=ToolsConfig(),
-            user_simulator=UserSimulatorConfig(),
             grading="grading.yaml",
         )
         assert t.name == "Nice Name"

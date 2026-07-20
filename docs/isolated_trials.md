@@ -109,7 +109,7 @@ orchestrator:
 
 ```bash
 uv run tolokaforge run \
-  --config examples/native/coding/run_config.yaml \
+  --config examples/native/coding/run_configs/dev.yaml \
   --runtime per_trial
 ```
 
@@ -150,11 +150,11 @@ manifest) and run it under each backend:
 ```bash
 # Default — shared backend. One stack, both trials share it.
 uv run tolokaforge run \
-  --config examples/native/coding/run_config.yaml
+  --config examples/native/coding/run_configs/dev.yaml
 
 # Same tasks, per-trial backend. Fresh stack per trial.
 uv run tolokaforge run \
-  --config examples/native/coding/run_config.yaml \
+  --config examples/native/coding/run_configs/dev.yaml \
   --runtime per_trial
 ```
 

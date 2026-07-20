@@ -18,7 +18,7 @@ orchestrator:
   queue_backend: sqlite
 
 evaluation:
-  task_packs:
+  projects:
     - "examples/native/browser_task/dataset"
   tasks_glob: "**/task.yaml"
   output_dir: "results/browser_task"

@@ -58,7 +58,7 @@ def validate(config_path: str, strict: bool, presets_file: str | None) -> None:
 
     Examples::
 
-        tolokaforge config validate --config examples/native/coding/run_config.yaml
+        tolokaforge config validate --config examples/native/coding/run_configs/dev.yaml
         tolokaforge config validate --config examples/native/coding/
         tolokaforge config validate --config "examples/**/*.yaml"
         tolokaforge config validate --config run.yaml --presets-file overlay.yaml

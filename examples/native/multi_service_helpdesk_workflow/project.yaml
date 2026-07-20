@@ -25,3 +25,7 @@ tasks:
 
 task_defaults:
   adapter_type: "native"
+  actors:
+    user:
+      mode: "llm"
+      persona: "cooperative"
