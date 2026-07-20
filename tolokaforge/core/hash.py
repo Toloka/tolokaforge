@@ -1,7 +1,10 @@
 """Canonical hash computation for stable state comparison.
 
-This module provides a single, standardized hash function that matches
-the implementation in mcp_core.utils.validation.calculate_database_hash().
+This module provides a single, standardized hash function. With
+``canonicalize_numbers=False`` it matches
+mcp_core.utils.validation.calculate_database_hash(); the default (True)
+additionally folds numerically-equal representations ("130.00" == "130.0")
+together, so it intentionally diverges from that byte-for-byte output.
 
 All hash computations across the codebase should use compute_stable_hash()
 to ensure consistent results.
@@ -20,6 +23,17 @@ logger = logging.getLogger(__name__)
 # quantity, or id is this long, and it bounds pathological inputs.
 _MAX_NUMERIC_LEN = 64
 _NUMERIC_TAG = "\x00tf-num:"
+# Escape prefix for a genuine string that itself begins with the reserved NUL,
+# so a crafted value like "\x00tf-num:130" can never collide with a numeric token.
+_ESCAPE_TAG = "\x00tf-esc:"
+
+
+def _numeric_token(d: Decimal) -> str:
+    """Canonical token for a Decimal: trailing zeros stripped, -0 folded to 0."""
+    d = d.normalize()
+    if d.is_zero():  # collapse "-0" and "0"
+        d = abs(d)
+    return _NUMERIC_TAG + format(d, "f")
 
 
 def _looks_like_plain_decimal(s: str) -> bool:
@@ -61,22 +75,32 @@ def canonical_number(value: Any) -> Any:
     * identifier-like strings with leading zeros (``"00123"``) are left untouched
       so two distinct ids are never numerically equated;
     * genuinely different numbers (``"790.00"`` vs ``"0.0"``) stay different;
+    * a genuine string that itself begins with the reserved NUL prefix is escaped
+      so it cannot masquerade as a numeric token;
     * non-numeric values pass through unchanged.
+
+    Leniency note: surrounding whitespace and a leading ``+`` are ignored, and a
+    numeric string collapses with its bare-number twin (``"123"`` == ``123`` ==
+    ``"123.0"``); numeric-string ids are protected only by the leading-zero rule.
     """
     if isinstance(value, bool):
         return value
     if isinstance(value, (int, float, Decimal)):
         try:
-            return _NUMERIC_TAG + format(Decimal(str(value)).normalize(), "f")
+            return _numeric_token(Decimal(str(value)))
         except (InvalidOperation, ValueError):
             return value
     if isinstance(value, str):
         s = value.strip()
         if 0 < len(s) <= _MAX_NUMERIC_LEN and _looks_like_plain_decimal(s):
             try:
-                return _NUMERIC_TAG + format(Decimal(s).normalize(), "f")
+                return _numeric_token(Decimal(s))
             except InvalidOperation:
-                return value
+                pass
+        # A genuine string beginning with the reserved NUL would otherwise be
+        # byte-identical to a numeric token; escape it so the two can't collide.
+        if value.startswith("\x00"):
+            return _ESCAPE_TAG + value
     return value
 
 
@@ -196,8 +220,10 @@ def compute_stable_hash(
     """
     Compute a stable SHA-256 hash of the state dictionary.
 
-    This function produces the same output as mcp_core.utils.validation.calculate_database_hash()
-    for identical state dictionaries.
+    With ``canonicalize_numbers=False`` this produces the same output as
+    mcp_core.utils.validation.calculate_database_hash() for identical state
+    dictionaries. The default (True) additionally folds numerically-equal
+    representations, intentionally diverging from that byte-for-byte output.
 
     Algorithm:
     1. Filter out unstable fields (if specified)

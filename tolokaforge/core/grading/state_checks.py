@@ -30,7 +30,14 @@ def to_hashable(item: ToHashable) -> Hashable:
     elif isinstance(item, list):
         return tuple(to_hashable(element) for element in item)
     elif isinstance(item, set):
-        return tuple(sorted(to_hashable(element) for element in item))
+        # Type-stable sort key: canonicalized scalars can mix bool with tagged
+        # numeric/str tokens, which are not mutually orderable under a bare sort.
+        return tuple(
+            sorted(
+                (to_hashable(element) for element in item),
+                key=lambda x: (type(x).__name__, str(x)),
+            )
+        )
     else:
         return canonical_number(item)
 

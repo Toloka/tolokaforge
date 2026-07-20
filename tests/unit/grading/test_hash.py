@@ -9,7 +9,7 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-from tolokaforge.core.hash import compute_stable_hash, filter_unstable_fields
+from tolokaforge.core.hash import canonical_number, compute_stable_hash, filter_unstable_fields
 
 # ---------------------------------------------------------------------------
 # Test 7: filter_unstable_fields handles nested table.field patterns
@@ -184,4 +184,18 @@ class TestComputeStableHashNumericCanonicalization:
         # Legacy mcp_core-exact behavior: without canonicalization the strings differ.
         assert compute_stable_hash(a, canonicalize_numbers=False) != compute_stable_hash(
             b, canonicalize_numbers=False
+        )
+
+    def test_tagged_string_does_not_collide_with_number(self):
+        # A crafted string byte-equal to a numeric token must not equal the number.
+        crafted = "\x00tf-num:130"
+        assert canonical_number(crafted) != canonical_number(130)
+        assert compute_stable_hash({"t": [{"amt": 130}]}) != compute_stable_hash(
+            {"t": [{"amt": crafted}]}
+        )
+
+    def test_negative_zero_collapses_to_zero(self):
+        assert canonical_number("-0.00") == canonical_number(0)
+        assert compute_stable_hash({"t": [{"amt": "-0.00"}]}) == compute_stable_hash(
+            {"t": [{"amt": "0.0"}]}
         )

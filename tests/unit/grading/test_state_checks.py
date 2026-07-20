@@ -38,6 +38,17 @@ class TestHashFunctions:
         result = to_hashable(data)
         assert result == (canonical_number(1), canonical_number(2), canonical_number(3))
 
+    def test_to_hashable_set_mixed_bool_and_number(self):
+        """Type-stable set sort must not raise when a bool and a number coexist.
+
+        Canonicalized numbers become tagged strings while bool stays bool; a bare
+        sort over that mix is a TypeError, so the sort uses a type-stable key.
+        """
+        result = to_hashable({True, 2})
+        assert len(result) == 2
+        assert True in result
+        assert canonical_number(2) in result
+
     def test_to_hashable_nested(self):
         """Test nested structure normalization"""
         data = {"users": [{"id": 2, "name": "bob"}, {"id": 1, "name": "alice"}], "count": 2}
