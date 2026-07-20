@@ -90,6 +90,28 @@ def test_convert_writes_native_bundles(runner, tmp_path, monkeypatch):
     assert (out / "_shared_marker").exists()
 
 
+def test_convert_validate_exits_nonzero_for_invalid_output(runner, tmp_path, monkeypatch):
+    monkeypatch.setattr(adapters_pkg, "get_adapter", lambda name, params: _StubConversionAdapter())
+
+    result = runner.invoke(
+        cli,
+        [
+            "adapter",
+            "convert",
+            "--name",
+            "stub",
+            "--tasks-glob",
+            "x/**",
+            "--output",
+            str(tmp_path / "out"),
+            "--validate",
+        ],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "Validation: 0 valid, 2 invalid" in result.output
+
+
 def test_convert_works_without_shared_resources(runner, tmp_path, monkeypatch):
     stub = _NoSharedAdapter()
     monkeypatch.setattr(adapters_pkg, "get_adapter", lambda name, params: stub)
