@@ -170,11 +170,23 @@ An optional `cancel` control message may precede completion:
 
 #### 4a — Versioning + compatibility
 
-What a breaking change is per surface (group + built-in names; `run_trial` signature + return; `agent` wire format), which parts are experimental rather than compatibility surfaces, and the CHANGELOG discipline.
+This milestone adds three compatibility surfaces. Each carries a breaking-change definition:
+
+1. **Group names + built-in registration names.** Breaking = renaming or removing a group or a built-in name, or changing the duplicate / load-error semantics. Additive = a new registered name.
+2. **`run_trial` signature + return type** (published Python API). Breaking = removing or renaming a parameter, narrowing an accepted type, or changing the return type or the named error types. Additive = a new keyword-only parameter with a default.
+3. **`agent` wire format.** Breaking = any change to the envelope / framing, or to a required field of `start` / `result` / `error` under the current `v` — which requires a `v` bump. Additive = a new `event` subtype within the current `v`.
+
+**Experimental — not compatibility surfaces:** `event` message subtypes (they grow additively within `v`), and the internal registry-loader implementation.
+
+**CHANGELOG discipline.** Any future change to the three surfaces requires a CHANGELOG entry. This milestone is additive, so `Unreleased/Feat` entries land with each sub-issue and no version bump is taken (the #305 constraint).
 
 #### 4b — Slim-image budget + policy
 
-The runner-image baseline (659 MB, measured 2026-07-20) with its measurement provenance, the ≥40% reduction target, and the `runner`-extra policy — same package, same wheel.
+**Baseline.** The current runner image measures **659 MB**, measured 2026-07-20 via `docker images` on the freshly-built `tolokaforge-runner` tag. The image is built from the `tolokaforge[docker]` wheel plus the ~11 extra runtime dependencies installed in `runner.Dockerfile`, on a `python:3.12-slim` base of ≈144 MB. The number is recorded with this provenance so a future reader can re-measure rather than trust a bare figure.
+
+**Target.** ≥40% smaller uncompressed (the #539 acceptance criterion).
+
+**Policy.** A `runner` extra — same package, same wheel, no multi-package split — installs the runner-only subset, with the runner import boundary enforced by a test. This ADR does not prescribe the extra's exact dependency list; that is #539's call.
 
 #### 4c — ADR lifecycle
 
@@ -190,10 +202,12 @@ Proposed on merge; flips to Accepted in the #540 consolidation PR, matching the 
 ### Negative / Trade-offs
 
 - Entry-point discovery makes the set of available backends / graders / conductors depend on what is installed in the environment, not only on what ships in-tree — a metadata scan at load time and one more place a misconfigured environment can surface.
+- JSON-Lines framing costs one JSON parse per message. Fine for one-trial-per-invocation, but noted so a future high-throughput design can consciously choose a different framing rather than inherit this one by default.
 
 ### Follow-ups
 
 - Code changes required: Surface 1 in #536, Surface 2 in #537, Surface 3 in #538, the slim runner image in #539; verification and the Proposed→Accepted flip in #540.
+- Documentation to update: `docs/RUNTIME_BACKENDS.md` seam-count drift (#541) and the ADR-index link-integrity test (#542), each deferred to a separate PR.
 
 ## Links
 
