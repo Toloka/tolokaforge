@@ -6,6 +6,14 @@
       "properties": {},
       "title": "_tolokaforge_get_state_Arguments",
       "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "result": {"title": "Result", "type": "string"}
+      },
+      "required": ["result"],
+      "title": "_tolokaforge_get_state_Output",
+      "type": "object"
     }
   },
   {
@@ -22,6 +30,14 @@
         "state_json"
       ],
       "title": "_tolokaforge_set_state_Arguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "result": {"title": "Result", "type": "string"}
+      },
+      "required": ["result"],
+      "title": "_tolokaforge_set_state_Output",
       "type": "object"
     }
   },
@@ -41,6 +57,18 @@
       ],
       "title": "dispense_controlled_substanceArguments",
       "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "result": {
+          "additionalProperties": true,
+          "title": "Result",
+          "type": "object"
+        }
+      },
+      "required": ["result"],
+      "title": "dispense_controlled_substanceOutput",
+      "type": "object"
     }
   },
   {
@@ -59,6 +87,18 @@
       ],
       "title": "log_controlled_dispenseArguments",
       "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "result": {
+          "additionalProperties": true,
+          "title": "Result",
+          "type": "object"
+        }
+      },
+      "required": ["result"],
+      "title": "log_controlled_dispenseOutput",
+      "type": "object"
     }
   },
   {
@@ -76,6 +116,18 @@
         "vet_id"
       ],
       "title": "verify_dea_registrationArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "result": {
+          "additionalProperties": true,
+          "title": "Result",
+          "type": "object"
+        }
+      },
+      "required": ["result"],
+      "title": "verify_dea_registrationOutput",
       "type": "object"
     }
   }
