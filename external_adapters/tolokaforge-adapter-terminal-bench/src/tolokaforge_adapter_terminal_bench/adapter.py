@@ -20,7 +20,6 @@ from tolokaforge.core.models import (
     TaskConfig,
     ToolsConfig,
     Trajectory,
-    UserSimulatorConfig,
 )
 from tolokaforge.runner.models import (
     AdapterType,
@@ -130,7 +129,6 @@ class TerminalBenchAdapter(BaseAdapter):
                 agent={"enabled": ["bash"]},
                 user={"enabled": []},
             ),
-            user_simulator=UserSimulatorConfig(mode="scripted", scripted_flow=[]),
             grading="__adapter__",
             system_prompt="__adapter__",
             adapter_settings={

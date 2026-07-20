@@ -8,9 +8,11 @@ and grading rules differ.
 ## Layout
 
 ```
-examples/native_shared_domain/
-  run_config.yaml                 # entry point (model + orchestrator settings)
-  run_config_gate_demo.yaml       # cheap-agent config for the gate-fire testcase
+examples/native/native_shared_domain/
+  project.yaml                    # identity + task discovery + task_defaults
+  run_configs/
+    dev.yaml                      # entry point (model + orchestrator settings)
+    gate_demo.yaml                # cheap-agent config for the gate-fire testcase
   dataset/
     notes/
       _shared/
@@ -42,8 +44,9 @@ examples/native_shared_domain/
 
 `task.yaml` carries `domain: ../../_shared/domain.yaml` and only the
 per-case fields (`task_id`, `name`, `description`, `initial_user_message`,
-`initial_state.json_db`, `user_simulator.backstory`, `grading`). Everything
-else — tools, mcp_server, system_prompt, category — is inherited.
+`initial_state.json_db`, `actors.user.backstory`, `grading`). Everything
+else — tools, mcp_server, system_prompt, category, the `actors.user`
+base — is inherited.
 
 ## Rubric-graded testcase (`summarize_notes_rubric`)
 
@@ -135,7 +138,7 @@ the trial outright, independent of `pass_threshold`, and the runner zeroes the
 failed the trial.
 
 The agent is a deliberately cheap model (`openai/gpt-4o-mini`) via
-`run_config_gate_demo.yaml`; because the policy is not in the agent's prompt, the
+`run_configs/gate_demo.yaml`; because the policy is not in the agent's prompt, the
 gate fires regardless of agent strength.
 
 ## Run
@@ -143,19 +146,19 @@ gate fires regardless of agent strength.
 All cases (the happy-path rubric included):
 
 ```sh
-scripts/with_env.sh uv run tolokaforge run --config examples/native/native_shared_domain/run_config.yaml
+scripts/with_env.sh uv run tolokaforge run --config examples/native/native_shared_domain/run_configs/dev.yaml
 ```
 
 Just the gate-fire testcase (cheap agent, `repeats: 1`):
 
 ```sh
-scripts/with_env.sh uv run tolokaforge run --config examples/native/native_shared_domain/run_config_gate_demo.yaml
+scripts/with_env.sh uv run tolokaforge run --config examples/native/native_shared_domain/run_configs/gate_demo.yaml
 ```
 
 Requires `OPENROUTER_API_KEY` in `.env`. All cases run with the docker
-runtime. The default `run_config.yaml` runs every testcase
+runtime. The default `run_configs/dev.yaml` runs every testcase
 (`tasks_glob: **/testcases/**/task.yaml`) and writes to
-`results/native_shared_domain_example/`; `run_config_gate_demo.yaml` narrows the
+`results/native_shared_domain_example/`; `run_configs/gate_demo.yaml` narrows the
 glob to `**/testcases/add_note_duplicate_check_gated/task.yaml` and writes to
 `results/native_shared_domain_gate_demo/`. To run only the happy-path rubric
 testcase, narrow the glob to `**/testcases/summarize_notes_rubric/task.yaml`.

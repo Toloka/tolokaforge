@@ -39,7 +39,7 @@ def _task(
         initial_user_message="x",
         initial_state=initial_state or {},
         tools={"agent": {"enabled": enabled_tools or []}, "user": {"enabled": []}},
-        user_simulator={"mode": "scripted"},
+        actors={"user": {"mode": "scripted"}},
         grading="grading.yaml",
     )
 

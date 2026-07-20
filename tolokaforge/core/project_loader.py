@@ -11,9 +11,6 @@ Public helpers:
 - :func:`find_project_yaml` — walk up from a start path looking for
   ``project.yaml``.
 - :func:`load_project_config` — read + validate a ``project.yaml`` file.
-- :func:`synthesize_default_project` — build a minimal ``ProjectConfig`` for
-  packs that don't ship a ``project.yaml``. Emits an info-level log line so
-  the fallback is visible without being a warning.
 - :func:`deep_merge` — recursive dict merge; delta wins on conflict.
 - :func:`resolve_effective_run_config_data` — apply ``project.run_defaults``
   under a run-config dict.
@@ -30,26 +27,96 @@ task-yaml delta.
 
 from __future__ import annotations
 
-import logging
+import difflib
 import os
 import re
-import warnings
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar, get_args
 
 import yaml
+from pydantic import BaseModel, ValidationError
 
 from tolokaforge.core.assets import compute_seed_digest
+from tolokaforge.core.deprecations import canonicalize_actor_config, warn_legacy_run_config_dir
 from tolokaforge.core.models import (
     EnvironmentManifest,
     EnvironmentPatch,
     GradingCombineConfig,
     ProjectConfig,
     ServiceSpec,
-    TaskDefaults,
 )
 
-logger = logging.getLogger(__name__)
+# ── Strict-schema construction ──────────────────────────────────────────
+
+_ConfigT = TypeVar("_ConfigT", bound=BaseModel)
+
+
+def construct_config(
+    model: type[_ConfigT], data: dict[str, Any], *, source: Path, section: str = ""
+) -> _ConfigT:
+    """Construct a Project-layer config model, turning an unknown-key
+    rejection into a load error that names the file, the offending key
+    path, and the closest schema match.
+
+    Only ``extra_forbidden`` errors are rewritten; a validation failure
+    that carries any other kind of error re-raises unchanged so a genuine
+    type or constraint error is never hidden behind the friendly message.
+    """
+    try:
+        return model(**data)
+    except ValidationError as exc:
+        errors = exc.errors()
+        extra = [e for e in errors if e["type"] == "extra_forbidden"]
+        if not extra or len(extra) != len(errors):
+            raise
+        lines = [_unknown_key_line(model, e["loc"], source, section) for e in extra]
+        raise RuntimeError("\n".join(lines)) from exc
+
+
+def _unknown_key_line(
+    model: type[BaseModel], loc: tuple[Any, ...], source: Path, section: str
+) -> str:
+    key_path = ".".join(str(part) for part in loc)
+    leaf = str(loc[-1])
+    suggestion = difflib.get_close_matches(leaf, _fields_at_loc(model, loc), n=1)
+    where = source.name + (f" ({section})" if section else "")
+    line = f"unknown key '{key_path}' in {where}"
+    if suggestion:
+        line += f" — did you mean '{suggestion[0]}'?"
+    return line
+
+
+def _fields_at_loc(model: type[BaseModel], loc: tuple[Any, ...]) -> list[str]:
+    """Field names of the model the offending key (``loc[-1]``) should have
+    matched, walking BaseModel fields and container value types along the
+    path. Empty when the path can't be resolved to a model."""
+    current: Any = model
+    for part in loc[:-1]:
+        fields = getattr(current, "model_fields", None)
+        if fields is not None and part in fields:
+            current = _model_from_annotation(fields[part].annotation)
+            if current is None:
+                return []
+    fields = getattr(current, "model_fields", None)
+    return list(fields) if fields is not None else []
+
+
+def _model_from_annotation(annotation: Any) -> type[BaseModel] | None:
+    """The ``BaseModel`` subclass an annotation resolves to, unwrapping
+    ``Optional`` / ``Union`` and ``dict`` / ``list`` containers. ``None``
+    for scalar or non-model annotations."""
+    args = get_args(annotation)
+    if not args:
+        return annotation if _is_model(annotation) else None
+    for arg in args:
+        found = _model_from_annotation(arg)
+        if found is not None:
+            return found
+    return None
+
+
+def _is_model(obj: Any) -> bool:
+    return isinstance(obj, type) and issubclass(obj, BaseModel)
 
 
 # ── Filesystem discovery ────────────────────────────────────────────────
@@ -101,7 +168,7 @@ def detect_project_layout(config_path: Path) -> tuple[Path | None, bool]:
     return project_root, used_legacy_dir
 
 
-# ── Load + synthesise ──────────────────────────────────────────────────
+# ── Load ───────────────────────────────────────────────────────────────
 
 
 def load_project_config(path: Path) -> ProjectConfig:
@@ -137,7 +204,10 @@ def load_project_config(path: Path) -> ProjectConfig:
     # Resolve default_environment.compose_file relative to the project dir
     # so EnvironmentManifest's validator can locate it regardless of CWD.
     _resolve_project_paths(data, path.parent)
-    project = ProjectConfig(**data)
+    task_defaults = data.get("task_defaults")
+    if isinstance(task_defaults, dict):
+        canonicalize_actor_config(task_defaults)
+    project = construct_config(ProjectConfig, data, source=path)
     _verify_seed_digests(project, path)
     return project
 
@@ -288,30 +358,6 @@ def _rewrite_task_defaults_paths(task_defaults: dict, project_dir: Path) -> None
 
     for rewriter in _PATH_FIELD_REWRITERS:
         rewriter(task_defaults, rewrite)
-
-
-def synthesize_default_project(
-    *,
-    project_root: Path,
-    task_defaults: TaskDefaults | None = None,
-) -> ProjectConfig:
-    """Return a minimal ``ProjectConfig`` used when a pack does not ship
-    a ``project.yaml``.
-
-    Emits an info-level log line so operators can see the synthesised
-    fallback took effect. Loaders route through here whenever
-    ``find_project_yaml`` returns ``None`` so downstream code always
-    has a ``ProjectConfig`` to consume.
-    """
-    logger.info(
-        "project.yaml not found under %s; using synthesised default",
-        project_root,
-    )
-    return ProjectConfig(
-        name=project_root.name or "synthesised",
-        description=None,
-        task_defaults=task_defaults or TaskDefaults(),
-    )
 
 
 # ── Deep merge ─────────────────────────────────────────────────────────
@@ -550,9 +596,9 @@ def load_effective_run_config(
 
     - ``config_data`` is the merged dict, ready to feed into
       ``RunConfig(**config_data)``.
-    - ``project`` is the enclosing ``ProjectConfig`` (loaded from the
-      discovered ``project.yaml``) or a synthesised default for packs
-      that don't ship one.
+    - ``project`` is the enclosing ``ProjectConfig`` loaded from the
+      discovered ``project.yaml``. A run config with no discoverable
+      ``project.yaml`` raises ``RuntimeError``.
 
     Emits a ``DeprecationWarning`` when the run config sits under the
     legacy ``run_config/`` (singular) directory.
@@ -574,10 +620,13 @@ def load_effective_run_config(
     project_root, used_legacy_dir = detect_project_layout(config_path)
     if used_legacy_dir:
         warn_legacy_run_config_dir(config_path)
-    if project_root is not None:
-        project = load_project_config(project_root / PROJECT_FILENAME)
-    else:
-        project = synthesize_default_project(project_root=config_path.parent)
+    if project_root is None:
+        raise RuntimeError(
+            f"No project.yaml found for run config {config_path}. "
+            f"Searched upward from {config_path.parent} to the filesystem root. "
+            f"Add a project.yaml at the pack root."
+        )
+    project = load_project_config(project_root / PROJECT_FILENAME)
     merged = resolve_effective_run_config_data(project, config_data)
     merged = _interpolate_env_vars(merged, source_path=config_path)
     validate_actor_roster_subset_of_models(project, merged)
@@ -603,15 +652,19 @@ def validate_actor_roster_subset_of_models(
     that's the only point where a project-side actor roster and the
     run-side model roster are both visible.
 
-    Scope: this check covers ``project.task_defaults.actors`` only.
-    Task-level ``TaskConfig.actors`` overrides bypass it — enforcement
-    for task-level actors will land alongside the runtime binding
-    (the ``actors.user`` ↔ user-simulator rename milestone).
+    Scope: this check covers ``project.task_defaults.actors`` — the
+    roster every task inherits, declared opt-in by the project author.
+    A task-level ``TaskConfig.actors`` override is not re-checked here:
+    individual ``task.yaml`` files are not loaded at run-config-resolve
+    time, and the loader lifts every task's ``user_simulator`` into
+    ``actors.user`` (``mode=llm`` by default), so a per-task roster gate
+    would fire for tasks that simply rely on the run's ``models.user``.
+    The user model each task's simulator uses is resolved from the run's
+    ``models`` at trial build.
 
     A ``None`` roster (project sets no ``actors``) is a no-op. Actor
     entries without ``mode == "llm"`` are ignored — scripted actors
-    don't need a model. This is a schema-time cross-check; runtime
-    binding lives in the actor rename milestone.
+    don't need a model.
     """
     actors = project.task_defaults.actors
     if not actors:
@@ -790,19 +843,3 @@ def _merge_env_patches(
         elif field in project:
             merged[field] = project[field]
     return merged
-
-
-# ── Legacy alias warnings ──────────────────────────────────────────────
-
-
-def warn_legacy_run_config_dir(config_path: Path) -> None:
-    """Emit a ``DeprecationWarning`` when a run config sits under
-    ``run_config/`` (singular) instead of ``run_configs/`` (plural).
-    """
-    warnings.warn(
-        f"Run config {config_path} sits under 'run_config/' (singular); the "
-        f"canonical directory is 'run_configs/' (plural). Rename the "
-        f"directory to remove this warning.",
-        DeprecationWarning,
-        stacklevel=2,
-    )

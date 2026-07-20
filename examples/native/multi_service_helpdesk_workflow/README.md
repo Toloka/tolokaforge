@@ -97,7 +97,7 @@ reveal-on-ask rules, a "never name the solution" rule, a natural opening, and a
 sheet* — they confirm the site has no cold storage or specialist **only when
 asked**, and never name a resolution path or quote policy. That forces the agent
 to do the reconciling. See `dataset/tasks/helpdesk_01/task.yaml` →
-`user_simulator.backstory`, and `docs/TASKS.md` § User Simulator.
+`actors.user.backstory`, and `docs/TASKS.md` § User Simulator.
 
 ## Isolation: the explicit ephemeral substrate
 
@@ -121,7 +121,7 @@ uv run tolokaforge validate --tasks "examples/native/multi_service_helpdesk_work
 ## Run
 
 ```bash
-scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_helpdesk_workflow/run_config.yaml
+scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_helpdesk_workflow/run_configs/dev.yaml
 ```
 
 Needs a running Docker daemon and `OPENROUTER_API_KEY` in `.env`. The first run
@@ -133,7 +133,7 @@ task's docker network, so the agent reaches each service by name (e.g.
 
 ```
 examples/native/multi_service_helpdesk_workflow/
-├── run_config.yaml               # haiku agent + user, sonnet judge, per_trial runtime
+├── run_configs/dev.yaml          # haiku agent + user, sonnet judge, per_trial runtime
 ├── project.yaml                  # discovery glob + native defaults
 ├── README.md                     # this file
 ├── shared/

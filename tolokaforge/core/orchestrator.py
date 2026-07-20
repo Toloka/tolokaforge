@@ -285,8 +285,9 @@ class Orchestrator:
         # Enclosing project (loaded from ``project.yaml``). Adapter
         # instantiation reads ``project.task_defaults`` from here so every
         # task inherits the project-level defaults declared alongside
-        # the pack. ``None`` for callers without a project (e.g. old-
-        # shape packs where the CLI synthesises a default upstream).
+        # the pack. ``None`` only for programmatic callers that construct
+        # the orchestrator without a project; the CLI always resolves an
+        # enclosing ``project.yaml``.
         self.project = project
         self.tasks: list[TaskConfig] = []
         self.results: list[Trajectory] = []

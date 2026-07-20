@@ -42,7 +42,7 @@ orchestrator:
   queue_backend: sqlite
 
 evaluation:
-  task_packs:
+  projects:
     - "examples/native/multi_service_helpdesk_workflow/dataset"
   tasks_glob: "tasks/helpdesk_01/task.yaml"
   output_dir: "results/multi_service_helpdesk_workflow_example"

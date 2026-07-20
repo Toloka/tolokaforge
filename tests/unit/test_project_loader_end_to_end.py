@@ -18,7 +18,6 @@ from tolokaforge.core.project_loader import (
     detect_project_layout,
     load_project_config,
     resolve_effective_run_config_data,
-    synthesize_default_project,
     warn_legacy_run_config_dir,
 )
 
@@ -37,7 +36,7 @@ def _drive_cli_loader(config_path: Path) -> RunConfig:
     Kept in sync with ``tolokaforge.cli.main.run``:
     1. Read the YAML at *config_path*.
     2. Detect the enclosing project layout.
-    3. Load ``project.yaml`` or synthesise a default.
+    3. Load ``project.yaml`` (raising if none is discoverable).
     4. Merge ``project.run_defaults`` under the run-config dict.
     5. Construct ``RunConfig`` from the merged dict.
     """
@@ -46,10 +45,9 @@ def _drive_cli_loader(config_path: Path) -> RunConfig:
     project_root, used_legacy_dir = detect_project_layout(config_path)
     if used_legacy_dir:
         warn_legacy_run_config_dir(config_path)
-    if project_root is not None:
-        project = load_project_config(project_root / "project.yaml")
-    else:
-        project = synthesize_default_project(project_root=config_path.parent)
+    if project_root is None:
+        raise RuntimeError(f"No project.yaml found for run config {config_path}.")
+    project = load_project_config(project_root / "project.yaml")
     config_data = resolve_effective_run_config_data(project, config_data)
     return RunConfig(**config_data)
 
@@ -110,7 +108,7 @@ class TestProjectAwareLoad:
         # orchestrator inherits from run_defaults since delta omits it
         assert run_config.orchestrator.repeats == 1
 
-    def test_run_config_without_project_yaml_uses_synthesised_default(self, tmp_path: Path) -> None:
+    def test_run_config_without_project_yaml_fails_loud(self, tmp_path: Path) -> None:
         _write_yaml(
             tmp_path / "run_configs" / "dev.yaml",
             {
@@ -119,11 +117,16 @@ class TestProjectAwareLoad:
                 "evaluation": {"output_dir": "results/dev"},
             },
         )
-        # No project.yaml — loader must synthesise a default silently
-        # (info log, no warning).
-        run_config = _drive_cli_loader(tmp_path / "run_configs" / "dev.yaml")
-        assert run_config.orchestrator.repeats == 3
-        assert run_config.compute is None  # nothing to inject
+        # No project.yaml anywhere up the tree — the loader must fail loud
+        # naming the searched root and instructing the author to add one.
+        from tolokaforge.core.project_loader import load_effective_run_config
+
+        run_cfg = tmp_path / "run_configs" / "dev.yaml"
+        with pytest.raises(
+            RuntimeError, match=r"No project\.yaml found.*Add a project\.yaml"
+        ) as exc:
+            load_effective_run_config(run_cfg)
+        assert str(run_cfg.resolve()) in str(exc.value)
 
     def test_legacy_run_config_dir_emits_deprecation_warning(self, tmp_path: Path) -> None:
         _write_yaml(tmp_path / "project.yaml", {"name": "demo"})
@@ -183,7 +186,6 @@ class TestTaskLoaderWithProjectDefaults:
         project_defaults = {
             "adapter_type": "native",
             "max_turns": 20,
-            "continue_prompt": "Continue.",
         }
         task, task_dir_out = load_task_yaml(
             task_dir / "task.yaml",

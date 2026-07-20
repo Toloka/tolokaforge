@@ -1,0 +1,7 @@
+{
+  "grading": "unknown key 'transcript_rules.must_contain_phrase' in grading.yaml (grading) \u2014 did you mean 'must_contain'?",
+  "project": "unknown key 'discription' in project.yaml \u2014 did you mean 'description'?",
+  "run_config_nested": "unknown key 'orchestrator.mox_turns' in dev.yaml \u2014 did you mean 'max_turns'?",
+  "run_config_top_level": "unknown key 'computee' in dev.yaml \u2014 did you mean 'compute'?",
+  "task": "unknown key 'max_turnss' in task.yaml \u2014 did you mean 'max_turns'?"
+}

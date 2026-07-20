@@ -18,14 +18,14 @@ Utility scripts for developing with Tolokaforge.
 ## Quick reference
 
     # Load .env and run the harness
-    scripts/with_env.sh uv run tolokaforge run --config examples/native/coding/run_config.yaml
+    scripts/with_env.sh uv run tolokaforge run --config examples/native/coding/run_configs/dev.yaml
 
     # Interactive .env setup (first time)
     scripts/setup/setup_env.sh
 
     # Generate Docker Compose override for task-pack mounts
     uv run python scripts/generate_task_pack_compose_override.py \
-      --config examples/native/coding/run_config.yaml \
+      --config examples/native/coding/run_configs/dev.yaml \
       --output docker-compose.taskpacks.override.yaml
 
     # Run the smoke test suite

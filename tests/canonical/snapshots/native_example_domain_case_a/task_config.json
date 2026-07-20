@@ -1,5 +1,12 @@
 {
-  "actors": null,
+  "actors": {
+    "user": {
+      "backstory": null,
+      "mode": "llm",
+      "persona": "cooperative",
+      "scripted_flow": null
+    }
+  },
   "adapter_settings": null,
   "adapter_type": "native",
   "category": "tool_use",
@@ -38,11 +45,5 @@
     "user": {
       "enabled": []
     }
-  },
-  "user_simulator": {
-    "backstory": null,
-    "mode": "llm",
-    "persona": "cooperative",
-    "scripted_flow": null
   }
 }

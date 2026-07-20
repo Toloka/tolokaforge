@@ -665,10 +665,15 @@ default_environment:
   network_policy: "no_internet"    # closed enum: no_internet | limited_internet |
                                    # full_internet; parameterisation (e.g. egress
                                    # hosts) is finalised before the first major release
+                                   # (uppercase enum names — NO_INTERNET — are accepted
+                                   # as a legacy alias with a DeprecationWarning)
   security_context_defaults:
     run_as_user: "toloka"          # username or numeric UID (int | str); substrates
     run_as_group: "toloka"         # that require numeric IDs (k8s runAsUser) get the
                                    # resolved UID at materialisation
+                                   # (legacy `user` / `group` keys are accepted as
+                                   # aliases for run_as_user / run_as_group with a
+                                   # DeprecationWarning)
 
 # ── Task defaults — base for every task ─────────────────────────
 # Applied to every task; task.yaml deltas deep-merge on top.
@@ -683,7 +688,7 @@ task_defaults:
     user:                          # the conventional counterpart actor; more can be added
       mode: "llm"
       persona: "curious engineer"
-      backstory_template: "./shared/user_backstory.md"  # composes with each task's `scenario`
+      backstory: "./shared/user_backstory.md"  # shared user backstory; each task may override
   policies:
     max_tool_calls_per_turn: 10
   metadata: {}
@@ -876,11 +881,12 @@ model; `models` is already an open map, not a fixed
 agent/user/judge trio. The legacy root-level `user_simulator`
 block is read as an alias for `actors.user` until M5 retires it.
 
-Each actor composes rather than merging scalar-wise. The project
-supplies the stable parts — `persona` and `backstory_template` —
-and each task supplies only that actor's `scenario`: the specific
-complaint, request, or goal. The effective backstory is the
-template with the scenario interpolated:
+An `ActorSpec` carries `mode` (`llm` or `scripted`), `persona`,
+`backstory` (a path to a backstory file, or inline text), and
+`scripted_flow`. The project declares the shared defaults under
+`task_defaults.actors.user`; each task overrides field-by-field
+(delta-wins), so a task that adds only a `backstory` inherits the
+project's `mode` and `persona`:
 
 ```yaml
 # project.yaml → task_defaults.actors
@@ -888,31 +894,21 @@ actors:
   user:
     mode: "llm"
     persona: "customer"
-    backstory_template: "./shared/user_backstory.md"   # contains ${scenario}
+    backstory: "./shared/user_backstory.md"
 ```
 
 ```yaml
 # tasks/MAN-34/task.yaml
 actors:
   user:
-    scenario: >
-      Hi, I'm Mikhail Orlov (User ID: USR-5K2N). Please
-      authenticate me. One of my analysts couldn't push order
-      PO-K7V3 to production; he gave me an ID: CAPA-H9Q5. Please
-      do everything needed to push it, and report when you're
-      done.
+    backstory: "./tasks/MAN-34/backstory.md"
 ```
 
-Composition fails loud at load: a `backstory_template` that
-lacks `${scenario}`, or a task that supplies neither a
-`scenario` nor a wholesale `backstory` for an actor whose
-defaults declare a template, is a config error. A task may
-still set an actor's `backstory` wholesale, which bypasses
-composition entirely (same full-replacement rule as
-`system_prompt`). Composition removes today's dominant
-duplication pattern: an identical wrapper backstory copied into
-every task with only the scenario sentence changed — and the
-scenario duplicated a second time inside the task `description`.
+A task's `backstory` replaces the project default wholesale (same
+full-replacement rule as `system_prompt`). Template + per-task
+`scenario` interpolation — one shared backstory template with a
+task-supplied scenario spliced in — is not part of `ActorSpec`
+today; it is tracked in #499.
 
 Three shape rules protect the roster's future:
 

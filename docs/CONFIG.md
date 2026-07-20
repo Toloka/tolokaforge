@@ -87,14 +87,14 @@ Notes:
   - `TASK_PACKS_DIRS` for orchestrator-visible pack roots
   - `TASKS_DIRS` for mock-web task roots (category directories)
 - Recommended: generate compose override from config via
-  `uv run python scripts/generate_task_pack_compose_override.py --config examples/native/coding/run_config.yaml --output docker-compose.taskpacks.override.yaml`
+  `uv run python scripts/generate_task_pack_compose_override.py --config examples/native/coding/run_configs/dev.yaml --output docker-compose.taskpacks.override.yaml`
 - For long runs, inspect progress with:
   `tolokaforge status --run-dir <output_dir_timestamped>`
 - For Postgres queue status (no local `run_queue.sqlite`):
-  `tolokaforge status --run-dir <any_existing_dir> --config examples/native/coding/run_config.yaml`
+  `tolokaforge status --run-dir <any_existing_dir> --config examples/native/coding/run_configs/dev.yaml`
 - For distributed worker mode:
-  `tolokaforge prepare --config examples/native/coding/run_config.yaml --run-dir <run_dir> --reset-queue`
-  `tolokaforge worker --config examples/native/coding/run_config.yaml --run-dir <run_dir>`
+  `tolokaforge prepare --config examples/native/coding/run_configs/dev.yaml --run-dir <run_dir> --reset-queue`
+  `tolokaforge worker --config examples/native/coding/run_configs/dev.yaml --run-dir <run_dir>`
 - For multi-runner distributed execution (e.g., GitHub Actions matrix), use
   `queue_backend: postgres` with a shared `queue_postgres_dsn`.
 

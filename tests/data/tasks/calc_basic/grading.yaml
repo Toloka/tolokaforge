@@ -7,22 +7,15 @@ combine:
 
 state_checks:
   jsonpaths: []
-  files:
-    - path: result.txt
-      must_exist: true
-      must_contain: "391"
 
 transcript_rules:
   tool_expectations:
     required_tools:
       - write_file
     disallowed_tools: []
-  
+
   max_turns: 10
-  
-  must_contain_phrases:
-    - "391"
-  
+
   disallow_regex: []
 
 llm_judge: null

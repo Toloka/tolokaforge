@@ -65,7 +65,7 @@ Task packs live outside the engine tree. Place your tasks in `tasks/` or use the
 
 ## Quick Start Run
 
-Use the sample config in `examples/native/coding/run_config.yaml` or create a minimal one:
+Use the sample config in `examples/native/coding/run_configs/dev.yaml` or create a minimal one:
 
 ```yaml
 models:
@@ -87,8 +87,8 @@ orchestrator:
   max_turns: 20
 
 evaluation:
-  task_packs:
-    - "examples/browser_task/dataset"
+  projects:
+    - "examples/native/browser_task/dataset"
   tasks_glob: "**/browser_public_example_01/task.yaml"
   output_dir: "results/quick_start"
 ```
@@ -96,7 +96,7 @@ evaluation:
 Run it:
 
 ```bash
-uv run tolokaforge run --config examples/native/coding/run_config.yaml
+uv run tolokaforge run --config examples/native/coding/run_configs/dev.yaml
 ```
 
 Check run progress/cost at any time:
@@ -111,7 +111,7 @@ You can load tasks from external benchmark packs without copying them into this 
 
 ```yaml
 evaluation:
-  task_packs:
+  projects:
     - "/abs/path/private-pack-core"
     - "/abs/path/private-pack-mobile"
   tasks_glob: "**/task.yaml"
@@ -124,15 +124,15 @@ Notes:
 
 ```bash
 uv run python scripts/generate_task_pack_compose_override.py \
-  --config examples/native/coding/run_config.yaml \
+  --config examples/native/coding/run_configs/dev.yaml \
   --output docker-compose.taskpacks.override.yaml
 ```
 
 For distributed queue workers (shared queue + shared artifacts path), run:
 
 ```bash
-uv run tolokaforge prepare --config examples/native/coding/run_config.yaml --run-dir results/distributed_run --reset-queue
-uv run tolokaforge worker --config examples/native/coding/run_config.yaml --run-dir results/distributed_run
+uv run tolokaforge prepare --config examples/native/coding/run_configs/dev.yaml --run-dir results/distributed_run --reset-queue
+uv run tolokaforge worker --config examples/native/coding/run_configs/dev.yaml --run-dir results/distributed_run
 ```
 
 For multi-runner GitHub Actions distributed mode, use a shared Postgres queue backend

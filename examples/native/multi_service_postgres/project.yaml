@@ -1,0 +1,28 @@
+# Project spec for the multi_service_postgres example.
+#
+# Single task exercising the shared-runtime + task-declared-stack path
+# (Case B in ADR-0018) over a genuine three-tier stack
+# (agent → PostgREST → real postgres:16). The stack lives on the task's
+# own `environment_manifest.stack`, so the project declares no
+# `default_environment`. See docs/PROJECTS.md for the full Project model.
+
+name: "multi-service-postgres"
+version: 1
+description: >
+  Query a PostgREST API backed by a real postgres database: join tickets
+  and customers, filter to open enterprise-tier tickets, and produce a
+  top-3 triage report. The task pack ships only SQL — PostgREST generates
+  the REST endpoints from the schema.
+
+tasks:
+  discovery:
+    glob: "dataset/tasks/**/task.yaml"
+
+# ── Task defaults — base for every task ─────────────────────────
+task_defaults:
+  adapter_type: "native"
+  max_turns: 15
+  actors:
+    user:
+      mode: "llm"
+      persona: "cooperative"

@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import ipaddress
 import re
-import warnings
 from datetime import datetime
 from enum import Enum
 from pathlib import Path, PurePosixPath
@@ -23,6 +22,12 @@ from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
+
+from tolokaforge.core.deprecations import (
+    coerce_flat_stack_fields,
+    coerce_network_policy_case,
+    coerce_security_context_aliases,
+)
 
 # =============================================================================
 # Enums (from TASK_DESCRIPTION_SCHEMA.md)
@@ -619,6 +624,11 @@ class SecurityContext(BaseModel):
 
     model_config = {"extra": "forbid"}
 
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_legacy_user_group(cls, data: Any) -> Any:
+        return coerce_security_context_aliases(data)
+
 
 class NetworkPolicy(str, Enum):
     """Network posture the provisioner is asked to enforce for a trial."""
@@ -1058,6 +1068,8 @@ class EnvironmentPatch(BaseModel):
     :class:`EnvironmentManifest` output type.
     """
 
+    model_config = {"extra": "forbid"}
+
     stack: StackPatch | None = None
     """Substrate slot — see :class:`StackPatch`. A task patch that sets
     ``stack.compose_file`` replaces the project's whole ``stack``
@@ -1097,30 +1109,12 @@ class EnvironmentPatch(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _accept_legacy_flat_stack_fields(cls, data: Any) -> Any:
-        """Accept legacy ``compose_file`` / ``runner_service`` at the
-        patch top level; normalise into ``stack``. Emits a
-        ``DeprecationWarning`` when the legacy shape is used."""
-        if not isinstance(data, dict):
-            return data
-        legacy_keys = {k for k in ("compose_file", "runner_service") if k in data}
-        if not legacy_keys:
-            return data
-        stack = dict(data.get("stack") or {})
-        for key in sorted(legacy_keys):
-            if key in stack:
-                raise ValueError(
-                    f"EnvironmentPatch: both flat {key!r} and stack.{key} declared; "
-                    "the flat form is legacy — declare it only under stack."
-                )
-            stack[key] = data.pop(key)
-        data["stack"] = stack
-        warnings.warn(
-            "EnvironmentPatch: flat compose_file / runner_service at the "
-            "top level is legacy; move under 'stack:'.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return data
+        return coerce_flat_stack_fields(data)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_network_policy_case(cls, data: Any) -> Any:
+        return coerce_network_policy_case(data)
 
 
 class EnvironmentManifest(BaseModel):

@@ -16,8 +16,9 @@ initial_user_message: |
   I've got something to hand to my shift lead.
 adapter_type: "native"
 environment_manifest:
-  compose_file: "../../../shared/environment.compose.yaml"
-  runner_service: "runner"
+  stack:
+    compose_file: "../../../shared/environment.compose.yaml"
+    runner_service: "runner"
   services:
     runner: {isolation: "shared"}
     db-service: {isolation: "shared"}
@@ -32,10 +33,11 @@ tools:
       allowed_hosts: ["app-service:8000"]
   user:
     enabled: []
-user_simulator:
-  mode: llm
-  persona: cooperative
-  backstory: "You are the shop-floor operator who flagged the contamination on lot LOT-1007. You know it needs a corrective action but you rely on the agent to know the system. Answer brief clarifying questions plainly, do not volunteer the reason code or spell out API calls, and end with ###STOP### once the action is logged and the report is written."
+actors:
+  user:
+    mode: llm
+    persona: cooperative
+    backstory: "You are the shop-floor operator who flagged the contamination on lot LOT-1007. You know it needs a corrective action but you rely on the agent to know the system. Answer brief clarifying questions plainly, do not volunteer the reason code or spell out API calls, and end with ###STOP### once the action is logged and the report is written."
 policies:
   guidance:
     - "Reach the API with the `http_request` tool against `http://app-service:8000` — GET the reason-code catalog to find the contamination code before opening the action; do not guess it."

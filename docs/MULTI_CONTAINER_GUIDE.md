@@ -16,7 +16,7 @@ runtime backend lifecycle, see
 **Who this is for:**
 
 - **Want to see it work?** Skip to [Running the examples](#running-the-examples),
-  pick any pack, and run its `run_config.yaml`.
+  pick any pack, and run its `run_configs/<name>.yaml`.
 - **Want to author a new multi-service task?** Read the
   [Walkthrough](#walkthrough--multi_service_postgres_reset) below; it walks the
   smallest real example end-to-end.
@@ -40,15 +40,15 @@ debugging investigation and an auto-dev build-and-verify loop.
 
 ### The command
 
-Every pack runs the same way — point `tolokaforge run` at its `run_config.yaml`:
+Every pack runs the same way — point `tolokaforge run` at its run config:
 
 ```bash
-scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_postgres/run_config.yaml
-scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_postgres_reset/run_config.yaml
-scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_lot_ops/run_config.yaml
-scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_helpdesk_workflow/run_config.yaml
-scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_cache_debug/run_config.yaml
-scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_endpoint_add/run_config.yaml
+scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_postgres/run_configs/dev.yaml
+scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_postgres_reset/run_configs/dev.yaml
+scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_lot_ops/run_configs/dev.yaml
+scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_helpdesk_workflow/run_configs/dev.yaml
+scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_cache_debug/run_configs/dev.yaml
+scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_endpoint_add/run_configs/dev.yaml
 ```
 
 `scripts/with_env.sh` loads `.env` (so `OPENROUTER_API_KEY` reaches the run)
@@ -64,12 +64,12 @@ are built automatically on the first `tolokaforge run` (and cached thereafter),
 so there is no separate build step — see
 [`docs/RUNTIME_BACKENDS.md`](RUNTIME_BACKENDS.md).
 
-Each run writes to the `output_dir` named in its `run_config.yaml` (under
+Each run writes to the `output_dir` named in its `run_configs/<name>.yaml` (under
 `results/`). To validate a pack's tasks without running them, use
 `uv run tolokaforge validate --tasks "<pack>/dataset/**/task.yaml"`.
 
 **Cost expectations** (a single trial each, honest ballpark — check each
-pack's `run_config.yaml` for the exact models):
+pack's `run_configs/<name>.yaml` for the exact models):
 
 | Pack | Models | Rough cost |
 | --- | --- | --- |
@@ -467,7 +467,7 @@ compose file. Suppose you want to add a redis cache the agent mutates:
 5. Validate and run:
    ```bash
    uv run tolokaforge validate --tasks "my_project/**/task.yaml"
-   scripts/with_env.sh uv run tolokaforge run --config my_project/run_config.yaml
+   scripts/with_env.sh uv run tolokaforge run --config my_project/run_configs/dev.yaml
    ```
 
 Because `cache` is `reset` (and `app-db` already is), the run requires

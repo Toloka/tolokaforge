@@ -1,0 +1,28 @@
+# Project spec for the browser-task example.
+#
+# Two public browser tasks that drive a headless browser against the
+# mock-web service (started via `make docker-up`). No Docker substrate is
+# declared here — the mock-web endpoint is reached through each task's
+# `initial_state.mock_web`, not a compose stack — so `default_environment`
+# is omitted. See docs/PROJECTS.md for the full Project model.
+
+name: "browser-task"
+version: 1
+description: >
+  Browser-tool evaluation: multi-page policy portals the agent must read
+  and synthesise into a support artifact. Two tasks share a base user
+  actor and turn budget; per-task deltas carry the browser start URL,
+  fixtures, and backstory.
+
+tasks:
+  discovery:
+    glob: "dataset/tasks/**/task.yaml"
+
+# ── Task defaults — base for every task ─────────────────────────
+task_defaults:
+  adapter_type: "native"
+  max_turns: 10
+  actors:
+    user:
+      mode: "llm"
+      persona: "cooperative"

@@ -472,6 +472,7 @@ def test_orchestrator_stores_events_from_deps() -> None:
 def _make_orchestrator_with_tasks(task_ids: list[str], repeats: int, shuffle: bool = False) -> Any:
     """Build a bare :class:`Orchestrator` for pending-trial construction tests."""
     from tolokaforge.core.models import (
+        ActorSpec,
         EvaluationConfig,
         InitialStateConfig,
         ModelConfig,
@@ -479,7 +480,6 @@ def _make_orchestrator_with_tasks(task_ids: list[str], repeats: int, shuffle: bo
         RunConfig,
         TaskConfig,
         ToolsConfig,
-        UserSimulatorConfig,
     )
     from tolokaforge.core.orchestrator import Orchestrator
 
@@ -502,7 +502,7 @@ def _make_orchestrator_with_tasks(task_ids: list[str], repeats: int, shuffle: bo
             description="d",
             initial_state=InitialStateConfig(),
             tools=ToolsConfig(),
-            user_simulator=UserSimulatorConfig(mode="scripted"),
+            actors={"user": ActorSpec(mode="scripted")},
             grading="grading.yaml",
         )
         for task_id in task_ids
@@ -693,10 +693,10 @@ def test_build_trial_executor_threads_events_into_provisioning_executor() -> Non
 
 def _make_task_for_run(task_id: str) -> Any:
     from tolokaforge.core.models import (
+        ActorSpec,
         InitialStateConfig,
         TaskConfig,
         ToolsConfig,
-        UserSimulatorConfig,
     )
 
     return TaskConfig(
@@ -706,7 +706,7 @@ def _make_task_for_run(task_id: str) -> Any:
         description="d",
         initial_state=InitialStateConfig(),
         tools=ToolsConfig(),
-        user_simulator=UserSimulatorConfig(mode="scripted"),
+        actors={"user": ActorSpec(mode="scripted")},
         grading="grading.yaml",
     )
 

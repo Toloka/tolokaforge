@@ -21,7 +21,7 @@ lock two distinct behaviours:
   after the reference endpoint is written over the shared volume yields ``PASS``.
   No LLM key, no agent loop; only the source edit is scripted.
 * **Test B — runnable + trace inspection (one Haiku run, ~$0.50-1.50).** Runs
-  the pack's ``run_config.yaml`` through ``tolokaforge run`` as a subprocess and
+  the pack's ``run_configs/dev.yaml`` through ``tolokaforge run`` as a subprocess and
   asserts *infrastructure + traces, not agent correctness*: the run exits 0, the
   per-trial backend was selected (the reset seam ran), ``repeats: 2`` produced
   two trial dirs, and the agent drove the auto-dev loop — a ``write_file`` edit
@@ -58,7 +58,7 @@ from tolokaforge.core.trial import EnvEndpoints, EnvironmentManifest, TrialSpec
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PACK = "examples/native/multi_service_endpoint_add"
 _PROJECT_YAML = _REPO_ROOT / _PACK / "project.yaml"
-_RUN_CONFIG = f"{_PACK}/run_config.yaml"
+_RUN_CONFIG = f"{_PACK}/run_configs/dev.yaml"
 _TASK_ID = "endpoint_add"
 _SEED_DIR = _REPO_ROOT / _PACK / "assets" / "source"
 
