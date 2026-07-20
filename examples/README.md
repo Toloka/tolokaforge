@@ -25,7 +25,7 @@ by adapter type.
 
 ## Running an example
 
-Most examples ship a `run_config.yaml`:
+Most examples ship a run config under `run_configs/`:
 
     uv run tolokaforge run --config examples/native/coding/run_configs/dev.yaml
 

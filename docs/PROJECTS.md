@@ -688,7 +688,7 @@ task_defaults:
     user:                          # the conventional counterpart actor; more can be added
       mode: "llm"
       persona: "curious engineer"
-      backstory_template: "./shared/user_backstory.md"  # composes with each task's `scenario`
+      backstory: "./shared/user_backstory.md"  # shared user backstory; each task may override
   policies:
     max_tool_calls_per_turn: 10
   metadata: {}

@@ -87,8 +87,8 @@ orchestrator:
   max_turns: 20
 
 evaluation:
-  task_packs:
-    - "examples/browser_task/dataset"
+  projects:
+    - "examples/native/browser_task/dataset"
   tasks_glob: "**/browser_public_example_01/task.yaml"
   output_dir: "results/quick_start"
 ```
@@ -111,7 +111,7 @@ You can load tasks from external benchmark packs without copying them into this 
 
 ```yaml
 evaluation:
-  task_packs:
+  projects:
     - "/abs/path/private-pack-core"
     - "/abs/path/private-pack-mobile"
   tasks_glob: "**/task.yaml"
