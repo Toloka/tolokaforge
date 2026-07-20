@@ -1,5 +1,5 @@
 """Locks the per-worker ``COMPOSE_PROJECT_NAME`` isolation that keeps
-parallel (``pytest -n auto``) Docker integration stacks from colliding.
+parallel (``pytest -n auto``) reset-recipe Docker stacks from colliding.
 """
 
 from __future__ import annotations
@@ -8,7 +8,7 @@ import os
 
 import pytest
 
-from tests.integration.conftest import apply_compose_project_isolation
+from tests.integration.reset_recipes.conftest import apply_compose_project_isolation
 
 pytestmark = pytest.mark.unit
 

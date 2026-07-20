@@ -40,7 +40,7 @@ scripts/with_env.sh uv run pytest tests/ -v -m integration -n auto
 scripts/with_env.sh uv run pytest tests/ -v
 ```
 
-Under `-n auto`, `tests/integration/conftest.py` assigns each xdist worker a unique `COMPOSE_PROJECT_NAME`, so concurrent Docker Compose stacks stay in disjoint project namespaces and never collide on container/network names. A single test that boots two mutually-isolated stacks at once must set its own per-stack `COMPOSE_PROJECT_NAME`.
+Under `-n auto`, `tests/integration/reset_recipes/conftest.py` assigns each xdist worker a unique `COMPOSE_PROJECT_NAME` for the reset-recipe suite, whose stacks all share the `compose` basename and would otherwise collide across workers. The rest of the integration suite derives per-test project names from slug-encoded `make_project_temp_dir` basenames, so it stays in disjoint namespaces without the env pin.
 
 ## Directory Structure
 

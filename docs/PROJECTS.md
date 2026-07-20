@@ -1104,7 +1104,8 @@ field and vice versa.
 | Identity (`name`, `version`, `description`) | project.yaml | — |
 | `tasks.discovery` | project.yaml | — |
 | `default_environment` | project.yaml | task.yaml's `environment_manifest` |
-| `task_defaults.*` (adapter, prompt, tools, actors, policies, grading_defaults, timeouts, stuck_heuristics, continue_prompt) | `project.task_defaults` | `task.yaml` |
+| `task_defaults.*` — task-scoped (adapter, prompt, tools, actors, policies, timeouts, stuck_heuristics, max_turns, adapter_settings, metadata, system_prompt) | `project.task_defaults` | `task.yaml` |
+| `task_defaults` — project-scoped only (grading_defaults, continue_prompt) | `project.task_defaults` | — (no per-task delta; `grading_defaults` reaches the engine via `NativeAdapter.get_grading_config`, `continue_prompt` via turn logic) |
 | `compute` (provider, workers, budget, rate limits, retries) | `project.run_defaults.compute` | `run_configs/<name>.yaml` |
 | `storage` (artifacts, logs, queue) | `project.run_defaults.storage` | `run_configs/<name>.yaml` |
 | `observability` (tracing, metrics, logging) | `project.run_defaults.observability` | `run_configs/<name>.yaml` |
