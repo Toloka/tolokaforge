@@ -19,6 +19,7 @@ All notable changes to this project are documented in this file.
 
 ### Fix
 
+- **loader**: project `task_defaults` again loads the shipped `example-microservices-pack`. Only `TaskConfig`-shaped keys of `task_defaults` are merged into each task dict before its `extra="forbid"` validation; project-scoped-only keys (`grading_defaults`, `continue_prompt`) are excluded from that merge and reach the engine through their own seams. Without this, the pack could not build a single `TaskDescription` — every task failed with `unknown key 'grading_defaults' in task.yaml`. The excluded set is derived from the schema (`TaskDefaults.model_fields - TaskConfig.model_fields`), so future project-only defaults are handled automatically (#277, regression from #213).
 - **config**: `orchestrator.max_turns` now defaults to unset (`None`), making the run-level turn cap opt-in. A task's `max_turns` is no longer silently clamped to 50; the effective budget is `min(task, run cap)` only when the operator sets a cap, and the engine default (50 turns) applies when neither the run nor the task declares a value (#265).
 - **loader**: `stack: null` and `stack: {compose_file: null}` in a task's `environment_manifest` (and in a project's `default_environment`) are now rejected at load time with a `RuntimeError` naming the offending file and field, enforcing the documented full-override rule — a task cannot unset the environment (or its substrate pointer) out from under a project that declares one. Omit the key to inherit (#235).
 
