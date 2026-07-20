@@ -129,8 +129,10 @@ except ImportError:
                 body = s[1:] if s[:1] in ("+", "-") else s
                 ip, dot, fp = body.partition(".")
                 if dot:
-                    numeric = fp.isascii() and fp.isdigit() and (
-                        not ip or (ip.isascii() and ip.isdigit())
+                    numeric = (
+                        fp.isascii()
+                        and fp.isdigit()
+                        and (not ip or (ip.isascii() and ip.isdigit()))
                     )
                 else:
                     numeric = ip.isascii() and ip.isdigit()
