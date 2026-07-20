@@ -24,7 +24,6 @@ from tolokaforge.core.project_loader import (
     load_project_config,
     resolve_effective_grading_combine,
     resolve_effective_run_config_data,
-    synthesize_default_project,
     warn_legacy_run_config_dir,
 )
 
@@ -214,22 +213,6 @@ class TestLoadProjectConfig:
         path.write_text("- not a mapping\n")
         with pytest.raises(RuntimeError, match="YAML mapping"):
             load_project_config(path)
-
-
-# ── synthesize_default_project ─────────────────────────────────────────
-
-
-class TestSynthesizeDefaultProject:
-    def test_returns_minimal_project(self, tmp_path: Path, caplog) -> None:
-        import logging
-
-        with caplog.at_level(logging.INFO):
-            project = synthesize_default_project(project_root=tmp_path / "my-pack")
-        assert project.name == "my-pack"
-        assert project.run_defaults is None
-        assert isinstance(project.task_defaults, TaskDefaults)
-        # Info line so the fallback is visible.
-        assert any("synthesised" in rec.message for rec in caplog.records)
 
 
 # ── resolve_effective_run_config_data ──────────────────────────────────

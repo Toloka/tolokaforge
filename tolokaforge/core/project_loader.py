@@ -11,9 +11,6 @@ Public helpers:
 - :func:`find_project_yaml` — walk up from a start path looking for
   ``project.yaml``.
 - :func:`load_project_config` — read + validate a ``project.yaml`` file.
-- :func:`synthesize_default_project` — build a minimal ``ProjectConfig`` for
-  packs that don't ship a ``project.yaml``. Emits an info-level log line so
-  the fallback is visible without being a warning.
 - :func:`deep_merge` — recursive dict merge; delta wins on conflict.
 - :func:`resolve_effective_run_config_data` — apply ``project.run_defaults``
   under a run-config dict.
@@ -31,7 +28,6 @@ task-yaml delta.
 from __future__ import annotations
 
 import difflib
-import logging
 import os
 import re
 from pathlib import Path
@@ -48,11 +44,7 @@ from tolokaforge.core.models import (
     GradingCombineConfig,
     ProjectConfig,
     ServiceSpec,
-    TaskDefaults,
 )
-
-logger = logging.getLogger(__name__)
-
 
 # ── Strict-schema construction ──────────────────────────────────────────
 
@@ -176,7 +168,7 @@ def detect_project_layout(config_path: Path) -> tuple[Path | None, bool]:
     return project_root, used_legacy_dir
 
 
-# ── Load + synthesise ──────────────────────────────────────────────────
+# ── Load ───────────────────────────────────────────────────────────────
 
 
 def load_project_config(path: Path) -> ProjectConfig:
@@ -366,30 +358,6 @@ def _rewrite_task_defaults_paths(task_defaults: dict, project_dir: Path) -> None
 
     for rewriter in _PATH_FIELD_REWRITERS:
         rewriter(task_defaults, rewrite)
-
-
-def synthesize_default_project(
-    *,
-    project_root: Path,
-    task_defaults: TaskDefaults | None = None,
-) -> ProjectConfig:
-    """Return a minimal ``ProjectConfig`` used when a pack does not ship
-    a ``project.yaml``.
-
-    Emits an info-level log line so operators can see the synthesised
-    fallback took effect. Loaders route through here whenever
-    ``find_project_yaml`` returns ``None`` so downstream code always
-    has a ``ProjectConfig`` to consume.
-    """
-    logger.info(
-        "project.yaml not found under %s; using synthesised default",
-        project_root,
-    )
-    return ProjectConfig(
-        name=project_root.name or "synthesised",
-        description=None,
-        task_defaults=task_defaults or TaskDefaults(),
-    )
 
 
 # ── Deep merge ─────────────────────────────────────────────────────────
@@ -628,9 +596,9 @@ def load_effective_run_config(
 
     - ``config_data`` is the merged dict, ready to feed into
       ``RunConfig(**config_data)``.
-    - ``project`` is the enclosing ``ProjectConfig`` (loaded from the
-      discovered ``project.yaml``) or a synthesised default for packs
-      that don't ship one.
+    - ``project`` is the enclosing ``ProjectConfig`` loaded from the
+      discovered ``project.yaml``. A run config with no discoverable
+      ``project.yaml`` raises ``RuntimeError``.
 
     Emits a ``DeprecationWarning`` when the run config sits under the
     legacy ``run_config/`` (singular) directory.
@@ -652,10 +620,13 @@ def load_effective_run_config(
     project_root, used_legacy_dir = detect_project_layout(config_path)
     if used_legacy_dir:
         warn_legacy_run_config_dir(config_path)
-    if project_root is not None:
-        project = load_project_config(project_root / PROJECT_FILENAME)
-    else:
-        project = synthesize_default_project(project_root=config_path.parent)
+    if project_root is None:
+        raise RuntimeError(
+            f"No project.yaml found for run config {config_path}. "
+            f"Searched upward from {config_path.parent} to the filesystem root. "
+            f"Add a project.yaml at the pack root."
+        )
+    project = load_project_config(project_root / PROJECT_FILENAME)
     merged = resolve_effective_run_config_data(project, config_data)
     merged = _interpolate_env_vars(merged, source_path=config_path)
     validate_actor_roster_subset_of_models(project, merged)
