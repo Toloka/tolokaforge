@@ -31,7 +31,7 @@ from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
 from tolokaforge.core.project_loader import load_project_config, resolve
 from tolokaforge.runner.models import TaskDescription
 
-pytestmark = pytest.mark.integration
+pytestmark = pytest.mark.canonical
 
 
 _PACK_ROOT = (

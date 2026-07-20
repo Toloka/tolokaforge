@@ -54,8 +54,16 @@ from typing import Any
 import yaml
 
 from tolokaforge.core.deprecations import canonicalize_actor_config
-from tolokaforge.core.models import TaskConfig
+from tolokaforge.core.models import TaskConfig, TaskDefaults
 from tolokaforge.core.project_loader import construct_config, deep_merge
+
+# Keys that live on ``project.task_defaults`` but are not ``TaskConfig`` fields.
+# They reach the engine through their own seams (``grading_defaults`` via
+# ``NativeAdapter.get_grading_config``, ``continue_prompt`` via turn logic), so
+# merging them into a task dict would fail its ``extra="forbid"`` validation.
+_PROJECT_SCOPED_DEFAULT_KEYS = frozenset(TaskDefaults.model_fields) - frozenset(
+    TaskConfig.model_fields
+)
 
 
 def validate_grading_yaml(grading_path: Path) -> None:
@@ -113,12 +121,14 @@ def load_task_yaml(
     Args:
         task_path: Absolute or relative path to ``task.yaml``.
         project_task_defaults: Optional ``project.task_defaults`` dict from
-            the enclosing project. When supplied, it is layered above the
-            adapter's Domain merge and below the task's own fields.
-            Precedence, low to high: adapter Domain bundle → project
-            defaults → task.yaml. Task fields win on conflict; project
-            defaults win over the Domain bundle where they overlap and
-            the task doesn't set the field.
+            the enclosing project. Only its ``TaskConfig``-shaped keys are
+            layered into the task dict — above the adapter's Domain merge and
+            below the task's own fields. Project-scoped-only keys
+            (``grading_defaults``, ``continue_prompt``) are excluded here and
+            reach the engine through their own seams. Precedence, low to high:
+            adapter Domain bundle → project defaults → task.yaml. Task fields
+            win on conflict; project defaults win over the Domain bundle where
+            they overlap and the task doesn't set the field.
 
     Returns:
         ``(task_config, effective_task_dir)``. ``effective_task_dir`` is the
@@ -172,7 +182,12 @@ def load_task_yaml(
     # is delta-wins, so the second argument overrides the first on conflict.
     base = domain_data
     if project_task_defaults:
-        base = deep_merge(base, project_task_defaults)
+        task_shaped_defaults = {
+            key: value
+            for key, value in project_task_defaults.items()
+            if key not in _PROJECT_SCOPED_DEFAULT_KEYS
+        }
+        base = deep_merge(base, task_shaped_defaults)
     task_data = deep_merge(base, task_data)
 
     # Auto-pick a sibling ``grading.yaml`` when no layer set ``grading``. An

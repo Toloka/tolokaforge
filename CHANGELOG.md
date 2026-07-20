@@ -22,6 +22,8 @@ All notable changes to this project are documented in this file.
 ### Fix
 
 - **docs/security**: rewrite `SECURITY.md`'s architecture overview, threat table, testing, and checklist to reflect the actual `runner-net` (non-internal, docker-py `EngineStack`) model. The doc previously described a vanished `env-net` (`internal: true`) network and `docker-compose.yaml`, and listed "executor reaching external internet — addressed by `env-net internal:true`" as an addressed threat that no longer holds (#324).
+- **loader** (M9): project `task_defaults` again loads the shipped `example-microservices-pack`. Only `TaskConfig`-shaped keys of `task_defaults` are merged into each task dict before validation; project-scoped-only keys (`grading_defaults`, `continue_prompt`) are excluded from that merge and reach the engine through their own seams. The excluded set is derived from the schema (`TaskDefaults.model_fields - TaskConfig.model_fields`), so future project-only defaults are handled automatically (#277).
+- **loader** (M9): `stack: null` and `stack: {compose_file: null}` in a task's `environment_manifest` (and in a project's `default_environment`) now emit a `DeprecationWarning` naming the offending file and field, with the documented full-override rule — a task cannot unset the environment (or its substrate pointer) out from under a project that declares one. Omit the key to inherit. Strict rejection deferred to a future release (#235).
 
 ## v0.9.1 (2026-07-17)
 
