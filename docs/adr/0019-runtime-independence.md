@@ -20,7 +20,7 @@ None of this shape exists in code yet, and none of it is captured as an architec
 - **Backend selection is task-driven, not name-driven.** `Orchestrator._construct_runtime_backend` (`orchestrator.py:749`) calls `_select_backend_from_tasks` (`orchestrator.py:644`), which picks `PerTrialRuntimeBackend` when any task's manifest requires per-trial materialisation, else `SharedStackRuntimeBackend`. The `orchestrator.runtime` config field (`models.py:538`) is only a **deprecated operator override** that emits a `DeprecationWarning` and is slated for retirement (`models.py:560–574`); its `docker` value is a legacy alias for `shared`.
 - **There is no registry.** Backend selection is a hard-coded dispatch, not a discovery lookup. Nothing lets an out-of-tree distribution contribute a backend.
 - **There is no library or subprocess entry.** `tolokaforge/__init__.py` exposes a lazy `__getattr__` public API with no `run_trial`; the single console script `tolokaforge = tolokaforge.cli.main:cli` has no `agent` subcommand.
-- **The runner image is fat.** `runner.Dockerfile` builds from the full `tolokaforge[docker]` wheel plus ~11 extra runtime deps — 659 MB, on a python:3.12-slim base of ≈144 MB.
+- **The runner image is fat.** `runner.Dockerfile` builds from the full `tolokaforge` wheel plus a hand-maintained ~11-dependency block — 659 MB, on a python:3.12-slim base of ≈144 MB.
 
 The five downstream sub-issues (#536–#540) each need to cite one section of a single decision as their contract source. Locking the seam shape, registry mechanics, library signature, subprocess wire format, and versioning story as a Proposed ADR **before** those tickets land is what makes them independently implementable without re-litigating the interface. This ADR is that interface deliverable; it decides nothing about implementation code.
 
@@ -182,11 +182,15 @@ This milestone adds three compatibility surfaces. Each carries a breaking-change
 
 #### 4b — Slim-image budget + policy
 
-**Baseline.** The current runner image measures **659 MB**, measured 2026-07-20 via `docker images` on the freshly-built `tolokaforge-runner` tag. The image is built from the `tolokaforge[docker]` wheel plus the ~11 extra runtime dependencies installed in `runner.Dockerfile`, on a `python:3.12-slim` base of ≈144 MB. The number is recorded with this provenance so a future reader can re-measure rather than trust a bare figure.
+**Baseline.** The pre-slim runner image measured **659 MB**, measured 2026-07-20 via `docker images` on the freshly-built `tolokaforge-runner` tag, on a `python:3.12-slim` base of ≈144 MB. It was built from the full `tolokaforge` wheel plus a hand-maintained ~11-dependency block in `runner.Dockerfile`. The number is recorded with this provenance so a future reader can re-measure rather than trust a bare figure.
 
 **Target.** ≥40% smaller uncompressed (the #539 acceptance criterion).
 
-**Policy.** A `runner` extra — same package, same wheel, no multi-package split — installs the runner-only subset, with the runner import boundary enforced by a test. This ADR does not prescribe the extra's exact dependency list; that is #539's call.
+**Outcome.** The multi-stage slim image measures **390 MB — a 40.8% reduction**, meeting the target. The saving is compat-safe: it comes from keeping the build-only apt toolchain and the docker CLI out of the runtime stage, installing the wheel with `--no-compile` (no `*.pyc` bytecode), and stripping the pip/setuptools/wheel toolchain — not from dropping any capability. The domain-tool drivers stay in the image (via the `runner` extra), so `tolokaforge-runner:local` serves every task pack unchanged.
+
+390 MB is the honest reachable minimum given the in-runner LLM-judge requirement: `litellm` (~105 MB, executed in-container for the `GradeTrial` RPC), the `python:3.12-slim` base (~144 MB), and the domain-tool drivers (~71 MB, kept for `:local` compatibility) dominate it. No tighter forward target is committed here — the only remaining headroom is out-of-scope work already tracked (registry publication; a smaller-base investigation deferred as too risky).
+
+**Policy.** A `runner` extra — same package, same wheel, no multi-package split — installs the runner-only subset, with the runner import boundary enforced by a test. The extra's exact dependency list is #539's call.
 
 #### 4c — ADR lifecycle
 

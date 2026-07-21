@@ -73,3 +73,36 @@ def is_docker_daemon_available() -> bool:
         return True
     except Exception:
         return False
+
+
+def newest_image_id(image_name: str) -> str | None:
+    """ID of the most recently built image tagged ``image_name``, or ``None``.
+
+    The newest image by build time is the one the current Dockerfile produces
+    (and what a ``:local``/``:latest`` alias points at after a build), so tests
+    that lock the freshly-built image resolve it this way rather than trusting a
+    possibly-stale tag.
+    """
+    import subprocess
+
+    listing = subprocess.run(
+        ["docker", "images", image_name, "--format", "{{.ID}}"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    image_ids = list(dict.fromkeys(line for line in listing.stdout.split() if line))
+    if not image_ids:
+        return None
+    newest_id: str | None = None
+    newest_created = ""
+    for image_id in image_ids:
+        created = subprocess.run(
+            ["docker", "image", "inspect", image_id, "--format", "{{.Created}}"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        if created > newest_created:
+            newest_created, newest_id = created, image_id
+    return newest_id

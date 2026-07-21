@@ -37,11 +37,12 @@ from tolokaforge.docker import builder
 
 pytestmark = [pytest.mark.integration, pytest.mark.requires_docker]
 
-RUNNER_IMAGE_SIZE_CEILING_MB = 430
-"""≤ 430 MB per ADR-0019 §4b amendment landing in this PR's Stage 4.
+RUNNER_IMAGE_SIZE_CEILING_MB = 405
+"""≤ 405 MB per ADR-0019 §4b — the multi-stage slim runner budget.
 
-Absorbs future minor dep bumps without a spurious CI break while still catching
-a real size regression.
+The slim image measures 390.2 MB (40.8% under the 659 MB baseline); the ceiling
+is that measurement plus ~15 MB slack, which absorbs future minor dependency
+bumps without a spurious CI break while still catching a real size regression.
 """
 
 

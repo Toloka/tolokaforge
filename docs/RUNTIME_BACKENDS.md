@@ -601,6 +601,8 @@ services:
 
 `:local` is a legal pinned tag (not one of the floating names — `latest` / `main` / `master` / `edge` / `stable` / `dev` / `develop` / `nightly` / `head` — that the validator rejects) and is decoupled from the tolokaforge release version, so task compose files don't rotate on every package bump.
 
+The `:local` image is the slim multi-stage runner (see [RUNNER.md](RUNNER.md#runner-image-contents)). Its dependency surface is `tolokaforge[runner]` — the `runner` extra in `pyproject.toml` carries the domain-tool drivers (SQL, JWT, HTTP-server tools) that task tool code needs at grade time, so a compose file referencing `tolokaforge-runner:local` runs SQL- and JWT-backed task packs with no change. The docker CLI is **not** baked into the default image: the orchestrator detects a terminal-bench run from the configured adapter type and builds `:local` with `INSTALL_DOCKER_CLI=true` for it automatically, so terminal-bench task packs that shell out to docker keep working while every other run's image stays slim.
+
 For structuring the *task-side* images a compose file references — the base → environment → instance layering that lets Docker's cache share build work across a task family — see [`IMAGE_LAYERING_GUIDE.md`](IMAGE_LAYERING_GUIDE.md).
 
 The alias step is best-effort and logged, not raise-and-fail — the shared-stack path still works with the content-hash tag whether or not the alias applies. Only per-trial task compose files referencing `tolokaforge-runner:local` would then fail, at which point the operator sees the aliasing warning from run start and knows what to fix.

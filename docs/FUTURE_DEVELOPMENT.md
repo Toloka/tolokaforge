@@ -36,6 +36,13 @@
 
 ### Issue 1 — Runner Docker image includes unnecessary domain files ([#36](https://github.com/Toloka/tolokaforge/issues/36))
 
+> **Status: resolved.** The runner image is built from the `tolokaforge` wheel
+> only — domain code arrives at runtime via `TaskDescription.tool_artifacts`,
+> and the build context is just the wheel (`builder.py::_runner_definition`). The
+> multi-stage `runner.Dockerfile` (#539) slimmed it to ~390 MB. The analysis
+> below is the original problem statement; its file/line references describe the
+> since-replaced image and are kept only as design history.
+
 The Runner Docker image bakes in domain-specific directories that should not be part of the image. This causes:
 - **Unnecessary rebuilds:** touching `contrib/` or `tasks/` triggers a content-hash change and full rebuild
 - **Slow context assembly:** `shutil.copytree` copies ~340 files to a temp directory
@@ -119,6 +126,11 @@ sqlite3.DatabaseError: file is not a database
 
 ## Stage 9 — Dockerfile Review and Runner Image Cleanup
 
+> **Status: resolved** (Path A landed). The runner image is domain-agnostic —
+> its build context is the `tolokaforge` wheel only, domain code arrives via
+> `tool_artifacts`, and the multi-stage `runner.Dockerfile` (#539) is slim
+> (~390 MB). The plan below is retained as design history.
+>
 > **Goal:** Make the Runner Docker image domain-agnostic. Remove domain-specific files from the build context. Audit and consolidate Dockerfiles.  
 > **Tracks:** [#36](https://github.com/Toloka/tolokaforge/issues/36)
 
