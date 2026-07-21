@@ -173,7 +173,10 @@ def run_trial(
     )
 
     runtime_backend.connect()
-    return _execute_trial(runtime_backend, conductor_impl, spec, task)
+    try:
+        return _execute_trial(runtime_backend, conductor_impl, spec, task)
+    finally:
+        runtime_backend.close()
 
 
 def _execute_trial(

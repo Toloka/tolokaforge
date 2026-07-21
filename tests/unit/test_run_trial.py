@@ -21,6 +21,7 @@ from tolokaforge.core.conductor import ConductorContext, InMemoryConductor
 from tolokaforge.core.output.artifacts import FileArtifactWriter, InMemoryArtifactWriter
 from tolokaforge.core.plugin_registry import UnknownImplementationError
 from tolokaforge.core.run_trial import run_trial
+from tolokaforge.core.runtime import InMemoryRuntimeBackend
 
 pytestmark = pytest.mark.unit
 
@@ -188,3 +189,70 @@ class TestOutputDirSeam:
         ctx = self._capture_context(monkeypatch, output_dir=out)
         assert isinstance(ctx.artifact_writer, FileArtifactWriter)
         assert ctx.output_dir == out
+
+
+# ---------------------------------------------------------------------------
+# (e) Backend lifecycle — connect() must be paired with close() on every exit
+# ---------------------------------------------------------------------------
+
+
+class _RaisingConductor:
+    """Conductor whose ``run`` raises, exercising the ``finally`` path."""
+
+    def run(self, spec: Any, task_config: Any) -> Any:
+        raise RuntimeError("conductor blew up")
+
+
+class TestBackendLifecycle:
+    def _capture_backend(self, monkeypatch: pytest.MonkeyPatch) -> list[InMemoryRuntimeBackend]:
+        captured: list[InMemoryRuntimeBackend] = []
+        original_loader = run_trial_mod.load_runtime_backend
+
+        def wrap_loader(name: str) -> Any:
+            real_factory = original_loader(name)
+
+            def capturing_factory(ctx: Any) -> Any:
+                backend = real_factory(ctx)
+                captured.append(backend)
+                return backend
+
+            return capturing_factory
+
+        monkeypatch.setattr(run_trial_mod, "load_runtime_backend", wrap_loader)
+        return captured
+
+    def _install_conductor(self, monkeypatch: pytest.MonkeyPatch, conductor_impl: Any) -> None:
+        monkeypatch.setattr(
+            run_trial_mod,
+            "load_conductor",
+            lambda name: (lambda ctx: conductor_impl),
+        )
+
+    def test_close_called_after_happy_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _patch_adapter(monkeypatch, make_task_description(task_id="task-1"))
+        captured = self._capture_backend(monkeypatch)
+        self._install_conductor(monkeypatch, InMemoryConductor())
+
+        run_trial(
+            task=make_task_config(task_id="task-1"),
+            models={"agent": _AGENT},
+            runtime="in_memory",
+        )
+
+        (backend,) = captured
+        assert backend.call_log.close_calls == 1
+
+    def test_close_called_when_conductor_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _patch_adapter(monkeypatch, make_task_description(task_id="task-1"))
+        captured = self._capture_backend(monkeypatch)
+        self._install_conductor(monkeypatch, _RaisingConductor())
+
+        with pytest.raises(RuntimeError, match="conductor blew up"):
+            run_trial(
+                task=make_task_config(task_id="task-1"),
+                models={"agent": _AGENT},
+                runtime="in_memory",
+            )
+
+        (backend,) = captured
+        assert backend.call_log.close_calls == 1
