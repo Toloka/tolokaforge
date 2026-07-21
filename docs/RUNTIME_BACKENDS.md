@@ -553,6 +553,10 @@ my_conductor = "mypkg.conductor:my_conductor_factory"
 
 `tolokaforge.run_trial(...)` runs a single trial in-process and consumes these same registries: its `runtime`, `grader`, and `conductor` arguments accept any registered name in the respective group, resolved through the same fail-loud loader. `runtime="auto"` is a reserved value (not a registrable name) that mirrors the CLI's task-driven default — `per_trial` when the task's manifest requires per-trial isolation, else `shared` — intercepted before the registry lookup. See [`docs/API.md`](API.md#run_trial) for the signature, return type, and error contract.
 
+### Subprocess consumer — `tolokaforge agent`
+
+`tolokaforge agent` wraps `run_trial` as a subprocess a harness in any language drives over a pipe, and selects the same seams from the same registries — the `start` message's `runtime`, `grader`, and `conductor` fields accept any registered name in the respective group, resolved through the same fail-loud loader (an unknown name comes back as a typed `error` message with `error_type: "UnknownImplementationError"` listing the known names). Selection travels on the wire, so a harness picks a backend without a second CLI flag or config source. See [`docs/API.md`](API.md#tolokaforge-agent) for the wire contract.
+
 ## Per-trial substrate bracket (`TrialExecutor`)
 
 The orchestrator brackets each `conductor.run` call with the substrate contract through a dedicated seam: the `TrialExecutor` Protocol (ADR-0015). The production concrete `ProvisioningTrialExecutor` composes a `RuntimeBackend`, a `Conductor`, and a `StructuredLogger`, and owns exactly this shape:
