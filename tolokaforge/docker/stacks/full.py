@@ -34,6 +34,7 @@ def full_stack(
     mock_web_port: int = 8080,
     enable_dind: bool = False,
     enable_playwright: bool = False,
+    enable_docker_cli: bool = False,
     task_pack_mounts: list[Path] | None = None,
     extra_runner_binds: list[tuple[Path, str]] | None = None,
     mount_docker_socket: bool = False,
@@ -54,6 +55,7 @@ def full_stack(
         mock_web_port: Host port for Mock Web service (default: 8080).
         enable_dind: Forwarded to ``core_stack``.
         enable_playwright: Forwarded to ``core_stack``.
+        enable_docker_cli: Forwarded to ``core_stack``.
         task_pack_mounts: Forwarded to ``core_stack``.
         extra_runner_binds: Forwarded to ``core_stack``.
         mount_docker_socket: Forwarded to ``core_stack``.
@@ -67,6 +69,7 @@ def full_stack(
         runner_port=runner_port,
         enable_dind=enable_dind,
         enable_playwright=enable_playwright,
+        enable_docker_cli=enable_docker_cli,
         task_pack_mounts=task_pack_mounts,
         extra_runner_binds=extra_runner_binds,
         mount_docker_socket=mount_docker_socket,

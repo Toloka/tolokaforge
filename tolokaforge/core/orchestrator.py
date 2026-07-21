@@ -121,6 +121,17 @@ def _tasks_need_playwright(tasks: list[Any]) -> bool:
     return False
 
 
+def _run_needs_docker_cli(adapter_type: str | None) -> bool:
+    """Return True iff the run's adapter shells out to docker inside the runner.
+
+    Terminal-bench tasks exec the docker CLI + compose plugin in the runner
+    (against the host daemon via the mounted socket), so their runner image must
+    carry the CLI. Detected from the configured adapter type so the slim default
+    image ships without it for every other run. Pure function for unit testing.
+    """
+    return adapter_type == AdapterType.TERMINAL_BENCH
+
+
 def _tasks_need_full_stack(tasks: list[Any]) -> bool:
     """Return True iff any task needs ``full_stack`` (mock-web / rag).
 
@@ -1273,6 +1284,19 @@ class Orchestrator:
                         "Playwright-dependent tool detected in tasks — enabling Playwright"
                     )
                     core_stack_kwargs["enable_playwright"] = True
+                # Terminal-bench shells out to docker inside the runner, so its
+                # runner image needs the docker CLI baked in. Every other run
+                # builds the slim default image without it.
+                adapter_type = (
+                    self.config.evaluation.harness_adapter.type
+                    if self.config.evaluation.harness_adapter
+                    else None
+                )
+                if _run_needs_docker_cli(adapter_type):
+                    self.logger.info(
+                        "Terminal-bench adapter detected — enabling docker CLI in runner image"
+                    )
+                    core_stack_kwargs["enable_docker_cli"] = True
                 # Pick full_stack (db-service + runner + rag-service +
                 # mock-web) when any task talks to mock-web or rag (see
                 # ``_FULL_STACK_TOOL_NAMES`` for the routing matrix) OR when
