@@ -243,7 +243,7 @@ Subcommand-level `--verbose` inside the REPL still bumps the root console handle
 
 ### Command discovery and completion
 
-Type `--help` inside the REPL for the same grouped listing produced by `tolokaforge --help` outside it, and `<command> --help` for any subcommand's full flag reference. `click-repl` also registers its own `:help` internal command. Tab-completion resolves subcommand names, flag names, and any argument declared as `click.Path` — file paths under the working directory.
+Type `--help` inside the REPL for the same grouped listing produced by `tolokaforge --help` outside it, and `<command> --help` for any subcommand's full flag reference. `click-repl` also registers its own internal commands under the `/` prefix (`/help`, `/exit`, `/quit` — the upstream `:` prefix is remapped to `/` by `tolokaforge.dx.repl` at import time so it reads consistently with the intervener's REPL grammar and doesn't collide with paths in copy-pasted output). Tab-completion resolves subcommand names, flag names, and any argument declared as `click.Path` — file paths under the working directory.
 
 ### Command history
 

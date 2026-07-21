@@ -78,15 +78,17 @@ def test_repl_renders_under_interactive_heading(runner: CliRunner) -> None:
 def test_repl_banner_names_actual_click_repl_commands(runner: CliRunner) -> None:
     """The banner must advertise the commands click-repl actually accepts.
 
-    click-repl 0.3.0 reserves the ``:`` prefix for internal commands, so
-    bare ``help`` / ``exit`` fall through to click's dispatcher and die
-    with "no such command". Locking ``:help`` / ``:exit`` in the banner
-    keeps user muscle memory aligned with click-repl's contract.
+    click-repl 0.3.0 ships with a hardcoded ``:`` prefix for internal
+    commands; ``tolokaforge.dx.repl`` monkey-patches the dispatcher at
+    import time so ``/help`` / ``/exit`` work instead (Slack / Discord
+    convention, reads better in shell logs). Locking ``/help`` /
+    ``/exit`` in the banner keeps user muscle memory aligned with what
+    the patched dispatcher actually accepts.
     """
 
     with patch("tolokaforge.dx.repl._click_repl"):
         result = runner.invoke(cli, [])
 
     assert result.exit_code == 0, result.stderr
-    assert ":help" in result.stderr
-    assert ":exit" in result.stderr
+    assert "/help" in result.stderr
+    assert "/exit" in result.stderr
