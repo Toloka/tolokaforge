@@ -75,13 +75,30 @@ _secrets.export_to_environ(
 )
 
 
-def _print_runtime_banner(*, console: Console, runtime_choice: str, source: str) -> None:
+def _print_runtime_banner(*, console: Console, runtime_choice: str | None, source: str) -> None:
     """Print a loud banner naming the selected runtime backend and the
     isolation posture callers should expect.
 
     Called after the run config is resolved and before the orchestrator
     starts. Users see the effective backend + how it was chosen — no
-    silent defaults."""
+    silent defaults.
+
+    When ``runtime_choice`` is ``None``, ``orchestrator.runtime`` was not
+    set on the config (the recommended shape — the field is deprecated).
+    In that case the actual backend is selected at orchestrator boot
+    based on task requirements; the banner reads ``auto (task-driven)``
+    and names both candidates so the operator knows which one will fire.
+    """
+    if runtime_choice is None:
+        console.print(
+            "[bold cyan]Runtime backend:[/bold cyan] auto "
+            "([dim]task-driven, resolved at orchestrator boot[/dim])"
+        )
+        console.print(
+            "[cyan]  → PerTrialRuntimeBackend if any task requires per-trial "
+            "isolation, else SharedStackRuntimeBackend[/cyan]"
+        )
+        return
     backend_class = {
         "shared": "SharedStackRuntimeBackend",
         "per_trial": "PerTrialRuntimeBackend",
