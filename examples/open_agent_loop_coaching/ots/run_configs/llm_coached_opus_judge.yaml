@@ -1,0 +1,52 @@
+# OTS coaching A/B — solo baseline, sonnet-4.6 judge (cheap batch).
+# Same task+model+seed as the coached arms in this batch; only differs
+# in `open_agent_loop.enabled` and `output_dir`.
+#
+# Tasks pack lives at an absolute path in a sibling repo
+# (tolokaforge-tasks, internal). The driver's `_discover_trial_ids` joins
+# REPO_ROOT / projects[0] — absolute paths on the right override the join.
+evaluation:
+  projects:
+    - "/Users/cirogam/Documents/toloka/new_tolokaforge/tolokaforge-tasks"
+  tasks_glob: "tasks/tau_manufacturing/{MAN-34,MAL-007,MAN-46}/task.yaml"
+  output_dir: "results/coaching_ab_ots/llm_coached_opus_judge"
+  harness_adapter:
+    type: frozen_mcp_core
+
+models:
+  agent:
+    provider: openrouter
+    name: moonshotai/kimi-k2.6
+    temperature: 0.6
+    reasoning:
+      mode: adaptive
+      effort_hint: medium
+    max_tokens: 16384
+    seed: 42
+  user:
+    provider: openrouter
+    name: anthropic/claude-sonnet-4.6
+    temperature: 0.0
+    max_tokens: 16384
+    seed: 42
+  judge:
+    provider: openrouter
+    name: anthropic/claude-opus-4.8
+    temperature: 0.0
+    max_tokens: 16384
+
+orchestrator:
+  workers: 1
+  repeats: 3
+  max_attempt_retries: 2
+  max_turns: 30
+  timeouts:
+    episode_s: 3600
+    turn_s: 240
+  runtime: docker
+
+compute:
+  max_budget_usd: 3.0
+
+open_agent_loop:
+  enabled: true

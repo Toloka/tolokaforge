@@ -43,22 +43,30 @@ from tolokaforge.core.llm import LLMClient  # noqa: E402
 from tolokaforge.core.models import Message, MessageRole, ModelConfig, RunConfig  # noqa: E402
 from tolokaforge.core.orchestrator import Orchestrator  # noqa: E402
 
-ARM_DIR = REPO_ROOT / "examples" / "open_agent_loop_coaching"
+DEFAULT_CONFIGS_DIR = REPO_ROOT / "examples" / "open_agent_loop_coaching"
 
-ARMS: dict[str, dict[str, str | None]] = {
+# Base arm definitions keyed by suffix. When `--judge-batch <suffix>` is
+# passed the driver appends `_<suffix>` to each arm's run_config filename
+# (e.g. `solo_sonnet_judge.yaml`) so two batches can share the same
+# coach_configs but differ in judge model.
+_ARM_TEMPLATE: dict[str, dict[str, str | None]] = {
     "solo": {
-        "run_config": "run_configs/solo.yaml",
+        "run_config_stem": "solo",
         "coach_config": None,
     },
     "rule_coached": {
-        "run_config": "run_configs/rule_coached.yaml",
+        "run_config_stem": "rule_coached",
         "coach_config": "coach_configs/rule.yaml",
     },
     "llm_coached": {
-        "run_config": "run_configs/llm_coached.yaml",
+        "run_config_stem": "llm_coached",
         "coach_config": "coach_configs/llm.yaml",
     },
 }
+
+# Hard budget rail — if cumulative total_cost_usd across arms crosses this,
+# remaining arms in the batch abort. Safety margin under the $10 study cap.
+_CUMULATIVE_COST_LIMIT_USD = 8.0
 
 # Sensible default for the coach's LLM. Cheap + fast.
 _COACH_MODEL = ModelConfig(
@@ -102,6 +110,27 @@ def _resolve_output_dir(configured: Path) -> Path:
     return candidates[0] if candidates else configured
 
 
+def _expand_braces(pattern: str) -> list[str]:
+    """Shell-style brace expansion: `a/{x,y}/z` → `[a/x/z, a/y/z]`.
+
+    pathlib.Path.glob does not support braces; the OTS smoke configs
+    rely on them (`tasks/tau_manufacturing/{MAN-34,MAL-007,MAN-46}/task.yaml`).
+    Handles one level of nesting, which is all the existing configs need.
+    """
+    import re
+
+    if "{" not in pattern:
+        return [pattern]
+    m = re.search(r"\{([^{}]+)\}", pattern)
+    if not m:
+        return [pattern]
+    prefix, suffix = pattern[: m.start()], pattern[m.end() :]
+    expansions: list[str] = []
+    for choice in m.group(1).split(","):
+        expansions.extend(_expand_braces(prefix + choice + suffix))
+    return expansions
+
+
 def _discover_trial_ids(config: RunConfig) -> list[str]:
     """Enumerate the trial IDs the orchestrator will produce, so we can
     pre-create sessions before the run starts.
@@ -109,18 +138,40 @@ def _discover_trial_ids(config: RunConfig) -> list[str]:
     Reads `evaluation.projects` (canonical) with `evaluation.task_packs`
     fallback for legacy configs — the Pydantic model coerces `task_packs`
     into `projects` internally, so post-validation `projects` is where
-    the actual paths live.
+    the actual paths live. Supports absolute `projects` paths (for OTS
+    task packs living outside the repo) and shell-style brace expansion
+    in `tasks_glob`.
     """
     trial_ids: list[str] = []
     project_paths = list(config.evaluation.projects) or list(config.evaluation.task_packs)
     for project in project_paths:
-        project_root = REPO_ROOT / project
-        for task_file in project_root.glob(config.evaluation.tasks_glob):
-            task_raw = yaml.safe_load(task_file.read_text()) or {}
-            task_id = task_raw.get("task_id") or task_file.parent.name
-            for trial_idx in range(config.orchestrator.repeats):
-                trial_ids.append(f"{task_id}:{trial_idx}")
+        project_root = REPO_ROOT / project  # abs paths on RHS override the join
+        for glob_pattern in _expand_braces(config.evaluation.tasks_glob):
+            for task_file in project_root.glob(glob_pattern):
+                task_raw = yaml.safe_load(task_file.read_text()) or {}
+                task_id = task_raw.get("task_id") or task_file.parent.name
+                for trial_idx in range(config.orchestrator.repeats):
+                    trial_ids.append(f"{task_id}:{trial_idx}")
     return trial_ids
+
+
+def _read_arm_cost_usd(output_root: Path) -> float:
+    """Read `total_cost_incl_judge_usd` from the arm's aggregate.json.
+
+    Returns 0.0 if the file doesn't exist (arm aborted early) or the
+    field is missing. The value is the sum of agent + user + judge
+    costs across all trials in the arm; coach LLM spend is separate.
+    """
+    import json
+
+    agg = output_root / "aggregate.json"
+    if not agg.is_file():
+        return 0.0
+    try:
+        data = json.loads(agg.read_text())
+    except Exception:
+        return 0.0
+    return float(data.get("total_cost_incl_judge_usd") or data.get("total_cost_usd") or 0.0)
 
 
 def _build_llm_call(model_config: ModelConfig) -> Callable[[str, str], str]:
@@ -239,33 +290,104 @@ def _run_arm(
         )
 
 
+def _resolve_arm_paths(
+    configs_dir: Path, judge_batch: str | None
+) -> dict[str, dict[str, Path | None]]:
+    """Build the concrete file-path arm map for one batch.
+
+    `judge_batch` picks a suffix — `sonnet` → `solo_sonnet_judge.yaml`,
+    `opus` → `solo_opus_judge.yaml`, or `None` → `solo.yaml`
+    (backward-compatible with the original tool_use configs).
+    """
+    suffix = f"_{judge_batch}_judge" if judge_batch else ""
+    result: dict[str, dict[str, Path | None]] = {}
+    for arm_name, template in _ARM_TEMPLATE.items():
+        run_config = configs_dir / "run_configs" / f"{template['run_config_stem']}{suffix}.yaml"
+        coach_config = configs_dir / template["coach_config"] if template["coach_config"] else None
+        # Fallback: coach_configs may live under configs_dir OR the default
+        # dir (task-agnostic — reused across experiments).
+        if coach_config is not None and not coach_config.is_file():
+            fallback = DEFAULT_CONFIGS_DIR / template["coach_config"]
+            if fallback.is_file():
+                coach_config = fallback
+        result[arm_name] = {"run_config": run_config, "coach_config": coach_config}
+    return result
+
+
 def main(argv: list[str] | None = None) -> int:
     _silence_loggers()
     parser = argparse.ArgumentParser(description=__doc__.strip().splitlines()[0])
     parser.add_argument(
+        "--configs-dir",
+        type=Path,
+        default=DEFAULT_CONFIGS_DIR,
+        help=(
+            "Directory containing run_configs/ and coach_configs/. "
+            f"Default: {DEFAULT_CONFIGS_DIR.relative_to(REPO_ROOT)}"
+        ),
+    )
+    parser.add_argument(
+        "--judge-batch",
+        choices=("sonnet", "opus"),
+        default=None,
+        help=(
+            "When set, appends `_<batch>_judge` to run-config filenames "
+            "so a config dir can carry multiple batches side by side. "
+            "Default: unsuffixed (works with the original tool_use configs)."
+        ),
+    )
+    parser.add_argument(
         "--arm",
         action="append",
-        choices=sorted(ARMS),
+        choices=sorted(_ARM_TEMPLATE),
         help="Run only the given arm(s). Repeatable. Default: all three.",
     )
     args = parser.parse_args(argv)
 
-    selected = args.arm if args.arm else list(ARMS)
+    configs_dir: Path = args.configs_dir
+    if not configs_dir.is_absolute():
+        configs_dir = REPO_ROOT / configs_dir
+    if not configs_dir.is_dir():
+        print(f"configs-dir does not exist: {configs_dir}", file=sys.stderr)
+        return 2
 
+    arm_paths = _resolve_arm_paths(configs_dir, args.judge_batch)
+    selected = args.arm if args.arm else list(_ARM_TEMPLATE)
+
+    cumulative_cost_usd = 0.0
     started = time.time()
     for arm_name in selected:
-        arm = ARMS[arm_name]
+        if cumulative_cost_usd >= _CUMULATIVE_COST_LIMIT_USD:
+            print(
+                f"\n! cumulative cost ${cumulative_cost_usd:.2f} ≥ hard rail "
+                f"${_CUMULATIVE_COST_LIMIT_USD:.2f}. Aborting remaining arms.",
+                file=sys.stderr,
+            )
+            break
+        arm = arm_paths[arm_name]
         _run_arm(
             arm_name=arm_name,
-            run_config_path=ARM_DIR / arm["run_config"],
-            coach_config_path=(ARM_DIR / arm["coach_config"]) if arm["coach_config"] else None,
+            run_config_path=arm["run_config"],
+            coach_config_path=arm["coach_config"],
         )
+        # Consult the arm's own aggregate.json (the orchestrator's honest
+        # accounting) for the cumulative check.
+        run_config = _load_run_config(arm["run_config"])
+        output_root = _resolve_output_dir(REPO_ROOT / run_config.evaluation.output_dir)
+        arm_cost = _read_arm_cost_usd(output_root)
+        cumulative_cost_usd += arm_cost
+        print(
+            f"  arm cost (from aggregate.json): ${arm_cost:.4f}  "
+            f"cumulative: ${cumulative_cost_usd:.4f}"
+        )
+
     total = time.time() - started
     print(f"\n{'═' * 60}\n▶ all arms complete in {total:.1f}s")
+    print(f"▶ cumulative trial cost (from aggregates): ${cumulative_cost_usd:.4f}")
     print(
         "\nNext: run "
-        "`uv run python examples/open_agent_loop_coaching/analyze_results.py` "
-        "to compute the A/B summary."
+        "`uv run python examples/open_agent_loop_coaching/analyze_results.py "
+        "--results-dir <results-root>` to compute the A/B summary."
     )
     return 0
 
