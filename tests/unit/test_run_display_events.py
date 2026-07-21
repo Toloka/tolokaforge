@@ -56,18 +56,22 @@ LIFECYCLE_METHODS: frozenset[str] = frozenset(
         "llm_call_started",
         "llm_call_finished",
         "llm_retry_scheduled",
+        "component_registered",
+        "component_status_changed",
+        "component_log_appended",
+        "component_unregistered",
     }
 )
 
 
-def test_protocol_declares_exactly_twelve_lifecycle_methods() -> None:
+def test_protocol_declares_expected_lifecycle_and_component_methods() -> None:
     declared = {
         name
         for name in vars(RunDisplayEvents)
         if not name.startswith("_") and callable(vars(RunDisplayEvents)[name])
     }
     assert declared == LIFECYCLE_METHODS
-    assert len(LIFECYCLE_METHODS) == 12
+    assert len(LIFECYCLE_METHODS) == 16
 
 
 @pytest.mark.parametrize("method_name", sorted(LIFECYCLE_METHODS))

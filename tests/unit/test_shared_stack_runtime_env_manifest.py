@@ -140,8 +140,14 @@ class TestConnectMaterialises:
         assert backend._temp_dir is not None
         assert backend._endpoints is fake_endpoints
         assert backend.runner_client is mock_client
-        # runner client was constructed with the resolved host:port.
-        mock_client_cls.assert_called_once_with(runner_address="localhost:60051")
+        # runner client was constructed with the resolved host:port. The
+        # ``events`` kwarg is threaded through from the backend so
+        # GrpcRunnerClient's retry loop can report through the Components
+        # channel; check by-name instead of positional-only.
+        mock_client_cls.assert_called_once()
+        call_kwargs = mock_client_cls.call_args.kwargs
+        assert call_kwargs["runner_address"] == "localhost:60051"
+        assert "events" in call_kwargs
         mock_client.connect.assert_called_once()
 
     def test_connect_raises_provision_error_when_runner_missing(self, tmp_path: Path) -> None:

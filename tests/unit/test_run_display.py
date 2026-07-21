@@ -50,7 +50,7 @@ def test_live_run_display_satisfies_protocol() -> None:
     assert isinstance(LiveRunDisplay(), RunDisplayEvents)
 
 
-def test_protocol_declares_twelve_lifecycle_methods() -> None:
+def test_protocol_declares_lifecycle_and_component_methods() -> None:
     expected = {
         "run_started",
         "trial_started",
@@ -64,6 +64,10 @@ def test_protocol_declares_twelve_lifecycle_methods() -> None:
         "llm_call_started",
         "llm_call_finished",
         "llm_retry_scheduled",
+        "component_registered",
+        "component_status_changed",
+        "component_log_appended",
+        "component_unregistered",
     }
     declared = {
         name
@@ -71,7 +75,8 @@ def test_protocol_declares_twelve_lifecycle_methods() -> None:
         if not name.startswith("_") and callable(vars(RunDisplayEvents)[name])
     }
     # `RunDisplayEvents` inherits from Protocol which contributes some dunders;
-    # the visible surface must equal the twelve lifecycle methods.
+    # the visible surface must equal the twelve lifecycle methods plus the
+    # four component-monitoring methods.
     assert declared == expected
 
 
@@ -1206,25 +1211,204 @@ def test_phase_changed_populates_services_and_renders_widget() -> None:
     display.phase_changed(phase="starting_services", detail="docker compose up", services=services)
 
     assert display._services == services
-    # `_total_trials == 0` and services populated: services widget region present.
+    # Adapter shim lifts each ServiceSnapshot into the Components model.
+    assert "engine/docker.service/runner" in display._components
+    assert "engine/docker.service/db-service" in display._components
+    # `_total_trials == 0` and components populated: Components widget region present.
     layout = display._build_layout()
     child_names = {getattr(child, "name", None) for child in layout.children}
-    assert "services" in child_names
+    assert "components" in child_names
 
 
 def test_services_widget_absent_once_trials_dispatch() -> None:
+    """After run_started with all components healthy, the Components widget
+    disappears — the panel reclaims the rows for trial cards."""
     from tolokaforge.core.run_display_events import ServiceSnapshot
 
     display = LiveRunDisplay(refresh_per_second=1000)
     services: list[ServiceSnapshot] = [
-        {"name": "runner", "status": "healthy", "ports": {}, "role": "engine"},
+        {"name": "runner", "status": "running", "ports": {}, "role": "engine"},
     ]
     display.phase_changed(phase="services_ready", services=services)
     display.run_started(total_trials=1, initial_completed=0)
 
     layout = display._build_layout()
     child_names = {getattr(child, "name", None) for child in layout.children}
-    assert "services" not in child_names
+    assert "components" not in child_names
+
+
+# ---------------------------------------------------------------------------
+# Components widget — direct component_* events, auto-expand-on-fail
+# ---------------------------------------------------------------------------
+
+
+def test_component_registered_and_status_changed_upsert_by_id() -> None:
+    """component_status_changed with the same id updates the row in place."""
+    from tolokaforge.core.run_display_events import ComponentSnapshot
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    snap: ComponentSnapshot = {
+        "id": "engine/grpc.client/runner",
+        "kind": "grpc.client",
+        "phase": "starting",
+        "detail": "attempt 1, elapsed=1.0s/30s",
+        "owner": "engine",
+    }
+    display.component_registered(snapshot=snap)
+    display.component_status_changed(snapshot={**snap, "detail": "attempt 7, elapsed=6.2s/30s"})
+    display.component_status_changed(
+        snapshot={**snap, "phase": "healthy", "detail": "port 50051 reachable"}
+    )
+    # One row, latest-write wins.
+    assert list(display._components.keys()) == ["engine/grpc.client/runner"]
+    assert display._components["engine/grpc.client/runner"]["phase"] == "healthy"
+    assert display._components["engine/grpc.client/runner"]["detail"] == "port 50051 reachable"
+
+
+def test_component_log_appended_bounded_ring_buffer() -> None:
+    """Per-component log tail is bounded — hitting the cap drops the oldest."""
+    from tolokaforge.dx.live_panel import _COMPONENT_TAIL_BUFFER_MAX
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    cid = "engine/grpc.client/runner"
+    for i in range(_COMPONENT_TAIL_BUFFER_MAX + 5):
+        display.component_log_appended(
+            component_id=cid, level="INFO", message=f"line-{i}", ts=float(i)
+        )
+    buf = display._component_log_buffers[cid]
+    assert len(buf) == _COMPONENT_TAIL_BUFFER_MAX
+    # Oldest lines were evicted; newest survive.
+    messages = [msg for _ts, _lvl, msg in buf]
+    assert messages[-1] == f"line-{_COMPONENT_TAIL_BUFFER_MAX + 4}"
+    assert "line-0" not in messages
+
+
+def test_unhealthy_component_keeps_widget_visible_mid_run() -> None:
+    """A component transitioning to unhealthy during a run pops the
+    Components widget back on so the operator sees the failure."""
+    from tolokaforge.core.run_display_events import ComponentSnapshot
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    display.run_started(total_trials=1, initial_completed=0)
+    display.trial_started(trial_id="t:0", task_id="t", trial_index=0, total_index=0)
+
+    # Mid-run failure on the runner client.
+    snap: ComponentSnapshot = {
+        "id": "engine/grpc.client/runner",
+        "kind": "grpc.client",
+        "phase": "unhealthy",
+        "detail": "connection refused",
+        "owner": "engine",
+    }
+    display.component_registered(snapshot=snap)
+
+    layout = display._build_layout()
+    names = {getattr(c, "name", None) for c in layout.children}
+    assert "components" in names, "unhealthy mid-run components must surface the widget"
+
+
+def test_unhealthy_component_expands_log_tail_beneath_row() -> None:
+    """A component in an unhealthy phase renders its recent log lines
+    indented beneath its row; healthy components stay one compact line."""
+    from rich.console import Console
+
+    from tolokaforge.core.run_display_events import ComponentSnapshot
+    from tolokaforge.dx._display import THEME
+    from tolokaforge.dx.live_panel import _render_components_table
+
+    healthy: ComponentSnapshot = {
+        "id": "engine/docker.service/runner",
+        "kind": "docker.service",
+        "phase": "healthy",
+        "detail": "running · 50051→50051",
+        "owner": "engine",
+    }
+    failing: ComponentSnapshot = {
+        "id": "engine/grpc.client/runner",
+        "kind": "grpc.client",
+        "phase": "unhealthy",
+        "detail": "timeout after 30.0s (30 attempts)",
+        "owner": "engine",
+    }
+    display = LiveRunDisplay(refresh_per_second=1000)
+    display.component_registered(snapshot=healthy)
+    display.component_registered(snapshot=failing)
+    display.component_log_appended(
+        component_id=failing["id"],
+        level="ERROR",
+        message="connection refused",
+        ts=0.0,
+    )
+    display.component_log_appended(
+        component_id=failing["id"], level="DEBUG", message="attempt 30", ts=1.0
+    )
+    # Healthy component's log — must NOT surface in the render.
+    display.component_log_appended(
+        component_id=healthy["id"], level="INFO", message="should not appear", ts=2.0
+    )
+
+    console = Console(
+        width=120, force_terminal=True, color_system="truecolor", record=True, theme=THEME
+    )
+    console.print(_render_components_table(display._components, display._component_log_buffers))
+    body = console.export_text()
+
+    # Failing component's log tail surfaces beneath its row.
+    assert "connection refused" in body
+    assert "attempt 30" in body
+    # Healthy component stays one compact line — its log line never renders.
+    assert "should not appear" not in body
+
+
+def test_component_unregistered_drops_row_and_buffer() -> None:
+    from tolokaforge.core.run_display_events import ComponentSnapshot
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    snap: ComponentSnapshot = {
+        "id": "engine/grpc.client/runner",
+        "kind": "grpc.client",
+        "phase": "healthy",
+        "detail": None,
+        "owner": "engine",
+    }
+    display.component_registered(snapshot=snap)
+    display.component_log_appended(component_id=snap["id"], level="INFO", message="x", ts=0.0)
+    assert snap["id"] in display._components
+    assert snap["id"] in display._component_log_buffers
+
+    display.component_unregistered(component_id=snap["id"])
+    assert snap["id"] not in display._components
+    assert snap["id"] not in display._component_log_buffers
+
+
+def test_grpc_runner_client_fires_component_events_on_healthy() -> None:
+    """GrpcRunnerClient.connect reports its retry loop through the
+    Components channel — one register + N status-changed(detail=…) +
+    one status-changed(phase=healthy). Verifies the noise-reduction
+    rewire in shared_stack_runtime.py."""
+    from unittest.mock import MagicMock
+
+    from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient
+
+    events = MagicMock()
+    client = GrpcRunnerClient("localhost:50051", events=events)
+    # Make health_check return True on first call so the loop exits fast.
+    client.health_check = MagicMock(return_value=True)  # type: ignore[method-assign]
+    client.channel = MagicMock()  # skip real grpc channel init
+    client.stub = MagicMock()
+
+    client.connect(timeout=1.0, retry_interval=0.01)
+
+    # One registered event.
+    events.component_registered.assert_called_once()
+    reg_snap = events.component_registered.call_args.kwargs["snapshot"]
+    assert reg_snap["id"] == "engine/grpc.client/runner"
+    assert reg_snap["kind"] == "grpc.client"
+
+    # At least one status_changed event — must include the healthy terminal.
+    status_calls = events.component_status_changed.call_args_list
+    phases = [call.kwargs["snapshot"]["phase"] for call in status_calls]
+    assert "healthy" in phases, f"missing healthy transition; saw {phases}"
 
 
 # ---------------------------------------------------------------------------
@@ -1406,9 +1590,9 @@ def test_boot_log_region_present_between_services_and_main_during_boot() -> None
 
     layout = display._build_layout()
     names = [getattr(c, "name", None) for c in layout.children]
-    assert "services" in names
+    assert "components" in names
     assert "boot_log" in names
-    assert names.index("boot_log") == names.index("services") + 1
+    assert names.index("boot_log") == names.index("components") + 1
     assert names.index("boot_log") == names.index("main") - 1
 
 
@@ -1519,7 +1703,7 @@ def test_boot_log_height_clamped_but_present_locks_392_regression() -> None:
 
     assert "boot_log" in sizes, "boot-log region must survive the mid-viewport clamp"
     assert sizes["boot_log"] == 4  # budget = 14 - 4 - 1 - 5 = 4
-    assert sizes["services"] == 4
+    assert sizes["components"] == 4
     assert sizes["main"] == 5
     assert sizes["bottom"] == 1
     assert sum(sizes.values()) == 14
@@ -1557,7 +1741,7 @@ def test_boot_log_region_dropped_when_budget_below_minimum_panel_height() -> Non
     sizes = {name: c.size for name, c in zip(names, layout.children, strict=True)}
 
     assert "boot_log" not in names
-    assert sizes["services"] == 4
+    assert sizes["components"] == 4
     assert sizes["main"] == 7  # total 12 - 4 services - 1 bottom - 0 banner - 0 boot_log
     assert sizes["bottom"] == 1
     assert sum(sizes.values()) == 12

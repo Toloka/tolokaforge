@@ -48,3 +48,4 @@ Day-to-day implementation choices that don't affect the system shape do *not* ne
 | [0016](0016-runtime-backend-comparison.md) | Runtime backend comparison: `shared` vs `per_trial` (lifecycle axis) | Accepted |
 | [0018](0018-multi-container-under-shared-runtime.md) | Multi-container capability under shared runtime (composition axis) | Accepted |
 | [0019](0019-front-end-plugin-namespace.md) | Front-end pluggability via `tolokaforge.dx` | Accepted |
+| [0021](0021-component-monitoring-seam.md) | Component-oriented monitoring — `ComponentSnapshot` / `component_*` events, panel widget with auto-expand-on-fail | Accepted |
