@@ -1,7 +1,7 @@
 # 0019. Runtime independence — Protocol registries, `run_trial`, and the `tolokaforge agent` subprocess contract
 
-- **Status:** Proposed
-- **Date:** 2026-07-20
+- **Status:** Accepted
+- **Date:** 2026-07-21
 - **Deciders:** @CiroGamboa
 - **Supersedes:** —
 - **Superseded by:** —
