@@ -549,6 +549,10 @@ my_conductor = "mypkg.conductor:my_conductor_factory"
 - **Duplicate name** — two entry points sharing a name within one group are an unresolvable ambiguity, so *any* lookup into that group raises `DuplicateRegistrationError` naming both providing distributions. Uninstall or rename one to resolve it.
 - **Broken import** — a target that raises on import fails **only when its own name is requested**; a broken third-party plug-in never breaks resolution of a healthy sibling (including a built-in), and the import error propagates loudly rather than being swallowed.
 
+### In-process library consumer — `tolokaforge.run_trial`
+
+`tolokaforge.run_trial(...)` runs a single trial in-process and consumes these same registries: its `runtime`, `grader`, and `conductor` arguments accept any registered name in the respective group, resolved through the same fail-loud loader. `runtime="auto"` is a reserved value (not a registrable name) that mirrors the CLI's task-driven default — `per_trial` when the task's manifest requires per-trial isolation, else `shared` — intercepted before the registry lookup. See [`docs/API.md`](API.md#run_trial) for the signature, return type, and error contract.
+
 ## Per-trial substrate bracket (`TrialExecutor`)
 
 The orchestrator brackets each `conductor.run` call with the substrate contract through a dedicated seam: the `TrialExecutor` Protocol (ADR-0015). The production concrete `ProvisioningTrialExecutor` composes a `RuntimeBackend`, a `Conductor`, and a `StructuredLogger`, and owns exactly this shape:

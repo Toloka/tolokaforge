@@ -217,7 +217,9 @@ def load_task_yaml(
     # No-op if the manifest is absent or the path is already absolute.
     _resolve_environment_manifest_paths(task_data, task_root, task_path)
 
-    return construct_config(TaskConfig, task_data, source=task_path), task_root
+    task = construct_config(TaskConfig, task_data, source=task_path)
+    task._source_dir = task_root
+    return task, task_root
 
 
 def _resolve_environment_manifest_paths(task_data: dict, task_root: Path, task_path: Path) -> None:

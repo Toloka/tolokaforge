@@ -35,6 +35,7 @@ _lazy: dict[str, str] = {
     "attribute_failure": "tolokaforge.core.failure_attribution",
     "summarize_failure_attributions": "tolokaforge.core.failure_attribution",
     "create_run_queue": "tolokaforge.core.run_queue",
+    "run_trial": "tolokaforge.core.run_trial",
 }
 
 
@@ -63,5 +64,6 @@ __all__ = [
     "attribute_failure",
     "summarize_failure_attributions",
     "create_run_queue",
+    "run_trial",
     "__version__",
 ]

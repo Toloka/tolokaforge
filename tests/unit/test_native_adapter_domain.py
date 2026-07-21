@@ -164,6 +164,75 @@ class TestBundleArtifacts:
 
 
 # ---------------------------------------------------------------------------
+# Pre-loaded single-task adapter bridge (run_trial seam)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def flat_pack_fixture(tmp_path: Path) -> Path:
+    """A flat-layout pack (no MCP server) whose task dir equals the task.yaml
+    parent, so ``to_task_description`` resolves its assets without spawning a
+    tool-schema subprocess. Returns the base dir the adapter globs from."""
+    task_dir = tmp_path / "tasks" / "flat"
+    task_dir.mkdir(parents=True)
+    (task_dir / "system_prompt.md").write_text("Be helpful.\n")
+    (task_dir / "initial_state.json").write_text('{"notes": []}')
+    write_yaml_file(
+        task_dir / "task.yaml",
+        {
+            "task_id": "flat",
+            "name": "flat",
+            "category": "tool_use",
+            "description": "flat",
+            "initial_state": {"json_db": "initial_state.json"},
+            "tools": {"agent": {"enabled": []}, "user": {"enabled": []}},
+            "grading": "grading.yaml",
+            "system_prompt": "system_prompt.md",
+        },
+    )
+    write_yaml_file(
+        task_dir / "grading.yaml",
+        {
+            "combine": {
+                "method": "weighted",
+                "weights": {"state_checks": 1.0},
+                "pass_threshold": 1.0,
+            },
+        },
+    )
+    return tmp_path
+
+
+class TestPreloadedTaskBridge:
+    def test_preloaded_adapter_resolves_assets_identically(self, flat_pack_fixture: Path) -> None:
+        # A pre-loaded, source-dir-stamped TaskConfig registered on a fresh
+        # adapter must resolve to the SAME TaskDescription + GradingConfig as a
+        # normally-discovered adapter over the same pack — proving the bridge
+        # reuses asset resolution rather than reimplementing it. ``generated_at``
+        # is a per-call timestamp, so it is excluded from the comparison.
+        discovered = NativeAdapter(
+            {"base_dir": str(flat_pack_fixture), "tasks_glob": "tasks/**/task.yaml"}
+        )
+        task = discovered.get_task("flat")
+        expected_td = discovered.to_task_description("flat")
+        expected_grading = discovered.get_grading_config("flat")
+
+        assert task.source_dir == flat_pack_fixture / "tasks" / "flat"
+
+        preloaded = NativeAdapter({"tasks_glob": "unused/**/task.yaml"})
+        preloaded.register_preloaded_task(task, task.source_dir)
+
+        assert preloaded.get_task("flat") is task
+        assert preloaded.get_task_dir("flat") == task.source_dir
+
+        actual_td = preloaded.to_task_description("flat")
+        assert actual_td.model_dump(exclude={"generated_at"}) == expected_td.model_dump(
+            exclude={"generated_at"}
+        )
+        assert preloaded.get_grading_config("flat") == expected_grading
+
+
+# ---------------------------------------------------------------------------
 # Flat-layout regression — domain support must not break the existing path.
 # ---------------------------------------------------------------------------
 
