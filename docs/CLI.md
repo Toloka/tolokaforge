@@ -443,9 +443,9 @@ When a budget cuts the run short (see [§ Cost, time, and sample limits](#cost-t
 
 The `→ Report:` URL is canonicalised via `Path.resolve().as_uri() + "/"`: always absolute, always trailing-slashed to mark a directory. Rich wraps it in OSC 8 hyperlink markup (`[link=URL]…[/link]`), so terminals that support OSC 8 render it clickable. Terminals without OSC 8 support show the URL as plain underlined-cyan text (the `link` theme token — see [§ THEME](#theme--semantic-token-palette)) and remain copyable.
 
-### `tolokaforge browse <run-id>`
+### `tolokaforge browse <run-id-or-path>`
 
-The `→ Browse:` line is a suggested follow-up command. `tolokaforge browse` is landed by #289; until then the string is copy-paste friendly text but not yet an installed subcommand.
+The `→ Browse:` line is the exact command to open the run's output directory in the OS default handler. Accepts either an absolute path to a run directory OR a bare run-id (resolved against `./results/` — override with `--results-root <path>` or the `TOLOKAFORGE_RESULTS_ROOT` env var). Uses `webbrowser.open` under a `file://` URL, so the OS routes to Finder / Explorer / xdg-open. Emits a `Opening file:///…` status line on stderr; stdout stays empty.
 
 ### Display-mode behaviour
 

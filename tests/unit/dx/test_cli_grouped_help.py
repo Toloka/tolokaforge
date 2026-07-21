@@ -119,6 +119,7 @@ class TestGroupedHelpLayout:
         runs_body = _section_body(result.stdout, "Runs:")
         assert _command_names_in(runs_body) == [
             "analyze",
+            "browse",
             "prepare",
             "run",
             "status",

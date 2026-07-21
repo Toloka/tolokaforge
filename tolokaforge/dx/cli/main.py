@@ -159,6 +159,7 @@ class _GroupedCommandsGroup(click.Group):
         "worker": "Runs",
         "status": "Runs",
         "analyze": "Runs",
+        "browse": "Runs",
         "validate": "Tasks",
         "docker": "Docker",
         "config": "Config",
@@ -1158,6 +1159,58 @@ def status(run_dir: str, config: str | None):
     console.print(f"[bold]Estimated cost:[/bold] ${total_cost:.4f}")
     console.print(f"[bold]Input tokens:[/bold] {total_input_tokens}")
     console.print(f"[bold]Output tokens:[/bold] {total_output_tokens}")
+
+
+@cli.command()
+@click.argument("run_id_or_path", metavar="RUN_ID_OR_PATH")
+@click.option(
+    "--results-root",
+    "results_root",
+    type=click.Path(exists=False, file_okay=False),
+    default=None,
+    help=(
+        "Root directory to search when RUN_ID_OR_PATH is a bare run-id. "
+        "Defaults to ./results (or the TOLOKAFORGE_RESULTS_ROOT env var)."
+    ),
+)
+def browse(run_id_or_path: str, results_root: str | None) -> None:
+    """Open a run's output directory in the OS default handler.
+
+    Accepts either an absolute path to a run directory OR a bare run-id.
+    A bare run-id is resolved against ``./results/`` (override with
+    ``--results-root`` or the ``TOLOKAFORGE_RESULTS_ROOT`` env var). Uses
+    ``webbrowser.open`` under a ``file://`` URL so the OS picks the right
+    handler (Finder on macOS, xdg-open on Linux, Explorer on Windows).
+
+    This is the command the ``→ Browse: tolokaforge browse <run-id>``
+    line in the end banner refers to. Stdout stays empty; the resolved
+    path is emitted on stderr as a status line.
+    """
+    import webbrowser
+
+    candidate = Path(run_id_or_path)
+    resolved: Path | None = None
+    if candidate.is_absolute() and candidate.is_dir():
+        resolved = candidate
+    else:
+        root_str = results_root or os.environ.get("TOLOKAFORGE_RESULTS_ROOT", "results")
+        root = Path(root_str)
+        candidate_under_root = root / run_id_or_path
+        if candidate_under_root.is_dir():
+            resolved = candidate_under_root.resolve()
+        elif candidate.is_dir():
+            resolved = candidate.resolve()
+
+    if resolved is None:
+        raise click.ClickException(
+            f"No run directory found for {run_id_or_path!r}. "
+            f"Pass an absolute path, or use --results-root to point at "
+            f"the parent directory holding the run-id."
+        )
+
+    url = resolved.as_uri() + ("/" if not resolved.as_uri().endswith("/") else "")
+    console.print(f"[muted]Opening[/muted] {url}")
+    webbrowser.open(url)
 
 
 if __name__ == "__main__":
