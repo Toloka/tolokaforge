@@ -1172,7 +1172,7 @@ def test_log_sink_buffer_is_bounded() -> None:
 
 
 def test_log_records_returns_buffered_records(_clean_root_handlers: object) -> None:
-    """``log_records`` gives the future Textual log pane a snapshot of the
+    """``log_records`` gives the per-trial log-tail widget a snapshot of the
     buffer without leaking the mutable deque."""
     fake_stream = io.StringIO()
     handler = logging.StreamHandler(fake_stream)
