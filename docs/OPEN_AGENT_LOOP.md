@@ -6,7 +6,7 @@ orchestrators — attach to a running trial, receive typed events, and submit
 typed interventions. It is off by default; sealed batch behaviour is unchanged.
 
 For the architectural rationale, see
-[ADR-0019 — Open Agent Loop: TrialSession Protocols and gate](architecture/adr/0019-open-agent-loop-sessions.md).
+[ADR-0019 — Open Agent Loop: TrialSession Protocols and gate](adr/0019-open-agent-loop-sessions.md).
 For a runnable example, see [`examples/open_agent_loop/`](../examples/open_agent_loop/).
 
 ---
@@ -457,9 +457,9 @@ sequenceDiagram
 ## See also
 
 - [`docs/INTERVENER.md`](INTERVENER.md) — canonical design guide for the intervener peer package: sinks, controllers, tools, decoupling contract.
-- [ADR-0019 — Open Agent Loop: TrialSession Protocols and gate](architecture/adr/0019-open-agent-loop-sessions.md) — the architectural record.
+- [ADR-0019 — Open Agent Loop: TrialSession Protocols and gate](adr/0019-open-agent-loop-sessions.md) — the architectural record.
 - [`examples/open_agent_loop/`](../examples/open_agent_loop/) — the runnable example.
 - [`tools/intervener/README.md`](../tools/intervener/README.md) — package README (installation, CLI, layout).
 - [`tolokaforge/session/`](../tolokaforge/session/) — the module itself. Every public class is `__all__`-exported and docstringed.
 - [`docs/CONFIG.md`](CONFIG.md#open-agent-loop) — where the config block lives in the wider run-config schema.
-- [`docs/architecture/README.md`](architecture/README.md) — the C4 view; the session block sits alongside the conductor.
+- [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) — the C4 view; the session block sits alongside the conductor.

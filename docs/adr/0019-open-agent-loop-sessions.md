@@ -240,11 +240,11 @@ flowchart LR
   `ConductorContext`. `tolokaforge/core/orchestrator.py` — the
   `oal_manager` dep + trial-completion trace-write hook.
   `tolokaforge/core/models.py` — `OpenAgentLoopConfig` on `RunConfig`.
-- **Documentation to update (done):** [`docs/OPEN_AGENT_LOOP.md`](../../OPEN_AGENT_LOOP.md)
-  as the user-facing guide, [`docs/CONFIG.md`](../../CONFIG.md) for the
-  config block, [`docs/REFERENCE.md`](../../REFERENCE.md) for the schema
-  reference, [`docs/architecture/README.md`](../README.md) building-block
-  view, [`docs/architecture/ROADMAP.md`](../ROADMAP.md) status update.
+- **Documentation to update (done):** [`docs/OPEN_AGENT_LOOP.md`](../OPEN_AGENT_LOOP.md)
+  as the user-facing guide, [`docs/CONFIG.md`](../CONFIG.md) for the
+  config block, [`docs/REFERENCE.md`](../REFERENCE.md) for the schema
+  reference, [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md) building-block
+  view, [`docs/ROADMAP.md`](../ROADMAP.md) status update.
 - **Tests to add (done):** unit coverage for every session file, the
   manager, the loop observer bridge, the intervention pump (including the
   Pause / Resume state machine and tool-approval mid-turn gate).
@@ -411,10 +411,10 @@ already there.
   [ADR-0008 (Conductor)](0008-conductor-protocol.md),
   [ADR-0014 (TrialGrader)](0014-trial-grader-protocol.md),
   [ADR-0015 (TrialExecutor)](0015-trial-executor-protocol.md).
-- Related code: [`tolokaforge/session/`](../../../tolokaforge/session/),
-  [`tolokaforge/core/loop.py`](../../../tolokaforge/core/loop.py),
-  [`tolokaforge/core/conductor.py`](../../../tolokaforge/core/conductor.py),
-  [`tolokaforge/core/orchestrator.py`](../../../tolokaforge/core/orchestrator.py).
-- User-facing doc: [`docs/OPEN_AGENT_LOOP.md`](../../OPEN_AGENT_LOOP.md).
-- Example: [`examples/open_agent_loop/`](../../../examples/open_agent_loop/).
-- Reference participants: [`tools/intervener/`](../../../tools/intervener/).
+- Related code: [`tolokaforge/session/`](../../tolokaforge/session/),
+  [`tolokaforge/core/loop.py`](../../tolokaforge/core/loop.py),
+  [`tolokaforge/core/conductor.py`](../../tolokaforge/core/conductor.py),
+  [`tolokaforge/core/orchestrator.py`](../../tolokaforge/core/orchestrator.py).
+- User-facing doc: [`docs/OPEN_AGENT_LOOP.md`](../OPEN_AGENT_LOOP.md).
+- Example: [`examples/open_agent_loop/`](../../examples/open_agent_loop/).
+- Reference participants: [`tools/intervener/`](../../tools/intervener/).
