@@ -1,0 +1,41 @@
+# Multi-service `postgres` example — `Enterprise Support Triage` task.
+#
+# Third example in the multi-service series. Exercises Case B in ADR-0018
+# (shared runtime + task-declared compose stack), but unlike the sibling
+# `multi_service` (nginx + static JSON) and `multi_service_advanced`
+# (two nginx-served fixtures) examples this one ships a genuine
+# three-tier stack:
+#
+#   agent → PostgREST (app-service) → real postgres:16 (app-db)
+#
+# PostgREST auto-generates REST endpoints from the postgres schema, so
+# the task pack ships no application code — only the SQL that defines
+# the schema and seeds the data.
+#
+# Requirements:
+#   - Docker daemon running.
+#   - OPENROUTER_API_KEY in .env (default).
+
+models:
+  agent:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.0
+    max_tokens: 4096
+  user:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.2
+
+orchestrator:
+  workers: 1
+  repeats: 1
+  max_turns: 15
+  runtime: shared
+  queue_backend: sqlite
+
+evaluation:
+  projects:
+    - "examples/native/multi_service_postgres/dataset"
+  tasks_glob: "tasks/multi_service/support_triage_01/task.yaml"
+  output_dir: "results/multi_service_postgres_example"

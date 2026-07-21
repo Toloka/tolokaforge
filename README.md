@@ -27,6 +27,16 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 uv sync
 ```
 
+### GitHub Codespaces
+
+Open the repo in a Codespace (**Code → Codespaces → Create codespace**) for a
+ready-to-run environment. The container image ships a pinned `uv`, `git-lfs`,
+Node, the `gh` CLI, and Playwright's OS dependencies. On create and attach it
+runs `uv sync`, installs Playwright's Chromium, pulls Git LFS objects, and
+installs the pre-commit hooks. To run evaluations, supply a provider key as a
+[Codespaces secret](https://docs.github.com/en/codespaces/managing-your-codespaces/managing-your-account-specific-secrets-for-github-codespaces)
+or in `.env` — `tolokaforge run` reads it from the environment.
+
 See [Python Package Guide](docs/PYTHON_PACKAGE.md) for all extras and programmatic API usage.
 
 ## Quick Start
@@ -36,7 +46,7 @@ See [Python Package Guide](docs/PYTHON_PACKAGE.md) for all extras and programmat
 cp .env.example .env
 
 # 2. Run one of the included examples
-uv run tolokaforge run --config examples/native/coding/run_config.yaml
+uv run tolokaforge run --config examples/native/coding/run_configs/dev.yaml
 
 # 3. Check results
 uv run tolokaforge status --run-dir results/coding_example
@@ -48,7 +58,7 @@ That's it. Docker services for browser / mobile / RAG tasks start automatically 
 
 ### What is a run config?
 
-A run config (e.g. `examples/native/coding/run_config.yaml`) is a single YAML file
+A run config (e.g. `examples/native/coding/run_configs/dev.yaml`) is a single YAML file
 that fully specifies an evaluation. The harness reads it and runs the benchmark:
 
 ```yaml
@@ -71,7 +81,7 @@ evaluation:                   # what to evaluate
 To write your own benchmark, copy a working example as a starting point:
 
 ```bash
-cp examples/native/coding/run_config.yaml my_run.yaml
+cp examples/native/coding/run_configs/dev.yaml my_run.yaml
 $EDITOR my_run.yaml         # change model, tasks_glob, output_dir
 uv run tolokaforge run --config my_run.yaml
 ```
@@ -113,7 +123,7 @@ silent grading bug.
 
 Read [docs/isolated_trials.md](docs/isolated_trials.md) for
 a walkthrough (when to use each mode, how to opt in, cost tradeoffs), or
-[docs/architecture/RUNTIME_BACKENDS.md](docs/architecture/RUNTIME_BACKENDS.md)
+[docs/RUNTIME_BACKENDS.md](docs/RUNTIME_BACKENDS.md)
 for the full lifecycle deep-dive.
 
 ## Multi-container tasks
@@ -142,9 +152,11 @@ smallest working demonstration (runner + db-service + an nginx serving a
 product catalog); its two siblings scale up to a multi-endpoint join and a
 full PostgREST + postgres three-tier stack.
 
-Read [docs/multi_container_tasks.md](docs/multi_container_tasks.md)
-for a walkthrough, or [ADR-0018](docs/architecture/adr/0018-multi-container-under-shared-runtime.md)
-for the case-matrix that decides which mode fits your task.
+**Start with the [Multi-Container Guide](docs/MULTI_CONTAINER_GUIDE.md)** — how
+the multi-container runtime works, how to run the six example packs, how to
+author your own stack, and how substrate grading works. For the case-matrix that
+decides which mode fits your task, see
+[ADR-0018](docs/adr/0018-multi-container-under-shared-runtime.md).
 
 ## Project Structure
 
@@ -174,16 +186,17 @@ examples/             # Reference task layouts with runnable run_config.yaml
 | Topic | Link |
 | --- | --- |
 | Getting started | [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) |
+| Architecture overview | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | Task authoring | [docs/TASKS.md](docs/TASKS.md) |
 | Grading system | [docs/GRADING.md](docs/GRADING.md) |
 | Tool reference | [docs/TOOLS.md](docs/TOOLS.md) |
 | Browser/mobile tools | [docs/BROWSER_TOOLS.md](docs/BROWSER_TOOLS.md) |
 | Runner & distributed execution | [docs/RUNNER.md](docs/RUNNER.md) |
-| Runtime backends (shared vs per-trial) | [docs/architecture/RUNTIME_BACKENDS.md](docs/architecture/RUNTIME_BACKENDS.md) |
-| Projects — top-level abstraction | [docs/architecture/PROJECTS.md](docs/architecture/PROJECTS.md) |
-| Reset recipes (seed-backed per-trial reset) | [docs/architecture/RESET_RECIPES.md](docs/architecture/RESET_RECIPES.md) |
+| Runtime backends (shared vs per-trial) | [docs/RUNTIME_BACKENDS.md](docs/RUNTIME_BACKENDS.md) |
+| Projects — top-level abstraction | [docs/PROJECTS.md](docs/PROJECTS.md) |
+| Reset recipes (seed-backed per-trial reset) | [docs/RESET_RECIPES.md](docs/RESET_RECIPES.md) |
 | Isolated trials guide | [docs/isolated_trials.md](docs/isolated_trials.md) |
-| Multi-container task guide | [docs/multi_container_tasks.md](docs/multi_container_tasks.md) |
+| Multi-container task guide | [docs/MULTI_CONTAINER_GUIDE.md](docs/MULTI_CONTAINER_GUIDE.md) |
 | Adapter architecture | [docs/ADAPTER_ARCHITECTURE.md](docs/ADAPTER_ARCHITECTURE.md) |
 | Analytics & failure attribution | [docs/ANALYTICS.md](docs/ANALYTICS.md) |
 | Python package API | [docs/PYTHON_PACKAGE.md](docs/PYTHON_PACKAGE.md) |
@@ -208,7 +221,7 @@ services (db-service, mock-web, RAG on demand):
 | [`examples/terminal_bench/`](examples/terminal_bench/) | Docker-compose stacks with `terminal_bench` adapter |
 
 Multi-container tasks — the task ships its own compose file declaring
-additional services (see [multi_container_tasks.md](docs/multi_container_tasks.md)):
+additional services (see [MULTI_CONTAINER_GUIDE.md](docs/MULTI_CONTAINER_GUIDE.md)):
 
 | Example | Description |
 | --- | --- |
@@ -217,7 +230,7 @@ additional services (see [multi_container_tasks.md](docs/multi_container_tasks.m
 | [`examples/native/multi_service_postgres/`](examples/native/multi_service_postgres/) | Realistic three-tier stack — PostgREST + postgres, no application code in the task pack |
 | [`examples/native/multi_service_postgres_reset/`](examples/native/multi_service_postgres_reset/) | Project layer — per-trial postgres reset via a named `sql_dump` seed |
 | [`examples/native/multi_service_slow_start/`](examples/native/multi_service_slow_start/) | Cross-service startup-order stress — slow-start postgres + `depends_on: service_healthy` |
-| [`examples/native/example-microservices-pack/`](examples/native/example-microservices-pack/) | Reference project for the full Project schema (see [`docs/architecture/PROJECTS.md`](docs/architecture/PROJECTS.md)) |
+| [`examples/native/example-microservices-pack/`](examples/native/example-microservices-pack/) | Reference project for the full Project schema (see [`docs/PROJECTS.md`](docs/PROJECTS.md)) |
 
 ## Testing
 

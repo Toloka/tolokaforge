@@ -1,0 +1,26 @@
+# Project spec for the coding example.
+#
+# Two public coding tasks the agent patches with `bash` + file tools. No
+# Docker substrate — the agent works against files copied into its
+# workspace — so `default_environment` is omitted. See docs/PROJECTS.md
+# for the full Project model.
+
+name: "coding"
+version: 1
+description: >
+  Coding evaluation: patch a subtle bug and harden a parser, each with a
+  written engineering handoff. Two tasks share a base user actor and turn
+  budget; per-task deltas carry the fixtures, guidance, and backstory.
+
+tasks:
+  discovery:
+    glob: "dataset/tasks/**/task.yaml"
+
+# ── Task defaults — base for every task ─────────────────────────
+task_defaults:
+  adapter_type: "native"
+  max_turns: 10
+  actors:
+    user:
+      mode: "llm"
+      persona: "cooperative"

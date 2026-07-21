@@ -51,6 +51,7 @@ from tolokaforge.core.models import (
 )
 from tolokaforge.core.output.aggregates import FileAggregateWriter, RunAggregateWriter
 from tolokaforge.core.output.artifacts import FileArtifactWriter, TrialArtifactWriter
+from tolokaforge.core.output.service_log_rollup import collect_service_log_captures
 from tolokaforge.core.rate_limiter import GlobalRateLimiter
 from tolokaforge.core.resume import RunStateManager
 from tolokaforge.core.run_display_events import (
@@ -295,8 +296,9 @@ class Orchestrator:
         # Enclosing project (loaded from ``project.yaml``). Adapter
         # instantiation reads ``project.task_defaults`` from here so every
         # task inherits the project-level defaults declared alongside
-        # the pack. ``None`` for callers without a project (e.g. old-
-        # shape packs where the CLI synthesises a default upstream).
+        # the pack. ``None`` only for programmatic callers that construct
+        # the orchestrator without a project; the CLI always resolves an
+        # enclosing ``project.yaml``.
         self.project = project
         self.tasks: list[TaskConfig] = []
         self.results: list[Trajectory] = []
@@ -858,6 +860,7 @@ class Orchestrator:
                 env_manifest=env_manifest,
                 run_id=run_id,
                 seeds=seeds,
+                log_capture=log_capture,
             )
         return SharedStackRuntimeBackend(
             runner_address=runner_address,
@@ -940,7 +943,7 @@ class Orchestrator:
         self,
         runtime_backend: RuntimeBackend,
         conductor: Conductor,
-        log_capture: LogCaptureConfig | None = None,
+        output_dir: Path,
     ) -> TrialExecutor:
         """Compose the per-run :class:`TrialExecutor` (ADR-0015).
 
@@ -951,9 +954,8 @@ class Orchestrator:
         ``conductor.run``; the bracket runs on the worker thread so
         provisioning parallelism equals worker count.
 
-        ``log_capture`` is the same instance the runtime backend was built
-        with, threaded so the executor can amend a failed trial's
-        ``metrics.yaml`` with the captured per-service byte counts.
+        ``output_dir`` is the run's output root, threaded so the executor can
+        amend a trial's ``metrics.yaml`` with host-side per-trial values.
         """
         from tolokaforge.core.trial_executor import ProvisioningTrialExecutor
 
@@ -961,7 +963,8 @@ class Orchestrator:
             runtime_backend=runtime_backend,
             conductor=conductor,
             logger=self.logger,
-            log_capture=log_capture,
+            output_dir=output_dir,
+            artifact_writer=self._artifact_writer,
             events=self._events,
         )
 
@@ -1517,7 +1520,7 @@ class Orchestrator:
             request_limiter=request_limiter,
         )
         trial_executor = self._build_trial_executor(
-            runtime_backend, conductor, log_capture=log_capture
+            runtime_backend, conductor, output_dir=output_dir
         )
 
         executor_healthy = runtime_backend.health_check()
@@ -1599,6 +1602,8 @@ class Orchestrator:
                     task_id=lease.task_id,
                     trial_index=lease.trial_index,
                     total_index=self._total_index_by_key.get((lease.task_id, lease.trial_index), 0),
+                    agent_model=f"{agent_config.provider}/{agent_config.name}",
+                    user_model=f"{user_config.provider}/{user_config.name}",
                 )
 
                 try:
@@ -1916,7 +1921,7 @@ class Orchestrator:
             request_limiter=request_limiter,
         )
         trial_executor = self._build_trial_executor(
-            runtime_backend, conductor, log_capture=log_capture
+            runtime_backend, conductor, output_dir=output_dir
         )
 
         task_by_id = {task.task_id: task for task in self.tasks}
@@ -2171,6 +2176,9 @@ class Orchestrator:
             )
 
         aggregate["schema_version"] = 1
+        aggregate["captured_service_logs"] = collect_service_log_captures(output_dir).model_dump(
+            by_alias=True, mode="json"
+        )
 
         # Deterministic failure attribution report
         failure_attributions = [

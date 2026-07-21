@@ -298,6 +298,7 @@ class TestHTTPRequestTool:
         assert func["name"] == "http_request"
         params = func["parameters"]
         assert "method" in params["properties"]
+        assert "PATCH" in params["properties"]["method"]["enum"]
         assert "url" in params["properties"]
         assert "headers" in params["properties"]
         assert "json" in params["properties"]

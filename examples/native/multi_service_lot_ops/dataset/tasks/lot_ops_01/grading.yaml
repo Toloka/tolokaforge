@@ -1,0 +1,75 @@
+# Three-way weighted grading for lot_ops_01.
+#
+#   state_checks.db_probes (0.5) — the substrate oracle. Reads the postgres
+#     `corrective_actions` table directly through the read-only `grader` role,
+#     NOT the agent's file or the API it just wrote to.
+#   transcript_rules      (0.2) — the agent both read (GET) and mutated (POST)
+#     over http_request, within the turn budget.
+#   llm_judge             (0.3) — the operator-facing completion report reads
+#     well and states the right lot and reason.
+combine:
+  method: weighted
+  weights:
+    state_checks: 0.5
+    transcript_rules: 0.2
+    llm_judge: 0.3
+  pass_threshold: 0.5
+
+state_checks:
+  db_probes:
+    - name: contamination_ca_opened
+      dsn: "postgresql://grader:grader_pw@app-db:5432/mfg"
+      query: "SELECT reason_code, status FROM corrective_actions WHERE lot_id = 7"
+      expect:
+        - path: "$.rows[0].reason_code"
+          equals: "CAPA-01"
+          description: "corrective action uses the contamination reason code"
+        - path: "$.rows[0].status"
+          equals: "open"
+          description: "the action is open"
+        - path: "$.row_count"
+          equals: 1
+          description: "exactly one corrective action exists for lot 7"
+      description: "an open contamination corrective action exists for lot 7 in the substrate"
+
+transcript_rules:
+  max_turns: 10
+  required_actions:
+    - action_id: "read_over_http"
+      requestor: assistant
+      name: http_request
+      arguments: {method: "GET"}
+      compare_args: ["method"]
+    - action_id: "mutate_over_http"
+      requestor: assistant
+      name: http_request
+      arguments: {method: "POST"}
+      compare_args: ["method"]
+
+llm_judge:
+  rubric:
+    reference: |
+      The operator reported a contamination hit on lot LOT-1007 (lot_id 7) and
+      asked for a corrective action to be opened and a short completion report
+      written under submissions/. A correct report names the lot, states that a
+      corrective action was opened for a contamination issue, and reads as a
+      note an operator could hand to a shift lead.
+    criteria:
+      - id: names_lot
+        description: >
+          The report identifies the affected lot (LOT-1007 or lot 7).
+        kind: binary
+        required: true
+        weight: 1.0
+      - id: states_reason
+        description: >
+          The report states the corrective action was opened for a contamination
+          issue (the reason it was raised), not a generic or unrelated cause.
+        kind: graded
+        weight: 1.0
+      - id: operator_facing
+        description: >
+          The report reads as a concise, clear operator-facing completion note
+          rather than raw API output or a debug dump.
+        kind: graded
+        weight: 0.5

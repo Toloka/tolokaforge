@@ -11,7 +11,7 @@ things beyond the basic Case B demonstration:
    Haiku 4.5 (smaller, cheaper) while the user simulator stays on Sonnet 4.6.
    Useful for comparing multi-service handling across model classes.
 
-Case B in [ADR-0018](../../../docs/architecture/adr/0018-multi-container-under-shared-runtime.md).
+Case B in [ADR-0018](../../../docs/adr/0018-multi-container-under-shared-runtime.md).
 
 ## What this example demonstrates
 
@@ -35,14 +35,15 @@ uv run tolokaforge validate --tasks "examples/native/multi_service_advanced/data
 ## Run
 
 ```bash
-scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_advanced/run_config.yaml
+scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_advanced/run_configs/dev.yaml
 ```
 
 ## Layout
 
 ```
 examples/native/multi_service_advanced/
-├── run_config.yaml                # haiku-4.5 agent, sonnet-4.6 user
+├── project.yaml                   # identity + task discovery + task_defaults
+├── run_configs/dev.yaml           # haiku-4.5 agent, sonnet-4.6 user
 ├── README.md                      # this file
 └── dataset/tasks/multi_service/
     └── orders_customers_join_01/
@@ -65,4 +66,4 @@ examples/native/multi_service_advanced/
 
 - [`../multi_service/README.md`](../multi_service/README.md) — the basic
   Case B example (single task-specific service, Sonnet 4.6 agent)
-- [ADR-0018](../../../docs/architecture/adr/0018-multi-container-under-shared-runtime.md) — case matrix + sequence diagrams
+- [ADR-0018](../../../docs/adr/0018-multi-container-under-shared-runtime.md) — case matrix + sequence diagrams

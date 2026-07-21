@@ -1,5 +1,12 @@
 {
-  "actors": null,
+  "actors": {
+    "user": {
+      "backstory": "You are customer Alex Torres (C-101) checking that the assistant can correctly use the shop tools to place your order and process payment. Confirm when the assistant tells you the order is placed and paid, then end the conversation with ###STOP###.\n",
+      "mode": "llm",
+      "persona": "cooperative",
+      "scripted_flow": null
+    }
+  },
   "adapter_settings": null,
   "adapter_type": "native",
   "category": "tool_use",
@@ -47,11 +54,5 @@
     "user": {
       "enabled": []
     }
-  },
-  "user_simulator": {
-    "backstory": "You are customer Alex Torres (C-101) checking that the assistant can correctly use the shop tools to place your order and process payment. Confirm when the assistant tells you the order is placed and paid, then end the conversation with ###STOP###.\n",
-    "mode": "llm",
-    "persona": "cooperative",
-    "scripted_flow": null
   }
 }

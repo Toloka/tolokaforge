@@ -1,21 +1,23 @@
 """Lock the trial-body log-capture contract on ``ProvisioningTrialExecutor``.
 
 After ``conductor.run`` returns and before teardown, the executor calls
-``runtime_backend.capture_service_logs(handle, failed=...)`` where ``failed``
-is true only for an execution failure (``ERROR`` / ``TIMEOUT``) — a clean run
-that merely failed grading is not a capture trigger. When the backend returns
-a non-empty byte map the executor emits the ``trial.service_logs_captured``
+``runtime_backend.capture_service_logs(handle, capture_worthy=...)`` where
+``capture_worthy`` is true for an execution failure (``ERROR`` / ``TIMEOUT``)
+or a completed-but-red grade (``COMPLETED`` with ``binary_pass is False``). A
+completed trial that passes is not capture-worthy. When the backend returns a
+non-empty byte map the executor emits the ``trial.service_logs_captured``
 summary line and amends the trial's ``metrics.yaml`` with a top-level
 ``captured_service_logs`` mapping.
 
 No Docker: an :class:`InMemoryRuntimeBackend` subclass returns a stub byte map
-(gated on the ``failed`` flag, writing no ``.log`` files) and an
-:class:`InMemoryConductor` drives the trajectory status. The real per-service
-``.log`` capture is locked by the Docker integration test.
+(gated on the ``capture_worthy`` flag, writing no ``.log`` files) and an
+:class:`InMemoryConductor` drives the trajectory status and grade. The real
+per-service ``.log`` capture is locked by the Docker integration test.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -23,10 +25,11 @@ import pytest
 import yaml
 
 from tests.canonical._factories import make_task_config, make_trial_spec
-from tolokaforge.core.compose_materialisation import LogCaptureConfig
+from tolokaforge.core import trial_executor
 from tolokaforge.core.conductor import InMemoryConductor
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import Grade, GradeComponents, Metrics, Trajectory, TrialStatus
+from tolokaforge.core.output.artifacts import InMemoryArtifactWriter
 from tolokaforge.core.runtime import EnvHandle, InMemoryRuntimeBackend
 from tolokaforge.core.trial_executor import ProvisioningTrialExecutor
 
@@ -35,25 +38,41 @@ pytestmark = pytest.mark.canonical
 _BYTE_MAP = {"db": 128, "runner": 64}
 
 
+def _monotonic_sequence(ticks: list[float]) -> Callable[[], float]:
+    it = iter(ticks)
+    return lambda: next(it)
+
+
 class _StubCaptureBackend(InMemoryRuntimeBackend):
     """In-memory backend whose ``capture_service_logs`` returns a stub byte
-    map, gated exactly like the real backend (``failed`` or on-success), and
-    writes no ``.log`` files. Still records the ``(trial_id, failed)`` call."""
+    map, gated exactly like the real backend (``capture_worthy`` or
+    on-success), and writes no ``.log`` files. Still records the
+    ``(trial_id, capture_worthy)`` call."""
 
     def __init__(self, *, on_success: bool = False) -> None:
         super().__init__()
         self._on_success = on_success
 
-    def capture_service_logs(self, handle: EnvHandle, *, failed: bool) -> dict[str, int]:
-        self.call_log.capture_service_logs_calls.append((handle.trial_id, failed))
-        if failed or self._on_success:
+    def capture_service_logs(self, handle: EnvHandle, *, capture_worthy: bool) -> dict[str, int]:
+        self.call_log.capture_service_logs_calls.append((handle.trial_id, capture_worthy))
+        if capture_worthy or self._on_success:
             return dict(_BYTE_MAP)
         return {}
 
 
-def _factory_for(status: TrialStatus, *, binary_pass: bool) -> object:
+def _factory_for(status: TrialStatus, *, binary_pass: bool | None) -> object:
     def _factory(task_id: str, trial_idx: int) -> Trajectory:
         now = datetime.now(UTC)
+        grade = (
+            None
+            if binary_pass is None
+            else Grade(
+                binary_pass=binary_pass,
+                score=1.0 if binary_pass else 0.0,
+                components=GradeComponents(),
+                reasons="synthetic",
+            )
+        )
         return Trajectory(
             task_id=task_id,
             trial_index=trial_idx,
@@ -62,12 +81,7 @@ def _factory_for(status: TrialStatus, *, binary_pass: bool) -> object:
             status=status,
             messages=[],
             metrics=Metrics(),
-            grade=Grade(
-                binary_pass=binary_pass,
-                score=1.0 if binary_pass else 0.0,
-                components=GradeComponents(),
-                reasons="synthetic",
-            ),
+            grade=grade,
         )
 
     return _factory
@@ -87,7 +101,8 @@ def _make_executor(
         runtime_backend=backend,
         conductor=InMemoryConductor(trajectory_factory=factory),
         logger=StructuredLogger("test-executor-log-capture"),
-        log_capture=LogCaptureConfig(output_root=output_root, tail=200, on_success=False),
+        output_dir=output_root,
+        artifact_writer=InMemoryArtifactWriter(),
     )
 
 
@@ -127,8 +142,8 @@ class TestErrorTrialCapture:
         assert len(_summary_lines(executor.logger)) == 1
 
 
-class TestGradedFailIsNotCapture:
-    def test_completed_binary_fail_does_not_capture(self, tmp_path: Path) -> None:
+class TestGradedFailIsCapture:
+    def test_completed_binary_fail_captures_and_amends_metrics(self, tmp_path: Path) -> None:
         backend = _StubCaptureBackend()
         factory = _factory_for(TrialStatus.COMPLETED, binary_pass=False)
         executor = _make_executor(backend, factory, tmp_path)
@@ -136,9 +151,101 @@ class TestGradedFailIsNotCapture:
 
         executor.execute(make_trial_spec(trial_id="task-1:0"), make_task_config(task_id="task-1"))
 
-        # Capture is still consulted, but with failed=False the map is empty.
+        assert backend.call_log.capture_service_logs_calls == [("task-1:0", True)]
+
+        summary = _summary_lines(executor.logger)
+        assert len(summary) == 1
+        assert summary[0]["context"]["services"] == _BYTE_MAP
+
+        metrics = yaml.safe_load(metrics_path.read_text())
+        assert metrics["captured_service_logs"] == _BYTE_MAP
+        # Pre-existing keys survive the read-add-write amendment.
+        assert metrics["cost_usd"] == 0.5
+
+
+class TestPassingTrialIsNotCapture:
+    def test_completed_binary_pass_does_not_capture(self, tmp_path: Path) -> None:
+        backend = _StubCaptureBackend()
+        factory = _factory_for(TrialStatus.COMPLETED, binary_pass=True)
+        executor = _make_executor(backend, factory, tmp_path)
+        metrics_path = _write_metrics(tmp_path, "task-1", 0)
+
+        executor.execute(make_trial_spec(trial_id="task-1:0"), make_task_config(task_id="task-1"))
+
+        # Capture is still consulted, but with capture_worthy=False the map is empty.
         assert backend.call_log.capture_service_logs_calls == [("task-1:0", False)]
         assert _summary_lines(executor.logger) == []
 
         metrics = yaml.safe_load(metrics_path.read_text())
         assert "captured_service_logs" not in metrics
+
+
+class TestUngradedCompletedIsNotCapture:
+    def test_completed_without_grade_does_not_capture(self, tmp_path: Path) -> None:
+        backend = _StubCaptureBackend()
+        factory = _factory_for(TrialStatus.COMPLETED, binary_pass=None)
+        executor = _make_executor(backend, factory, tmp_path)
+        metrics_path = _write_metrics(tmp_path, "task-1", 0)
+
+        executor.execute(make_trial_spec(trial_id="task-1:0"), make_task_config(task_id="task-1"))
+
+        assert backend.call_log.capture_service_logs_calls == [("task-1:0", False)]
+        assert _summary_lines(executor.logger) == []
+
+        metrics = yaml.safe_load(metrics_path.read_text())
+        assert "captured_service_logs" not in metrics
+
+
+class TestProvisioningDuration:
+    def test_records_on_passing_trial(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.setattr(trial_executor.time, "monotonic", _monotonic_sequence([10.0, 11.5]))
+        backend = _StubCaptureBackend()
+        factory = _factory_for(TrialStatus.COMPLETED, binary_pass=True)
+        executor = _make_executor(backend, factory, tmp_path)
+        metrics_path = _write_metrics(tmp_path, "task-1", 0)
+
+        executor.execute(make_trial_spec(trial_id="task-1:0"), make_task_config(task_id="task-1"))
+
+        metrics = yaml.safe_load(metrics_path.read_text())
+        assert metrics["provisioning_duration_s"] == 1.5
+        assert isinstance(metrics["provisioning_duration_s"], float)
+        # Pre-existing keys survive; a passing trial is not capture-worthy.
+        assert metrics["cost_usd"] == 0.5
+        assert "captured_service_logs" not in metrics
+
+    def test_coexists_with_captured_service_logs_on_red_trial(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(trial_executor.time, "monotonic", _monotonic_sequence([100.0, 105.5]))
+        backend = _StubCaptureBackend()
+        factory = _factory_for(TrialStatus.ERROR, binary_pass=False)
+        executor = _make_executor(backend, factory, tmp_path)
+        metrics_path = _write_metrics(tmp_path, "task-1", 0)
+
+        executor.execute(make_trial_spec(trial_id="task-1:0"), make_task_config(task_id="task-1"))
+
+        metrics = yaml.safe_load(metrics_path.read_text())
+        assert metrics["provisioning_duration_s"] == 5.5
+        assert metrics["captured_service_logs"] == _BYTE_MAP
+        assert metrics["cost_usd"] == 0.5
+
+    def test_absent_metrics_file_writes_nothing(self, tmp_path: Path, monkeypatch) -> None:
+        """When no ``metrics.yaml`` exists under the executor's ``output_dir``,
+        the amendment is a silent no-op — the trial's own metrics file (written
+        elsewhere) is left untouched."""
+        monkeypatch.setattr(trial_executor.time, "monotonic", _monotonic_sequence([1.0, 2.0]))
+        backend = _StubCaptureBackend()
+        factory = _factory_for(TrialStatus.COMPLETED, binary_pass=True)
+        executor = ProvisioningTrialExecutor(
+            runtime_backend=backend,
+            conductor=InMemoryConductor(trajectory_factory=factory),
+            logger=StructuredLogger("test-executor-log-capture"),
+            output_dir=tmp_path / "run",
+            artifact_writer=InMemoryArtifactWriter(),
+        )
+        metrics_path = _write_metrics(tmp_path, "task-1", 0)
+
+        executor.execute(make_trial_spec(trial_id="task-1:0"), make_task_config(task_id="task-1"))
+
+        metrics = yaml.safe_load(metrics_path.read_text())
+        assert "provisioning_duration_s" not in metrics

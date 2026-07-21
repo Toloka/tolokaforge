@@ -136,6 +136,7 @@ class GradingEngine:
                         jsonpath_assertions=self.config.state_checks.jsonpaths,
                         expected_hash=expected_hash,
                         hash_weight=hash_weight,
+                        numeric_string_fields=self.config.state_checks.numeric_string_fields,
                     )
                 # Use tau-style grading if golden_actions are present and MCP context available
                 elif (
@@ -160,6 +161,7 @@ class GradingEngine:
                                 mcp_server_path=self.task_mcp_server,
                                 task_domain=self.task_domain,
                                 hash_weight=hash_weight,
+                                numeric_string_fields=self.config.state_checks.numeric_string_fields,
                             )
                         )
                 else:
@@ -169,6 +171,7 @@ class GradingEngine:
                         jsonpath_assertions=self.config.state_checks.jsonpaths,
                         expected_hash=None,
                         hash_weight=hash_weight,
+                        numeric_string_fields=self.config.state_checks.numeric_string_fields,
                     )
 
                 if state_reasons:

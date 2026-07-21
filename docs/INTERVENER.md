@@ -6,7 +6,7 @@ consumer of the Open Agent Loop gate.
 For the gate itself (event/intervention taxonomy, sealed vs open modes,
 config, trace format), see [`docs/OPEN_AGENT_LOOP.md`](OPEN_AGENT_LOOP.md).
 For the architectural decision record, see
-[ADR-0019](architecture/adr/0019-open-agent-loop-sessions.md).
+[ADR-0019](adr/0019-open-agent-loop-sessions.md).
 
 ---
 
@@ -420,7 +420,7 @@ for the full test patterns.
 ## See also
 
 - [`docs/OPEN_AGENT_LOOP.md`](OPEN_AGENT_LOOP.md) — the OAL gate itself: event/intervention taxonomy, modes, config, trace format.
-- [ADR-0019 — Open Agent Loop: TrialSession Protocols and gate](architecture/adr/0019-open-agent-loop-sessions.md) — the architectural record for the whole stack (main + two addenda covering the composed layer and the tools plug-in).
+- [ADR-0019 — Open Agent Loop: TrialSession Protocols and gate](adr/0019-open-agent-loop-sessions.md) — the architectural record for the whole stack (main + two addenda covering the composed layer and the tools plug-in).
 - [`examples/open_agent_loop/`](../examples/open_agent_loop/) — runnable copilot-attach example.
 - [`tools/intervener/README.md`](../tools/intervener/README.md) — package README (installation, `intervener-demo` CLI, layout).
 - [`tools/intervener/intervener/`](../tools/intervener/intervener/) — the code itself. Every public class is `__all__`-exported and docstringed.

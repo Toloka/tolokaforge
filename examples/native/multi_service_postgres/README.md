@@ -13,7 +13,7 @@ postgres schema and generates REST endpoints automatically. All the task
 authoring lives in one file: the SQL that defines the schema and seeds
 the data (`app-db/init.sql`).
 
-Case B in [ADR-0018](../../../docs/architecture/adr/0018-multi-container-under-shared-runtime.md).
+Case B in [ADR-0018](../../../docs/adr/0018-multi-container-under-shared-runtime.md).
 
 ## What this example demonstrates
 
@@ -53,7 +53,7 @@ uv run tolokaforge validate --tasks "examples/native/multi_service_postgres/data
 ## Run
 
 ```bash
-scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_postgres/run_config.yaml
+scripts/with_env.sh uv run tolokaforge run --config examples/native/multi_service_postgres/run_configs/dev.yaml
 ```
 
 First run is ~30-45s slower than the sibling examples — postgres has to
@@ -65,7 +65,8 @@ runs from scratch (compose volumes are removed at teardown).
 
 ```
 examples/native/multi_service_postgres/
-├── run_config.yaml                # sonnet-4-6 agent + user
+├── project.yaml                   # identity + task discovery + task_defaults
+├── run_configs/dev.yaml           # sonnet-4-6 agent + user
 ├── README.md                      # this file
 └── dataset/tasks/multi_service/
     └── support_triage_01/
@@ -103,4 +104,4 @@ examples/native/multi_service_postgres/
   B (nginx + static JSON)
 - [`../multi_service_advanced/README.md`](../multi_service_advanced/README.md) —
   multi-endpoint join over two nginx services
-- [ADR-0018](../../../docs/architecture/adr/0018-multi-container-under-shared-runtime.md) — case matrix + sequence diagrams
+- [ADR-0018](../../../docs/adr/0018-multi-container-under-shared-runtime.md) — case matrix + sequence diagrams

@@ -17,6 +17,7 @@ from typing import Any
 
 from jsonpath_ng.ext import parse
 
+from tolokaforge.core.hash import canonical_number
 from tolokaforge.runner.models import (
     StateDiff,
     TableDiff,
@@ -69,6 +70,20 @@ def compute_state_diff(trial_state: dict[str, Any], golden_state: dict[str, Any]
     return StateDiff(tables=tables_diff, summary=summary)
 
 
+def _make_hashable(value: Any) -> Any:
+    """Make a value hashable for comparison.
+
+    Scalars pass through :func:`canonical_number` so numerically-equal
+    representations (``"130.00"`` / ``"130.0"`` / ``130``) compare equal and a
+    pure decimal-formatting difference is not reported as a row/field change.
+    """
+    if isinstance(value, dict):
+        return tuple(sorted((k, _make_hashable(v)) for k, v in value.items()))
+    elif isinstance(value, list):
+        return tuple(_make_hashable(v) for v in value)
+    return canonical_number(value)
+
+
 def _compare_table_records(
     trial_records: list[dict[str, Any]], golden_records: list[dict[str, Any]]
 ) -> TableDiff:
@@ -93,14 +108,6 @@ def _compare_table_records(
     def record_to_tuple(record: dict[str, Any]) -> tuple:
         """Convert record to hashable tuple for comparison."""
         return tuple(sorted((k, _make_hashable(v)) for k, v in record.items()))
-
-    def _make_hashable(value: Any) -> Any:
-        """Make a value hashable for comparison."""
-        if isinstance(value, dict):
-            return tuple(sorted((k, _make_hashable(v)) for k, v in value.items()))
-        elif isinstance(value, list):
-            return tuple(_make_hashable(v) for v in value)
-        return value
 
     trial_tuples = {record_to_tuple(r): r for r in trial_records}
     golden_tuples = {record_to_tuple(r): r for r in golden_records}
@@ -160,16 +167,22 @@ def _records_might_match(record1: dict[str, Any], record2: dict[str, Any]) -> bo
     common_keys = set(record1.keys()) & set(record2.keys())
     id_fields = sorted(f for f in common_keys if f == "id" or f.endswith("_id"))
 
-    # Match on the first shared ID field (most specific)
+    # Match on the first shared ID field (most specific). Compare via the same
+    # canonical form as the record hashing, so numeric-TYPE ids pair across
+    # representations (123 == 123.0 == Decimal("123")). A numeric-looking STRING
+    # id ("123") is NOT equated with the number 123 here: string folding is the
+    # opt-in per-field tier, off on this reason-only diff path.
     for field in id_fields:
         if record1[field] is not None and record2[field] is not None:
-            return record1[field] == record2[field]
+            return _make_hashable(record1[field]) == _make_hashable(record2[field])
 
     # Fallback: check if they share at least 50% of fields with same values
     if not common_keys:
         return False
 
-    matching_values = sum(1 for f in common_keys if record1[f] == record2[f])
+    matching_values = sum(
+        1 for f in common_keys if _make_hashable(record1[f]) == _make_hashable(record2[f])
+    )
     return matching_values >= len(common_keys) * 0.5
 
 
@@ -181,7 +194,9 @@ def _get_field_diffs(expected: dict[str, Any], actual: dict[str, Any]) -> list[d
     for field in sorted(all_fields):
         exp_val = expected.get(field)
         act_val = actual.get(field)
-        if exp_val != act_val:
+        # Compare via canonical form so a numerically-equal value in a different
+        # decimal format ("130.00" vs "130.0") is not reported as a field diff.
+        if _make_hashable(exp_val) != _make_hashable(act_val):
             diffs.append({"field": field, "expected": exp_val, "actual": act_val})
 
     return diffs
@@ -662,6 +677,68 @@ def evaluate_jsonpath_state_checks(
     return score, reasons
 
 
+async def _fetch_probe_rows(dsn: str, query: str) -> list[dict[str, Any]]:
+    """Connect to ``dsn`` via asyncpg, run ``query``, return rows as dicts.
+
+    Isolated so unit tests inject rows without a live database; the asyncpg
+    import is deferred so importing this module never requires the driver.
+    """
+    import asyncpg
+
+    conn = await asyncpg.connect(dsn)
+    try:
+        records = await conn.fetch(query)
+    finally:
+        await conn.close()
+    return [dict(record) for record in records]
+
+
+async def evaluate_db_probes(probes: list[dict[str, Any]]) -> tuple[float, str]:
+    """Evaluate substrate SQL probes against a task-declared postgres.
+
+    For each probe, connect to its ``dsn``, run its read-only ``query``, shape
+    the result into ``{"rows": [...], "row_count": N}``, and apply its ``expect``
+    JSONPath assertions via ``evaluate_jsonpath_state_checks``.
+
+    Two-level aggregation: a probe passes iff *every* ``expect`` assertion passes
+    (its JSONPath score is 1.0); the component score is the fraction of passing
+    probes. A connection/query failure is a FAILED probe with an actionable
+    reason (fail loud — never a silent pass). Empty list → -1.0 sentinel,
+    matching the file/state evaluators.
+    """
+    if not probes:
+        return -1.0, ""
+
+    passed = 0
+    total = len(probes)
+    reasons_parts: list[str] = []
+
+    for probe in probes:
+        name = probe.get("name", "")
+        description = probe.get("description") or name
+        expect = probe.get("expect", []) or []
+
+        try:
+            rows = await _fetch_probe_rows(probe.get("dsn", ""), probe.get("query", ""))
+        except Exception as exc:
+            reasons_parts.append(
+                f"FAIL: probe {name!r} could not query postgres: "
+                f"{type(exc).__name__}: {exc} — {description}"
+            )
+            continue
+
+        state = {"rows": rows, "row_count": len(rows)}
+        probe_score, probe_reasons = evaluate_jsonpath_state_checks(expect, state)
+        if probe_score == 1.0:
+            passed += 1
+            reasons_parts.append(f"PASS: probe {name!r} — {probe_reasons}")
+        else:
+            reasons_parts.append(f"FAIL: probe {name!r} — {probe_reasons}")
+
+    score = passed / total
+    return score, "; ".join(reasons_parts)
+
+
 def evaluate_jsonpath_checks(
     checks: list[dict[str, Any]],
     state: dict[str, Any] | None = None,
@@ -765,6 +842,11 @@ def combine_grade_components(
         active_components["state_checks"] = hash_score
     elif jsonpath_score >= 0:
         active_components["state_checks"] = jsonpath_score
+    # db_probes is the sole state source for its tasks (mixing with hash/jsonpath
+    # in one task is out of scope), so it fills the state_checks slot directly.
+    db_probe_score = components.get("db_probe_score", -1.0)
+    if db_probe_score >= 0:
+        active_components["state_checks"] = db_probe_score
     if transcript_score >= 0:
         active_components["transcript_rules"] = transcript_score
 
@@ -878,6 +960,17 @@ def build_grade_reasons(
             reasons.append("JSONPath: all checks passed")
         else:
             reasons.append(f"JSONPath: score={jsonpath_score:.2f}")
+
+    # State checks reason — db probes
+    db_probe_score = components.get("db_probe_score", -1.0)
+    if db_probe_score >= 0:
+        db_probe_reasons = components.get("db_probe_reasons", "")
+        if db_probe_reasons:
+            reasons.append(f"DB probes: {db_probe_reasons}")
+        elif db_probe_score == 1.0:
+            reasons.append("DB probes: all probes passed")
+        else:
+            reasons.append(f"DB probes: score={db_probe_score:.2f}")
 
     # Transcript rules reason
     transcript_score = components.get("transcript_score", -1.0)

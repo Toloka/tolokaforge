@@ -63,6 +63,10 @@ _LOCAL_DOCKER_BASELINE: tuple[CapabilitySpec, ...] = (
         name="network_isolation:no_internet",
         description="Backend attaches task application services to an internal network with no public egress; the runner keeps egress for grading.",
     ),
+    CapabilitySpec(
+        name="network_isolation:limited_internet",
+        description="Backend routes task application services' egress through an injected default-deny forward proxy that forwards only to the manifest allowlist; the runner keeps direct egress for grading.",
+    ),
 )
 
 

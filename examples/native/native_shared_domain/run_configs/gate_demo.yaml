@@ -1,0 +1,41 @@
+# Gate-fire demo run config — runs ONLY the add_note_duplicate_check_gated
+# testcase, which demonstrates the rubric REQUIRED-criterion gate firing.
+#
+# The agent is deliberately a cheap/weaker model: the check-first policy is NOT
+# in the agent's system prompt and the user never asks for it, so the agent
+# reliably saves the note directly and misses the required `checked_duplicates_first`
+# criterion → gate_failed → binary_pass=false, even though the graded
+# `note_saved` / `clarity` criteria still score (see grade.yaml criterion_results).
+#
+# The read-only rubric `judge` is a run-level model (models.judge), separate
+# from the cheap agent under test — it must reliably terminate on agentic
+# grading (gpt-4o-mini loops and never submits; 4.1-mini terminates).
+#
+# Run with:
+#   scripts/with_env.sh uv run tolokaforge run --config examples/native/native_shared_domain/run_configs/gate_demo.yaml
+models:
+  agent:
+    provider: "openrouter"
+    name: "openai/gpt-4o-mini"
+    temperature: 0.0
+    max_tokens: 2048
+  user:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.2
+  judge:
+    provider: "openrouter"
+    name: "openai/gpt-4.1-mini"
+    temperature: 0.0
+
+orchestrator:
+  workers: 1
+  repeats: 1
+  max_turns: 8
+  queue_backend: sqlite
+
+evaluation:
+  projects:
+    - "examples/native/native_shared_domain/dataset"
+  tasks_glob: "**/testcases/add_note_duplicate_check_gated/task.yaml"
+  output_dir: "results/native_shared_domain_gate_demo"

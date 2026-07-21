@@ -5,17 +5,26 @@ conductor, and trial runner import the Protocol without dragging the
 terminal front-end + Rich dependency graph into engine-side code paths
 (worker container, gRPC runner, cloud-runtime trial-plane).
 
-The reference Rich-bound consumer is :class:`tolokaforge.dx.live_panel.LiveRunDisplay`;
-future front-ends (see ADR-0019) implement the same Protocol. The
-Protocol has a no-op default (:data:`_NULL_EVENTS`), so callers that
+The Protocol has a no-op default (:data:`_NULL_EVENTS`), so callers that
 never build a display can still thread ``events`` through without
-conditional branches.
+conditional branches. The 12 methods bracket the full trial lifecycle:
+run-level (``run_started`` / ``run_finished`` / ``phase_changed``),
+per-trial boundary events (``trial_started`` / ``trial_provisioned`` /
+``trial_progress`` / ``judgment_scored`` / ``trial_completed`` /
+``trial_failed``), and the in-flight LLM-call trio
+(``llm_call_started`` / ``llm_call_finished`` / ``llm_retry_scheduled``)
+that surfaces provider activity *during* a generation so a display can
+show progress while a slow attempt or an outer-retry backoff is in
+flight.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, TypedDict, runtime_checkable
+from typing import Literal, Protocol, TypedDict, runtime_checkable
+
+LLMCallRole = Literal["agent", "user", "judge", "grader"]
 
 
 class ServiceSnapshot(TypedDict):
@@ -82,12 +91,18 @@ class RunDisplayEvents(Protocol):
         task_id: str,
         trial_index: int,
         total_index: int,
+        agent_model: str | None = None,
+        user_model: str | None = None,
     ) -> None:
         """Fired when a worker leases a trial and enters provisioning.
 
         ``trial_index`` is the task-local trial number (0..repeats-1);
         ``total_index`` is the run-wide trial number (0..total_trials-1)
         so the display can render a global ``[N/M]`` prefix.
+        ``agent_model`` / ``user_model`` carry the ``provider/name``
+        identity of the two in-process LLM roles when the orchestrator
+        knows them, so the display can label per-role call events
+        without a lookup.
         """
 
     def trial_progress(
@@ -157,6 +172,85 @@ class RunDisplayEvents(Protocol):
         services widget already covers that path.
         """
 
+    def llm_call_started(
+        self,
+        *,
+        trial_id: str,
+        role: LLMCallRole,
+        provider: str,
+        model: str,
+        attempt: int,
+    ) -> None:
+        """Fired immediately before an in-process LLM attempt hits the wire.
+
+        ``attempt`` is the 1-indexed outer-retry attempt number of the
+        current ``LLMClient.generate`` call — attempt 1 for the initial
+        try, attempt >1 after an ``llm_retry_scheduled`` backoff.
+        Exactly one ``llm_call_finished`` follows each start for the
+        same ``(trial_id, role, provider, model, attempt)`` tuple.
+        """
+
+    def llm_call_finished(
+        self,
+        *,
+        trial_id: str,
+        role: LLMCallRole,
+        provider: str,
+        model: str,
+        attempt: int,
+        duration_s: float,
+        error: str | None,
+    ) -> None:
+        """Fired when an in-process LLM attempt returns or raises.
+
+        ``duration_s`` is monotonic wall-clock for the attempt (transport
+        timeouts, key rotation, and synthetic-envelope detection are all
+        inside the same attempt). ``error`` is ``None`` on success or
+        ``str(exc)`` when the attempt raised — a failed attempt that is
+        about to be retried surfaces here first, then via
+        ``llm_retry_scheduled``.
+        """
+
+    def llm_retry_scheduled(
+        self,
+        *,
+        trial_id: str,
+        role: LLMCallRole,
+        provider: str,
+        model: str,
+        attempt: int,
+        next_attempt_in_s: float,
+        reason: str,
+    ) -> None:
+        """Fired inside the outer-retry ``before_sleep`` hook.
+
+        ``attempt`` is the attempt that just failed; the next attempt
+        starts after ``next_attempt_in_s`` seconds of tenacity backoff.
+        ``reason`` is ``str(exc)`` for the exception that triggered the
+        retry, so the display can show why a call is stalling. Never
+        fires after the final attempt — a terminal failure surfaces via
+        ``llm_call_finished`` with ``error`` set, followed by whatever
+        the caller does with the reraised exception.
+        """
+
+
+@dataclass(frozen=True)
+class LLMCallObservation:
+    """Per-call context threaded from a trial into ``LLMClient.generate``.
+
+    Bundles the live sink reference with the identity of the call site
+    (``trial_id`` + ``role``) so the client can fire the LLM-call trio
+    without knowing anything about how the sink is routed. Lives with
+    the seam because it references both :class:`RunDisplayEvents` and
+    :data:`LLMCallRole`; the LLM client, agent loop, and user simulator
+    already import from this module, preserving a one-way dependency
+    graph.
+    """
+
+    events: RunDisplayEvents
+    trial_id: str
+    role: LLMCallRole
+
 
 class _NullRunDisplayEvents:
     """No-op :class:`RunDisplayEvents`.
@@ -175,6 +269,9 @@ class _NullRunDisplayEvents:
     def run_finished(self, **_: object) -> None: ...
     def phase_changed(self, **_: object) -> None: ...
     def trial_provisioned(self, **_: object) -> None: ...
+    def llm_call_started(self, **_: object) -> None: ...
+    def llm_call_finished(self, **_: object) -> None: ...
+    def llm_retry_scheduled(self, **_: object) -> None: ...
 
 
 _NULL_EVENTS: RunDisplayEvents = _NullRunDisplayEvents()
@@ -182,6 +279,8 @@ _NULL_EVENTS: RunDisplayEvents = _NullRunDisplayEvents()
 
 __all__ = [
     "ContainerSnapshot",
+    "LLMCallObservation",
+    "LLMCallRole",
     "RunDisplayEvents",
     "ServiceSnapshot",
     "_NULL_EVENTS",

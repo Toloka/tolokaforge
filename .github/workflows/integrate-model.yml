@@ -138,7 +138,7 @@ jobs:
           version: "0.9.5"
           enable-cache: true
           cache-dependency-glob: "uv.lock"
-      - run: uv python install 3.12
+      - run: uv python install "$(cat .python-version)"
       - run: uv sync --dev --locked
 
       - name: Parse candidate model from PR title

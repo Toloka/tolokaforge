@@ -11,6 +11,7 @@
   "llm_judge": null,
   "state_checks": {
     "db_hash_check": false,
+    "db_probes": [],
     "env_assertions": [],
     "hash": {
       "enabled": true,
@@ -78,7 +79,8 @@
         "equals": 13,
         "path": "$.db.products[1].stock"
       }
-    ]
+    ],
+    "numeric_string_fields": []
   },
   "transcript_rules": {
     "communicate_info": [

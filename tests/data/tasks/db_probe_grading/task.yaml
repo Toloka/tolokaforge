@@ -1,0 +1,29 @@
+task_id: db_probe_grading
+name: "DB Probe Grading Fixture"
+category: test
+description: |
+  Minimal fixture exercising state_checks.db_probes translation through the
+  native adapter. Not runnable end-to-end (no live postgres) — used only to
+  lock the grading-config contract.
+
+initial_state:
+  json_db: null
+
+tools:
+  agent:
+    enabled:
+      - write_file
+  user:
+    enabled: []
+
+user_simulator:
+  mode: "scripted"
+  scripted_flow:
+    - role: "user"
+      content: "Open a corrective action for lot 7 with reason code CAPA-01."
+
+policies:
+  disallowed_actions: []
+  guidance: []
+
+grading: "grading.yaml"

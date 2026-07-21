@@ -2,7 +2,6 @@ task_id: "support_triage_01"
 name: "Enterprise Support Triage"
 category: "multi_service"
 description: "Query a REST API (PostgREST) backed by a real postgres database. Join tickets and customers, filter to open enterprise-tier tickets, rank by priority, and produce a triage report for the top-3."
-max_turns: 15
 initial_user_message: |
   Please produce a triage report for the on-call team. A support REST API
   runs at http://app-service:3000. Two endpoints are relevant:
@@ -25,8 +24,9 @@ initial_user_message: |
   has `tier == "enterprise"`. Skip everything else.
 adapter_type: "native"
 environment_manifest:
-  compose_file: "./environment.compose.yaml"
-  runner_service: "runner"
+  stack:
+    compose_file: "./environment.compose.yaml"
+    runner_service: "runner"
   services:
     runner: {isolation: "shared"}
     db-service: {isolation: "shared"}
@@ -39,10 +39,9 @@ tools:
     enabled: ["bash", "write_file"]
   user:
     enabled: []
-user_simulator:
-  mode: llm
-  persona: cooperative
-  backstory: "You are the incident-management lead waiting on the triage report. Ask brief clarifying questions only when strictly necessary and end with ###STOP### once the report is delivered."
+actors:
+  user:
+    backstory: "You are the incident-management lead waiting on the triage report. Ask brief clarifying questions only when strictly necessary and end with ###STOP### once the report is delivered."
 policies:
   guidance:
     - "Use `bash` with `python3 -c 'import urllib.request; ...'` to reach the REST API — the runner container joins the same docker network as `app-service` and reaches it by service name. (The bash allowlist permits python but not curl/wget.)"

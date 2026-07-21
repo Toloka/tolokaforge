@@ -89,9 +89,9 @@ def _make_trajectory(
 def _make_task_config(task_id: str = "TASK-001", **overrides: Any) -> TaskConfig:
     """Build a minimal TaskConfig for testing."""
     from tolokaforge.core.models import (
+        ActorSpec,
         InitialStateConfig,
         ToolsConfig,
-        UserSimulatorConfig,
     )
 
     defaults: dict[str, Any] = {
@@ -101,7 +101,7 @@ def _make_task_config(task_id: str = "TASK-001", **overrides: Any) -> TaskConfig
         "description": "A test task",
         "initial_state": InitialStateConfig(),
         "tools": ToolsConfig(),
-        "user_simulator": UserSimulatorConfig(mode="scripted"),
+        "actors": {"user": ActorSpec(mode="scripted")},
         "grading": "grading.yaml",
     }
     defaults.update(overrides)

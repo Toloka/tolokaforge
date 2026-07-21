@@ -7,11 +7,11 @@ overrides, and a worked example you can run against an unchanged example
 task pack.
 
 For the underlying protocol and materialisation lifecycle see
-[`docs/architecture/RUNTIME_BACKENDS.md`](../architecture/RUNTIME_BACKENDS.md).
+[`docs/RUNTIME_BACKENDS.md`](RUNTIME_BACKENDS.md).
 For the tradeoff analysis behind the two backends see
-[ADR-0016](../architecture/adr/0016-runtime-backend-comparison.md); for the
+[ADR-0016](adr/0016-runtime-backend-comparison.md); for the
 provisioning contract see
-[ADR-0010](../architecture/adr/0010-runtime-backend-provisioning-contract.md).
+[ADR-0010](adr/0010-runtime-backend-provisioning-contract.md).
 
 ## What "isolated trial" means
 
@@ -109,7 +109,7 @@ orchestrator:
 
 ```bash
 uv run tolokaforge run \
-  --config examples/native/coding/run_config.yaml \
+  --config examples/native/coding/run_configs/dev.yaml \
   --runtime per_trial
 ```
 
@@ -150,11 +150,11 @@ manifest) and run it under each backend:
 ```bash
 # Default — shared backend. One stack, both trials share it.
 uv run tolokaforge run \
-  --config examples/native/coding/run_config.yaml
+  --config examples/native/coding/run_configs/dev.yaml
 
 # Same tasks, per-trial backend. Fresh stack per trial.
 uv run tolokaforge run \
-  --config examples/native/coding/run_config.yaml \
+  --config examples/native/coding/run_configs/dev.yaml \
   --runtime per_trial
 ```
 
@@ -208,22 +208,22 @@ four combinations exist:
 | Task manifest, `shared` | Task-declared compose once per run | Task-specific services, shared |
 | Task manifest, `per_trial` | Task-declared compose per trial | Task-specific services, isolated |
 
-See [`multi_container_tasks.md`](multi_container_tasks.md) for the
+See [`MULTI_CONTAINER_GUIDE.md`](MULTI_CONTAINER_GUIDE.md) for the
 task-manifest side of that matrix, and
-[ADR-0018](../architecture/adr/0018-multi-container-under-shared-runtime.md)
+[ADR-0018](adr/0018-multi-container-under-shared-runtime.md)
 for the full case analysis.
 
 ## Further reading
 
-- [`docs/architecture/RUNTIME_BACKENDS.md`](../architecture/RUNTIME_BACKENDS.md)
+- [`docs/RUNTIME_BACKENDS.md`](RUNTIME_BACKENDS.md)
   — the `RuntimeBackend` protocol, provisioning lifecycle, sequence
   diagrams for each backend.
-- [ADR-0007](../architecture/adr/0007-runtime-backend-protocol.md)
+- [ADR-0007](adr/0007-runtime-backend-protocol.md)
   — the seam.
-- [ADR-0010](../architecture/adr/0010-runtime-backend-provisioning-contract.md)
+- [ADR-0010](adr/0010-runtime-backend-provisioning-contract.md)
   — per-trial provisioning contract.
-- [ADR-0016](../architecture/adr/0016-runtime-backend-comparison.md)
+- [ADR-0016](adr/0016-runtime-backend-comparison.md)
   — shared vs per-trial tradeoff analysis.
-- [`docs/TASKS.md`](../TASKS.md#multi-container-environments-environment_manifest)
+- [`docs/TASKS.md`](TASKS.md#multi-container-environments-environment_manifest)
   — reference schema for `services.<name>.isolation` and the other
   manifest fields.

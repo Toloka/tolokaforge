@@ -44,7 +44,9 @@ class ScriptedClient:
         self.calls = 0
         self.seen_tool_names: list[str] = []
 
-    def generate(self, system, messages, tools, tool_choice="auto") -> GenerationResult:
+    def generate(
+        self, system, messages, tools, tool_choice="auto", observation=None
+    ) -> GenerationResult:
         self.calls += 1
         self.seen_tool_names = [t["function"]["name"] for t in tools]
         if self._i >= len(self._script):
@@ -664,7 +666,7 @@ def test_judge_loop_crash_errors_not_scores():
     rubric = _binary_rubric()
 
     class BoomClient:
-        def generate(self, system, messages, tools, tool_choice="auto"):
+        def generate(self, system, messages, tools, tool_choice="auto", observation=None):
             raise RuntimeError("provider exploded")
 
     result = run_rubric_judge(
@@ -685,7 +687,7 @@ def test_agent_system_prompt_injected_into_opening_context():
     captured: dict = {}
 
     class CapturingClient(ScriptedClient):
-        def generate(self, system, messages, tools, tool_choice="auto"):
+        def generate(self, system, messages, tools, tool_choice="auto", observation=None):
             captured.setdefault("first_user", messages[0].content)
             return super().generate(system, messages, tools, tool_choice)
 
@@ -708,7 +710,7 @@ def test_state_diff_injected_into_opening_context():
     captured: dict = {}
 
     class CapturingClient(ScriptedClient):
-        def generate(self, system, messages, tools, tool_choice="auto"):
+        def generate(self, system, messages, tools, tool_choice="auto", observation=None):
             captured.setdefault("first_user", messages[0].content)
             return super().generate(system, messages, tools, tool_choice)
 

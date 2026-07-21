@@ -198,7 +198,7 @@ The key question for removing baked-in domain files is: how does each adapter de
 tolokaforge validate --tasks "tasks/**/task.yaml"
 
 # Run a native task
-tolokaforge run --config examples/native/coding/run_config.yaml --limit 1
+tolokaforge run --config examples/native/coding/run_configs/dev.yaml --limit 1
 ```
 
 ### 11.3 TauAdapter end-to-end

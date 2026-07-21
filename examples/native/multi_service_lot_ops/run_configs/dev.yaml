@@ -1,0 +1,41 @@
+# Multi-service `lot_ops` example — real postgres substrate-mutation grading.
+#
+#   agent → FastAPI (app-service) → postgres:16 (app-db)
+#
+# The agent opens a corrective action over the API; grading reads the
+# `corrective_actions` table directly through a read-only role (an independent
+# oracle), and combines that with transcript rules and an llm_judge rubric.
+#
+# Three model roles: the `agent` under test, the `user` simulator, and the
+# read-only rubric `judge`.
+#
+# Requirements:
+#   - Docker daemon running.
+#   - OPENROUTER_API_KEY in .env.
+models:
+  agent:
+    provider: "openrouter"
+    name: "anthropic/claude-haiku-4-5"
+    temperature: 0.0
+    max_tokens: 4096
+  user:
+    provider: "openrouter"
+    name: "anthropic/claude-haiku-4-5"
+    temperature: 0.2
+  judge:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.0
+
+orchestrator:
+  workers: 1
+  repeats: 1
+  max_turns: 10
+  runtime: shared
+  queue_backend: sqlite
+
+evaluation:
+  projects:
+    - "examples/native/multi_service_lot_ops/dataset"
+  tasks_glob: "tasks/lot_ops_01/task.yaml"
+  output_dir: "results/multi_service_lot_ops_example"

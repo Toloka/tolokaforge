@@ -11,7 +11,7 @@ layer, and a plug-in surface for interactive tools.
 [`docs/OPEN_AGENT_LOOP.md`](../../docs/OPEN_AGENT_LOOP.md).
 
 **Architectural record:**
-[ADR-0019](../../docs/architecture/adr/0019-open-agent-loop-sessions.md).
+[ADR-0019](../../docs/adr/0019-open-agent-loop-sessions.md).
 
 ---
 
@@ -130,7 +130,7 @@ All tests are offline (recorded transport for participants, stubbed
 ## Milestone position
 
 Reference implementations for **M2** of the OAL rollout (see
-[ADR-0019](../../docs/architecture/adr/0019-open-agent-loop-sessions.md)).
+[ADR-0019](../../docs/adr/0019-open-agent-loop-sessions.md)).
 Landed against the recorded transport (M0). When M1's live in-process
 transport shipped, the same participants attached to a live trial without
 a single line of code change — the interface they're coded against is

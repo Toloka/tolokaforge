@@ -1,9 +1,12 @@
-"""Pin the exact injected topology of the ``no_internet`` network-policy
-transform against the ``multi_service_example_01`` compose file.
+"""Pin the exact injected topology of the ``no_internet`` and
+``limited_internet`` network-policy transforms against the
+``multi_service_example_01`` compose file.
 
-The snapshot fixes the wire shape of :func:`enforce_network_policy` so a
+The snapshots fix the wire shape of :func:`enforce_network_policy` so a
 future refactor cannot silently change which networks are injected, which
-services join them, or the ``internal: true`` markings that block egress.
+services join them, the ``internal: true`` markings that block egress, or —
+under ``limited_internet`` — the injected proxy sidecar and the per-service
+``HTTP(S)_PROXY`` wiring.
 """
 
 from __future__ import annotations
@@ -36,7 +39,19 @@ def test_no_internet_topology_snapshot(canon_snapshot) -> None:
     assert EXAMPLE_COMPOSE.is_file(), f"missing example compose: {EXAMPLE_COMPOSE}"
     doc = yaml.safe_load(EXAMPLE_COMPOSE.read_text())
 
-    transformed = enforce_network_policy(doc, NetworkPolicy.NO_INTERNET, "runner")
+    transformed = enforce_network_policy(doc, NetworkPolicy.NO_INTERNET, "runner", [])
 
     snapshot = canon_snapshot("network_policy_enforcement")
     snapshot.assert_match(transformed, "multi_service_example_01_no_internet.json")
+
+
+def test_limited_internet_topology_snapshot(canon_snapshot) -> None:
+    assert EXAMPLE_COMPOSE.is_file(), f"missing example compose: {EXAMPLE_COMPOSE}"
+    doc = yaml.safe_load(EXAMPLE_COMPOSE.read_text())
+
+    transformed = enforce_network_policy(
+        doc, NetworkPolicy.LIMITED_INTERNET, "runner", ["api.openai.com", "*.example.com"]
+    )
+
+    snapshot = canon_snapshot("network_policy_enforcement")
+    snapshot.assert_match(transformed, "multi_service_example_01_limited_internet.json")

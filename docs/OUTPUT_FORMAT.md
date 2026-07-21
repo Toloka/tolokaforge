@@ -14,6 +14,9 @@ bumped and this document is updated in the same commit.
 
 ```
 {output_dir}/
+├── services/                              ← run-level per-service compose logs (shared-stack materialise failure only)
+│   ├── {service}.log
+│   └── _capture.yaml                      ← manifest (capture_reason: materialise_error)
 └── trials/
     └── {task_id}/
         └── {trial_index}/
@@ -26,10 +29,14 @@ bumped and this document is updated in the same commit.
             ├── logs.yaml
             ├── prompts.yaml                ← agent + user-sim system prompts
             ├── tools_schemas.yaml          ← post-policy tool list
-            └── services/                   ← per-service compose logs (only on trial failure)
+            └── services/                   ← per-service compose logs (on trial-body or graded failure)
                 ├── {service}.log
                 └── _capture.yaml           ← manifest (provision-failure path only)
 ```
+
+Byte counts from every `services/` bundle above — per-trial and run-level — are
+rolled up run-wide in `aggregate.json` → `captured_service_logs` (see
+[`docs/ANALYTICS.md`](ANALYTICS.md:1) § `aggregate.json` → `captured_service_logs`).
 
 * `{output_dir}` = the orchestrator's run output root. The naming
   convention differs by entry point:
@@ -252,10 +259,63 @@ user:
 db: {...}          # Full database state
 filesystem: {...}  # File system state
 mock_web_url: "..."
+agent_visible_dir: /work
+environment:       # present only for manifest-driven trials (see below)
+  network_policy: no_internet
+  runner_service: runner
+  services:
+    app-db:
+      image: postgres:16
+      pinned: true
+      isolation: reset
+      reset_seed: baseline
+      dsns: []
+      mounts:
+        - /docker-entrypoint-initdb.d/init.sql:ro
+    app-service:
+      image: tolokaforge-runner:0.5.0
+      pinned: true
+      isolation: shared
+      reset_seed: null
+      dsns:
+        - postgresql://app:***@app-db:5432/mfg
+      mounts:
+        - /srv/app/main.py:ro
 ```
 
 Free-form snapshot of the environment state at trial end. Adapters /
 tasks control the shape; no schema version attached.
+
+### `environment` — resolved environment identity
+
+Manifest-driven trials (a task carrying an `environment_manifest`, i.e.
+Project-layer / multi-container substrates) record the resolved
+environment identity under `environment`. The block is a pure function of
+the trial's `EnvironmentManifest`, so it is available for post-mortems
+even after a per-trial stack is torn down. Trials without a manifest
+(run.yaml-only / JSON-DB tasks) omit the key entirely.
+
+Top-level keys:
+
+| Key | Meaning |
+|---|---|
+| `network_policy` | Run-level network posture (`no_internet` / `limited_internet` / `full_internet`) |
+| `runner_service` | Compose service the runner executes inside |
+| `services` | Per-service identity, keyed by compose service name |
+
+Each `services.<name>` entry:
+
+| Field | Meaning |
+|---|---|
+| `image` | Resolved image reference after `${VAR}` / `${VAR:-default}` substitution from `stack_inputs` |
+| `pinned` | `true` when the resolved image carries a digest or a non-floating tag |
+| `isolation` | `shared` / `reset` / `ephemeral`; services absent from the manifest default to `ephemeral` |
+| `reset_seed` | Seed name for a `reset` service, else `null` |
+| `dsns` | Connection strings from the service's compose `environment`, each with any embedded password replaced by `***` |
+| `mounts` | Container-side mount targets (`<target>:<mode>`); host source paths are omitted |
+
+DSN passwords are redacted and host mount sources are never recorded, so
+the block is safe to share and stable across hosts.
 
 ## `trials/{task_id}/{trial_index}/metrics.yaml`
 
@@ -323,9 +383,57 @@ table):
 | `cache_read_input_tokens` | Anthropic | Tokens re-used from the ephemeral cache this call |
 | `provider_raw` | — | Best-effort dump of the *last* call's raw usage block |
 
-### `captured_service_logs` — only on trial-body failure
+### `provisioning_duration_s` — wall-clock provisioning latency
 
-When a trial body fails (`trajectory.status` is `error` or `timeout`) on the
+```yaml
+provisioning_duration_s: 5.5
+```
+
+Wall-clock seconds (monotonic-clock-measured, rounded to milliseconds) from
+`provision` start through `endpoints()` return — the full
+`provision → await_ready → endpoints` bracket, excluding the trial body and
+teardown. Recorded on every trial that provisions successfully and runs a
+conductor body. Omitted from the provision-failure `metrics.yaml` (see
+[Provision-failure bundle](#provision-failure-bundle)) because no
+`provision → await_ready → endpoints` bracket completed.
+
+### Provision-failure bundle
+
+When a trial fails during substrate provisioning (`provision` / `reset_recipe`
+raises, or `await_ready` times out), the conductor body never runs, so the
+executor writes the trial directory itself. Only three files land —
+`trajectory.yaml`, `metrics.yaml`, and `grade.yaml` — plus the
+[`services/`](#trialstask_idtrial_indexservices) bundle when per-service capture
+fired inside `provision`. `task.yaml`, `env.yaml`, and `logs.yaml` are **not**
+written (no resolved model config, no environment state, no per-trial logger for
+a run that never happened).
+
+* `trajectory.yaml` — `status: error`, `termination_reason: provision_error`,
+  empty `messages`.
+* `metrics.yaml` — the default-`Metrics` shape (`cost_usd: null`,
+  `schema_version: 1`, empty `tool_usage`) plus two top-level failure-signal
+  keys:
+
+  ```yaml
+  error: provision_error
+  error_reason: "partial startup — failed after service 'db'"
+  ```
+
+  `error` is the `TerminationReason.PROVISION_ERROR` value, so the failure
+  vocabulary matches `trajectory.yaml`'s `termination_reason`; `error_reason`
+  carries the underlying `ProvisionError` reason string. `provisioning_duration_s`
+  and `captured_service_logs` are absent on this path.
+* `grade.yaml` — `binary_pass: false`, `score: 0.0`, `reasons` carrying the
+  provisioning failure stage and reason.
+
+Writing this bundle is best-effort: an I/O failure while writing it is logged
+and does not change the trial's failed result.
+
+### `captured_service_logs` — on trial-body or graded failure
+
+When a trial is diagnostics-worthy — its body fails (`trajectory.status` is
+`error` or `timeout`) **or** it runs to completion but grades red
+(`trajectory.status` is `completed` with `grade.binary_pass: false`) — on the
 per-trial runtime backend, the executor captures each compose service's
 `docker compose logs` output to
 [`services/{service}.log`](#trialstask_idtrial_indexservices) **before**
@@ -337,17 +445,19 @@ captured_service_logs:
   runner: 512
 ```
 
-The key is present only when at least one service produced output. Capture on
-a successful trial is off by default; enable it with
+The key is present only when at least one service produced output. A
+`completed` trial that passes, or one with no grade, does not trigger capture.
+Capture on a successful trial is off by default; enable it with
 `compute.capture_logs_on_success: true` (see [`docs/CONFIG.md`](CONFIG.md:1)).
-Graded failures (`status: completed`, `binary_pass: false`) do **not** trigger
-capture — that keeps the output-dir footprint bounded.
+
+These byte counts are rolled up across the run in `aggregate.json` →
+`captured_service_logs` (see [`docs/ANALYTICS.md`](ANALYTICS.md:1)).
 
 ## `trials/{task_id}/{trial_index}/services/`
 
-Per-service compose logs, written **only on trial failure** and only on the
-per-trial runtime backend (see
-[`docs/architecture/RUNTIME_BACKENDS.md`](architecture/RUNTIME_BACKENDS.md:1)
+Per-service compose logs, written on a trial-body or graded failure and only on
+the per-trial runtime backend (see
+[`docs/RUNTIME_BACKENDS.md`](RUNTIME_BACKENDS.md:1)
 § "Per-service log capture on failure"). The shared-stack backend never writes
 this directory.
 
@@ -355,8 +465,9 @@ this directory.
   service (`N` = `compute.log_tail`, default 500). One file per compose
   service that produced output. No parsing, no format changes.
 * **`_capture.yaml`** — manifest written **only on the provision-failure
-  path** (compose-up or reset-recipe failure), where no `metrics.yaml` exists
-  to amend:
+  path** (compose-up or reset-recipe failure). The backend captures per-service
+  logs inside `provision` and writes this manifest before it raises, so it holds
+  the byte counts on this path:
 
   ```yaml
   tail: 500
@@ -366,9 +477,15 @@ this directory.
       bytes: 4096
   ```
 
-  On the trial-body-failure path the durable record is the
-  [`metrics.yaml` `captured_service_logs`](#captured_service_logs--only-on-trial-body-failure)
-  field instead, so the two surfaces never both write a record.
+  On the trial-body path the durable record is the
+  [`metrics.yaml` `captured_service_logs`](#captured_service_logs--on-trial-body-or-graded-failure)
+  field instead. The provision-failure
+  [`metrics.yaml`](#provision-failure-bundle) the executor writes does **not**
+  carry `captured_service_logs`, so the two surfaces never both hold the byte
+  counts.
+
+  Byte counts from this manifest are rolled up across the run in `aggregate.json`
+  → `captured_service_logs` (see [`docs/ANALYTICS.md`](ANALYTICS.md:1)).
 
 ## `trials/{task_id}/{trial_index}/grade.yaml`
 

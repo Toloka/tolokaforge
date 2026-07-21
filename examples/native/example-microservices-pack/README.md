@@ -6,18 +6,17 @@ for both tasks (`task_defaults`) and runs (`run_defaults`);
 per-item deltas live in `tasks/<name>/task.yaml` and
 `run_configs/<name>.yaml`. Five tasks show the full range of
 inheritance and override patterns. Read alongside
-[`docs/architecture/PROJECTS.md`](../../../docs/architecture/PROJECTS.md).
+[`docs/PROJECTS.md`](../../../docs/PROJECTS.md).
 
 > **Status.** Reference project for the Project schema — full
 > inheritance/override matrix across 5 tasks. See
-> [`docs/architecture/PROJECTS.md`](../../../docs/architecture/PROJECTS.md).
+> [`docs/PROJECTS.md`](../../../docs/PROJECTS.md).
 > `backend-api` runs [PostgREST](https://postgrest.org), which
 > auto-generates a REST API from the postgres schema — the pack ships
 > no application code. The compose stack materialises and serves the
 > seeded schema; the loader and per-task manifest resolution work
-> end-to-end. Running individual tasks via `tolokaforge run` needs
-> task-schema relaxation (#366) to land first, since these tasks use
-> the minimal `task_id` + `description` shape PROJECTS.md documents.
+> end-to-end. The tasks use the minimal `task_id` + `description`
+> shape PROJECTS.md documents.
 
 ## Layout
 
@@ -157,7 +156,7 @@ Which scope contributes each field for each task.
 The project's `run_configs/dev.yaml` is slim by design: it
 declares only `models` and `evaluation.output_dir`. Everything
 else (`compute`, `storage`, `observability`, `orchestrator`)
-comes from `project.run_defaults`. Invoke (post-M2) with
+comes from `project.run_defaults`. Invoke with
 `tolokaforge run --config run_configs/dev.yaml`.
 
 To run the same project under a different configuration — more
@@ -168,9 +167,9 @@ The loader deep-merges `project.run_defaults` under it.
 
 ## Cross-references
 
-- Architecture doc: [`../../../docs/architecture/PROJECTS.md`](../../../docs/architecture/PROJECTS.md)
-- Runtime backends: [`../../../docs/architecture/RUNTIME_BACKENDS.md`](../../../docs/architecture/RUNTIME_BACKENDS.md)
-- Roadmap: [`../../../docs/architecture/ROADMAP.md`](../../../docs/architecture/ROADMAP.md)
+- Architecture doc: [`../../../docs/PROJECTS.md`](../../../docs/PROJECTS.md)
+- Runtime backends: [`../../../docs/RUNTIME_BACKENDS.md`](../../../docs/RUNTIME_BACKENDS.md)
+- Roadmap: [`../../../docs/ROADMAP.md`](../../../docs/ROADMAP.md)
 - Related multi-service examples:
   - [`../multi_service/`](../multi_service/) — smallest task-declared compose
   - [`../multi_service_postgres/`](../multi_service_postgres/) — the postgres pattern this project extends

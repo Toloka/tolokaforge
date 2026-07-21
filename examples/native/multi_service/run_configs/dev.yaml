@@ -1,0 +1,34 @@
+# Multi-service example — `Product Catalog Summary` task.
+#
+# Exercises the shared-runtime + task-declared-stack path (Case B in
+# ADR-0018). The task declares its own compose file with three services
+# (runner + db-service + app-service). The engine materialises them
+# **once at run start** under `--runtime shared`.
+#
+# Requirements:
+#   - Docker daemon running.
+#   - OPENROUTER_API_KEY in .env (default).
+
+models:
+  agent:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.0
+    max_tokens: 4096
+  user:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.2
+
+orchestrator:
+  workers: 1
+  repeats: 1
+  max_turns: 10
+  runtime: shared
+  queue_backend: sqlite
+
+evaluation:
+  projects:
+    - "examples/native/multi_service/dataset"
+  tasks_glob: "tasks/multi_service/multi_service_example_01/task.yaml"
+  output_dir: "results/multi_service_example"
