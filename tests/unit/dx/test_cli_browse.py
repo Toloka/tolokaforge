@@ -118,3 +118,63 @@ class TestBrowseCommand:
         assert result.exit_code == 0, result.stderr
         # Grouped under Runs since it's a run-adjacent verb.
         assert "browse" in result.output
+
+
+class TestBrowseTabCompletion:
+    def test_completion_lists_matching_run_ids_under_default_results(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from unittest.mock import MagicMock
+
+        from tolokaforge.dx.cli.main import _complete_run_ids
+
+        results = tmp_path / "results"
+        for run_id in (
+            "coding_20260722_010203",
+            "coding_20260722_150000",
+            "tool_use_run",
+        ):
+            (results / run_id).mkdir(parents=True)
+        monkeypatch.chdir(tmp_path)
+
+        ctx = MagicMock()
+        ctx.params = {"results_root": None}
+        assert _complete_run_ids(ctx, None, "coding") == [
+            "coding_20260722_010203",
+            "coding_20260722_150000",
+        ]
+        assert _complete_run_ids(ctx, None, "") == [
+            "coding_20260722_010203",
+            "coding_20260722_150000",
+            "tool_use_run",
+        ]
+
+    def test_completion_honours_results_root_flag(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from unittest.mock import MagicMock
+
+        from tolokaforge.dx.cli.main import _complete_run_ids
+
+        other = tmp_path / "elsewhere"
+        (other / "run_x").mkdir(parents=True)
+        (other / "run_y").mkdir(parents=True)
+
+        ctx = MagicMock()
+        ctx.params = {"results_root": str(other)}
+        assert _complete_run_ids(ctx, None, "run") == ["run_x", "run_y"]
+
+    def test_completion_returns_empty_on_missing_results_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from unittest.mock import MagicMock
+
+        from tolokaforge.dx.cli.main import _complete_run_ids
+
+        monkeypatch.chdir(tmp_path)  # no ./results directory
+
+        ctx = MagicMock()
+        ctx.params = {"results_root": None}
+        # Must not raise — tab-completion inside a shell should degrade
+        # silently if the results tree isn't there yet.
+        assert _complete_run_ids(ctx, None, "anything") == []

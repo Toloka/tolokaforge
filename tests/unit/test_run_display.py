@@ -1220,9 +1220,13 @@ def test_phase_changed_populates_services_and_renders_widget() -> None:
     assert "components" in child_names
 
 
-def test_services_widget_absent_once_trials_dispatch() -> None:
-    """After run_started with all components healthy, the Components widget
-    disappears — the panel reclaims the rows for trial cards."""
+def test_components_widget_persists_after_trials_dispatch() -> None:
+    """The Components widget is a persistent status board — once a component
+    is registered (via ``phase_changed(services=…)``, ``trial_provisioned(
+    containers=…)``, or a direct ``component_*`` event) the widget stays
+    visible. Rationale: operators want a stable view of engine + per-trial
+    infrastructure; the widget's own tail-rule keeps healthy rows compact
+    (one line each), so persistent visibility is cheap on rows."""
     from tolokaforge.core.run_display_events import ServiceSnapshot
 
     display = LiveRunDisplay(refresh_per_second=1000)
@@ -1234,7 +1238,65 @@ def test_services_widget_absent_once_trials_dispatch() -> None:
 
     layout = display._build_layout()
     child_names = {getattr(child, "name", None) for child in layout.children}
+    assert "components" in child_names
+
+
+def test_widget_absent_when_no_components_tracked() -> None:
+    """A run that never registers any component (no phase_changed with
+    services, no explicit component_* event) leaves the Components widget
+    absent. Nothing to render → the layout region is elided."""
+    display = LiveRunDisplay(refresh_per_second=1000)
+    display.run_started(total_trials=1, initial_completed=0)
+
+    layout = display._build_layout()
+    child_names = {getattr(child, "name", None) for child in layout.children}
     assert "components" not in child_names
+
+
+def test_multicontainer_task_provisioned_surfaces_container_components() -> None:
+    """``trial_provisioned(containers=[…])`` lifts each ``ContainerSnapshot``
+    into a component under ``owner="trial/<trial_id>"`` via the adapter
+    shim. A multi-container task exercising several services should have
+    every service visible in the Components widget alongside the engine
+    services."""
+    from tolokaforge.core.run_display_events import ContainerSnapshot
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    containers: list[ContainerSnapshot] = [
+        {
+            "name": "task_a-db-1",
+            "service": "db",
+            "state": "running",
+            "health": "healthy",
+            "ports": {5432: 55432},
+        },
+        {
+            "name": "task_a-cache-1",
+            "service": "cache",
+            "state": "running",
+            "health": "healthy",
+            "ports": {},
+        },
+        {
+            "name": "task_a-web-1",
+            "service": "web",
+            "state": "running",
+            "health": "starting",
+            "ports": {},
+        },
+    ]
+    display.trial_started(trial_id="task_a:0", task_id="task_a", trial_index=0, total_index=0)
+    display.trial_provisioned(trial_id="task_a:0", containers=containers, endpoints={})
+
+    # Every container appears as a component under the trial's owner.
+    expected_ids = {
+        "trial/task_a:0/container/db",
+        "trial/task_a:0/container/cache",
+        "trial/task_a:0/container/web",
+    }
+    assert expected_ids.issubset(display._components.keys())
+    for cid in expected_ids:
+        assert display._components[cid]["owner"] == "trial/task_a:0"
 
 
 # ---------------------------------------------------------------------------

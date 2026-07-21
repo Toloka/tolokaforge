@@ -1161,8 +1161,41 @@ def status(run_dir: str, config: str | None):
     console.print(f"[bold]Output tokens:[/bold] {total_output_tokens}")
 
 
+def _complete_run_ids(ctx: click.Context, param: click.Parameter, incomplete: str) -> list[str]:
+    """Tab-completion for ``browse``'s ``RUN_ID_OR_PATH`` argument.
+
+    Enumerates directory names under the resolved results root (the
+    ``--results-root`` flag if already typed, else ``TOLOKAFORGE_RESULTS_ROOT``
+    env var, else ``./results``) and returns those that share the
+    ``incomplete`` prefix. Best-effort — missing directory, unreadable
+    entries, and OS errors return an empty list so tab-completion never
+    raises inside the shell.
+
+    Works in the ``tolokaforge`` REPL out of the box via ``click-repl``'s
+    ``prompt-toolkit`` integration. For Bash / Zsh outside the REPL, users
+    run the standard Click completion setup once:
+    ``eval "$(_TOLOKAFORGE_COMPLETE=bash_source tolokaforge)"``.
+    """
+    try:
+        root_str = (
+            ctx.params.get("results_root")
+            or os.environ.get("TOLOKAFORGE_RESULTS_ROOT")
+            or "results"
+        )
+        root = Path(root_str)
+        if not root.is_dir():
+            return []
+        return sorted(
+            entry.name
+            for entry in root.iterdir()
+            if entry.is_dir() and entry.name.startswith(incomplete)
+        )
+    except OSError:
+        return []
+
+
 @cli.command()
-@click.argument("run_id_or_path", metavar="RUN_ID_OR_PATH")
+@click.argument("run_id_or_path", metavar="RUN_ID_OR_PATH", shell_complete=_complete_run_ids)
 @click.option(
     "--results-root",
     "results_root",

@@ -445,7 +445,20 @@ The `→ Report:` URL is canonicalised via `Path.resolve().as_uri() + "/"`: alwa
 
 ### `tolokaforge browse <run-id-or-path>`
 
-The `→ Browse:` line is the exact command to open the run's output directory in the OS default handler. Accepts either an absolute path to a run directory OR a bare run-id (resolved against `./results/` — override with `--results-root <path>` or the `TOLOKAFORGE_RESULTS_ROOT` env var). Uses `webbrowser.open` under a `file://` URL, so the OS routes to Finder / Explorer / xdg-open. Emits a `Opening file:///…` status line on stderr; stdout stays empty.
+The `→ Browse:` line is the exact command to open the run's output directory in the OS default handler. Accepts either an absolute path to a run directory OR a bare run-id (resolved against `./results/` — override with `--results-root <path>` or the `TOLOKAFORGE_RESULTS_ROOT` env var). Uses `webbrowser.open` under a `file://` URL, so the OS routes to Finder / Explorer / xdg-open. Emits an `Opening file:///…` status line on stderr; stdout stays empty.
+
+The `RUN_ID_OR_PATH` argument has tab-completion — the callback enumerates directory names under the effective results root (from `--results-root`, `TOLOKAFORGE_RESULTS_ROOT`, or `./results` in that order) and returns the ones sharing the typed prefix. Works out of the box inside the `tolokaforge` REPL via `click-repl`'s `prompt-toolkit` integration. For bare-shell completion (Bash / Zsh outside the REPL), run the standard Click completion setup once:
+
+```bash
+# Bash: add to ~/.bashrc
+eval "$(_TOLOKAFORGE_COMPLETE=bash_source tolokaforge)"
+
+# Zsh: add to ~/.zshrc
+eval "$(_TOLOKAFORGE_COMPLETE=zsh_source tolokaforge)"
+
+# Fish: run once
+_TOLOKAFORGE_COMPLETE=fish_source tolokaforge > ~/.config/fish/completions/tolokaforge.fish
+```
 
 ### Display-mode behaviour
 

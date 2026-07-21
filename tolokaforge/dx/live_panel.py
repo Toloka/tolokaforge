@@ -1821,11 +1821,17 @@ class LiveRunDisplay:
                 cid: deque(buf, maxlen=buf.maxlen)
                 for cid, buf in self._component_log_buffers.items()
             }
-            has_unhealthy_component = any(
-                c["phase"] in _UNHEALTHY_PHASES for c in components.values()
-            )
             in_startup = self._total_trials == 0
-            show_components = bool(components and (in_startup or has_unhealthy_component))
+            # Components widget stays visible as long as ANY component is
+            # tracked. Rationale: the operator wants a persistent status
+            # board — engine services during startup, per-trial containers
+            # after trials dispatch (multi-container tasks surface here
+            # via the ``trial_provisioned`` → ``_container_to_component``
+            # adapter), everything failing / recovering in between. The
+            # widget's own tail rule (:func:`_component_tail_visible`)
+            # keeps the healthy rows compact so a persistently-visible
+            # widget stays cheap on rows.
+            show_components = bool(components)
             boot_filtered: list[logging.LogRecord] = (
                 _docker_boot_records(self._log_buffer) if in_startup else []
             )
