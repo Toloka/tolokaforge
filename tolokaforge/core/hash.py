@@ -3,8 +3,10 @@
 This module provides a single, standardized hash function. With
 ``canonicalize_numbers=False`` it matches
 mcp_core.utils.validation.calculate_database_hash(); the default (True)
-additionally folds numerically-equal representations ("130.00" == "130.0")
-together, so it intentionally diverges from that byte-for-byte output.
+additionally folds numerically-equal NUMERIC-TYPE values (72 == 72.0) together,
+so it intentionally diverges from that byte-for-byte output. Numeric-looking
+STRINGS ("130.00" == "130.0") fold only with the opt-in
+``normalize_numeric_strings`` flag — see :func:`canonical_number`.
 
 All hash computations across the codebase should use compute_stable_hash()
 to ensure consistent results.
@@ -57,19 +59,31 @@ def _looks_like_plain_decimal(s: str) -> bool:
     return not (len(int_part) > 1 and int_part[0] == "0")
 
 
-def canonical_number(value: Any) -> Any:
+def canonical_number(value: Any, *, normalize_strings: bool = False) -> Any:
     """Collapse numerically-equal representations of a value to one token.
 
     State grading compares field values for equality — via this module's
     :func:`compute_stable_hash` and via
-    :func:`tolokaforge.core.grading.state_checks.to_hashable`. Databases
-    round-trip ``Decimal`` columns through strings, so the *same* amount
-    surfaces as ``"130.00"`` on one side and ``"130.0"`` (or ``130``) on the
-    other; a naive string/JSON comparison then treats a pure formatting
+    :func:`tolokaforge.core.grading.state_checks.to_hashable`. The same amount
+    can surface as ``72`` on one side and ``72.0`` (or ``Decimal("72.00")``) on
+    the other; a naive string/JSON comparison then treats a pure representation
     difference as a state change — a grading false-fail.
 
-    This maps every representation of one number to a single canonical token so
-    those format-only differences compare equal, while preserving correctness:
+    Two tiers of folding:
+
+    * **Numeric types** (``int`` / ``float`` / ``Decimal``) — always folded to
+      one token. The type itself declares the value is a number, so this is a
+      safe, generic improvement (``72 == 72.0 == Decimal("72.00")``).
+    * **Numeric-looking strings** (``"130.00"`` vs ``"130.0"``) — folded ONLY
+      when ``normalize_strings=True``. This is deliberately opt-in and
+      DANGEROUS as a default: a string that merely looks numeric may carry
+      meaning in its exact representation (version numbers like ``"1.10"`` vs
+      ``"1.1"``, codes, zero-padded ids), and folding those would false-PASS a
+      genuinely wrong state. Enable it per task via the grading config
+      (``state_checks.numeric_string_normalization``) for domains whose string
+      fields are genuinely numeric (e.g. DB-round-tripped Decimal columns).
+
+    Correctness guards in both tiers:
 
     * ``bool`` is left untouched (``True == 1`` in Python, undesirable here);
     * identifier-like strings with leading zeros (``"00123"``) are left untouched
@@ -79,9 +93,10 @@ def canonical_number(value: Any) -> Any:
       so it cannot masquerade as a numeric token;
     * non-numeric values pass through unchanged.
 
-    Leniency note: surrounding whitespace and a leading ``+`` are ignored, and a
-    numeric string collapses with its bare-number twin (``"123"`` == ``123`` ==
-    ``"123.0"``); numeric-string ids are protected only by the leading-zero rule.
+    Leniency note (string tier): surrounding whitespace and a leading ``+`` are
+    ignored, and a numeric string collapses with its bare-number twin
+    (``"123"`` == ``123`` == ``"123.0"``); numeric-string ids are protected only
+    by the leading-zero rule.
     """
     if isinstance(value, bool):
         return value
@@ -91,12 +106,13 @@ def canonical_number(value: Any) -> Any:
         except (InvalidOperation, ValueError):
             return value
     if isinstance(value, str):
-        s = value.strip()
-        if 0 < len(s) <= _MAX_NUMERIC_LEN and _looks_like_plain_decimal(s):
-            try:
-                return _numeric_token(Decimal(s))
-            except InvalidOperation:
-                pass
+        if normalize_strings:
+            s = value.strip()
+            if 0 < len(s) <= _MAX_NUMERIC_LEN and _looks_like_plain_decimal(s):
+                try:
+                    return _numeric_token(Decimal(s))
+                except InvalidOperation:
+                    pass
         # A genuine string beginning with the reserved NUL would otherwise be
         # byte-identical to a numeric token; escape it so the two can't collide.
         if value.startswith("\x00"):
@@ -104,15 +120,20 @@ def canonical_number(value: Any) -> Any:
     return value
 
 
-def _canonicalize_numbers(data: Any) -> Any:
+def _canonicalize_numbers(data: Any, *, normalize_strings: bool = False) -> Any:
     """Recursively apply :func:`canonical_number` to every scalar in a state."""
     if isinstance(data, dict):
-        return {key: _canonicalize_numbers(value) for key, value in data.items()}
+        return {
+            key: _canonicalize_numbers(value, normalize_strings=normalize_strings)
+            for key, value in data.items()
+        }
     if isinstance(data, list):
-        return [_canonicalize_numbers(item) for item in data]
+        return [_canonicalize_numbers(item, normalize_strings=normalize_strings) for item in data]
     if isinstance(data, tuple):
-        return tuple(_canonicalize_numbers(item) for item in data)
-    return canonical_number(data)
+        return tuple(
+            _canonicalize_numbers(item, normalize_strings=normalize_strings) for item in data
+        )
+    return canonical_number(data, normalize_strings=normalize_strings)
 
 
 def _convert_datetime_to_str(data: Any) -> Any:
@@ -216,6 +237,7 @@ def compute_stable_hash(
     unstable_fields: list[str] | None = None,
     *,
     canonicalize_numbers: bool = True,
+    normalize_numeric_strings: bool = False,
 ) -> str:
     """
     Compute a stable SHA-256 hash of the state dictionary.
@@ -235,10 +257,19 @@ def compute_stable_hash(
         state: State dictionary to hash
         unstable_fields: Optional list of field names to exclude from hash
         canonicalize_numbers: When True (default), collapse numerically-equal
-            representations ("130.00" == "130.0" == 130) before hashing so a
-            pure decimal-formatting difference is not a spurious state mismatch.
-            Pass False to reproduce the legacy byte-for-byte
+            NUMERIC-TYPE values (72 == 72.0 == Decimal("72.00")) before hashing.
+            Generic and safe — the type declares the value is a number. Pass
+            False to reproduce the legacy byte-for-byte
             mcp_core.calculate_database_hash() output.
+        normalize_numeric_strings: When True, ALSO collapse numeric-looking
+            STRINGS ("130.00" == "130.0" == "130"). Default False — this is an
+            opt-in, per-task feature (grading config
+            ``state_checks.numeric_string_normalization``), NOT a generic
+            improvement: exact string representation can be meaningful
+            (versions "1.10" vs "1.1", codes), and folding those would
+            false-pass a wrong state. Enable only for domains whose string
+            fields are DB-round-tripped decimals. Ignored when
+            canonicalize_numbers is False.
 
     Returns:
         Hexadecimal string of the SHA-256 hash
@@ -259,10 +290,14 @@ def compute_stable_hash(
     # Convert datetime objects to strings
     serializable_state = _convert_datetime_to_str(state)
 
-    # Collapse numerically-equal representations ("130.00" == "130.0" == 130) so
-    # a pure decimal-formatting difference is not graded as a state change.
+    # Collapse numerically-equal representations so a pure representation
+    # difference is not graded as a state change: numeric TYPES always
+    # (72 == 72.0), numeric-looking STRINGS only when the per-task flag opts in
+    # ("130.00" == "130.0" — see the normalize_numeric_strings docstring).
     if canonicalize_numbers:
-        serializable_state = _canonicalize_numbers(serializable_state)
+        serializable_state = _canonicalize_numbers(
+            serializable_state, normalize_strings=normalize_numeric_strings
+        )
 
     # Serialize with canonical format matching mcp_core
     json_str = json.dumps(serializable_state, sort_keys=True, separators=(",", ":"), default=str)

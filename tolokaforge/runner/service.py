@@ -1033,7 +1033,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             )
             try:
                 hash_result = await self._execute_hash_grading(
-                    trial_id, trial_context, golden_actions
+                    trial_id,
+                    trial_context,
+                    golden_actions,
+                    normalize_numeric_strings=state_checks_config.numeric_string_normalization,
                 )
                 components.hash_match = hash_result.hash_match
                 components.hash_score = hash_result.hash_score
@@ -1494,6 +1497,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         trial_id: str,
         trial_context: TrialContextRuntime,
         golden_actions: list[GoldenAction],
+        *,
+        normalize_numeric_strings: bool = False,
     ) -> HashGradingResult:
         """
         Execute hash-based grading algorithm.
@@ -1535,7 +1540,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 logger.error(f"GradeTrial: Failed to sync MCP state before trial_hash: {e}")
                 raise
 
-        trial_hash = await self.db_client.get_stable_hash(trial_id)
+        trial_hash = await self.db_client.get_stable_hash(
+            trial_id, normalize_numeric_strings=normalize_numeric_strings
+        )
         logger.debug(f"GradeTrial: Trial hash = {trial_hash[:16]}...")
 
         # 2. Snapshot current state
@@ -1630,7 +1637,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         # 6. Get golden stable hash
         # get_stable_hash returns the hash string directly
-        golden_hash = await self.db_client.get_stable_hash(trial_id)
+        golden_hash = await self.db_client.get_stable_hash(
+            trial_id, normalize_numeric_strings=normalize_numeric_strings
+        )
         logger.debug(f"GradeTrial: Golden hash = {golden_hash[:16]}...")
 
         # 7. Restore trial state

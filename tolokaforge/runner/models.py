@@ -301,6 +301,10 @@ class StateChecksConfig(BaseModel):
     hash_enabled: bool = False
     expected_hash: str | None = None  # Pre-computed (if available)
     golden_actions: list[GoldenAction] = Field(default_factory=list)
+    # Opt-in, per-task: fold numeric-looking STRINGS ("130.00" == "130.0") when
+    # hashing state. Dangerous as a default (versions/codes carry meaning in
+    # their exact representation) — see core/hash.py canonical_number.
+    numeric_string_normalization: bool = False
 
     # JSONPath assertions
     jsonpath_checks: list[dict[str, Any]] = Field(default_factory=list)

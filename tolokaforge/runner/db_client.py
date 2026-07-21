@@ -401,7 +401,9 @@ class DBServiceClient:
             self._handle_error_response(response)
             return StableStateResponse.model_validate(response.json())
 
-    async def get_stable_hash(self, trial_id: str) -> str:
+    async def get_stable_hash(
+        self, trial_id: str, *, normalize_numeric_strings: bool = False
+    ) -> str:
         """
         Get SHA-256 hash of the stable state.
 
@@ -409,6 +411,9 @@ class DBServiceClient:
 
         Args:
             trial_id: Trial identifier
+            normalize_numeric_strings: Opt-in per-task flag — fold
+                numeric-looking strings ("130.00" == "130.0") when hashing.
+                See core/hash.py canonical_number.
 
         Returns:
             The stable_hash string
@@ -418,7 +423,10 @@ class DBServiceClient:
         """
         async with self._create_client() as client:
             try:
-                response = await client.get(f"/trials/{trial_id}/state/hash")
+                response = await client.get(
+                    f"/trials/{trial_id}/state/hash",
+                    params={"normalize_numeric_strings": normalize_numeric_strings},
+                )
             except httpx.ConnectError as e:
                 raise ConnectionError(f"Failed to connect to DB Service: {e}")
 

@@ -145,32 +145,28 @@ class TestComputeStableHash:
 
 
 class TestComputeStableHashNumericCanonicalization:
-    """Numerically-equal state values must hash identically (grading false-fail fix).
+    """Two-tier numeric canonicalization in state hashing.
 
-    Regression: the DB round-trips ``Decimal`` columns through strings, so the
-    same amount surfaces as ``"130.00"`` on one side and ``"130.0"`` on the
-    other; the old JSON hash treated that pure formatting difference as a state
-    change and false-failed correct trials (OTS ``custom_refund_amount`` etc.).
+    Tier 1 (default): numerically-equal NUMERIC-TYPE values hash identically
+    (72 == 72.0 == Decimal("72.00")) — the type declares number-ness, generic
+    and safe. Tier 2 (opt-in ``normalize_numeric_strings``): numeric-looking
+    STRINGS also fold ("130.00" == "130.0") — per-task flag because exact
+    string representation can carry meaning (versions, codes).
     """
 
-    def test_decimal_trailing_zeros_hash_equal(self):
+    # ---- tier 1: numeric types, default behavior ----
+
+    def test_numeric_types_fold_by_default(self):
+        from decimal import Decimal
+
+        a = {"cases": [{"id": "C1", "qty": 72}]}
+        b = {"cases": [{"id": "C1", "qty": 72.0}]}
+        c = {"cases": [{"id": "C1", "qty": Decimal("72.00")}]}
+        assert compute_stable_hash(a) == compute_stable_hash(b) == compute_stable_hash(c)
+
+    def test_numeric_strings_do_NOT_fold_by_default(self):
         a = {"cases": [{"id": "C1", "refund": "130.00"}]}
         b = {"cases": [{"id": "C1", "refund": "130.0"}]}
-        assert compute_stable_hash(a) == compute_stable_hash(b)
-
-    def test_int_vs_decimal_string_hash_equal(self):
-        a = {"cases": [{"id": "C1", "qty": 72}]}
-        b = {"cases": [{"id": "C1", "qty": "72.00"}]}
-        assert compute_stable_hash(a) == compute_stable_hash(b)
-
-    def test_genuine_numeric_difference_hashes_differently(self):
-        a = {"cases": [{"id": "C1", "refund": "790.00"}]}
-        b = {"cases": [{"id": "C1", "refund": "0.0"}]}
-        assert compute_stable_hash(a) != compute_stable_hash(b)
-
-    def test_leading_zero_identifier_not_collapsed(self):
-        a = {"cases": [{"code": "00123"}]}
-        b = {"cases": [{"code": "123"}]}
         assert compute_stable_hash(a) != compute_stable_hash(b)
 
     def test_bool_not_collapsed_to_int(self):
@@ -179,23 +175,57 @@ class TestComputeStableHashNumericCanonicalization:
         assert compute_stable_hash(a) != compute_stable_hash(b)
 
     def test_opt_out_preserves_legacy_byte_exact_behavior(self):
-        a = {"cases": [{"id": "C1", "refund": "130.00"}]}
-        b = {"cases": [{"id": "C1", "refund": "130.0"}]}
-        # Legacy mcp_core-exact behavior: without canonicalization the strings differ.
+        from decimal import Decimal
+
+        a = {"cases": [{"id": "C1", "qty": 72}]}
+        b = {"cases": [{"id": "C1", "qty": Decimal("72.00")}]}
+        # Legacy mcp_core-exact behavior: str(72) != str(Decimal("72.00")).
         assert compute_stable_hash(a, canonicalize_numbers=False) != compute_stable_hash(
             b, canonicalize_numbers=False
         )
 
+    # ---- tier 2: numeric strings, behind the per-task flag ----
+
+    def test_decimal_string_formats_fold_with_flag(self):
+        a = {"cases": [{"id": "C1", "refund": "130.00"}]}
+        b = {"cases": [{"id": "C1", "refund": "130.0"}]}
+        assert compute_stable_hash(a, normalize_numeric_strings=True) == compute_stable_hash(
+            b, normalize_numeric_strings=True
+        )
+
+    def test_int_vs_decimal_string_folds_with_flag(self):
+        a = {"cases": [{"id": "C1", "qty": 72}]}
+        b = {"cases": [{"id": "C1", "qty": "72.00"}]}
+        assert compute_stable_hash(a, normalize_numeric_strings=True) == compute_stable_hash(
+            b, normalize_numeric_strings=True
+        )
+
+    def test_genuine_numeric_difference_differs_even_with_flag(self):
+        a = {"cases": [{"id": "C1", "refund": "790.00"}]}
+        b = {"cases": [{"id": "C1", "refund": "0.0"}]}
+        assert compute_stable_hash(a, normalize_numeric_strings=True) != compute_stable_hash(
+            b, normalize_numeric_strings=True
+        )
+
+    def test_leading_zero_identifier_not_collapsed_even_with_flag(self):
+        a = {"cases": [{"code": "00123"}]}
+        b = {"cases": [{"code": "123"}]}
+        assert compute_stable_hash(a, normalize_numeric_strings=True) != compute_stable_hash(
+            b, normalize_numeric_strings=True
+        )
+
+    def test_negative_zero_collapses_to_zero_with_flag(self):
+        assert canonical_number("-0.00", normalize_strings=True) == canonical_number(0)
+        assert compute_stable_hash(
+            {"t": [{"amt": "-0.00"}]}, normalize_numeric_strings=True
+        ) == compute_stable_hash({"t": [{"amt": "0.0"}]}, normalize_numeric_strings=True)
+
+    # ---- guards independent of the flag ----
+
     def test_tagged_string_does_not_collide_with_number(self):
         # A crafted string byte-equal to a numeric token must not equal the number.
         crafted = "\x00tf-num:130"
-        assert canonical_number(crafted) != canonical_number(130)
-        assert compute_stable_hash({"t": [{"amt": 130}]}) != compute_stable_hash(
-            {"t": [{"amt": crafted}]}
-        )
-
-    def test_negative_zero_collapses_to_zero(self):
-        assert canonical_number("-0.00") == canonical_number(0)
-        assert compute_stable_hash({"t": [{"amt": "-0.00"}]}) == compute_stable_hash(
-            {"t": [{"amt": "0.0"}]}
-        )
+        assert canonical_number(crafted, normalize_strings=True) != canonical_number(130)
+        assert compute_stable_hash(
+            {"t": [{"amt": 130}]}, normalize_numeric_strings=True
+        ) != compute_stable_hash({"t": [{"amt": crafted}]}, normalize_numeric_strings=True)
