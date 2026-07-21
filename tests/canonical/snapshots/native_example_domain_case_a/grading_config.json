@@ -19,7 +19,8 @@
         "equals": [],
         "path": "$.db.items"
       }
-    ]
+    ],
+    "numeric_string_fields": []
   },
   "transcript_rules": null
 }

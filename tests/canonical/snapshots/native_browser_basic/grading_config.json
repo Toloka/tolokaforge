@@ -14,7 +14,8 @@
     "db_probes": [],
     "env_assertions": [],
     "hash": null,
-    "jsonpaths": []
+    "jsonpaths": [],
+    "numeric_string_fields": []
   },
   "transcript_rules": {
     "communicate_info": [],
