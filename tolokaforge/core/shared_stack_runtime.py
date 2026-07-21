@@ -691,6 +691,14 @@ class GrpcRunnerClient:
 
         Returns:
             True if service is healthy
+
+        A failed probe returns ``False`` and logs at ``DEBUG`` — this
+        method is called from both the transient startup retry loop in
+        :meth:`connect` and post-startup verification paths, and the
+        transient case would emit one ERROR line per attempt. Callers
+        that need to escalate a real failure log at their own level on
+        the returned ``False`` (see ``Orchestrator.run`` which emits an
+        ``INFO`` line naming the outcome).
         """
         if not self.stub:
             self.connect()
@@ -699,7 +707,7 @@ class GrpcRunnerClient:
             response = self.stub.HealthCheck(runner_pb2.HealthCheckRequest())
             return response.status == "healthy"
         except grpc.RpcError as e:
-            logger.error(f"Health check failed: {e}")
+            logger.debug(f"Health check failed: {e}")
             return False
 
     def health_check_detailed(self) -> dict:
