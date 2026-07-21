@@ -34,6 +34,10 @@ All notable changes to this project are documented in this file.
 
   Every deprecation message here follows a uniform actionable shape: **what** legacy shape triggered the warning, **where** it lives (file basename via `source_context` — never absolute paths), **why** it is deprecated, **how** to migrate (a concrete key rename or block move with a worked example), and **when** it goes away (`(tracked in #533)`). This lets external pack authors migrate incrementally without any hard breaks and gives them a concrete follow-up issue to subscribe to (#213).
 
+### Changed
+
+- **packaging**: a bare `pip install tolokaforge` no longer pulls `sqlalchemy`, `odata-query`, or `grpcio-tools`. These are domain-tool / build-time deps with no first-party harness importer: `sqlalchemy` and `odata-query` move to the new `[runner]` extra (the runner image's dependency surface), and `grpcio-tools` is build-time only (proto compilation; the runtime imports the generated `_pb2` modules) and stays in the dev group. Consumers who ran domain SQL/OData tool code in-process from a bare install (none known) migrate to `pip install tolokaforge[runner]`. The runner **image** is unchanged in effect — it installs `[runner]` — so task compose files referencing `tolokaforge-runner:local` are unaffected (#539).
+
 ### Docs
 
 - **guide**: task-pack image-layering guide covering the 3-tier base/environment/instance pattern from SWE-bench, with Dockerfile snippets and compose-file references (#146).
