@@ -2,6 +2,65 @@
 
 Key classes and entry points for programmatic usage.
 
+## run_trial
+
+Run one trial in-process and get its `TrialResult` back, without
+constructing the orchestrator or its batch lifecycle (queue, run-state,
+worker pool, budget, resume).
+
+```python
+import tolokaforge
+
+result = tolokaforge.run_trial(
+    task=task,                          # a TaskConfig
+    models={"agent": {"provider": "openrouter", "name": "anthropic/claude-sonnet-4.6"}},
+    runtime="auto",                     # or a registered backend name
+    grader="runner_rpc",
+    conductor="in_process",
+    output_dir=None,                    # None → no disk artifacts
+    trial_index=0,
+)
+print(result.trajectory.grade)
+```
+
+Keyword-only signature:
+
+```python
+def run_trial(
+    *,
+    task: TaskConfig,
+    models: dict[str, ModelConfig | dict[str, Any]],
+    runtime: str = "auto",
+    grader: str = "runner_rpc",
+    conductor: str = "in_process",
+    output_dir: Path | str | None = None,
+    trial_index: int = 0,
+) -> TrialResult: ...
+```
+
+- **`models`** — a role → model map. `agent` is required; `user` and
+  `judge` are optional (`user` defaults to the engine's default user
+  model). Values are `ModelConfig` instances or plain dicts.
+- **`runtime="auto"`** — resolves to `per_trial` when the task's
+  environment manifest requires per-trial isolation, else `shared`,
+  mirroring the CLI's task-driven default. `auto` is a reserved value;
+  any other value is a registered runtime-backend name.
+- **`runtime` / `grader` / `conductor`** — resolved by name through the
+  entry-point registries (`tolokaforge.runtime_backends`,
+  `tolokaforge.trial_graders`, `tolokaforge.conductors`).
+- **`output_dir=None`** — writes no artifacts to disk; pass a directory
+  to persist them.
+
+Errors:
+
+- **`pydantic.ValidationError`** — `models` is missing `agent` or carries
+  a malformed / unexpected value, or the composed run config is invalid.
+- **`UnknownImplementationError`** (`tolokaforge.core.plugin_registry`) —
+  a `runtime` / `grader` / `conductor` name is not registered; the
+  message lists the known names.
+- **`ProvisionError`** (`tolokaforge.core.runtime`) — the substrate
+  failed to provision. Raised, not swallowed.
+
 ## Orchestrator
 
 ```python
