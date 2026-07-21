@@ -69,6 +69,14 @@ class TestParseEnvelope:
         with pytest.raises(ProtocolError):
             parse_envelope('{"v":1,"type":"resume","task":{},"models":{}}')
 
+    def test_unknown_envelope_key_is_protocol_error(self) -> None:
+        with pytest.raises(ProtocolError, match="runtme"):
+            parse_envelope('{"v":1,"type":"start","runtme":"x","task":{},"models":{}}')
+
+    def test_unknown_envelope_key_in_cancel_is_protocol_error(self) -> None:
+        with pytest.raises(ProtocolError, match="extra"):
+            parse_envelope('{"v":1,"type":"cancel","extra":"x"}')
+
 
 class TestMarshalError:
     def _synthetic_validation_error(self) -> ValidationError:

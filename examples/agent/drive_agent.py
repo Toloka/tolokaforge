@@ -17,6 +17,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+# The public task-file loader is deferred to #547; until it lands, obtaining a
+# TaskConfig from disk goes through the adapter's loader — the honest current
+# path a downstream harness would use.
 from tolokaforge.adapters._task_loader import load_task_yaml
 from tolokaforge.secrets import init_default
 

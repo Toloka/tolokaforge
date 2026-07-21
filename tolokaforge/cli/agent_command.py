@@ -35,11 +35,7 @@ WIRE_VERSION = 1
 
 class ProtocolError(Exception):
     """A stdin envelope violates the wire framing (bad ``v``, unknown ``type``,
-    or malformed JSON)."""
-
-
-class InternalError(Exception):
-    """An unexpected failure with no named wire ``error_type`` of its own."""
+    unknown top-level key, or malformed JSON)."""
 
 
 class _Cancelled(Exception):
@@ -47,12 +43,16 @@ class _Cancelled(Exception):
     synchronous ``cancel`` envelope — surfaced as ``error_type:"cancelled"``."""
 
 
+_ALLOWED_START_KEYS = frozenset({"v", "type", "task", "models", "runtime", "grader", "conductor"})
+_ALLOWED_CANCEL_KEYS = frozenset({"v", "type"})
+
+
 @dataclass(frozen=True)
 class StartMessage:
     """A parsed ``start`` envelope: the arguments one ``run_trial`` call needs."""
 
-    task: dict[str, Any]
-    models: dict[str, Any]
+    task: dict[str, Any] | None
+    models: dict[str, Any] | None
     runtime: str
     grader: str
     conductor: str
@@ -87,9 +87,16 @@ def parse_envelope(line: str | bytes) -> StartMessage | CancelMessage:
 
     message_type = envelope.get("type")
     if message_type == "cancel":
+        unknown = set(envelope) - _ALLOWED_CANCEL_KEYS
+        if unknown:
+            raise ProtocolError(f"unknown envelope key(s): {sorted(unknown)}")
         return CancelMessage()
     if message_type != "start":
         raise ProtocolError(f"unknown message type {message_type!r}; expected 'start' or 'cancel'")
+
+    unknown = set(envelope) - _ALLOWED_START_KEYS
+    if unknown:
+        raise ProtocolError(f"unknown envelope key(s): {sorted(unknown)}")
 
     return StartMessage(
         task=envelope.get("task"),
