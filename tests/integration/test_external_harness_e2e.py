@@ -255,6 +255,11 @@ def test_agent_over_downstream_plugins(
     assert envelope["result"] == run_trial_payload["result"]
 
     if os.environ.get("TOLOKAFORGE_REGENERATE_GOLDEN") == "1":
+        assert not os.environ.get("CI"), (
+            "TOLOKAFORGE_REGENERATE_GOLDEN=1 is set in a CI environment. "
+            "Regeneration is a dev-only tool; the frozen golden lock must not be silently rewritten. "
+            "Set the env var only when regenerating locally."
+        )
         _GOLDEN.parent.mkdir(parents=True, exist_ok=True)
         _GOLDEN.write_text(wire_line + "\n")
         return

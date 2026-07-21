@@ -194,7 +194,7 @@ This milestone adds three compatibility surfaces. Each carries a breaking-change
 
 #### 4c — ADR lifecycle
 
-Proposed on merge; flips to Accepted in the #540 consolidation PR, matching the 0009 / 0010 / 0014 / 0015 lifecycle.
+Accepted at milestone #13 close-out (#540), matching the 0009 / 0010 / 0014 / 0015 Proposed→Accepted lifecycle.
 
 ## Consequences
 
