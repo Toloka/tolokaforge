@@ -47,4 +47,4 @@ Day-to-day implementation choices that don't affect the system shape do *not* ne
 | [0015](0015-trial-executor-protocol.md) | `TrialExecutor` Protocol — per-trial substrate-lifecycle seam | Accepted |
 | [0016](0016-runtime-backend-comparison.md) | Runtime backend comparison: `shared` vs `per_trial` (lifecycle axis) | Accepted |
 | [0018](0018-multi-container-under-shared-runtime.md) | Multi-container capability under shared runtime (composition axis) | Accepted |
-| [0019](0019-runtime-independence.md) | Runtime independence — Protocol registries, `run_trial`, `agent` subprocess contract | Proposed |
+| [0019](0019-runtime-independence.md) | Runtime independence — Protocol registries, `run_trial`, `agent` subprocess contract | Accepted |

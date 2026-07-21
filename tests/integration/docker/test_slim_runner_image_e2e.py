@@ -8,9 +8,13 @@ slimming did not break the image's function:
 - it boots and every domain-tool driver imports inside the container;
 - the docker CLI is absent from the default image;
 - it serves gRPC and reports healthy;
-- shared-stack and per-trial real-agent runs pass end-to-end against it.
+- shared-stack and per-trial real-agent runs pass end-to-end against it;
+- a ``tolokaforge agent`` subprocess drives a real trial to completion against
+  it — the one path none of the #536–#539 tests exercise together (#538
+  subprocess entry + #539 slim image + #536 ``shared`` resolution + #537
+  composition inside the agent).
 
-The first three need only Docker (no LLM key); the last two are real-agent runs
+The first three need only Docker (no LLM key); the last three are real-agent runs
 gated on Docker + a reachable runner + a provider key, mirroring
 ``tests/integration/test_run_trial_e2e.py``.
 """
@@ -22,6 +26,7 @@ import os
 import shutil
 import socket
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -207,5 +212,56 @@ def test_slim_runner_image_per_trial_coding_example() -> None:
         / "examples/native/coding/dataset/tasks/coding/coding_public_example_01/task.yaml"
     )
     result = _run_trial_on(task_yaml, runtime="per_trial")
+    assert result.trajectory.status.value == "completed", result.trajectory.status
+    assert result.trajectory.grade is not None
+
+
+@pytest.mark.requires_api
+@pytest.mark.llm
+@pytest.mark.slow
+@_real_agent_guards
+def test_slim_runner_image_agent_subprocess_shared_stack() -> None:
+    """A ``tolokaforge agent`` subprocess drives a real trial to completion against
+    the slim runner image — #538 (subprocess) + #539 (slim image) + #536
+    (``shared`` resolution) + #537 (composition inside the agent) together."""
+    from tolokaforge.adapters._task_loader import load_task_yaml
+    from tolokaforge.core.trial import TrialResult
+
+    provider, model = _pick_provider()  # type: ignore[misc]
+    task_yaml = (
+        _REPO_ROOT
+        / "examples/native/tool_use/dataset/tasks/tool_use/tool_use_public_example_01/task.yaml"
+    )
+    task, task_dir = load_task_yaml(task_yaml)
+
+    start = {
+        "v": 1,
+        "type": "start",
+        "task": task.model_dump(mode="json"),
+        "models": _models(provider, model),
+        "runtime": "shared",
+        "conductor": "in_process",
+    }
+    # A wire task carries no source_dir, so file assets resolve against the
+    # subprocess cwd — spawn at the task-pack root. The provider key is inherited
+    # from os.environ (exported by scripts/with_env.sh).
+    proc = subprocess.run(
+        [sys.executable, "-m", "tolokaforge.cli.main", "agent"],
+        input=json.dumps(start) + "\n",
+        cwd=str(task_dir),
+        env=os.environ.copy(),
+        capture_output=True,
+        text=True,
+        timeout=900,
+    )
+    assert proc.returncode == 0, (
+        f"agent subprocess failed (rc={proc.returncode}):\n"
+        f"stdout:\n{proc.stdout[-4000:]}\nstderr:\n{proc.stderr[-4000:]}"
+    )
+    lines = [line for line in proc.stdout.splitlines() if line.strip()]
+    assert len(lines) == 1, f"expected one stdout line, got: {proc.stdout!r}"
+    envelope = json.loads(lines[0])
+    assert envelope["type"] == "result", envelope
+    result = TrialResult.model_validate(envelope["result"])
     assert result.trajectory.status.value == "completed", result.trajectory.status
     assert result.trajectory.grade is not None
