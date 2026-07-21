@@ -14,7 +14,7 @@ Common extras:
 
 ```bash
 pip install "tolokaforge[browser]"   # Playwright + Pillow
-pip install "tolokaforge[docker]"    # Docker + gRPC runtime
+pip install "tolokaforge[runner]"    # runner-image domain-tool drivers (SQL, JWT, HTTP)
 pip install "tolokaforge[server]"    # FastAPI/Uvicorn services
 pip install "tolokaforge[rag]"       # BM25 RAG search
 pip install "tolokaforge[all]"       # Full feature set
@@ -105,6 +105,6 @@ orch.run()
 
 1. Package wheels exclude bundled benchmark tasks; use `evaluation.task_packs` for public/private content.
 2. Browser/mobile tools require the `browser` extra.
-3. Docker is the only supported runtime; install the `docker` extra (`pip install "tolokaforge[docker]"`).
+3. Docker is the only supported runtime; its client + the gRPC stack ship in the base install (no extra needed). The `runner` extra adds the domain-tool drivers the runner *image* installs, not something a host caller normally needs.
 4. For queue/distributed execution details, see `docs/RUNNER.md`.
 5. For metric definitions and failure attribution interpretation, see `docs/ANALYTICS.md`.

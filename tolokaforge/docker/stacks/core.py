@@ -30,6 +30,7 @@ def core_stack(
     runner_port: int | Literal["auto"] = "auto",
     enable_dind: bool = False,
     enable_playwright: bool = False,
+    enable_docker_cli: bool = False,
     task_pack_mounts: list[Path] | None = None,
     extra_runner_binds: list[tuple[Path, str]] | None = None,
     mount_docker_socket: bool = False,
@@ -48,6 +49,10 @@ def core_stack(
             Runner connects via ``DOCKER_HOST=tcp://dind:2375``.
         enable_playwright: Install Playwright + Chromium in the Runner
             image for browser tool support. Detected automatically from tasks.
+        enable_docker_cli: Install the docker CLI + compose plugin in the
+            Runner image so terminal-bench tasks can shell out to the host
+            Docker daemon via the mounted socket. Detected automatically from
+            the configured adapter type; the default image ships without it.
         task_pack_mounts: Host directories to bind-mount into the Runner at
             the same absolute path. Used by the ``terminal_bench`` adapter so
             the host Docker daemon (reached via a mounted socket) and the
@@ -183,6 +188,8 @@ def core_stack(
     }
     if enable_playwright:
         runner_build_args["INSTALL_PLAYWRIGHT"] = "true"
+    if enable_docker_cli:
+        runner_build_args["INSTALL_DOCKER_CLI"] = "true"
 
     runner = ServiceDefinition(
         name="runner",
