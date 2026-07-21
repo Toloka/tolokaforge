@@ -2,7 +2,6 @@ task_id: "tool_use_public_example_01"
 name: "Ticket Resolution Plan"
 category: "tool_use"
 description: "Use database tools to triage a high-priority support ticket, update status, and produce an operator-facing action plan."
-max_turns: 9
 initial_user_message: "Use the ticket data to move ticket `T-100` to `in_progress`, assign it to `oncall-platform`, and write a resolution plan to `submissions/tool_use_ticket_plan.md`."
 initial_state:
   json_db: "initial_state.json"
@@ -15,10 +14,9 @@ tools:
     enabled: ["db_query", "db_update", "read_file", "write_file"]
   user:
     enabled: []
-user_simulator:
-  mode: llm
-  persona: cooperative
-  backstory: "You are an operations manager validating that the assistant can use tools to update ticket state safely and summarize next actions. Acknowledge completion and end with ###STOP### once the assistant has delivered the requested artifact(s)."
+actors:
+  user:
+    backstory: "You are an operations manager validating that the assistant can use tools to update ticket state safely and summarize next actions. Acknowledge completion and end with ###STOP### once the assistant has delivered the requested artifact(s)."
 policies:
   guidance:
     - "Query current state before updating records."

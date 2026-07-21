@@ -53,8 +53,21 @@ from typing import Any
 
 import yaml
 
-from tolokaforge.core.models import TaskConfig
-from tolokaforge.core.project_loader import deep_merge
+from tolokaforge.core.deprecations import (
+    canonicalize_actor_config,
+    source_context,
+    warn_deprecated,
+)
+from tolokaforge.core.models import TaskConfig, TaskDefaults
+from tolokaforge.core.project_loader import construct_config, deep_merge
+
+# Keys that live on ``project.task_defaults`` but are not ``TaskConfig`` fields.
+# They reach the engine through their own seams (``grading_defaults`` via
+# ``NativeAdapter.get_grading_config``, ``continue_prompt`` via turn logic), so
+# merging them into a task dict would fail its ``extra="forbid"`` validation.
+_PROJECT_SCOPED_DEFAULT_KEYS = frozenset(TaskDefaults.model_fields) - frozenset(
+    TaskConfig.model_fields
+)
 
 
 def validate_grading_yaml(grading_path: Path) -> None:
@@ -112,12 +125,14 @@ def load_task_yaml(
     Args:
         task_path: Absolute or relative path to ``task.yaml``.
         project_task_defaults: Optional ``project.task_defaults`` dict from
-            the enclosing project. When supplied, it is layered above the
-            adapter's Domain merge and below the task's own fields.
-            Precedence, low to high: adapter Domain bundle → project
-            defaults → task.yaml. Task fields win on conflict; project
-            defaults win over the Domain bundle where they overlap and
-            the task doesn't set the field.
+            the enclosing project. Only its ``TaskConfig``-shaped keys are
+            layered into the task dict — above the adapter's Domain merge and
+            below the task's own fields. Project-scoped-only keys
+            (``grading_defaults``, ``continue_prompt``) are excluded here and
+            reach the engine through their own seams. Precedence, low to high:
+            adapter Domain bundle → project defaults → task.yaml. Task fields
+            win on conflict; project defaults win over the Domain bundle where
+            they overlap and the task doesn't set the field.
 
     Returns:
         ``(task_config, effective_task_dir)``. ``effective_task_dir`` is the
@@ -156,11 +171,35 @@ def load_task_yaml(
     domain_data = _load_domain_dict(task_path, task_data, task_root)
     task_data.pop("domain", None)
 
+    # Lift each layer's legacy ``user_simulator`` into ``actors.user`` before
+    # the merge, so a legacy layer and a canonical layer both speak
+    # ``actors.user`` and ``deep_merge`` composes them field-by-field. Run
+    # per-layer: a post-merge coercer sees both keys deposited by different
+    # layers and could not tell a cross-layer override from a same-source
+    # conflict. The task-side ``source_context`` names task.yaml so any
+    # emitted ``DeprecationWarning`` carries the right basename; domain-
+    # side coercion runs inside ``_load_domain_dict`` where the domain
+    # file path is in scope; project-side coercion already ran in
+    # ``load_project_config`` (this second call is idempotent).
+    with source_context(task_path):
+        canonicalize_actor_config(task_data)
+    # domain_data already canonicalised inside _load_domain_dict (with the
+    # domain file path in source_context); project_task_defaults already
+    # canonicalised inside load_project_config. Both calls here were
+    # redundant duplicates that could re-fire warnings without source
+    # context — removed.
+    _ = project_task_defaults  # no-op: canonicalisation happens upstream
+
     # Build the precedence chain from lowest to highest. ``deep_merge``
     # is delta-wins, so the second argument overrides the first on conflict.
     base = domain_data
     if project_task_defaults:
-        base = deep_merge(base, project_task_defaults)
+        task_shaped_defaults = {
+            key: value
+            for key, value in project_task_defaults.items()
+            if key not in _PROJECT_SCOPED_DEFAULT_KEYS
+        }
+        base = deep_merge(base, task_shaped_defaults)
     task_data = deep_merge(base, task_data)
 
     # Auto-pick a sibling ``grading.yaml`` when no layer set ``grading``. An
@@ -178,7 +217,7 @@ def load_task_yaml(
     # No-op if the manifest is absent or the path is already absolute.
     _resolve_environment_manifest_paths(task_data, task_root, task_path)
 
-    return TaskConfig(**task_data), task_root
+    return construct_config(TaskConfig, task_data, source=task_path), task_root
 
 
 def _resolve_environment_manifest_paths(task_data: dict, task_root: Path, task_path: Path) -> None:
@@ -204,19 +243,49 @@ def _resolve_environment_manifest_paths(task_data: dict, task_root: Path, task_p
             f"(got {type(manifest).__name__})"
         )
 
+    if "stack" in manifest and manifest["stack"] is None:
+        with source_context(task_path):
+            warn_deprecated(
+                legacy="'environment_manifest.stack: null'",
+                canonical="omit the key or declare a stack sub-object",
+                detail=(
+                    "A task cannot unset the environment out from under a project "
+                    "that declares one. Omit the key entirely to inherit the project's "
+                    "stack, or declare a stack sub-object explicitly."
+                ),
+                stacklevel=2,
+            )
+        # Drop the null key so the loader treats it as unset (inherit-from-project).
+        manifest.pop("stack")
+
     stack = manifest.get("stack")
     if isinstance(stack, dict) and "compose_file" in stack:
         compose_file = stack["compose_file"]
-        if not isinstance(compose_file, str):
-            raise RuntimeError(
-                f"Task file {task_path}: "
-                f"'environment_manifest.stack.compose_file' must be a string "
-                f"(got {type(compose_file).__name__})"
-            )
-        resolved = Path(compose_file)
-        if not resolved.is_absolute():
-            resolved = (task_root / resolved).resolve()
-        stack["compose_file"] = str(resolved)
+        if compose_file is None:
+            with source_context(task_path):
+                warn_deprecated(
+                    legacy="'environment_manifest.stack.compose_file: null'",
+                    canonical="omit the key or declare a compose_file path",
+                    detail=(
+                        "A task cannot unset the substrate pointer; there is no "
+                        "engine-default compose file to fall through to. Omit the "
+                        "key entirely to inherit the project's compose_file."
+                    ),
+                    stacklevel=2,
+                )
+            # Drop the null key so the loader treats it as unset (inherit-from-project).
+            stack.pop("compose_file")
+        else:
+            if not isinstance(compose_file, str):
+                raise RuntimeError(
+                    f"Task file {task_path}: "
+                    f"'environment_manifest.stack.compose_file' must be a string "
+                    f"(got {type(compose_file).__name__})"
+                )
+            resolved = Path(compose_file)
+            if not resolved.is_absolute():
+                resolved = (task_root / resolved).resolve()
+            stack["compose_file"] = str(resolved)
 
     if "compose_file" in manifest:
         compose_file = manifest["compose_file"]
@@ -282,6 +351,12 @@ def _load_domain_dict(task_path: Path, task_data: dict, task_root: Path) -> dict
         )
 
     _rewrite_task_paths(domain_data, domain_path.parent, task_root)
+    # Lift legacy top-level ``user_simulator`` inside the domain layer to
+    # ``actors.user`` here (rather than at the caller) so any
+    # ``DeprecationWarning`` names this domain file, not the referring
+    # task.yaml. Idempotent: a canonical layer is left untouched.
+    with source_context(domain_path):
+        canonicalize_actor_config(domain_data)
     return domain_data
 
 

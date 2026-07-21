@@ -37,7 +37,8 @@ from typing import TYPE_CHECKING, Any
 from testcontainers.compose import DockerCompose
 
 from tolokaforge.core.compose_materialisation import (
-    RUNNER_PORT_DEFAULT,
+    DB_SERVICE_DEFAULT,
+    DB_SERVICE_PORT_DEFAULT,
     LogCaptureConfig,
     apply_network_policy_to_compose_file,
     capture_compose_service_logs,
@@ -49,7 +50,6 @@ from tolokaforge.core.compose_materialisation import (
     resolve_runner_endpoint,
     shutdown_compose,
     trial_services_dir,
-    verify_network_policy_supported,
     write_capture_manifest,
 )
 from tolokaforge.core.models import SeedRef
@@ -124,6 +124,7 @@ class PerTrialRuntimeBackend:
             "reset_recipes:redis_dump",
             "reset_recipes:bare",
             "network_isolation:no_internet",
+            "network_isolation:limited_internet",
         }
     )
     """Local-docker per-trial capability advertisement. Read by
@@ -212,7 +213,6 @@ class PerTrialRuntimeBackend:
                 ),
             )
 
-        verify_network_policy_supported(manifest.network_policy)
         service_names = tuple(manifest.load_compose()["services"])
         temp_dir = make_project_temp_dir(spec.trial_id)
         compose: DockerCompose | None = None
@@ -222,6 +222,7 @@ class PerTrialRuntimeBackend:
                 temp_dir / manifest.compose_file.name,
                 manifest.network_policy,
                 manifest.runner_service,
+                manifest.limited_internet_allowlist,
             )
             compose = DockerCompose(
                 context=str(temp_dir),
@@ -256,7 +257,7 @@ class PerTrialRuntimeBackend:
             raise
 
         runner_service = manifest.runner_service
-        runner_port = RUNNER_PORT_DEFAULT
+        runner_port = manifest.runner_port
         runner_endpoint = resolve_runner_endpoint(compose, runner_service, runner_port)
         if runner_endpoint is None:
             cleanup_partial_materialisation(compose, temp_dir)
@@ -275,7 +276,15 @@ class PerTrialRuntimeBackend:
         # `db_url=None`. The runner-side DBServiceClient reads DB_SERVICE_URL
         # from its container env, and `db_json.py` tools fall back to the
         # same env var, so a missing db_url is not a provisioning failure.
-        endpoints = resolve_env_endpoints(compose, runner_host, runner_host_port)
+        endpoints = resolve_env_endpoints(
+            compose,
+            runner_host,
+            runner_host_port,
+            db_service=manifest.db_service or DB_SERVICE_DEFAULT,
+            db_port=manifest.db_port or DB_SERVICE_PORT_DEFAULT,
+            rag_service=manifest.rag_service,
+            rag_port=manifest.rag_port,
+        )
 
         # Client is constructed but not yet connected. Connect is deferred
         # to first per-trial RPC use — see :attr:`_connected_trials`.
@@ -329,11 +338,11 @@ class PerTrialRuntimeBackend:
         shutdown_compose(handle.compose)
         shutil.rmtree(handle.temp_dir, ignore_errors=True)
 
-    def capture_service_logs(self, handle: EnvHandle, *, failed: bool) -> dict[str, int]:
-        """Capture per-service logs for the trial-body-failure path.
+    def capture_service_logs(self, handle: EnvHandle, *, capture_worthy: bool) -> dict[str, int]:
+        """Capture per-service logs for the trial-body diagnostics path.
 
-        No-op ``{}`` when capture is disabled, the gate (``failed`` or the
-        on-success policy) is not met, or ``handle`` is foreign. Otherwise
+        No-op ``{}`` when capture is disabled, the gate (``capture_worthy`` or
+        the on-success policy) is not met, or ``handle`` is foreign. Otherwise
         writes ``docker compose logs`` output for the handle's snapshot
         services into the trial ``services/`` dir and returns the byte map.
         Writes only the ``.log`` files — the durable ``metrics.yaml``
@@ -341,7 +350,7 @@ class PerTrialRuntimeBackend:
         """
         if self.log_capture is None:
             return {}
-        if not (failed or self.log_capture.on_success):
+        if not (capture_worthy or self.log_capture.on_success):
             return {}
         if not isinstance(handle, _LocalEnvHandle):
             return {}

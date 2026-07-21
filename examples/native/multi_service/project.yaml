@@ -1,0 +1,27 @@
+# Project spec for the multi_service example.
+#
+# Single task exercising the shared-runtime + task-declared-stack path
+# (Case B in ADR-0018). The stack lives on the task's own
+# `environment_manifest.stack` (task-local compose file), so the project
+# declares no `default_environment`. See docs/PROJECTS.md for the full
+# Project model.
+
+name: "multi-service"
+version: 1
+description: >
+  Query a running product-catalog HTTP service and summarise the top-3
+  most expensive in-stock products. Demonstrates a task that materialises
+  its own three-service stack once at run start under `--runtime shared`.
+
+tasks:
+  discovery:
+    glob: "dataset/tasks/**/task.yaml"
+
+# ── Task defaults — base for every task ─────────────────────────
+task_defaults:
+  adapter_type: "native"
+  max_turns: 10
+  actors:
+    user:
+      mode: "llm"
+      persona: "cooperative"

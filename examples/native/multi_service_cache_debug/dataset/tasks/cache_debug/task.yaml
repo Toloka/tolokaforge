@@ -1,0 +1,50 @@
+task_id: "cache_debug"
+name: "Diagnose Stale Order Reads"
+category: "multi_service"
+description: "The orders API serves a stale order status because a redis cache entry is never invalidated when postgres is updated. The agent inspects the app layer and the cache layer over HTTP, compares against the source of truth, and writes a root-cause note naming the cache-invalidation bug."
+max_turns: 20
+initial_user_message: |
+  Hey — on-call here. Customers are telling us order 4021 still shows as
+  "processing" in the orders API even though our records say it shipped. It
+  looks like the orders service is serving stale data intermittently and I
+  can't tell why. Can you dig in and figure out the root cause?
+
+  The orders API is at http://orders-api:8000 — `GET /orders/4021` is what
+  customers hit, and `GET /orders/4021/source` reads straight from the
+  database. There's also a cache inspector at http://cache-admin:8000 if you
+  need to look at what's cached. When you've worked out what's going on,
+  please write a short root-cause note to a file under `submissions/`.
+adapter_type: "native"
+initial_state:
+  filesystem: {}
+tools:
+  agent:
+    enabled: ["http_request", "write_file"]
+    http_request:
+      allowed_hosts:
+        - "orders-api:8000"
+        - "cache-admin:8000"
+  user:
+    enabled: []
+actors:
+  user:
+    mode: llm
+    persona: "on-call engineer"
+    backstory: |
+      You are the on-call engineer who paged for help. You know order 4021 is
+      showing the wrong status to customers ("processing" when it actually
+      shipped) and that it happens intermittently, but you do NOT know the cause
+      — that is what you need the agent to find. Rules:
+      - Open naturally, in your own words, with the symptom — not a checklist.
+      - Answer clarifying questions plainly from what you know (the symptom, the
+        two orders-api endpoints, the cache inspector).
+      - Never name the root cause or say the word "cache invalidation" yourself;
+        that is the agent's job to diagnose.
+      - Say ###STOP### once the agent has written a root-cause note under
+        submissions/ and told you what it found.
+policies:
+  guidance:
+    - "The orders API is at `http://orders-api:8000` — `GET /orders/{id}` returns the served order, `GET /orders/{id}/source` returns the order as recorded in the source-of-truth datastore, `POST /orders/{id}` records a status update. The cache-admin service at `http://cache-admin:8000` exposes read-only inspection: `GET /keys` lists keys, `GET /cache/{key}` returns the raw cached value. Reach all of these with the `http_request` tool."
+    - "Diagnose the reported staleness by inspecting both layers and comparing what each returns for order 4021. Do not guess the root cause — derive it from the divergence you observe."
+    - "Write a short root-cause note to `submissions/rootcause.md` with the `write_file` tool, naming the bug and the mechanism."
+grading: "grading.yaml"

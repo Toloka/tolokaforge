@@ -1,0 +1,48 @@
+# Multi-service `helpdesk_workflow` example — flagship cross-service reasoning.
+#
+#   agent → 5 FastAPI services (delivery-tracker, product-catalog,
+#           client-locations, crm, policy-search) → postgres:16 (app-db)
+#
+# The agent reconciles data across four business services plus an in-container
+# postgres-FTS policy corpus, derives the one policy-valid resolution
+# (`reschedule`), records it as a CRM case, and annotates the delivery. Grading
+# reads the substrate directly through a read-only role and checks *policy
+# correctness*, combined with transcript rules and an llm_judge rubric.
+#
+# Three model roles: the `agent` under test, the `user` simulator, and the
+# read-only rubric `judge`.
+#
+# `runtime: per_trial` because the postgres substrate is declared
+# `isolation: ephemeral`, which routes the whole run to the per-trial backend
+# so each trial gets a freshly seeded database (`crm_cases` empty).
+#
+# Requirements:
+#   - Docker daemon running.
+#   - OPENROUTER_API_KEY in .env.
+models:
+  agent:
+    provider: "openrouter"
+    name: "anthropic/claude-haiku-4-5"
+    temperature: 0.0
+    max_tokens: 4096
+  user:
+    provider: "openrouter"
+    name: "anthropic/claude-haiku-4-5"
+    temperature: 0.2
+  judge:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.0
+
+orchestrator:
+  workers: 1
+  repeats: 1
+  max_turns: 18
+  runtime: per_trial
+  queue_backend: sqlite
+
+evaluation:
+  projects:
+    - "examples/native/multi_service_helpdesk_workflow/dataset"
+  tasks_glob: "tasks/helpdesk_01/task.yaml"
+  output_dir: "results/multi_service_helpdesk_workflow_example"

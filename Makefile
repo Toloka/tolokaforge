@@ -80,7 +80,7 @@ docker-status:
 # =============================================================================
 
 run:
-	uv run tolokaforge run --config examples/native/coding/run_config.yaml
+	uv run tolokaforge run --config examples/native/coding/run_configs/dev.yaml
 
 TASKS_GLOB ?= tasks/**/task.yaml
 

@@ -61,22 +61,22 @@ uv run tolokaforge docker status
 When a task declares its own `environment_manifest`, the runner runs
 alongside those task-declared services for the duration of each trial,
 provisioning them per the manifest's isolation rules. See
-[architecture/RUNTIME_BACKENDS.md](architecture/RUNTIME_BACKENDS.md) for
+[RUNTIME_BACKENDS.md](RUNTIME_BACKENDS.md) for
 the backend lifecycle.
 
 ## Local Queue Run (SQLite)
 
 ```bash
-uv run tolokaforge prepare --config examples/native/coding/run_config.yaml --run-dir results/queue_run --reset-queue
-uv run tolokaforge worker --config examples/native/coding/run_config.yaml --run-dir results/queue_run
+uv run tolokaforge prepare --config examples/native/coding/run_configs/dev.yaml --run-dir results/queue_run --reset-queue
+uv run tolokaforge worker --config examples/native/coding/run_configs/dev.yaml --run-dir results/queue_run
 uv run tolokaforge status --run-dir results/queue_run
 ```
 
 Run multiple local workers on one machine:
 
 ```bash
-uv run tolokaforge worker --config examples/native/coding/run_config.yaml --run-dir results/queue_run &
-uv run tolokaforge worker --config examples/native/coding/run_config.yaml --run-dir results/queue_run &
+uv run tolokaforge worker --config examples/native/coding/run_configs/dev.yaml --run-dir results/queue_run &
+uv run tolokaforge worker --config examples/native/coding/run_configs/dev.yaml --run-dir results/queue_run &
 wait
 ```
 
@@ -95,19 +95,19 @@ orchestrator:
 2. Prepare queue once:
 
 ```bash
-uv run tolokaforge prepare --config examples/native/coding/run_config.yaml --run-dir results/distributed_run --reset-queue
+uv run tolokaforge prepare --config examples/native/coding/run_configs/dev.yaml --run-dir results/distributed_run --reset-queue
 ```
 
 3. Start N workers (on any machines with access to the same Postgres):
 
 ```bash
-uv run tolokaforge worker --config examples/native/coding/run_config.yaml --run-dir results/distributed_run
+uv run tolokaforge worker --config examples/native/coding/run_configs/dev.yaml --run-dir results/distributed_run
 ```
 
 4. Monitor:
 
 ```bash
-uv run tolokaforge status --run-dir results/distributed_run --config examples/native/coding/run_config.yaml
+uv run tolokaforge status --run-dir results/distributed_run --config examples/native/coding/run_configs/dev.yaml
 ```
 
 ### GitHub Actions

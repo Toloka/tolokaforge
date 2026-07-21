@@ -59,7 +59,7 @@ caps = ModelCapabilities.for_model(name="openai/gpt-5.4", provider="openai")
 ## CLI
 
 ```bash
-uv run tolokaforge run --config examples/native/coding/run_config.yaml
+uv run tolokaforge run --config examples/native/coding/run_configs/dev.yaml
 uv run tolokaforge validate --tasks "tasks/**/task.yaml"
 uv run tolokaforge analyze --trajectory results/.../trajectory.yaml
 ```

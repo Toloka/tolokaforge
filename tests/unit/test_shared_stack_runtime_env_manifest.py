@@ -20,7 +20,9 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 
+from tolokaforge.core.compose_materialisation import LogCaptureConfig
 from tolokaforge.core.runtime import ProvisionError
 from tolokaforge.core.shared_stack_runtime import SharedStackRuntimeBackend
 from tolokaforge.core.trial import EnvEndpoints, EnvironmentManifest
@@ -238,6 +240,172 @@ class TestConnectMaterialises:
             pytest.raises(ProvisionError, match="docker compose up failed"),
         ):
             backend.connect()
+        mock_cleanup.assert_called_once()
+
+    def test_capture_writes_run_level_bundle_on_compose_start_failure(self, tmp_path: Path) -> None:
+        """On the compose-start failure branch the run-level ``services/``
+        bundle (per-service ``.log`` files + ``_capture.yaml`` with
+        ``capture_reason: "materialise_error"``) is written before cleanup,
+        and the original ``ProvisionError`` still propagates.
+
+        Only the docker subprocess boundary (``_fetch_service_logs``) is
+        stubbed — the real capture/manifest/file-writing code runs."""
+        manifest = _make_manifest(tmp_path)
+        log_capture = LogCaptureConfig(output_root=tmp_path, tail=100, on_success=False)
+        backend = SharedStackRuntimeBackend(
+            env_manifest=manifest, run_id="run-x", log_capture=log_capture
+        )
+
+        fake_compose = MagicMock()
+        fake_compose.start.side_effect = RuntimeError("daemon socket refused")
+        fake_compose.compose_command_property = ["docker", "compose", "-f", "x.yaml"]
+        fake_compose.context = str(tmp_path)
+
+        def fake_fetch(base_command, context, service, tail):  # noqa: ANN001, ANN202
+            return f"log-bytes-for-{service}".encode()
+
+        def assert_captured_first(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            assert (tmp_path / "services" / "runner.log").exists()
+
+        with (
+            patch("tolokaforge.core.shared_stack_runtime.DockerCompose", return_value=fake_compose),
+            patch(
+                "tolokaforge.core.shared_stack_runtime.copy_compose_context",
+                lambda src, dst: None,
+            ),
+            patch(
+                "tolokaforge.core.shared_stack_runtime.apply_network_policy_to_compose_file",
+                lambda *a, **k: None,
+            ),
+            patch(
+                "tolokaforge.core.shared_stack_runtime.cleanup_partial_materialisation",
+                side_effect=assert_captured_first,
+            ),
+            patch(
+                "tolokaforge.core.compose_materialisation._fetch_service_logs",
+                side_effect=fake_fetch,
+            ),
+            pytest.raises(ProvisionError, match="docker compose up failed"),
+        ):
+            backend.connect()
+
+        services_dir = tmp_path / "services"
+        assert (services_dir / "runner.log").read_bytes() == b"log-bytes-for-runner"
+        assert (services_dir / "db-service.log").read_bytes() == b"log-bytes-for-db-service"
+        recorded = yaml.safe_load((services_dir / "_capture.yaml").read_text())
+        assert recorded["capture_reason"] == "materialise_error"
+        assert recorded["services"] == {
+            "runner": {"bytes": len(b"log-bytes-for-runner")},
+            "db-service": {"bytes": len(b"log-bytes-for-db-service")},
+        }
+
+    def test_capture_error_does_not_mask_provision_error(self, tmp_path: Path) -> None:
+        """A capture-time error is swallowed and logged — the original
+        ``ProvisionError`` is what propagates, never the capture error."""
+        manifest = _make_manifest(tmp_path)
+        log_capture = LogCaptureConfig(output_root=tmp_path, tail=100, on_success=False)
+        backend = SharedStackRuntimeBackend(
+            env_manifest=manifest, run_id="run-x", log_capture=log_capture
+        )
+
+        fake_compose = MagicMock()
+        fake_compose.start.side_effect = RuntimeError("daemon socket refused")
+        with (
+            patch("tolokaforge.core.shared_stack_runtime.DockerCompose", return_value=fake_compose),
+            patch(
+                "tolokaforge.core.shared_stack_runtime.copy_compose_context",
+                lambda src, dst: None,
+            ),
+            patch(
+                "tolokaforge.core.shared_stack_runtime.apply_network_policy_to_compose_file",
+                lambda *a, **k: None,
+            ),
+            patch("tolokaforge.core.shared_stack_runtime.cleanup_partial_materialisation"),
+            patch(
+                "tolokaforge.core.shared_stack_runtime.capture_compose_service_logs",
+                side_effect=RuntimeError("capture boom"),
+            ),
+            pytest.raises(ProvisionError, match="docker compose up failed"),
+        ):
+            backend.connect()
+
+    def test_no_capture_when_log_capture_none(self, tmp_path: Path) -> None:
+        """With no ``log_capture`` configured, capture is a silent no-op:
+        cleanup still runs, the ``ProvisionError`` still raises, and no
+        run-level ``services/`` dir is created."""
+        manifest = _make_manifest(tmp_path)
+        backend = SharedStackRuntimeBackend(env_manifest=manifest, run_id="run-x")
+
+        fake_compose = MagicMock()
+        fake_compose.start.side_effect = RuntimeError("daemon socket refused")
+        with (
+            patch("tolokaforge.core.shared_stack_runtime.DockerCompose", return_value=fake_compose),
+            patch(
+                "tolokaforge.core.shared_stack_runtime.copy_compose_context",
+                lambda src, dst: None,
+            ),
+            patch(
+                "tolokaforge.core.shared_stack_runtime.apply_network_policy_to_compose_file",
+                lambda *a, **k: None,
+            ),
+            patch(
+                "tolokaforge.core.shared_stack_runtime.cleanup_partial_materialisation"
+            ) as mock_cleanup,
+            pytest.raises(ProvisionError, match="docker compose up failed"),
+        ):
+            backend.connect()
+        mock_cleanup.assert_called_once()
+        assert not (tmp_path / "services").exists()
+
+    def test_capture_fires_on_missing_runner_endpoint_branch(self, tmp_path: Path) -> None:
+        """The missing-runner-endpoint branch captures the run-level bundle
+        before cleanup, same as the compose-start branch."""
+        manifest = _make_manifest(tmp_path)
+        log_capture = LogCaptureConfig(output_root=tmp_path, tail=100, on_success=False)
+        backend = SharedStackRuntimeBackend(
+            env_manifest=manifest, run_id="run-x", log_capture=log_capture
+        )
+
+        fake_compose = MagicMock()
+        fake_compose.compose_command_property = ["docker", "compose", "-f", "x.yaml"]
+        fake_compose.context = str(tmp_path)
+
+        def fake_fetch(base_command, context, service, tail):  # noqa: ANN001, ANN202
+            return f"log-bytes-for-{service}".encode()
+
+        def assert_captured_first(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            assert (tmp_path / "services" / "runner.log").exists()
+
+        with (
+            patch("tolokaforge.core.shared_stack_runtime.DockerCompose", return_value=fake_compose),
+            patch(
+                "tolokaforge.core.shared_stack_runtime.copy_compose_context",
+                lambda src, dst: None,
+            ),
+            patch(
+                "tolokaforge.core.shared_stack_runtime.apply_network_policy_to_compose_file",
+                lambda *a, **k: None,
+            ),
+            patch(
+                "tolokaforge.core.shared_stack_runtime.resolve_runner_endpoint",
+                return_value=None,
+            ),
+            patch(
+                "tolokaforge.core.compose_materialisation._fetch_service_logs",
+                side_effect=fake_fetch,
+            ),
+            patch(
+                "tolokaforge.core.shared_stack_runtime.cleanup_partial_materialisation",
+                side_effect=assert_captured_first,
+            ) as mock_cleanup,
+            pytest.raises(ProvisionError, match="runner_service"),
+        ):
+            backend.connect()
+
+        services_dir = tmp_path / "services"
+        assert (services_dir / "runner.log").read_bytes() == b"log-bytes-for-runner"
+        recorded = yaml.safe_load((services_dir / "_capture.yaml").read_text())
+        assert recorded["capture_reason"] == "materialise_error"
         mock_cleanup.assert_called_once()
 
 

@@ -12,8 +12,8 @@ from tolokaforge.adapters._task_loader import _detect_task_root, load_task_yaml
 from tolokaforge.adapters.base import AdapterEnvironment, BaseAdapter
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import EnvironmentPatch, GradingConfig, TaskConfig
+from tolokaforge.core.project_loader import construct_config, resolve_effective_grading_combine
 from tolokaforge.core.project_loader import resolve as resolve_environment
-from tolokaforge.core.project_loader import resolve_effective_grading_combine
 
 if TYPE_CHECKING:
     from tolokaforge.runner.models import TaskDescription
@@ -330,7 +330,12 @@ class NativeAdapter(BaseAdapter):
             combine = resolve_effective_grading_combine(
                 self._project_combine_defaults(), task_combine
             )
-            return GradingConfig(**grading_data, combine=combine)
+            return construct_config(
+                GradingConfig,
+                {**grading_data, "combine": combine},
+                source=grading_path,
+                section="grading",
+            )
 
         raise ValueError(f"Grading config not found: {grading_path}")
 
@@ -396,6 +401,7 @@ class NativeAdapter(BaseAdapter):
 
         from tolokaforge.runner.models import (
             AdapterType,
+            DbProbe,
             EnvAssertion,
             GoldenAction,
             InitializationAction,
@@ -616,12 +622,15 @@ class NativeAdapter(BaseAdapter):
                         )
                     )
 
+                db_probes = [DbProbe(**probe) for probe in state_checks_data.get("db_probes", [])]
+
                 state_checks = StateChecksConfig(
                     hash_enabled=bool(hash_config and hash_config.get("enabled", False)),
                     expected_hash=hash_config.get("expected_state_hash") if hash_config else None,
                     golden_actions=golden_actions,
                     jsonpath_checks=state_checks_data.get("jsonpaths", []),
                     env_assertions=env_assertions,
+                    db_probes=db_probes,
                 )
 
             # Build transcript rules
@@ -678,14 +687,11 @@ class NativeAdapter(BaseAdapter):
         )
 
         # Build user simulator config
+        sim = task.resolve_user_simulator()
         user_simulator = RunnerUserSimulatorConfig(
-            mode=task.user_simulator.mode if task.user_simulator else "llm",
-            persona=task.user_simulator.persona if task.user_simulator else "cooperative",
-            backstory=(
-                task.user_simulator.backstory
-                if task.user_simulator and task.user_simulator.backstory
-                else ""
-            ),
+            mode=sim.mode,
+            persona=sim.persona,
+            backstory=sim.backstory or "",
         )
 
         # Build filesystem state from initial_state.filesystem.copy so the

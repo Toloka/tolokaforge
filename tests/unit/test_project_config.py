@@ -8,6 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from tolokaforge.core.models import (
+    ActorSpec,
     GradingCombineConfig,
     GradingDefaults,
     ProjectConfig,
@@ -16,7 +17,6 @@ from tolokaforge.core.models import (
     TaskDiscoveryConfig,
     TaskInventoryConfig,
     TimeoutDefaults,
-    UserSimulatorConfig,
 )
 from tolokaforge.runner.models import EnvironmentPatch, StackPatch
 
@@ -51,7 +51,7 @@ class TestTaskDefaultsFields:
         assert td.adapter_type is None
         assert td.max_turns is None
         assert td.system_prompt is None
-        assert td.user_simulator is None
+        assert td.actors is None
         assert td.policies == {}
         assert td.metadata is None
         assert td.adapter_settings == {}
@@ -65,12 +65,10 @@ class TestTaskDefaultsFields:
         with pytest.raises(ValidationError):
             TaskDefaults(max_turns=0)
 
-    def test_user_simulator_nested(self) -> None:
-        td = TaskDefaults(
-            user_simulator=UserSimulatorConfig(mode="llm", persona="curious engineer")
-        )
-        assert td.user_simulator is not None
-        assert td.user_simulator.persona == "curious engineer"
+    def test_actors_user_nested(self) -> None:
+        td = TaskDefaults(actors={"user": ActorSpec(mode="llm", persona="curious engineer")})
+        assert td.actors is not None
+        assert td.actors["user"].persona == "curious engineer"
 
     def test_timeout_defaults_nested(self) -> None:
         td = TaskDefaults(timeouts=TimeoutDefaults(trial_seconds=1200, tool_call_seconds=90))

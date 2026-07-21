@@ -1,0 +1,44 @@
+# Three-way weighted grading for cache_debug.
+#
+#   llm_judge        (0.5) — the primary signal. The diagnosis is a natural-
+#     language note; the judge scores whether it identifies the stale-cache /
+#     missing-invalidation bug, explains the mechanism, and avoids a false fix.
+#   state_checks     (0.3) — a deterministic floor: the written note names the
+#     cache-invalidation concept (substring `invalidat`).
+#   transcript_rules (0.2) — a bonus: the agent inspected both the app layer and
+#     the cache layer over http_request and wrote a note, within the turn budget.
+#
+# No single check is decisive: 0.5 judge + 0.3 note already exceeds the 0.6
+# threshold, so a correct diagnosis is not sunk by an exact-URL transcript miss.
+combine:
+  method: weighted
+  weights: { state_checks: 0.3, transcript_rules: 0.2, llm_judge: 0.5 }
+  pass_threshold: 0.6
+state_checks:
+  jsonpaths:
+    - path_glob: "/env/fs/agent-visible/submissions/*"
+      contains_ci: "invalidat"
+      description: "root-cause note names cache invalidation"
+transcript_rules:
+  max_turns: 20
+  required_actions:
+    - { action_id: read_app_layer,   requestor: assistant, name: http_request, arguments: { url: "http://orders-api:8000/orders/4021", method: "GET" },        compare_args: [url, method] }
+    - { action_id: read_cache_layer, requestor: assistant, name: http_request, arguments: { url: "http://cache-admin:8000/cache/order:4021", method: "GET" }, compare_args: [url, method] }
+    - { action_id: write_note,       requestor: assistant, name: write_file,   arguments: {}, compare_args: [] }
+llm_judge:
+  rubric:
+    reference: |
+      The root cause is a cache-invalidation bug. The orders API is cache-first:
+      GET /orders/4021 returns the cached value when the key order:4021 exists.
+      A status update writes postgres but never invalidates (deletes/refreshes)
+      the cached order:4021 key, so the cache holds a stale value ("processing")
+      while postgres holds the fresh truth ("shipped"), and the customer-facing
+      read keeps serving the stale cached value. GET /orders/4021/source reads
+      postgres directly and shows the fresh value; the cache inspector shows the
+      stale cached value — the divergence between the two locates the bug. A good
+      note names the stale cache / missing invalidation and explains this
+      mechanism, and does not attribute the fault to an unrelated cause.
+    criteria:
+      - { id: identifies_bug, description: "Names the root cause as a stale cache / missing cache invalidation, not a database or generic bug.", kind: binary, required: true, weight: 1.0 }
+      - { id: explains_mechanism, description: "Explains that the write updates the database but does not invalidate the cached order key, so cache-first reads serve the stale value.", kind: graded, weight: 1.0 }
+      - { id: no_false_fix, description: "Does not attribute the fault to an unrelated cause (e.g. a database write failure, a network issue, or bad seed data).", kind: graded, weight: 0.5 }

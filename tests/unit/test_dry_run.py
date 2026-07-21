@@ -112,10 +112,11 @@ class TestMaterializeDryRunSample:
             runtime_choice="shared",
         )
 
+        sim = task.resolve_user_simulator()
         assert sample.user_prompt_is_literal is False
         assert "generated at runtime by user simulator" in sample.user_prompt_text
-        assert f"mode={task.user_simulator.mode}" in sample.user_prompt_text
-        assert f"persona={task.user_simulator.persona}" in sample.user_prompt_text
+        assert f"mode={sim.mode}" in sample.user_prompt_text
+        assert f"persona={sim.persona}" in sample.user_prompt_text
 
     def test_materialize_no_http_via_respx(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """No socket opens. Belt-and-braces: patch httpx.Client.send AND

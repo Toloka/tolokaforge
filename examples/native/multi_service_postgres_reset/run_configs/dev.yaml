@@ -1,0 +1,32 @@
+# Reset-recipe example — run config.
+#
+# The loader walks up to the enclosing project.yaml so discovery resolves
+# its `assets.seeds` + `default_environment`. Exercises the reset
+# code path via `tolokaforge run`: `repeats: 2` provisions the stack
+# twice, so the `postgres_baseline` seed is applied on each of the two
+# trials.
+#
+# Requirements:
+#   - Docker daemon running.
+#   - OPENROUTER_API_KEY in .env.
+
+models:
+  agent:
+    provider: "openrouter"
+    name: "anthropic/claude-haiku-4-5"
+    temperature: 0.0
+    max_tokens: 2048
+  user:
+    provider: "openrouter"
+    name: "anthropic/claude-haiku-4-5"
+    temperature: 0.2
+
+orchestrator:
+  repeats: 2
+  max_turns: 8
+
+evaluation:
+  projects:
+    - "examples/native/multi_service_postgres_reset/dataset"
+  tasks_glob: "tasks/reset_probe/task.yaml"
+  output_dir: "results/multi_service_postgres_reset_example"

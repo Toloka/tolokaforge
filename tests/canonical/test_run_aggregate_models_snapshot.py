@@ -48,12 +48,15 @@ from tolokaforge.core.models import (
 )
 from tolokaforge.core.output.aggregate_models import (
     AggregateMetrics,
+    CapturedServiceLogsRollup,
     FailureAttribution,
     FailureRecord,
     FailureSummary,
     MetadataSlices,
     PerTaskMetrics,
     RunAggregate,
+    ServiceLogCaptureEntry,
+    ServiceLogCaptureSource,
 )
 
 pytestmark = pytest.mark.canonical
@@ -250,6 +253,119 @@ def test_run_aggregate_round_trip_with_schema_version() -> None:
     payload["schema_version"] = 1
 
     _round_trip(RunAggregate, payload)
+
+
+# ---------------------------------------------------------------------------
+# captured_service_logs roll-up (#337)
+# ---------------------------------------------------------------------------
+
+
+def _captured_service_logs_payload() -> dict[str, Any]:
+    """A populated roll-up covering all three capture sources — a
+    provision-failure and a trial-body entry (per-trial), plus a
+    shared-stack-materialise entry (run-level, ``task_id``/``trial_index``
+    ``None``). The trial-body entry carries ``capture_reason: None``,
+    exercising both the ``None`` and populated paths of that field, and
+    ``db`` recurs across two entries so ``per_service_bytes`` sums it."""
+    return {
+        "captures": 3,
+        "total_bytes": 9216,
+        "per_service_bytes": {"db": 5120, "runner": 512, "api": 3584},
+        "entries": [
+            {
+                "task_id": "task-1",
+                "trial_index": 0,
+                "source": "provision_failure",
+                "capture_reason": "provision_error",
+                "total_bytes": 4608,
+                "services": {"db": 4096, "runner": 512},
+            },
+            {
+                "task_id": "task-2",
+                "trial_index": 1,
+                "source": "trial_body",
+                "capture_reason": None,
+                "total_bytes": 1024,
+                "services": {"db": 1024},
+            },
+            {
+                "task_id": None,
+                "trial_index": None,
+                "source": "shared_stack_materialise",
+                "capture_reason": "materialise_error",
+                "total_bytes": 3584,
+                "services": {"api": 3584},
+            },
+        ],
+    }
+
+
+def test_service_log_capture_source_enum_values() -> None:
+    """The closed source vocabulary must be exactly the three lowercase
+    strings the collector produces — a rename here is a wire break."""
+    assert [s.value for s in ServiceLogCaptureSource] == [
+        "provision_failure",
+        "trial_body",
+        "shared_stack_materialise",
+    ]
+
+
+def test_run_aggregate_round_trip_with_captured_service_logs() -> None:
+    """A ``RunAggregate`` payload carrying a populated
+    ``captured_service_logs`` — one entry per source, including a
+    run-level entry (``task_id``/``trial_index`` ``None``) and a
+    trial-body entry (``capture_reason`` ``None``) — round-trips
+    byte-identically."""
+    payload = calculate_aggregate_metrics(_sample_task_metrics_list(), weighted=True)
+    payload["schema_version"] = 1
+    payload["captured_service_logs"] = _captured_service_logs_payload()
+
+    _round_trip(RunAggregate, payload)
+
+
+def test_run_aggregate_round_trip_omitting_captured_service_logs() -> None:
+    """A payload that omits ``captured_service_logs`` still round-trips
+    under ``exclude_unset=True`` — the optional field stays absent, so a
+    pre-feature ``aggregate.json`` (no key) is distinguishable from a
+    clean-run zero roll-up (key present, ``captures: 0``)."""
+    payload = calculate_aggregate_metrics(_sample_task_metrics_list(), weighted=True)
+    payload["schema_version"] = 1
+    assert "captured_service_logs" not in payload
+
+    model = RunAggregate.model_validate(payload)
+    dumped = model.model_dump(by_alias=True, mode="json", exclude_unset=True)
+    assert "captured_service_logs" not in dumped
+    _round_trip(RunAggregate, payload)
+
+
+def test_captured_service_logs_rollup_zero_envelope() -> None:
+    """A clean-run zero roll-up serialises with all keys present — the
+    explicit ``captures: 0`` / empty-collections shape that distinguishes
+    'feature shipped, nothing captured' from a pre-feature file."""
+    rollup = CapturedServiceLogsRollup(captures=0, total_bytes=0)
+    dumped = rollup.model_dump(mode="json")
+    assert dumped == {
+        "captures": 0,
+        "total_bytes": 0,
+        "per_service_bytes": {},
+        "entries": [],
+    }
+
+
+def test_service_log_capture_entry_run_level_shape() -> None:
+    """The run-level (shared-stack) entry carries ``task_id`` and
+    ``trial_index`` ``None`` and validates against the source enum."""
+    entry = ServiceLogCaptureEntry.model_validate(
+        {
+            "source": "shared_stack_materialise",
+            "capture_reason": "materialise_error",
+            "total_bytes": 3584,
+            "services": {"api": 3584},
+        }
+    )
+    assert entry.task_id is None
+    assert entry.trial_index is None
+    assert entry.source is ServiceLogCaptureSource.SHARED_STACK_MATERIALISE
 
 
 # ---------------------------------------------------------------------------

@@ -119,9 +119,10 @@ class TestProjectAwareLoad:
                 "evaluation": {"output_dir": "results/dev"},
             },
         )
-        # No project.yaml — loader must synthesise a default silently
-        # (info log, no warning).
-        run_config = _drive_cli_loader(tmp_path / "run_configs" / "dev.yaml")
+        # No project.yaml — the loader synthesises a default so the pack still
+        # loads, and warns the author to add one.
+        with pytest.warns(DeprecationWarning, match="Missing project.yaml"):
+            run_config = _drive_cli_loader(tmp_path / "run_configs" / "dev.yaml")
         assert run_config.orchestrator.repeats == 3
         assert run_config.compute is None  # nothing to inject
 
@@ -183,7 +184,6 @@ class TestTaskLoaderWithProjectDefaults:
         project_defaults = {
             "adapter_type": "native",
             "max_turns": 20,
-            "continue_prompt": "Continue.",
         }
         task, task_dir_out = load_task_yaml(
             task_dir / "task.yaml",

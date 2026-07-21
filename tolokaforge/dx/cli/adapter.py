@@ -119,16 +119,18 @@ def convert(
 
                 traceback.print_exc()
 
+    validation_errors = 0
+
     # Optional validation pass
     if do_validate and converted > 0:
-        _validate_converted(output_path, task_ids, verbose)
+        validation_errors = _validate_converted(output_path, task_ids, verbose)
 
     console.print(f"\nConverted {converted} tasks ({errors} errors)")
-    if errors > 0:
+    if errors > 0 or validation_errors > 0:
         raise SystemExit(1)
 
 
-def _validate_converted(output_path: Path, task_ids: list[str], verbose: bool) -> None:
+def _validate_converted(output_path: Path, task_ids: list[str], verbose: bool) -> int:
     """Validate converted output by loading via NativeAdapter."""
     from tolokaforge.adapters._task_loader import load_task_yaml
 
@@ -150,3 +152,4 @@ def _validate_converted(output_path: Path, task_ids: list[str], verbose: bool) -
             console.print(f"  ✗ invalid: {task_id}: {exc}", style="red")
 
     console.print(f"  Validation: {valid} valid, {invalid} invalid")
+    return invalid

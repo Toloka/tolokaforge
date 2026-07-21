@@ -167,7 +167,7 @@ class TestRealCLISubprocessConfigValidate:
     exercise the same code path operators use.
     """
 
-    EXAMPLE_CONFIG = "examples/native/tool_use/run_config.yaml"
+    EXAMPLE_CONFIG = "examples/native/tool_use/run_configs/dev.yaml"
 
     def test_good_overlay_exits_zero(self, tmp_path: Path) -> None:
         overlay = tmp_path / "good_overlay.yaml"

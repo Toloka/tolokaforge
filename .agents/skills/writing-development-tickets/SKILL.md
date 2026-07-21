@@ -43,22 +43,29 @@ Action-oriented, describes the deliverable: `feat: Add pipeline batch progress t
 
 Use the repo's existing taxonomy:
 
-| Label | Usage |
+Every ticket gets one type label and one priority label.
+
+| Type label | Usage |
 |-------|-------|
 | `enhancement` | New capability |
 | `bug` | Something broken |
 | `documentation` | Documentation only |
 | `question` | Needs clarification before it's actionable |
 
-The repo has no priority labels — record priority in the issue body as a
-`**Priority:** P0–P3` line. The `automation:*` labels are owned by the
-model auto-integration workflows; never set them by hand.
+| Priority label | Usage |
+|-------|-------|
+| `P0` | Critical: blocks production or core user flow |
+| `P1` | High: important UX, stability or correctness gap |
+| `P2` | Medium: improvement or hardening, not user-blocking |
+| `P3` | Low: cleanup, nitpick, deferred improvement |
+
+The `automation:*` labels are owned by the model auto-integration
+workflows; never set them by hand.
 
 ### Issue Body Content
 
 **Required:**
 - **Context** (2-3 sentences): What problem, why now. Only what's unique to this deliverable.
-- **Priority**: P0–P3, one line.
 - **Deliverables**: Checkboxed list of what's true when done
 - **Acceptance criteria**: User-observable verification (not code-level)
 - **Design decisions**: Chosen approaches with rationale ("X because Y")
@@ -80,8 +87,6 @@ model auto-integration workflows; never set them by hand.
 ```markdown
 ## Context
 <What problem this solves, why now — 2-3 sentences>
-
-**Priority:** P1
 
 ## Deliverables
 - [ ] <What's true when done — user-observable>
@@ -117,14 +122,14 @@ owner: Toloka
 repo: tolokaforge
 title: "feat: <description>"
 body: "<issue template filled in>"
-labels: ["enhancement"]
+labels: ["enhancement", "P2"]
 ```
 
 ## Creation Checklist
 
 - [ ] Ticket is at feature level (not too small, not too big)
 - [ ] Type label set (enhancement/bug/documentation)
-- [ ] Priority stated in the body (P0-P3)
+- [ ] Priority label set (P0-P3)
 - [ ] Context explains "why now"
 - [ ] Deliverables are checkboxed and user-observable
 - [ ] Design decisions list chosen approaches with rationale

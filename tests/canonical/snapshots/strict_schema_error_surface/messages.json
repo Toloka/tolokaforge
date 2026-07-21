@@ -1,0 +1,6 @@
+{
+  "grading": "unknown key 'transcript_ruless' in grading.yaml (grading) \u2014 did you mean 'transcript_rules'? Rename `transcript_ruless` to `transcript_rules` (or remove it if unused). (tracked in #533)",
+  "project": "unknown key 'discription' in project.yaml \u2014 did you mean 'description'? Rename `discription` to `description` (or remove it if unused). (tracked in #533)",
+  "run_config": "unknown key 'computee' in dev.yaml \u2014 did you mean 'compute'? Rename `computee` to `compute` (or remove it if unused). (tracked in #533)",
+  "task": "unknown key 'max_turnss' in task.yaml \u2014 did you mean 'max_turns'? Rename `max_turnss` to `max_turns` (or remove it if unused). (tracked in #533)"
+}

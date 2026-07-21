@@ -39,6 +39,7 @@ from tests.canonical._factories import (
 from tolokaforge.core.llm import GenerationResult
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.models import Metrics
+from tolokaforge.core.output.artifacts import InMemoryArtifactWriter
 from tolokaforge.core.run_display_events import RunDisplayEvents
 
 pytestmark = pytest.mark.unit
@@ -319,6 +320,8 @@ def test_provisioning_trial_executor_fires_trial_provisioned_after_await_ready()
         runtime_backend=backend,
         conductor=conductor,
         logger=MagicMock(),
+        output_dir=Path("/nonexistent-run-dir"),
+        artifact_writer=InMemoryArtifactWriter(),
         events=events,
     )
 
@@ -356,6 +359,8 @@ def test_provisioning_trial_executor_default_events_is_silent() -> None:
         runtime_backend=backend,
         conductor=InMemoryConductor(),
         logger=MagicMock(),
+        output_dir=Path("/nonexistent-run-dir"),
+        artifact_writer=InMemoryArtifactWriter(),
     )
     executor.execute(make_trial_spec(), make_task_config())
 
@@ -373,6 +378,8 @@ def test_provisioning_trial_executor_skips_trial_provisioned_on_provision_error(
         runtime_backend=backend,
         conductor=InMemoryConductor(),
         logger=MagicMock(),
+        output_dir=Path("/nonexistent-run-dir"),
+        artifact_writer=InMemoryArtifactWriter(),
         events=events,
     )
     executor.execute(make_trial_spec(), make_task_config())
@@ -465,6 +472,7 @@ def test_orchestrator_stores_events_from_deps() -> None:
 def _make_orchestrator_with_tasks(task_ids: list[str], repeats: int, shuffle: bool = False) -> Any:
     """Build a bare :class:`Orchestrator` for pending-trial construction tests."""
     from tolokaforge.core.models import (
+        ActorSpec,
         EvaluationConfig,
         InitialStateConfig,
         ModelConfig,
@@ -472,7 +480,6 @@ def _make_orchestrator_with_tasks(task_ids: list[str], repeats: int, shuffle: bo
         RunConfig,
         TaskConfig,
         ToolsConfig,
-        UserSimulatorConfig,
     )
     from tolokaforge.core.orchestrator import Orchestrator
 
@@ -495,7 +502,7 @@ def _make_orchestrator_with_tasks(task_ids: list[str], repeats: int, shuffle: bo
             description="d",
             initial_state=InitialStateConfig(),
             tools=ToolsConfig(),
-            user_simulator=UserSimulatorConfig(mode="scripted"),
+            actors={"user": ActorSpec(mode="scripted")},
             grading="grading.yaml",
         )
         for task_id in task_ids
@@ -674,7 +681,7 @@ def test_build_trial_executor_threads_events_into_provisioning_executor() -> Non
     executor = orch._build_trial_executor(
         runtime_backend=MagicMock(),
         conductor=MagicMock(),
-        log_capture=None,
+        output_dir=Path("/nonexistent-run-dir"),
     )
     assert executor.events is events
 
@@ -686,10 +693,10 @@ def test_build_trial_executor_threads_events_into_provisioning_executor() -> Non
 
 def _make_task_for_run(task_id: str) -> Any:
     from tolokaforge.core.models import (
+        ActorSpec,
         InitialStateConfig,
         TaskConfig,
         ToolsConfig,
-        UserSimulatorConfig,
     )
 
     return TaskConfig(
@@ -699,7 +706,7 @@ def _make_task_for_run(task_id: str) -> Any:
         description="d",
         initial_state=InitialStateConfig(),
         tools=ToolsConfig(),
-        user_simulator=UserSimulatorConfig(mode="scripted"),
+        actors={"user": ActorSpec(mode="scripted")},
         grading="grading.yaml",
     )
 

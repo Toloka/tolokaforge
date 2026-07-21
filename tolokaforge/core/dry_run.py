@@ -86,7 +86,7 @@ def _placeholder_user_prompt(task: TaskConfig) -> str:
     operator sees what the user simulator would generate at runtime
     without firing the simulator's LLM call.
     """
-    sim = task.user_simulator
+    sim = task.resolve_user_simulator()
     backstory = sim.backstory or ""
     truncated = backstory[:120]
     suffix = "…" if len(backstory) > 120 else ""

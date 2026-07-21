@@ -7,17 +7,26 @@ in ``tests/canonical/test_conductor_contract.py``.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
 from tolokaforge.core.conductor import (
+    DEFAULT_MAX_TURNS,
     ConductorCallLog,
     InMemoryConductor,
+    InProcessConductor,
     _default_success_trajectory,
+    resolve_max_turns,
 )
-from tolokaforge.core.models import ModelConfig
+from tolokaforge.core.models import (
+    ModelConfig,
+    OrchestratorConfig,
+    ResetSpec,
+    ServiceSpec,
+)
 from tolokaforge.core.trial import EnvEndpoints, EnvironmentManifest, TrialSpec
 from tolokaforge.runner.models import TaskDescription
 
@@ -215,3 +224,103 @@ class TestTrialSpecWireExclusion:
 
         assert '"task_id":"t1"' in wire_json
         assert '"adapter_type":"native"' in wire_json
+
+
+class TestCaptureFinalStateEnvironmentBlock:
+    """``_capture_final_state`` records the resolved environment identity under
+    ``final_env_state["environment"]`` only when the trial's task carries an
+    ``environment_manifest``. Manifest-less trials keep the JSON-DB-only shape —
+    the additive/back-compat guarantee the descriptor rests on.
+    """
+
+    def _conductor(self) -> InProcessConductor:
+        conductor = InProcessConductor(
+            adapter=MagicMock(),
+            artifact_writer=MagicMock(),
+            config=MagicMock(),
+            logger=MagicMock(),
+            agent_client=MagicMock(),
+            runtime_backend=MagicMock(),
+            trial_grader=MagicMock(),
+            output_dir=Path("/tmp"),
+        )
+        conductor.runtime_backend.get_state.return_value = {"success": False}
+        return conductor
+
+    def _setup(self) -> MagicMock:
+        setup = MagicMock()
+        setup.trial_id = "t1:0"
+        setup.env_state.get_final_state.return_value = {}
+        setup.env_state.agent_visible_dir = Path("/tmp/agent")
+        setup.adapter_env.data = None
+        return setup
+
+    def _manifest(self) -> EnvironmentManifest:
+        fixture = (
+            Path(__file__).parent.parent
+            / "canonical"
+            / "fixtures"
+            / "environment_manifest"
+            / "identity_multi_service.yaml"
+        )
+        return EnvironmentManifest(
+            compose_file=fixture,
+            runner_service="runner",
+            services={
+                "runner": ServiceSpec(isolation="shared"),
+                "app-service": ServiceSpec(isolation="shared"),
+                "app-db": ServiceSpec(isolation="reset", reset=ResetSpec(seed="baseline")),
+            },
+        )
+
+    def test_manifest_bearing_trial_gains_environment_block(self) -> None:
+        spec = _make_spec()
+        spec = spec.model_copy(
+            update={"task": spec.task.model_copy(update={"environment_manifest": self._manifest()})}
+        )
+        trajectory = _default_success_trajectory("t1", 0)
+
+        self._conductor()._capture_final_state(spec, self._setup(), trajectory)
+
+        environment = trajectory.final_env_state["environment"]
+        assert set(environment["services"]) == {"runner", "app-service", "app-db"}
+        assert environment["services"]["app-service"]["dsns"] == [
+            "postgresql://app:***@app-db:5432/mfg"
+        ]
+        assert "app_pw" not in json.dumps(trajectory.final_env_state)
+
+    def test_manifest_less_trial_omits_environment_block(self) -> None:
+        spec = _make_spec()
+        assert spec.task.environment_manifest is None
+        trajectory = _default_success_trajectory("t1", 0)
+
+        self._conductor()._capture_final_state(spec, self._setup(), trajectory)
+
+        assert "environment" not in trajectory.final_env_state
+
+
+class TestResolveMaxTurns:
+    def test_orchestrator_default_is_50(self) -> None:
+        # Pre-M9 semantic: run-level cap is always-on, defaults to 50.
+        # A future release will flip this to opt-in (default None).
+        assert OrchestratorConfig().max_turns == 50
+
+    def test_default_config_clamps_task_value_to_run_cap(self) -> None:
+        # A task authoring max_turns=100 clamps to the run cap default (50).
+        # To let a higher task value stand, an operator must raise the run cap.
+        assert resolve_max_turns(100, OrchestratorConfig().max_turns) == 50
+
+    def test_both_unset_falls_back_to_engine_default(self) -> None:
+        assert resolve_max_turns(None, None) == DEFAULT_MAX_TURNS == 50
+
+    def test_run_cap_clamps_higher_task_value(self) -> None:
+        assert resolve_max_turns(100, 30) == 30
+
+    def test_task_value_stands_when_run_cap_unset(self) -> None:
+        assert resolve_max_turns(30, None) == 30
+
+    def test_run_cap_stands_when_task_value_unset(self) -> None:
+        assert resolve_max_turns(None, 30) == 30
+
+    def test_tighter_of_two_set_values_wins(self) -> None:
+        assert resolve_max_turns(100, 200) == 100

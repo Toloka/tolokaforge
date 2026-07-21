@@ -35,8 +35,7 @@ def _uv_available() -> bool:
     return shutil.which("uv") is not None
 
 
-@pytest.mark.skipif(not _uv_available(), reason="uv CLI not available")
-def test_bundle_writer_ships_in_the_built_wheel(tmp_path: Path) -> None:
+def test_bundle_writer_ships_in_the_built_wheel(built_wheel: Path) -> None:
     """``tolokaforge.adapters.bundle_writer`` must be present in the wheel
     hatchling produces.
 
@@ -45,24 +44,7 @@ def test_bundle_writer_ships_in_the_built_wheel(tmp_path: Path) -> None:
     test — the source tree still has the file. The only way to catch it
     is to build the wheel and look inside.
     """
-    build_result = subprocess.run(
-        ["uv", "build", "--wheel", "--out-dir", str(tmp_path)],
-        cwd=_REPO_ROOT,
-        capture_output=True,
-        text=True,
-        timeout=180,
-        check=False,
-    )
-    assert build_result.returncode == 0, (
-        f"uv build failed (rc={build_result.returncode}):\n"
-        f"stdout:\n{build_result.stdout}\nstderr:\n{build_result.stderr}"
-    )
-
-    wheels = sorted(tmp_path.glob("tolokaforge-*.whl"))
-    assert wheels, f"No tolokaforge wheel produced under {tmp_path}"
-    wheel = wheels[-1]
-
-    with zipfile.ZipFile(wheel) as zf:
+    with zipfile.ZipFile(built_wheel) as zf:
         members = set(zf.namelist())
 
     required = {
@@ -75,7 +57,7 @@ def test_bundle_writer_ships_in_the_built_wheel(tmp_path: Path) -> None:
     }
     missing = required - members
     assert not missing, (
-        f"Wheel {wheel.name} is missing modules that adapter convert depends on: "
+        f"Wheel {built_wheel.name} is missing modules that adapter convert depends on: "
         f"{sorted(missing)}. Members starting with 'tolokaforge/adapters/': "
         f"{sorted(m for m in members if m.startswith('tolokaforge/adapters/'))}"
     )
@@ -123,8 +105,7 @@ def test_bundle_writer_module_imports_cleanly() -> None:
     assert "tolokaforge.adapters.bundle_writer" in sys.modules
 
 
-@pytest.mark.skipif(not _uv_available(), reason="uv CLI not available")
-def test_python_version_pin_ships_in_the_built_wheel(tmp_path: Path) -> None:
+def test_python_version_pin_ships_in_the_built_wheel(built_wheel: Path) -> None:
     """``tolokaforge/_python_version.txt`` must be present in the wheel.
 
     ``tolokaforge.docker.builder._pinned_python_version`` reads this
@@ -138,24 +119,7 @@ def test_python_version_pin_ships_in_the_built_wheel(tmp_path: Path) -> None:
     ``pyproject.toml``. This test pins that the copy actually happens
     and the value in the wheel matches the repo-root single source.
     """
-    build_result = subprocess.run(
-        ["uv", "build", "--wheel", "--out-dir", str(tmp_path)],
-        cwd=_REPO_ROOT,
-        capture_output=True,
-        text=True,
-        timeout=180,
-        check=False,
-    )
-    assert build_result.returncode == 0, (
-        f"uv build failed (rc={build_result.returncode}):\n"
-        f"stdout:\n{build_result.stdout}\nstderr:\n{build_result.stderr}"
-    )
-
-    wheels = sorted(tmp_path.glob("tolokaforge-*.whl"))
-    assert wheels, f"No tolokaforge wheel produced under {tmp_path}"
-    wheel = wheels[-1]
-
-    with zipfile.ZipFile(wheel) as zf:
+    with zipfile.ZipFile(built_wheel) as zf:
         members = set(zf.namelist())
         assert "tolokaforge/_python_version.txt" in members, (
             "Wheel is missing tolokaforge/_python_version.txt — "

@@ -45,7 +45,8 @@ orchestrator:
   max_attempt_retries: 1      # optional retries for transient infra failures
   queue_backend: "sqlite"     # "sqlite" (default) or "postgres"
   queue_postgres_dsn: null    # required when queue_backend="postgres"
-  max_turns: 50
+  # max_turns: 60             # run-level cap (default 50); raise to let
+                              # task-authored max_turns above 50 stand
   continue_prompt: "Please proceed to the next step."
   timeouts:
     turn_s: 60
@@ -77,7 +78,7 @@ Notes:
 - `max_budget_usd` pauses scheduling new trials when cumulative spend reaches the budget.
 - `max_requests_per_second` applies a global limiter across worker threads.
 - `max_attempt_retries` retries transient failures (`rate_limit`, `api_error`, `timeout`) before marking a trial failed.
-- `compute.log_tail` (default `500`, must be `>= 1`) bounds the `docker compose logs --tail` line count captured per service when a multi-service trial fails on the per-trial backend.
+- `compute.log_tail` (default `500`, must be `>= 1`) bounds the `docker compose logs --tail` line count captured per service when a multi-service trial fails or grades red on the per-trial backend.
 - `compute.capture_logs_on_success` (default `false`) is a debug escape hatch: when `true`, per-service logs are captured for successful trials too, not only failures.
 - `queue_backend: postgres` enables distributed queue/state using Postgres; set `queue_postgres_dsn`.
 - If `evaluation.task_packs` is empty, `tasks_glob` is resolved relative to the working directory.
@@ -87,14 +88,14 @@ Notes:
   - `TASK_PACKS_DIRS` for orchestrator-visible pack roots
   - `TASKS_DIRS` for mock-web task roots (category directories)
 - Recommended: generate compose override from config via
-  `uv run python scripts/generate_task_pack_compose_override.py --config examples/native/coding/run_config.yaml --output docker-compose.taskpacks.override.yaml`
+  `uv run python scripts/generate_task_pack_compose_override.py --config examples/native/coding/run_configs/dev.yaml --output docker-compose.taskpacks.override.yaml`
 - For long runs, inspect progress with:
   `tolokaforge status --run-dir <output_dir_timestamped>`
 - For Postgres queue status (no local `run_queue.sqlite`):
-  `tolokaforge status --run-dir <any_existing_dir> --config examples/native/coding/run_config.yaml`
+  `tolokaforge status --run-dir <any_existing_dir> --config examples/native/coding/run_configs/dev.yaml`
 - For distributed worker mode:
-  `tolokaforge prepare --config examples/native/coding/run_config.yaml --run-dir <run_dir> --reset-queue`
-  `tolokaforge worker --config examples/native/coding/run_config.yaml --run-dir <run_dir>`
+  `tolokaforge prepare --config examples/native/coding/run_configs/dev.yaml --run-dir <run_dir> --reset-queue`
+  `tolokaforge worker --config examples/native/coding/run_configs/dev.yaml --run-dir <run_dir>`
 - For multi-runner distributed execution (e.g., GitHub Actions matrix), use
   `queue_backend: postgres` with a shared `queue_postgres_dsn`.
 
@@ -213,7 +214,7 @@ presets:
 For models that reuse existing policy classes, you don't need to release the
 engine to add or adjust a preset. Point TolokaForge at a second YAML file that
 gets merged onto the bundled `model_presets.yaml` at startup. See
-[ADR 0002 — External model registry](architecture/adr/0002-external-model-registry.md)
+[ADR 0002 — External model registry](adr/0002-external-model-registry.md)
 for the rationale and [`docs/ADD_NEW_MODEL.md`](ADD_NEW_MODEL.md) for a
 walkthrough.
 

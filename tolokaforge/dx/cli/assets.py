@@ -2,7 +2,8 @@
 
 Provides ``tolokaforge assets stamp [PATH]`` which walks
 ``assets.seeds.<name>`` entries in a project's ``project.yaml``,
-computes ``sha256:<hex>`` over each referenced file, and writes the
+computes ``sha256:<hex>`` over each referenced seed — a file's byte
+stream or a directory's deterministic tree hash — and writes the
 ``digest`` field back in place.
 
 Uses lazy imports for heavy dependencies (yaml, project_loader) so
@@ -102,7 +103,7 @@ def stamp(project_path: Path, check_only: bool) -> None:
             path_less_entries.append(name)
             continue
         abs_path = _resolve_seed_path(seed_path_str, project_dir)
-        if not abs_path.is_file():
+        if not abs_path.exists():
             missing_files.append((name, abs_path))
             continue
         new_digest = compute_seed_digest(abs_path)

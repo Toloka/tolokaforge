@@ -58,6 +58,11 @@ class TestEnvironmentPatchNoIO:
         assert stack.compose_file is None
         assert stack.runner_service is None
         assert stack.inputs == {}
+        assert stack.runner_port is None
+        assert stack.db_service is None
+        assert stack.db_port is None
+        assert stack.rag_service is None
+        assert stack.rag_port is None
 
 
 class TestLegacyFlatShape:
@@ -260,10 +265,154 @@ class TestAtomicStackReplacement:
         task = EnvironmentPatch(
             stack=StackPatch(compose_file=ENV_FIXTURE),
             network_policy=NetworkPolicy.LIMITED_INTERNET,
+            limited_internet_allowlist=["api.openai.com"],
         )
         manifest = resolve(project, task)
         assert manifest is not None
         assert manifest.network_policy == NetworkPolicy.LIMITED_INTERNET
+        assert manifest.limited_internet_allowlist == ["api.openai.com"]
+
+
+class TestLimitedInternetAllowlistMerge:
+    """The allowlist is a policy-request field — it threads through resolve(),
+    survives atomic ``stack`` replacement, and the task list replaces the
+    project list outright (task-wins, never a union)."""
+
+    def test_task_inherits_project_allowlist_on_deep_merge(self) -> None:
+        project = EnvironmentPatch(
+            stack=StackPatch(compose_file=ENV_FIXTURE, runner_service="default"),
+            network_policy=NetworkPolicy.LIMITED_INTERNET,
+            limited_internet_allowlist=["api.openai.com", "*.example.com"],
+        )
+        task = EnvironmentPatch(stack=StackPatch(inputs={"postgres_version": "17"}))
+        manifest = resolve(project, task)
+        assert manifest is not None
+        assert manifest.network_policy is NetworkPolicy.LIMITED_INTERNET
+        assert manifest.limited_internet_allowlist == ["api.openai.com", "*.example.com"]
+
+    def test_task_allowlist_replaces_project_allowlist(self) -> None:
+        project = EnvironmentPatch(
+            stack=StackPatch(compose_file=ENV_FIXTURE, runner_service="default"),
+            network_policy=NetworkPolicy.LIMITED_INTERNET,
+            limited_internet_allowlist=["api.openai.com", "*.example.com"],
+        )
+        task = EnvironmentPatch(limited_internet_allowlist=["api.anthropic.com"])
+        manifest = resolve(project, task)
+        assert manifest is not None
+        # Atomic list replacement — the project's broader list is not unioned in.
+        assert manifest.limited_internet_allowlist == ["api.anthropic.com"]
+
+    def test_allowlist_survives_atomic_stack_replacement(self) -> None:
+        project = EnvironmentPatch(
+            stack=StackPatch(compose_file=ENV_FIXTURE),
+            network_policy=NetworkPolicy.LIMITED_INTERNET,
+            limited_internet_allowlist=["api.openai.com"],
+        )
+        task = EnvironmentPatch(stack=StackPatch(compose_file=ENV_FIXTURE))
+        manifest = resolve(project, task)
+        assert manifest is not None
+        assert manifest.network_policy is NetworkPolicy.LIMITED_INTERNET
+        assert manifest.limited_internet_allowlist == ["api.openai.com"]
+
+    def test_limited_internet_without_any_allowlist_fails_loud(self) -> None:
+        project = EnvironmentPatch(
+            stack=StackPatch(compose_file=ENV_FIXTURE),
+            network_policy=NetworkPolicy.LIMITED_INTERNET,
+        )
+        with pytest.raises(ValueError, match="requires a non-empty"):
+            resolve(project, None)
+
+    def test_allowlist_does_not_affect_environment_identity(self) -> None:
+        from tolokaforge.core.env_identity import resolve_environment_identity
+
+        def _manifest(allowlist: list[str]) -> EnvironmentManifest:
+            patch = EnvironmentPatch(
+                stack=StackPatch(compose_file=ENV_FIXTURE, runner_service="default"),
+                network_policy=NetworkPolicy.LIMITED_INTERNET,
+                limited_internet_allowlist=allowlist,
+            )
+            manifest = resolve(patch, None)
+            assert manifest is not None
+            return manifest
+
+        narrow = _manifest(["api.openai.com"])
+        broad = _manifest(["api.openai.com", "*.example.com"])
+        # The allowlist is an operational egress override, not architectural
+        # identity — it must not shift the environment digest.
+        assert resolve_environment_identity(narrow) == resolve_environment_identity(broad)
+
+
+class TestResolveEndpointOverrides:
+    """Endpoint-resolution overrides on ``stack`` flow through resolve()
+    onto the manifest; unset fields keep the manifest's convention
+    defaults; atomic ``stack`` replacement clears them."""
+
+    TWO_SERVICE = ENV_FIXTURE.parent / "safe_two_service.yaml"
+
+    def test_unset_fields_keep_manifest_defaults(self) -> None:
+        project = EnvironmentPatch(
+            stack=StackPatch(compose_file=ENV_FIXTURE, runner_service="default"),
+        )
+        manifest = resolve(project, None)
+        assert manifest is not None
+        assert manifest.runner_port == 50051
+        assert manifest.db_service is None
+        assert manifest.db_port is None
+        assert manifest.rag_service is None
+        assert manifest.rag_port is None
+
+    def test_full_override_propagates(self) -> None:
+        project = EnvironmentPatch(
+            stack=StackPatch(
+                compose_file=self.TWO_SERVICE,
+                runner_service="default",
+                runner_port=9000,
+                db_service="db",
+                db_port=5433,
+                rag_service="default",
+                rag_port=8080,
+            ),
+        )
+        manifest = resolve(project, None)
+        assert manifest is not None
+        assert manifest.runner_port == 9000
+        assert manifest.db_service == "db"
+        assert manifest.db_port == 5433
+        assert manifest.rag_service == "default"
+        assert manifest.rag_port == 8080
+
+    def test_partial_override_leaves_other_defaults(self) -> None:
+        project = EnvironmentPatch(
+            stack=StackPatch(
+                compose_file=self.TWO_SERVICE,
+                runner_service="default",
+                db_service="db",
+            ),
+        )
+        manifest = resolve(project, None)
+        assert manifest is not None
+        assert manifest.db_service == "db"
+        assert manifest.runner_port == 50051
+        assert manifest.db_port is None
+        assert manifest.rag_service is None
+        assert manifest.rag_port is None
+
+    def test_atomic_replacement_clears_project_endpoint_override(self) -> None:
+        project = EnvironmentPatch(
+            stack=StackPatch(
+                compose_file=self.TWO_SERVICE,
+                runner_service="default",
+                db_service="db",
+                runner_port=9000,
+            ),
+        )
+        task = EnvironmentPatch(stack=StackPatch(compose_file=ENV_FIXTURE))
+        manifest = resolve(project, task)
+        assert manifest is not None
+        # Task's stack replaces the project's — endpoint overrides reset
+        # to the manifest's convention defaults along with the rest of stack.
+        assert manifest.db_service is None
+        assert manifest.runner_port == 50051
 
 
 class TestResolveWithoutComposeFileFailsLoud:

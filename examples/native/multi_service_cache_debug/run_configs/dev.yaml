@@ -1,0 +1,53 @@
+# Multi-service `cache_debug` example — run config.
+#
+#   agent → orders-api + cache-admin (FastAPI) → redis:7-alpine (cache,
+#           isolation: reset) + postgres:16 (app-db, source of truth)
+#
+# Exercises the redis_dump reset code path via `tolokaforge run`: the `redis`
+# service is `isolation: reset` bound to the `cache_poisoned` RDB seed, so the
+# per-trial backend restores the poisoned cache before each trial. The agent
+# diagnoses the cache-invalidation bug over http_request and writes a root-cause
+# note; three model roles run — the `agent` under test, the `user` simulator,
+# and the read-only rubric `judge`.
+#
+# `runtime: per_trial` because `redis` is `isolation: reset` and the other
+# services default to `ephemeral`, which routes the run to the per-trial
+# backend — the only backend that applies reset recipes.
+#
+# `capture_logs_on_success: true` lands per-service logs under `services/` on a
+# green run too, so `redis.log` witnesses the RDB restore without needing a red
+# grade.
+#
+# Requirements:
+#   - Docker daemon running.
+#   - OPENROUTER_API_KEY in .env.
+models:
+  agent:
+    provider: "openrouter"
+    name: "anthropic/claude-haiku-4-5"
+    temperature: 0.0
+    max_tokens: 4096
+  user:
+    provider: "openrouter"
+    name: "anthropic/claude-haiku-4-5"
+    temperature: 0.2
+  judge:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.0
+
+orchestrator:
+  workers: 1
+  repeats: 1
+  max_turns: 20
+  runtime: per_trial
+  queue_backend: sqlite
+
+compute:
+  capture_logs_on_success: true
+
+evaluation:
+  projects:
+    - "examples/native/multi_service_cache_debug/dataset"
+  tasks_glob: "tasks/cache_debug/task.yaml"
+  output_dir: "results/multi_service_cache_debug_example"
