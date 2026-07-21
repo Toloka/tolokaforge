@@ -32,7 +32,7 @@ import subprocess
 
 import pytest
 
-from tests.utils.docker_helpers import is_docker_daemon_available
+from tests.utils.docker_helpers import is_docker_daemon_available, newest_image_id
 from tolokaforge.docker import builder
 
 pytestmark = [pytest.mark.integration, pytest.mark.requires_docker]
@@ -47,37 +47,10 @@ bumps without a spurious CI break while still catching a real size regression.
 
 
 def _resolve_runner_image_id() -> str | None:
-    """Return the ID of the most recently built runner image, or ``None``.
-
-    The image name is read from the builder's static definition table rather
-    than ``get_image_definition`` — the latter triggers wheel resolution as a
-    side effect, which a size lock has no need for. The newest image by build
-    time is the one the current Dockerfile produces (and what the ``:local``
-    alias points at after a run), so the lock measures it directly rather than
-    trusting a possibly-stale tag.
-    """
-    image_name = builder.IMAGE_DEFINITIONS["runner"]["name"]
-    listing = subprocess.run(
-        ["docker", "images", image_name, "--format", "{{.ID}}"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    image_ids = list(dict.fromkeys(line for line in listing.stdout.split() if line))
-    if not image_ids:
-        return None
-    newest_id: str | None = None
-    newest_created = ""
-    for image_id in image_ids:
-        created = subprocess.run(
-            ["docker", "image", "inspect", image_id, "--format", "{{.Created}}"],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout.strip()
-        if created > newest_created:
-            newest_created, newest_id = created, image_id
-    return newest_id
+    # Read the image name from the builder's static definition table rather
+    # than get_image_definition — the latter triggers wheel resolution as a
+    # side effect, which a size lock has no need for.
+    return newest_image_id(builder.IMAGE_DEFINITIONS["runner"]["name"])
 
 
 def _image_size_mb(image_id: str) -> float:
