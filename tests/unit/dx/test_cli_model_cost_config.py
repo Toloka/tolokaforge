@@ -1,15 +1,13 @@
-"""Stage-3 ``--model-cost-config`` overlay wiring.
+"""``observability.pricing_overlay_path`` overlay wiring.
 
 Locks the surface in ``tolokaforge/dx/cli/main.py``:
 
-* ``--model-cost-config <path>`` calls
-  :func:`pricing.reload_pricing` with the overlay path BEFORE the
+* When ``observability.pricing_overlay_path`` is set on the run config,
+  :func:`pricing.reload_pricing` fires with that path BEFORE the
   :class:`Orchestrator` is constructed.
 * After the CLI exits, the mutation to :data:`MODEL_PRICING` is
   observable via :func:`estimate_cost` (module-global side effect —
   matches the pre-existing :func:`reload_pricing` semantics).
-* A non-existent path is rejected by ``click.Path(exists=True)`` before
-  the callback runs.
 * YAML and JSON overlays are both accepted (suffix-detected inside
   :func:`reload_pricing`).
 """
@@ -36,8 +34,7 @@ def runner() -> CliRunner:
     return CliRunner(mix_stderr=False)
 
 
-@pytest.fixture
-def valid_config(tmp_path: Path) -> Path:
+def _config_with_overlay(tmp_path: Path, overlay_path: Path) -> Path:
     config_path = tmp_path / "run.yaml"
     config_path.write_text(
         yaml.safe_dump(
@@ -49,6 +46,7 @@ def valid_config(tmp_path: Path) -> Path:
                 },
                 "orchestrator": {"repeats": 1, "auto_start_services": False},
                 "compute": {"workers": 1},
+                "observability": {"pricing_overlay_path": str(overlay_path)},
             }
         )
     )
@@ -77,25 +75,19 @@ def _make_stub_orchestrator(run_return: Path) -> type:
     return _StubOrchestrator
 
 
-class TestModelCostConfigOverlay:
+class TestPricingOverlayFromConfig:
     def test_yaml_overlay_is_applied_before_orchestrator(
         self,
         runner: CliRunner,
-        valid_config: Path,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
         restore_pricing: Any,
     ) -> None:
         overlay = tmp_path / "prices.yaml"
         overlay.write_text(
-            yaml.safe_dump(
-                {
-                    "models": {
-                        "synthetic/test-model": {"input": 1.0, "output": 2.0},
-                    }
-                }
-            )
+            yaml.safe_dump({"models": {"synthetic/test-model": {"input": 1.0, "output": 2.0}}})
         )
+        config_path = _config_with_overlay(tmp_path, overlay)
         expected_dir = (tmp_path / "results" / "run").resolve()
         expected_dir.mkdir(parents=True)
         monkeypatch.setattr(
@@ -104,16 +96,7 @@ class TestModelCostConfigOverlay:
             _make_stub_orchestrator(expected_dir),
         )
 
-        result = runner.invoke(
-            cli,
-            [
-                "run",
-                "--config",
-                str(valid_config),
-                "--model-cost-config",
-                str(overlay),
-            ],
-        )
+        result = runner.invoke(cli, ["run", "--config", str(config_path)])
 
         assert result.exit_code == 0, result.stderr
         # The overlay's model is now priced — pre-overlay, `synthetic/test-model`
@@ -127,18 +110,51 @@ class TestModelCostConfigOverlay:
     def test_json_overlay_is_applied_before_orchestrator(
         self,
         runner: CliRunner,
-        valid_config: Path,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
         restore_pricing: Any,
     ) -> None:
         overlay = tmp_path / "prices.json"
         overlay.write_text(
-            json.dumps(
+            json.dumps({"models": {"synthetic/json-model": {"input": 3.0, "output": 5.0}}})
+        )
+        config_path = _config_with_overlay(tmp_path, overlay)
+        expected_dir = (tmp_path / "results" / "run").resolve()
+        expected_dir.mkdir(parents=True)
+        monkeypatch.setattr(
+            cli_main,
+            "Orchestrator",
+            _make_stub_orchestrator(expected_dir),
+        )
+
+        result = runner.invoke(cli, ["run", "--config", str(config_path)])
+
+        assert result.exit_code == 0, result.stderr
+        cost = pricing.estimate_cost(
+            "synthetic/json-model", input_tokens=1_000_000, output_tokens=1_000_000
+        )
+        assert cost == pytest.approx(8.0)
+
+    def test_no_overlay_leaves_pricing_unchanged(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        restore_pricing: Any,
+    ) -> None:
+        """A config with no ``observability.pricing_overlay_path`` field
+        does not touch the shipped pricing table."""
+        config_path = tmp_path / "run.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
                 {
-                    "models": {
-                        "synthetic/json-model": {"input": 3.0, "output": 5.0},
-                    }
+                    "models": {"agent": {"provider": "openai", "name": "gpt-4"}},
+                    "evaluation": {
+                        "output_dir": str(tmp_path / "out"),
+                        "tasks_glob": str(tmp_path / "tasks" / "*"),
+                    },
+                    "orchestrator": {"repeats": 1, "auto_start_services": False},
+                    "compute": {"workers": 1},
                 }
             )
         )
@@ -150,37 +166,13 @@ class TestModelCostConfigOverlay:
             _make_stub_orchestrator(expected_dir),
         )
 
-        result = runner.invoke(
-            cli,
-            [
-                "run",
-                "--config",
-                str(valid_config),
-                "--model-cost-config",
-                str(overlay),
-            ],
-        )
+        result = runner.invoke(cli, ["run", "--config", str(config_path)])
 
         assert result.exit_code == 0, result.stderr
+        # synthetic/test-model is not in the shipped table → estimate_cost
+        # returns None. If a stale overlay from a sibling test leaked, this
+        # would be non-None.
         cost = pricing.estimate_cost(
-            "synthetic/json-model", input_tokens=1_000_000, output_tokens=1_000_000
+            "synthetic/test-model", input_tokens=1_000_000, output_tokens=0
         )
-        assert cost == pytest.approx(8.0)
-
-    def test_nonexistent_path_is_rejected_before_callback(
-        self,
-        runner: CliRunner,
-        valid_config: Path,
-    ) -> None:
-        result = runner.invoke(
-            cli,
-            [
-                "run",
-                "--config",
-                str(valid_config),
-                "--model-cost-config",
-                "/nonexistent/path.yaml",
-            ],
-        )
-        assert result.exit_code != 0
-        assert "does not exist" in result.stderr.lower()
+        assert cost is None

@@ -3,8 +3,8 @@
 Locks the Stage 2 contract:
 
 - exit 0 with stdout empty and the rendered panels on stderr,
-- default of three samples renders three panels,
-- ``--dry-run-samples`` controls the panel count (up to task count),
+- the first three tasks render as panels (fixed cap, no CLI knob),
+- a task pack with fewer than three tasks renders that many exactly,
 - zero HTTP: both ``httpx.Client.send`` and ``litellm.completion`` remain
   unreached by the CLI path,
 - preset overlays supplied via ``--presets-file`` reach the resolved
@@ -140,9 +140,9 @@ class TestDryRunExitAndStreams:
 
 
 class TestDryRunPanelCount:
-    def test_dry_run_default_samples_renders_3_panels(
-        self, runner: CliRunner, tmp_path: Path
-    ) -> None:
+    def test_dry_run_renders_default_three_panels(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Dry-run always renders the first three tasks. The count is
+        fixed at :data:`_DEFAULT_DRY_RUN_SAMPLES` — no CLI knob."""
         dataset = _write_task_pack(tmp_path, [f"fixture_{i:02d}" for i in range(1, 6)])
         config = _write_run_config(tmp_path, dataset)
 
@@ -152,17 +152,16 @@ class TestDryRunPanelCount:
         assert _count_panels(result.stderr) == 3
         assert "rendering first 3 sample(s) (of 5 task(s) available)" in result.stderr
 
-    def test_dry_run_samples_flag_controls_count(self, runner: CliRunner, tmp_path: Path) -> None:
-        dataset = _write_task_pack(tmp_path, [f"fixture_{i:02d}" for i in range(1, 6)])
+    def test_dry_run_caps_to_task_count_when_fewer(self, runner: CliRunner, tmp_path: Path) -> None:
+        """A task pack with fewer than three tasks renders exactly that
+        many — no padding."""
+        dataset = _write_task_pack(tmp_path, ["fixture_01", "fixture_02"])
         config = _write_run_config(tmp_path, dataset)
 
-        result = runner.invoke(
-            cli,
-            ["run", "--config", str(config), "--dry-run", "--dry-run-samples", "5"],
-        )
+        result = runner.invoke(cli, ["run", "--config", str(config), "--dry-run"])
 
         assert result.exit_code == 0, result.stderr
-        assert _count_panels(result.stderr) == 5
+        assert _count_panels(result.stderr) == 2
 
 
 class TestDryRunNoHttp:

@@ -309,44 +309,11 @@ DEFAULT_USER_MODEL = "anthropic/claude-sonnet-4.6"
 DEFAULT_USER_MODEL_PROVIDER = "openrouter"
 DEFAULT_USER_MODEL_TEMPERATURE = 0.2
 
-
-def _parse_fallback_models(spec: str, *, default_provider: str) -> list[ModelConfig]:
-    """Parse ``--fallback-models`` into an ordered chain of :class:`ModelConfig`.
-
-    Tokens separated by commas; whitespace inside a token stripped. Each
-    token is either ``<provider>/<name>`` (partition on the FIRST ``/``,
-    so ``openrouter/anthropic/claude-sonnet-4.6`` yields
-    ``provider="openrouter"`` and ``name="anthropic/claude-sonnet-4.6"``)
-    or a bare name — in which case ``default_provider`` (the primary
-    agent's provider) fills in.
-
-    Empty spec, whitespace-only spec, or a token that resolves to an
-    empty name raises :class:`click.BadParameter` naming the offender.
-    """
-    if not spec or not spec.strip():
-        raise click.BadParameter(
-            "--fallback-models is empty; pass a comma-separated list of model ids"
-        )
-    tokens = [tok.strip() for tok in spec.split(",")]
-    result: list[ModelConfig] = []
-    for token in tokens:
-        if not token:
-            raise click.BadParameter(
-                f"--fallback-models contains an empty token in {spec!r}; check for stray commas"
-            )
-        provider_head, sep, name_tail = token.partition("/")
-        if sep:
-            provider = provider_head
-            name = name_tail
-        else:
-            provider = default_provider
-            name = token
-        if not name:
-            raise click.BadParameter(
-                f"--fallback-models token {token!r} resolved to an empty model name"
-            )
-        result.append(ModelConfig(provider=provider, name=name))
-    return result
+_DEFAULT_DRY_RUN_SAMPLES = 3
+"""Number of tasks rendered under ``tolokaforge run --dry-run``.
+Deliberately not a CLI knob — three samples is enough to spot a
+misconfigured system prompt or tool spec, and rare tweaks are covered
+by inspecting the run's on-disk output."""
 
 
 def _read_limit_hit_reason(run_dir: Path) -> str | None:
@@ -532,39 +499,6 @@ def _run_dry_run(
     ),
 )
 @click.option(
-    "--sample-limit",
-    "sample_limit",
-    type=int,
-    default=None,
-    help=(
-        "Hard cap on terminated trials (completed or retry-exhausted). "
-        "In-flight trials finish gracefully."
-    ),
-)
-@click.option(
-    "--fallback-models",
-    "fallback_models",
-    type=str,
-    default=None,
-    help=(
-        "Comma-separated ordered chain of fallback agent models "
-        "(e.g. 'openrouter/anthropic/claude-sonnet-4.6,openai/gpt-4o'). "
-        "On a hard failure of the primary agent model, subsequent turns "
-        "for that trial use the next model in the chain. Tokens without "
-        "a '/' inherit the primary agent's provider."
-    ),
-)
-@click.option(
-    "--model-cost-config",
-    "model_cost_config",
-    type=click.Path(exists=True, dir_okay=False),
-    default=None,
-    help=(
-        "JSON or YAML overlay merged onto the shipped pricing table. "
-        "Same schema as tolokaforge/core/data/pricing.json. See docs/CLI.md."
-    ),
-)
-@click.option(
     "--dry-run",
     "dry_run",
     is_flag=True,
@@ -572,19 +506,8 @@ def _run_dry_run(
     help=(
         "Resolve the run config and tasks, render the first-turn wire "
         "request (system prompt, user prompt, sanitized tool spec) for "
-        "up to --dry-run-samples tasks, and exit 0 without any HTTP "
-        "call to a provider. See docs/CLI.md § Dry run."
-    ),
-)
-@click.option(
-    "--dry-run-samples",
-    "dry_run_samples",
-    type=click.IntRange(min=1),
-    default=3,
-    show_default=True,
-    help=(
-        "Max number of tasks to render under --dry-run. Requires "
-        "--dry-run; using it without raises a UsageError."
+        "the first three tasks, and exit 0 without any HTTP call to a "
+        "provider. See docs/CLI.md § Dry run."
     ),
 )
 @click.pass_context
@@ -602,11 +525,7 @@ def run(
     workers: int | None,
     cost_limit: float | None,
     time_limit: str | None,
-    sample_limit: int | None,
-    fallback_models: str | None,
-    model_cost_config: str | None,
     dry_run: bool,
-    dry_run_samples: int,
 ):
     """Run benchmark with specified configuration"""
     if verbose:
@@ -624,9 +543,6 @@ def run(
         raise click.UsageError(
             "--run-dir requires --resume; use it only to point --resume at an existing run directory"
         )
-    samples_source = ctx.get_parameter_source("dry_run_samples")
-    if not dry_run and samples_source is not click.core.ParameterSource.DEFAULT:
-        raise click.UsageError("--dry-run-samples requires --dry-run")
 
     console.print(f"[bold blue]Loading configuration from {config}...[/bold blue]")
 
@@ -691,13 +607,14 @@ def run(
         except ValueError as exc:
             raise click.BadParameter(f"--time-limit: {exc}") from exc
 
-    # --model-cost-config overlays the shipped pricing table BEFORE the
-    # orchestrator is constructed so every downstream cost computation
-    # (including litellm's fallback path) sees the merged rates.
-    if model_cost_config is not None:
-        pricing.reload_pricing(overlay_path=Path(model_cost_config))
-
     run_config = construct_config(RunConfig, config_data, source=Path(config))
+
+    # ``observability.pricing_overlay_path`` overlays the shipped pricing
+    # table BEFORE the orchestrator is constructed so every downstream
+    # cost computation (including litellm's fallback path) sees the
+    # merged rates. Config-file driven; no CLI flag.
+    if run_config.observability and run_config.observability.pricing_overlay_path:
+        pricing.reload_pricing(overlay_path=Path(run_config.observability.pricing_overlay_path))
 
     _print_runtime_banner(
         console=console,
@@ -719,28 +636,17 @@ def run(
     if overlay_path:
         console.print(f"[cyan]Preset overlay: {overlay_path}[/cyan]")
 
-    # --fallback-models parses and validates before the dry-run branch so a
-    # malformed chain fails identically on both paths (parity with
-    # --time-limit / --cost-limit / --sample-limit, which are validated
-    # above). The parsed chain is only threaded into the orchestrator on
-    # the real-run path.
-    fallback_chain: list[ModelConfig] | None = None
-    if fallback_models is not None:
-        agent_cfg = run_config.models.get("agent")
-        if agent_cfg is None:
-            raise click.UsageError(
-                "--fallback-models requires an agent model in the run config "
-                "(models.agent). Add one, or drop the flag."
-            )
-        fallback_chain = _parse_fallback_models(
-            fallback_models, default_provider=agent_cfg.provider
-        )
+    # Fallback-model chain lives on ``models.agent.fallbacks`` in the run
+    # config (list of ModelConfig entries, in order). Empty list → no
+    # fallback client, orchestrator constructs a bare LLMClient.
+    agent_cfg = run_config.models.get("agent")
+    fallback_chain: list[ModelConfig] = list(agent_cfg.fallbacks) if agent_cfg is not None else []
 
     if dry_run:
         _run_dry_run(
             run_config=run_config,
             project=project,
-            dry_run_samples=dry_run_samples,
+            dry_run_samples=_DEFAULT_DRY_RUN_SAMPLES,
         )
         return
 
@@ -779,15 +685,15 @@ def run(
     budget = make_budget(
         cost_limit_usd=cost_budget_usd,
         time_limit_seconds=time_limit_seconds,
-        sample_limit=sample_limit,
+        sample_limit=None,
     )
 
-    # --fallback-models is realised as a per-invocation
+    # ``models.agent.fallbacks`` is realised as a per-invocation
     # ``agent_client_factory`` that wraps the primary agent model in a
-    # :class:`FallbackLLMClient`. When the flag is unset the seam stays
+    # :class:`FallbackLLMClient`. When the list is empty the seam stays
     # ``None`` and the orchestrator constructs a bare :class:`LLMClient`.
     agent_client_factory: Callable[[ModelConfig], LLMClient] | None = None
-    if fallback_chain is not None:
+    if fallback_chain:
 
         def _fallback_factory(primary: ModelConfig) -> LLMClient:
             return FallbackLLMClient(primary=primary, fallbacks=fallback_chain)  # type: ignore[return-value]

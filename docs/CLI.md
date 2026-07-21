@@ -259,7 +259,7 @@ The REPL lives in the `[dx]` extras alongside Rich panels and banners (see [ADR-
 
 ## Dry run
 
-`tolokaforge run --dry-run [--dry-run-samples N]` resolves the run config with full parity to a real run, loads the declared tasks via the adapter, renders the first N samples' first-turn wire requests as Rich panels on stderr, and exits `0` without creating a run directory or issuing a single HTTP call to any provider.
+`tolokaforge run --dry-run` resolves the run config with full parity to a real run, loads the declared tasks via the adapter, renders the first three tasks' first-turn wire requests as Rich panels on stderr, and exits `0` without creating a run directory or issuing a single HTTP call to any provider.
 
 ```bash
 tolokaforge run --config examples/native/tool_use/run_config.yaml --dry-run
@@ -267,9 +267,9 @@ tolokaforge run --config examples/native/tool_use/run_config.yaml --dry-run
 
 ### What it does
 
-1. Loads the run config (same `load_effective_run_config` path a real run takes) and applies every CLI override — `--user-model`, `--judge-model`, `--runtime`, `--workers`, `--cost-limit`, `--time-limit`, `--sample-limit`, `--fallback-models`, `--model-cost-config`, `--presets-file` — identically to a real invocation. A malformed `--time-limit=30xyz` fails with the same `click.BadParameter` diagnostic under `--dry-run` as under a real run.
+1. Loads the run config (same `load_effective_run_config` path a real run takes) and applies every CLI override — `--user-model`, `--judge-model`, `--runtime`, `--workers`, `--cost-limit`, `--time-limit`, `--presets-file` — identically to a real invocation. A malformed `--time-limit=30xyz` fails with the same `click.BadParameter` diagnostic under `--dry-run` as under a real run.
 2. Constructs the adapter and enumerates every declared task. **Skips the TypeSense preflight** `Orchestrator.load_tasks()` performs — dry-run never starts Docker.
-3. For each of the first N tasks (default N=3), materialises the first-turn wire request: system prompt, first user message, sanitized OpenAI-shape tool spec, and resolved model / judge / runtime identifiers.
+3. For the first three tasks (fixed cap; more never needed in practice), materialises the first-turn wire request: system prompt, first user message, sanitized OpenAI-shape tool spec, and resolved model / judge / runtime identifiers.
 4. Renders one `rich.panel.Panel` per sample on stderr through the shared `console`.
 5. Returns exit `0`. No run directory is created, no `emit_artifact_path` fires (stdout stays empty), no [start/end banner](#run-banner) renders, and no [Live run panel](#live-run-panel---display-rich-during-tolokaforge-run) opens.
 
@@ -277,8 +277,7 @@ tolokaforge run --config examples/native/tool_use/run_config.yaml --dry-run
 
 | Flag | Argument | Default | Behaviour |
 |------|----------|---------|-----------|
-| `--dry-run` | boolean | `False` | Activate the dry-run branch. Mutually exclusive with `--resume` — passing both fails with `click.UsageError`. |
-| `--dry-run-samples` | `int >= 1` | `3` | Cap on the number of rendered samples. When the cap exceeds the declared task count, every task renders and the preamble line reads `rendering first {N} sample(s) (of {N} task(s) available)`. Requires `--dry-run` — passing `--dry-run-samples` without `--dry-run` fails with `click.UsageError`. |
+| `--dry-run` | boolean | `False` | Activate the dry-run branch. Mutually exclusive with `--resume` — passing both fails with `click.UsageError`. Sample cap is fixed at 3 (`_DEFAULT_DRY_RUN_SAMPLES`); packs smaller than that render every task. |
 
 ### Panel shape
 
@@ -308,7 +307,7 @@ One sample is one `(task_id, trial_index=0)` pair. Every trial of the same task 
 - **`--display={rich,plain,log}`** — panels render through the shared `console` (stderr). No `LiveRunDisplay` opens under any display mode — dry-run is a one-shot render, not an animated region.
 - **`--presets-file`** — the overlay is activated identically to a real run; the `preset:` field on the rendered panel reflects the overlay-resolved preset name.
 - **`--user-model` / `--judge-model` / `--runtime`** — reflected in the `Model:` / `Judge:` / `Runtime:` lines.
-- **`--cost-limit` / `--time-limit` / `--sample-limit` / `--fallback-models`** — parsed and validated identically to a real run; a bad token surfaces the same `click.BadParameter` diagnostic. Not applied, because no trials execute.
+- **`--cost-limit` / `--time-limit`** — parsed and validated identically to a real run; a bad token surfaces the same `click.BadParameter` diagnostic. Not applied, because no trials execute.
 
 ### Streams
 
@@ -349,7 +348,7 @@ On the resume path the [start banner](#start-banner) first line changes from `�
 ### Composition with other flags
 
 - **`--dry-run`** — mutually exclusive. Passing both fails with `click.UsageError("--dry-run and --resume are mutually exclusive; --dry-run does not consult run state")`.
-- **`--cost-limit` / `--time-limit` / `--sample-limit`** — budgets are per-invocation. The cost budget seeds from prior-invocation spend recorded under the run directory, so dollars already burned still count; the time and sample counters restart on each `tolokaforge run --resume` invocation. Cumulative budgets across resumes are tracked in [#352](https://github.com/Toloka/tolokaforge/issues/352). See [§ Cost, time, and sample limits](#cost-time-and-sample-limits).
+- **`--cost-limit` / `--time-limit`** — budgets are per-invocation. The cost budget seeds from prior-invocation spend recorded under the run directory, so dollars already burned still count; the time counter restarts on each `tolokaforge run --resume` invocation. Cumulative budgets across resumes are tracked in [#352](https://github.com/Toloka/tolokaforge/issues/352). See [§ Cost and time limits](#cost-and-time-limits).
 - **`--presets-file` / `--user-model` / `--judge-model` / `--runtime`** — applied identically to a first-time run.
 
 ### `--run-dir` flag
@@ -459,24 +458,22 @@ The `→ Browse:` line is a suggested follow-up command. `tolokaforge browse` is
 
 `--display=log` shapes the log-line stream only; it does not silence the shared `console`, so the banner still renders under it.
 
-## Cost, time, and sample limits
+## Cost and time limits
 
-Three flags on `tolokaforge run` cap what the run may spend. Any single cap crossing triggers a graceful shutdown: `Orchestrator.run()` stops enqueuing new trials, in-flight trials complete, `LIMIT_HIT.json` lands under the run directory, and the [end banner](#end-banner) switches to the `⏸ Run stopped (<reason>)` variant.
+Two flags on `tolokaforge run` cap what the run may spend. Any single cap crossing triggers a graceful shutdown: `Orchestrator.run()` stops enqueuing new trials, in-flight trials complete, `LIMIT_HIT.json` lands under the run directory, and the [end banner](#end-banner) switches to the `⏸ Run stopped (<reason>)` variant.
 
 | Flag | Argument | Effect |
 |------|----------|--------|
 | `--cost-limit` | float (USD) | Caps cumulative agent cost. Overrides `compute.max_budget_usd` in the run config (mirrors `--workers`). When set, the `--display=rich` bottom-bar `$cost` segment renders in `warn` (yellow) at ≥ 80 % of the budget and `error` (bold red) at ≥ 100 % — see [§ THEME](#theme--semantic-token-palette). |
 | `--time-limit` | duration string | Caps wall-clock execution time. Accepted units: `s`, `m`, `h`, `d`. Compound and fractional forms are accepted — `30m`, `2h`, `1h30m`, `90s`, `1d12h`, `1.5h`. Bare numbers (no unit), empty strings, negatives, and unknown units fail with `click.BadParameter` naming the offending token. The clock starts on the first `record_*` call inside the wait loop — task-loading time (which may be tens of seconds on large projects) does not count against the budget. |
-| `--sample-limit` | int | Caps the number of **terminated** trials — trials that reached `mark_completed` OR `mark_failed` after retries exhausted. Distinct from the task-selection cap (`evaluation.tasks_glob`); this applies at the queue-dispatch layer. Because in-flight trials complete after a hit, the effective sample count on shutdown is `n` to `n + workers − 1`. |
 
-Composing multiple flags is expected — `--cost-limit 5 --time-limit 30m --sample-limit 100` builds a composite budget and the first hit wins:
+Composing the two flags is expected — `--cost-limit 5 --time-limit 30m` builds a composite budget and the first hit wins:
 
 ```bash
-tolokaforge run --config run.yaml \
-    --cost-limit 5 --time-limit 30m --sample-limit 100
+tolokaforge run --config run.yaml --cost-limit 5 --time-limit 30m
 ```
 
-Resume semantics: on `tolokaforge run --resume` the cost budget seeds from prior-invocation spend (dollars already burned still count), while the time and sample counters restart for each invocation.
+Resume semantics: on `tolokaforge run --resume` the cost budget seeds from prior-invocation spend (dollars already burned still count), while the time counter restarts for each invocation.
 
 ### `LIMIT_HIT.json` marker
 
@@ -491,35 +488,36 @@ On any budget hit the orchestrator writes `<run-dir>/LIMIT_HIT.json`:
 }
 ```
 
-`which` is `"cost"`, `"time"`, or `"sample"`. `threshold` is the limit as configured; `value_at_hit` is the counter value at the moment of the crossing (may exceed the threshold on the last increment). `timestamp` is ISO 8601 UTC with a trailing `Z`. The file is absent on natural completion. A resumed run that hits a fresh limit overwrites an existing marker.
+`which` is `"cost"` or `"time"`. `threshold` is the limit as configured; `value_at_hit` is the counter value at the moment of the crossing (may exceed the threshold on the last increment). `timestamp` is ISO 8601 UTC with a trailing `Z`. The file is absent on natural completion. A resumed run that hits a fresh limit overwrites an existing marker.
 
 The full on-disk schema (including field types) is documented in [`docs/OUTPUT_FORMAT.md` § LIMIT_HIT.json](OUTPUT_FORMAT.md#limit_hitjson). After `Orchestrator.run()` returns the CLI reads this file to shape the [end banner](#end-banner).
 
 ## Fallback models
 
-`--fallback-models m1,m2,...` accepts a comma-separated ordered chain of fallback agent models. Each trial constructs its own cursor starting at position 0 (the primary agent model from `models.agent`). On a hard `generate()` failure — any exception surfacing from `LLMClient.generate` after its inner tenacity retry (5 attempts) gave up — the cursor advances one step and the current call retries once on the next model. The trial's message history is preserved: subsequent turns for the same trial continue on the fallback model until *its* retry budget is also exhausted, at which point the cursor advances again.
+The agent-model fallback chain lives on the run config as `models.agent.fallbacks: [...]` — an ordered list of `ModelConfig` entries. Each trial constructs its own cursor starting at position 0 (the primary agent model from `models.agent`). On a hard `generate()` failure — any exception surfacing from `LLMClient.generate` after its inner tenacity retry (5 attempts) gave up — the cursor advances one step and the current call retries once on the next model. The trial's message history is preserved: subsequent turns for the same trial continue on the fallback model until *its* retry budget is also exhausted, at which point the cursor advances again.
 
 Cursor advancement is at `generate()` granularity, not per-trial. A trial that started on the primary and hit a hard failure on turn 3 continues turns 4+ on the fallback; the mixed-model provenance is recorded per call in `metrics.yaml.usage.calls[].model`. The cursor never rewinds inside a trial — a fallback that started serving turns cannot bounce back to the primary. Each new trial resets the cursor to 0.
-
-Token format per chain entry:
-
-- `<provider>/<name>` — explicit provider (e.g. `openai/gpt-4o-mini`, `anthropic/claude-sonnet-4.6`).
-- `<name>` — bare name; provider inferred from the primary agent's provider.
 
 Rate-limit-style transient errors are handled by the inner `LLMClient` retry (5 attempts) and never reach the fallback wrapper. The chain fires only on what the primary itself declared unrecoverable. Chain exhaustion — every model in the chain raised — re-raises the last exception, and the trial fails through the orchestrator's normal path.
 
 Every fallback event emits a structured log line on the `tolokaforge.core.llm.fallback` logger — `"Fallback triggered"` at `WARNING` level with scope pairs `from_provider`, `from_name`, `to_provider`, `to_name`, `cursor`, `error`, `error_type`. The line interleaves above the Rich Live region.
 
-```bash
-tolokaforge run --config run.yaml \
-    --fallback-models "anthropic/claude-sonnet-4.6,openai/gpt-4o-mini"
+```yaml
+# run.yaml
+models:
+  agent:
+    provider: openrouter
+    name: anthropic/claude-sonnet-4.6
+    fallbacks:
+      - {provider: openai,    name: gpt-4o-mini}
+      - {provider: anthropic, name: claude-sonnet-4.6}
 ```
 
 Fallback is scoped to the **agent** client only. The user simulator and rubric judge run on their configured models without fallback in this release.
 
 ## Custom pricing overlay
 
-`--model-cost-config <path>` overlays a JSON or YAML file onto the shipped pricing table (`tolokaforge/core/data/pricing.json`, refreshed from the OpenRouter API by `tools/pricing-updater`). Format is detected by file suffix — `.json` → JSON; `.yaml` / `.yml` → YAML. Both must match the shipped schema: a top-level `models` mapping keyed by `<provider>/<name>` with per-model `{input, output, cache_read?, cache_write?}` in USD per 1 M tokens.
+The pricing overlay lives on the run config as `observability.pricing_overlay_path: <path>` — a JSON or YAML file merged onto the shipped pricing table (`tolokaforge/core/data/pricing.json`, refreshed from the OpenRouter API by `tools/pricing-updater`). Format is detected by file suffix — `.json` → JSON; `.yaml` / `.yml` → YAML. Both must match the shipped schema: a top-level `models` mapping keyed by `<provider>/<name>` with per-model `{input, output, cache_read?, cache_write?}` in USD per 1 M tokens.
 
 Merge semantics are field-level:
 
@@ -529,10 +527,12 @@ Merge semantics are field-level:
 
 The overlay applies to the process-global `MODEL_PRICING` via `tolokaforge.core.pricing.reload_pricing(overlay_path=...)`. Because each CLI invocation is one process, the overlay is scoped to that invocation. Programmatic embedders reading two configs in the same Python process see the LATEST overlay's rates on both configs.
 
-Malformed overlay (unparseable JSON / YAML) → `ValueError` naming the parse-failure location. Unknown suffix → `ValueError` naming the suffix. Non-existent path → Click's own `--model-cost-config` validator surfaces `does not exist` before the run starts.
+Malformed overlay (unparseable JSON / YAML) → `ValueError` naming the parse-failure location. Unknown suffix → `ValueError` naming the suffix. Non-existent path → `FileNotFoundError` from `reload_pricing`.
 
-```bash
-tolokaforge run --config run.yaml --model-cost-config prices.yaml
+```yaml
+# run.yaml
+observability:
+  pricing_overlay_path: prices.yaml
 ```
 
 ## stdout / stderr contract

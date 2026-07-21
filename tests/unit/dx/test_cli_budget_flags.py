@@ -1,11 +1,10 @@
-"""Stage-3 CLI flag surface — ``--cost-limit`` / ``--time-limit`` /
-``--sample-limit`` / ``--fallback-models`` / ``--model-cost-config``.
+"""Run-CLI budget flag surface — ``--cost-limit`` / ``--time-limit``.
 
 Every test uses ``CliRunner`` against a stubbed :class:`Orchestrator`
 that captures the ``OrchestratorDeps`` the CLI wires so we can assert
-the flags produced the intended budget composite, agent-client factory,
-and pricing overlay side effect. No real LLM, Docker, or filesystem
-surfaces are touched beyond the run's own output directory.
+the flags produced the intended budget composite. No real LLM, Docker,
+or filesystem surfaces are touched beyond the run's own output
+directory.
 """
 
 from __future__ import annotations
@@ -21,7 +20,6 @@ import tolokaforge.dx.cli.main as cli_main
 from tolokaforge.core.budgets import (
     CompositeBudget,
     CostBudget,
-    SampleBudget,
     TimeBudget,
 )
 from tolokaforge.dx.cli.main import cli
@@ -79,7 +77,7 @@ def _make_capturing_orchestrator(
 
 
 # ---------------------------------------------------------------------------
-# --cost-limit / --time-limit / --sample-limit
+# --cost-limit / --time-limit
 # ---------------------------------------------------------------------------
 
 
@@ -186,35 +184,8 @@ class TestTimeLimit:
         assert "--time-limit" in result.stderr or "time-limit" in result.stderr
 
 
-class TestSampleLimit:
-    def test_flag_produces_composite_with_sample_budget(
-        self,
-        runner: CliRunner,
-        valid_config: Path,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        expected_dir = (tmp_path / "results" / "run").resolve()
-        expected_dir.mkdir(parents=True)
-        captured: dict[str, Any] = {}
-        monkeypatch.setattr(
-            cli_main,
-            "Orchestrator",
-            _make_capturing_orchestrator(captured, run_return=expected_dir),
-        )
-
-        result = runner.invoke(cli, ["run", "--config", str(valid_config), "--sample-limit", "5"])
-
-        assert result.exit_code == 0, result.stderr
-        budget = captured["deps"].budget
-        assert isinstance(budget, CompositeBudget)
-        trackers = budget.trackers
-        assert len(trackers) == 1
-        assert isinstance(trackers[0], SampleBudget)
-
-
 class TestComposedFlags:
-    def test_all_three_limits_produce_a_three_child_composite(
+    def test_both_limits_produce_a_two_child_composite(
         self,
         runner: CliRunner,
         valid_config: Path,
@@ -240,8 +211,6 @@ class TestComposedFlags:
                 "0.5",
                 "--time-limit",
                 "1h",
-                "--sample-limit",
-                "10",
             ],
         )
 
@@ -249,7 +218,7 @@ class TestComposedFlags:
         budget = captured["deps"].budget
         assert isinstance(budget, CompositeBudget)
         tracker_types = {type(t).__name__ for t in budget.trackers}
-        assert tracker_types == {"CostBudget", "TimeBudget", "SampleBudget"}
+        assert tracker_types == {"CostBudget", "TimeBudget"}
 
 
 class TestNoLimits:

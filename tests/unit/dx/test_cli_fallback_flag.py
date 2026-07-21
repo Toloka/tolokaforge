@@ -1,13 +1,13 @@
-"""Stage-3 ``--fallback-models`` CLI flag parsing + wiring.
+"""``models.agent.fallbacks`` config-driven fallback chain.
 
 Locks the surface in ``tolokaforge/dx/cli/main.py``:
 
-* :func:`_parse_fallback_models` produces the correct ordered
-  ``list[ModelConfig]`` — ``<provider>/<name>`` splits on the first
-  ``/``, bare names inherit the primary agent's provider.
-* Malformed input raises :class:`click.BadParameter` naming the offender.
-* When the flag is set, :class:`OrchestratorDeps.agent_client_factory`
-  is populated; when unset, it stays ``None``.
+* When the run config declares ``models.agent.fallbacks: [...]``,
+  :class:`OrchestratorDeps.agent_client_factory` is populated with a
+  factory that wraps the primary agent config in a
+  :class:`FallbackLLMClient`.
+* When the field is absent or empty, the factory stays ``None`` and the
+  orchestrator constructs a bare :class:`LLMClient`.
 """
 
 from __future__ import annotations
@@ -22,62 +22,9 @@ from click.testing import CliRunner
 import tolokaforge.dx.cli.main as cli_main
 from tolokaforge.core.llm.fallback_client import FallbackLLMClient
 from tolokaforge.core.models import ModelConfig
-from tolokaforge.dx.cli.main import _parse_fallback_models, cli
+from tolokaforge.dx.cli.main import cli
 
 pytestmark = pytest.mark.unit
-
-
-# ---------------------------------------------------------------------------
-# _parse_fallback_models — pure parser
-# ---------------------------------------------------------------------------
-
-
-class TestParseFallbackModels:
-    def test_provider_slash_name_splits_on_first_slash(self) -> None:
-        chain = _parse_fallback_models("a/b,c/d", default_provider="openai")
-        assert [m.provider for m in chain] == ["a", "c"]
-        assert [m.name for m in chain] == ["b", "d"]
-
-    def test_bare_name_inherits_primary_provider(self) -> None:
-        chain = _parse_fallback_models("gpt-4o,claude-sonnet", default_provider="openrouter")
-        assert [m.provider for m in chain] == ["openrouter", "openrouter"]
-        assert [m.name for m in chain] == ["gpt-4o", "claude-sonnet"]
-
-    def test_first_slash_wins_for_openrouter_style(self) -> None:
-        chain = _parse_fallback_models(
-            "openrouter/anthropic/claude-sonnet-4.6", default_provider="openai"
-        )
-        assert chain[0].provider == "openrouter"
-        assert chain[0].name == "anthropic/claude-sonnet-4.6"
-
-    def test_whitespace_is_stripped_inside_tokens(self) -> None:
-        chain = _parse_fallback_models(" a/b , c/d ", default_provider="openai")
-        assert [m.provider for m in chain] == ["a", "c"]
-        assert [m.name for m in chain] == ["b", "d"]
-
-    @pytest.mark.parametrize("spec", ["", "   ", "\t\n"])
-    def test_empty_spec_raises_bad_parameter(self, spec: str) -> None:
-        import click
-
-        with pytest.raises(click.BadParameter, match="empty"):
-            _parse_fallback_models(spec, default_provider="openai")
-
-    def test_empty_token_raises_bad_parameter(self) -> None:
-        import click
-
-        with pytest.raises(click.BadParameter, match="empty token"):
-            _parse_fallback_models("a/b,,c/d", default_provider="openai")
-
-    def test_slash_with_empty_name_raises_bad_parameter(self) -> None:
-        import click
-
-        with pytest.raises(click.BadParameter, match="empty model name"):
-            _parse_fallback_models("openai/", default_provider="openai")
-
-
-# ---------------------------------------------------------------------------
-# CLI wiring — factory injection
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -85,14 +32,17 @@ def runner() -> CliRunner:
     return CliRunner(mix_stderr=False)
 
 
-@pytest.fixture
-def valid_config(tmp_path: Path) -> Path:
+def _config_with_fallbacks(tmp_path: Path, fallbacks: list[dict]) -> Path:
     config_path = tmp_path / "run.yaml"
     config_path.write_text(
         yaml.safe_dump(
             {
                 "models": {
-                    "agent": {"provider": "openrouter", "name": "gpt-4"},
+                    "agent": {
+                        "provider": "openrouter",
+                        "name": "gpt-4",
+                        "fallbacks": fallbacks,
+                    },
                 },
                 "evaluation": {
                     "output_dir": str(tmp_path / "out"),
@@ -125,14 +75,20 @@ def _make_capturing_orchestrator(
     return _CapturingOrchestrator
 
 
-class TestFallbackCliWiring:
-    def test_flag_installs_agent_client_factory(
+class TestFallbackFromConfig:
+    def test_fallbacks_installs_agent_client_factory(
         self,
         runner: CliRunner,
-        valid_config: Path,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        config_path = _config_with_fallbacks(
+            tmp_path,
+            [
+                {"provider": "openai", "name": "gpt-4o-mini"},
+                {"provider": "anthropic", "name": "claude-sonnet-4.6"},
+            ],
+        )
         expected_dir = (tmp_path / "results" / "run").resolve()
         expected_dir.mkdir(parents=True)
         captured: dict[str, Any] = {}
@@ -142,22 +98,13 @@ class TestFallbackCliWiring:
             _make_capturing_orchestrator(captured, run_return=expected_dir),
         )
 
-        result = runner.invoke(
-            cli,
-            [
-                "run",
-                "--config",
-                str(valid_config),
-                "--fallback-models",
-                "openai/gpt-4o-mini,anthropic/claude-sonnet-4.6",
-            ],
-        )
+        result = runner.invoke(cli, ["run", "--config", str(config_path)])
 
         assert result.exit_code == 0, result.stderr
         factory = captured["deps"].agent_client_factory
         assert factory is not None
         # Invoking the factory produces a FallbackLLMClient whose chain is
-        # the primary agent config plus the two parsed fallbacks.
+        # the primary agent config plus the two config-declared fallbacks.
         primary = ModelConfig(provider="openrouter", name="gpt-4")
         wrapper = factory(primary)
         assert isinstance(wrapper, FallbackLLMClient)
@@ -167,13 +114,27 @@ class TestFallbackCliWiring:
         assert wrapper.chain[2].provider == "anthropic"
         assert wrapper.chain[2].name == "claude-sonnet-4.6"
 
-    def test_no_flag_leaves_agent_client_factory_none(
+    def test_no_fallbacks_leaves_agent_client_factory_none(
         self,
         runner: CliRunner,
-        valid_config: Path,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        # No ``fallbacks`` field at all.
+        config_path = tmp_path / "run.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "models": {"agent": {"provider": "openrouter", "name": "gpt-4"}},
+                    "evaluation": {
+                        "output_dir": str(tmp_path / "out"),
+                        "tasks_glob": str(tmp_path / "tasks" / "*"),
+                    },
+                    "orchestrator": {"repeats": 1, "auto_start_services": False},
+                    "compute": {"workers": 1},
+                }
+            )
+        )
         expected_dir = (tmp_path / "results" / "run").resolve()
         expected_dir.mkdir(parents=True)
         captured: dict[str, Any] = {}
@@ -183,27 +144,20 @@ class TestFallbackCliWiring:
             _make_capturing_orchestrator(captured, run_return=expected_dir),
         )
 
-        result = runner.invoke(cli, ["run", "--config", str(valid_config)])
+        result = runner.invoke(cli, ["run", "--config", str(config_path)])
 
         assert result.exit_code == 0, result.stderr
         assert captured["deps"].agent_client_factory is None
 
-    def test_empty_flag_value_exits_nonzero(
+    def test_empty_fallbacks_list_leaves_factory_none(
         self,
         runner: CliRunner,
-        valid_config: Path,
-    ) -> None:
-        result = runner.invoke(cli, ["run", "--config", str(valid_config), "--fallback-models", ""])
-        assert result.exit_code != 0
-        assert "empty" in result.stderr.lower()
-
-    def test_bare_name_inherits_primary_provider_via_cli(
-        self,
-        runner: CliRunner,
-        valid_config: Path,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        """An explicit ``fallbacks: []`` is treated the same as absent —
+        no factory installed, orchestrator builds a bare LLMClient."""
+        config_path = _config_with_fallbacks(tmp_path, [])
         expected_dir = (tmp_path / "results" / "run").resolve()
         expected_dir.mkdir(parents=True)
         captured: dict[str, Any] = {}
@@ -213,16 +167,7 @@ class TestFallbackCliWiring:
             _make_capturing_orchestrator(captured, run_return=expected_dir),
         )
 
-        result = runner.invoke(
-            cli,
-            ["run", "--config", str(valid_config), "--fallback-models", "gpt-4o"],
-        )
+        result = runner.invoke(cli, ["run", "--config", str(config_path)])
 
         assert result.exit_code == 0, result.stderr
-        factory = captured["deps"].agent_client_factory
-        assert factory is not None
-        primary = ModelConfig(provider="openrouter", name="gpt-4")
-        wrapper = factory(primary)
-        # The bare-name fallback inherited the primary's provider ("openrouter").
-        assert wrapper.chain[1].provider == "openrouter"
-        assert wrapper.chain[1].name == "gpt-4o"
+        assert captured["deps"].agent_client_factory is None

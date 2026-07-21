@@ -80,7 +80,7 @@ returns to shape the `⏸ Run stopped (<reason>)` end banner (see
 | Field | Type | Meaning |
 |---|---|---|
 | `which` | `"cost"` \| `"time"` \| `"sample"` | Which budget crossed its threshold first. Additional values are rejected by the writer. |
-| `threshold` | float | The limit as configured — `--cost-limit` USD, `--time-limit` seconds, or `--sample-limit` count. Numeric type is `float` for uniform on-disk shape; integer limits round-trip losslessly. |
+| `threshold` | float | The limit as configured — `--cost-limit` USD or `--time-limit` seconds. Numeric type is `float` for uniform on-disk shape; integer limits round-trip losslessly. |
 | `value_at_hit` | float | The counter's value at the moment of the hit. May exceed `threshold` on the last increment (e.g. a $0.02 trial pushing spend from $4.99 to $5.01 records `value_at_hit=5.01`). |
 | `timestamp` | ISO 8601 UTC string | When the hit was detected. Formatted `YYYY-MM-DDTHH:MM:SSZ` with an explicit `Z` suffix. |
 
