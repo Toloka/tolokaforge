@@ -1,0 +1,82 @@
+# multi_service_endpoint_add stack: agent (runner) edits source over a shared
+# named volume; testrunner runs the real suite against that source and writes a
+# PASS/FAIL marker; app-db holds the orders + customers substrate the endpoints
+# read. Pinned images only.
+#
+#   runner:/work ── source (named volume) ── testrunner:/workspace
+#                                                   │
+#   testrunner ── POST /run-tests → unittest ──▶ app-db:5432 (orders + customers)
+#
+# The `source` volume is mounted into BOTH the runner (as /work, the agent's
+# workspace) and the testrunner (as /workspace, the filesystem_dir reset target).
+# The reset recipe seeds the pristine source into that volume per trial, so the
+# agent's edits and the tests run against the same tree.
+volumes:
+  source: {}
+
+services:
+  runner:
+    image: tolokaforge-runner:local
+    environment:
+      DB_SERVICE_URL: "http://db-service:8000"
+    ports:
+      - "50051"
+    volumes:
+      - source:/work
+    depends_on:
+      db-service:
+        condition: service_healthy
+      app-db:
+        condition: service_healthy
+      testrunner:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import grpc; grpc.channel_ready_future(grpc.insecure_channel('localhost:50051')).result(timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  db-service:
+    image: tolokaforge-db-service:local
+    ports:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  app-db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: "orders"
+      POSTGRES_USER: "app"
+      POSTGRES_PASSWORD: "app_pw"
+    volumes:
+      - ./app-db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d orders"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # The test-runner infra (testrunner/main.py, bind-mounted read-only) is NOT
+  # part of the resettable source. `source:/workspace` is the filesystem_dir
+  # reset target AND the agent's /work via the shared volume; the seeded tests
+  # and app.py live there, run in-process via Starlette TestClient.
+  testrunner:
+    image: tolokaforge-runner:local
+    command: ["python", "-m", "uvicorn", "main:app", "--app-dir", "/srv/app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      APP_DB_DSN: "postgresql://app:app_pw@app-db:5432/orders"
+    volumes:
+      - source:/workspace
+      - ./testrunner/main.py:/srv/app/main.py:ro
+    depends_on:
+      app-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 30

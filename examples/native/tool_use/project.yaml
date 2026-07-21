@@ -1,0 +1,27 @@
+# Project spec for the tool-use example.
+#
+# Two public tool-use tasks that drive database + file tools against a
+# JSON-backed state store. No Docker substrate — state lives in the
+# task's `initial_state.json_db` — so `default_environment` is omitted.
+# See docs/PROJECTS.md for the full Project model.
+
+name: "tool-use"
+version: 1
+description: >
+  Tool-use evaluation: triage a support ticket and stage an account-state
+  change safely, each with an operator-facing checklist. Two tasks share a
+  base user actor; per-task deltas carry the DB state, guidance, and
+  backstory.
+
+tasks:
+  discovery:
+    glob: "dataset/tasks/**/task.yaml"
+
+# ── Task defaults — base for every task ─────────────────────────
+task_defaults:
+  adapter_type: "native"
+  max_turns: 9
+  actors:
+    user:
+      mode: "llm"
+      persona: "cooperative"

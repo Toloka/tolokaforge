@@ -1,0 +1,28 @@
+# Project spec for the multi_service_lot_ops example.
+#
+# A single native task that mutates a real postgres substrate over a FastAPI
+# service and grades the mutation directly against the database through a
+# read-only role (state_checks.db_probes). The task declares its own
+# `environment_manifest` (all four services `isolation: shared`), so this
+# project only supplies discovery + native defaults. See README.md.
+#
+# See docs/PROJECTS.md for the full Project model.
+
+name: "multi-service-lot-ops"
+version: 1
+description: >
+  Single-task project demonstrating substrate-state grading: the agent opens
+  a corrective-action record over a FastAPI API backed by postgres, and
+  grading reads the corrective_actions table directly via a least-privilege
+  read-only role — an independent oracle, not the agent's own written file.
+
+tasks:
+  discovery:
+    glob: "tasks/**/task.yaml"
+
+task_defaults:
+  adapter_type: "native"
+  actors:
+    user:
+      mode: "llm"
+      persona: "cooperative"

@@ -6,7 +6,7 @@
 # brings up a fresh compose stack and applies the seed, overwriting the
 # `factory_default` row init.sql seeded with `baseline`. See README.md.
 #
-# See docs/architecture/PROJECTS.md for the full Project model.
+# See docs/PROJECTS.md for the full Project model.
 
 name: "multi-service-postgres-reset"
 version: 1

@@ -1,0 +1,26 @@
+combine:
+  method: weighted
+  weights:
+    state_checks: 1.0
+  pass_threshold: 0.5
+
+state_checks:
+  db_probes:
+    - name: corrective_action_recorded
+      dsn: "postgresql://grader:grader_pw@app-db:5432/mfg"
+      query: "SELECT reason_code, status FROM corrective_actions WHERE lot_id = 7"
+      expect:
+        - path: "$.rows[0].reason_code"
+          equals: "CAPA-01"
+          description: "reason code matches"
+        - path: "$.rows[0].status"
+          equals: "open"
+          description: "status is open"
+        - path: "$.row_count"
+          equals: 1
+          description: "exactly one corrective action"
+      description: "a corrective action exists for lot 7"
+
+transcript_rules: {}
+
+llm_judge: null

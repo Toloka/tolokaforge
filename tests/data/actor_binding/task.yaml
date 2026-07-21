@@ -1,0 +1,14 @@
+task_id: actor_user_binding
+name: Actor User Binding
+description: A task authored with the canonical actors.user shape.
+initial_state: {}
+tools:
+  agent:
+    enabled: []
+  user:
+    enabled: []
+actors:
+  user:
+    mode: llm
+    persona: curious engineer
+    backstory: I just joined the ops team and need help.

@@ -1,0 +1,37 @@
+# Multi-service `advanced` example — `Customer Value Analysis` task.
+#
+# Exercises the shared-runtime + task-declared-stack path (Case B in
+# ADR-0018) with **two** task-specific HTTP services the agent must
+# coordinate reads across (orders + customers), joined on `customer_id`.
+#
+# Also demonstrates model heterogeneity vs the sibling `multi_service`
+# example — the agent runs on Claude Haiku 4.5 (smaller, cheaper) while
+# the user simulator stays on Sonnet 4.6 (drives cleaner dialogue).
+#
+# Requirements:
+#   - Docker daemon running.
+#   - OPENROUTER_API_KEY in .env (default).
+
+models:
+  agent:
+    provider: "openrouter"
+    name: "anthropic/claude-haiku-4.5"
+    temperature: 0.0
+    max_tokens: 4096
+  user:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.2
+
+orchestrator:
+  workers: 1
+  repeats: 1
+  max_turns: 12
+  runtime: shared
+  queue_backend: sqlite
+
+evaluation:
+  projects:
+    - "examples/native/multi_service_advanced/dataset"
+  tasks_glob: "tasks/multi_service/orders_customers_join_01/task.yaml"
+  output_dir: "results/multi_service_advanced_example"

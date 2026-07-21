@@ -9,8 +9,10 @@ asserts observable network behaviour against a live Docker daemon:
   while inter-service DNS and the host-published runner port stay reachable.
 * ``test_full_internet`` — application egress succeeds (over-enforcement
   guard).
-* ``test_limited_internet`` — materialisation refuses before any container
-  starts.
+* ``test_limited_internet`` — egress to an allowlisted host succeeds
+  (HTTP 200 through the injected proxy) while a non-allowlisted host and a
+  raw-IP target are refused (HTTP 403), and inter-service DNS plus the
+  host-published runner port stay reachable.
 
 Marked ``integration`` + ``docker`` — requires a real Docker daemon.
 """

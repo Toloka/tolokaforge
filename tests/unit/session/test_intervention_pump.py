@@ -303,7 +303,7 @@ class TestLoopIntegration:
         # injected user message in its messages arg.
         seen_messages_per_call: list[list[Message]] = []
 
-        def fake_generate(system, messages, tools, tool_choice="auto"):
+        def fake_generate(system, messages, tools, tool_choice="auto", **kwargs):
             seen_messages_per_call.append(list(messages))
             return GenerationResult(text="ok", tool_calls=[], usage=Usage())
 

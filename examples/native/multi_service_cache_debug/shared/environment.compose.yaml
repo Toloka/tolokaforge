@@ -1,0 +1,87 @@
+# multi_service_cache_debug stack: agent -> orders-api + cache-admin (FastAPI)
+# -> redis:7-alpine (cache, isolation: reset) + postgres:16 (app-db, source of
+# truth); db-service backs engine state. Pinned images only.
+services:
+  runner:
+    image: tolokaforge-runner:local
+    environment:
+      DB_SERVICE_URL: "http://db-service:8000"
+    ports:
+      - "50051"
+    depends_on:
+      db-service:
+        condition: service_healthy
+      orders-api:
+        condition: service_healthy
+      cache-admin:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import grpc; grpc.channel_ready_future(grpc.insecure_channel('localhost:50051')).result(timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  db-service:
+    image: tolokaforge-db-service:local
+    ports:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  app-db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: "orders"
+      POSTGRES_USER: "app"
+      POSTGRES_PASSWORD: "app_pw"
+    volumes:
+      - ./app-db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d orders"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "PING"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  orders-api:
+    image: tolokaforge-runner:local
+    command: ["python", "-m", "uvicorn", "main:app", "--app-dir", "/srv/app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      APP_DB_DSN: "postgresql://app:app_pw@app-db:5432/orders"
+      REDIS_URL: "redis://redis:6379"
+    volumes:
+      - ./orders-api/main.py:/srv/app/main.py:ro
+      - ./_lib/redis_mini.py:/srv/app/redis_mini.py:ro
+    depends_on:
+      app-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  cache-admin:
+    image: tolokaforge-runner:local
+    command: ["python", "-m", "uvicorn", "main:app", "--app-dir", "/srv/app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      REDIS_URL: "redis://redis:6379"
+    volumes:
+      - ./cache-admin/main.py:/srv/app/main.py:ro
+      - ./_lib/redis_mini.py:/srv/app/redis_mini.py:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 30

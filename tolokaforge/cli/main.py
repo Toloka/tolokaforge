@@ -17,7 +17,7 @@ from tolokaforge.core.llm.presets import (
 )
 from tolokaforge.core.models import RunConfig
 from tolokaforge.core.orchestrator import Orchestrator
-from tolokaforge.core.project_loader import load_effective_run_config
+from tolokaforge.core.project_loader import construct_config, load_effective_run_config
 from tolokaforge.core.resume import RunStateManager
 from tolokaforge.core.run_queue import create_run_queue
 from tolokaforge.secrets import init_default, install_global_redactor
@@ -63,8 +63,7 @@ def _print_runtime_banner(*, console: Console, runtime_choice: str, source: str)
     }.get(runtime_choice, runtime_choice)
     isolation_line = {
         "shared": (
-            "one docker-compose stack shared across every trial (fastest, "
-            "no cross-trial isolation)"
+            "one docker-compose stack shared across every trial (fastest, no cross-trial isolation)"
         ),
         "per_trial": (
             "one docker-compose stack per trial via Testcontainers "
@@ -190,7 +189,7 @@ def _activate_presets_overlay(
         "'shared' (default) uses one docker-compose stack across every trial; "
         "'per_trial' materialises an isolated stack per trial via Testcontainers "
         "(required by tasks whose environment_manifest declares "
-        "isolation: per_trial). See docs/architecture/RUNTIME_BACKENDS.md."
+        "isolation: per_trial). See docs/RUNTIME_BACKENDS.md."
     ),
 )
 @click.option(
@@ -264,7 +263,7 @@ def run(
     if workers is not None:
         config_data.setdefault("compute", {})["workers"] = workers
 
-    run_config = RunConfig(**config_data)
+    run_config = construct_config(RunConfig, config_data, source=Path(config))
 
     _print_runtime_banner(
         console=console,
@@ -351,7 +350,7 @@ def prepare(
     """Prepare a queue-backed run directory for distributed workers."""
     console.print(f"[bold blue]Preparing run from config {config}...[/bold blue]")
     config_data, project = load_effective_run_config(Path(config))
-    run_config = RunConfig(**config_data)
+    run_config = construct_config(RunConfig, config_data, source=Path(config))
 
     overlay_path = _activate_presets_overlay(presets_file, run_config)
     if overlay_path:
@@ -408,7 +407,7 @@ def worker(
     """Run a queue worker process (distributed execution mode)."""
     console.print(f"[bold blue]Loading worker config from {config}...[/bold blue]")
     config_data, project = load_effective_run_config(Path(config))
-    run_config = RunConfig(**config_data)
+    run_config = construct_config(RunConfig, config_data, source=Path(config))
 
     # Worker overlay precedence: --presets-file > ``prepare``-persisted queue
     # state > engine.presets_file.
@@ -647,7 +646,7 @@ def status(run_dir: str, config: str | None):
         queue = create_run_queue("sqlite", sqlite_path=queue_db, max_retries=0)
     elif config:
         config_data, _project = load_effective_run_config(Path(config))
-        run_config = RunConfig(**config_data)
+        run_config = construct_config(RunConfig, config_data, source=Path(config))
         if run_config.effective_queue_backend == "postgres":
             queue = create_run_queue(
                 "postgres",

@@ -12,9 +12,11 @@ from pathlib import Path
 
 import pytest
 
+from tolokaforge.runner import grading as grading_module
 from tolokaforge.runner.grading import (
     build_grade_reasons,
     combine_grade_components,
+    evaluate_db_probes,
     evaluate_jsonpath_checks,
     evaluate_jsonpath_file_checks,
     evaluate_jsonpath_state_checks,
@@ -60,6 +62,38 @@ def test_check_fails_when_file_missing_expected_text(tmp_path: Path):
     score, reasons = evaluate_jsonpath_file_checks(checks)
     assert score == 0.0
     assert "FAIL: must mention X" in reasons
+
+
+@pytest.mark.parametrize(
+    ("marker", "expected_score", "expected_reason"),
+    [
+        ("PASS", 1.0, "PASS: test suite passed"),
+        ("FAIL", 0.0, "FAIL: test suite passed"),
+    ],
+)
+def test_pass_marker_discriminates_against_fail(
+    tmp_path: Path, marker: str, expected_score: float, expected_reason: str
+):
+    """A test-result marker file checked with ``contains_ci: "PASS"`` must score
+    1.0 only when the marker says PASS. A file containing exactly ``FAIL`` must
+    NOT vacuously satisfy the check — this is the decisive state-check floor the
+    endpoint_add pack relies on, and using ``contains:`` instead of
+    ``contains_ci:`` would silently always-pass because the missing key defaults
+    to ``""`` and ``"" in content`` is vacuously True.
+    """
+    marker_file = tmp_path / "test_result.txt"
+    marker_file.write_text(marker)
+
+    checks = [
+        {
+            "path_glob": str(marker_file),
+            "contains_ci": "PASS",
+            "description": "test suite passed",
+        }
+    ]
+    score, reasons = evaluate_jsonpath_file_checks(checks)
+    assert score == expected_score
+    assert expected_reason in reasons
 
 
 def test_check_fails_when_no_files_match_glob(tmp_path: Path):
@@ -246,6 +280,114 @@ def test_combine_components_multiplies_hash_and_jsonpath():
     }
     score, _ = combine_grade_components(components, grading_config)
     assert score == pytest.approx(0.5)
+
+
+def _stub_rows(rows, monkeypatch):
+    """Inject an in-memory row set for _fetch_probe_rows (no live DB)."""
+
+    async def fake_fetch(dsn: str, query: str):
+        return rows
+
+    monkeypatch.setattr(grading_module, "_fetch_probe_rows", fake_fetch)
+
+
+async def test_db_probes_empty_returns_sentinel():
+    score, reasons = await evaluate_db_probes([])
+    assert score == -1.0
+    assert reasons == ""
+
+
+async def test_db_probe_passes_when_expect_matches(monkeypatch):
+    _stub_rows([{"reason_code": "CAPA-01", "status": "open"}], monkeypatch)
+    probes = [
+        {
+            "name": "ca_exists",
+            "dsn": "postgresql://grader@app-db/mfg",
+            "query": "SELECT reason_code, status FROM corrective_actions WHERE lot_id = 7",
+            "expect": [
+                {
+                    "path": "$.rows[0].reason_code",
+                    "equals": "CAPA-01",
+                    "description": "reason code",
+                },
+                {"path": "$.rows[0].status", "equals": "open", "description": "status open"},
+                {"path": "$.row_count", "equals": 1, "description": "exactly one row"},
+            ],
+            "description": "corrective action recorded",
+        }
+    ]
+    score, reasons = await evaluate_db_probes(probes)
+    assert score == 1.0
+    assert "PASS: probe 'ca_exists'" in reasons
+
+
+async def test_db_probe_fails_and_reports_actual_value(monkeypatch):
+    _stub_rows([{"reason_code": "WRONG", "status": "open"}], monkeypatch)
+    probes = [
+        {
+            "name": "ca_exists",
+            "dsn": "postgresql://grader@app-db/mfg",
+            "query": "SELECT reason_code FROM corrective_actions",
+            "expect": [
+                {
+                    "path": "$.rows[0].reason_code",
+                    "equals": "CAPA-01",
+                    "description": "reason code",
+                },
+            ],
+            "description": "corrective action recorded",
+        }
+    ]
+    score, reasons = await evaluate_db_probes(probes)
+    assert score == 0.0
+    assert "FAIL: probe 'ca_exists'" in reasons
+    # The mismatching value is surfaced for debugging.
+    assert "WRONG" in reasons
+
+
+async def test_db_probe_connection_error_fails_loud(monkeypatch):
+    async def raising_fetch(dsn: str, query: str):
+        raise ConnectionError("could not connect to app-db:5432")
+
+    monkeypatch.setattr(grading_module, "_fetch_probe_rows", raising_fetch)
+    probes = [
+        {
+            "name": "ca_exists",
+            "dsn": "postgresql://grader@app-db/mfg",
+            "query": "SELECT 1",
+            "expect": [{"path": "$.row_count", "equals": 1}],
+            "description": "corrective action recorded",
+        }
+    ]
+    score, reasons = await evaluate_db_probes(probes)
+    assert score == 0.0
+    assert "FAIL: probe 'ca_exists'" in reasons
+    assert "could not query postgres" in reasons
+    assert "ConnectionError" in reasons
+
+
+def test_combine_components_uses_db_probe_as_state_checks():
+    components = {"hash_score": -1.0, "jsonpath_score": -1.0, "db_probe_score": 1.0}
+    grading_config = {
+        "combine_method": "weighted",
+        "weights": {"state_checks": 1.0},
+        "state_checks": {"db_probes": [{"name": "x"}]},
+    }
+    score, binary_pass = combine_grade_components(components, grading_config)
+    assert score == 1.0
+    assert binary_pass is True
+
+
+def test_build_reasons_includes_db_probe_when_score_set():
+    components = {
+        "hash_score": -1.0,
+        "jsonpath_score": -1.0,
+        "db_probe_score": 0.0,
+        "db_probe_reasons": "FAIL: probe 'ca_exists' — FAIL: reason code",
+        "transcript_score": -1.0,
+    }
+    text = build_grade_reasons(components)
+    assert "DB probes: FAIL: probe 'ca_exists'" in text
 
 
 def test_build_reasons_includes_jsonpath_when_score_set():

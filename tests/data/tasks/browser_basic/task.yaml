@@ -8,20 +8,6 @@ description: |
 
 initial_state:
   json_db: null
-  workspace:
-    files:
-      - path: test.html
-        content: |
-          <!DOCTYPE html>
-          <html>
-          <head>
-              <title>Test Page</title>
-          </head>
-          <body>
-              <h1>Welcome to the Test Page</h1>
-              <p>The secret code is: <span id="code">ABC123</span></p>
-          </body>
-          </html>
 
 tools:
   agent:

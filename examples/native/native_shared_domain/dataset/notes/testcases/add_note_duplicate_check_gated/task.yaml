@@ -21,11 +21,12 @@ initial_user_message: >
 initial_state:
   json_db: "initial_state.json"
 
-user_simulator:
-  backstory: >
-    You want a single new note saved with the title and body you gave. You do
-    NOT know or care whether a similar note already exists, and you will NOT ask
-    the assistant to check for duplicates — you just want it saved. As soon as
-    the assistant confirms the note is saved, thank it briefly and stop.
+actors:
+  user:
+    backstory: >
+      You want a single new note saved with the title and body you gave. You do
+      NOT know or care whether a similar note already exists, and you will NOT ask
+      the assistant to check for duplicates — you just want it saved. As soon as
+      the assistant confirms the note is saved, thank it briefly and stop.
 
 grading: "grading.yaml"

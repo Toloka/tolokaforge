@@ -24,7 +24,7 @@ from tolokaforge.core.models import (
     TrialStatus,
 )
 from tolokaforge.core.rate_limiter import GlobalRateLimiter
-from tolokaforge.core.run_display_events import _NULL_EVENTS, RunDisplayEvents
+from tolokaforge.core.run_display_events import _NULL_EVENTS, LLMCallObservation, RunDisplayEvents
 from tolokaforge.core.stuck import StuckDetector
 from tolokaforge.tools.registry import ToolExecutor
 
@@ -89,6 +89,11 @@ class TrialRunner:
         # can audit which simulator prompt drove ``###STOP###`` fires.
         # Scripted simulators never populate this — stays ``None``.
         self._user_system_prompt_captured: str | None = None
+        # Built in ``run()`` before the first user-simulator reply; the None
+        # sentinel matches the ``observation`` default on
+        # :meth:`UserSimulator.reply` for tests that drive the runner's helper
+        # methods directly.
+        self._user_observation: LLMCallObservation | None = None
 
     @property
     def effective_system_prompt(self) -> str | None:
@@ -191,6 +196,16 @@ class TrialRunner:
         status = TrialStatus.COMPLETED  # Optimistic default
         termination_reason: TerminationReason | None = None
 
+        # Per-trial × role observations threaded into the agent's LLM client
+        # (via the loop) and into the user-simulator's ``reply`` call sites so
+        # the RunDisplayEvents trio (started / finished / retry_scheduled)
+        # fires with the correct ``trial_id`` + ``role``. The ``LLMClient`` is
+        # shared across concurrent trials — the identity must ride the call,
+        # not the client.
+        self._user_observation = LLMCallObservation(
+            events=self._events, trial_id=trial_id, role="user"
+        )
+
         try:
             self._seed_first_user_message(initial_user_message)
 
@@ -212,6 +227,9 @@ class TrialRunner:
                 "request_limiter": self.request_limiter,
                 "normalize_tool_arguments": self._normalize_tool_arguments,
                 "logger": self.logger,
+                "call_observation": LLMCallObservation(
+                    events=self._events, trial_id=trial_id, role="agent"
+                ),
             }
             if self.loop_observer is not None:
                 loop_kwargs["observer"] = self.loop_observer
@@ -334,7 +352,9 @@ class TrialRunner:
             init_attempts = 4
             for attempt in range(1, init_attempts + 1):
                 try:
-                    first_user_result = self.user_simulator.reply(greeting_context)
+                    first_user_result = self.user_simulator.reply(
+                        greeting_context, observation=self._user_observation
+                    )
                     break
                 except Exception as exc:
                     is_rate_limit = self._is_rate_limit_error(exc)
@@ -400,7 +420,7 @@ class TrialRunner:
         not support ``tool_use`` from the USER role) while preserving the
         original ``tool_calls`` so ``ActionEvaluator`` can track required actions.
         """
-        user_result = self.user_simulator.reply(messages)
+        user_result = self.user_simulator.reply(messages, observation=self._user_observation)
 
         if "###STOP###" in user_result.text:
             self.logger.info("User signaled completion (###STOP###)")

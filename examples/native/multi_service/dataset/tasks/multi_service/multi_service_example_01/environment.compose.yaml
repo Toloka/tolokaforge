@@ -3,7 +3,7 @@
 # Three services on the same docker-compose network:
 #   - `runner`      — tolokaforge-runner, the gRPC server the conductor talks to.
 #                     References the `:local` alias applied by the engine at run
-#                     start; see docs/architecture/RUNTIME_BACKENDS.md.
+#                     start; see docs/RUNTIME_BACKENDS.md.
 #   - `db-service`  — tolokaforge-db-service, the runner's state / grading backend
 #                     (in-memory sqlite behind an HTTP JSON interface).
 #   - `app-service` — nginx serving `fixtures/products.json` — the task-specific

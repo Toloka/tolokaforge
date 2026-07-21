@@ -11,8 +11,9 @@ tools:
   user:
     enabled: []
 
-user_simulator:
-  mode: llm
-  persona: cooperative
+actors:
+  user:
+    mode: llm
+    persona: cooperative
 
 system_prompt: "system_prompt.md"

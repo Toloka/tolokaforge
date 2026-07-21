@@ -12,10 +12,11 @@ initial_user_message: >
 initial_state:
   json_db: "initial_state.json"
 
-user_simulator:
-  backstory: >
-    You earlier saved a note about the office Wi-Fi. You want the assistant
-    to remind you of the password it contains. Once the assistant tells you
-    the password, thank it briefly and stop.
+actors:
+  user:
+    backstory: >
+      You earlier saved a note about the office Wi-Fi. You want the assistant
+      to remind you of the password it contains. Once the assistant tells you
+      the password, thank it briefly and stop.
 
 grading: "grading.yaml"

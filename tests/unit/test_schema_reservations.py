@@ -23,7 +23,6 @@ from tolokaforge.core.models import (
     TaskConfig,
     TaskDefaults,
     ToolsConfig,
-    UserSimulatorConfig,
 )
 from tolokaforge.runner.models import SecurityContext
 
@@ -41,13 +40,17 @@ class TestActorSpec:
         assert spec.backstory is None
         assert spec.scripted_flow is None
 
-    def test_forbids_unknown_sub_keys(self) -> None:
-        # `tools` and `service` are reserved by the design; using them
-        # today is a load error so a pack cannot repurpose the name.
-        with pytest.raises(ValidationError):
-            ActorSpec(tools=["bash"])  # type: ignore[call-arg]
-        with pytest.raises(ValidationError):
-            ActorSpec(service="runner")  # type: ignore[call-arg]
+    def test_unknown_sub_keys_are_dropped(self) -> None:
+        # `tools` and `service` are reserved by the design; today they are
+        # silently dropped from the model (``extra="ignore"``) — a future
+        # strict flip (tracked in #533) will reject them via
+        # ``construct_config``'s file+key+suggestion warning that becomes an
+        # error. The soft-drop keeps external packs authored against the
+        # pre-M9 schema loading unchanged.
+        spec = ActorSpec(tools=["bash"])  # type: ignore[call-arg]
+        assert not hasattr(spec, "tools")
+        spec = ActorSpec(service="runner")  # type: ignore[call-arg]
+        assert not hasattr(spec, "service")
 
     def test_accepts_documented_fields(self) -> None:
         spec = ActorSpec(mode="llm", persona="curious engineer", backstory="…")
@@ -76,28 +79,24 @@ class TestActorsMapReservation:
                 description="y",
                 initial_state=InitialStateConfig(),
                 tools=ToolsConfig(),
-                user_simulator=UserSimulatorConfig(),
                 grading="grading.yaml",
                 actors={"agent": ActorSpec(mode="llm")},
             )
 
     def test_task_config_accepts_user_actor(self) -> None:
-        # Positive counterpart to the reserved-name rejection — a task
-        # override with a non-reserved actor name parses cleanly. The
-        # runtime binding of ``actors.user`` back to today's simulator
-        # lives in the actor-rename milestone; here we only pin that
-        # the shape parses at the task layer, matching TaskDefaults.
+        # A task override with the non-reserved ``user`` actor parses and
+        # drives the resolved simulator.
         t = TaskConfig(
             task_id="x",
             description="y",
             initial_state=InitialStateConfig(),
             tools=ToolsConfig(),
-            user_simulator=UserSimulatorConfig(),
             grading="grading.yaml",
             actors={"user": ActorSpec(mode="llm", persona="task-local")},
         )
         assert t.actors is not None
         assert t.actors["user"].persona == "task-local"
+        assert t.resolve_user_simulator().persona == "task-local"
 
 
 # ── ComputeConfig.capabilities ──────────────────────────────────
@@ -171,16 +170,22 @@ class TestSeedRef:
         with pytest.raises(ValidationError, match="digest"):
             SeedRef.model_validate({"path": "/x/y.sql", "kind": "sql_dump"})
 
-    def test_extra_keys_rejected(self) -> None:
-        with pytest.raises(ValidationError):
-            SeedRef.model_validate(
-                {
-                    "path": "/x/y.sql",
-                    "kind": "sql_dump",
-                    "digest": "sha256:aaaa",
-                    "unknown": 1,
-                }
-            )
+    def test_extra_keys_are_dropped(self) -> None:
+        # Extra keys silently drop (``extra="ignore"``) — a future strict
+        # flip (tracked in #533) will reject them via ``construct_config``'s
+        # file+key+suggestion warning that becomes an error. The soft-drop
+        # keeps external packs authored against the pre-M9 schema loading
+        # unchanged.
+        seed = SeedRef.model_validate(
+            {
+                "path": "/x/y.sql",
+                "kind": "sql_dump",
+                "digest": "sha256:aaaa",
+                "unknown": 1,
+            }
+        )
+        assert str(seed.path) == "/x/y.sql"
+        assert not hasattr(seed, "unknown")
 
     @pytest.mark.parametrize(
         "kind",
@@ -209,9 +214,13 @@ class TestAssetsConfig:
         ac = AssetsConfig()
         assert ac.seeds == {}
 
-    def test_extra_keys_rejected(self) -> None:
-        with pytest.raises(ValidationError):
-            AssetsConfig(seeds={}, unknown_field=1)  # type: ignore[call-arg]
+    def test_extra_keys_are_dropped(self) -> None:
+        # Extra keys silently drop (``extra="ignore"``) — a future strict
+        # flip (tracked in #533) will reject them via ``construct_config``'s
+        # file+key+suggestion warning that becomes an error.
+        ac = AssetsConfig(seeds={}, unknown_field=1)  # type: ignore[call-arg]
+        assert ac.seeds == {}
+        assert not hasattr(ac, "unknown_field")
 
 
 class TestProjectConfigAssets:
@@ -245,15 +254,16 @@ class TestTaskConfigMinimal:
         assert t.task_id == "x"
         assert t.name is None
         assert t.category is None
-        # Three of the four relaxed fields default to model instances (not
-        # None) so the unguarded live consumers in conductor.py / native.py
-        # keep working; grading defaults to None (path field, guarded fail-
-        # loud where dereferenced).
+        # The relaxed fields default to model instances (not None) so the
+        # unguarded live consumers in conductor.py / native.py keep working;
+        # grading defaults to None (path field, guarded fail-loud where
+        # dereferenced). With no ``actors.user`` the resolved simulator is
+        # the default (mode=llm, persona=cooperative).
         assert isinstance(t.initial_state, InitialStateConfig)
         assert isinstance(t.tools, ToolsConfig)
-        assert isinstance(t.user_simulator, UserSimulatorConfig)
-        assert t.user_simulator.mode == "llm"
-        assert t.user_simulator.persona == "cooperative"
+        assert t.actors is None
+        assert t.resolve_user_simulator().mode == "llm"
+        assert t.resolve_user_simulator().persona == "cooperative"
         assert t.grading is None
 
     def test_name_still_set_when_provided(self) -> None:
@@ -264,7 +274,6 @@ class TestTaskConfigMinimal:
             description="y",
             initial_state=InitialStateConfig(),
             tools=ToolsConfig(),
-            user_simulator=UserSimulatorConfig(),
             grading="grading.yaml",
         )
         assert t.name == "Nice Name"

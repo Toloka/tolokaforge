@@ -217,8 +217,11 @@ def _make_trial_spec(
     trial_id: str = "task-1:0",
     compose_file: Path | None = None,
     services: dict[str, ServiceSpec] | None = None,
+    manifest: EnvironmentManifest | None = None,
 ) -> TrialSpec:
-    if compose_file is None:
+    if manifest is not None:
+        pass
+    elif compose_file is None:
         manifest = None
     elif services is None:
         manifest = EnvironmentManifest(compose_file=compose_file)
@@ -567,6 +570,38 @@ class TestEndpoints:
         handle = backend.provision(spec)
         endpoints = backend.endpoints(handle)
         assert endpoints.rag_url == "http://127.0.0.1:58080"
+
+    def test_runner_port_and_db_service_overrides_flow_to_endpoints(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``stack`` endpoint overrides on the manifest reach resolution:
+        a non-default ``runner_port`` is the port resolved for the runner
+        service, and a non-default ``db_service`` / ``db_port`` name the
+        service+port resolved for ``db_url`` (not the ``db-service:8000``
+        convention)."""
+
+        class _OverrideCompose(_FakeCompose):
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                super().__init__(*args, **kwargs)
+                self.exposed_services = {
+                    "default": {9000: 50100},
+                    "db": {5433: 58001},
+                }
+
+        monkeypatch.setattr(per_trial_runtime_module, "DockerCompose", _OverrideCompose)
+        monkeypatch.setattr(per_trial_runtime_module, "GrpcRunnerClient", _FakeRunnerClient)
+        backend = PerTrialRuntimeBackend()
+        manifest = EnvironmentManifest(
+            compose_file=_FIXTURES / "safe_two_service.yaml",
+            runner_port=9000,
+            db_service="db",
+            db_port=5433,
+        )
+        spec = _make_trial_spec(manifest=manifest)
+        handle = backend.provision(spec)
+        endpoints = backend.endpoints(handle)
+        assert endpoints.runner_url == "http://127.0.0.1:50100"
+        assert endpoints.db_url == "http://127.0.0.1:58001"
 
     def test_endpoints_rejects_foreign_handle(
         self, patched_backend: PerTrialRuntimeBackend

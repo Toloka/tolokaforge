@@ -1,11 +1,14 @@
 """Canonization infrastructure: --update-canon flag and canon_snapshot fixture."""
 
 import json
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
 
 SNAPSHOT_DIR = Path(__file__).parent / "snapshots"
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def pytest_addoption(parser):
@@ -61,3 +64,32 @@ def shop_orders_02_task_dir(canonical_task_dir):
 def terminal_bench_tasks_dir(test_data_dir):
     """Get path to terminal_bench_tasks test data directory."""
     return test_data_dir / "terminal_bench_tasks"
+
+
+@pytest.fixture(scope="session")
+def built_wheel(tmp_path_factory) -> Path:
+    """Build the tolokaforge wheel once per session and return its path.
+
+    Skips loud if the ``uv`` CLI is unavailable; hard-fails with captured
+    build output if the build itself fails (fail-fast, no fallback).
+    """
+    if shutil.which("uv") is None:
+        pytest.skip("uv CLI not available")
+
+    out_dir = tmp_path_factory.mktemp("built_wheel")
+    build_result = subprocess.run(
+        ["uv", "build", "--wheel", "--out-dir", str(out_dir)],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    assert build_result.returncode == 0, (
+        f"uv build failed (rc={build_result.returncode}):\n"
+        f"stdout:\n{build_result.stdout}\nstderr:\n{build_result.stderr}"
+    )
+
+    wheels = sorted(out_dir.glob("tolokaforge-*.whl"))
+    assert wheels, f"No tolokaforge wheel produced under {out_dir}"
+    return wheels[-1]

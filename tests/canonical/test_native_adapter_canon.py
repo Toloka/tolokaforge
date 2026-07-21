@@ -165,6 +165,40 @@ class TestShopOrders02Canon:
         snap.assert_match(actual, "initial_state_tables.json")
 
 
+class TestDbProbeGradingCanon:
+    """state_checks.db_probes translation: grading.yaml → runner GradingConfig.
+
+    Locks the contract that a ``db_probes`` assertion authored in grading.yaml
+    survives native-adapter translation into the runner-side GradingConfig
+    (and is retained by the core GradingConfig the ``validate`` path uses)
+    without a live database.
+    """
+
+    def test_db_probes_round_trip_into_runner_grading(self, native_adapter, test_data_dir):
+        td = native_adapter.to_task_description("db_probe_grading")
+        probes = td.grading.state_checks.db_probes
+
+        source = yaml.safe_load(
+            (test_data_dir / "tasks" / "db_probe_grading" / "grading.yaml").read_text()
+        )
+        src_probes = source["state_checks"]["db_probes"]
+
+        assert len(probes) == len(src_probes) == 1
+        probe, src = probes[0], src_probes[0]
+        assert probe.name == src["name"]
+        assert probe.dsn == src["dsn"]
+        assert probe.query == src["query"]
+        assert probe.expect == src["expect"]
+        assert probe.description == src["description"]
+
+    def test_core_grading_config_retains_db_probes(self, native_adapter):
+        """The ``tolokaforge validate`` path (core GradingConfig) retains
+        db_probes rather than silently dropping the key."""
+        grading = native_adapter.get_grading_config("db_probe_grading")
+        assert len(grading.state_checks.db_probes) == 1
+        assert grading.state_checks.db_probes[0]["name"] == "corrective_action_recorded"
+
+
 class TestShopOrders02SnapshotIntegrity:
     """Cross-validate snapshots against their source files WITHOUT using the adapter.
 

@@ -2,22 +2,44 @@
 
 All notable changes to this project are documented in this file.
 
-## Unreleased
+## v0.9.2 (2026-07-21)
 
 ### Feat
 
-- **core**: `tolokaforge.core.run_display_events` publishes the `RunDisplayEvents` engine seam — a 9-method `@runtime_checkable` Protocol with `ServiceSnapshot` / `ContainerSnapshot` TypedDicts and a `_NULL_EVENTS` no-op default — that front-ends implement to consume per-trial lifecycle events without pulling any UI package into the engine dependency graph. The orchestrator, conductor, and trial executor emit every lifecycle event through the seam; `OrchestratorDeps.events` accepts a consumer sink (defaults to the null singleton, so runs that never attach a front-end are byte-identical to the pre-seam engine) (#416)
-- **runtime**: `RuntimeBackend` widens with `get_infrastructure_snapshot(handle) -> list[ContainerSnapshot]` — the display's per-trial infrastructure hook. `PerTrialRuntimeBackend` reads its per-trial compose stack; `SharedStackRuntimeBackend` returns `[]` in built-in mode and reads the run-wide compose otherwise; `InMemoryRuntimeBackend` returns a synthetic single-container shape. Every in-repo backend implements the new method in the same commit, so out-of-tree implementers of `RuntimeBackend` (none on `main`) would need to add the method to keep `isinstance(impl, RuntimeBackend)` semantically complete (#416)
-- **schema**: task.yaml minimal shape is task_id + description; initial_state / tools / user_simulator / grading now optional with sane defaults (#366)
-- **runtime**: `compute.log_tail` + `compute.capture_logs_on_success` config knobs and a per-service compose-log capture primitive for trial-failure diagnostics (#302)
-- **runtime**: `PerTrialRuntimeBackend` captures per-service logs on provision-stage failure (compose-up / reset-recipe) before teardown, writing `services/<service>.log` + a `services/_capture.yaml` manifest; `RuntimeBackend` gains `capture_service_logs` (per-trial writes `.log` files; shared-stack is a documented no-op) (#302)
-- **runtime**: on a trial-body failure (`ERROR` / `TIMEOUT`) the trial executor captures per-service logs before teardown, emits a `trial.service_logs_captured` summary line, and amends the trial's `metrics.yaml` with a `captured_service_logs` byte-count map (#302)
-- **examples**: `multi_service_slow_start` pack + `test_startup_order_stress.py` stress-cover the `depends_on` + healthcheck + `--wait` start-order chain against a `pg_sleep`-driven ≥20 s slow dependency, proving the per-trial backend blocks on the full chain before the trial's first RPC (#303)
+- **project-layer**: Project-layer v1 finalization — canonical shape with warn-only compat (M9) (#531)
+- **runtime**: multi-container v1 completion (M8 consolidation) (#511)
 
 ### Fix
 
-- **grading**: a project's `task_defaults.grading_defaults.combine` now deep-merges under each task's own `grading.yaml.combine` (task fields win, `weights` merge key-by-key); a task that omits `combine` inherits the project block instead of an arbitrary `{state_checks: 1.0}` / `pass_threshold: 1.0` fallback, and `get_grading_config` no longer raises on tasks that ship no `combine` block (#376)
-- **runtime**: `SharedStackRuntimeBackend` no longer advertises `reset_recipes:*` capabilities — a shared stack cannot honour them (reset tasks route to `PerTrialRuntimeBackend`, which still advertises them). A shared-selected run that requested a `reset_recipes:*` capability was admitting a capability it could not deliver; it is now refused at run start with the standard admission error (#310)
+- **grading**: compare numerically-equal state values as equal (#532)
+- **adapter**: fail conversion on invalid output (#494)
+- **tools**: advertise PATCH requests (#463)
+
+## v0.9.1 (2026-07-17)
+
+## v0.9.0 (2026-07-17)
+
+### Feat
+
+- **examples,runtime,assets**: multi-container example depth (Milestone 18) (#469)
+- **core**: observability seam extension — llm_call trio + model identity (#389) (#450)
+- **automation**: model auto-integration pipeline (observe/resolve/finalize + Slack-triggered poller) (#154)
+- **project-layer**: make Project schema end-to-end runnable — task-schema relaxation, grading_defaults merge, dead-seam cleanup, docs residue (#375) (#390)
+- **skills**: milestone integration-branch workflow with rich consolidation PR (#372)
+- **examples**: swap example-microservices-pack backend-api from fictional to postgrest (real image) (#367)
+- **runtime**: per-service log capture on trial failure (#302) (#347)
+
+### Fix
+
+- **loader**: preserve storage discriminator tag under run_defaults merge (#312) (#365)
+
+### Refactor
+
+- **core**: extract RunDisplayEvents engine seam to main (#416) (#433)
+
+### Perf
+
+- **orchestration**: reclaim wall-clock in /implement-milestone via overlap, review sharding, and stack warmup (#426)
 
 ## v0.8.4 (2026-07-15)
 

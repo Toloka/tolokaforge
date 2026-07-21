@@ -11,9 +11,8 @@ Public helpers:
 - :func:`find_project_yaml` — walk up from a start path looking for
   ``project.yaml``.
 - :func:`load_project_config` — read + validate a ``project.yaml`` file.
-- :func:`synthesize_default_project` — build a minimal ``ProjectConfig`` for
-  packs that don't ship a ``project.yaml``. Emits an info-level log line so
-  the fallback is visible without being a warning.
+- :func:`synthesize_default_project` — build a minimal ``ProjectConfig``
+  for a pack that ships no ``project.yaml``.
 - :func:`deep_merge` — recursive dict merge; delta wins on conflict.
 - :func:`resolve_effective_run_config_data` — apply ``project.run_defaults``
   under a run-config dict.
@@ -30,15 +29,24 @@ task-yaml delta.
 
 from __future__ import annotations
 
-import logging
+import difflib
 import os
 import re
 import warnings
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import yaml
+from pydantic import BaseModel
 
+from tolokaforge.core.assets import compute_seed_digest
+from tolokaforge.core.deprecations import (
+    POST_M9_STRICT_FLIP_ISSUE,
+    canonicalize_actor_config,
+    source_context,
+    warn_deprecated,
+    warn_legacy_run_config_dir,
+)
 from tolokaforge.core.models import (
     EnvironmentManifest,
     EnvironmentPatch,
@@ -48,7 +56,55 @@ from tolokaforge.core.models import (
     TaskDefaults,
 )
 
-logger = logging.getLogger(__name__)
+# ── Config construction ─────────────────────────────────────────────────
+
+_ConfigT = TypeVar("_ConfigT", bound=BaseModel)
+
+
+def construct_config(
+    model: type[_ConfigT], data: dict[str, Any], *, source: Path, section: str = ""
+) -> _ConfigT:
+    """Construct a Project-layer config model, warning on each unknown
+    top-level key before the model's ``extra="ignore"`` config drops it.
+
+    A key in *data* that is not a field of *model* raises a
+    ``DeprecationWarning`` naming the file basename, the key, the closest
+    schema match (via :func:`difflib.get_close_matches`), and a
+    ``(tracked in #<n>)`` suffix pointing at the strict-flip follow-up
+    issue so users can plan against a concrete retirement schedule. The
+    key is then silently dropped. A genuine validation failure (type
+    mismatch, missing required field) propagates unchanged.
+
+    Scope: only top-level keys are checked. An unknown key nested inside a
+    sub-model is dropped without a warning — restoring the recursive scan
+    is deferred to the strict-flip follow-up (see the tracker suffix).
+    """
+    known = set(model.model_fields)
+    for key in data:
+        if key not in known:
+            warnings.warn(
+                _unknown_key_line(model, key, source, section),
+                DeprecationWarning,
+                stacklevel=2,
+            )
+    with source_context(source):
+        return model(**data)
+
+
+def _unknown_key_line(model: type[BaseModel], key: str, source: Path, section: str) -> str:
+    suggestion = difflib.get_close_matches(key, list(model.model_fields), n=1)
+    where = source.name + (f" ({section})" if section else "")
+    line = f"unknown key '{key}' in {where}"
+    if suggestion:
+        line += f" — did you mean '{suggestion[0]}'? "
+        line += f"Rename `{key}` to `{suggestion[0]}` (or remove it if unused). "
+    else:
+        line += (
+            f" — no close match on {model.__name__}. Remove the key or "
+            f"check the schema for the correct name. "
+        )
+    line += f"(tracked in #{POST_M9_STRICT_FLIP_ISSUE})"
+    return line
 
 
 # ── Filesystem discovery ────────────────────────────────────────────────
@@ -100,7 +156,7 @@ def detect_project_layout(config_path: Path) -> tuple[Path | None, bool]:
     return project_root, used_legacy_dir
 
 
-# ── Load + synthesise ──────────────────────────────────────────────────
+# ── Load ───────────────────────────────────────────────────────────────
 
 
 def load_project_config(path: Path) -> ProjectConfig:
@@ -132,33 +188,72 @@ def load_project_config(path: Path) -> ProjectConfig:
         raise RuntimeError(
             f"project.yaml at {path} is not a YAML mapping (got {type(data).__name__})"
         )
+    _warn_null_stack(data, path)
     # Resolve default_environment.compose_file relative to the project dir
     # so EnvironmentManifest's validator can locate it regardless of CWD.
     _resolve_project_paths(data, path.parent)
-    project = ProjectConfig(**data)
+    task_defaults = data.get("task_defaults")
+    if isinstance(task_defaults, dict):
+        with source_context(path):
+            canonicalize_actor_config(task_defaults)
+    project = construct_config(ProjectConfig, data, source=path)
     _verify_seed_digests(project, path)
     return project
 
 
+def synthesize_default_project(
+    *,
+    project_root: Path,
+    task_defaults: TaskDefaults | None = None,
+) -> ProjectConfig:
+    """Return a minimal ``ProjectConfig`` for a pack that ships no
+    ``project.yaml``.
+
+    Loaders route through here whenever :func:`find_project_yaml` returns
+    ``None`` so downstream code always has a ``ProjectConfig`` to consume.
+    Emits a ``DeprecationWarning`` naming the searched root and
+    recommending the author add a ``project.yaml``; the pack still loads.
+    """
+    # Route through warn_deprecated for uniform message shape (in <file> +
+    # (tracked in #NNN)); pack-root basename is what the user recognises,
+    # and it keeps this consistent with the basename-only policy the rest of
+    # M9's warnings follow.
+    with source_context(project_root):
+        warn_deprecated(
+            legacy="Missing project.yaml",
+            canonical="a project.yaml at the pack root",
+            detail=(
+                f"Add a `project.yaml` at the pack root (`name: {project_root.name}` "
+                "alone suffices) to remove this warning. A future release will require "
+                "project.yaml at load time."
+            ),
+            stacklevel=2,
+        )
+    return ProjectConfig(
+        name=project_root.name or "synthesised",
+        description=None,
+        task_defaults=task_defaults or TaskDefaults(),
+    )
+
+
 def _verify_seed_digests(project: ProjectConfig, project_yaml_path: Path) -> None:
-    """Read each ``assets.seeds.<name>.path`` and compare its sha256 to
-    the declared ``digest``. Raises ``RuntimeError`` on mismatch or
-    missing file, naming the seed key, declared digest, and actual
+    """Read each ``assets.seeds.<name>.path`` and compare its digest to
+    the declared ``digest``. A seed path is either a file (byte-stream
+    hash) or a directory (deterministic tree hash) — both go through
+    :func:`compute_seed_digest`. Raises ``RuntimeError`` on mismatch or
+    missing path, naming the seed key, declared digest, and actual
     digest so the author sees the exact fix.
     """
-    import hashlib
-
     if project.assets is None:
         return
     for name, seed in project.assets.seeds.items():
         seed_path = Path(seed.path)
-        if not seed_path.is_file():
+        if not seed_path.exists():
             raise RuntimeError(
-                f"assets.seeds.{name}.path {seed_path!s} does not exist or is "
-                f"not a file (declared in {project_yaml_path})."
+                f"assets.seeds.{name}.path {seed_path!s} does not exist "
+                f"(declared in {project_yaml_path})."
             )
-        actual_bytes = seed_path.read_bytes()
-        actual_digest = "sha256:" + hashlib.sha256(actual_bytes).hexdigest()
+        actual_digest = compute_seed_digest(seed_path)
         if seed.digest != actual_digest:
             raise RuntimeError(
                 f"assets.seeds.{name}: digest mismatch for {seed_path!s}. "
@@ -166,6 +261,45 @@ def _verify_seed_digests(project: ProjectConfig, project_yaml_path: Path) -> Non
                 "Re-stamp via `tolokaforge assets stamp` or restore the "
                 "original file."
             )
+
+
+def _warn_null_stack(data: dict, path: Path) -> None:
+    """Warn (and drop) when ``default_environment.stack`` (or its
+    ``compose_file``) is present but explicitly null. A project omits the
+    key to declare no environment default; explicit-null is deprecated and
+    silently drops the field. Pre-Pydantic so the warning carries the
+    ``project.yaml`` basename via :func:`source_context`. Strict rejection
+    deferred to a future release (tracked in #533).
+    """
+    env = data.get("default_environment")
+    if not isinstance(env, dict):
+        return
+    if "stack" in env and env["stack"] is None:
+        with source_context(path):
+            warn_deprecated(
+                legacy="'default_environment.stack: null'",
+                canonical="omit the key or declare a stack sub-object",
+                detail=(
+                    "A project.yaml cannot unset the environment via null — omit the "
+                    "key entirely to declare no environment default, or declare a "
+                    "stack sub-object explicitly."
+                ),
+                stacklevel=2,
+            )
+        env.pop("stack")
+    stack = env.get("stack")
+    if isinstance(stack, dict) and "compose_file" in stack and stack["compose_file"] is None:
+        with source_context(path):
+            warn_deprecated(
+                legacy="'default_environment.stack.compose_file: null'",
+                canonical="omit the key or declare a compose_file path",
+                detail=(
+                    "There is no engine-default compose file to fall through to. Omit "
+                    "the key entirely to declare no substrate pointer, or declare one."
+                ),
+                stacklevel=2,
+            )
+        stack.pop("compose_file")
 
 
 def _resolve_project_paths(data: dict, project_dir: Path) -> None:
@@ -263,30 +397,6 @@ def _rewrite_task_defaults_paths(task_defaults: dict, project_dir: Path) -> None
 
     for rewriter in _PATH_FIELD_REWRITERS:
         rewriter(task_defaults, rewrite)
-
-
-def synthesize_default_project(
-    *,
-    project_root: Path,
-    task_defaults: TaskDefaults | None = None,
-) -> ProjectConfig:
-    """Return a minimal ``ProjectConfig`` used when a pack does not ship
-    a ``project.yaml``.
-
-    Emits an info-level log line so operators can see the synthesised
-    fallback took effect. Loaders route through here whenever
-    ``find_project_yaml`` returns ``None`` so downstream code always
-    has a ``ProjectConfig`` to consume.
-    """
-    logger.info(
-        "project.yaml not found under %s; using synthesised default",
-        project_root,
-    )
-    return ProjectConfig(
-        name=project_root.name or "synthesised",
-        description=None,
-        task_defaults=task_defaults or TaskDefaults(),
-    )
 
 
 # ── Deep merge ─────────────────────────────────────────────────────────
@@ -525,9 +635,9 @@ def load_effective_run_config(
 
     - ``config_data`` is the merged dict, ready to feed into
       ``RunConfig(**config_data)``.
-    - ``project`` is the enclosing ``ProjectConfig`` (loaded from the
-      discovered ``project.yaml``) or a synthesised default for packs
-      that don't ship one.
+    - ``project`` is the enclosing ``ProjectConfig`` loaded from the
+      discovered ``project.yaml``, or a synthesised default (with a
+      ``DeprecationWarning``) for a pack that ships none.
 
     Emits a ``DeprecationWarning`` when the run config sits under the
     legacy ``run_config/`` (singular) directory.
@@ -578,15 +688,19 @@ def validate_actor_roster_subset_of_models(
     that's the only point where a project-side actor roster and the
     run-side model roster are both visible.
 
-    Scope: this check covers ``project.task_defaults.actors`` only.
-    Task-level ``TaskConfig.actors`` overrides bypass it — enforcement
-    for task-level actors will land alongside the runtime binding
-    (the ``actors.user`` ↔ user-simulator rename milestone).
+    Scope: this check covers ``project.task_defaults.actors`` — the
+    roster every task inherits, declared opt-in by the project author.
+    A task-level ``TaskConfig.actors`` override is not re-checked here:
+    individual ``task.yaml`` files are not loaded at run-config-resolve
+    time, and the loader lifts every task's ``user_simulator`` into
+    ``actors.user`` (``mode=llm`` by default), so a per-task roster gate
+    would fire for tasks that simply rely on the run's ``models.user``.
+    The user model each task's simulator uses is resolved from the run's
+    ``models`` at trial build.
 
     A ``None`` roster (project sets no ``actors``) is a no-op. Actor
     entries without ``mode == "llm"`` are ignored — scripted actors
-    don't need a model. This is a schema-time cross-check; runtime
-    binding lives in the actor rename milestone.
+    don't need a model.
     """
     actors = project.task_defaults.actors
     if not actors:
@@ -611,15 +725,26 @@ def validate_actor_roster_subset_of_models(
 # ── Environment resolve ────────────────────────────────────────────────
 
 
-_POLICY_REQUEST_FIELDS = ("network_policy", "security_context_defaults")
+_POLICY_REQUEST_FIELDS = (
+    "network_policy",
+    "limited_internet_allowlist",
+    "security_context_defaults",
+)
 """Fields that survive atomic ``stack`` replacement — policy requests
 that are substrate-neutral (they describe the trial regardless of
-substrate)."""
+substrate). List-valued members (``limited_internet_allowlist``) replace
+outright on merge — the task list wins over the project list, never
+unions with it."""
 
 _SERVICE_TREATMENT_FIELDS = ("initial_state", "services")
 """Fields scoped to the reviewed stack — discarded on atomic
 ``stack`` replacement (the project's opt-outs reviewed the project's
 services, not the replacement stack)."""
+
+_ENDPOINT_OVERRIDE_FIELDS = ("runner_port", "db_service", "db_port", "rag_service", "rag_port")
+"""Endpoint-resolution overrides carried under ``stack``. Substrate-scoped
+— cleared with the rest of ``stack`` on atomic replacement — so a task that
+swaps ``stack.compose_file`` drops any project-side endpoint override."""
 
 
 def resolve(
@@ -648,8 +773,9 @@ def resolve(
       discarded — the project's per-service opt-outs reviewed the
       project's services, not the replacement stack.
     - Policy-request fields (``network_policy``,
-      ``security_context_defaults``) survive — substrate-neutral, they
-      describe the trial regardless of substrate.
+      ``limited_internet_allowlist``, ``security_context_defaults``)
+      survive — substrate-neutral, they describe the trial regardless of
+      substrate.
 
     After manifest construction, every compose service missing from the
     merged ``services`` map is filled with an ``ephemeral`` default so
@@ -685,6 +811,10 @@ def resolve(
     runner_service = stack.get("runner_service")
     if runner_service:
         manifest_kwargs["runner_service"] = runner_service
+    for field in _ENDPOINT_OVERRIDE_FIELDS:
+        value = stack.get(field)
+        if value is not None:
+            manifest_kwargs[field] = value
     for field in (*_SERVICE_TREATMENT_FIELDS, *_POLICY_REQUEST_FIELDS):
         value = merged.get(field)
         if value is None:
@@ -749,19 +879,3 @@ def _merge_env_patches(
         elif field in project:
             merged[field] = project[field]
     return merged
-
-
-# ── Legacy alias warnings ──────────────────────────────────────────────
-
-
-def warn_legacy_run_config_dir(config_path: Path) -> None:
-    """Emit a ``DeprecationWarning`` when a run config sits under
-    ``run_config/`` (singular) instead of ``run_configs/`` (plural).
-    """
-    warnings.warn(
-        f"Run config {config_path} sits under 'run_config/' (singular); the "
-        f"canonical directory is 'run_configs/' (plural). Rename the "
-        f"directory to remove this warning.",
-        DeprecationWarning,
-        stacklevel=2,
-    )

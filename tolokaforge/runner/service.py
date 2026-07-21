@@ -52,6 +52,7 @@ from tolokaforge.runner.grading import (
     build_grade_reasons,
     combine_grade_components,
     compute_state_diff,
+    evaluate_db_probes,
     evaluate_jsonpath_checks,
     evaluate_transcript_rules,
 )
@@ -1032,7 +1033,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             )
             try:
                 hash_result = await self._execute_hash_grading(
-                    trial_id, trial_context, golden_actions
+                    trial_id,
+                    trial_context,
+                    golden_actions,
+                    numeric_string_fields=state_checks_config.numeric_string_fields,
                 )
                 components.hash_match = hash_result.hash_match
                 components.hash_score = hash_result.hash_score
@@ -1071,6 +1075,20 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             components.jsonpath_score = jsonpath_score
             components.jsonpath_reasons = jsonpath_reasons
             logger.info(f"GradeTrial: {trial_id} - Jsonpath checks: score={jsonpath_score:.2f}")
+
+        # A.3) DB PROBES (substrate SQL assertions) — the sole state source for
+        # tasks that use it; combining db_probes with hash/jsonpath checks in one
+        # task is out of scope, so its score fills the state_checks component.
+        if state_checks_config and state_checks_config.db_probes:
+            logger.info(
+                f"GradeTrial: {trial_id} - Evaluating "
+                f"{len(state_checks_config.db_probes)} db probes"
+            )
+            probes = [probe.model_dump() for probe in state_checks_config.db_probes]
+            db_probe_score, db_probe_reasons = await evaluate_db_probes(probes)
+            components.db_probe_score = db_probe_score
+            components.db_probe_reasons = db_probe_reasons
+            logger.info(f"GradeTrial: {trial_id} - DB probes: score={db_probe_score:.2f}")
 
         # B) TRANSCRIPT RULES GRADING (if transcript_rules exist)
         transcript_rules_config = grading_config.transcript_rules
@@ -1184,6 +1202,15 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         logger.info(f"GradeTrial: {trial_id} - score={score:.2f}, pass={binary_pass}")
 
+        if components.db_probe_score >= 0:
+            state_checks_component = components.db_probe_score
+        elif components.hash_score < 0:
+            state_checks_component = components.jsonpath_score
+        elif components.jsonpath_score < 0:
+            state_checks_component = components.hash_score
+        else:
+            state_checks_component = components.hash_score * components.jsonpath_score
+
         return pb2.GradeTrialResponse(
             success=True,
             error="",
@@ -1191,15 +1218,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 binary_pass=binary_pass,
                 score=score,
                 components=pb2.GradeComponents(
-                    state_checks=(
-                        components.jsonpath_score
-                        if components.hash_score < 0
-                        else (
-                            components.hash_score
-                            if components.jsonpath_score < 0
-                            else components.hash_score * components.jsonpath_score
-                        )
-                    ),
+                    state_checks=state_checks_component,
                     transcript_rules=components.transcript_score,
                     llm_judge=components.llm_judge_score,
                     custom_checks=-1.0,  # Not implemented yet
@@ -1478,6 +1497,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         trial_id: str,
         trial_context: TrialContextRuntime,
         golden_actions: list[GoldenAction],
+        *,
+        numeric_string_fields: list[str] | None = None,
     ) -> HashGradingResult:
         """
         Execute hash-based grading algorithm.
@@ -1519,7 +1540,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 logger.error(f"GradeTrial: Failed to sync MCP state before trial_hash: {e}")
                 raise
 
-        trial_hash = await self.db_client.get_stable_hash(trial_id)
+        trial_hash = await self.db_client.get_stable_hash(
+            trial_id, numeric_string_fields=numeric_string_fields
+        )
         logger.debug(f"GradeTrial: Trial hash = {trial_hash[:16]}...")
 
         # 2. Snapshot current state
@@ -1614,7 +1637,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         # 6. Get golden stable hash
         # get_stable_hash returns the hash string directly
-        golden_hash = await self.db_client.get_stable_hash(trial_id)
+        golden_hash = await self.db_client.get_stable_hash(
+            trial_id, numeric_string_fields=numeric_string_fields
+        )
         logger.debug(f"GradeTrial: Golden hash = {golden_hash[:16]}...")
 
         # 7. Restore trial state

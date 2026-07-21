@@ -1,0 +1,27 @@
+# Project spec for the native shared-domain example.
+#
+# Notes-app testcases that share one `dataset/notes/_shared/` directory.
+# The pack's shared task config (category, tools, system prompt, and the
+# `actors.user` base) lives in `_shared/domain.yaml`, which each task
+# merges via its `domain:` ref — so the project's `task_defaults` stays
+# minimal. No Docker substrate (an in-process MCP server backs the tools),
+# so `default_environment` is omitted. See docs/PROJECTS.md for the full
+# Project model.
+
+name: "native-shared-domain"
+version: 1
+description: >
+  Notes-app testcases over a shared MCP tool domain: add, recall, and
+  summarise notes, plus a rubric-gate demo. Every testcase deep-merges
+  `_shared/domain.yaml`; per-case task.yaml files carry only the deltas
+  (message, initial state, backstory, grading).
+
+tasks:
+  discovery:
+    glob: "dataset/notes/testcases/**/task.yaml"
+
+# ── Task defaults — base for every task ─────────────────────────
+# The shared task shape lives in `_shared/domain.yaml`; only the adapter
+# is pinned project-wide here.
+task_defaults:
+  adapter_type: "native"

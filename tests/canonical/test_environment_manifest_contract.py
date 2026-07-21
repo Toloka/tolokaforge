@@ -431,6 +431,148 @@ class TestManifestCrossFieldValidation:
 
 
 # ---------------------------------------------------------------------------
+# EnvironmentManifest — limited_internet allowlist
+# ---------------------------------------------------------------------------
+
+
+class TestLimitedInternetAllowlist:
+    def test_default_is_empty_and_clean_under_no_internet(self) -> None:
+        m = EnvironmentManifest(compose_file=_fixture("safe_two_service.yaml"))
+        assert m.network_policy is NetworkPolicy.NO_INTERNET
+        assert m.limited_internet_allowlist == []
+
+    def test_valid_allowlist_constructs_and_normalises(self) -> None:
+        m = EnvironmentManifest(
+            compose_file=_fixture("safe_two_service.yaml"),
+            network_policy=NetworkPolicy.LIMITED_INTERNET,
+            limited_internet_allowlist=["API.OpenAI.com", "*.Example.COM"],
+        )
+        assert m.limited_internet_allowlist == ["api.openai.com", "*.example.com"]
+
+    def test_valid_allowlist_round_trips_through_json(self) -> None:
+        m = EnvironmentManifest(
+            compose_file=_fixture("safe_two_service.yaml"),
+            network_policy=NetworkPolicy.LIMITED_INTERNET,
+            limited_internet_allowlist=["api.openai.com", "*.example.com"],
+        )
+        reloaded = EnvironmentManifest.model_validate_json(m.model_dump_json())
+        assert reloaded.limited_internet_allowlist == ["api.openai.com", "*.example.com"]
+
+    def test_limited_internet_with_empty_allowlist_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="requires a non-empty"):
+            EnvironmentManifest(
+                compose_file=_fixture("safe_two_service.yaml"),
+                network_policy=NetworkPolicy.LIMITED_INTERNET,
+            )
+
+    def test_allowlist_under_no_internet_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="only valid under network_policy"):
+            EnvironmentManifest(
+                compose_file=_fixture("safe_two_service.yaml"),
+                network_policy=NetworkPolicy.NO_INTERNET,
+                limited_internet_allowlist=["api.openai.com"],
+            )
+
+    def test_allowlist_under_full_internet_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="only valid under network_policy"):
+            EnvironmentManifest(
+                compose_file=_fixture("safe_two_service.yaml"),
+                network_policy=NetworkPolicy.FULL_INTERNET,
+                limited_internet_allowlist=["api.openai.com"],
+            )
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            "https://api.openai.com",
+            "api.openai.com:443",
+            "api.openai.com/v1",
+            "10.0.0.1",
+            "1.1.1.1",
+            "*.*.openai.com",
+            "has space.com",
+        ],
+    )
+    def test_invalid_entry_is_rejected_and_named(self, entry: str) -> None:
+        with pytest.raises(ValidationError) as exc:
+            EnvironmentManifest(
+                compose_file=_fixture("safe_two_service.yaml"),
+                network_policy=NetworkPolicy.LIMITED_INTERNET,
+                limited_internet_allowlist=[entry],
+            )
+        assert repr(entry) in str(exc.value)
+
+    def test_empty_string_entry_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="non-empty hostnames"):
+            EnvironmentManifest(
+                compose_file=_fixture("safe_two_service.yaml"),
+                network_policy=NetworkPolicy.LIMITED_INTERNET,
+                limited_internet_allowlist=[""],
+            )
+
+    def test_duplicate_entries_are_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="duplicate entries"):
+            EnvironmentManifest(
+                compose_file=_fixture("safe_two_service.yaml"),
+                network_policy=NetworkPolicy.LIMITED_INTERNET,
+                limited_internet_allowlist=["api.openai.com", "API.openai.com"],
+            )
+
+
+# ---------------------------------------------------------------------------
+# EnvironmentManifest — endpoint-resolution override fields
+# ---------------------------------------------------------------------------
+
+
+class TestEndpointResolutionFields:
+    def test_defaults_are_convention_sentinels(self) -> None:
+        m = EnvironmentManifest(compose_file=_fixture("safe_two_service.yaml"))
+        assert m.runner_port == 50051
+        assert m.db_service is None
+        assert m.db_port is None
+        assert m.rag_service is None
+        assert m.rag_port is None
+
+    def test_full_override_round_trips(self) -> None:
+        m = EnvironmentManifest(
+            compose_file=_fixture("safe_two_service.yaml"),
+            runner_port=9000,
+            db_service="db",
+            db_port=5433,
+            rag_service="default",
+            rag_port=8080,
+        )
+        reloaded = EnvironmentManifest.model_validate_json(m.model_dump_json())
+        assert reloaded == m
+        assert reloaded.runner_port == 9000
+        assert reloaded.db_service == "db"
+        assert reloaded.db_port == 5433
+        assert reloaded.rag_service == "default"
+        assert reloaded.rag_port == 8080
+
+    def test_unknown_db_service_fails_loud(self) -> None:
+        with pytest.raises(ValidationError, match="db_service.*not declared in the compose file"):
+            EnvironmentManifest(
+                compose_file=_fixture("safe_two_service.yaml"),
+                db_service="nonexistent",
+            )
+
+    def test_unknown_rag_service_fails_loud(self) -> None:
+        with pytest.raises(ValidationError, match="rag_service.*not declared in the compose file"):
+            EnvironmentManifest(
+                compose_file=_fixture("safe_two_service.yaml"),
+                rag_service="nonexistent",
+            )
+
+    def test_none_service_overrides_are_not_validated(self) -> None:
+        # safe_two_service.yaml declares neither `db-service` nor `rag`; the
+        # convention default (None) must construct cleanly regardless.
+        m = EnvironmentManifest(compose_file=_fixture("safe_two_service.yaml"))
+        assert m.db_service is None
+        assert m.rag_service is None
+
+
+# ---------------------------------------------------------------------------
 # Wire-shape snapshot — top-level manifest fields
 # ---------------------------------------------------------------------------
 
@@ -460,10 +602,22 @@ class TestManifestWireShape:
             "stack_inputs",
             "initial_state",
             "network_policy",
+            "limited_internet_allowlist",
             "security_context_defaults",
             "services",
+            "runner_port",
+            "db_service",
+            "db_port",
+            "rag_service",
+            "rag_port",
         }
         assert wire["runner_service"] == "default"
+        assert wire["limited_internet_allowlist"] == []
+        assert wire["runner_port"] == 50051
+        assert wire["db_service"] is None
+        assert wire["db_port"] is None
+        assert wire["rag_service"] is None
+        assert wire["rag_port"] is None
         assert wire["network_policy"] == "no_internet"
         assert wire["services"] == {
             "db": {"isolation": "reset", "reset": {"seed": "baseline"}},
