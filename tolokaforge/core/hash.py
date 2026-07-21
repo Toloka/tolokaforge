@@ -1,7 +1,12 @@
 """Canonical hash computation for stable state comparison.
 
-This module provides a single, standardized hash function that matches
-the implementation in mcp_core.utils.validation.calculate_database_hash().
+This module provides a single, standardized hash function. With
+``canonicalize_numbers=False`` it matches
+mcp_core.utils.validation.calculate_database_hash(); the default (True)
+additionally folds numerically-equal NUMERIC-TYPE values (72 == 72.0) together,
+so it intentionally diverges from that byte-for-byte output. Numeric-looking
+STRINGS ("130.00" == "130.0") fold only for the per-field opt-in set
+``numeric_string_fields`` — see :func:`compute_stable_hash`.
 
 All hash computations across the codebase should use compute_stable_hash()
 to ensure consistent results.
@@ -10,10 +15,148 @@ to ensure consistent results.
 import hashlib
 import json
 import logging
+from collections.abc import Iterable
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# Cap the work spent deciding whether a string is a number: no real amount,
+# quantity, or id is this long, and it bounds pathological inputs.
+_MAX_NUMERIC_LEN = 64
+_NUMERIC_TAG = "\x00tf-num:"
+# Escape prefix for a genuine string that itself begins with the reserved NUL,
+# so a crafted value like "\x00tf-num:130" can never collide with a numeric token.
+_ESCAPE_TAG = "\x00tf-esc:"
+
+
+def _numeric_token(d: Decimal) -> str:
+    """Canonical token for a Decimal: trailing zeros stripped, -0 folded to 0."""
+    d = d.normalize()
+    if d.is_zero():  # collapse "-0" and "0"
+        d = abs(d)
+    return _NUMERIC_TAG + format(d, "f")
+
+
+def _looks_like_plain_decimal(s: str) -> bool:
+    """Whether ``s`` is a plain decimal / integer literal we should canonicalize.
+
+    Linear-time and regex-free (so it cannot backtrack). Accepts ``"130"``,
+    ``"130.00"``, ``"-5.50"``, ``"0"``, ``"0.0"``, ``".5"``; rejects leading-zero
+    integer parts (``"00123"``, ``"007"`` — they smell like string identifiers),
+    scientific notation (``"1e3"``), and anything non-ASCII or non-numeric.
+    """
+    body = s[1:] if s[:1] in ("+", "-") else s
+    int_part, dot, frac_part = body.partition(".")
+    if dot:  # exactly one '.'; the fractional side must be >= 1 ASCII digit
+        if not (frac_part.isascii() and frac_part.isdigit()):
+            return False
+        if int_part and not (int_part.isascii() and int_part.isdigit()):
+            return False
+    elif not (int_part.isascii() and int_part.isdigit()):
+        return False
+    # Reject leading-zero integer parts; allow a lone "0" and "0.x".
+    return not (len(int_part) > 1 and int_part[0] == "0")
+
+
+def canonical_number(value: Any, *, normalize_strings: bool = False) -> Any:
+    """Collapse numerically-equal representations of a value to one token.
+
+    State grading compares field values for equality — via this module's
+    :func:`compute_stable_hash` and via
+    :func:`tolokaforge.core.grading.state_checks.to_hashable`. The same amount
+    can surface as ``72`` on one side and ``72.0`` (or ``Decimal("72.00")``) on
+    the other; a naive string/JSON comparison then treats a pure representation
+    difference as a state change — a grading false-fail.
+
+    Two tiers of folding:
+
+    * **Numeric types** (``int`` / ``float`` / ``Decimal``) — always folded to
+      one token. The type itself declares the value is a number, so this is a
+      safe, generic improvement (``72 == 72.0 == Decimal("72.00")``).
+    * **Numeric-looking strings** (``"130.00"`` vs ``"130.0"``) — folded ONLY
+      when ``normalize_strings=True``. This is deliberately opt-in and
+      DANGEROUS as a default: a string that merely looks numeric may carry
+      meaning in its exact representation (version numbers like ``"1.10"`` vs
+      ``"1.1"``, codes, zero-padded ids), and folding those would false-PASS a
+      genuinely wrong state. Enabled per FIELD via the grading config
+      (``state_checks.numeric_string_fields``) for the specific money / quantity
+      fields that are genuinely numeric (e.g. DB-round-tripped Decimal columns),
+      not as a blanket per-task switch.
+
+    Correctness guards in both tiers:
+
+    * ``bool`` is left untouched (``True == 1`` in Python, undesirable here);
+    * identifier-like strings with leading zeros (``"00123"``) are left untouched
+      so two distinct ids are never numerically equated;
+    * genuinely different numbers (``"790.00"`` vs ``"0.0"``) stay different;
+    * a genuine string that itself begins with the reserved NUL prefix is escaped
+      so it cannot masquerade as a numeric token;
+    * non-numeric values pass through unchanged.
+
+    Leniency note (string tier): surrounding whitespace and a leading ``+`` are
+    ignored, and a numeric string collapses with its bare-number twin
+    (``"123"`` == ``123`` == ``"123.0"``); numeric-string ids are protected only
+    by the leading-zero rule.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float, Decimal)):
+        try:
+            return _numeric_token(Decimal(str(value)))
+        except (InvalidOperation, ValueError):
+            return value
+    if isinstance(value, str):
+        if normalize_strings:
+            s = value.strip()
+            if 0 < len(s) <= _MAX_NUMERIC_LEN and _looks_like_plain_decimal(s):
+                try:
+                    return _numeric_token(Decimal(s))
+                except InvalidOperation:
+                    pass
+        # A genuine string beginning with the reserved NUL would otherwise be
+        # byte-identical to a numeric token; escape it so the two can't collide.
+        if value.startswith("\x00"):
+            return _ESCAPE_TAG + value
+    return value
+
+
+def _canonicalize_numbers(
+    data: Any,
+    string_fields: frozenset[str] | None = None,
+    *,
+    _normalize_strings: bool = False,
+) -> Any:
+    """Recursively fold numerically-equal values in a state.
+
+    Numeric TYPES (int/float/Decimal) always fold. Numeric-looking STRINGS fold
+    only for a value sitting under a record key named in ``string_fields`` — the
+    per-field opt-in. ``_normalize_strings`` carries that per-key decision down
+    through the value's enclosing list(s); a nested dict re-decides per its own
+    keys. So a version/code string field is never folded merely because a
+    sibling money field in the same record is listed.
+    """
+    if isinstance(data, dict):
+        return {
+            key: _canonicalize_numbers(
+                value,
+                string_fields,
+                _normalize_strings=(string_fields is not None and key in string_fields),
+            )
+            for key, value in data.items()
+        }
+    if isinstance(data, list):
+        return [
+            _canonicalize_numbers(item, string_fields, _normalize_strings=_normalize_strings)
+            for item in data
+        ]
+    if isinstance(data, tuple):
+        return tuple(
+            _canonicalize_numbers(item, string_fields, _normalize_strings=_normalize_strings)
+            for item in data
+        )
+    return canonical_number(data, normalize_strings=_normalize_strings)
 
 
 def _convert_datetime_to_str(data: Any) -> Any:
@@ -115,12 +258,17 @@ def filter_unstable_fields(
 def compute_stable_hash(
     state: dict[str, Any],
     unstable_fields: list[str] | None = None,
+    *,
+    canonicalize_numbers: bool = True,
+    numeric_string_fields: Iterable[str] | None = None,
 ) -> str:
     """
     Compute a stable SHA-256 hash of the state dictionary.
 
-    This function produces the same output as mcp_core.utils.validation.calculate_database_hash()
-    for identical state dictionaries.
+    With ``canonicalize_numbers=False`` this produces the same output as
+    mcp_core.utils.validation.calculate_database_hash() for identical state
+    dictionaries. The default (True) additionally folds numerically-equal
+    representations, intentionally diverging from that byte-for-byte output.
 
     Algorithm:
     1. Filter out unstable fields (if specified)
@@ -131,6 +279,19 @@ def compute_stable_hash(
     Args:
         state: State dictionary to hash
         unstable_fields: Optional list of field names to exclude from hash
+        canonicalize_numbers: When True (default), collapse numerically-equal
+            NUMERIC-TYPE values (72 == 72.0 == Decimal("72.00")) before hashing.
+            Generic and safe — the type declares the value is a number. Pass
+            False to reproduce the legacy byte-for-byte
+            mcp_core.calculate_database_hash() output.
+        numeric_string_fields: Record-level field names whose numeric-looking
+            STRING values should ALSO fold ("130.00" == "130.0" == "130"). This
+            is deliberately PER-FIELD, not global: a string that looks numeric
+            can carry meaning in its exact representation (versions "1.10" vs
+            "1.1", zero-padded codes), so folding is opt-in only for the money /
+            quantity fields a task declares here (grading config
+            ``state_checks.numeric_string_fields``). Matched by the immediate
+            record key at any depth. Ignored when canonicalize_numbers is False.
 
     Returns:
         Hexadecimal string of the SHA-256 hash
@@ -150,6 +311,14 @@ def compute_stable_hash(
 
     # Convert datetime objects to strings
     serializable_state = _convert_datetime_to_str(state)
+
+    # Collapse numerically-equal representations so a pure representation
+    # difference is not graded as a state change: numeric TYPES always
+    # (72 == 72.0); numeric-looking STRINGS only in the opt-in per-field set
+    # ("130.00" == "130.0" — see numeric_string_fields).
+    if canonicalize_numbers:
+        string_fields = frozenset(numeric_string_fields) if numeric_string_fields else None
+        serializable_state = _canonicalize_numbers(serializable_state, string_fields)
 
     # Serialize with canonical format matching mcp_core
     json_str = json.dumps(serializable_state, sort_keys=True, separators=(",", ":"), default=str)

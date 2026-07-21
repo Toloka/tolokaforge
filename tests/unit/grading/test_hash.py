@@ -9,7 +9,7 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-from tolokaforge.core.hash import compute_stable_hash, filter_unstable_fields
+from tolokaforge.core.hash import canonical_number, compute_stable_hash, filter_unstable_fields
 
 # ---------------------------------------------------------------------------
 # Test 7: filter_unstable_fields handles nested table.field patterns
@@ -142,3 +142,179 @@ class TestComputeStableHash:
         filter_unstable_fields(state, ["tickets.subject"])
 
         assert state == original, "filter_unstable_fields must not mutate the original dict"
+
+
+class TestComputeStableHashNumericCanonicalization:
+    """Two-tier numeric canonicalization in state hashing.
+
+    Tier 1 (default): numerically-equal NUMERIC-TYPE values hash identically
+    (72 == 72.0 == Decimal("72.00")) — the type declares number-ness, generic
+    and safe. Tier 2 (opt-in ``numeric_string_fields``): numeric-looking
+    STRINGS also fold ("130.00" == "130.0") but ONLY under a record key listed
+    in that per-field set, because exact string representation can carry meaning
+    (versions, codes).
+    """
+
+    # ---- tier 1: numeric types, default behavior ----
+
+    def test_numeric_types_fold_by_default(self):
+        from decimal import Decimal
+
+        a = {"cases": [{"id": "C1", "qty": 72}]}
+        b = {"cases": [{"id": "C1", "qty": 72.0}]}
+        c = {"cases": [{"id": "C1", "qty": Decimal("72.00")}]}
+        assert compute_stable_hash(a) == compute_stable_hash(b) == compute_stable_hash(c)
+
+    def test_numeric_strings_do_NOT_fold_by_default(self):
+        a = {"cases": [{"id": "C1", "refund": "130.00"}]}
+        b = {"cases": [{"id": "C1", "refund": "130.0"}]}
+        assert compute_stable_hash(a) != compute_stable_hash(b)
+
+    def test_bool_not_collapsed_to_int(self):
+        a = {"flags": [{"active": True}]}
+        b = {"flags": [{"active": 1}]}
+        assert compute_stable_hash(a) != compute_stable_hash(b)
+
+    def test_opt_out_preserves_legacy_byte_exact_behavior(self):
+        from decimal import Decimal
+
+        a = {"cases": [{"id": "C1", "qty": 72}]}
+        b = {"cases": [{"id": "C1", "qty": Decimal("72.00")}]}
+        # Legacy mcp_core-exact behavior: str(72) != str(Decimal("72.00")).
+        assert compute_stable_hash(a, canonicalize_numbers=False) != compute_stable_hash(
+            b, canonicalize_numbers=False
+        )
+
+    # ---- tier 2: numeric strings, only under a listed field ----
+
+    def test_decimal_string_formats_fold_for_listed_field(self):
+        a = {"cases": [{"id": "C1", "refund": "130.00"}]}
+        b = {"cases": [{"id": "C1", "refund": "130.0"}]}
+        assert compute_stable_hash(a, numeric_string_fields=["refund"]) == compute_stable_hash(
+            b, numeric_string_fields=["refund"]
+        )
+
+    def test_int_vs_decimal_string_folds_for_listed_field(self):
+        a = {"cases": [{"id": "C1", "qty": 72}]}
+        b = {"cases": [{"id": "C1", "qty": "72.00"}]}
+        assert compute_stable_hash(a, numeric_string_fields=["qty"]) == compute_stable_hash(
+            b, numeric_string_fields=["qty"]
+        )
+
+    def test_unlisted_field_does_NOT_fold_even_with_a_sibling_listed(self):
+        # The whole point of per-field: a version string in the same record as a
+        # listed money field must NOT fold just because the money field is listed.
+        a = {"cases": [{"refund": "130.00", "version": "1.10"}]}
+        b = {"cases": [{"refund": "130.0", "version": "1.1"}]}
+        # "version" is not listed → its "1.10" vs "1.1" difference is preserved,
+        # so the two states stay distinct even though "refund" folds.
+        assert compute_stable_hash(a, numeric_string_fields=["refund"]) != compute_stable_hash(
+            b, numeric_string_fields=["refund"]
+        )
+        # Listing "version" too collapses both, confirming the difference was the
+        # version field alone.
+        assert compute_stable_hash(
+            a, numeric_string_fields=["refund", "version"]
+        ) == compute_stable_hash(b, numeric_string_fields=["refund", "version"])
+
+    def test_genuine_numeric_difference_differs_even_when_listed(self):
+        a = {"cases": [{"id": "C1", "refund": "790.00"}]}
+        b = {"cases": [{"id": "C1", "refund": "0.0"}]}
+        assert compute_stable_hash(a, numeric_string_fields=["refund"]) != compute_stable_hash(
+            b, numeric_string_fields=["refund"]
+        )
+
+    def test_leading_zero_identifier_not_collapsed_even_when_listed(self):
+        a = {"cases": [{"code": "00123"}]}
+        b = {"cases": [{"code": "123"}]}
+        assert compute_stable_hash(a, numeric_string_fields=["code"]) != compute_stable_hash(
+            b, numeric_string_fields=["code"]
+        )
+
+    def test_negative_zero_collapses_to_zero_when_listed(self):
+        assert canonical_number("-0.00", normalize_strings=True) == canonical_number(0)
+        assert compute_stable_hash(
+            {"t": [{"amt": "-0.00"}]}, numeric_string_fields=["amt"]
+        ) == compute_stable_hash({"t": [{"amt": "0.0"}]}, numeric_string_fields=["amt"])
+
+    # ---- guards independent of the field set ----
+
+    def test_tagged_string_does_not_collide_with_number(self):
+        # A crafted string byte-equal to a numeric token must not equal the number.
+        crafted = "\x00tf-num:130"
+        assert canonical_number(crafted, normalize_strings=True) != canonical_number(130)
+        assert compute_stable_hash(
+            {"t": [{"amt": 130}]}, numeric_string_fields=["amt"]
+        ) != compute_stable_hash({"t": [{"amt": crafted}]}, numeric_string_fields=["amt"])
+
+
+def _load_standalone_fallback_hash():
+    """Import the json_db_service standalone ``compute_stable_hash`` fallback.
+
+    The service prefers ``tolokaforge.core.hash`` and only defines the local
+    fallback when that import fails (standalone/testing). Force the ImportError
+    branch by poisoning ``sys.modules`` so we exercise the vendored copy, then
+    restore the real module so no other test is affected.
+    """
+    import builtins
+    import importlib
+    import sys
+
+    real_import = builtins.__import__
+
+    def blocking_import(name, *args, **kwargs):
+        if name == "tolokaforge.core.hash":
+            raise ImportError("forced for parity test")
+        return real_import(name, *args, **kwargs)
+
+    saved = {m: sys.modules[m] for m in list(sys.modules) if "json_db_service" in m}
+    for m in saved:
+        del sys.modules[m]
+    builtins.__import__ = blocking_import
+    try:
+        app = importlib.import_module("tolokaforge.env.json_db_service.app")
+        fn = app.compute_stable_hash
+        # Guard: make sure we actually got the vendored fallback (defined in
+        # app.py), not the real core function — otherwise this parity test would
+        # silently compare the real implementation against itself.
+        assert (
+            fn.__module__ == "tolokaforge.env.json_db_service.app"
+        ), "fallback poisoning failed; got the real core.hash function"
+        return fn
+    finally:
+        builtins.__import__ = real_import
+        for m in list(sys.modules):
+            if "json_db_service" in m:
+                del sys.modules[m]
+        sys.modules.update(saved)
+
+
+class TestStandaloneFallbackParity:
+    """The json_db_service standalone fallback must stay byte-identical to the
+    real core ``compute_stable_hash`` (the only current sync guard is a comment).
+    """
+
+    def test_fallback_matches_core_across_cases(self):
+        fallback = _load_standalone_fallback_hash()
+
+        cases = [
+            # (state, kwargs)
+            ({"cases": [{"id": "C1", "qty": 72}]}, {}),
+            ({"cases": [{"id": "C1", "qty": 72.0}]}, {}),
+            ({"t": [{"amt": "130.00", "ver": "1.10"}]}, {"numeric_string_fields": ["amt"]}),
+            ({"t": [{"amt": "130.0", "ver": "1.1"}]}, {"numeric_string_fields": ["amt"]}),
+            (
+                {"t": [{"amt": "130.00", "ver": "1.10"}]},
+                {"numeric_string_fields": ["amt", "ver"]},
+            ),
+            ({"cases": [{"code": "00123"}]}, {"numeric_string_fields": ["code"]}),
+            ({"flags": [{"active": True}]}, {"numeric_string_fields": ["active"]}),
+            ({"t": [{"amt": "-0.00"}]}, {"numeric_string_fields": ["amt"]}),
+            ({"t": [{"amt": "\x00tf-num:130"}]}, {"numeric_string_fields": ["amt"]}),
+            ({"cases": [{"id": "C1", "qty": 72}]}, {"canonicalize_numbers": False}),
+        ]
+        for state, kwargs in cases:
+            assert fallback(state, **kwargs) == compute_stable_hash(state, **kwargs), (
+                state,
+                kwargs,
+            )

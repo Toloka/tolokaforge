@@ -11,6 +11,7 @@ Usage:
 """
 
 import logging
+from collections.abc import Iterable
 from typing import Any
 
 import httpx
@@ -401,7 +402,9 @@ class DBServiceClient:
             self._handle_error_response(response)
             return StableStateResponse.model_validate(response.json())
 
-    async def get_stable_hash(self, trial_id: str) -> str:
+    async def get_stable_hash(
+        self, trial_id: str, *, numeric_string_fields: Iterable[str] | None = None
+    ) -> str:
         """
         Get SHA-256 hash of the stable state.
 
@@ -409,6 +412,9 @@ class DBServiceClient:
 
         Args:
             trial_id: Trial identifier
+            numeric_string_fields: Opt-in per-field list — record field names
+                whose numeric-looking string values fold ("130.00" == "130.0")
+                when hashing. See core/hash.py compute_stable_hash.
 
         Returns:
             The stable_hash string
@@ -416,9 +422,17 @@ class DBServiceClient:
         Raises:
             TrialNotFoundError: If trial not found
         """
+        params = (
+            {"numeric_string_fields": list(numeric_string_fields)}
+            if numeric_string_fields
+            else None
+        )
         async with self._create_client() as client:
             try:
-                response = await client.get(f"/trials/{trial_id}/state/hash")
+                response = await client.get(
+                    f"/trials/{trial_id}/state/hash",
+                    params=params,
+                )
             except httpx.ConnectError as e:
                 raise ConnectionError(f"Failed to connect to DB Service: {e}")
 

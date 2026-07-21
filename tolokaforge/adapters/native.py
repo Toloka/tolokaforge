@@ -631,6 +631,7 @@ class NativeAdapter(BaseAdapter):
                     jsonpath_checks=state_checks_data.get("jsonpaths", []),
                     env_assertions=env_assertions,
                     db_probes=db_probes,
+                    numeric_string_fields=list(state_checks_data.get("numeric_string_fields", [])),
                 )
 
             # Build transcript rules

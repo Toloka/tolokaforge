@@ -17,6 +17,7 @@ from typing import Any
 
 from jsonpath_ng.ext import parse
 
+from tolokaforge.core.hash import canonical_number
 from tolokaforge.runner.models import (
     StateDiff,
     TableDiff,
@@ -69,6 +70,20 @@ def compute_state_diff(trial_state: dict[str, Any], golden_state: dict[str, Any]
     return StateDiff(tables=tables_diff, summary=summary)
 
 
+def _make_hashable(value: Any) -> Any:
+    """Make a value hashable for comparison.
+
+    Scalars pass through :func:`canonical_number` so numerically-equal
+    representations (``"130.00"`` / ``"130.0"`` / ``130``) compare equal and a
+    pure decimal-formatting difference is not reported as a row/field change.
+    """
+    if isinstance(value, dict):
+        return tuple(sorted((k, _make_hashable(v)) for k, v in value.items()))
+    elif isinstance(value, list):
+        return tuple(_make_hashable(v) for v in value)
+    return canonical_number(value)
+
+
 def _compare_table_records(
     trial_records: list[dict[str, Any]], golden_records: list[dict[str, Any]]
 ) -> TableDiff:
@@ -93,14 +108,6 @@ def _compare_table_records(
     def record_to_tuple(record: dict[str, Any]) -> tuple:
         """Convert record to hashable tuple for comparison."""
         return tuple(sorted((k, _make_hashable(v)) for k, v in record.items()))
-
-    def _make_hashable(value: Any) -> Any:
-        """Make a value hashable for comparison."""
-        if isinstance(value, dict):
-            return tuple(sorted((k, _make_hashable(v)) for k, v in value.items()))
-        elif isinstance(value, list):
-            return tuple(_make_hashable(v) for v in value)
-        return value
 
     trial_tuples = {record_to_tuple(r): r for r in trial_records}
     golden_tuples = {record_to_tuple(r): r for r in golden_records}
@@ -160,16 +167,22 @@ def _records_might_match(record1: dict[str, Any], record2: dict[str, Any]) -> bo
     common_keys = set(record1.keys()) & set(record2.keys())
     id_fields = sorted(f for f in common_keys if f == "id" or f.endswith("_id"))
 
-    # Match on the first shared ID field (most specific)
+    # Match on the first shared ID field (most specific). Compare via the same
+    # canonical form as the record hashing, so numeric-TYPE ids pair across
+    # representations (123 == 123.0 == Decimal("123")). A numeric-looking STRING
+    # id ("123") is NOT equated with the number 123 here: string folding is the
+    # opt-in per-field tier, off on this reason-only diff path.
     for field in id_fields:
         if record1[field] is not None and record2[field] is not None:
-            return record1[field] == record2[field]
+            return _make_hashable(record1[field]) == _make_hashable(record2[field])
 
     # Fallback: check if they share at least 50% of fields with same values
     if not common_keys:
         return False
 
-    matching_values = sum(1 for f in common_keys if record1[f] == record2[f])
+    matching_values = sum(
+        1 for f in common_keys if _make_hashable(record1[f]) == _make_hashable(record2[f])
+    )
     return matching_values >= len(common_keys) * 0.5
 
 
@@ -181,7 +194,9 @@ def _get_field_diffs(expected: dict[str, Any], actual: dict[str, Any]) -> list[d
     for field in sorted(all_fields):
         exp_val = expected.get(field)
         act_val = actual.get(field)
-        if exp_val != act_val:
+        # Compare via canonical form so a numerically-equal value in a different
+        # decimal format ("130.00" vs "130.0") is not reported as a field diff.
+        if _make_hashable(exp_val) != _make_hashable(act_val):
             diffs.append({"field": field, "expected": exp_val, "actual": act_val})
 
     return diffs

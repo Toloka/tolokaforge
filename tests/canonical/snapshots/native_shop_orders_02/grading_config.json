@@ -79,7 +79,8 @@
         "equals": 13,
         "path": "$.db.products[1].stock"
       }
-    ]
+    ],
+    "numeric_string_fields": []
   },
   "transcript_rules": {
     "communicate_info": [
