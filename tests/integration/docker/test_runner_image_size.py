@@ -20,8 +20,10 @@ Recorded baseline (provenance, mirroring ADR-0019 §4b):
   - site-packages 371 MB total (includes ``litellm``/proxy, ``pip``,
     ``setuptools``, ``grpc_tools`` build-time compiler, and ``*.pyc`` bytecode)
 
-The size levers behind the ceiling land in the multi-stage Dockerfile rewrite;
-this module is the behaviour lock that proves the reduction is real.
+The multi-stage runner Dockerfile achieves the reduction (build-only apt +
+docker CLI kept out of the runtime stage, wheel installed with ``--no-compile``,
+the pip/setuptools toolchain stripped); this module is the behaviour lock that
+proves it stays real.
 """
 
 from __future__ import annotations
@@ -44,28 +46,37 @@ a real size regression.
 
 
 def _resolve_runner_image_id() -> str | None:
-    """Return the Docker image ID for the built runner image, or ``None``.
+    """Return the ID of the most recently built runner image, or ``None``.
 
     The image name is read from the builder's static definition table rather
     than ``get_image_definition`` — the latter triggers wheel resolution as a
-    side effect, which a size lock has no need for. Prefers the ``:local``
-    alias (what an orchestrated run actually serves); otherwise falls back to
-    the image the daemon lists first (created-descending).
+    side effect, which a size lock has no need for. The newest image by build
+    time is the one the current Dockerfile produces (and what the ``:local``
+    alias points at after a run), so the lock measures it directly rather than
+    trusting a possibly-stale tag.
     """
     image_name = builder.IMAGE_DEFINITIONS["runner"]["name"]
-    result = subprocess.run(
-        ["docker", "images", image_name, "--format", "{{.Tag}} {{.ID}}"],
+    listing = subprocess.run(
+        ["docker", "images", image_name, "--format", "{{.ID}}"],
         capture_output=True,
         text=True,
         check=True,
     )
-    rows = [line.split() for line in result.stdout.splitlines() if line.strip()]
-    if not rows:
+    image_ids = list(dict.fromkeys(line for line in listing.stdout.split() if line))
+    if not image_ids:
         return None
-    for tag, image_id in rows:
-        if tag == "local":
-            return image_id
-    return rows[0][1]
+    newest_id: str | None = None
+    newest_created = ""
+    for image_id in image_ids:
+        created = subprocess.run(
+            ["docker", "image", "inspect", image_id, "--format", "{{.Created}}"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        if created > newest_created:
+            newest_created, newest_id = created, image_id
+    return newest_id
 
 
 def _image_size_mb(image_id: str) -> float:
@@ -79,9 +90,6 @@ def _image_size_mb(image_id: str) -> float:
     return int(result.stdout.strip()) / 1_000_000
 
 
-# xfail removed in Stage 3 when the multi-stage Dockerfile brings the image
-# under the ceiling; strict flips to a hard failure if it passes early.
-@pytest.mark.xfail(reason="slim image lands in Stage 3", strict=True)
 def test_runner_image_within_size_ceiling() -> None:
     if not is_docker_daemon_available():
         pytest.skip("Docker daemon not available")
