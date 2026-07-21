@@ -103,6 +103,11 @@ from tolokaforge.cli.assets_commands import assets  # noqa: E402
 
 cli.add_command(assets)
 
+# Register the `agent` subprocess-contract command (JSON-Lines wire over stdio).
+from tolokaforge.cli.agent_command import agent  # noqa: E402
+
+cli.add_command(agent)
+
 
 # Default user model configuration
 DEFAULT_USER_MODEL = "anthropic/claude-sonnet-4.6"
