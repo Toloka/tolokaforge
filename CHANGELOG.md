@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file.
 
-## Unreleased
+## v0.9.2 (2026-07-21)
 
 ### Feat
 
@@ -75,6 +75,17 @@ Every soft-warning path M9 introduces is documented as a `DeprecationWarning` th
 - **#489** — `orchestrator.timeouts` opt-in default (sibling of #265): bundled with M5's `turn_s`/`episode_s` → `trial_seconds`/`tool_call_seconds` rename so the field reshapes once.
 
 External pack authors: run your suite; every warning message tells you exactly what to change. There are no schema errors introduced in this release — a pack that loads on `main` today continues to load, with warnings that point at the migration you'll need to make before the strict flips in #533 / #534 / #214 / #489 land.
+
+Release-summary anchors (short form of items detailed above):
+
+- **project-layer**: Project-layer v1 finalization — canonical shape with warn-only compat (M9) (#531)
+- **runtime**: multi-container v1 completion (M8 consolidation) (#511)
+
+Additional fixes landed this release:
+
+- **grading**: compare numerically-equal state values as equal (#532)
+- **adapter**: fail conversion on invalid output (#494)
+- **tools**: advertise PATCH requests (#463)
 
 ## v0.9.1 (2026-07-17)
 
