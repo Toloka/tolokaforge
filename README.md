@@ -41,6 +41,8 @@ See [Python Package Guide](docs/PYTHON_PACKAGE.md) for all extras and programmat
 
 To run a single trial in-process from Python, `tolokaforge.run_trial(...)` returns a typed `TrialResult` — see [`docs/API.md`](docs/API.md#run_trial) and the runnable [`examples/library/run_trial.py`](examples/library/run_trial.py).
 
+To drive a trial from any language over a pipe, `tolokaforge agent` runs one trial as a subprocess speaking a JSON-Lines wire — see [`docs/API.md`](docs/API.md#tolokaforge-agent) and the runnable [`examples/agent/drive_agent.py`](examples/agent/drive_agent.py).
+
 ## Quick Start
 
 ```bash
