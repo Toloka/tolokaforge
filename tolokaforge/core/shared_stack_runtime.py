@@ -43,7 +43,13 @@ from tolokaforge.core.compose_materialisation import (
     write_capture_manifest,
 )
 from tolokaforge.core.models import SeedRef
-from tolokaforge.core.run_display_events import ContainerSnapshot
+from tolokaforge.core.run_display_events import (
+    _NULL_EVENTS,
+    ComponentSnapshot,
+    ContainerSnapshot,
+    RunDisplayEvents,
+    build_component_id,
+)
 from tolokaforge.core.runtime import EnvHandle, IsolationMode, ProvisionError
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, EnvEndpoints, EnvironmentManifest
 from tolokaforge.runner import (
@@ -144,24 +150,49 @@ class GrpcRunnerClient:
         - health_check(): Check service health
     """
 
-    def __init__(self, runner_address: str = "runner:50051"):
+    def __init__(
+        self,
+        runner_address: str = "runner:50051",
+        *,
+        events: RunDisplayEvents | None = None,
+    ):
         """
         Initialize Runner client
 
         Args:
             runner_address: gRPC address for Runner service (TCP)
+            events: Optional display-events sink. When provided,
+                :meth:`connect` reports its progress through the
+                Components monitoring channel (one row per attempt,
+                same row updated in place) instead of scrolling
+                per-attempt log lines. Defaults to the null sink so
+                out-of-tree callers keep pre-existing behaviour.
         """
         self.runner_address = runner_address
         self.channel: grpc.Channel | None = None
         self.stub: runner_pb2_grpc.RunnerServiceStub | None = None
+        self._events: RunDisplayEvents = events if events is not None else _NULL_EVENTS
         logger.info(f"GrpcRunnerClient initialized with address: {runner_address}")
+
+    def _component_snapshot(self, phase: str, detail: str | None = None) -> ComponentSnapshot:
+        return ComponentSnapshot(
+            id=build_component_id("engine", "grpc.client", "runner"),
+            kind="grpc.client",
+            phase=phase,  # type: ignore[typeddict-item]
+            detail=detail,
+            owner="engine",
+        )
 
     def connect(self, timeout: float = 30.0, retry_interval: float = 1.0) -> None:
         """Establish connection to Runner service with health check retry.
 
-        Waits for the Runner service to become healthy before returning.
-        This is important when starting containers, as the Runner may take
-        time to initialize.
+        Reports progress through the Components monitoring channel: a
+        single component row for ``engine/grpc.client/runner`` transitions
+        ``pending → starting`` (with per-attempt ``detail`` updates that
+        do not scroll the log stream) → ``healthy`` on success or
+        ``unhealthy`` on timeout. Per-attempt log records stay at DEBUG
+        so ``-v`` still surfaces them for debugging without the panel
+        showing them by default.
 
         Args:
             timeout: Maximum time to wait for healthy service (seconds)
@@ -175,29 +206,68 @@ class GrpcRunnerClient:
             self.stub = runner_pb2_grpc.RunnerServiceStub(self.channel)
             logger.info("Channel created to Runner service")
 
-        # Wait for service to become healthy
+        component_id = build_component_id("engine", "grpc.client", "runner")
+        self._events.component_registered(
+            snapshot=self._component_snapshot(
+                "starting", detail=f"connecting to {self.runner_address}"
+            )
+        )
+
         start_time = time.time()
         attempt = 0
         while time.time() - start_time < timeout:
             attempt += 1
+            elapsed = time.time() - start_time
             try:
                 if self.health_check():
                     logger.info(
                         f"Runner service healthy after {attempt} attempt(s), "
-                        f"elapsed={time.time() - start_time:.2f}s"
+                        f"elapsed={elapsed:.2f}s"
+                    )
+                    self._events.component_status_changed(
+                        snapshot=self._component_snapshot(
+                            "healthy",
+                            detail=f"{self.runner_address} · {attempt} attempt(s), {elapsed:.1f}s",
+                        )
                     )
                     return
             except grpc.RpcError as e:
                 logger.debug(f"Health check attempt {attempt} failed: {e}")
+                self._events.component_log_appended(
+                    component_id=component_id,
+                    level="DEBUG",
+                    message=f"attempt {attempt}: {e}",
+                    ts=time.time(),
+                )
 
-            logger.info(
+            # Per-attempt progress: updates the SAME row's ``detail`` in place —
+            # no new log line scrolls. Downgraded from the pre-M11.2 INFO chatter.
+            logger.debug(
                 f"Waiting for Runner service (attempt {attempt}, "
-                f"elapsed={time.time() - start_time:.1f}s/{timeout}s)"
+                f"elapsed={elapsed:.1f}s/{timeout}s)"
+            )
+            self._events.component_status_changed(
+                snapshot=self._component_snapshot(
+                    "starting",
+                    detail=f"attempt {attempt}, elapsed={elapsed:.1f}s/{timeout:.0f}s",
+                )
             )
             time.sleep(retry_interval)
 
         # Timeout reached
         elapsed = time.time() - start_time
+        self._events.component_status_changed(
+            snapshot=self._component_snapshot(
+                "unhealthy",
+                detail=f"timeout after {elapsed:.1f}s ({attempt} attempts)",
+            )
+        )
+        self._events.component_log_appended(
+            component_id=component_id,
+            level="ERROR",
+            message=f"Runner service at {self.runner_address} not healthy after {elapsed:.1f}s",
+            ts=time.time(),
+        )
         raise ConnectionError(
             f"Runner service at {self.runner_address} not healthy after {elapsed:.1f}s "
             f"({attempt} attempts). Check if the Runner container is running."
@@ -709,6 +779,8 @@ class SharedStackRuntimeBackend:
         run_id: str = "run",
         seeds: dict[str, SeedRef] | None = None,
         log_capture: LogCaptureConfig | None = None,
+        *,
+        events: RunDisplayEvents | None = None,
     ):
         """Initialize the shared-stack runtime.
 
@@ -739,12 +811,13 @@ class SharedStackRuntimeBackend:
         self._temp_dir: Path | None = None
         self.seeds: dict[str, SeedRef] = dict(seeds or {})
         self.log_capture = log_capture
+        self._events: RunDisplayEvents = events if events is not None else _NULL_EVENTS
 
         self.runner_client: GrpcRunnerClient | None
         self._endpoints: EnvEndpoints | None
         if env_manifest is None:
             # Built-in-stack mode: runner + endpoints known at construction.
-            self.runner_client = GrpcRunnerClient(runner_address)
+            self.runner_client = GrpcRunnerClient(runner_address, events=self._events)
             if endpoints is None:
                 endpoints = EnvEndpoints(
                     db_url=f"http://{runner_address}/db",
@@ -893,7 +966,10 @@ class SharedStackRuntimeBackend:
         self._compose = compose
         self._temp_dir = temp_dir
         self._endpoints = endpoints
-        self.runner_client = GrpcRunnerClient(runner_address=f"{runner_host}:{runner_host_port}")
+        self.runner_client = GrpcRunnerClient(
+            runner_address=f"{runner_host}:{runner_host_port}",
+            events=self._events,
+        )
 
     def _capture_materialise_failure_logs(self, compose: DockerCompose | None) -> None:
         """Best-effort run-level capture of the shared stack's per-service

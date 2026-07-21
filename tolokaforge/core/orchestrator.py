@@ -856,11 +856,13 @@ class Orchestrator:
                 run_id=run_id,
                 seeds=seeds,
                 log_capture=log_capture,
+                events=self._events,
             )
         return SharedStackRuntimeBackend(
             runner_address=runner_address,
             endpoints=_build_env_endpoints(runner_address),
             seeds=seeds,
+            events=self._events,
         )
 
     def _project_seed_registry(self) -> dict[str, Any]:

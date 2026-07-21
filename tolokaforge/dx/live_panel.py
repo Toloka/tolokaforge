@@ -47,10 +47,13 @@ from tolokaforge.core.logging import _TOLOKAFORGE_ROOT_HANDLER_SENTINEL
 from tolokaforge.core.logging_context import TRIAL_ID_CTXVAR
 from tolokaforge.core.run_display_events import (
     _NULL_EVENTS,
+    ComponentPhase,
+    ComponentSnapshot,
     ContainerSnapshot,
     LLMCallRole,
     RunDisplayEvents,
     ServiceSnapshot,
+    build_component_id,
 )
 from tolokaforge.dx._display import DisplayMode, format_duration, make_live
 
@@ -68,6 +71,44 @@ _BOOT_LOG_MAX_LINES = 5
 :func:`_render_boot_log_tail`'s default ``max_lines`` and the desired
 height computed in :meth:`LiveRunDisplay._build_layout` so the two
 never drift out of sync."""
+
+_COMPONENT_TAIL_MAX_LINES = 5
+"""Per-component log-tail cap. Rendered under the row of any component in
+a non-healthy phase; capped at this many most-recent lines to keep the
+Components widget compact when a component is failing."""
+
+_COMPONENT_TAIL_BUFFER_MAX = 32
+"""Per-component ring-buffer size for ``component_log_appended`` records.
+Larger than the render cap so a component that recovers can be
+inspected in retrospect by future tooling; the panel itself only ever
+shows the last :data:`_COMPONENT_TAIL_MAX_LINES`."""
+
+_COMPONENT_PHASE_ICONS: dict[str, str] = {
+    "pending": "…",
+    "starting": "⏳",
+    "healthy": "✓",
+    "degraded": "⚠",
+    "unhealthy": "✗",
+    "stopped": "·",
+    "dead": "☠",
+}
+"""Icon per :data:`ComponentPhase`. Unknown phases fall back to ``"?"``
+via :meth:`dict.get` so the widget never crashes on a
+future-value snapshot."""
+
+_COMPONENT_PHASE_STYLES: dict[str, str] = {
+    "pending": "muted",
+    "starting": "warn",
+    "healthy": "ok",
+    "degraded": "warn",
+    "unhealthy": "error",
+    "stopped": "muted",
+    "dead": "error",
+}
+"""Rich theme token per phase. Themes live in :mod:`tolokaforge.dx._display`."""
+
+_UNHEALTHY_PHASES = frozenset({"degraded", "unhealthy", "dead"})
+"""Phases that trigger auto-expansion of the component's log tail."""
 
 
 def _now() -> datetime:
@@ -474,6 +515,154 @@ def _summarise_ports(ports: dict[int, int]) -> str:
     return ", ".join(f"{container}→{host}" for container, host in sorted(ports.items()))
 
 
+def _service_to_component(service: ServiceSnapshot, *, phase: str) -> ComponentSnapshot:
+    """Adapter: lift a ``ServiceSnapshot`` into a ``ComponentSnapshot``.
+
+    Used by :meth:`LiveRunDisplay.phase_changed`'s services-list branch so
+    legacy callers that only fire ``phase_changed(services=[…])`` still
+    populate the Components widget. The ``phase`` argument is the run
+    phase (``"starting_services"`` / ``"services_ready"``), not the
+    component phase — the docker container status is mapped independently.
+    """
+    status = service.get("status", "")
+    comp_phase = _map_docker_status_to_component_phase(status, phase)
+    return ComponentSnapshot(
+        id=build_component_id("engine", "docker.service", service["name"]),
+        kind="docker.service",
+        phase=comp_phase,
+        detail=(
+            f"{status} · {_summarise_ports(service.get('ports', {}))}".rstrip(" ·")
+            if status
+            else None
+        ),
+        owner="engine",
+    )
+
+
+def _container_to_component(container: ContainerSnapshot, *, trial_id: str) -> ComponentSnapshot:
+    """Adapter: lift a per-trial ``ContainerSnapshot`` into a ``ComponentSnapshot``.
+
+    Used by :meth:`LiveRunDisplay.trial_provisioned` so multi-container
+    task substrates surface in the Components widget under a
+    ``trial/<trial_id>`` owner alongside engine services.
+    """
+    health = container.get("health")
+    state = container.get("state", "unknown")
+    comp_phase: ComponentPhase
+    if health == "healthy":
+        comp_phase = "healthy"
+    elif health == "unhealthy":
+        comp_phase = "unhealthy"
+    elif health == "starting":
+        comp_phase = "starting"
+    elif state == "running":
+        comp_phase = "healthy"
+    elif state in ("exited", "dead"):
+        comp_phase = "dead"
+    else:
+        comp_phase = "pending"
+    return ComponentSnapshot(
+        id=build_component_id(
+            f"trial/{trial_id}", "container", container.get("service", "unknown")
+        ),
+        kind="container",
+        phase=comp_phase,
+        detail=(state if not health else f"{state} · {health}"),
+        owner=f"trial/{trial_id}",
+    )
+
+
+def _map_docker_status_to_component_phase(docker_status: str, run_phase: str) -> ComponentPhase:
+    """Map docker container ``status`` ∈ compose-status vocabulary to a
+    :data:`ComponentPhase`.
+
+    The ``run_phase`` context matters: ``"starting_services"`` +
+    ``status="created"`` means ``pending`` (declared but not started
+    yet); ``"services_ready"`` + ``status="created"`` would mean the
+    service failed to start.
+    """
+    if docker_status == "running":
+        return "healthy"
+    if docker_status in ("exited", "dead"):
+        return "dead"
+    if docker_status == "unhealthy":
+        return "unhealthy"
+    if docker_status in ("created", "not_created"):
+        return "pending" if run_phase == "starting_services" else "unhealthy"
+    if docker_status in ("starting", "restarting", "paused"):
+        return "starting"
+    return "pending"
+
+
+def _components_desired_height(
+    components: dict[str, ComponentSnapshot],
+    log_buffers: dict[str, deque[tuple[float, str, str]]],
+) -> int:
+    """Row count the Components widget wants: one per component +
+    N per unhealthy component's expanded tail + 2 border rows.
+
+    Callers use this to size the layout region; the widget's own render
+    always fills exactly its granted rows (Rich crop-from-bottom).
+    """
+    if not components:
+        return 0
+    row_count = len(components)
+    for comp in components.values():
+        if comp["phase"] in _UNHEALTHY_PHASES:
+            tail = log_buffers.get(comp["id"])
+            if tail:
+                row_count += min(len(tail), _COMPONENT_TAIL_MAX_LINES)
+    return row_count + 2  # +2 for the Panel's top/bottom border
+
+
+def _render_components_table(
+    components: dict[str, ComponentSnapshot],
+    log_buffers: dict[str, deque[tuple[float, str, str]]],
+) -> Text:
+    """Render the components status widget as a flat multi-line ``Text``.
+
+    Rows: ``[icon] [id]  [phase]  [detail]``. Unhealthy components get
+    their last :data:`_COMPONENT_TAIL_MAX_LINES` log lines indented
+    beneath their row, prefixed with ``└─``. Empty component set renders
+    the "(no components tracked)" placeholder.
+
+    Kept flat (``Text`` inside ``Panel``, no Rich ``Table``) for the same
+    reason as :func:`_render_services_table` — Table row-drop under a
+    tight ``Layout(size=…)`` cap.
+
+    Sort order: primary by ``owner`` (``None`` last), secondary by ``id``
+    so the widget renders deterministically across refreshes.
+    """
+    if not components:
+        return Text("(no components tracked)", style="muted")
+    rows = sorted(
+        components.values(),
+        key=lambda c: (c.get("owner") or "￿", c["id"]),
+    )
+    id_w = min(60, max((len(c["id"]) for c in rows), default=8))
+    phase_w = max((len(c["phase"]) for c in rows), default=8)
+    text = Text()
+    for component in rows:
+        phase = component["phase"]
+        icon = _COMPONENT_PHASE_ICONS.get(phase, "?")
+        style = _COMPONENT_PHASE_STYLES.get(phase, "muted")
+        detail = component.get("detail") or ""
+        line = f"  {icon}  {component['id']:<{id_w}}  {phase:<{phase_w}}  {detail}".rstrip()
+        text.append(line + "\n", style=style)
+        if phase in _UNHEALTHY_PHASES:
+            tail = log_buffers.get(component["id"])
+            if tail:
+                for _ts, level, message in list(tail)[-_COMPONENT_TAIL_MAX_LINES:]:
+                    text.append(
+                        f"    └─ [{level}] {message}\n",
+                        style="muted",
+                    )
+    # Strip the trailing newline so the Text hugs its Panel border.
+    if text.plain.endswith("\n"):
+        text.right_crop(1)
+    return text
+
+
 def _render_services_table(services: list[ServiceSnapshot]) -> Text:
     """Compact one-line-per-service renderable for the startup-window widget.
 
@@ -878,6 +1067,17 @@ class LiveRunDisplay:
         # ``starting_services`` and ``services_ready`` transitions. Feeds
         # the mid-region widget until trials dispatch.
         self._services: list[ServiceSnapshot] | None = None
+        # Component monitoring table (transport-agnostic). Populated by
+        # the four ``component_*`` events plus adapter shims that lift
+        # legacy ``phase_changed(services=…)`` and
+        # ``trial_provisioned(containers=…)`` records into the same model.
+        # One row per stable component id; last-write-wins on update.
+        self._components: dict[str, ComponentSnapshot] = {}
+        # Per-component log tail. Bounded ring per id; rendered only when
+        # the component is in an unhealthy phase, kept for post-mortem
+        # otherwise. Values are ``(ts, level, message)`` tuples so the
+        # renderer needs no LogRecord fields.
+        self._component_log_buffers: dict[str, deque[tuple[float, str, str]]] = {}
         # Top-of-panel error banner. Populated once the first auth-shaped
         # ``trial_failed`` fires so a bad key doesn't hide as ``fail 1``
         # in the counters. Tuple: (title, message, hint | None).
@@ -1073,16 +1273,75 @@ class LiveRunDisplay:
         The bottom bar reads :attr:`_current_phase` when ``_total_trials == 0``
         and renders ``"Starting services… (detail)"`` instead of the empty
         ``0/0 · 0 running · …`` line. When ``services`` is supplied the
-        panel adds a mid-region widget with one row per service. Once
-        ``run_started`` fires, phase state is cleared and the bar switches
-        to counters.
+        panel adds a mid-region widget with one row per service and, via
+        the components-model adapter, lifts each ``ServiceSnapshot`` into
+        a ``ComponentSnapshot`` so callers that only fire the legacy path
+        still populate the Components widget. Once ``run_started`` fires,
+        phase state is cleared and the bar switches to counters.
         """
         with self._lock:
             self._current_phase = phase
             self._current_phase_detail = detail
             if services is not None:
                 self._services = list(services)
+                for svc in services:
+                    self._ingest_component_locked(_service_to_component(svc, phase=phase))
             self._refresh_live_locked()
+
+    def component_registered(self, *, snapshot: ComponentSnapshot) -> None:
+        """Announce a component the panel should start tracking."""
+        with self._lock:
+            self._ingest_component_locked(snapshot)
+            self._refresh_live_locked()
+
+    def component_status_changed(self, *, snapshot: ComponentSnapshot) -> None:
+        """Update a component's phase / detail. Unknown ids implicit-register."""
+        with self._lock:
+            self._ingest_component_locked(snapshot)
+            self._refresh_live_locked()
+
+    def component_log_appended(
+        self,
+        *,
+        component_id: str,
+        level: str,
+        message: str,
+        ts: float,
+    ) -> None:
+        """Attach a log line to the component's tail buffer.
+
+        Kept out of the panel's general log ring so component chatter never
+        scrolls above the panel. Rendered only while the component is in
+        an unhealthy phase.
+        """
+        with self._lock:
+            buf = self._component_log_buffers.setdefault(
+                component_id,
+                deque(maxlen=_COMPONENT_TAIL_BUFFER_MAX),
+            )
+            buf.append((ts, level, message))
+            # Only refresh if the tail is currently visible (unhealthy row).
+            snap = self._components.get(component_id)
+            if snap is not None and snap["phase"] in _UNHEALTHY_PHASES:
+                self._refresh_live_locked()
+
+    def component_unregistered(self, *, component_id: str) -> None:
+        """Drop a component from the display's tracking set."""
+        with self._lock:
+            self._components.pop(component_id, None)
+            self._component_log_buffers.pop(component_id, None)
+            self._refresh_live_locked()
+
+    def _ingest_component_locked(self, snapshot: ComponentSnapshot) -> None:
+        """Upsert one snapshot into :attr:`_components`. Caller MUST hold the lock.
+
+        Same-id updates overwrite in place — this is what keeps per-attempt
+        polling from scrolling the log stream. Callers that lift legacy
+        events into components (see :func:`_service_to_component` /
+        :func:`_container_to_component`) route through here so the wire
+        shape is normalised regardless of the source.
+        """
+        self._components[snapshot["id"]] = snapshot
 
     def trial_started(
         self,
@@ -1144,6 +1403,11 @@ class LiveRunDisplay:
         with self._lock:
             card = self._trials.get(trial_id) or self._lazy_card_locked(trial_id)
             card.containers = list(containers)
+            # Adapter: each per-trial container becomes a component under
+            # the ``trial/<trial_id>`` namespace so multi-container tasks
+            # surface in the Components widget alongside engine services.
+            for container in containers:
+                self._ingest_component_locked(_container_to_component(container, trial_id=trial_id))
             self._refresh_live_locked()
 
     def trial_completed(self, *, trial_id: str, binary_pass: bool, score: float | None) -> None:
@@ -1444,15 +1708,20 @@ class LiveRunDisplay:
         Row composition (top → bottom):
 
         - Optional ``banner`` (size 5) — first auth-shaped failure.
-        - Optional ``services`` (size ``len(services) + 2`` — one line per
-          service + 2 border rows). Only during the startup window
-          (``_total_trials == 0`` and ``_services`` populated).
+        - Optional ``components`` (size ``rows_needed + 2`` — one line
+          per component + one indented line per unhealthy-tail entry +
+          2 border rows). Visible when any component is tracked and
+          either the run is in its startup window OR at least one
+          component is currently in an unhealthy phase (surfaces mid-run
+          infrastructure failures without keeping the widget always-on).
+          Replaces the pre-M11.2 Services widget; ``ServiceSnapshot``
+          rows still populate it via the adapter shim in
+          :func:`_service_to_component`.
         - Optional ``boot_log`` (size ``min(len(filtered), _BOOT_LOG_MAX_LINES)
           + 2`` desired, clamped down to whatever rows are left after
-          ``services`` and ``main``'s floor of 5; dropped entirely when the
-          clamp leaves < 3 rows). Only during the startup window when
-          ``_docker_boot_records(_log_buffer)`` is non-empty. Trials dispatch
-          → both widgets disappear → ``main`` reclaims their rows.
+          ``components`` and ``main``'s floor of 5; dropped entirely when
+          the clamp leaves < 3 rows). Only during the startup window when
+          ``_docker_boot_records(_log_buffer)`` is non-empty.
         - ``main`` (fills the leftover; min 5) — trials + focused split.
         - ``bottom`` (size 1) — spinner + phase / counters.
 
@@ -1464,15 +1733,25 @@ class LiveRunDisplay:
         layout = Layout()
         with self._lock:
             banner = self._banner
-            services = self._services
-            in_startup = bool(self._total_trials == 0 and services)
+            components = dict(self._components)
+            component_log_buffers = {
+                cid: deque(buf, maxlen=buf.maxlen)
+                for cid, buf in self._component_log_buffers.items()
+            }
+            has_unhealthy_component = any(
+                c["phase"] in _UNHEALTHY_PHASES for c in components.values()
+            )
+            in_startup = self._total_trials == 0
+            show_components = bool(components and (in_startup or has_unhealthy_component))
             boot_filtered: list[logging.LogRecord] = (
-                _docker_boot_records(self._log_buffer) if self._total_trials == 0 else []
+                _docker_boot_records(self._log_buffer) if in_startup else []
             )
         viewport = self._viewport_rows()
         total = max(12, viewport - 1)
         banner_h = 5 if banner is not None else 0
-        services_h = (len(services) + 2) if in_startup and services else 0
+        components_h = (
+            _components_desired_height(components, component_log_buffers) if show_components else 0
+        )
         bottom_h = 1
         desired_boot_log_h = (
             min(len(boot_filtered), _BOOT_LOG_MAX_LINES) + 2 if boot_filtered else 0
@@ -1482,16 +1761,16 @@ class LiveRunDisplay:
         # needs ≥ 3 rows to render at least one content line; below that
         # the region drops entirely so we never emit a zero-content
         # bordered box.
-        budget = total - banner_h - services_h - bottom_h - 5
+        budget = total - banner_h - components_h - bottom_h - 5
         boot_log_h = min(desired_boot_log_h, budget) if desired_boot_log_h else 0
         if boot_log_h < 3:
             boot_log_h = 0
-        main_h = max(5, total - banner_h - services_h - boot_log_h - bottom_h)
+        main_h = max(5, total - banner_h - components_h - boot_log_h - bottom_h)
         row_defs: list[Layout] = []
         if banner is not None:
             row_defs.append(Layout(name="banner", size=banner_h))
-        if in_startup and services:
-            row_defs.append(Layout(name="services", size=services_h))
+        if show_components:
+            row_defs.append(Layout(name="components", size=components_h))
         if boot_log_h > 0:
             row_defs.append(Layout(name="boot_log", size=boot_log_h))
         row_defs.append(Layout(name="main", size=main_h))
@@ -1499,9 +1778,13 @@ class LiveRunDisplay:
         layout.split_column(*row_defs)
         if banner is not None:
             layout["banner"].update(self._render_banner(banner))
-        if in_startup and services:
-            layout["services"].update(
-                Panel(_render_services_table(services), title="Services", padding=(0, 1))
+        if show_components:
+            layout["components"].update(
+                Panel(
+                    _render_components_table(components, component_log_buffers),
+                    title="Components",
+                    padding=(0, 1),
+                )
             )
         if boot_log_h > 0:
             layout["boot_log"].update(
