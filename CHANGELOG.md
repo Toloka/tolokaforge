@@ -2,56 +2,18 @@
 
 All notable changes to this project are documented in this file.
 
-## Unreleased
+## v0.9.2 (2026-07-21)
 
 ### Feat
 
-- **runtime**: `network_policy: limited_internet` enforcement via a squid forward-proxy sidecar. Declare `stack.limited_internet_allowlist: [host, ...]` (bare hostnames or `*.domain` wildcards); the provisioner injects a digest-pinned `ubuntu/squid` sidecar on a dual internal/edge network, points app services' `HTTP(S)_PROXY` at it, and default-denies non-allowlisted egress with HTTP 403. Runner retains direct edge egress for `llm_judge` grading (#323).
-- **manifest**: five endpoint-resolution override fields on `stack:` — `runner_port`, `db_service`, `db_port`, `rag_service`, `rag_port` — let task-pack authors point the engine at non-convention service names and ports without touching the runtime backend. Defaults reproduce prior behaviour byte-identically; unknown service overrides fail loud at manifest load (#144).
-- **observability**: `aggregate.json` gains an additive `captured_service_logs` roll-up on `RunAggregate` — a run-level view (`captures`, `total_bytes`, `per_service_bytes`, per-bundle `entries`) of the per-trial and run-level captured compose-log surfaces, with a closed `source` vocabulary (`provision_failure` / `trial_body` / `shared_stack_materialise`). Produced at report generation by scanning the on-disk capture tree (per-trial `services/_capture.yaml` and `metrics.yaml`, plus the run-level shared-stack `services/_capture.yaml`); fail-safe — a corrupt capture artifact is skipped, never breaking report generation. Always emitted (zero envelope on clean runs); no `schema_version` bump (#337).
-- **runtime**: `SharedStackRuntimeBackend._materialise_manifest` now captures per-service compose logs to `<output_dir>/services/<name>.log` + `_capture.yaml` (with `capture_reason: "materialise_error"`) before cleanup on the failure path — mirroring #302's per-trial pattern for run-level materialise failures (#339).
-- **observability**: per-trial `provisioning_duration_s` recorded in `metrics.yaml` — wall-clock seconds around the `provision → await_ready → endpoints` bracket, monotonic-clock-measured, additive to the existing metrics shape (#354).
-- **runtime**: provision-failed trials now write a minimal trial bundle (`trajectory.yaml` + `metrics.yaml` with `error: "provision_error"` + `grade.yaml`) to `<output_dir>/trials/<task>/<idx>/`, making cost aggregation and post-mortem tooling see a consistent trial-directory shape whether the trial completed or failed to provision (#338).
-- **project-layer**: M9 keystone — canonical Project-layer shape activated with **warn-only** compat. Every legacy shape a real task pack ships continues to load unchanged, with a `DeprecationWarning` naming the file, the offending key, and the concrete migration action. **No hard breaks in this release.** Post-M9 follow-up #533 tracks the future strict-rejection flip once a deprecation-window release cycle has closed.
-
-  Canonical shapes activated (aliases still accepted with warning):
-  - **`actors.user`** is the canonical author shape for the user simulator on `project.yaml` `task_defaults` and `task.yaml`; it now drives the simulator at runtime (previously parsed but inert). The top-level `user_simulator` block is a legacy alias — the loader lifts it into `actors.user` per config layer with a `DeprecationWarning`. Direct-Python callers using `TaskConfig(user_simulator=...)` continue to work via a `mode="before"` shim on `TaskConfig` and `TaskDefaults` that lifts to `actors["user"]` with the same warning (#213).
-  - **`evaluation.projects`** replaces `evaluation.task_packs`. Legacy key accepted with warning.
-  - **`network_policy` lowercase enum values** (`no_internet`, `limited_internet`, `full_internet`) replace the uppercase names (`NO_INTERNET`, ...). Uppercase accepted with warning; lowercased at parse time.
-  - **`security_context_defaults.run_as_user` / `.run_as_group`** replace `.user` / `.group`. Legacy keys accepted with warning; disagreeing values (both a legacy and a canonical key set to different values) fail loud.
-  - **`stack` sub-object** on `default_environment` is the canonical substrate shape; flat `compose_file` / `runner_service` at the top level of `EnvironmentPatch` are accepted with warning.
-
-  Compat surfaces preserved:
-  - **Missing `project.yaml`** — a pack without one still loads via a synthesised default. The synthesiser emits a `DeprecationWarning` naming the searched root and the exact fix (`Add a project.yaml at the pack root...`). Post-M9 #533 will flip this to a hard error.
-  - **Unknown keys** in `project.yaml` / `run_configs/*.yaml` / `task.yaml` / `grading.yaml` emit a `DeprecationWarning` naming the file, the key, and the closest schema match (e.g. `unknown key 'mox_turns' in dev.yaml — did you mean 'max_turns'? Rename 'mox_turns' to 'max_turns'... (tracked in #533)`) — the key is silently dropped from the model instance so existing configs keep loading. Top-level scan only; nested unknown keys pass through unnoticed (documented limitation; the recursive scan will land alongside the strict flip in #533).
-  - **`stack: null` / `stack.compose_file: null`** in a task's `environment_manifest` (and in a project's `default_environment`) now emit a `DeprecationWarning` naming the offending file and field, with the documented full-override rule — a task cannot unset the environment (or its substrate pointer) out from under a project that declares one. Omit the key entirely to inherit. Post-M9 #533 will re-flip to a hard error.
-
-  In-tree canonicalisation:
-  - Every pack under `examples/native/` now ships a `project.yaml` at pack root, uses the `stack` sub-object, `actors.user`, `run_configs/<name>.yaml`, and `evaluation.projects`. `example-microservices-pack` is the reference exemplar.
-
-  Every deprecation message here follows a uniform actionable shape: **what** legacy shape triggered the warning, **where** it lives (file basename via `source_context` — never absolute paths), **why** it is deprecated, **how** to migrate (a concrete key rename or block move with a worked example), and **when** it goes away (`(tracked in #533)`). This lets external pack authors migrate incrementally without any hard breaks and gives them a concrete follow-up issue to subscribe to (#213).
-
-### Docs
-
-- **guide**: task-pack image-layering guide covering the 3-tier base/environment/instance pattern from SWE-bench, with Dockerfile snippets and compose-file references (#146).
-- **security/runtime**: document the built-in (Case A) `EngineStack` as `full_internet` by construction — the built-in `runner-net` is non-internal and the runner retains egress for in-container LLM-as-judge grading; task-declared stacks remain the only path with an enforceable `network_policy`. Recorded in ADR-0018 + `RUNTIME_BACKENDS.md`, and locks the `Network.internal` foundation primitive + the `EngineStack.create_networks` non-internal invariant with a unit test (#324).
+- **project-layer**: Project-layer v1 finalization — canonical shape with warn-only compat (M9) (#531)
+- **runtime**: multi-container v1 completion (M8 consolidation) (#511)
 
 ### Fix
 
-- **docs/security**: rewrite `SECURITY.md`'s architecture overview, threat table, testing, and checklist to reflect the actual `runner-net` (non-internal, docker-py `EngineStack`) model. The doc previously described a vanished `env-net` (`internal: true`) network and `docker-compose.yaml`, and listed "executor reaching external internet — addressed by `env-net internal:true`" as an addressed threat that no longer holds (#324).
-- **loader** (M9): project `task_defaults` again loads the shipped `example-microservices-pack`. Only `TaskConfig`-shaped keys of `task_defaults` are merged into each task dict before validation; project-scoped-only keys (`grading_defaults`, `continue_prompt`) are excluded from that merge and reach the engine through their own seams. The excluded set is derived from the schema (`TaskDefaults.model_fields - TaskConfig.model_fields`), so future project-only defaults are handled automatically (#277).
-- **loader** (M9): `stack: null` and `stack: {compose_file: null}` in a task's `environment_manifest` (and in a project's `default_environment`) now emit a `DeprecationWarning` naming the offending file and field, with the documented full-override rule — a task cannot unset the environment (or its substrate pointer) out from under a project that declares one. Omit the key to inherit. Strict rejection deferred to a future release (#235, #533).
-
-### Compat / migration notes
-
-Every soft-warning path M9 introduces is documented as a `DeprecationWarning` that names the file, the offending key/shape, the concrete migration action, and a `(tracked in #NNN)` suffix pointing at the follow-up issue that carries the retirement schedule:
-
-- **#533** — post-M9 strict flip: re-flip Project-layer `extra="forbid"`, remove `synthesize_default_project`, re-flip `stack: null` / `stack.compose_file: null` to hard errors, add the recursive unknown-key scan. Fires one release cycle after M9 lands.
-- **#534** — post-M9 `orchestrator.max_turns` default flip (redo #265): flip default from `int = 50` back to `int | None = None` (opt-in cap) after the deprecation window closes.
-- **#214** — M5 legacy alias retirement (pre-existing): removes `evaluation.task_packs`, top-level `user_simulator`, uppercase `network_policy`, `security_context.user/group`, flat-stack aliases.
-- **#489** — `orchestrator.timeouts` opt-in default (sibling of #265): bundled with M5's `turn_s`/`episode_s` → `trial_seconds`/`tool_call_seconds` rename so the field reshapes once.
-
-External pack authors: run your suite; every warning message tells you exactly what to change. There are no schema errors introduced in this release — a pack that loads on `main` today continues to load, with warnings that point at the migration you'll need to make before the strict flips in #533 / #534 / #214 / #489 land.
+- **grading**: compare numerically-equal state values as equal (#532)
+- **adapter**: fail conversion on invalid output (#494)
+- **tools**: advertise PATCH requests (#463)
 
 ## v0.9.1 (2026-07-17)
 
