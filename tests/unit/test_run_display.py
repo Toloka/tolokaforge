@@ -1412,6 +1412,180 @@ def test_grpc_runner_client_fires_component_events_on_healthy() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Log-record → component tail routing via `extra={"component_id": ...}`
+# ---------------------------------------------------------------------------
+
+
+def _make_component_record(*, level: int, message: str, component_id: str) -> logging.LogRecord:
+    """Build a real ``LogRecord`` carrying ``record.component_id`` — the
+    tag the display's ``_LogSink`` inspects for tail routing."""
+    record = logging.getLogger("test").makeRecord(
+        "test", level, "test.py", 1, message, args=(), exc_info=None
+    )
+    record.component_id = component_id  # type: ignore[attr-defined]
+    return record
+
+
+def test_log_sink_routes_component_tagged_records_to_component_tail() -> None:
+    """A log record tagged ``extra={"component_id": ...}`` bypasses the
+    general ring + print_above channels and lands in the component's
+    tail buffer instead. This is the generic mechanism that turns
+    ``logger.error("Health check failed", extra={"component_id": ...})``
+    into a visualisation-only artefact — no scroll above the panel."""
+    from tolokaforge.dx.live_panel import _LogSink
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    printed_above: list[str] = []
+    sink = _LogSink(
+        print_above=lambda s: printed_above.append(s),
+        formatter=None,
+        buffer=display._log_buffer,
+        route_component_log=display._route_component_log,
+    )
+    sink.emit(
+        _make_component_record(
+            level=logging.ERROR,
+            message="Health check failed: bad thing",
+            component_id="engine/grpc.client/runner",
+        )
+    )
+
+    # Not in the general ring, not printed above the panel.
+    assert len(display._log_buffer) == 0
+    assert printed_above == []
+    # Landed in the component's tail buffer.
+    tail = display._component_log_buffers["engine/grpc.client/runner"]
+    assert len(tail) == 1
+    _ts, level, message = tail[0]
+    assert level == "ERROR"
+    assert message == "Health check failed: bad thing"
+
+
+def test_log_sink_untagged_records_keep_pre_component_behaviour() -> None:
+    """Records without a ``component_id`` follow the original
+    ``_LogSink`` routing: INFO/DEBUG → general ring; WARNING+ → also
+    print_above. No component tail touched."""
+    from tolokaforge.dx.live_panel import _LogSink
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    printed_above: list[str] = []
+    sink = _LogSink(
+        print_above=lambda s: printed_above.append(s),
+        formatter=None,
+        buffer=display._log_buffer,
+        route_component_log=display._route_component_log,
+    )
+    info_record = logging.getLogger("test").makeRecord(
+        "test", logging.INFO, "test.py", 1, "just info", args=(), exc_info=None
+    )
+    warning_record = logging.getLogger("test").makeRecord(
+        "test", logging.WARNING, "test.py", 1, "warn text", args=(), exc_info=None
+    )
+    sink.emit(info_record)
+    sink.emit(warning_record)
+
+    assert list(display._log_buffer) == [info_record, warning_record]
+    assert printed_above == ["warn text"]
+    assert display._component_log_buffers == {}
+
+
+def test_tail_expands_for_starting_component_with_populated_buffer() -> None:
+    """A ``starting`` component that has already logged something under
+    its component_id should surface the tail immediately — not wait for
+    the outer retry loop to escalate to ``unhealthy``. This is the
+    visualisation the operator wanted for the runner-connect retries."""
+    from tolokaforge.core.run_display_events import ComponentSnapshot
+    from tolokaforge.dx.live_panel import _component_tail_visible
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    snap: ComponentSnapshot = {
+        "id": "engine/grpc.client/runner",
+        "kind": "grpc.client",
+        "phase": "starting",
+        "detail": "attempt 3, elapsed=2.5s/30s",
+        "owner": "engine",
+    }
+    display.component_registered(snapshot=snap)
+    display.component_log_appended(
+        component_id=snap["id"],
+        level="ERROR",
+        message="connection refused",
+        ts=0.0,
+    )
+
+    assert _component_tail_visible(display._components[snap["id"]], display._component_log_buffers)
+
+
+def test_tail_hidden_for_healthy_component_even_with_history() -> None:
+    """A component that ended up healthy — even after logging attempts
+    on the way — leaves the tail collapsed. Retry-during history stays
+    available in the ring buffer for post-mortem, but the widget stays
+    compact once the component stabilised."""
+    from tolokaforge.core.run_display_events import ComponentSnapshot
+    from tolokaforge.dx.live_panel import _component_tail_visible
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    snap: ComponentSnapshot = {
+        "id": "engine/grpc.client/runner",
+        "kind": "grpc.client",
+        "phase": "starting",
+        "detail": "attempt 3, elapsed=2.5s/30s",
+        "owner": "engine",
+    }
+    display.component_registered(snapshot=snap)
+    display.component_log_appended(
+        component_id=snap["id"], level="ERROR", message="tmp fail", ts=0.0
+    )
+    # Recover to healthy.
+    display.component_status_changed(snapshot={**snap, "phase": "healthy", "detail": "ready"})
+    assert not _component_tail_visible(
+        display._components[snap["id"]], display._component_log_buffers
+    )
+
+
+def test_grpc_runner_client_error_log_tagged_with_component_id() -> None:
+    """`GrpcRunnerClient.health_check` emits ``logger.error(..., extra={
+    "component_id": ...})`` — the record still hits the log record at
+    ERROR level (so ``-v`` and log processors see it correctly) but the
+    display's ``_LogSink`` routes it to the component tail."""
+    from unittest.mock import MagicMock
+
+    import grpc
+
+    from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient
+
+    client = GrpcRunnerClient("localhost:50051")
+    client.channel = MagicMock()
+    client.stub = MagicMock()
+
+    class _FakeRpcError(grpc.RpcError):
+        def __str__(self) -> str:
+            return "UNAVAILABLE: socket closed"
+
+    client.stub.HealthCheck.side_effect = _FakeRpcError()
+
+    caplog_records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            if "Health check failed" in record.getMessage():
+                caplog_records.append(record)
+
+    handler = _Capture(level=logging.DEBUG)
+    logging.getLogger("tolokaforge.core.shared_stack_runtime").addHandler(handler)
+    try:
+        result = client.health_check()
+    finally:
+        logging.getLogger("tolokaforge.core.shared_stack_runtime").removeHandler(handler)
+
+    assert result is False
+    assert len(caplog_records) == 1
+    record = caplog_records[0]
+    assert record.levelno == logging.ERROR
+    assert getattr(record, "component_id", None) == "engine/grpc.client/runner"
+
+
+# ---------------------------------------------------------------------------
 # Boot-log helpers — filter predicate + tail renderer for the startup widget
 # ---------------------------------------------------------------------------
 

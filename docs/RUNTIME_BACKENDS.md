@@ -329,12 +329,12 @@ class MyBackend:
 Guidelines:
 
 - **One row per `id`.** Reuse the same id string on every update — the panel keys on it and updates the row in place. Per-attempt polling loops fire `component_status_changed` with a fresh `detail` string; no log line scrolls.
-- **Downgrade retry chatter to DEBUG.** Per-attempt `logger.info` calls become redundant once the panel is reflecting the retry state. Keep the DEBUG records for `-v` diagnosis.
-- **Use `component_log_appended` for the failure tail.** Records land in a per-component ring, surface beneath the row only while unhealthy, and never scroll above the panel.
+- **Tag existing `logger.*` calls with `extra={"component_id": ...}`.** This is the generic escape hatch — any subsystem that already emits log records (including WARNING / ERROR ones) can opt into the component-tail visualisation by adding the tag. `_LogSink` inspects `record.component_id` and routes tagged records to the component's tail buffer instead of the general ring + `print_above` channel. The log record keeps its real level (external log processors, `-v` inspection, post-mortem artefacts all see it correctly); only the panel-side visualisation is switched.
+- **Use `component_log_appended` for records not already on the `logging` bus.** Direct-Python events (probe outcomes, correlation ids from a third-party SDK) that never went through `logger.*` can be pushed straight into the tail via the event method.
 - **Namespace by ownership.** `engine/…` for run-level infrastructure; `trial/<trial_id>/…` for per-trial substrate; `worker/<n>/…` for future worker-thread components. Any transport-native namespace (e.g. `k8s/<pod-name>`) is up to the reporter.
 - **`events=None` is legal.** Backends constructed outside the orchestrator (tests, scripts) fall through to `_NULL_EVENTS` and behave as pre-M11.2 — no events, no reporting overhead.
 
-The reference wiring lives in `tolokaforge/core/shared_stack_runtime.py`'s `GrpcRunnerClient.connect()`: it reports the retry loop as one `engine/grpc.client/runner` row that transitions `starting → healthy` (or `starting → unhealthy` on timeout), with the per-attempt DEBUG records available via `-v`. Legacy callers that only fire `phase_changed(services=[…])` populate the widget via the adapter shim in `tolokaforge/dx/live_panel.py:_service_to_component`.
+The reference wiring lives in `tolokaforge/core/shared_stack_runtime.py`. `GrpcRunnerClient.connect()` reports the retry loop as one `engine/grpc.client/runner` row that transitions `starting → healthy` (or `starting → unhealthy` on timeout). Every `logger.*` call in the retry loop and `health_check()` carries `extra={"component_id": "engine/grpc.client/runner"}`, so `_LogSink` compacts the per-attempt ERROR / INFO records into the tail beneath that row instead of scrolling them above the panel. Legacy callers that only fire `phase_changed(services=[…])` populate the widget via the adapter shim in `tolokaforge/dx/live_panel.py:_service_to_component`.
 
 ## Teardown + cleanup
 

@@ -108,7 +108,17 @@ _COMPONENT_PHASE_STYLES: dict[str, str] = {
 """Rich theme token per phase. Themes live in :mod:`tolokaforge.dx._display`."""
 
 _UNHEALTHY_PHASES = frozenset({"degraded", "unhealthy", "dead"})
-"""Phases that trigger auto-expansion of the component's log tail."""
+"""Phases that decisively indicate a component is in trouble. Used by
+:meth:`LiveRunDisplay._enter_interactive_mode` and by the layout's
+mid-run resurfacing rule for the Components widget."""
+
+_STABLE_PHASES = frozenset({"healthy", "stopped"})
+"""Phases where the component is in a steady state. When the phase is
+here AND no failure log entries are attached, the tail stays collapsed;
+outside of it (``pending`` / ``starting`` / ``degraded`` / ``unhealthy``
+/ ``dead``) any tail entries expand beneath the row. This is what makes
+a retry-in-progress component surface its recent errors without waiting
+for the outer retry to give up."""
 
 
 def _now() -> datetime:
@@ -122,12 +132,26 @@ def _now() -> datetime:
 class _LogSink(logging.Handler):
     """Root-logger handler installed for the lifetime of :class:`LiveRunDisplay`.
 
-    Every record is appended to :attr:`buffer` (a bounded ring); records
-    at ``WARNING`` or above are additionally routed to the caller's
-    ``print_above`` callback so Rich Live can render them above the panel
-    without destabilising its cursor math. INFO/DEBUG records are
-    swallowed for on-panel display, preventing the Docker-boot log wall
-    from scrolling the Live region off-screen.
+    Three routing paths, chosen per-record:
+
+    1. **Component-tagged records** — ``record.component_id`` is set (via
+       ``extra={"component_id": ...}`` at the emitter, or an explicit
+       ``LogRecord.component_id`` assignment). Routed to the display's
+       :meth:`component_log_appended` handler so the record lands in that
+       component's bounded tail buffer, rendered beneath the component's
+       row in the Components widget when the widget expands it. **Does
+       not** append to the general ring, **does not** ``print_above`` —
+       component chatter never scrolls over the panel regardless of level.
+       This is the generic escape hatch: any subsystem that owns a
+       monitored component can tag its records and get a compact
+       visualisation for free, at the natural log level.
+    2. **Global WARNING+ records** — ``print_above`` renders them above
+       the Live panel via the Live-owned console. Kept for records that
+       aren't tied to any component (root-level errors, unclassified
+       failures).
+    3. **Everything else** — appended to the general 500-entry ring
+       (:attr:`buffer`) for the per-trial log-view widget and post-mortem
+       introspection; not rendered above the panel.
 
     Historical note: an earlier version wrote WARNING+ directly to the
     stream captured before Rich patched ``sys.stderr``. That bypasses
@@ -144,12 +168,14 @@ class _LogSink(logging.Handler):
         print_above: Callable[[str], None],
         formatter: logging.Formatter | None,
         buffer: deque[logging.LogRecord],
+        route_component_log: Callable[[str, str, str, float], None] | None = None,
     ) -> None:
         super().__init__()
         self._print_above = print_above
         if formatter is not None:
             self.setFormatter(formatter)
         self.buffer = buffer
+        self._route_component_log = route_component_log
 
     def emit(self, record: logging.LogRecord) -> None:
         # Stamp the active trial identity so the per-trial log view can filter,
@@ -159,6 +185,25 @@ class _LogSink(logging.Handler):
             ctx_trial_id = TRIAL_ID_CTXVAR.get()
             if ctx_trial_id is not None:
                 record.trial_id = ctx_trial_id  # type: ignore[attr-defined]
+
+        # Component-tagged records take a separate path: they populate
+        # the component's tail buffer instead of the general ring, and
+        # they NEVER print_above regardless of level — the whole point of
+        # the tag is to keep the noise compacted under the component's
+        # row rather than scrolling above the panel.
+        component_id = getattr(record, "component_id", None)
+        if component_id is not None and self._route_component_log is not None:
+            try:
+                self._route_component_log(
+                    component_id,
+                    record.levelname,
+                    record.getMessage(),
+                    record.created,
+                )
+            except Exception:  # noqa: BLE001 — handlers must never raise past logging
+                self.handleError(record)
+            return
+
         self.buffer.append(record)
         if record.levelno < logging.WARNING:
             return
@@ -594,6 +639,24 @@ def _map_docker_status_to_component_phase(docker_status: str, run_phase: str) ->
     return "pending"
 
 
+def _component_tail_visible(
+    component: ComponentSnapshot,
+    log_buffers: dict[str, deque[tuple[float, str, str]]],
+) -> bool:
+    """Should the component's log tail render beneath its row?
+
+    Tail expands whenever the buffer has entries AND the component is
+    NOT in a stable phase (``healthy`` / ``stopped``). Rationale: a
+    ``starting`` component that's already logged retry errors is worth
+    showing NOW, not after the outer retry gives up. A stable healthy
+    component with historical log entries stays one compact line.
+    """
+    tail = log_buffers.get(component["id"])
+    if not tail:
+        return False
+    return component["phase"] not in _STABLE_PHASES
+
+
 def _components_desired_height(
     components: dict[str, ComponentSnapshot],
     log_buffers: dict[str, deque[tuple[float, str, str]]],
@@ -608,7 +671,7 @@ def _components_desired_height(
         return 0
     row_count = len(components)
     for comp in components.values():
-        if comp["phase"] in _UNHEALTHY_PHASES:
+        if _component_tail_visible(comp, log_buffers):
             tail = log_buffers.get(comp["id"])
             if tail:
                 row_count += min(len(tail), _COMPONENT_TAIL_MAX_LINES)
@@ -649,14 +712,13 @@ def _render_components_table(
         detail = component.get("detail") or ""
         line = f"  {icon}  {component['id']:<{id_w}}  {phase:<{phase_w}}  {detail}".rstrip()
         text.append(line + "\n", style=style)
-        if phase in _UNHEALTHY_PHASES:
-            tail = log_buffers.get(component["id"])
-            if tail:
-                for _ts, level, message in list(tail)[-_COMPONENT_TAIL_MAX_LINES:]:
-                    text.append(
-                        f"    └─ [{level}] {message}\n",
-                        style="muted",
-                    )
+        if _component_tail_visible(component, log_buffers):
+            tail = log_buffers[component["id"]]
+            for _ts, level, message in list(tail)[-_COMPONENT_TAIL_MAX_LINES:]:
+                text.append(
+                    f"    └─ [{level}] {message}\n",
+                    style="muted",
+                )
     # Strip the trailing newline so the Text hugs its Panel border.
     if text.plain.endswith("\n"):
         text.right_crop(1)
@@ -1174,6 +1236,7 @@ class LiveRunDisplay:
                 print_above=_print_above,
                 formatter=handler.formatter,
                 buffer=self._log_buffer,
+                route_component_log=self._route_component_log,
             )
             sink.setLevel(handler.level)
             setattr(sink, _TOLOKAFORGE_ROOT_HANDLER_SENTINEL, True)
@@ -1243,6 +1306,7 @@ class LiveRunDisplay:
                 print_above=print_above,
                 formatter=None,
                 buffer=self._log_buffer,
+                route_component_log=self._route_component_log,
             )
             logger_obj.addHandler(sink)
             self._added_child_sinks.append((logger_obj, sink))
@@ -1311,8 +1375,10 @@ class LiveRunDisplay:
         """Attach a log line to the component's tail buffer.
 
         Kept out of the panel's general log ring so component chatter never
-        scrolls above the panel. Rendered only while the component is in
-        an unhealthy phase.
+        scrolls above the panel. Rendered beneath the component's row
+        whenever the buffer is non-empty and the component is not in a
+        stable phase (``healthy`` / ``stopped``) — see
+        :func:`_component_tail_visible`.
         """
         with self._lock:
             buf = self._component_log_buffers.setdefault(
@@ -1320,9 +1386,11 @@ class LiveRunDisplay:
                 deque(maxlen=_COMPONENT_TAIL_BUFFER_MAX),
             )
             buf.append((ts, level, message))
-            # Only refresh if the tail is currently visible (unhealthy row).
+            # Refresh only if the tail is currently visible for this
+            # component; otherwise the buffer grows silently for later
+            # inspection.
             snap = self._components.get(component_id)
-            if snap is not None and snap["phase"] in _UNHEALTHY_PHASES:
+            if snap is not None and _component_tail_visible(snap, self._component_log_buffers):
                 self._refresh_live_locked()
 
     def component_unregistered(self, *, component_id: str) -> None:
@@ -1331,6 +1399,21 @@ class LiveRunDisplay:
             self._components.pop(component_id, None)
             self._component_log_buffers.pop(component_id, None)
             self._refresh_live_locked()
+
+    def _route_component_log(self, component_id: str, level: str, message: str, ts: float) -> None:
+        """Callback wired into :class:`_LogSink` so any ``logging`` record
+        tagged with ``extra={"component_id": ...}`` lands in that
+        component's tail buffer instead of scrolling above the panel.
+
+        The tag is the opt-in mechanism for any subsystem that owns a
+        monitored component: gRPC clients, Docker service startup,
+        HealthProbe retry loops, future k8s / SSH reporters. Emitters
+        keep their log records at the natural level (WARNING / ERROR
+        etc.) — the sink handles the visualisation switch.
+        """
+        # Delegate to the public event handler so the two ingestion paths
+        # (Protocol event + logging-record routing) share one code path.
+        self.component_log_appended(component_id=component_id, level=level, message=message, ts=ts)
 
     def _ingest_component_locked(self, snapshot: ComponentSnapshot) -> None:
         """Upsert one snapshot into :attr:`_components`. Caller MUST hold the lock.

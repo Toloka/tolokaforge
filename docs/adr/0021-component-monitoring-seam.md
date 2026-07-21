@@ -50,7 +50,9 @@ def component_unregistered(self, *, component_id: str) -> None: ...
 
 `component_status_changed` on an already-known id updates the same row in place. Per-attempt polling loops fire it repeatedly with the same id and a fresh `detail` — the panel's row updates, no log line scrolls.
 
-`component_log_appended` is a **distinct channel** from the panel's global `_LogSink` ring buffer. Records land in a small per-component ring bounded at `_COMPONENT_TAIL_BUFFER_MAX = 32` (rendered at most `_COMPONENT_TAIL_MAX_LINES = 5`) and surface only beneath the row of a component in an unhealthy phase. This is what stops WARNING-level retry chatter from scrolling above the panel.
+`component_log_appended` is a **distinct channel** from the panel's global `_LogSink` ring buffer. Records land in a small per-component ring bounded at `_COMPONENT_TAIL_BUFFER_MAX = 32` (rendered at most `_COMPONENT_TAIL_MAX_LINES = 5`) and surface beneath the component's row whenever the buffer is non-empty and the phase is NOT `healthy` / `stopped`. This is what stops WARNING-level retry chatter from scrolling above the panel.
+
+**The generic escape hatch for any startup subsystem** — an emitter can tag its own `logger.*` calls with `extra={"component_id": ...}` and `_LogSink` routes them to the tagged component's tail automatically, at the natural log level. No downgrade to DEBUG, no bespoke wiring per subsystem. The gRPC runner-connect loop and `GrpcRunnerClient.health_check` are the reference users; docker-service startup, HealthProbe retries, and any future k8s / SSH reporter can opt in the same way.
 
 ### Namespace convention
 

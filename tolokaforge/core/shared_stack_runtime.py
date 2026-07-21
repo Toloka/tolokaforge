@@ -232,19 +232,23 @@ class GrpcRunnerClient:
                     )
                     return
             except grpc.RpcError as e:
-                logger.debug(f"Health check attempt {attempt} failed: {e}")
-                self._events.component_log_appended(
-                    component_id=component_id,
-                    level="DEBUG",
-                    message=f"attempt {attempt}: {e}",
-                    ts=time.time(),
+                # Tagged with component_id so ``_LogSink`` routes the record
+                # into the component's tail widget instead of print_above'ing
+                # over the panel. The log level stays at its natural value —
+                # signal preserved, visualisation moved to the right channel.
+                logger.warning(
+                    f"Health check attempt {attempt} failed: {e}",
+                    extra={"component_id": component_id},
                 )
 
-            # Per-attempt progress: updates the SAME row's ``detail`` in place —
-            # no new log line scrolls. Downgraded from the pre-M11.2 INFO chatter.
-            logger.debug(
+            # Per-attempt progress: updates the SAME row's ``detail`` in place.
+            # The INFO line is tagged with component_id so ``_LogSink`` routes
+            # it to the component tail rather than the general ring / above-panel
+            # channel.
+            logger.info(
                 f"Waiting for Runner service (attempt {attempt}, "
-                f"elapsed={elapsed:.1f}s/{timeout}s)"
+                f"elapsed={elapsed:.1f}s/{timeout}s)",
+                extra={"component_id": component_id},
             )
             self._events.component_status_changed(
                 snapshot=self._component_snapshot(
@@ -692,13 +696,13 @@ class GrpcRunnerClient:
         Returns:
             True if service is healthy
 
-        A failed probe returns ``False`` and logs at ``DEBUG`` — this
-        method is called from both the transient startup retry loop in
-        :meth:`connect` and post-startup verification paths, and the
-        transient case would emit one ERROR line per attempt. Callers
-        that need to escalate a real failure log at their own level on
-        the returned ``False`` (see ``Orchestrator.run`` which emits an
-        ``INFO`` line naming the outcome).
+        A failed probe logs at ``ERROR`` — the record's real level, so
+        ``-v`` inspection, external log processors, and post-mortem
+        artifacts see it correctly. The log record is tagged with
+        ``extra={"component_id": ...}``; ``_LogSink`` recognises that tag
+        and routes the record into the component's tail widget instead of
+        ``print_above``-ing over the Rich panel. Visualisation stays
+        compact; signal is preserved.
         """
         if not self.stub:
             self.connect()
@@ -707,7 +711,10 @@ class GrpcRunnerClient:
             response = self.stub.HealthCheck(runner_pb2.HealthCheckRequest())
             return response.status == "healthy"
         except grpc.RpcError as e:
-            logger.debug(f"Health check failed: {e}")
+            logger.error(
+                f"Health check failed: {e}",
+                extra={"component_id": build_component_id("engine", "grpc.client", "runner")},
+            )
             return False
 
     def health_check_detailed(self) -> dict:
