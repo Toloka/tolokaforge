@@ -107,18 +107,20 @@ except ImportError:
         unstable_fields: list[str] | None = None,
         *,
         canonicalize_numbers: bool = True,
-        normalize_numeric_strings: bool = False,
+        numeric_string_fields: list[str] | None = None,
     ) -> str:
         """Compute a stable SHA-256 hash of the state dictionary.
 
         Standalone fallback — mirrors tolokaforge.core.hash.compute_stable_hash,
-        including the two-tier numeric canonicalization (numeric TYPES always;
-        numeric-looking STRINGS only when ``normalize_numeric_strings``).
-        Keep the two in sync.
+        including the two-tier numeric canonicalization: numeric TYPES always
+        fold; numeric-looking STRINGS fold only under a record key listed in
+        ``numeric_string_fields``. Keep the two in sync.
         """
         from decimal import Decimal, InvalidOperation
 
-        def _canon(v: Any) -> Any:
+        string_fields = frozenset(numeric_string_fields) if numeric_string_fields else None
+
+        def _canon(v: Any, normalize_strings: bool) -> Any:
             if isinstance(v, bool):
                 return v
             if isinstance(v, (int, float, Decimal)):
@@ -128,7 +130,7 @@ except ImportError:
                 except (InvalidOperation, ValueError):
                     return v
             if isinstance(v, str):
-                if normalize_numeric_strings:
+                if normalize_strings:
                     s = v.strip()
                     body = s[1:] if s[:1] in ("+", "-") else s
                     ip, dot, fp = body.partition(".")
@@ -151,14 +153,17 @@ except ImportError:
                     return "\x00tf-esc:" + v
             return v
 
-        def _walk(data: Any) -> Any:
+        def _walk(data: Any, normalize_strings: bool = False) -> Any:
             if isinstance(data, dict):
-                return {k: _walk(x) for k, x in data.items()}
+                return {
+                    k: _walk(x, string_fields is not None and k in string_fields)
+                    for k, x in data.items()
+                }
             if isinstance(data, list):
-                return [_walk(x) for x in data]
+                return [_walk(x, normalize_strings) for x in data]
             if isinstance(data, tuple):
-                return tuple(_walk(x) for x in data)
-            return _canon(data)
+                return tuple(_walk(x, normalize_strings) for x in data)
+            return _canon(data, normalize_strings)
 
         if unstable_fields:
             state = filter_unstable_fields(state, unstable_fields)
@@ -493,11 +498,11 @@ class TrialState(BaseModel):
         """Compute hash of full state (including unstable fields)."""
         return compute_stable_hash(self.data)
 
-    def compute_stable_hash(self, *, normalize_numeric_strings: bool = False) -> str:
+    def compute_stable_hash(self, *, numeric_string_fields: list[str] | None = None) -> str:
         """Compute hash of stable state (unstable fields filtered)."""
         unstable_list = self.get_unstable_field_list()
         return compute_stable_hash(
-            self.data, unstable_list, normalize_numeric_strings=normalize_numeric_strings
+            self.data, unstable_list, numeric_string_fields=numeric_string_fields
         )
 
     def cleanup(self):
@@ -766,12 +771,15 @@ async def get_stable_state(trial_id: str) -> dict[str, Any]:
 
 
 @app.get("/trials/{trial_id}/state/hash")
-async def get_state_hash(trial_id: str, normalize_numeric_strings: bool = False) -> dict[str, Any]:
+async def get_state_hash(
+    trial_id: str,
+    numeric_string_fields: list[str] | None = Query(default=None),
+) -> dict[str, Any]:
     """Get SHA-256 hash of the stable state.
 
-    ``normalize_numeric_strings`` is the opt-in per-task grading flag that
-    folds numeric-looking strings ("130.00" == "130.0") — see
-    core/hash.py canonical_number.
+    ``numeric_string_fields`` is the opt-in per-field grading list: record
+    field names whose numeric-looking string values fold ("130.00" == "130.0")
+    — see core/hash.py compute_stable_hash.
     """
     try:
         trial = db_service.get_trial(trial_id)
@@ -780,9 +788,7 @@ async def get_state_hash(trial_id: str, normalize_numeric_strings: bool = False)
 
     with trial._lock:
         return {
-            "stable_hash": trial.compute_stable_hash(
-                normalize_numeric_strings=normalize_numeric_strings
-            ),
+            "stable_hash": trial.compute_stable_hash(numeric_string_fields=numeric_string_fields),
             "full_hash": trial.compute_full_hash(),
             "version": trial.version,
         }

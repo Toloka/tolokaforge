@@ -1036,7 +1036,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     trial_id,
                     trial_context,
                     golden_actions,
-                    normalize_numeric_strings=state_checks_config.numeric_string_normalization,
+                    numeric_string_fields=state_checks_config.numeric_string_fields,
                 )
                 components.hash_match = hash_result.hash_match
                 components.hash_score = hash_result.hash_score
@@ -1498,7 +1498,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         trial_context: TrialContextRuntime,
         golden_actions: list[GoldenAction],
         *,
-        normalize_numeric_strings: bool = False,
+        numeric_string_fields: list[str] | None = None,
     ) -> HashGradingResult:
         """
         Execute hash-based grading algorithm.
@@ -1541,7 +1541,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 raise
 
         trial_hash = await self.db_client.get_stable_hash(
-            trial_id, normalize_numeric_strings=normalize_numeric_strings
+            trial_id, numeric_string_fields=numeric_string_fields
         )
         logger.debug(f"GradeTrial: Trial hash = {trial_hash[:16]}...")
 
@@ -1638,7 +1638,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # 6. Get golden stable hash
         # get_stable_hash returns the hash string directly
         golden_hash = await self.db_client.get_stable_hash(
-            trial_id, normalize_numeric_strings=normalize_numeric_strings
+            trial_id, numeric_string_fields=numeric_string_fields
         )
         logger.debug(f"GradeTrial: Golden hash = {golden_hash[:16]}...")
 

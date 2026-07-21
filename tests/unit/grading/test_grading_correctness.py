@@ -891,12 +891,16 @@ class TestNumericCanonicalization:
         assert consistent_hash(to_hashable(72)) == consistent_hash(to_hashable(Decimal("72.00")))
 
     def test_numeric_strings_do_not_fold_by_default(self):
-        """Numeric-looking STRINGS stay distinct without the per-task flag."""
+        """Numeric-looking STRINGS stay distinct unless a field opts them in."""
         assert consistent_hash(to_hashable("130.00")) != consistent_hash(to_hashable("130.0"))
         assert consistent_hash(to_hashable("72.00")) != consistent_hash(to_hashable(72))
 
-    def test_numeric_strings_fold_with_flag(self):
-        """canonical_number(normalize_strings=True) folds decimal string formats."""
+    def test_numeric_strings_fold_when_normalized(self):
+        """canonical_number(normalize_strings=True) folds decimal string formats.
+
+        This value-level flag is what the per-field ``numeric_string_fields``
+        set turns on for a listed field's values.
+        """
         from tolokaforge.core.hash import canonical_number
 
         assert canonical_number("130.00", normalize_strings=True) == canonical_number(

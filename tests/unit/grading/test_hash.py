@@ -149,9 +149,10 @@ class TestComputeStableHashNumericCanonicalization:
 
     Tier 1 (default): numerically-equal NUMERIC-TYPE values hash identically
     (72 == 72.0 == Decimal("72.00")) — the type declares number-ness, generic
-    and safe. Tier 2 (opt-in ``normalize_numeric_strings``): numeric-looking
-    STRINGS also fold ("130.00" == "130.0") — per-task flag because exact
-    string representation can carry meaning (versions, codes).
+    and safe. Tier 2 (opt-in ``numeric_string_fields``): numeric-looking
+    STRINGS also fold ("130.00" == "130.0") but ONLY under a record key listed
+    in that per-field set, because exact string representation can carry meaning
+    (versions, codes).
     """
 
     # ---- tier 1: numeric types, default behavior ----
@@ -184,48 +185,64 @@ class TestComputeStableHashNumericCanonicalization:
             b, canonicalize_numbers=False
         )
 
-    # ---- tier 2: numeric strings, behind the per-task flag ----
+    # ---- tier 2: numeric strings, only under a listed field ----
 
-    def test_decimal_string_formats_fold_with_flag(self):
+    def test_decimal_string_formats_fold_for_listed_field(self):
         a = {"cases": [{"id": "C1", "refund": "130.00"}]}
         b = {"cases": [{"id": "C1", "refund": "130.0"}]}
-        assert compute_stable_hash(a, normalize_numeric_strings=True) == compute_stable_hash(
-            b, normalize_numeric_strings=True
+        assert compute_stable_hash(a, numeric_string_fields=["refund"]) == compute_stable_hash(
+            b, numeric_string_fields=["refund"]
         )
 
-    def test_int_vs_decimal_string_folds_with_flag(self):
+    def test_int_vs_decimal_string_folds_for_listed_field(self):
         a = {"cases": [{"id": "C1", "qty": 72}]}
         b = {"cases": [{"id": "C1", "qty": "72.00"}]}
-        assert compute_stable_hash(a, normalize_numeric_strings=True) == compute_stable_hash(
-            b, normalize_numeric_strings=True
+        assert compute_stable_hash(a, numeric_string_fields=["qty"]) == compute_stable_hash(
+            b, numeric_string_fields=["qty"]
         )
 
-    def test_genuine_numeric_difference_differs_even_with_flag(self):
+    def test_unlisted_field_does_NOT_fold_even_with_a_sibling_listed(self):
+        # The whole point of per-field: a version string in the same record as a
+        # listed money field must NOT fold just because the money field is listed.
+        a = {"cases": [{"refund": "130.00", "version": "1.10"}]}
+        b = {"cases": [{"refund": "130.0", "version": "1.1"}]}
+        # "version" is not listed → its "1.10" vs "1.1" difference is preserved,
+        # so the two states stay distinct even though "refund" folds.
+        assert compute_stable_hash(a, numeric_string_fields=["refund"]) != compute_stable_hash(
+            b, numeric_string_fields=["refund"]
+        )
+        # Listing "version" too collapses both, confirming the difference was the
+        # version field alone.
+        assert compute_stable_hash(
+            a, numeric_string_fields=["refund", "version"]
+        ) == compute_stable_hash(b, numeric_string_fields=["refund", "version"])
+
+    def test_genuine_numeric_difference_differs_even_when_listed(self):
         a = {"cases": [{"id": "C1", "refund": "790.00"}]}
         b = {"cases": [{"id": "C1", "refund": "0.0"}]}
-        assert compute_stable_hash(a, normalize_numeric_strings=True) != compute_stable_hash(
-            b, normalize_numeric_strings=True
+        assert compute_stable_hash(a, numeric_string_fields=["refund"]) != compute_stable_hash(
+            b, numeric_string_fields=["refund"]
         )
 
-    def test_leading_zero_identifier_not_collapsed_even_with_flag(self):
+    def test_leading_zero_identifier_not_collapsed_even_when_listed(self):
         a = {"cases": [{"code": "00123"}]}
         b = {"cases": [{"code": "123"}]}
-        assert compute_stable_hash(a, normalize_numeric_strings=True) != compute_stable_hash(
-            b, normalize_numeric_strings=True
+        assert compute_stable_hash(a, numeric_string_fields=["code"]) != compute_stable_hash(
+            b, numeric_string_fields=["code"]
         )
 
-    def test_negative_zero_collapses_to_zero_with_flag(self):
+    def test_negative_zero_collapses_to_zero_when_listed(self):
         assert canonical_number("-0.00", normalize_strings=True) == canonical_number(0)
         assert compute_stable_hash(
-            {"t": [{"amt": "-0.00"}]}, normalize_numeric_strings=True
-        ) == compute_stable_hash({"t": [{"amt": "0.0"}]}, normalize_numeric_strings=True)
+            {"t": [{"amt": "-0.00"}]}, numeric_string_fields=["amt"]
+        ) == compute_stable_hash({"t": [{"amt": "0.0"}]}, numeric_string_fields=["amt"])
 
-    # ---- guards independent of the flag ----
+    # ---- guards independent of the field set ----
 
     def test_tagged_string_does_not_collide_with_number(self):
         # A crafted string byte-equal to a numeric token must not equal the number.
         crafted = "\x00tf-num:130"
         assert canonical_number(crafted, normalize_strings=True) != canonical_number(130)
         assert compute_stable_hash(
-            {"t": [{"amt": 130}]}, normalize_numeric_strings=True
-        ) != compute_stable_hash({"t": [{"amt": crafted}]}, normalize_numeric_strings=True)
+            {"t": [{"amt": 130}]}, numeric_string_fields=["amt"]
+        ) != compute_stable_hash({"t": [{"amt": crafted}]}, numeric_string_fields=["amt"])
