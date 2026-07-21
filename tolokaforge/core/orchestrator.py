@@ -1440,8 +1440,24 @@ class Orchestrator:
                         "Preparing Docker engine images (task-declared-stack mode: "
                         "images built + aliased, built-in containers not started)..."
                     )
+                    # Fire the same phase_changed pair the shared branch fires,
+                    # so the Components widget populates during the (long)
+                    # image-build window instead of staying empty until the
+                    # first trial provisions. Snapshots carry declared status
+                    # only — the engine containers themselves are never
+                    # started in task-declared-stack mode.
+                    self._events.phase_changed(
+                        phase="starting_services",
+                        detail="building engine images",
+                        services=_declared_engine_service_snapshots(service_stack),
+                    )
                     service_stack.build_and_prepare()
                     self._ensure_engine_image_local_aliases(service_stack)
+                    self._events.phase_changed(
+                        phase="services_ready",
+                        detail="engine images ready (per-trial stacks own runtime)",
+                        services=_declared_engine_service_snapshots(service_stack),
+                    )
                     runner_address = None
                     self.logger.info("EngineStack prepared (images ready, no containers started)")
                 else:

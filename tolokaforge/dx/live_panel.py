@@ -207,6 +207,15 @@ class _LogSink(logging.Handler):
         self.buffer.append(record)
         if record.levelno < logging.WARNING:
             return
+        # Trial-scoped records surface via the focused pane's ``l`` per-trial
+        # log-tail widget (which filters ``_log_buffer`` by ``record.trial_id``);
+        # keep them out of the ``print_above`` channel so a chatty trial —
+        # tool errors, retry warnings — can't destabilise the panel with
+        # scroll. Records without a trial id (root-level failures, unclassified
+        # noise) still print above at WARNING+ so real orchestrator-level
+        # problems remain immediately visible.
+        if getattr(record, "trial_id", None) is not None:
+            return
         try:
             self._print_above(self.format(record))
         except Exception:  # noqa: BLE001 — handlers must never raise past logging
@@ -793,18 +802,21 @@ def _render_boot_log_tail(
 def _render_containers_table(containers: list[ContainerSnapshot]) -> Table:
     """Compact per-container table for the focused-trial infra sub-panel.
 
-    Columns: container name / health glyph / port summary. State + health
-    combine into a single glyph so the sub-panel stays short enough for
-    the right pane's limited width.
+    Columns: service name / health glyph / port summary. Prefers the
+    compose ``service`` field (short — ``app-db``, ``runner``) over the
+    docker container ``name`` (long — ``tolokaforge-endpoint_add_0-532m7q73-app-db-1``)
+    so the right pane's narrow column stays readable. Falls back to the
+    docker name only when the reporter didn't populate ``service``.
     """
     table = Table(show_header=False, expand=True, pad_edge=False, box=None)
-    table.add_column("name", ratio=3, no_wrap=True)
+    table.add_column("service", ratio=3, no_wrap=True)
     table.add_column("", width=1, no_wrap=True)
     table.add_column("ports", ratio=3, no_wrap=True)
     for container in containers:
         health = container.get("health") or container.get("state", "unknown")
+        display_name = container.get("service") or container.get("name", "")
         table.add_row(
-            container.get("name", ""),
+            display_name,
             _health_glyph(health),
             _summarise_ports(container.get("ports", {})),
         )

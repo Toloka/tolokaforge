@@ -1605,6 +1605,59 @@ def test_tail_hidden_for_healthy_component_even_with_history() -> None:
     )
 
 
+def test_log_sink_skips_print_above_for_trial_scoped_records() -> None:
+    """A WARNING+ log record tagged with a ``trial_id`` (via
+    ``TRIAL_ID_CTXVAR`` or explicit ``extra={"trial_id": ...}``) lands in
+    the general ring buffer — where the ``l`` per-trial log-tail widget
+    picks it up — but stays OUT of the ``print_above`` channel. Prevents
+    a chatty trial (tool errors, retry warnings) from destabilising the
+    panel with scroll."""
+    from tolokaforge.dx.live_panel import _LogSink
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    printed_above: list[str] = []
+    sink = _LogSink(
+        print_above=lambda s: printed_above.append(s),
+        formatter=None,
+        buffer=display._log_buffer,
+        route_component_log=display._route_component_log,
+    )
+
+    trial_warning = logging.getLogger("test").makeRecord(
+        "test", logging.WARNING, "test.py", 1, "tool failed", args=(), exc_info=None
+    )
+    trial_warning.trial_id = "endpoint_add:0"  # type: ignore[attr-defined]
+    sink.emit(trial_warning)
+
+    # Reaches the ring (per-trial log-tail widget renders from here)…
+    assert trial_warning in display._log_buffer
+    # …but never above the panel.
+    assert printed_above == []
+
+
+def test_log_sink_still_prints_above_untagged_warnings() -> None:
+    """Root-level WARNING+ records (no trial_id, no component_id) keep
+    their pre-existing pathway: append to ring + print_above. That way
+    genuine orchestrator-level failures stay immediately visible."""
+    from tolokaforge.dx.live_panel import _LogSink
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    printed_above: list[str] = []
+    sink = _LogSink(
+        print_above=lambda s: printed_above.append(s),
+        formatter=None,
+        buffer=display._log_buffer,
+        route_component_log=display._route_component_log,
+    )
+    root_warning = logging.getLogger("test").makeRecord(
+        "test", logging.ERROR, "test.py", 1, "unclassified", args=(), exc_info=None
+    )
+    sink.emit(root_warning)
+
+    assert root_warning in display._log_buffer
+    assert printed_above == ["unclassified"]
+
+
 def test_grpc_runner_client_error_log_tagged_with_component_id() -> None:
     """`GrpcRunnerClient.health_check` emits ``logger.error(..., extra={
     "component_id": ...})`` — the record still hits the log record at
