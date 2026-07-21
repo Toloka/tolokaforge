@@ -108,8 +108,8 @@ def test_convert_validate_exits_nonzero_for_invalid_output(runner, tmp_path, mon
         ],
     )
 
-    assert result.exit_code == 1, result.output
-    assert "Validation: 0 valid, 2 invalid" in result.output
+    assert result.exit_code == 1, result.stderr
+    assert "Validation: 0 valid, 2 invalid" in result.stderr
 
 
 def test_convert_works_without_shared_resources(runner, tmp_path, monkeypatch):
