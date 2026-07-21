@@ -18,28 +18,57 @@ ToHashable = Union[str, int, float, dict[str, "ToHashable"], list["ToHashable"],
 Hashable = Union[str, int, float, tuple["Hashable"], tuple[tuple[str, "Hashable"]]]
 
 
-def to_hashable(item: ToHashable) -> Hashable:
+def to_hashable(
+    item: ToHashable,
+    string_fields: frozenset[str] | None = None,
+    *,
+    _normalize_strings: bool = False,
+) -> Hashable:
     """Convert item to hashable representation (tau-bench compatible).
 
     Scalar values pass through :func:`canonical_number` so numerically-equal
-    representations (``"130.00"`` / ``"130.0"`` / ``130``) hash identically and
-    a pure decimal-formatting difference is not graded as a state change.
+    NUMERIC-TYPE representations (``130`` / ``130.0`` / ``Decimal("130.00")``)
+    hash identically and a pure formatting difference is not graded as a state
+    change.
+
+    Numeric-looking STRINGS (``"130.00"`` == ``"130.0"``) fold only for a value
+    sitting under a record key named in ``string_fields`` — the per-field opt-in
+    that mirrors :func:`tolokaforge.core.hash.compute_stable_hash`. Key-aware
+    exactly like ``_canonicalize_numbers``: ``_normalize_strings`` carries the
+    per-key decision down through enclosing list(s)/set(s); a nested dict
+    re-decides per its own keys.
     """
     if isinstance(item, dict):
-        return tuple((key, to_hashable(value)) for key, value in sorted(item.items()))
+        return tuple(
+            (
+                key,
+                to_hashable(
+                    value,
+                    string_fields,
+                    _normalize_strings=(string_fields is not None and key in string_fields),
+                ),
+            )
+            for key, value in sorted(item.items())
+        )
     elif isinstance(item, list):
-        return tuple(to_hashable(element) for element in item)
+        return tuple(
+            to_hashable(element, string_fields, _normalize_strings=_normalize_strings)
+            for element in item
+        )
     elif isinstance(item, set):
         # Type-stable sort key: canonicalized scalars can mix bool with tagged
         # numeric/str tokens, which are not mutually orderable under a bare sort.
         return tuple(
             sorted(
-                (to_hashable(element) for element in item),
+                (
+                    to_hashable(element, string_fields, _normalize_strings=_normalize_strings)
+                    for element in item
+                ),
                 key=lambda x: (type(x).__name__, str(x)),
             )
         )
     else:
-        return canonical_number(item)
+        return canonical_number(item, normalize_strings=_normalize_strings)
 
 
 def consistent_hash(value: Hashable) -> str:
@@ -255,6 +284,8 @@ class StateChecker:
         self,
         state: dict[str, Any],
         expected_hash: str,
+        *,
+        numeric_string_fields: list[str] | None = None,
     ) -> tuple[float, str]:
         """
         Check state hash against expected using tau-bench algorithm
@@ -262,13 +293,16 @@ class StateChecker:
         Args:
             state: Final environment state
             expected_hash: Expected SHA256 hash of normalized state
+            numeric_string_fields: Record field names whose numeric-looking
+                string values fold when hashing (per-field opt-in).
 
         Returns:
             (score 0 or 1, reason)
         """
         try:
             # Use tau-bench compatible hashing
-            actual_hash = consistent_hash(to_hashable(state))
+            string_fields = frozenset(numeric_string_fields) if numeric_string_fields else None
+            actual_hash = consistent_hash(to_hashable(state, string_fields))
 
             if actual_hash == expected_hash:
                 return 1.0, "State hash matches (tau-bench algorithm)"
@@ -286,6 +320,8 @@ class StateChecker:
         jsonpath_assertions: list[dict[str, Any]],
         expected_hash: str | None = None,
         hash_weight: float = 0.5,
+        *,
+        numeric_string_fields: list[str] | None = None,
     ) -> tuple[float, str]:
         """
         Grade state with combination of JSONPath and hash checks
@@ -295,6 +331,8 @@ class StateChecker:
             jsonpath_assertions: JSONPath assertions
             expected_hash: Optional expected state hash
             hash_weight: Weight for hash check vs JSONPath
+            numeric_string_fields: Record field names whose numeric-looking
+                string values fold when hashing (per-field opt-in).
 
         Returns:
             (score 0-1, reasons)
@@ -302,7 +340,9 @@ class StateChecker:
         jsonpath_score, jsonpath_reasons = self.check_jsonpaths(state, jsonpath_assertions)
 
         if expected_hash:
-            hash_score, hash_reason = self.check_hash(state, expected_hash)
+            hash_score, hash_reason = self.check_hash(
+                state, expected_hash, numeric_string_fields=numeric_string_fields
+            )
             # Weighted combination
             final_score = (jsonpath_score * (1 - hash_weight)) + (hash_score * hash_weight)
             reasons = jsonpath_reasons + [hash_reason]
@@ -400,6 +440,8 @@ class StateChecker:
         initial_state_path: str,
         mcp_server_path: str,
         task_domain: str,
+        *,
+        numeric_string_fields: list[str] | None = None,
     ) -> str:
         """
         Compute expected hash by executing golden actions on fresh data (tau-bench style).
@@ -415,6 +457,8 @@ class StateChecker:
             initial_state_path: Path to initial state JSON file (relative to task_dir)
             mcp_server_path: Path to MCP server module (relative to task_dir)
             task_domain: Domain name (e.g., "airline", "retail")
+            numeric_string_fields: Record field names whose numeric-looking
+                string values fold when hashing (per-field opt-in).
 
         Returns:
             Expected SHA256 hash of state after executing golden actions
@@ -422,7 +466,8 @@ class StateChecker:
         data = self._execute_golden_actions(
             golden_actions, task_dir, initial_state_path, mcp_server_path, task_domain
         )
-        return consistent_hash(to_hashable(data))
+        string_fields = frozenset(numeric_string_fields) if numeric_string_fields else None
+        return consistent_hash(to_hashable(data, string_fields))
 
     def grade_tau_style(
         self,
@@ -434,6 +479,8 @@ class StateChecker:
         mcp_server_path: str,
         task_domain: str,
         hash_weight: float = 1.0,
+        *,
+        numeric_string_fields: list[str] | None = None,
     ) -> tuple[float, str, dict[str, Any] | None]:
         """
         Grade state using tau-bench style with diff calculation.
@@ -473,8 +520,9 @@ class StateChecker:
         db_state = state.get("db", state.get("agent", state))
 
         # Compute hashes
-        expected_hash = consistent_hash(to_hashable(expected_state))
-        actual_hash = consistent_hash(to_hashable(db_state))
+        string_fields = frozenset(numeric_string_fields) if numeric_string_fields else None
+        expected_hash = consistent_hash(to_hashable(expected_state, string_fields))
+        actual_hash = consistent_hash(to_hashable(db_state, string_fields))
 
         # Calculate diff if states don't match
         diff_result = None

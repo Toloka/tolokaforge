@@ -1250,6 +1250,12 @@ class StateChecksConfig(BaseModel):
     env_assertions: list[EnvAssertion] = Field(default_factory=list)  # NEW
     db_hash_check: bool = False  # NEW - compare final DB hash
     db_probes: list[dict[str, Any]] = Field(default_factory=list)
+    # Opt-in, per-field: record field names whose numeric-looking STRING values
+    # fold ("130.00" == "130.0") when hashing state. Mirrors the runner-side
+    # StateChecksConfig so the same grading.yaml key behaves identically on the
+    # core GradingEngine path (to_hashable) and the runner path
+    # (compute_stable_hash). See core/hash.py compute_stable_hash.
+    numeric_string_fields: list[str] = Field(default_factory=list)
 
 
 class CommunicateInfo(BaseModel):

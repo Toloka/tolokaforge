@@ -12,35 +12,52 @@ Scores are weighted and combined into a final score. See [REFERENCE.md](REFERENC
 
 ## Hash-Based Grading (Tau-Bench Compatible)
 
-Hash grading compares SHA256 of final state against a pre-computed golden hash.
+Hash grading canonicalizes the final state and the golden state, hashes both
+with SHA256, and passes iff the two hashes match. Grading is **engine-vs-engine**:
+the golden hash is (re)computed live by replaying the golden actions, not read
+from a stored literal (see the caveat below).
 
 ### Algorithm
 
+Scalars pass through `canonical_number()` so a pure numeric-representation
+difference is not graded as a state change. Two tiers:
+
+- **Numeric TYPES** (`int` / `float` / `Decimal`) always fold:
+  `72 == 72.0 == Decimal("72.00")`. Generic and safe (the type declares
+  number-ness). On by default.
+- **Numeric-looking STRINGS** (`"130.00" == "130.0"`) fold ONLY for values under
+  a record key listed in `state_checks.numeric_string_fields` (see below).
+  Per-field, because a string that merely looks numeric can carry meaning in its
+  exact form (versions `"1.10"` vs `"1.1"`, codes, zero-padded ids).
+
 ```python
 import hashlib
-from typing import Any, Dict, List, Set, Tuple, Union
+from tolokaforge.core.grading.state_checks import to_hashable, consistent_hash
 
-ToHashable = Union[str, int, float, Dict[str, "ToHashable"], List["ToHashable"], Set["ToHashable"]]
-Hashable = Union[str, int, float, Tuple["Hashable"], Tuple[Tuple[str, "Hashable"]]]
+# to_hashable(item, string_fields=None) sorts dict keys, canonicalizes numbers
+# via canonical_number, and is key-aware for the string tier: a value folds
+# numeric strings only when its immediate record key is in string_fields.
+# consistent_hash(value) = sha256(str(value)).
 
-def to_hashable(item: ToHashable) -> Hashable:
-    """Convert to hashable representation (tau-bench compatible)"""
-    if isinstance(item, dict):
-        return tuple((key, to_hashable(value)) for key, value in sorted(item.items()))
-    elif isinstance(item, list):
-        return tuple(to_hashable(element) for element in item)
-    elif isinstance(item, set):
-        return tuple(sorted(to_hashable(element) for element in item))
-    else:
-        return item
-
-def consistent_hash(value: Hashable) -> str:
-    """Compute SHA256 hash"""
-    return hashlib.sha256(str(value).encode("utf-8")).hexdigest()
-
-# Usage:
+# Usage (types-only folding, the default):
 # golden_hash = consistent_hash(to_hashable(final_state))
+# Usage (also fold numeric strings under the money field):
+# golden_hash = consistent_hash(to_hashable(final_state, frozenset(["custom_refund_amount"])))
 ```
+
+Guards (both tiers): `bool` never folds to `int`; leading-zero ids (`"00123"`)
+are never equated with `"123"`; genuinely different numbers stay different; a
+genuine string that begins with the reserved numeric-token prefix is escaped so
+it cannot masquerade as a number.
+
+> **Hash-algorithm change (recompute stored hashes).** `to_hashable` now applies
+> `canonical_number`, so it produces different digests than the pre-canonicalization
+> version for any numeric-bearing state. Because grading recomputes the golden
+> hash live (golden-action replay via `compute_tau_style_expected_hash`), this is
+> symmetric and safe. But any **externally pre-computed** `expected_state_hash`
+> stored from before this change is stale and will false-fail — recompute it.
+> (Scanned at time of writing: `0` task-pack grading configs store a hash literal,
+> so there is nothing to migrate in-tree.)
 
 ### Computing Golden Hashes
 
@@ -56,10 +73,33 @@ from tolokaforge.core.grading.state_checks import to_hashable, consistent_hash
 golden_hash = consistent_hash(to_hashable(env.dump()))
 ```
 
+### Folding numeric strings for a money / quantity field
+
+Some backends round-trip `Decimal` columns as strings, so the same amount can
+surface as `"130.00"` on one side and `"130.0"` on the other and false-fail a
+correct trial. Opt the specific field(s) into string folding — never globally:
+
+```yaml
+state_checks:
+  hash:
+    enabled: true
+    weight: 1.0
+  numeric_string_fields:      # per-field allow-list; matched by record key at any depth
+    - custom_refund_amount    # e.g. the d365 travel refund field
+```
+
+Only list fields that are genuinely numeric quantities. Do NOT list identifier
+or code fields (`payment_method_last4`, `id`, `organization_id`): folding those
+would treat `"0042"`-style values as numbers. This key is honored identically on
+both grading substrates (the core `GradingEngine`/`to_hashable` path and the
+runner gRPC/`compute_stable_hash` path).
+
 ### Best Practices
 
 - Filter non-deterministic fields (timestamps, UUIDs) before hashing
-- Document how golden hash was computed
+- Prefer golden-action replay over storing a hash literal; if you must store one,
+  recompute it whenever the hashing algorithm changes (see the callout above)
+- Fold numeric strings per-field (`numeric_string_fields`), never as a global switch
 - Combine with JSONPath assertions using `weight: 0.8` for flexibility
 
 ---

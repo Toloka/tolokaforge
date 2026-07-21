@@ -199,7 +199,12 @@ class EnvironmentEvaluator:
                 try:
                     # Compute hash of agent DB state
                     agent_db = agent_env_state.get("db", agent_env_state)
-                    actual_hash = consistent_hash(to_hashable(agent_db))
+                    string_fields = (
+                        frozenset(state_checks_config.numeric_string_fields)
+                        if state_checks_config.numeric_string_fields
+                        else None
+                    )
+                    actual_hash = consistent_hash(to_hashable(agent_db, string_fields))
                     db_hash_match = actual_hash == hash_to_check
 
                     if db_hash_match:

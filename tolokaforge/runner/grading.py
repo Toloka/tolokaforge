@@ -168,7 +168,10 @@ def _records_might_match(record1: dict[str, Any], record2: dict[str, Any]) -> bo
     id_fields = sorted(f for f in common_keys if f == "id" or f.endswith("_id"))
 
     # Match on the first shared ID field (most specific). Compare via the same
-    # canonical form as the record hashing so a numeric id "123" pairs with 123.
+    # canonical form as the record hashing, so numeric-TYPE ids pair across
+    # representations (123 == 123.0 == Decimal("123")). A numeric-looking STRING
+    # id ("123") is NOT equated with the number 123 here: string folding is the
+    # opt-in per-field tier, off on this reason-only diff path.
     for field in id_fields:
         if record1[field] is not None and record2[field] is not None:
             return _make_hashable(record1[field]) == _make_hashable(record2[field])

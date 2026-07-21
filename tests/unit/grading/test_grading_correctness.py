@@ -914,6 +914,32 @@ class TestNumericCanonicalization:
             "123", normalize_strings=True
         )
 
+    def test_to_hashable_folds_strings_only_for_listed_field(self):
+        """The core path (to_hashable) honors numeric_string_fields with the same
+        per-field selectivity as the runner path (compute_stable_hash): a listed
+        money field folds while an unlisted sibling version string is preserved.
+        """
+        a = {"cases": [{"refund": "130.00", "version": "1.10"}]}
+        b = {"cases": [{"refund": "130.0", "version": "1.1"}]}
+
+        # No field set: numeric-looking strings never fold.
+        assert consistent_hash(to_hashable(a)) != consistent_hash(to_hashable(b))
+        # Only "refund" listed: the "version" 1.10 vs 1.1 difference is preserved,
+        # so the two states stay distinct.
+        assert consistent_hash(to_hashable(a, frozenset(["refund"]))) != consistent_hash(
+            to_hashable(b, frozenset(["refund"]))
+        )
+        # Both listed: everything numeric folds and the states match.
+        assert consistent_hash(to_hashable(a, frozenset(["refund", "version"]))) == consistent_hash(
+            to_hashable(b, frozenset(["refund", "version"]))
+        )
+        # Money-only formatting difference under the listed field folds.
+        c = {"cases": [{"refund": "130.00", "version": "1.1"}]}
+        d = {"cases": [{"refund": "130.0", "version": "1.1"}]}
+        assert consistent_hash(to_hashable(c, frozenset(["refund"]))) == consistent_hash(
+            to_hashable(d, frozenset(["refund"]))
+        )
+
     def test_bool_not_collapsed_to_int(self):
         """bool stays distinct from its int twin (True == 1 in Python)."""
         assert consistent_hash(to_hashable(True)) != consistent_hash(to_hashable(1))

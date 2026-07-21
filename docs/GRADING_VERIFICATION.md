@@ -27,39 +27,64 @@ The grading system uses SHA-256 hash comparison to determine if the agent achiev
 **Algorithm:**
 ```python
 # From tolokaforge/core/hash.py
-def compute_stable_hash(state: dict, unstable_fields: list[str] | None = None) -> str:
+def compute_stable_hash(
+    state: dict,
+    unstable_fields: list[str] | None = None,
+    *,
+    canonicalize_numbers: bool = True,          # fold numeric TYPES (72 == 72.0)
+    numeric_string_fields: list[str] | None = None,  # per-field: fold numeric STRINGS
+) -> str:
     # 1. Filter out unstable fields (timestamps, auto-generated IDs)
     if unstable_fields:
         state = filter_unstable_fields(state, unstable_fields)
-    
+
     # 2. Convert datetime objects to ISO format strings
     serializable_state = _convert_datetime_to_str(state)
-    
-    # 3. Serialize to JSON with canonical format
+
+    # 3. Canonicalize numbers (types always; strings only under listed fields)
+    if canonicalize_numbers:
+        serializable_state = _canonicalize_numbers(serializable_state, ...)
+
+    # 4. Serialize to JSON with canonical format, then SHA-256 hexdigest
     json_str = json.dumps(serializable_state, sort_keys=True, separators=(",", ":"), default=str)
-    
-    # 4. Compute SHA-256 hexdigest
     return hashlib.sha256(json_str.encode("utf-8")).hexdigest()
 ```
 
 **Tau-bench compatible algorithm** (used by StateChecker):
 ```python
 # From tolokaforge/core/grading/state_checks.py
-def to_hashable(item):
-    """Convert to hashable representation (tau-bench compatible)"""
+def to_hashable(item, string_fields=None, *, _normalize_strings=False):
+    """Convert to hashable representation (tau-bench compatible).
+
+    Scalars pass through canonical_number(); numeric-looking strings fold only
+    under a record key in string_fields (key-aware, like _canonicalize_numbers).
+    """
     if isinstance(item, dict):
-        return tuple((key, to_hashable(value)) for key, value in sorted(item.items()))
+        return tuple(
+            (k, to_hashable(v, string_fields,
+                            _normalize_strings=(string_fields is not None and k in string_fields)))
+            for k, v in sorted(item.items())
+        )
     elif isinstance(item, list):
-        return tuple(to_hashable(element) for element in item)
+        return tuple(to_hashable(e, string_fields, _normalize_strings=_normalize_strings) for e in item)
     elif isinstance(item, set):
-        return tuple(sorted(to_hashable(element) for element in item))
+        return tuple(sorted(
+            (to_hashable(e, string_fields, _normalize_strings=_normalize_strings) for e in item),
+            key=lambda x: (type(x).__name__, str(x)),   # type-stable: mixed canonical scalars
+        ))
     else:
-        return item
+        return canonical_number(item, normalize_strings=_normalize_strings)
 
 def consistent_hash(value) -> str:
     """Compute SHA256 hash"""
     return hashlib.sha256(str(value).encode("utf-8")).hexdigest()
 ```
+
+> Both hashers canonicalize numbers so a pure representation difference
+> (`"130.00"` vs `"130.0"`, `72` vs `72.0`) is not graded as a state change. The
+> string tier is opt-in per field via `state_checks.numeric_string_fields` — see
+> [GRADING.md](GRADING.md#hash-based-grading-tau-bench-compatible). Any hash
+> literal precomputed before this change must be recomputed.
 
 ### 2. Golden Set Comparison
 
