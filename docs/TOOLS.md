@@ -7,6 +7,8 @@ Tolokaforge exposes built-in tools via function calling. Enable them per task in
 - `browser`: Playwright-based browser automation (coordinate actions).
 - `mobile`: Mobile app interaction tool (tap/type/scroll/app switching).
 - `bash`: Allowlisted shell execution.
+- `bash_session`: Persistent bash shell; cwd, environment, and functions persist across calls.
+- `str_replace_editor`: View, create, and edit files with `view`/`create`/`str_replace`/`insert`.
 - `read_file`: Read from `/env/fs/agent-visible`.
 - `write_file`: Write to `/env/fs/agent-visible`.
 - `list_dir`: List files in `/env/fs/agent-visible`.
@@ -33,6 +35,119 @@ Tolokaforge exposes built-in tools via function calling. Enable them per task in
 
 See [BROWSER_TOOLS.md](BROWSER_TOOLS.md) for action schemas, examples, and coordinate behavior.
 
+## Persistent Shell and Editor Tools
+
+`bash_session` and `str_replace_editor` mirror Anthropic's agent tool contracts.
+Each has two provider variants — a local variant and a docker-compose variant —
+selected purely by `tool_config`: pass a `service` key to route into a container,
+omit it to run locally. The wire schema the LLM sees is identical for both
+variants. Both tools are wrapped by the runner, which drives their per-trial
+lifecycle (see [RUNNER.md § Tool Lifecycle](RUNNER.md#tool-lifecycle)) and the
+design rationale in [ADR 0017](adr/0017-persistent-agent-shell-and-editor-tools.md).
+
+### `bash_session`
+
+Session-lifetime shell matching Anthropic's `bash_20250124` contract.
+
+**Input schema**
+
+- `command` (string): the bash command to run.
+- `restart` (boolean): reset the shell to a clean state; omit `command` when
+  restarting (`{"restart": true}`).
+
+Both fields are optional at the schema level; a call must supply one or the
+other, and a call with neither fails loud.
+
+**Session semantics.** The working directory, exported environment variables,
+shell functions, and aliases persist across `execute()` calls for the life of
+the trial. `restart` discards that state and yields a clean shell.
+
+**Timeout.** Per-command timeout defaults to 120 s, configurable via
+`tool_config.timeout_s`. On timeout the command is terminated and a
+`[timed out after <n>s; command terminated]` note is appended to the output.
+
+**Output.** Middle-truncated at 16384 characters (an elision marker names the
+elided character count and hints to re-run a narrower command or `grep` for the
+pattern). Non-zero
+exit codes are surfaced as an `[exit code: <n>]` suffix.
+
+**Provider variants**
+
+- **Local** (no `service` key): a `bash` subprocess held under a PTY with job
+  control (`set -m`). A timed-out command runs in its own foreground process
+  group; terminating that group (SIGINT then SIGKILL) leaves the session-leader
+  shell alive, so session state survives a per-command timeout.
+- **Compose** (`service` + `compose_project_prefix`): a held
+  `docker exec` into an already-running service container. It never brings the
+  compose stack up or down — the environment / another lifecycle consumer owns
+  that. Kill-safety is weaker than the local variant: signalling the host-side
+  `docker exec` process group does not reach the command running inside the
+  container, so on a per-command timeout the host exec client is killed and the
+  in-container session is restarted. Session state accumulated before a
+  timed-out command is lost (unlike the local variant, which preserves it), and
+  the runaway command may briefly survive as an in-container orphan.
+
+The compose variant resolves its target container as
+`<compose_project_prefix><trial_id>_<service>`, with any `:` in the trial id
+replaced by `_`; both compose tools share this resolution so they target the
+identical container.
+
+**When to use.** Prefer `bash_session` for multi-step workflows that need a
+persistent cwd, environment, or shell functions across turns. Use the legacy
+per-call [`bash`](#built-in-tools) for one-shot allowlisted commands.
+
+### `str_replace_editor`
+
+File editor matching Anthropic's `str_replace_based_edit_tool` contract (the
+`text_editor_20250429` / `text_editor_20250728` shape — parameter-identical;
+`text_editor_20250728` adds a `max_characters` view-truncation knob). `undo_edit`
+is absent, as in those Claude-4 variants.
+
+**Input schema.** `command` (enum: `view`/`create`/`str_replace`/`insert`) and
+`path` are required; the remaining fields apply per command: `view_range`,
+`file_text`, `old_str`, `new_str`, `insert_line`, `insert_text`.
+
+**Commands**
+
+- `view` — `path` plus optional `view_range: [start, end]` (1-indexed; `-1` for
+  end of file). Renders `cat -n`-style line-numbered content for a file, or a
+  directory listing 2 levels deep (hidden entries and `__pycache__` skipped).
+  An out-of-range `view_range` fails loud.
+- `create` — `path` + `file_text`. **Fails loud if the path already exists**
+  (a deliberate deviation from Anthropic's reference, which overwrites).
+- `str_replace` — `path` + `old_str` + `new_str`. Replaces the single unique
+  occurrence of `old_str`; fails loud on zero matches or more than one (the
+  error reports the match count).
+- `insert` — `path` + `insert_line` + **`insert_text`** (note: `insert` uses
+  `insert_text`, not `str_replace`'s `new_str`). `insert_line: 0` inserts before
+  the first line; a positive `N` inserts after line `N`.
+
+**Fail-loud framing.** Ambiguous, destructive, or out-of-range operations raise,
+and the error reaches the LLM for self-correction. Mutating commands
+(`create`/`str_replace`/`insert`) require valid UTF-8 and fail loud on a
+non-UTF-8 file (which cannot be safely round-tripped); `view` reads with
+replacement characters for display only.
+
+**Path validation.** Paths resolve to their realpath and must stay contained in
+the working root (`/work`); a symlink escape or a `..` component that leaves the
+root fails loud.
+
+**Provider variants**
+
+- **Local** (no `service` key): in-process file operations rooted at the runner
+  container's `/work`. Writes go to a temp file and are renamed into place
+  (single-process temp+rename).
+- **Compose** (`service` + `compose_project_prefix`): every command runs through
+  `docker exec` into an already-running service container. File content is piped
+  on stdin (never interpolated into the shell command string) and paths are
+  passed as positional arguments, so agent-controlled bytes cannot inject shell
+  commands. Path containment is validated **inside the container** via
+  `realpath`; if `realpath` is absent from the target image the engine fails
+  loud rather than silently skipping validation. Write atomicity is weaker than
+  the local variant: a completed temp-file+`mv` is atomic, but an exec
+  interrupted mid-write can leave the temp file behind. The editor has no
+  configurable per-command timeout.
+
 ## Enabling Tools
 
 ```yaml
@@ -42,6 +157,44 @@ tools:
   user:
     enabled: []
 ```
+
+### Persistent shell and editor
+
+List the tool in `enabled` to get its local variant — no kwargs block is needed:
+
+```yaml
+tools:
+  agent:
+    enabled: ["bash_session", "str_replace_editor"]
+```
+
+To select the compose variant, add a per-tool kwargs block under
+`tools.agent.<name>` naming the target `service` and the `compose_project_prefix`
+used to bring the stack up. `bash_session` additionally accepts `timeout_s`; the
+editor has no configurable per-command timeout:
+
+```yaml
+tools:
+  agent:
+    enabled: ["bash_session", "str_replace_editor"]
+    bash_session:
+      service: main
+      compose_project_prefix: env_
+      timeout_s: 120
+    str_replace_editor:
+      service: main
+      compose_project_prefix: env_
+```
+
+> **Compose-variant network isolation.** Under `network_policy: no_internet` /
+> `limited_internet`, the engine attaches every compose service to a single
+> injected internal network. If a task pack co-locates env services (e.g. a DB)
+> with the agent-side compose service that `bash_session` /
+> `str_replace_editor` executes into, the agent can reach those services
+> directly and bypass wrapped tools. Tracked as
+> [#581](https://github.com/Toloka/tolokaforge/issues/581). Until that lands, do
+> not co-locate env services with the `bash_session` / `str_replace_editor`
+> target service. The local variants are unaffected.
 
 ## MCP Tools
 
