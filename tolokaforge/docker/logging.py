@@ -96,6 +96,7 @@ class LogRouter(BaseModel):
         ...     container_id="abc123",
         ...     trial_id="trial-001",
         ...     log_file="/tmp/container.log",
+        ...     component_id="engine/docker.service/runner",
         ... )
         >>> log_router.start()
         >>> # ... container runs ...
@@ -136,6 +137,16 @@ class LogRouter(BaseModel):
         default=5,
         description="Maximum number of reconnection attempts (0 = unlimited)",
     )
+    component_id: str | None = Field(
+        default=None,
+        description=(
+            "Component id (as built via build_component_id). When set, every "
+            "emitted log record carries extra={'component_id': component_id} "
+            "so a _LogSink handler routes the record into that component's "
+            "tail buffer instead of the general log ring. None (the default) "
+            "omits the field so records fall through the normal path."
+        ),
+    )
 
     # Private attributes (not serialized)
     _state: LogRouterState = PrivateAttr(default=LogRouterState.IDLE)
@@ -144,6 +155,7 @@ class LogRouter(BaseModel):
     _file_handle: TextIO | None = PrivateAttr(default=None)
     _logger: logging.Logger = PrivateAttr(default=None)  # type: ignore[assignment]
     _reconnect_count: int = PrivateAttr(default=0)
+    _log_stream: Any = PrivateAttr(default=None)
 
     model_config = {
         "extra": "forbid",
@@ -152,7 +164,13 @@ class LogRouter(BaseModel):
 
     def model_post_init(self, __context: Any) -> None:
         """Initialize private attributes after model creation."""
-        # Create a child logger for this container
+        # Create a child logger for this container. The ``container`` parent
+        # logger is pinned to ``propagate=False`` so records emitted here
+        # never reach the root logger's handlers — the sole subscriber is a
+        # handler installed on the ``container`` logger by the active
+        # display (e.g. :class:`LiveRunDisplay._LogSink`). Without a
+        # display, records drop silently instead of leaking to stderr.
+        logging.getLogger("container").propagate = False
         self._logger = logging.getLogger(f"container.{self.container_name}")
 
     @classmethod
@@ -166,6 +184,7 @@ class LogRouter(BaseModel):
         reconnect_on_failure: bool = True,
         reconnect_delay_s: float = 1.0,
         max_reconnect_attempts: int = 5,
+        component_id: str | None = None,
     ) -> LogRouter:
         """Create a LogRouter for a Container instance.
 
@@ -178,6 +197,10 @@ class LogRouter(BaseModel):
             reconnect_on_failure: Whether to attempt reconnection on stream failure.
             reconnect_delay_s: Delay between reconnection attempts.
             max_reconnect_attempts: Maximum number of reconnection attempts.
+            component_id: Optional component id (as built via
+                ``build_component_id``). When provided, every emitted record
+                is tagged with ``extra={'component_id': component_id}`` so
+                the display routes it into that component's tail buffer.
 
         Returns:
             LogRouter instance configured for the container.
@@ -202,6 +225,7 @@ class LogRouter(BaseModel):
             reconnect_on_failure=reconnect_on_failure,
             reconnect_delay_s=reconnect_delay_s,
             max_reconnect_attempts=max_reconnect_attempts,
+            component_id=component_id,
         )
 
     @property
@@ -221,6 +245,8 @@ class LogRouter(BaseModel):
         }
         if self.trial_id:
             extra["trial_id"] = self.trial_id
+        if self.component_id is not None:
+            extra["component_id"] = self.component_id
         return extra
 
     def _format_log_line(self, line: str) -> str:
@@ -319,6 +345,9 @@ class LogRouter(BaseModel):
                     follow=True,
                     timestamps=False,
                 )
+                # Publish the stream so ``stop()`` can close it and unblock
+                # the iterator below without waiting for the next chunk.
+                self._log_stream = log_stream
 
                 for chunk in log_stream:
                     if self._stop_event.is_set():
@@ -389,6 +418,9 @@ class LogRouter(BaseModel):
 
                 self._wait_for_reconnect()
 
+        # Drop the stream reference: the thread is exiting so ``stop()``
+        # no longer needs a handle to unblock.
+        self._log_stream = None
         self._close_log_file()
 
         if self._state == LogRouterState.RUNNING:
@@ -496,6 +528,18 @@ class LogRouter(BaseModel):
         self._state = LogRouterState.STOPPING
         self._stop_event.set()
 
+        # Close the docker log stream first so the streaming thread's
+        # ``for chunk in log_stream:`` unblocks immediately instead of
+        # waiting for the next chunk. Quiet-but-healthy containers would
+        # otherwise pay the full ``timeout_s`` ceiling on every teardown.
+        # ``.close()`` is idempotent enough across docker-py versions to
+        # swallow errors here; the stream may already be gone if the
+        # thread exited normally between ``set()`` and this call.
+        stream = self._log_stream
+        if stream is not None:
+            with suppress(Exception):
+                stream.close()
+
         if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=timeout_s)
             if self._thread.is_alive():
@@ -507,6 +551,7 @@ class LogRouter(BaseModel):
 
         self._state = LogRouterState.STOPPED
         self._thread = None
+        self._log_stream = None
 
         logger.info(
             "Log router stopped for container '%s'",
