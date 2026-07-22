@@ -593,39 +593,6 @@ def _service_to_component(service: ServiceSnapshot, *, phase: str) -> ComponentS
     )
 
 
-def _container_to_component(container: ContainerSnapshot, *, trial_id: str) -> ComponentSnapshot:
-    """Adapter: lift a per-trial ``ContainerSnapshot`` into a ``ComponentSnapshot``.
-
-    Used by :meth:`LiveRunDisplay.trial_provisioned` so multi-container
-    task substrates surface in the Components widget under a
-    ``trial/<trial_id>`` owner alongside engine services.
-    """
-    health = container.get("health")
-    state = container.get("state", "unknown")
-    comp_phase: ComponentPhase
-    if health == "healthy":
-        comp_phase = "healthy"
-    elif health == "unhealthy":
-        comp_phase = "unhealthy"
-    elif health == "starting":
-        comp_phase = "starting"
-    elif state == "running":
-        comp_phase = "healthy"
-    elif state in ("exited", "dead"):
-        comp_phase = "dead"
-    else:
-        comp_phase = "pending"
-    return ComponentSnapshot(
-        id=build_component_id(
-            f"trial/{trial_id}", "container", container.get("service", "unknown")
-        ),
-        kind="container",
-        phase=comp_phase,
-        detail=(state if not health else f"{state} · {health}"),
-        owner=f"trial/{trial_id}",
-    )
-
-
 def _map_docker_status_to_component_phase(docker_status: str, run_phase: str) -> ComponentPhase:
     """Map docker container ``status`` ∈ compose-status vocabulary to a
     :data:`ComponentPhase`.
@@ -1171,11 +1138,13 @@ class LiveRunDisplay:
         # ``starting_services`` and ``services_ready`` transitions. Feeds
         # the mid-region widget until trials dispatch.
         self._services: list[ServiceSnapshot] | None = None
-        # Component monitoring table (transport-agnostic). Populated by
-        # the four ``component_*`` events plus adapter shims that lift
-        # legacy ``phase_changed(services=…)`` and
-        # ``trial_provisioned(containers=…)`` records into the same model.
-        # One row per stable component id; last-write-wins on update.
+        # Engine-scoped component monitoring table. Populated by the
+        # four ``component_*`` events plus the adapter shim that lifts
+        # legacy ``phase_changed(services=…)`` records into the same
+        # model. Per-trial containers do NOT flow through here — they
+        # render in the per-trial "Infrastructure" sub-panel inside
+        # the Focused pane off ``_TrialCard.containers`` directly. One
+        # row per stable component id; last-write-wins on update.
         self._components: dict[str, ComponentSnapshot] = {}
         # Per-component log tail. Bounded ring per id; rendered only when
         # the component is in an unhealthy phase, kept for post-mortem
@@ -1482,10 +1451,9 @@ class LiveRunDisplay:
         """Upsert one snapshot into :attr:`_components`. Caller MUST hold the lock.
 
         Same-id updates overwrite in place — this is what keeps per-attempt
-        polling from scrolling the log stream. Callers that lift legacy
-        events into components (see :func:`_service_to_component` /
-        :func:`_container_to_component`) route through here so the wire
-        shape is normalised regardless of the source.
+        polling from scrolling the log stream. The
+        :func:`_service_to_component` adapter routes through here so the
+        wire shape is normalised regardless of the source.
         """
         self._components[snapshot["id"]] = snapshot
 
@@ -1549,11 +1517,13 @@ class LiveRunDisplay:
         with self._lock:
             card = self._trials.get(trial_id) or self._lazy_card_locked(trial_id)
             card.containers = list(containers)
-            # Adapter: each per-trial container becomes a component under
-            # the ``trial/<trial_id>`` namespace so multi-container tasks
-            # surface in the Components widget alongside engine services.
-            for container in containers:
-                self._ingest_component_locked(_container_to_component(container, trial_id=trial_id))
+            # Trial containers land in the per-trial "Infrastructure"
+            # sub-panel inside the Focused pane (rendered by
+            # :meth:`_render_right_pane` off ``card.containers``). They
+            # are intentionally NOT lifted into ``_components`` — the
+            # top-level components widget is engine-only, and duplicating
+            # task-declared containers there just clutters the layout
+            # when the operator can already see them per-trial.
             self._refresh_live_locked()
 
     def trial_completed(self, *, trial_id: str, binary_pass: bool, score: float | None) -> None:
@@ -1940,26 +1910,15 @@ class LiveRunDisplay:
             in_startup = self._total_trials == 0
             focused_component_id = self._focused_component_id
             logs_shown = frozenset(self._component_logs_shown)
-            # Widgets split by owner: engine components (tolokaforge's
-            # own docker services + the gRPC runner client) → "Engine
-            # Components" panel; per-trial infrastructure (multi-
-            # container task services) → "Infrastructure" panel. The
-            # Infrastructure panel only appears when at least one trial
-            # component has been registered — non-multicontainer runs
-            # (built-in engine stack + tasks that ship no
-            # environment_manifest) never surface it. Both widgets
-            # consult the same ``_component_log_buffers`` for their
-            # tail rendering.
+            # Top-level components widget is engine-only: tolokaforge's
+            # own docker services + the gRPC runner client (rows whose
+            # ``owner == "engine"``). Per-trial containers live in the
+            # per-trial "Infrastructure" sub-panel inside the Focused
+            # pane instead — one place per concern, no duplication.
             engine_components = {
                 cid: comp for cid, comp in components.items() if comp.get("owner") == "engine"
             }
-            task_components = {
-                cid: comp
-                for cid, comp in components.items()
-                if (comp.get("owner") or "").startswith("trial/")
-            }
             show_engine = bool(engine_components)
-            show_task = bool(task_components)
             boot_filtered: list[logging.LogRecord] = (
                 _docker_boot_records(self._log_buffer) if in_startup else []
             )
@@ -1971,11 +1930,6 @@ class LiveRunDisplay:
             if show_engine
             else 0
         )
-        task_h = (
-            _components_desired_height(task_components, component_log_buffers, logs_shown)
-            if show_task
-            else 0
-        )
         bottom_h = 1
         desired_boot_log_h = (
             min(len(boot_filtered), _BOOT_LOG_MAX_LINES) + 2 if boot_filtered else 0
@@ -1985,18 +1939,16 @@ class LiveRunDisplay:
         # needs ≥ 3 rows to render at least one content line; below that
         # the region drops entirely so we never emit a zero-content
         # bordered box.
-        budget = total - banner_h - engine_h - task_h - bottom_h - 5
+        budget = total - banner_h - engine_h - bottom_h - 5
         boot_log_h = min(desired_boot_log_h, budget) if desired_boot_log_h else 0
         if boot_log_h < 3:
             boot_log_h = 0
-        main_h = max(5, total - banner_h - engine_h - task_h - boot_log_h - bottom_h)
+        main_h = max(5, total - banner_h - engine_h - boot_log_h - bottom_h)
         row_defs: list[Layout] = []
         if banner is not None:
             row_defs.append(Layout(name="banner", size=banner_h))
         if show_engine:
             row_defs.append(Layout(name="engine_components", size=engine_h))
-        if show_task:
-            row_defs.append(Layout(name="task_infrastructure", size=task_h))
         if boot_log_h > 0:
             row_defs.append(Layout(name="boot_log", size=boot_log_h))
         row_defs.append(Layout(name="main", size=main_h))
@@ -2014,19 +1966,6 @@ class LiveRunDisplay:
                         logs_shown,
                     ),
                     title="Engine Components",
-                    padding=(0, 1),
-                )
-            )
-        if show_task:
-            layout["task_infrastructure"].update(
-                Panel(
-                    _render_components_table(
-                        task_components,
-                        component_log_buffers,
-                        focused_component_id,
-                        logs_shown,
-                    ),
-                    title="Infrastructure",
                     padding=(0, 1),
                 )
             )

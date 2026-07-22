@@ -1211,16 +1211,13 @@ def test_phase_changed_populates_services_and_renders_widget() -> None:
     display.phase_changed(phase="starting_services", detail="docker compose up", services=services)
 
     assert display._services == services
-    # Adapter shim lifts each ServiceSnapshot into the Components model.
+    # Adapter shim lifts each ServiceSnapshot into the components model.
     assert "engine/docker.service/runner" in display._components
     assert "engine/docker.service/db-service" in display._components
-    # Engine-owned components populate the "engine_components" region; the
-    # "task_infrastructure" region stays absent because no trial has
-    # provisioned yet.
+    # The single top-level "Engine Components" region renders.
     layout = display._build_layout()
     child_names = {getattr(child, "name", None) for child in layout.children}
     assert "engine_components" in child_names
-    assert "task_infrastructure" not in child_names
 
 
 def test_engine_components_widget_persists_after_trials_dispatch() -> None:
@@ -1243,42 +1240,24 @@ def test_engine_components_widget_persists_after_trials_dispatch() -> None:
     assert "engine_components" in child_names
 
 
-def test_both_widgets_absent_when_no_components_tracked() -> None:
-    """A run that never registers any component (no phase_changed with
-    services, no explicit component_* event) leaves both widget regions
-    absent. Nothing to render → nothing shown."""
+def test_engine_components_widget_absent_when_no_engine_components_tracked() -> None:
+    """A run that never registers any engine component (no
+    ``phase_changed(services=…)``, no explicit engine ``component_*``
+    event) leaves the top-level widget region absent."""
     display = LiveRunDisplay(refresh_per_second=1000)
     display.run_started(total_trials=1, initial_completed=0)
 
     layout = display._build_layout()
     child_names = {getattr(child, "name", None) for child in layout.children}
     assert "engine_components" not in child_names
-    assert "task_infrastructure" not in child_names
 
 
-def test_task_infrastructure_widget_hidden_without_trial_components() -> None:
-    """A run with only engine components (typical of built-in engine stack
-    task packs — no multicontainer) shows the Components widget but keeps
-    the Task Infrastructure widget hidden. The panel doesn't render an
-    empty box."""
-    from tolokaforge.core.run_display_events import ServiceSnapshot
-
-    display = LiveRunDisplay(refresh_per_second=1000)
-    services: list[ServiceSnapshot] = [
-        {"name": "runner", "status": "running", "ports": {}, "role": "engine"},
-    ]
-    display.phase_changed(phase="services_ready", services=services)
-
-    layout = display._build_layout()
-    child_names = {getattr(child, "name", None) for child in layout.children}
-    assert "engine_components" in child_names
-    assert "task_infrastructure" not in child_names
-
-
-def test_task_infrastructure_widget_appears_when_trial_provisions() -> None:
-    """A ``trial_provisioned(containers=[...])`` populates the Task
-    Infrastructure widget. Engine services remain in the Components widget
-    — the two are separate panels."""
+def test_trial_provisioned_does_not_surface_containers_in_top_widget() -> None:
+    """Per-trial containers do NOT flow into the top-level components
+    widget — they render only in the per-trial "Infrastructure" sub-panel
+    inside the Focused pane (off ``_TrialCard.containers``). Duplicating
+    them at the top would clutter the layout and confuse operators about
+    which panel owns which concern."""
     from tolokaforge.core.run_display_events import ContainerSnapshot, ServiceSnapshot
 
     display = LiveRunDisplay(refresh_per_second=1000)
@@ -1298,10 +1277,19 @@ def test_task_infrastructure_widget_appears_when_trial_provisions() -> None:
     display.trial_started(trial_id="task_a:0", task_id="task_a", trial_index=0, total_index=0)
     display.trial_provisioned(trial_id="task_a:0", containers=containers, endpoints={})
 
+    # Trial container info lives on the trial card (used by the Focused
+    # pane's Infrastructure sub-panel).
+    assert display._trials["task_a:0"].containers == containers
+    # But NOT in the top-level components model — that stays engine-only.
+    assert not any(
+        (comp.get("owner") or "").startswith("trial/") for comp in display._components.values()
+    )
     layout = display._build_layout()
     child_names = {getattr(child, "name", None) for child in layout.children}
+    # Only the engine-components region renders; there is no separate
+    # top-level task widget.
     assert "engine_components" in child_names
-    assert "task_infrastructure" in child_names
+    assert "task_infrastructure" not in child_names
 
 
 def test_mapper_created_and_services_ready_is_stopped_not_unhealthy() -> None:
@@ -1316,38 +1304,41 @@ def test_mapper_created_and_services_ready_is_stopped_not_unhealthy() -> None:
     assert _map_docker_status_to_component_phase("created", "starting_services") == "pending"
 
 
-def test_component_nav_walks_visible_rows_and_wraps() -> None:
-    """``[`` / ``]`` walk focus across the union of both widgets' rows in
-    sort order (owner, id) and wrap at the boundaries."""
+def test_component_nav_walks_engine_rows_and_wraps() -> None:
+    """``[`` / ``]`` walk focus across engine-component rows in
+    (owner, id) sort order and wrap at the boundaries. Since the
+    top-level widget is engine-only, nav is scoped to engine rows;
+    per-trial containers live in the Focused pane's Infrastructure
+    sub-panel and are not part of this walk."""
     from tolokaforge.core.run_display_events import ComponentSnapshot
 
     display = LiveRunDisplay(refresh_per_second=1000)
-    engine: ComponentSnapshot = {
+    runner: ComponentSnapshot = {
         "id": "engine/docker.service/runner",
         "kind": "docker.service",
         "phase": "healthy",
         "detail": None,
         "owner": "engine",
     }
-    task: ComponentSnapshot = {
-        "id": "trial/t:0/container/db",
-        "kind": "container",
+    grpc_client: ComponentSnapshot = {
+        "id": "engine/grpc.client/runner",
+        "kind": "grpc.client",
         "phase": "healthy",
         "detail": None,
-        "owner": "trial/t:0",
+        "owner": "engine",
     }
-    display.component_registered(snapshot=engine)
-    display.component_registered(snapshot=task)
+    display.component_registered(snapshot=runner)
+    display.component_registered(snapshot=grpc_client)
 
-    # Sort order: (owner, id) → engine first, trial/... second.
+    # Sort order: (owner, id) — docker.service before grpc.client.
     display._nav_next_component()
     assert display._focused_component_id == "engine/docker.service/runner"
     display._nav_next_component()
-    assert display._focused_component_id == "trial/t:0/container/db"
+    assert display._focused_component_id == "engine/grpc.client/runner"
     display._nav_next_component()  # wraps
     assert display._focused_component_id == "engine/docker.service/runner"
     display._nav_prev_component()  # wraps backwards
-    assert display._focused_component_id == "trial/t:0/container/db"
+    assert display._focused_component_id == "engine/grpc.client/runner"
 
 
 def test_focus_alone_does_not_expand_healthy_component_tail() -> None:
@@ -1484,9 +1475,11 @@ def test_focused_component_row_renders_with_reverse_highlight() -> None:
 
 
 def test_engine_and_infrastructure_panel_titles() -> None:
-    """The two component widgets are titled "Engine Components" and
-    "Infrastructure" respectively — the layout child names stay
-    ``engine_components`` / ``task_infrastructure`` internally."""
+    """The single top-level components widget is titled "Engine
+    Components" and only exists when at least one engine component is
+    tracked. No sibling "Infrastructure" region is created at the top
+    level — per-trial containers surface in the Focused pane's own
+    Infrastructure sub-panel instead."""
     from rich.console import Console
     from rich.panel import Panel
 
@@ -1508,26 +1501,24 @@ def test_engine_and_infrastructure_panel_titles() -> None:
 
     layout = display._build_layout()
     engine_panel = layout["engine_components"].renderable
-    task_panel = layout["task_infrastructure"].renderable
     assert isinstance(engine_panel, Panel)
-    assert isinstance(task_panel, Panel)
-    # Panel titles read as user-facing labels.
+    # Panel title reads as user-facing label.
     console = Console(width=80, record=True, force_terminal=False, legacy_windows=False)
     console.print(engine_panel)
-    console.print(task_panel)
     dump = console.export_text()
     assert "Engine Components" in dump
-    assert "Infrastructure" in dump
-    # The old titles must not appear.
+    # Old / duplicate titles must not appear at the top level.
     assert "Task Infrastructure" not in dump
+    # Nor is there a sibling top-level region.
+    child_names = {getattr(child, "name", None) for child in layout.children}
+    assert "task_infrastructure" not in child_names
 
 
-def test_multicontainer_task_provisioned_surfaces_container_components() -> None:
-    """``trial_provisioned(containers=[…])`` lifts each ``ContainerSnapshot``
-    into a component under ``owner="trial/<trial_id>"`` via the adapter
-    shim. A multi-container task exercising several services should have
-    every service visible in the Components widget alongside the engine
-    services."""
+def test_trial_provisioned_populates_focused_pane_infrastructure_sub_panel() -> None:
+    """A ``trial_provisioned(containers=[…])`` event stores containers on
+    the trial card so the per-trial "Infrastructure" sub-panel inside the
+    Focused pane can render them. It does NOT lift them into the top-level
+    ``_components`` model."""
     from tolokaforge.core.run_display_events import ContainerSnapshot
 
     display = LiveRunDisplay(refresh_per_second=1000)
@@ -1557,15 +1548,10 @@ def test_multicontainer_task_provisioned_surfaces_container_components() -> None
     display.trial_started(trial_id="task_a:0", task_id="task_a", trial_index=0, total_index=0)
     display.trial_provisioned(trial_id="task_a:0", containers=containers, endpoints={})
 
-    # Every container appears as a component under the trial's owner.
-    expected_ids = {
-        "trial/task_a:0/container/db",
-        "trial/task_a:0/container/cache",
-        "trial/task_a:0/container/web",
-    }
-    assert expected_ids.issubset(display._components.keys())
-    for cid in expected_ids:
-        assert display._components[cid]["owner"] == "trial/task_a:0"
+    # Containers hang off the trial card (used by the Focused pane).
+    assert display._trials["task_a:0"].containers == containers
+    # None of them appear in the top-level components model.
+    assert display._components == {}
 
 
 # ---------------------------------------------------------------------------
