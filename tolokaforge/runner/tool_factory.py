@@ -98,7 +98,7 @@ class ToolExecutionError(Exception):
 # =============================================================================
 
 
-@dataclass
+@dataclass(frozen=True)
 class ToolLifecycleContext:
     """Per-trial context passed to a tool's ``start()``.
 
@@ -109,6 +109,7 @@ class ToolLifecycleContext:
 
     trial_id: str
     artifacts_dir: str | None = None
+    work_dir: str | None = None
 
 
 class ToolWrapper(ABC):
