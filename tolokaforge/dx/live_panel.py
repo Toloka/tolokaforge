@@ -31,6 +31,7 @@ from collections.abc import Callable, Iterable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -119,6 +120,19 @@ outside of it (``pending`` / ``starting`` / ``degraded`` / ``unhealthy``
 / ``dead``) any tail entries expand beneath the row. This is what makes
 a retry-in-progress component surface its recent errors without waiting
 for the outer retry to give up."""
+
+
+class _Panel(str, Enum):
+    """Currently-active navigable panel inside the live-run display.
+
+    Values are the panel names used in log traces and diagnostics.
+    ``(str, Enum)`` inheritance matches :class:`DisplayMode` so the values
+    compare cleanly against string literals and serialise transparently.
+    """
+
+    TRIALS = "trials"
+    ENGINE = "engine"
+    INFRASTRUCTURE = "infrastructure"
 
 
 def _now() -> datetime:
@@ -1182,6 +1196,20 @@ class LiveRunDisplay:
         # ``▶ `` marker + reverse-video row style; the tail does not
         # auto-expand on focus (see :attr:`_component_logs_shown`).
         self._focused_component_id: str | None = None
+        # Currently-active navigable panel. Determines where ``j`` / ``k`` /
+        # ``H`` / ``L`` route their keystrokes and which panel ``l`` toggles.
+        # Advances through :meth:`_visible_panels_locked` in Tab-cycle order.
+        self._active_panel: _Panel = _Panel.TRIALS
+        # Remembered component focus for the Engine panel — kept across Tab
+        # cycles so the operator's row selection survives leaving and
+        # returning to the panel. ``None`` when no engine row has been focused
+        # since the last time the panel was seeded.
+        self._engine_focused_id: str | None = None
+        # Remembered container focus for the Infrastructure panel of the
+        # currently-focused trial. Cleared whenever the focused trial changes
+        # or the focused trial's containers depart. ``None`` when no container
+        # row has been focused since the last Infrastructure seed.
+        self._infra_focused_id: str | None = None
         # Component ids whose log tail the operator has explicitly
         # toggled on via ``l`` while focused. Independent of phase:
         # a healthy or stopped component with an entry in this set
@@ -1753,6 +1781,39 @@ class LiveRunDisplay:
         prior focus. Caller MUST hold :attr:`_lock`.
         """
         return self._engine_component_ids_locked() + self._focused_trial_container_ids_locked()
+
+    def _visible_panels_locked(self) -> list[_Panel]:
+        """Panels rendered on the current frame, in Tab-cycle order.
+
+        The Trials panel is always present. The Engine panel appears
+        whenever any engine-owned component is registered. The
+        Infrastructure panel appears when a trial is focused, the
+        trial-log view is off (Infrastructure only renders under the
+        summary branch of the Focused pane), and that trial has at least
+        one container registered. Caller MUST hold :attr:`_lock`.
+        """
+        panels: list[_Panel] = [_Panel.TRIALS]
+        if self._engine_component_ids_locked():
+            panels.append(_Panel.ENGINE)
+        if (
+            self._focused_trial_id is not None
+            and not self._show_logs_pane
+            and self._focused_trial_container_ids_locked()
+        ):
+            panels.append(_Panel.INFRASTRUCTURE)
+        return panels
+
+    def _ensure_active_panel_visible_locked(self) -> None:
+        """Reset :attr:`_active_panel` to :attr:`_Panel.TRIALS` when the
+        currently-active panel is no longer in :meth:`_visible_panels_locked`.
+
+        A no-op when the active panel is still visible. Called by any
+        mutator that can remove a panel (a component unregistering,
+        the focused trial's containers departing, flipping the trial-log
+        view on). Caller MUST hold :attr:`_lock`.
+        """
+        if self._active_panel not in self._visible_panels_locked():
+            self._active_panel = _Panel.TRIALS
 
     def _current_component_group_locked(self) -> str | None:
         """Group of the currently-focused component: ``"engine"`` /

@@ -32,6 +32,7 @@ from tolokaforge.dx.live_panel import (
     _BottomBarStats,
     _format_bottom_bar,
     _NoopDisplayCtx,
+    _Panel,
 )
 
 pytestmark = pytest.mark.unit
@@ -1301,6 +1302,111 @@ def test_mapper_created_and_services_ready_is_stopped_not_unhealthy() -> None:
     assert _map_docker_status_to_component_phase("created", "services_ready") == "stopped"
     # And the starting_services branch stays pending (declared but boot in-flight).
     assert _map_docker_status_to_component_phase("created", "starting_services") == "pending"
+
+
+def test_active_panel_defaults_to_trials() -> None:
+    """A fresh :class:`LiveRunDisplay` starts with the Trials panel active
+    so keystrokes always have a well-defined destination even before any
+    component has registered."""
+    display = LiveRunDisplay(refresh_per_second=1000)
+    assert display._active_panel is _Panel.TRIALS
+
+
+def test_visible_panels_returns_trials_only_at_start() -> None:
+    """With no components registered and no focused trial, only the
+    Trials panel is visible."""
+    display = LiveRunDisplay(refresh_per_second=1000)
+    assert display._visible_panels_locked() == [_Panel.TRIALS]
+
+
+def test_visible_panels_includes_engine_when_engine_component_registered() -> None:
+    """Registering any engine-owned component makes the Engine panel
+    visible in the Tab cycle."""
+    from tolokaforge.core.run_display_events import ComponentSnapshot
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    snap: ComponentSnapshot = {
+        "id": "engine/docker.service/runner",
+        "kind": "docker.service",
+        "phase": "healthy",
+        "detail": None,
+        "owner": "engine",
+    }
+    display.component_registered(snapshot=snap)
+
+    visible = display._visible_panels_locked()
+    assert _Panel.ENGINE in visible
+    assert visible == [_Panel.TRIALS, _Panel.ENGINE]
+
+
+def test_visible_panels_includes_infrastructure_when_focused_trial_has_containers() -> None:
+    """When a trial is focused and has at least one container, the
+    Infrastructure panel joins the Tab cycle."""
+    from tolokaforge.core.run_display_events import ContainerSnapshot
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    containers: list[ContainerSnapshot] = [
+        {"name": "t-db-1", "service": "db", "state": "running", "health": "healthy", "ports": {}},
+    ]
+    display.trial_started(trial_id="t:0", task_id="t", trial_index=0, total_index=0)
+    display.trial_provisioned(trial_id="t:0", containers=containers, endpoints={})
+
+    assert display._focused_trial_id == "t:0"
+    assert _Panel.INFRASTRUCTURE in display._visible_panels_locked()
+
+
+def test_visible_panels_omits_infrastructure_when_show_logs_pane_active() -> None:
+    """Infrastructure only renders under the Focused pane's summary
+    branch. When the operator flips the trial-log view on, the
+    Infrastructure panel is not visible even if the focused trial has
+    containers."""
+    from tolokaforge.core.run_display_events import ContainerSnapshot
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    containers: list[ContainerSnapshot] = [
+        {"name": "t-db-1", "service": "db", "state": "running", "health": "healthy", "ports": {}},
+    ]
+    display.trial_started(trial_id="t:0", task_id="t", trial_index=0, total_index=0)
+    display.trial_provisioned(trial_id="t:0", containers=containers, endpoints={})
+    display._show_logs_pane = True
+
+    assert _Panel.INFRASTRUCTURE not in display._visible_panels_locked()
+
+
+def test_ensure_active_panel_visible_falls_back_to_trials_when_active_panel_disappears() -> None:
+    """When the currently-active panel is no longer visible,
+    :meth:`_ensure_active_panel_visible_locked` snaps the active panel
+    back to Trials so keystrokes still route somewhere."""
+    display = LiveRunDisplay(refresh_per_second=1000)
+    display._active_panel = _Panel.ENGINE
+
+    # No engine components have been registered — ENGINE is not visible.
+    assert _Panel.ENGINE not in display._visible_panels_locked()
+
+    display._ensure_active_panel_visible_locked()
+
+    assert display._active_panel is _Panel.TRIALS
+
+
+def test_ensure_active_panel_visible_no_op_when_active_panel_still_visible() -> None:
+    """When the active panel is still visible on the current frame,
+    :meth:`_ensure_active_panel_visible_locked` leaves it unchanged."""
+    from tolokaforge.core.run_display_events import ComponentSnapshot
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    snap: ComponentSnapshot = {
+        "id": "engine/docker.service/runner",
+        "kind": "docker.service",
+        "phase": "healthy",
+        "detail": None,
+        "owner": "engine",
+    }
+    display.component_registered(snapshot=snap)
+    display._active_panel = _Panel.ENGINE
+
+    display._ensure_active_panel_visible_locked()
+
+    assert display._active_panel is _Panel.ENGINE
 
 
 def test_bracket_nav_walks_within_current_group_only() -> None:
