@@ -47,11 +47,13 @@ from tolokaforge.core.llm.response_policy import (
     ArrayDictMapResponse,
     JsonCoerceResponse,
     MinimaxM3TagRecoveryResponse,
+    RecursiveArrayDictMapResponse,
     ResponsePolicy,
     StandardResponse,
     UnwrapInputResponse,
 )
 from tolokaforge.core.llm.schema_sanitizer import (
+    GeminiRecursiveSchema,
     GeminiSchema,
     PassthroughSchema,
     StrictSchema,
@@ -80,6 +82,7 @@ _SCHEMA_SANITIZERS: dict[str, type[ToolSchemaSanitizer]] = {
     "passthrough": PassthroughSchema,
     "strict": StrictSchema,
     "gemini": GeminiSchema,
+    "gemini_recursive": GeminiRecursiveSchema,
 }
 
 _PROMPT_POLICIES: dict[str, type[SystemPromptPolicy]] = {
@@ -98,6 +101,7 @@ _RESPONSE_POLICIES: dict[str, type[ResponsePolicy]] = {
     "unwrap_input": UnwrapInputResponse,
     "json_coerce": JsonCoerceResponse,
     "array_dict_map": ArrayDictMapResponse,
+    "recursive_array_dict_map": RecursiveArrayDictMapResponse,
     "minimax_m3_tags": MinimaxM3TagRecoveryResponse,
 }
 

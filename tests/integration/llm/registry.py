@@ -1002,6 +1002,71 @@ _ALL: list[MC] = [
         ),
     ),
     # -----------------------------------------------------------------
+    # Gemini 3.6 Flash — Flash-lineage successor to 3.5-flash. Routed
+    # through the dedicated ``gemini_36_flash`` preset (see
+    # ``model_presets.yaml``), which keeps the gemini reasoning codec but
+    # swaps the generic ``gemini`` route's schema sanitiser + response
+    # policy for their cycle-tolerant variants
+    # (``gemini_recursive`` + ``recursive_array_dict_map``). Auto-integrated
+    # via the observe/resolve auto-resolve loop 2026-07-22 (PR #559): the
+    # observe baseline on the default gemini route surfaced two structural
+    # gaps in the shipped classes — RECURSIVE_REF_TOOL_CALL crashed
+    # ("$ref resolution exceeded depth 16", 0/15 on every shape) and the
+    # nested / scalar dict-map variants left the pivot un-reversed (0/15) —
+    # both FORMATTING (engine-fixable), not model ceilings. The dedicated
+    # preset closes them: the final reprobe went 5/5 on every fix-target
+    # (recursive_ref × 4 shapes + dict_map nested_in_object + scalar_values),
+    # so all six are ``required``. Caching + signed-thinking-replay are the
+    # genuine Flash-lineage provider ceilings (below).
+    # -----------------------------------------------------------------
+    MC(
+        model_id="openrouter__google_gemini-3.6-flash",
+        provider="openrouter",
+        name="google/gemini-3.6-flash",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.DICT_MAP_TOOL_CALL,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.THINKING_EMITS_BLOCKS,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.UNSIGNED_THINKING_REPLAY,
+                C.LEXICAL_TOOL_INVENTION,
+                # Fixed by the ``gemini_recursive`` schema sanitiser
+                # (cycle-tolerant $ref inlining) — 5/5 on every shape in the
+                # final reprobe. The generic gemini route crashed 0/15 here.
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # Genuine Flash-lineage provider ceilings (not addressed by
+                # the preset; recorded from the observe baseline). Gemini
+                # emits ``reasoning.encrypted`` blocks only, so there is no
+                # signed / readable block to replay round-trip; and no cache
+                # surface is exposed on the OpenRouter google/gemini-* routes
+                # (neither explicit cache_control nor a reproducible
+                # 2-call auto-cache read).
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.PROMPT_CACHING,
+                C.IMPLICIT_PROMPT_CACHING,
+            }
+        ),
+    ),
+    # -----------------------------------------------------------------
     # Moonshot Kimi K2.6 / DeepSeek V4 Pro / Xiaomi MiMo V2.5 Pro —
     # routed via the ``openrouter_dict_stringify_recovery`` preset
     # (passthrough schema + DictMapHints + JsonCoerceResponse + OpenAI

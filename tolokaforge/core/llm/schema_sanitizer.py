@@ -76,6 +76,7 @@ __all__ = [
     "PassthroughSchema",
     "StrictSchema",
     "GeminiSchema",
+    "GeminiRecursiveSchema",
     "SchemaInvariantError",
 ]
 
@@ -814,3 +815,174 @@ class GeminiSchema(StrictSchema):
     flatten_oneof_discriminator = True
     strip_parameters_root_description = False
     strip_re2_incompatible_patterns = False
+
+
+class GeminiRecursiveSchema(GeminiSchema):
+    """:class:`GeminiSchema` extended for two structural shapes the base
+    Gemini sanitiser mishandles, both observed live on
+    ``google/gemini-3.6-flash`` (observe stage 2026-07-22).
+
+    1. **Cyclic ``$ref`` tolerance.** The base ``StrictSchema`` ``$ref``
+       pre-pass fully *inlines* every ``$ref``. A genuinely recursive
+       Pydantic model (``TreeNode.children: list[TreeNode]``) emits a
+       ``$ref`` cycle, and full inlining recurses until the depth-16 guard
+       raises ``"$ref resolution exceeded depth 16"`` — the tool schema is
+       never built and the probe fails before the model is even called
+       (``test_recursive_ref_tool_call`` 0/15). This subclass inlines
+       *acyclic* ``$ref``\\ s as before but, on detecting a ``$ref`` whose
+       target is already on the active resolution path, leaves that
+       ``$ref`` node in place (a self-referential schema is valid
+       JSON-Schema and Gemini handles it — it only mis-handled the
+       *unsupported inlined shapes*, not recursion per se). Any ``$defs``
+       entry still reachable through a surviving ``$ref`` is preserved.
+
+    2. **Scalar-valued dict-map ``value`` field.** ``StrictSchema``
+       converts ``additionalProperties: {schema}`` to an array of
+       ``{key, …value_fields}`` objects. For a *scalar*-valued map
+       (``dict[str, int]`` → ``additionalProperties: {type: integer}``) the
+       value schema has no ``properties``, so only the synthetic ``key``
+       field lands on the item and the model has nowhere to put the value —
+       observed live emitting ``{"SKU-A": {"value": 10}}`` (a
+       ``{value: …}`` wrapper) instead of ``{"SKU-A": 10}``
+       (``test_variant_dict_map[dict_map__scalar_values]`` 0/15). This
+       subclass adds an explicit synthetic ``value`` field (typed from the
+       scalar value schema) to the item so the model has a slot;
+       :class:`RecursiveArrayDictMapResponse` unwraps ``{key, value}`` back
+       to ``{key: value}`` on the way in.
+    """
+
+    #: Synthetic field carrying a scalar dict-map value on the array items.
+    VALUE_FIELD = "value"
+
+    #: JSON-Schema ``type`` values treated as scalar (leaf) value schemas.
+    _SCALAR_TYPES = frozenset({"integer", "number", "string", "boolean"})
+
+    @classmethod
+    def _inline_refs_in_tool(cls, tool: Any) -> Any:
+        """Cycle-tolerant variant of the base ``$ref`` pre-pass.
+
+        Inlines acyclic ``$ref``\\ s; leaves recursive ones in place and
+        keeps the ``$defs`` block only when a ``$ref`` survived (so the
+        surviving reference still resolves).
+        """
+        if not isinstance(tool, dict):
+            return tool
+        func = tool.get("function")
+        if not isinstance(func, dict):
+            return tool
+        params = func.get("parameters")
+        if not isinstance(params, dict):
+            return tool
+        defs = params.get("$defs")
+        if not isinstance(defs, dict):
+            return tool
+        survivors: set[str] = set()
+        resolved_params = cls._inline_refs_cycle_safe(
+            params, defs, active=(), survivors=survivors, depth=0
+        )
+        if isinstance(resolved_params, dict):
+            if survivors:
+                # Keep only the $defs entries still reachable through a
+                # surviving (recursive) $ref; drop the rest now that they
+                # have been inlined.
+                resolved_params = dict(resolved_params)
+                resolved_params["$defs"] = {name: defs[name] for name in survivors if name in defs}
+            else:
+                resolved_params.pop("$defs", None)
+        new_func = dict(func)
+        new_func["parameters"] = resolved_params
+        new_tool = dict(tool)
+        new_tool["function"] = new_func
+        return new_tool
+
+    @classmethod
+    def _inline_refs_cycle_safe(
+        cls,
+        schema: Any,
+        defs: dict[str, Any],
+        *,
+        active: tuple[str, ...],
+        survivors: set[str],
+        depth: int,
+    ) -> Any:
+        """Inline acyclic ``$ref``\\ s; leave cyclic ones untouched.
+
+        ``active`` is the chain of ``$defs`` names currently being resolved
+        on this path. A ``$ref`` to a name already in ``active`` is a cycle:
+        return the ``$ref`` node verbatim and record the name in
+        ``survivors`` so its ``$defs`` entry is preserved.
+        """
+        if depth > cls._MAX_REF_DEPTH:
+            # Non-cyclic but pathologically deep — degrade to leaving the
+            # node as-is rather than raising, matching the tolerant intent.
+            return schema
+        if isinstance(schema, list):
+            return [
+                cls._inline_refs_cycle_safe(
+                    item, defs, active=active, survivors=survivors, depth=depth + 1
+                )
+                for item in schema
+            ]
+        if not isinstance(schema, dict):
+            return schema
+        ref = schema.get("$ref")
+        if isinstance(ref, str) and ref.startswith("#/$defs/"):
+            target_name = ref.removeprefix("#/$defs/")
+            if target_name in active:
+                # Cycle: keep the $ref in place and preserve its $defs entry.
+                survivors.add(target_name)
+                return schema
+            target = defs.get(target_name)
+            if target is None:
+                raise ValueError(
+                    f"StrictSchema: $ref {ref!r} points to a missing "
+                    f"$defs entry. Available: {sorted(defs.keys())!r}"
+                )
+            resolved = cls._inline_refs_cycle_safe(
+                target,
+                defs,
+                active=active + (target_name,),
+                survivors=survivors,
+                depth=depth + 1,
+            )
+            siblings = {k: v for k, v in schema.items() if k != "$ref"}
+            if not siblings:
+                return resolved
+            if isinstance(resolved, dict):
+                merged = dict(resolved)
+                for k, v in siblings.items():
+                    merged[k] = cls._inline_refs_cycle_safe(
+                        v, defs, active=active, survivors=survivors, depth=depth + 1
+                    )
+                return merged
+            return resolved
+        return {
+            k: cls._inline_refs_cycle_safe(
+                v, defs, active=active, survivors=survivors, depth=depth + 1
+            )
+            for k, v in schema.items()
+        }
+
+    def _convert_dict_map_to_array(
+        self, result: dict[str, Any], value_schema: dict[str, Any]
+    ) -> dict[str, Any]:
+        """As the base conversion, but add a synthetic ``value`` field when
+        the dict-map value schema is a scalar (no ``properties`` to lift).
+        """
+        sanitised_value = self._sanitise_schema(value_schema)
+        is_scalar_map = (
+            isinstance(sanitised_value, dict)
+            and sanitised_value.get("type") in self._SCALAR_TYPES
+            and not sanitised_value.get("properties")
+        )
+        converted = super()._convert_dict_map_to_array(result, value_schema)
+        if is_scalar_map:
+            items = converted.get("items")
+            if isinstance(items, dict) and isinstance(items.get("properties"), dict):
+                value_field = dict(sanitised_value)
+                value_field.setdefault("description", "The scalar value for this map key.")
+                items["properties"][self.VALUE_FIELD] = value_field
+                req = items.get("required")
+                if isinstance(req, list) and self.VALUE_FIELD not in req:
+                    req.append(self.VALUE_FIELD)
+        return converted

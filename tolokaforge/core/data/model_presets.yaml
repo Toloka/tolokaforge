@@ -196,6 +196,43 @@ presets:
     content_policy: nova
     response_policy: standard
 
+  # Gemini 3.6 Flash — Flash-lineage sibling of the generic ``gemini``
+  # route below, listed FIRST so first-match-wins routing picks it before
+  # the ``*gemini-3*`` glob. The default gemini route's shipped
+  # ``GeminiSchema`` + ``ArrayDictMapResponse`` classes have two structural
+  # gaps this model surfaces (observe integration 2026-07-22, PR #559), both
+  # FORMATTING (engine/preset-fixable), not model ceilings:
+  #
+  #   * RECURSIVE_REF_TOOL_CALL (0/15 on default) — ``GeminiSchema``'s $ref
+  #     pre-pass raises "$ref resolution exceeded depth 16" on a genuinely
+  #     recursive schema (``TreeNode.children: list[TreeNode]``); the tool
+  #     schema never builds and the model is never called.
+  #     ``GeminiRecursiveSchema`` inlines $ref cycle-tolerantly (leaves the
+  #     recursive $ref in place, keeps $defs) so the schema builds.
+  #   * dict_map__nested_in_object (0/15) — the flat ``ArrayDictMapResponse``
+  #     only reverses top-level array→dict pivots, so a one-level-deep
+  #     dict-map (``order.lines``) stays a list. ``RecursiveArrayDictMapResponse``
+  #     reverses the pivot recursively.
+  #   * dict_map__scalar_values (0/15) — a scalar-valued map (``dict[str,int]``)
+  #     loses its value slot in the array conversion, so the model improvises
+  #     ``{"value": N}``. ``GeminiRecursiveSchema`` adds a synthetic ``value``
+  #     field; ``RecursiveArrayDictMapResponse`` unwraps ``{key, value}`` back
+  #     to ``{key: value}``.
+  #
+  # Only the two axes differ from the generic gemini route (schema_sanitizer +
+  # response_policy); ``reasoning_codec: gemini`` is retained. Every fix-target
+  # went 5/5 on the final reprobe (see PR #559). Caching + signed-thinking
+  # replay are genuine provider ceilings (known_unsupported in registry.py),
+  # not addressed here.
+  gemini_36_flash:
+    match:
+      - "openrouter/google/gemini-3.6-flash"
+      - "google/gemini-3.6-flash"
+      - "*gemini-3.6-flash*"
+    reasoning_codec: gemini
+    schema_sanitizer: gemini_recursive
+    response_policy: recursive_array_dict_map
+
   # Google Gemini family (3.x preview + 3.x GA + 2.5 backstop).
   # ``GeminiReasoningCodec`` decodes Gemini's OpenRouter
   # ``provider_specific_fields.reasoning_details`` envelope: handles

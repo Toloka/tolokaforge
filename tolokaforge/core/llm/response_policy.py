@@ -47,6 +47,7 @@ __all__ = [
     "UnwrapInputResponse",
     "JsonCoerceResponse",
     "ArrayDictMapResponse",
+    "RecursiveArrayDictMapResponse",
     "JsonRecursiveCoerceResponse",
     "ItemRecursiveUnwrapResponse",
     "MinimaxM3TagRecoveryResponse",
@@ -317,6 +318,79 @@ class ArrayDictMapResponse:
                 key = str(value_copy.pop(self.KEY_FIELD))
                 result[param_name] = {key: value_copy}
         return result
+
+
+class RecursiveArrayDictMapResponse:
+    """Recursive, scalar-aware reverse of the ``StrictSchema`` dict-map→array
+    pivot — the fix for two shapes the flat :class:`ArrayDictMapResponse`
+    misses (observed live on ``google/gemini-3.6-flash``, observe 2026-07-22):
+
+    * **Nested dict-map.** When the map lives one level deep
+      (``order.lines`` on ``submit_order``), the flat policy only pivots
+      top-level params and leaves ``order.lines`` a ``list`` →
+      ``test_variant_dict_map[dict_map__nested_in_object]`` 0/15. This
+      policy walks the whole argument tree and pivots any
+      ``[{key, …}, …]`` array — at any depth — back to a dict.
+
+    * **Scalar-valued dict-map.** With :class:`GeminiRecursiveSchema` adding
+      a synthetic ``value`` field for ``dict[str, int]``-style maps, the
+      wire shape is ``[{"key": "SKU-A", "value": 10}, …]``. After popping
+      ``key`` the item is ``{"value": 10}``; this policy unwraps that
+      single ``value`` field back to the scalar so the map is
+      ``{"SKU-A": 10}`` rather than ``{"SKU-A": {"value": 10}}``
+      (``test_variant_dict_map[dict_map__scalar_values]`` 0/15).
+
+    The array→dict pivot is self-identifying (every item carries the
+    synthetic ``key`` field), so the recursion needs no schema info and is
+    safe to run structurally: a genuine ``array`` param whose items lack
+    ``key`` is left untouched. ``value``-unwrap fires only on the exact
+    two-field ``{key, value}`` item the scalar-map sanitiser produces.
+    """
+
+    KEY_FIELD = StrictSchema.KEY_FIELD
+    VALUE_FIELD = "value"
+
+    def parse_arguments(
+        self,
+        arguments: dict[str, Any],
+        *,
+        param_types: Mapping[str, str] | None = None,
+    ) -> dict[str, Any]:
+        coerced = _coerce_empty_containers(arguments, param_types)
+        result = _coerce_json_strings(coerced)
+        return self._pivot(result)
+
+    def _pivot(self, value: Any) -> Any:
+        """Recursively reverse array→dict pivots throughout the tree."""
+        if isinstance(value, dict):
+            return {k: self._pivot(v) for k, v in value.items()}
+        if isinstance(value, list):
+            if value and all(isinstance(item, dict) and self.KEY_FIELD in item for item in value):
+                dict_map: dict[str, Any] = {}
+                for item in value:
+                    item_copy = dict(item)
+                    key = str(item_copy.pop(self.KEY_FIELD))
+                    dict_map[key] = self._unwrap_value(self._pivot(item_copy))
+                return dict_map
+            return [self._pivot(item) for item in value]
+        return value
+
+    def _unwrap_value(self, item: Any) -> Any:
+        """Collapse the scalar-map ``{value: <scalar>}`` wrapper to the scalar.
+
+        Fires only when the pivoted item is exactly ``{"value": x}`` and
+        ``x`` is a scalar leaf — the shape :class:`GeminiRecursiveSchema`
+        produces for a scalar-valued dict-map. Multi-field value objects
+        (the ``{sku, qty, price}`` case) pass through unchanged.
+        """
+        if (
+            isinstance(item, dict)
+            and len(item) == 1
+            and self.VALUE_FIELD in item
+            and not isinstance(item[self.VALUE_FIELD], (dict, list))
+        ):
+            return item[self.VALUE_FIELD]
+        return item
 
 
 # ---------------------------------------------------------------------------

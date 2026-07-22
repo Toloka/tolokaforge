@@ -2,7 +2,7 @@
   "_meta": {
     "description": "Model pricing in USD per 1M tokens. Source: OpenRouter API.",
     "source_url": "https://openrouter.ai/api/v1/models",
-    "updated_at": "2026-05-27T11:24:38.153095+00:00",
+    "updated_at": "2026-07-22T07:37:24.367863+00:00",
     "notes": "Run `uv run pricing-updater update` to refresh from OpenRouter API."
   },
   "models": {
@@ -504,6 +504,12 @@
     "google/gemini-3.5-flash": {
       "input": 1.5,
       "output": 9.0,
+      "cache_read": 0.15,
+      "cache_write": 0.083333
+    },
+    "google/gemini-3.6-flash": {
+      "input": 1.5,
+      "output": 7.5,
       "cache_read": 0.15,
       "cache_write": 0.083333
     },
