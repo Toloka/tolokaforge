@@ -52,6 +52,7 @@ from tolokaforge.core.run_display_events import (
 )
 from tolokaforge.core.runtime import EnvHandle, IsolationMode, ProvisionError
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, EnvEndpoints, EnvironmentManifest
+from tolokaforge.docker.logging import LogRouter
 from tolokaforge.runner import (
     ExecutionStatus,
     runner_pb2,
@@ -221,8 +222,7 @@ class GrpcRunnerClient:
             try:
                 if self.health_check():
                     logger.info(
-                        f"Runner service healthy after {attempt} attempt(s), "
-                        f"elapsed={elapsed:.2f}s"
+                        f"Runner service healthy after {attempt} attempt(s), elapsed={elapsed:.2f}s"
                     )
                     self._events.component_status_changed(
                         snapshot=self._component_snapshot(
@@ -824,6 +824,7 @@ class SharedStackRuntimeBackend:
         self._run_id = run_id
         self._compose: DockerCompose | None = None
         self._temp_dir: Path | None = None
+        self._compose_log_routers: list[LogRouter] = []
         self.seeds: dict[str, SeedRef] = dict(seeds or {})
         self.log_capture = log_capture
         self._events: RunDisplayEvents = events if events is not None else _NULL_EVENTS
@@ -889,6 +890,15 @@ class SharedStackRuntimeBackend:
             if self.runner_client is not None:
                 self.runner_client.close()
         finally:
+            for router in self._compose_log_routers:
+                try:
+                    router.stop()
+                except Exception:  # noqa: BLE001 — teardown must never mask compose cleanup
+                    logger.exception(
+                        "SharedStackRuntimeBackend: log router stop failed for container %r",
+                        router.container_name,
+                    )
+            self._compose_log_routers = []
             if self._compose is not None:
                 shutdown_compose(self._compose)
                 self._compose = None
@@ -985,6 +995,35 @@ class SharedStackRuntimeBackend:
             runner_address=f"{runner_host}:{runner_host_port}",
             events=self._events,
         )
+
+        # Attach a LogRouter per container in the task-declared stack so
+        # container stdout/stderr reaches the component tail widget. The
+        # compose stack is already up at this point; a per-container router
+        # failure MUST NOT abort provisioning — log it and continue with the
+        # remaining containers.
+        for container in compose.get_containers():
+            if not container.ID:
+                continue
+            try:
+                router = LogRouter(
+                    container_name=container.Name or container.Service or "unknown",
+                    container_id=container.ID,
+                    component_id=build_component_id(
+                        "engine",
+                        "docker.service",
+                        container.Service or "unknown",
+                    ),
+                )
+                router.start()
+            except Exception:  # noqa: BLE001 — router failure must not abort provisioning
+                logger.exception(
+                    "SharedStackRuntimeBackend: failed to attach log router for "
+                    "container %r (service=%r)",
+                    container.Name,
+                    container.Service,
+                )
+                continue
+            self._compose_log_routers.append(router)
 
     def _capture_materialise_failure_logs(self, compose: DockerCompose | None) -> None:
         """Best-effort run-level capture of the shared stack's per-service
