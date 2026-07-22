@@ -109,17 +109,18 @@ isolated `--target` (never the dev venv) and drive it in fresh subprocesses.
 
 `test_external_harness_e2e.py` is the runtime-independence capstone: a single
 downstream plug-in registers a runtime backend, grader, and conductor, and both
-`tolokaforge.run_trial` and the `tolokaforge run-one` subprocess resolve all
-three seams from installed metadata. `test_run_one_over_downstream_plugins`
-compares the subprocess's `result` wire line to a checked-in golden at
-`tests/data/run_one_capstone_golden.jsonl`. The fixture trajectory carries no
+`tolokaforge.runner.run_trial` and the `tolokaforge run-trial` subprocess resolve
+all three seams from installed metadata.
+`test_run_trial_cli_over_downstream_plugins` compares the subprocess's `result`
+wire line to a checked-in golden at
+`tests/data/run_trial_capstone_golden.jsonl`. The fixture trajectory carries no
 volatile field (`messages=[]`, pinned `start_ts`/`end_ts`, default `Metrics`), so
 the golden is byte-stable with **no mask**. Regenerate it after an intentional
 wire/fixture change with:
 
 ```bash
 TOLOKAFORGE_REGENERATE_GOLDEN=1 scripts/with_env.sh uv run pytest \
-  tests/integration/test_external_harness_e2e.py::test_run_one_over_downstream_plugins
+  tests/integration/test_external_harness_e2e.py::test_run_trial_cli_over_downstream_plugins
 ```
 
 If two regenerations differ, a volatile field leaked — pin it in the fixture, do

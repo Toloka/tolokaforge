@@ -1,7 +1,7 @@
-"""Subprocess behaviour lock for ``tolokaforge run-one`` — the acceptance
+"""Subprocess behaviour lock for ``tolokaforge run-trial`` — the acceptance
 behaviour-lock, Docker/LLM-free, every PR.
 
-Spawns a real ``tolokaforge run-one`` subprocess and asserts the stdout
+Spawns a real ``tolokaforge run-trial`` subprocess and asserts the stdout
 JSON-Lines stream for the six wire outcomes. ``runtime="in_memory"
 conductor="in_memory"`` drives the whole path deterministically with no Docker
 and no LLM key: ``InMemoryConductor`` returns a synthetic trajectory and never
@@ -9,7 +9,7 @@ touches the RPC surface, and registry resolution goes through installed
 entry-point metadata (the same dependency as ``test_run_trial_composition``).
 
 The real agent loop across the subprocess boundary is locked separately in
-``tests/integration/test_run_one_e2e.py`` (gated: real runner + real LLM).
+``tests/integration/test_run_trial_cli_e2e.py`` (gated: real runner + real LLM).
 """
 
 from __future__ import annotations
@@ -24,15 +24,15 @@ from pathlib import Path
 import pytest
 
 from tests.canonical._factories import write_yaml_file
-from tolokaforge import run_trial
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.models import TaskConfig
 from tolokaforge.core.trial import TrialResult
+from tolokaforge.runner import run_trial
 
 pytestmark = pytest.mark.canonical
 
 _AGENT = {"provider": "openai", "name": "gpt-4"}
-_RUN_ONE_CMD = [sys.executable, "-m", "tolokaforge.cli.main", "run-one"]
+_RUN_TRIAL_CLI_CMD = [sys.executable, "-m", "tolokaforge.cli.main", "run-trial"]
 
 
 @pytest.fixture
@@ -92,7 +92,12 @@ def _start_line(task: TaskConfig, **overrides: object) -> str:
 
 def _spawn(stdin: str, cwd: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        _RUN_ONE_CMD, input=stdin, cwd=str(cwd), capture_output=True, text=True, timeout=120
+        _RUN_TRIAL_CLI_CMD,
+        input=stdin,
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        timeout=120,
     )
 
 
@@ -103,7 +108,7 @@ def _sole_stdout_envelope(proc: subprocess.CompletedProcess[str]) -> dict:
     return json.loads(lines[0])
 
 
-def test_happy_path_matches_run_trial(flat_pack: Path) -> None:
+def test_happy_path_matches_run_trial_library(flat_pack: Path) -> None:
     task = _load_task(flat_pack)
     proc = _spawn(_start_line(task), cwd=flat_pack)
 
@@ -166,7 +171,7 @@ def test_sigterm_while_blocked_is_cancelled(flat_pack: Path) -> None:
     outcome: tuple[int, str] | None = None
     for warmup_s in (1.0, 2.0, 4.0, 6.0, 8.0):
         proc = subprocess.Popen(
-            _RUN_ONE_CMD,
+            _RUN_TRIAL_CLI_CMD,
             cwd=str(flat_pack),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -185,7 +190,7 @@ def test_sigterm_while_blocked_is_cancelled(flat_pack: Path) -> None:
         if proc.returncode == 1 and stdout.strip():
             break
 
-    assert outcome is not None, "run-one never produced a terminal outcome"
+    assert outcome is not None, "run-trial subprocess never produced a terminal outcome"
     returncode, stdout = outcome
     assert returncode == 1, f"signal handler never became active (last rc={returncode})"
     lines = [line for line in stdout.splitlines() if line.strip()]

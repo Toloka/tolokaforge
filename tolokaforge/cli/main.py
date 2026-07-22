@@ -103,10 +103,10 @@ from tolokaforge.cli.assets_commands import assets  # noqa: E402
 
 cli.add_command(assets)
 
-# Register the `run-one` subprocess-contract command (JSON-Lines wire over stdio).
-from tolokaforge.cli.run_one_command import run_one  # noqa: E402
+# Register the `run-trial` subprocess-contract command (JSON-Lines wire over stdio).
+from tolokaforge.cli.run_trial_command import run_trial  # noqa: E402
 
-cli.add_command(run_one)
+cli.add_command(run_trial)
 
 
 # Default user model configuration

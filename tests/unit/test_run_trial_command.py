@@ -1,8 +1,8 @@
-"""Pure-function contract for ``tolokaforge run-one``: envelope parse, error
+"""Pure-function contract for ``tolokaforge run-trial``: envelope parse, error
 marshal, result marshal, and command registration — no subprocess, no services.
 
 The subprocess behaviour lock (canned stdin → expected stdout) lives in the
-canonical tier (``tests/canonical/test_run_one_subprocess.py``).
+canonical tier (``tests/canonical/test_run_trial_cli_subprocess.py``).
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from tests.canonical._factories import make_trajectory
-from tolokaforge.cli.run_one_command import (
+from tolokaforge.cli.run_trial_command import (
     CancelMessage,
     ProtocolError,
     StartMessage,
@@ -45,7 +45,7 @@ class TestParseEnvelope:
             conductor="in_memory",
         )
 
-    def test_start_omitting_seams_defaults_to_run_trial_defaults(self) -> None:
+    def test_start_omitting_seams_defaults_to_library_defaults(self) -> None:
         message = parse_envelope('{"v":1,"type":"start","task":{},"models":{}}')
         assert isinstance(message, StartMessage)
         assert (message.runtime, message.grader, message.conductor) == (
@@ -130,7 +130,7 @@ class TestMarshalResult:
 
 
 class TestRegistration:
-    def test_run_one_command_is_registered(self) -> None:
+    def test_run_trial_cli_command_is_registered(self) -> None:
         from tolokaforge.cli.main import cli
 
-        assert "run-one" in cli.commands
+        assert "run-trial" in cli.commands

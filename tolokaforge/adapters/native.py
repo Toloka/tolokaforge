@@ -210,7 +210,7 @@ class NativeAdapter(BaseAdapter):
         """Seed the discovery caches with an already-validated task.
 
         Lets an in-process caller that already holds a :class:`TaskConfig` and
-        its pack directory (e.g. :func:`tolokaforge.run_trial`) resolve
+        its pack directory (e.g. :func:`tolokaforge.runner.run_trial`) resolve
         ``task.task_id`` through the standard asset-resolution methods
         (:meth:`to_task_description`, :meth:`get_grading_config`,
         :meth:`create_environment`, :meth:`get_system_prompt`) without a

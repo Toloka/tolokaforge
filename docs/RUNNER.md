@@ -4,10 +4,10 @@ This guide covers Tolokaforge's queue-backed runner for local and distributed
 execution — the `prepare` / `worker` / `status` batch flow.
 
 > **Looking to consume the runner as an independent component** — from your own
-> agent loop, from a non-Python control plane, via `tolokaforge.run_trial(...)`,
-> or via the `tolokaforge run-one` subprocess CLI — see
-> [STANDALONE_RUNNER.md](STANDALONE_RUNNER.md). This guide is the different
-> tool for the different job of running a whole batch.
+> agent loop, from a non-Python control plane, via
+> `tolokaforge.runner.run_trial(...)`, or via the `tolokaforge run-trial`
+> subprocess CLI — see [STANDALONE_RUNNER.md](STANDALONE_RUNNER.md). This guide
+> is the different tool for the different job of running a whole batch.
 
 ## Execution Modes
 

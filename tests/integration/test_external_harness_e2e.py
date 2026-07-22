@@ -5,25 +5,25 @@ installed only into an isolated ``--target`` — never the dev venv) registers a
 runtime backend, a trial grader, and a conductor. Both tolokaforge entries are
 driven over that package, in fresh subprocesses, Docker-free and keyless:
 
-* ``test_run_trial_over_downstream_plugins`` — the library entry
-  ``tolokaforge.run_trial`` resolves all three fixture seams from installed
-  metadata and returns the fixture conductor's synthetic trajectory carrying the
-  fixture grader's sentinel grade; its trajectory is byte-equal (no mask) to what
-  an ``Orchestrator`` wired to the same seams produces.
-* ``test_run_one_over_downstream_plugins`` — the ``tolokaforge run-one``
+* ``test_run_trial_library_over_downstream_plugins`` — the library entry
+  ``tolokaforge.runner.run_trial`` resolves all three fixture seams from
+  installed metadata and returns the fixture conductor's synthetic trajectory
+  carrying the fixture grader's sentinel grade; its trajectory is byte-equal
+  (no mask) to what an ``Orchestrator`` wired to the same seams produces.
+* ``test_run_trial_cli_over_downstream_plugins`` — the ``tolokaforge run-trial``
   subprocess over the ADR wire produces a ``result`` that equals the library
   result and is byte-equal to a checked-in golden transcript. The fixture
   trajectory carries no volatile field (``messages=[]``, pinned
   ``start_ts``/``end_ts``, default ``Metrics``), so the golden needs no mask.
 
 Load-bearing matrix (issue #540 AC): remove #536 (entry-point registries) → both
-tests fail at seam resolution; remove #537 (``tolokaforge.run_trial``) →
-``test_run_trial_over_downstream_plugins`` fails; remove #538 (the ``run-one``
-subcommand) → ``test_run_one_over_downstream_plugins`` fails.
+tests fail at seam resolution; remove #537 (``tolokaforge.runner.run_trial``) →
+``test_run_trial_library_over_downstream_plugins`` fails; remove #538 (the
+``run-trial`` subcommand) → ``test_run_trial_cli_over_downstream_plugins`` fails.
 
 Regenerate the golden after an intentional wire/fixture change:
 ``TOLOKAFORGE_REGENERATE_GOLDEN=1 scripts/with_env.sh uv run pytest \
-tests/integration/test_external_harness_e2e.py::test_run_one_over_downstream_plugins``.
+tests/integration/test_external_harness_e2e.py::test_run_trial_cli_over_downstream_plugins``.
 A diff across two regenerations means a volatile field leaked — pin it in the
 fixture, do not add a mask.
 """
@@ -49,8 +49,8 @@ pytestmark = [
 ]
 
 _FIXTURE_DIR = Path(__file__).parent.parent / "fixtures" / "tolokaforge_plugin_fixture"
-_GOLDEN = Path(__file__).parent.parent / "data" / "run_one_capstone_golden.jsonl"
-_RUN_ONE_CMD = [sys.executable, "-m", "tolokaforge.cli.main", "run-one"]
+_GOLDEN = Path(__file__).parent.parent / "data" / "run_trial_capstone_golden.jsonl"
+_RUN_TRIAL_CLI_CMD = [sys.executable, "-m", "tolokaforge.cli.main", "run-trial"]
 _AGENT_MODEL = {"provider": "openai", "name": "gpt-4"}
 _TASK_ID = "capstone"
 
@@ -69,11 +69,11 @@ import sys
 from unittest.mock import MagicMock
 from pathlib import Path
 
-from tolokaforge import run_trial
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.models import EvaluationConfig, ModelConfig, OrchestratorConfig, RunConfig
 from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
 from tolokaforge.core.trial import TrialResult
+from tolokaforge.runner import run_trial
 from tolokaforge_plugin_fixture import FixtureConductor, FixtureGrader, FixtureRuntimeBackend
 
 base_dir, out_file, orch_out = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -194,7 +194,7 @@ def run_trial_payload(
     return json.loads(out.read_text())
 
 
-def test_run_trial_over_downstream_plugins(run_trial_payload: dict) -> None:
+def test_run_trial_library_over_downstream_plugins(run_trial_payload: dict) -> None:
     result = run_trial_payload["result"]
     TrialResult.model_validate(result)
 
@@ -213,7 +213,7 @@ def test_run_trial_over_downstream_plugins(run_trial_payload: dict) -> None:
     assert trajectory["start_ts"] == trajectory["end_ts"]
 
 
-def test_run_one_over_downstream_plugins(
+def test_run_trial_cli_over_downstream_plugins(
     isolated_env: dict[str, str],
     flat_pack: Path,
     run_trial_payload: dict,
@@ -235,7 +235,7 @@ def test_run_one_over_downstream_plugins(
     # A wire task carries no source_dir, so assets resolve against cwd — spawn at
     # the task-pack root, matching the ADR wire contract.
     proc = subprocess.run(
-        _RUN_ONE_CMD,
+        _RUN_TRIAL_CLI_CMD,
         input=json.dumps(start) + "\n",
         cwd=str(task_dir),
         env=isolated_env,
@@ -243,7 +243,7 @@ def test_run_one_over_downstream_plugins(
         text=True,
     )
     assert proc.returncode == 0, (
-        f"run-one subprocess failed (rc={proc.returncode}):\n"
+        f"run-trial subprocess failed (rc={proc.returncode}):\n"
         f"stdout:\n{proc.stdout[-4000:]}\nstderr:\n{proc.stderr[-4000:]}"
     )
     lines = [line for line in proc.stdout.splitlines() if line.strip()]

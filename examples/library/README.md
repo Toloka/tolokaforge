@@ -1,8 +1,8 @@
-# Library example — `tolokaforge.run_trial`
+# Library example — `tolokaforge.runner.run_trial`
 
 `run_trial.py` runs a single trial in-process through the
-[`tolokaforge.run_trial`](../../docs/API.md#run_trial) library API and prints
-the grade. It loads a `TaskConfig` from the bundled
+[`tolokaforge.runner.run_trial`](../../docs/API.md#run_trial) library API and
+prints the grade. It loads a `TaskConfig` from the bundled
 `examples/native/tool_use` pack, so no config file is needed.
 
 ## Requirements

@@ -549,13 +549,13 @@ my_conductor = "mypkg.conductor:my_conductor_factory"
 - **Duplicate name** — two entry points sharing a name within one group are an unresolvable ambiguity, so *any* lookup into that group raises `DuplicateRegistrationError` naming both providing distributions. Uninstall or rename one to resolve it.
 - **Broken import** — a target that raises on import fails **only when its own name is requested**; a broken third-party plug-in never breaks resolution of a healthy sibling (including a built-in), and the import error propagates loudly rather than being swallowed.
 
-### In-process library consumer — `tolokaforge.run_trial`
+### In-process library consumer — `tolokaforge.runner.run_trial`
 
-`tolokaforge.run_trial(...)` runs a single trial in-process and consumes these same registries: its `runtime`, `grader`, and `conductor` arguments accept any registered name in the respective group, resolved through the same fail-loud loader. `runtime="auto"` is a reserved value (not a registrable name) that mirrors the CLI's task-driven default — `per_trial` when the task's manifest requires per-trial isolation, else `shared` — intercepted before the registry lookup. See [`docs/API.md`](API.md#run_trial) for the signature, return type, and error contract.
+`tolokaforge.runner.run_trial(...)` runs a single trial in-process and consumes these same registries: its `runtime`, `grader`, and `conductor` arguments accept any registered name in the respective group, resolved through the same fail-loud loader. `runtime="auto"` is a reserved value (not a registrable name) that mirrors the CLI's task-driven default — `per_trial` when the task's manifest requires per-trial isolation, else `shared` — intercepted before the registry lookup. See [`docs/API.md`](API.md#run_trial) for the signature, return type, and error contract.
 
-### Subprocess consumer — `tolokaforge run-one`
+### Subprocess consumer — `tolokaforge run-trial`
 
-`tolokaforge run-one` wraps `run_trial` as a subprocess a harness in any language drives over a pipe, and selects the same seams from the same registries — the `start` message's `runtime`, `grader`, and `conductor` fields accept any registered name in the respective group, resolved through the same fail-loud loader (an unknown name comes back as a typed `error` message with `error_type: "UnknownImplementationError"` listing the known names). Selection travels on the wire, so a harness picks a backend without a second CLI flag or config source. See [`docs/API.md`](API.md#tolokaforge-run-one) for the wire contract.
+`tolokaforge run-trial` wraps `run_trial` as a subprocess a harness in any language drives over a pipe, and selects the same seams from the same registries — the `start` message's `runtime`, `grader`, and `conductor` fields accept any registered name in the respective group, resolved through the same fail-loud loader (an unknown name comes back as a typed `error` message with `error_type: "UnknownImplementationError"` listing the known names). Selection travels on the wire, so a harness picks a backend without a second CLI flag or config source. See [`docs/API.md`](API.md#tolokaforge-run-trial) for the wire contract.
 
 ## Per-trial substrate bracket (`TrialExecutor`)
 

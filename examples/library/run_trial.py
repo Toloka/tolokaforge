@@ -1,4 +1,4 @@
-"""Run one trial through the ``tolokaforge.run_trial`` library API.
+"""Run one trial through the ``tolokaforge.runner.run_trial`` library API.
 
 Obtains a ``TaskConfig`` from the bundled ``examples/native/tool_use`` pack,
 runs a single trial in-process, and prints the resulting grade.
@@ -11,12 +11,11 @@ Needs an LLM key in ``.env`` (like every real run) and a live runner
 
 from pathlib import Path
 
-import tolokaforge
-
 # The public task-file loader is deferred to #547; until it lands, obtaining a
 # TaskConfig from disk goes through the adapter's loader — the honest current
 # path a downstream harness would use.
 from tolokaforge.adapters._task_loader import load_task_yaml
+from tolokaforge.runner import run_trial
 from tolokaforge.secrets import init_default
 
 _TASK_YAML = (
@@ -32,7 +31,7 @@ def main() -> None:
 
     task, _task_dir = load_task_yaml(_TASK_YAML)
 
-    result = tolokaforge.run_trial(
+    result = run_trial(
         task=task,
         models={
             "agent": {

@@ -1,4 +1,4 @@
-"""Real-agent-loop parity lock for ``tolokaforge.run_trial``.
+"""Real-agent-loop parity lock for ``tolokaforge.runner.run_trial``.
 
 Against a live local runner (``shared`` backend, ``conductor="in_process"``)
 and a cheap real LLM, ``run_trial`` must produce a trial whose
@@ -149,12 +149,12 @@ def _run_orchestrator_baseline(
     reason="Neither ANTHROPIC_API_KEY nor OPENROUTER_API_KEY is set",
 )
 def test_run_trial_matches_orchestrator_real_agent_loop(tmp_path: Path) -> None:
-    import tolokaforge
+    from tolokaforge.runner import run_trial
 
     provider, model = _pick_provider()  # type: ignore[misc]
     task, _task_dir = load_task_yaml(_TASK_YAML)
 
-    result = tolokaforge.run_trial(
+    result = run_trial(
         task=task,
         models=_models(provider, model),
         runtime="shared",

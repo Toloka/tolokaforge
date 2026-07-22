@@ -1,4 +1,4 @@
-"""``tolokaforge run-one`` — run one trial as a subprocess over a JSON-Lines pipe.
+"""``tolokaforge run-trial`` — run one trial as a subprocess over a JSON-Lines pipe.
 
 A wire adapter over :func:`tolokaforge.core.run_trial.run_trial`: read one
 ``start`` envelope on stdin, run the trial, write exactly one ``result`` /
@@ -26,7 +26,7 @@ from pydantic import ValidationError
 
 from tolokaforge.core.models import TaskConfig
 from tolokaforge.core.plugin_registry import UnknownImplementationError
-from tolokaforge.core.run_trial import run_trial
+from tolokaforge.core.run_trial import run_trial as run_trial_library
 from tolokaforge.core.runtime import ProvisionError
 from tolokaforge.core.trial import TrialResult
 
@@ -155,9 +155,9 @@ def _read_first_envelope(stream: TextIO) -> StartMessage | CancelMessage:
 
 
 def _run_from_start(message: StartMessage) -> TrialResult:
-    """Reconstruct the task and dispatch to ``run_trial`` with the wire seams."""
+    """Reconstruct the task and dispatch to the library ``run_trial`` with the wire seams."""
     task = TaskConfig.model_validate(message.task)
-    return run_trial(
+    return run_trial_library(
         task=task,
         models=message.models,
         runtime=message.runtime,
@@ -178,7 +178,7 @@ def _install_signal_handlers() -> None:
             signal.signal(signum, _raise_cancelled)
 
 
-def _run_one(in_stream: TextIO, out_stream: TextIO) -> int:
+def _run_trial(in_stream: TextIO, out_stream: TextIO) -> int:
     """Drive one trial from ``in_stream``, writing the wire to ``out_stream``.
 
     The whole ``run_trial`` call sits inside the ``try`` so a signal-raised
@@ -218,8 +218,8 @@ def _reroute_stdout_to_stderr() -> TextIO:
     return os.fdopen(wire_fd, "w", encoding="utf-8")
 
 
-@click.command(name="run-one")
-def run_one() -> None:
+@click.command(name="run-trial")
+def run_trial() -> None:
     """Run one trial as a subprocess over a JSON-Lines pipe.
 
     Reads exactly one request envelope on stdin, runs a single trial, and writes
@@ -233,7 +233,7 @@ def run_one() -> None:
        "runtime":"auto","grader":"runner_rpc","conductor":"in_process"}
       {"v":1,"type":"cancel"}
 
-    "task" and "models" mirror the tolokaforge.run_trial arguments; "runtime",
+    "task" and "models" mirror the tolokaforge.runner.run_trial arguments; "runtime",
     "grader", and "conductor" are registered implementation names and default to
     "auto" / "runner_rpc" / "in_process" when omitted.
 
@@ -264,4 +264,4 @@ def run_one() -> None:
     """
     _install_signal_handlers()
     wire_out = _reroute_stdout_to_stderr()
-    raise SystemExit(_run_one(sys.stdin, wire_out))
+    raise SystemExit(_run_trial(sys.stdin, wire_out))

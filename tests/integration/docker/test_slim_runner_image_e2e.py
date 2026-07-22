@@ -9,7 +9,7 @@ slimming did not break the image's function:
 - the docker CLI is absent from the default image;
 - it serves gRPC and reports healthy;
 - shared-stack and per-trial real-agent runs pass end-to-end against it;
-- a ``tolokaforge run-one`` subprocess drives a real trial to completion against
+- a ``tolokaforge run-trial`` subprocess drives a real trial to completion against
   it — the one path none of the #536–#539 tests exercise together (#538
   subprocess entry + #539 slim image + #536 ``shared`` resolution + #537
   composition inside the subprocess).
@@ -167,12 +167,12 @@ def _models(provider: str, model: str) -> dict[str, dict[str, Any]]:
 
 def _run_trial_on(task_yaml: Path, runtime: str) -> Any:
     """Run one trial through the reachable slim runner and return the TrialResult."""
-    import tolokaforge
     from tolokaforge.adapters._task_loader import load_task_yaml
+    from tolokaforge.runner import run_trial
 
     provider, model = _pick_provider()  # type: ignore[misc]
     task, _task_dir = load_task_yaml(task_yaml)
-    return tolokaforge.run_trial(
+    return run_trial(
         task=task,
         models=_models(provider, model),
         runtime=runtime,
@@ -220,8 +220,8 @@ def test_slim_runner_image_per_trial_coding_example() -> None:
 @pytest.mark.llm
 @pytest.mark.slow
 @_real_agent_guards
-def test_slim_runner_image_run_one_subprocess_shared_stack() -> None:
-    """A ``tolokaforge run-one`` subprocess drives a real trial to completion against
+def test_slim_runner_image_run_trial_cli_subprocess_shared_stack() -> None:
+    """A ``tolokaforge run-trial`` subprocess drives a real trial to completion against
     the slim runner image — #538 (subprocess) + #539 (slim image) + #536
     (``shared`` resolution) + #537 (composition inside the subprocess) together."""
     from tolokaforge.adapters._task_loader import load_task_yaml
@@ -246,7 +246,7 @@ def test_slim_runner_image_run_one_subprocess_shared_stack() -> None:
     # subprocess cwd — spawn at the task-pack root. The provider key is inherited
     # from os.environ (exported by scripts/with_env.sh).
     proc = subprocess.run(
-        [sys.executable, "-m", "tolokaforge.cli.main", "run-one"],
+        [sys.executable, "-m", "tolokaforge.cli.main", "run-trial"],
         input=json.dumps(start) + "\n",
         cwd=str(task_dir),
         env=os.environ.copy(),
@@ -255,7 +255,7 @@ def test_slim_runner_image_run_one_subprocess_shared_stack() -> None:
         timeout=900,
     )
     assert proc.returncode == 0, (
-        f"run-one subprocess failed (rc={proc.returncode}):\n"
+        f"run-trial subprocess failed (rc={proc.returncode}):\n"
         f"stdout:\n{proc.stdout[-4000:]}\nstderr:\n{proc.stderr[-4000:]}"
     )
     lines = [line for line in proc.stdout.splitlines() if line.strip()]

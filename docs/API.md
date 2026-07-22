@@ -9,9 +9,9 @@ constructing the orchestrator or its batch lifecycle (queue, run-state,
 worker pool, budget, resume).
 
 ```python
-import tolokaforge
+from tolokaforge.runner import run_trial
 
-result = tolokaforge.run_trial(
+result = run_trial(
     task=task,                          # a TaskConfig
     models={"agent": {"provider": "openrouter", "name": "anthropic/claude-sonnet-4.6"}},
     runtime="auto",                     # or a registered backend name
@@ -61,9 +61,9 @@ Errors:
 - **`ProvisionError`** (`tolokaforge.core.runtime`) — the substrate
   failed to provision. Raised, not swallowed.
 
-## tolokaforge run-one
+## tolokaforge run-trial
 
-`tolokaforge run-one` runs a single trial as a subprocess a harness in any
+`tolokaforge run-trial` runs a single trial as a subprocess a harness in any
 language drives over a pipe — the subprocess wrapper of `run_trial`. It reads
 one request on stdin, runs one trial, and writes one terminal message on
 stdout.

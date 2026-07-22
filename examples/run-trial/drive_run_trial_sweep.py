@@ -1,22 +1,22 @@
-"""End-user shape of a `tolokaforge run-one` driver — model + task sweep.
+"""End-user shape of a `tolokaforge run-trial` driver — model + task sweep.
 
 Runs both bundled `tool_use` tasks (`tool_use_public_example_01` and
 `tool_use_public_example_02`) against two agent models through the
-`tolokaforge run-one` subprocess CLI. Each trial is an isolated subprocess —
+`tolokaforge run-trial` subprocess CLI. Each trial is an isolated subprocess —
 a crash in one leaves the others untouched. Errors are dispatched by
 `error_type` rather than caught as tracebacks. At the end, a small
 comparison table lands on stdout: per-task, per-model score, cost, and
 wall-clock.
 
-The pattern this demonstrates: taking `run-one` beyond the "hello world"
+The pattern this demonstrates: taking `run-trial` beyond the "hello world"
 one-line-of-JSON case into the shape of a real driver — one that has to
 loop, aggregate, and handle both the happy path and typed failure paths.
-Compare with `drive_run_one.py`, which is the minimal version.
+Compare with `drive_run_trial.py`, which is the minimal version.
 
 Needs an LLM key in `.env` (like every real run) and a live runner
 (`make docker-up`). Then, from the repo root::
 
-    uv run python examples/run-one/drive_run_one_sweep.py
+    uv run python examples/run-trial/drive_run_trial_sweep.py
 
 Set `TOLOKAFORGE_SWEEP_MODELS` to a comma-separated list to override the
 model choices, e.g. ``TOLOKAFORGE_SWEEP_MODELS=openai/gpt-4o`` to run one
@@ -75,7 +75,7 @@ def _models_from_env() -> list[str]:
     return [name.strip() for name in override.split(",") if name.strip()]
 
 
-def _run_one_trial(task_yaml: Path, model: str) -> TrialOutcome:
+def _run_single_trial(task_yaml: Path, model: str) -> TrialOutcome:
     task, task_dir = load_task_yaml(task_yaml)
 
     start = {
@@ -95,7 +95,7 @@ def _run_one_trial(task_yaml: Path, model: str) -> TrialOutcome:
 
     began = time.monotonic()
     proc = subprocess.run(
-        [sys.executable, "-m", "tolokaforge.cli.main", "run-one"],
+        [sys.executable, "-m", "tolokaforge.cli.main", "run-trial"],
         input=json.dumps(start) + "\n",
         cwd=str(task_dir),
         env=os.environ.copy(),
@@ -210,7 +210,7 @@ def main() -> None:
     for task_yaml in _TASK_YAMLS:
         for model in models:
             print(f"  running {task_yaml.parent.name} x {model} ...", flush=True)
-            outcomes.append(_run_one_trial(task_yaml, model))
+            outcomes.append(_run_single_trial(task_yaml, model))
 
     print()
     print(_format_table(outcomes))

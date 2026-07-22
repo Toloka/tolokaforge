@@ -31,10 +31,10 @@ can add more via entry-point registration.
                                     +--------------------------------------+
 your code / your language  <------> |  three consumer surfaces             |
                                     |                                      |
-                                    |  * tolokaforge.run_trial(...)        |
+                                    |  * tolokaforge.runner.run_trial(...) |
                                     |    (Python library entry)            |
                                     |                                      |
-                                    |  * tolokaforge run-one                |
+                                    |  * tolokaforge run-trial              |
                                     |    (subprocess CLI, JSON-Lines wire) |
                                     |                                      |
                                     |  * importlib.metadata entry points   |
@@ -66,11 +66,11 @@ in how *you* reach them, not in what the runner does underneath.
 
 | Your situation | Reach for |
 |---|---|
-| Python codebase, want in-process control, care about types | `tolokaforge.run_trial(...)` |
-| Non-Python control plane (Rust / Go / TypeScript / shell) | `tolokaforge run-one` subprocess |
+| Python codebase, want in-process control, care about types | `tolokaforge.runner.run_trial(...)` |
+| Non-Python control plane (Rust / Go / TypeScript / shell) | `tolokaforge run-trial` subprocess |
 | Want to add a new runtime backend, grader, or conductor | Entry-point registries |
-| Want isolation between trials (crash containment, per-trial resource caps) | `tolokaforge run-one` subprocess, one process per trial |
-| Want the lowest per-trial overhead | `tolokaforge.run_trial(...)`, in-process |
+| Want isolation between trials (crash containment, per-trial resource caps) | `tolokaforge run-trial` subprocess, one process per trial |
+| Want the lowest per-trial overhead | `tolokaforge.runner.run_trial(...)`, in-process |
 | Want to run 10,000 trials with distributed workers | Not this guide — use [RUNNER.md](RUNNER.md) (batch mode) |
 
 ## Quickstart
@@ -87,22 +87,22 @@ Two things you need on the host either way:
 
 Then pick a surface.
 
-### From Python — `tolokaforge.run_trial(...)`
+### From Python — `tolokaforge.runner.run_trial(...)`
 
 The library entry is a single keyword-only function. It takes a `TaskConfig`, a
 models dict, and returns a typed `TrialResult`. No config file, no
 `Orchestrator`, no filesystem side effects unless you pass an `output_dir`.
 
 ```python
-import tolokaforge
 from tolokaforge.adapters._task_loader import load_task_yaml
+from tolokaforge.runner import run_trial
 from tolokaforge.secrets import init_default
 
 init_default()  # reads .env into the singleton SecretManager
 
 task, _ = load_task_yaml("examples/native/tool_use/dataset/tasks/tool_use/tool_use_public_example_01/task.yaml")
 
-result = tolokaforge.run_trial(
+result = run_trial(
     task=task,
     models={"agent": {"provider": "openrouter", "name": "anthropic/claude-sonnet-4.6", "temperature": 0.0}},
 )
@@ -121,16 +121,16 @@ not leak gRPC channels or Docker stacks.
 
 Runnable version: [`examples/library/run_trial.py`](../examples/library/run_trial.py).
 
-### From any language — `tolokaforge run-one`
+### From any language — `tolokaforge run-trial`
 
-`tolokaforge run-one` reads one JSON-Lines message from stdin, runs one trial,
+`tolokaforge run-trial` reads one JSON-Lines message from stdin, runs one trial,
 and writes one JSON-Lines message to stdout. Every message carries a wire
 version (`"v":1`) that changes independently of the tolokaforge package
 version — a downstream harness pins against the wire, not the release.
 
 ```bash
 $ echo '{"v":1,"type":"start","task":{...},"models":{"agent":{"provider":"openrouter","name":"anthropic/claude-sonnet-4.6"}}}' \
-    | tolokaforge run-one
+    | tolokaforge run-trial
 {"v":1,"type":"result","result":{"trajectory":{"grade":{...},...}}}
 ```
 
@@ -150,14 +150,14 @@ tool code), spawn the subprocess with its working directory at the task-pack
 root, and file paths in the task will resolve.
 
 Runnable versions:
-- [`examples/run-one/drive_run_one.py`](../examples/run-one/drive_run_one.py) —
+- [`examples/run-trial/drive_run_trial.py`](../examples/run-trial/drive_run_trial.py) —
   minimal "hello world": one trial, print the grade.
-- [`examples/run-one/drive_run_one_sweep.py`](../examples/run-one/drive_run_one_sweep.py)
+- [`examples/run-trial/drive_run_trial_sweep.py`](../examples/run-trial/drive_run_trial_sweep.py)
   — end-user shape: runs both bundled `tool_use` tasks against two models,
   aggregates per-task per-model scores + cost + latency, prints a readable
   comparison table. Handles `error` messages typed rather than as tracebacks.
 
-Full wire format spec: [`docs/API.md`](API.md#tolokaforge-run-one).
+Full wire format spec: [`docs/API.md`](API.md#tolokaforge-run-trial).
 
 ### As an extension point — entry-point registries
 
@@ -185,7 +185,7 @@ and conductors.
 Then, in code that composes your plug-in:
 
 ```python
-result = tolokaforge.run_trial(
+result = run_trial(
     task=task,
     models={"agent": {...}},
     runtime="my_substrate",  # resolves by name; unknown names fail loud
@@ -218,7 +218,7 @@ runner in as a scoring service:
 ```python
 for problem in my_problem_set:
     task = build_task_from_problem(problem)     # your code
-    result = tolokaforge.run_trial(
+    result = run_trial(
         task=task,
         models={"agent": my_model_config()},    # your model
     )
@@ -236,7 +236,7 @@ Compare two models across a small task set without standing up a batch run:
 ```python
 for task in tasks:
     for model_name in ["anthropic/claude-sonnet-4.6", "openai/gpt-4o"]:
-        result = tolokaforge.run_trial(
+        result = run_trial(
             task=task,
             models={"agent": {"provider": "openrouter", "name": model_name}},
         )
@@ -244,24 +244,24 @@ for task in tasks:
 ```
 
 For a runnable end-to-end version of this pattern — with error handling, a
-comparison table printed to stdout, and use of `tolokaforge run-one` (so each
+comparison table printed to stdout, and use of `tolokaforge run-trial` (so each
 trial runs in an isolated subprocess), see
-[`examples/run-one/drive_run_one_sweep.py`](../examples/run-one/drive_run_one_sweep.py).
+[`examples/run-trial/drive_run_trial_sweep.py`](../examples/run-trial/drive_run_trial_sweep.py).
 
 ### Non-Python control plane
 
 You already have orchestration in Go / Rust / TypeScript / shell. Pipe JSON
-into `tolokaforge run-one` and read one JSON message back. No FFI, no
+into `tolokaforge run-trial` and read one JSON message back. No FFI, no
 embedded interpreter, no cross-language type gymnastics.
 
 ```bash
 # shell — one trial through the subprocess CLI
-cat trial_start.json | tolokaforge run-one > trial_result.json
+cat trial_start.json | tolokaforge run-trial > trial_result.json
 ```
 
 ```typescript
 // TypeScript — same shape, different plumbing
-const child = spawn("tolokaforge", ["run-one"]);
+const child = spawn("tolokaforge", ["run-trial"]);
 child.stdin.write(JSON.stringify(startMessage) + "\n");
 child.stdin.end();
 const [resultLine] = await readOneJsonLine(child.stdout);
@@ -297,7 +297,7 @@ my_rubric = "your_package.graders:factory"
 Install alongside tolokaforge (`pip install your_package tolokaforge`), then:
 
 ```python
-result = tolokaforge.run_trial(
+result = run_trial(
     task=task,
     models={"agent": {...}},
     trial_grader="my_rubric",   # your grader, resolved by name
@@ -309,7 +309,7 @@ conductors (`conductor="my_agent_loop"`).
 
 ## Wire format quick-reference
 
-`tolokaforge run-one` speaks a small JSON-Lines protocol. Every message
+`tolokaforge run-trial` speaks a small JSON-Lines protocol. Every message
 carries `"v":1`.
 
 **Client → runner (stdin):**
@@ -345,7 +345,7 @@ silently ignored. A typo like `"runtme": "auto"` fails loud with the offending
 key name rather than falling back to the default.
 
 Full spec, including the (experimental) `event` progress subtypes and the
-`cancel` control message: [`docs/API.md`](API.md#tolokaforge-run-one).
+`cancel` control message: [`docs/API.md`](API.md#tolokaforge-run-trial).
 
 ## Compatibility guarantees
 
@@ -359,7 +359,7 @@ locks them:
 2. **`run_trial(...)`'s signature, return type, and named error types.** New
    optional keyword arguments can be added; positional shape and return
    surface stay stable.
-3. **`tolokaforge run-one` wire format at `"v":1`.** New optional fields on
+3. **`tolokaforge run-trial` wire format at `"v":1`.** New optional fields on
    existing message types are allowed (additive); breaking changes require a
    `v` bump. New message subtypes (like `event`) are experimental until
    promoted.
@@ -403,7 +403,7 @@ before building a plug-in that leans heavily on the current model.
 ## See also
 
 - [`docs/API.md`](API.md) — full API reference for `run_trial` and the
-  `run-one` wire format.
+  `run-trial` wire format.
 - [`docs/RUNTIME_BACKENDS.md`](RUNTIME_BACKENDS.md) — the `RuntimeBackend`
   Protocol contract, existing implementations, and plug-in registration
   mechanics.
@@ -413,5 +413,5 @@ before building a plug-in that leans heavily on the current model.
   — the design decision this guide describes, with rationale and the
   compatibility-surfaces table.
 - [`examples/library/`](../examples/library/) — Python library-entry example.
-- [`examples/run-one/`](../examples/run-one/) — subprocess CLI examples,
+- [`examples/run-trial/`](../examples/run-trial/) — subprocess CLI examples,
   minimal + comparison-sweep.

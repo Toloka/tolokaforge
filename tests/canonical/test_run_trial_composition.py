@@ -1,4 +1,4 @@
-"""Composition-equivalence lock for ``tolokaforge.run_trial``.
+"""Composition-equivalence lock for ``tolokaforge.runner.run_trial``.
 
 Over a fixture task pack, ``run_trial`` wired to the ``in_memory`` runtime
 backend + ``in_memory`` conductor must return a :class:`TrialResult` whose
@@ -21,7 +21,6 @@ from unittest.mock import MagicMock
 import pytest
 
 from tests.canonical._factories import write_yaml_file
-from tolokaforge import run_trial
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.conductor import InMemoryConductor
 from tolokaforge.core.models import (
@@ -34,6 +33,7 @@ from tolokaforge.core.models import (
 from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
 from tolokaforge.core.runtime import InMemoryRuntimeBackend
 from tolokaforge.core.trial import TrialResult
+from tolokaforge.runner import run_trial
 
 pytestmark = pytest.mark.canonical
 

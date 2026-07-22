@@ -1,7 +1,7 @@
-# run-one examples — `tolokaforge run-one` subprocess
+# run-trial examples — `tolokaforge run-trial` subprocess
 
 Two examples of driving trials through the
-[`tolokaforge run-one`](../../docs/API.md#tolokaforge-run-one) subprocess
+[`tolokaforge run-trial`](../../docs/API.md#tolokaforge-run-trial) subprocess
 contract. Both read the same JSON-Lines wire (`"v":1`) and both target the
 bundled `examples/native/tool_use` task pack — pick the one that matches how
 far along your driver is.
@@ -9,34 +9,34 @@ far along your driver is.
 Start with the [standalone runner guide](../../docs/STANDALONE_RUNNER.md) if
 you want the mental model + when-to-use guidance before touching code.
 
-## `drive_run_one.py` — the "hello world"
+## `drive_run_trial.py` — the "hello world"
 
 One trial, one JSON message in, one JSON message out, print the grade. About
 90 lines, no aggregation, no comparison. Read this first if the wire format
 is new to you.
 
 ```bash
-uv run python examples/run-one/drive_run_one.py
+uv run python examples/run-trial/drive_run_trial.py
 ```
 
-## `drive_run_one_sweep.py` — end-user shape
+## `drive_run_trial_sweep.py` — end-user shape
 
 Runs both bundled `tool_use` tasks against two agent models
 (`anthropic/claude-sonnet-4.6` and `openai/gpt-4o` by default), each trial in
 its own isolated subprocess, and prints a per-task per-model comparison table
 plus per-model averages. Errors are dispatched by `error_type` rather than
-caught as tracebacks — a `run-one` driver never sees a Python traceback
+caught as tracebacks — a `run-trial` driver never sees a Python traceback
 across the wire.
 
 ```bash
-uv run python examples/run-one/drive_run_one_sweep.py
+uv run python examples/run-trial/drive_run_trial_sweep.py
 ```
 
 Override the model list with `TOLOKAFORGE_SWEEP_MODELS`:
 
 ```bash
 TOLOKAFORGE_SWEEP_MODELS=anthropic/claude-sonnet-4.6 \
-    uv run python examples/run-one/drive_run_one_sweep.py
+    uv run python examples/run-trial/drive_run_trial_sweep.py
 ```
 
 ## Requirements
