@@ -230,7 +230,9 @@ class _PtyBashSession:
 
     def _write(self, data: str) -> None:
         assert self._master_fd is not None
-        os.write(self._master_fd, data.encode())
+        buf = data.encode()
+        while buf:
+            buf = buf[os.write(self._master_fd, buf) :]
 
     def _read(self) -> bytes:
         assert self._master_fd is not None
@@ -330,6 +332,9 @@ class DockerComposeBashSession(_PtyBashSession):
         )
 
     def _seed_cwd(self, cwd: str | None) -> None:
+        # Host work_dir need not exist inside the container; swallow the cd
+        # failure so the session still opens (the local engine's isdir guard
+        # has no in-container equivalent here).
         if cwd:
             self.run(f"cd {shlex.quote(cwd)} 2>/dev/null || true", timeout_s=_OPEN_TIMEOUT_S)
 

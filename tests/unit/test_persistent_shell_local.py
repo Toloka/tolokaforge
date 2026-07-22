@@ -99,6 +99,26 @@ def test_output_is_middle_truncated_with_grep_hint(session):
     assert "grep" in out
 
 
+def test_large_command_survives_short_writes(session, monkeypatch):
+    """``os.write`` on the PTY master may write fewer bytes than requested, so
+    ``_write`` must loop until the buffer drains. Cap every write at 4096 bytes
+    to force that short-write condition deterministically, then round-trip a
+    large heredoc: a single un-looped write would drop the command tail (the
+    heredoc terminator never arrives → timeout), while the loop delivers it in
+    full. ``wc -c`` keeps the output under the 16 KB truncation budget so the
+    write path is what's under test."""
+    import tolokaforge.tools.persistent_shell as ps
+
+    real_write = os.write
+    monkeypatch.setattr(ps.os, "write", lambda fd, buf: real_write(fd, buf[:4096]))
+
+    payload = "A" * 100_000
+    result = session.run(f"cat <<'EOF' | wc -c\n{payload}\nEOF", 15)
+    assert result.timed_out is False
+    assert result.exit_code == 0
+    assert result.output.strip() == str(len(payload) + 1)
+
+
 async def test_wrapper_timeout_resolved_from_tool_config(tmp_path):
     """A 5s ``tool_config`` timeout is enforced — proves the wrapper reads
     tool_config, not self.timeout_s (pinned to 30s by the adapter)."""
