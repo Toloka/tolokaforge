@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Feat
+
+- **tools**: session-lifetime bash tool matching Anthropic `bash_20250124` — new `bash_session` schema (input: `command` string + `restart` bool) with subprocess variant. Docker-compose provider variant lands in follow-up. Additive; existing `bash` builtin unchanged.
+
 ## v0.9.3 (2026-07-22)
 
 ## v0.9.2 (2026-07-21)

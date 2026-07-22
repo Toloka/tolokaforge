@@ -32,6 +32,8 @@ def test_list_builtins_covers_every_consumer_today():
         # executor side (was builtin_tool_factories, 10 entries)
         "list_dir",
         "search_kb",
+        # session-lifetime persistent shell (#566)
+        "bash_session",
     }
     assert expected == set(registry.list_builtins())
 
@@ -40,12 +42,21 @@ def test_dispatch_groups_are_disjoint_and_exhaustive():
     generic = registry.list_for_dispatch(registry.Dispatch.GENERIC)
     files = registry.list_for_dispatch(registry.Dispatch.FILES)
     rag = registry.list_for_dispatch(registry.Dispatch.RAG)
+    shell = registry.list_for_dispatch(registry.Dispatch.PERSISTENT_SHELL)
+    groups = [generic, files, rag, shell]
     # Disjoint
-    assert generic.isdisjoint(files)
-    assert generic.isdisjoint(rag)
-    assert files.isdisjoint(rag)
+    for i, a in enumerate(groups):
+        for b in groups[i + 1 :]:
+            assert a.isdisjoint(b)
     # Exhaustive
-    assert generic | files | rag == registry.list_builtins()
+    assert generic | files | rag | shell == registry.list_builtins()
+
+
+def test_bash_session_routes_to_persistent_shell_dispatch():
+    from tolokaforge.tools.persistent_shell import PersistentShellTool
+
+    assert registry.get_dispatch("bash_session") is registry.Dispatch.PERSISTENT_SHELL
+    assert registry.get_class("bash_session") is PersistentShellTool
 
 
 def test_bash_is_generic_not_files():

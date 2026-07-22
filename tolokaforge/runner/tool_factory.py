@@ -22,6 +22,7 @@ import asyncio
 import importlib
 import json
 import logging
+import os
 import re
 import subprocess
 import sys
@@ -47,6 +48,11 @@ from tolokaforge.runner.rag_client import (
     RAGServiceClient,
     RAGServiceError,
     SearchResponse,
+)
+from tolokaforge.tools.persistent_shell import (
+    BashSession,
+    CommandResult,
+    LocalBashSession,
 )
 
 logger = logging.getLogger(__name__)
@@ -1150,6 +1156,78 @@ class DockerComposeExecToolWrapper(ToolWrapper):
 
 
 # =============================================================================
+# Persistent Shell Tool Wrapper
+# =============================================================================
+
+
+class PersistentShellToolWrapper(ToolWrapper):
+    """Runner-side executor for the session-lifetime ``bash_session`` tool.
+
+    Holds one bash session for the trial: ``start()`` opens it (seeding the
+    working directory from :class:`ToolLifecycleContext`), ``execute()`` runs
+    commands or restarts the shell, and ``stop()`` tears it down. State (cwd,
+    environment, functions) persists across ``execute()`` calls.
+    """
+
+    has_lifecycle = True
+
+    def __init__(self, tool_schema: ToolSchemaModel):
+        super().__init__(tool_schema)
+        tool_config = tool_schema.tool_config or {}
+        # Resolve from tool_config, not self.timeout_s: the native adapter pins
+        # every builtin's ToolSchema.timeout_s to 30.0, so self.timeout_s can
+        # never carry the ADR-locked 120s default or a task's configured value.
+        self._timeout_s = float(tool_config.get("timeout_s", 120.0))
+        self._session: BashSession | None = None
+        self._cwd: str | None = None
+
+    def start(self, ctx: "ToolLifecycleContext") -> None:
+        self._cwd = ctx.work_dir if ctx.work_dir and os.path.isdir(ctx.work_dir) else None
+        session = LocalBashSession()
+        session.open(self._cwd)
+        self._session = session
+
+    def stop(self) -> None:
+        if self._session is not None:
+            self._session.close()
+            self._session = None
+
+    def cleanup(self) -> None:
+        self.stop()
+
+    async def execute(self, arguments: dict[str, Any]) -> str:
+        if self._session is None:
+            raise ToolExecutionError(self.name, "bash session not started")
+        if arguments.get("restart"):
+            return await self._restart()
+        command = arguments.get("command")
+        if command is None:
+            raise ToolExecutionError(
+                self.name, "bash_session requires either 'command' or 'restart'"
+            )
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, self._session.run, command, self._timeout_s)
+        return self._format_result(result)
+
+    async def _restart(self) -> str:
+        assert self._session is not None
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, self._session.close)
+        session = LocalBashSession()
+        await loop.run_in_executor(None, session.open, self._cwd)
+        self._session = session
+        return "Shell session restarted; working directory and environment reset."
+
+    def _format_result(self, result: CommandResult) -> str:
+        if result.timed_out:
+            suffix = f"\n[timed out after {self._timeout_s:g}s; command terminated]"
+            return result.output + suffix
+        if result.exit_code not in (0, None):
+            return f"{result.output}\n[exit code: {result.exit_code}]"
+        return result.output
+
+
+# =============================================================================
 # Tool Factory
 # =============================================================================
 
@@ -1273,6 +1351,8 @@ class ToolFactory:
                 return self._create_rag_search_wrapper(schema)
             if dispatch is builtin_registry.Dispatch.FILES:
                 return BuiltinFileToolWrapper(schema)
+            if dispatch is builtin_registry.Dispatch.PERSISTENT_SHELL:
+                return PersistentShellToolWrapper(schema)
             return BuiltinGenericToolWrapper(schema)
 
         source = schema.source
