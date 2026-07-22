@@ -97,12 +97,15 @@ Per-attempt `logger.info` at `shared_stack_runtime.py:193` is downgraded to `log
 ### Negative
 
 - **Two coexisting paths.** `phase_changed(services=[…])` and `component_*` events both target the same widget. Ownership overlap can confuse a reader; the adapter shim doc-string names the direction.
-- **Widget-title vs region-name split.** The layout child is still `"components"` (renamed from `"services"`); the panel title text is `"Components"`. Every existing test that referenced `"services"` had to be updated.
+- **Widget-title vs region-name split.** The layout children are `"engine_components"` and `"task_infrastructure"` (both filtered views of the same `_components` dict); the panel titles are `"Components"` and `"Task Infrastructure"`. Every existing test that referenced the older single `"services"` / `"components"` region name had to be updated.
 - **Per-component log buffers add memory.** Each tracked component owns a 32-entry deque. Worst-case runs with hundreds of components would grow the memory footprint; not a concern today.
 
 ### Neutral
 
 - **The old services widget is gone.** Its Panel title changed from "Services" to "Components". Two canonical SVG goldens (`panel_boot_log_{80,120}.svg`) were regenerated to match.
+- **Two-widget split over the same model.** `_components` stays a single flat dict keyed by component id; the render side splits it into two adjacent widgets — **Components** (rows where `owner == "engine"`) and **Task Infrastructure** (rows where `owner` starts with `"trial/"`). Task Infrastructure is elided when no trial component is present, so single-container task packs (e.g. the built-in `coding` engine stack) see only the top Components widget. Rationale: engine health and task-declared per-trial infrastructure are separate operator concerns — mixing them into one table obscures which one is actually broken when something goes red.
+- **Operator-driven tail expansion.** `[` / `]` walk focus across the union of both widgets (see `docs/CLI.md § Keyboard navigation`); the focused row is marked `▶ ` and its recent log tail expands beneath the row regardless of the phase. Healthy / stopped rows stay one line by default, so persistent widget visibility remains cheap on rows, and history-on-demand does not require the row to fail first.
+- **Docker `created` under per-trial isolation is `stopped`, not `unhealthy`.** `_map_docker_status_to_component_phase("created", "services_ready")` returns `"stopped"`: per-trial-mode engine services are legitimately declared but never started because the per-trial stack owns runtime. The visual is a neutral `·` glyph rather than a red `✗`.
 
 ## Alternatives Considered
 

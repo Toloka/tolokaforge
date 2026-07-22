@@ -1214,19 +1214,21 @@ def test_phase_changed_populates_services_and_renders_widget() -> None:
     # Adapter shim lifts each ServiceSnapshot into the Components model.
     assert "engine/docker.service/runner" in display._components
     assert "engine/docker.service/db-service" in display._components
-    # `_total_trials == 0` and components populated: Components widget region present.
+    # Engine-owned components populate the "engine_components" region; the
+    # "task_infrastructure" region stays absent because no trial has
+    # provisioned yet.
     layout = display._build_layout()
     child_names = {getattr(child, "name", None) for child in layout.children}
-    assert "components" in child_names
+    assert "engine_components" in child_names
+    assert "task_infrastructure" not in child_names
 
 
-def test_components_widget_persists_after_trials_dispatch() -> None:
-    """The Components widget is a persistent status board — once a component
-    is registered (via ``phase_changed(services=…)``, ``trial_provisioned(
-    containers=…)``, or a direct ``component_*`` event) the widget stays
-    visible. Rationale: operators want a stable view of engine + per-trial
-    infrastructure; the widget's own tail-rule keeps healthy rows compact
-    (one line each), so persistent visibility is cheap on rows."""
+def test_engine_components_widget_persists_after_trials_dispatch() -> None:
+    """The engine Components widget is a persistent status board — once a
+    docker service or gRPC client is registered, the widget stays visible.
+    Operators want a stable view of engine infrastructure across the
+    whole run; the widget's tail-rule keeps healthy rows compact so a
+    persistently-visible widget stays cheap on layout rows."""
     from tolokaforge.core.run_display_events import ServiceSnapshot
 
     display = LiveRunDisplay(refresh_per_second=1000)
@@ -1238,19 +1240,171 @@ def test_components_widget_persists_after_trials_dispatch() -> None:
 
     layout = display._build_layout()
     child_names = {getattr(child, "name", None) for child in layout.children}
-    assert "components" in child_names
+    assert "engine_components" in child_names
 
 
-def test_widget_absent_when_no_components_tracked() -> None:
+def test_both_widgets_absent_when_no_components_tracked() -> None:
     """A run that never registers any component (no phase_changed with
-    services, no explicit component_* event) leaves the Components widget
-    absent. Nothing to render → the layout region is elided."""
+    services, no explicit component_* event) leaves both widget regions
+    absent. Nothing to render → nothing shown."""
     display = LiveRunDisplay(refresh_per_second=1000)
     display.run_started(total_trials=1, initial_completed=0)
 
     layout = display._build_layout()
     child_names = {getattr(child, "name", None) for child in layout.children}
-    assert "components" not in child_names
+    assert "engine_components" not in child_names
+    assert "task_infrastructure" not in child_names
+
+
+def test_task_infrastructure_widget_hidden_without_trial_components() -> None:
+    """A run with only engine components (typical of built-in engine stack
+    task packs — no multicontainer) shows the Components widget but keeps
+    the Task Infrastructure widget hidden. The panel doesn't render an
+    empty box."""
+    from tolokaforge.core.run_display_events import ServiceSnapshot
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    services: list[ServiceSnapshot] = [
+        {"name": "runner", "status": "running", "ports": {}, "role": "engine"},
+    ]
+    display.phase_changed(phase="services_ready", services=services)
+
+    layout = display._build_layout()
+    child_names = {getattr(child, "name", None) for child in layout.children}
+    assert "engine_components" in child_names
+    assert "task_infrastructure" not in child_names
+
+
+def test_task_infrastructure_widget_appears_when_trial_provisions() -> None:
+    """A ``trial_provisioned(containers=[...])`` populates the Task
+    Infrastructure widget. Engine services remain in the Components widget
+    — the two are separate panels."""
+    from tolokaforge.core.run_display_events import ContainerSnapshot, ServiceSnapshot
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    services: list[ServiceSnapshot] = [
+        {"name": "runner", "status": "running", "ports": {}, "role": "engine"},
+    ]
+    containers: list[ContainerSnapshot] = [
+        {
+            "name": "task_a-db-1",
+            "service": "db",
+            "state": "running",
+            "health": "healthy",
+            "ports": {},
+        },
+    ]
+    display.phase_changed(phase="services_ready", services=services)
+    display.trial_started(trial_id="task_a:0", task_id="task_a", trial_index=0, total_index=0)
+    display.trial_provisioned(trial_id="task_a:0", containers=containers, endpoints={})
+
+    layout = display._build_layout()
+    child_names = {getattr(child, "name", None) for child in layout.children}
+    assert "engine_components" in child_names
+    assert "task_infrastructure" in child_names
+
+
+def test_mapper_created_and_services_ready_is_stopped_not_unhealthy() -> None:
+    """Per-trial-mode engine containers reach ``services_ready`` still in
+    ``status="created"`` (declared but never started — per-trial stacks
+    own runtime). That's ``stopped`` (idle by design), not ``unhealthy``.
+    Regression guard for the "runner/db-service unhealthy" cosmetic bug."""
+    from tolokaforge.dx.live_panel import _map_docker_status_to_component_phase
+
+    assert _map_docker_status_to_component_phase("created", "services_ready") == "stopped"
+    # And the starting_services branch stays pending (declared but boot in-flight).
+    assert _map_docker_status_to_component_phase("created", "starting_services") == "pending"
+
+
+def test_component_nav_walks_visible_rows_and_wraps() -> None:
+    """``[`` / ``]`` walk focus across the union of both widgets' rows in
+    sort order (owner, id) and wrap at the boundaries."""
+    from tolokaforge.core.run_display_events import ComponentSnapshot
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    engine: ComponentSnapshot = {
+        "id": "engine/docker.service/runner",
+        "kind": "docker.service",
+        "phase": "healthy",
+        "detail": None,
+        "owner": "engine",
+    }
+    task: ComponentSnapshot = {
+        "id": "trial/t:0/container/db",
+        "kind": "container",
+        "phase": "healthy",
+        "detail": None,
+        "owner": "trial/t:0",
+    }
+    display.component_registered(snapshot=engine)
+    display.component_registered(snapshot=task)
+
+    # Sort order: (owner, id) → engine first, trial/... second.
+    display._nav_next_component()
+    assert display._focused_component_id == "engine/docker.service/runner"
+    display._nav_next_component()
+    assert display._focused_component_id == "trial/t:0/container/db"
+    display._nav_next_component()  # wraps
+    assert display._focused_component_id == "engine/docker.service/runner"
+    display._nav_prev_component()  # wraps backwards
+    assert display._focused_component_id == "trial/t:0/container/db"
+
+
+def test_focused_component_tail_expands_even_when_healthy() -> None:
+    """A healthy component's log tail is normally collapsed. Focusing it
+    via ``[`` / ``]`` force-expands the tail so operators can inspect
+    the buffered history on demand."""
+    from tolokaforge.core.run_display_events import ComponentSnapshot
+    from tolokaforge.dx.live_panel import _component_tail_visible
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    snap: ComponentSnapshot = {
+        "id": "engine/grpc.client/runner",
+        "kind": "grpc.client",
+        "phase": "healthy",
+        "detail": "ready",
+        "owner": "engine",
+    }
+    display.component_registered(snapshot=snap)
+    display.component_log_appended(
+        component_id=snap["id"],
+        level="INFO",
+        message="attempt 1",
+        ts=0.0,
+    )
+
+    # Not focused → healthy component keeps tail collapsed.
+    assert not _component_tail_visible(
+        display._components[snap["id"]], display._component_log_buffers
+    )
+    # Focused → tail expands.
+    assert _component_tail_visible(
+        display._components[snap["id"]],
+        display._component_log_buffers,
+        snap["id"],
+    )
+
+
+def test_component_focus_clears_when_focused_component_unregistered() -> None:
+    """When the operator's focused component is removed (via
+    ``component_unregistered``), ``_focused_component_id`` resets to
+    ``None`` so nav doesn't dangle on a stale id."""
+    from tolokaforge.core.run_display_events import ComponentSnapshot
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    snap: ComponentSnapshot = {
+        "id": "engine/grpc.client/runner",
+        "kind": "grpc.client",
+        "phase": "healthy",
+        "detail": None,
+        "owner": "engine",
+    }
+    display.component_registered(snapshot=snap)
+    display._nav_next_component()
+    assert display._focused_component_id == snap["id"]
+
+    display.component_unregistered(component_id=snap["id"])
+    assert display._focused_component_id is None
 
 
 def test_multicontainer_task_provisioned_surfaces_container_components() -> None:
@@ -1366,7 +1520,9 @@ def test_unhealthy_component_keeps_widget_visible_mid_run() -> None:
 
     layout = display._build_layout()
     names = {getattr(c, "name", None) for c in layout.children}
-    assert "components" in names, "unhealthy mid-run components must surface the widget"
+    assert (
+        "engine_components" in names
+    ), "unhealthy mid-run engine components must surface the Components widget"
 
 
 def test_unhealthy_component_expands_log_tail_beneath_row() -> None:
@@ -1879,9 +2035,9 @@ def test_boot_log_region_present_between_services_and_main_during_boot() -> None
 
     layout = display._build_layout()
     names = [getattr(c, "name", None) for c in layout.children]
-    assert "components" in names
+    assert "engine_components" in names
     assert "boot_log" in names
-    assert names.index("boot_log") == names.index("components") + 1
+    assert names.index("boot_log") == names.index("engine_components") + 1
     assert names.index("boot_log") == names.index("main") - 1
 
 
@@ -1992,7 +2148,7 @@ def test_boot_log_height_clamped_but_present_locks_392_regression() -> None:
 
     assert "boot_log" in sizes, "boot-log region must survive the mid-viewport clamp"
     assert sizes["boot_log"] == 4  # budget = 14 - 4 - 1 - 5 = 4
-    assert sizes["components"] == 4
+    assert sizes["engine_components"] == 4
     assert sizes["main"] == 5
     assert sizes["bottom"] == 1
     assert sum(sizes.values()) == 14
@@ -2030,7 +2186,7 @@ def test_boot_log_region_dropped_when_budget_below_minimum_panel_height() -> Non
     sizes = {name: c.size for name, c in zip(names, layout.children, strict=True)}
 
     assert "boot_log" not in names
-    assert sizes["components"] == 4
+    assert sizes["engine_components"] == 4
     assert sizes["main"] == 7  # total 12 - 4 services - 1 bottom - 0 banner - 0 boot_log
     assert sizes["bottom"] == 1
     assert sum(sizes.values()) == 12
