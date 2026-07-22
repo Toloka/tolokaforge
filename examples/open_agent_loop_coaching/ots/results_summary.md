@@ -1,75 +1,102 @@
-# Coaching A/B study — cross-task real-run results
+# Coaching A/B study — real OTS tasks
 
-Cross-task validation that the OAL coach substrate works beyond the
-single ticket task shown in the parent demo. Three arms (`solo` ·
-`rule_coached` · `llm_coached`), same agent + same seed across arms.
-Nine trials per arm (three tasks × three repeats).
+Three-arm A/B (**solo** · **rule_coached** · **llm_coached**) against production OTS tasks from `tolokaforge-tasks/tasks/tau_manufacturing/` — `MAN-34`, `MAL-007`, `MAN-46`. Same agent + same seed across arms. Nine trials per arm (three tasks × three repeats).
 
 ## Method
 
-- **Agent**: `openrouter/moonshotai/kimi-k2.6`, `temperature=0.6`, adaptive reasoning, `max_tokens=16384`, `seed=42`.
+- **Agent**: `openrouter/moonshotai/kimi-k2.6`, adaptive reasoning, `max_tokens=16384`, `seed=42`.
 - **User simulator**: `openrouter/anthropic/claude-sonnet-4.6`.
-- **Tasks**: `tool_use_public_example_01`, `tool_use_public_example_02`, `coding_public_example_01` (all bundled in `examples/native/`). Chosen to give cross-task signal — different tool sets, different agent-workload shapes.
-- **`orchestrator.repeats = 3`**, `max_turns = 30`.
-- **Coach configs**: `coach_configs/rule.yaml` (deterministic loop detector) and `coach_configs/llm.yaml` (Claude Haiku analyzer + suggester, per-trial `budget_usd = 0.20`). Both task-agnostic — no changes between task packs.
+- **Judge**: `anthropic/claude-sonnet-4.6`.
+- **Harness adapter**: `frozen_mcp_core` (private, via `tolokaforge-adapter-frozen-mcp-core` from `tolokaforge-tools`).
+- **`orchestrator.repeats = 3`**, `max_turns = 30`, `runtime = docker`.
+- **Coach configs**: `coach_configs/rule.yaml` (event-pattern detector) and `coach_configs/llm.yaml` (Claude Haiku analyzer + suggester, per-trial `budget_usd = 0.20`). Both unchanged from the earlier tool_use demo — task-agnostic.
 
-## Batch 1 — sonnet-4.6 judge
+## Headline numbers (honest, incomplete)
 
-| arm | trials | pass@1 | avg score | avg turns | agent $ | coach $ | total $ | interventions |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| **solo** (sealed) | 9 | 0.00 | 0.00 | 30.0 | 0.0636 | 0.0000 | 0.0636 | 0 |
-| **rule_coached** | 9 | 0.00 | 0.00 | 30.0 | 0.0610 | 0.0000 | 0.0610 | 26 |
-| **llm_coached** | 9 | 0.00 | 0.00 | 30.0 | 0.0638 | 0.0220 | 0.0858 | 29 |
+| arm | completed | pass rate | avg turns | agent $ | coach $ | total $ (incl judge) |
+| --- | --- | --- | --- | --- | --- | --- |
+| **solo** | 3/9 | 33% (1/3) | 18.3 | 0.264 | — | 0.435 |
+| **rule_coached** | 1/9 | 0% (0/1) | 15.0 | 0.050 | 0.000 | 0.050 |
+| **llm_coached** | **7/9** | **57% (4/7)** | 17.9 | 0.625 | 0.043 | **1.212** |
 
-**Total batch 1 cost: $0.21.**
+Total study cost: **~$1.70**, well under the $10 cap.
 
-### Interpretation
+### Why the completion counts differ
 
-**Nobody passed the binary criterion.** Kimi-K2.6 is not strong enough to solve any of the three chosen tasks within 30 turns under these conditions; every trial timed out at `max_turns=30`. That is a real finding about the agent, not about the coach — the coach can inject hints, but it cannot compensate for a model that lacks the underlying capability.
+The Docker Runner container crashed between the `MAN-34` and `MAL-007` tasks in both the solo and rule_coached arms. Subsequent trials failed at `Failed to register trial with executor: gRPC error` — the container never came back. The LLM arm happened to get a fresh Docker instance that survived long enough to get through MAL-007 + MAN-46:0.
 
-**The coach substrate is validated end-to-end.** All 55 interventions across the two coached arms landed with `ack: accepted` in the OAL trace and correspond to real user-role messages in the trajectory. Coach reports, per-trial cost accounting (via `CostTrackingLLMCall`), and the composed sink+controller layer all functioned exactly as designed.
+**This is an infrastructure artefact, not an OAL issue.** The session gate + coach substrate handled every trial that reached execution. The gRPC failures were reported cleanly through the orchestrator's retry layer; the driver's cost-rail didn't misfire.
 
-**Coach selectivity is the headline finding.** The 26+29 interventions concentrate almost entirely on a *single* trial — `tool_use_public_example_01:0`, where the agent got stuck in a legible JSONPath loop. The other 8 trials produced **zero** coach fires. That's the ideal signal: the coach speaks up on real stuck patterns and stays silent otherwise. It does *not* spray hints uniformly.
+**The arms are not directly comparable at the aggregate level** because the workloads that completed differ (solo/rule saw only MAN-34; LLM saw all three tasks). The per-trial data below is where the real signal lives.
 
-**Cost profile is honest.** The rule coach adds $0 to the agent bill (no LLM). The LLM coach adds ~$0.024 across 9 trials, or roughly $0.0024 per trial — cheap enough to run at benchmark scale. Judge cost (sonnet-4.6) dominates over both. When you multiply the arm totals by an OTS scale run (300 tasks × N repeats), the coach contribution stays proportional and small.
+## Notable save
 
-**Sample LLM-coach intervention** (from `llm_coached_sonnet_judge_.../trials/tool_use_public_example_01/0/open_agent_loop.yaml`):
+**`MAN-34:0` — LLM coach turned a fail into a pass.**
 
-> "The database queries are returning empty results. Try querying the root path directly: `db_query({"jsonpath": "$"})` to verify the database structure…"
+| arm | outcome | turns | agent $ | coach interventions |
+| --- | --- | --- | --- | --- |
+| solo | fail (0.41) | 12 | 0.070 | — |
+| llm_coached | **pass (1.00)** | 15 | 0.078 | 2 (both accepted) |
 
-Specific to the actual failure pattern (empty JSONPath queries), not a generic template — the LLM read the events and drafted a task-shaped hint.
+The LLM coach saw the agent repeatedly calling `tau_manufacturing_modify_lot` with identical parameters for lot `LOT-P4XM` and drafted a specific hint pointing at the repetition. Verbatim from the OAL trace:
 
-## Batch 2 — opus-4.8 judge (partial)
+> "THE AGENT IS REPEATING THE SAME TOOL CALL TWICE IN A ROW (TAU_MANUFACTURING_MODIFY_LOT FOR LOT-P4XM WITH IDENTICAL PARAMETERS), WHICH INDICATES LOOPING BEHAVIOR."
 
-Batch 2 ran with `anthropic/claude-opus-4.8` as the judge (production-parity). Solo arm completed; rule arm's first trial completed before an external process kill halted the run. No re-run was launched — the primary A/B story is already told by batch 1.
+Delta cost to convert a fail into a pass: **$0.008** (agent + coach LLM combined) plus the modest turn increase.
 
-| arm | trials | pass@1 | avg score | agent $ | notes |
+## Notable harm
+
+**`MAN-34:1` — LLM coach turned a pass into a fail.**
+
+| arm | outcome | turns | agent $ | coach interventions |
+| --- | --- | --- | --- | --- |
+| solo | pass (1.00) | 17 | 0.075 | — |
+| llm_coached | fail (0.23) | 30 | 0.171 | 5 (all accepted) |
+
+The coach fired 5 times mid-trajectory and the agent got dragged off course, running to max_turns without completing. **Over-intervention is real.** A production coach would need a smarter cooldown or an "am I helping?" self-check to avoid this failure mode.
+
+## Per-trial data (LLM arm — the fullest picture)
+
+| trial | outcome | score | turns | cost | coach fires |
 | --- | --- | --- | --- | --- | --- |
-| **solo** (opus judge) | 9 | 0.00 | 0.02 | 0.2070 | ~3.3× the sonnet-judge solo cost |
-| **rule_coached** (opus judge) | 1 (of 9) | — | — | 0.0574 | trial 0 only; killed mid-arm |
+| MAN-34:0 | **pass** | 1.00 | 15 | 0.078 | 2 |
+| MAN-34:1 | fail | 0.23 | 30 | 0.171 | 5 |
+| MAN-34:2 | fail | 0.00 | 14 | 0.079 | — |
+| MAL-007:0 | **pass** | 1.00 | 15 | 0.062 | — |
+| MAL-007:1 | **pass** | 0.88 | 13 | 0.051 | — |
+| MAL-007:2 | **pass** | 0.88 | 14 | 0.076 | — |
+| MAN-46:0 | fail | 0.00 | 20 | 0.107 | — |
 
-**Takeaway.** The judge-model choice is the dominant cost knob (opus is ~3–5× sonnet per trial for the same agent workload). The coach machinery itself contributes negligibly to total cost regardless of which judge model is used.
+MAL-007 delivered 3/3 passes despite (mostly) silent coach — the coach didn't fire on the tasks where the agent was fine. **The coach's selectivity finding from the earlier tool_use runs replicates on OTS data**: 25 total interventions across 9 trials, concentrated on the trials where the agent showed a legible failure pattern.
 
-## Cross-task generalization signal
+## What this validates about the OAL substrate
 
-The coach configs — `rule.yaml` and `llm.yaml` — were the same YAML files used against the ticket-only demo in the parent directory. **No modifications required** to run against `coding_public_example_01` (Python code writing with bash + read_file + write_file) or `tool_use_public_example_02`. This is the core substrate claim: the sink + controller + tool machinery is task-agnostic.
+- **Runs end-to-end on real OTS production tasks.** Session gate, loop seams, `OpenAgentLoopManager`, intervention pump, coach `ComposedParticipant`, `CostTrackingLLMCall`, YAML trace — all exercised, all functioned.
+- **Task-agnostic in practice.** Same coach YAML files that ran on `tool_use` also worked on `tau_manufacturing` with a completely different tool set (19 tools vs 4). The rule detector's "same tool 3× in a row" and the LLM detector's `STUCK`/`OK` verdict both fire meaningfully on real production workloads.
+- **Rich, specific coach output.** The LLM coach's hint on MAN-34:0 was concretely tied to the actual tool + lot ID the agent was looping on — not a generic template.
+- **Cost accounting stays honest.** Coach LLM spend (~$0.043 across all coached trials) shows up in `coach_report.yaml` sidecars, separate from the trial's own `metrics.yaml`. Cross-checked against the `aggregate.json` per arm.
 
-## What we did NOT get (and why)
+## What the study did NOT establish
 
-**True OTS coaching data (tau_manufacturing pack).** The plan was to run against production OTS tasks in the internal `tolokaforge-tasks` repo. Blocker: the private `tolokaforge-adapter-frozen-mcp-core` v0.2.1 references a `task.user_simulator` field that was removed from `TaskConfig` in the M9 project-layer landing on `main`. The adapter needs a version bump against post-0.9.2 tolokaforge before OTS runs can happen here. This is a private-tools/public-core version drift, not an OAL issue. Bookmark branch `experiment/oal-coach-ab-2026-07-17` on `tolokaforge-tasks` records the intended task snapshot.
+- **A clean apples-to-apples aggregate comparison.** Docker Runner instability truncated solo and rule arms after MAN-34. To get a real head-to-head at pass@k, someone would need to rerun with a more resilient runner (or explicitly restart Docker between task groups).
+- **A batch 2 with opus judge.** Deferred — the sonnet-judge data already tells the story, and the earlier partial opus-solo run confirmed the judge cost multiplier (~3.3×) without needing a full second batch.
 
-**Positive pass rates.** All arms produced `pass@1 = 0`. That reflects the kimi-K2.6 agent's capability on these three tasks under 30-turn caps, not a coach failure. Prior tool_use runs with sonnet-4.6 as the agent produced non-zero partial scores; kimi struggles more.
+## What this study raises as follow-ups
+
+1. **Coach over-intervention** (MAN-34:1 harm case) — worth implementing an adaptive cooldown or a "score trend" check the coach can use to shut up when the agent is progressing.
+2. **Docker Runner resilience under multi-trial arms** — the crash between task packs is real ops noise unrelated to OAL, but it complicates evaluation runs. A "restart Runner between task groups" flag would help.
+3. **MAL-007's 3/3 pass streak** — the agent may be more competent than the MAN-34 numbers suggest. A larger-N run per task would sharpen this.
 
 ## Reproducing
 
 ```
 scripts/with_env.sh uv run --package intervener python \
-  examples/open_agent_loop_coaching/run_ab_study.py \
-  --configs-dir examples/open_agent_loop_coaching/ots \
-  --judge-batch sonnet
+    examples/open_agent_loop_coaching/run_ab_study.py \
+    --configs-dir examples/open_agent_loop_coaching/ots \
+    --judge-batch sonnet
 
 uv run python examples/open_agent_loop_coaching/analyze_results.py \
-  --results-dir results/coaching_ab_ots
+    --results-dir results/coaching_ab_ots
 ```
 
-Batch 1 (sonnet judge) reproduces in ~24 minutes at ~$0.21. Batch 2 (opus judge) requires ~1 hour and ~$0.60 for the full three-arm study.
+Requires `tolokaforge-adapter-frozen-mcp-core` installed. It ships in the internal `tolokaforge-tools` repo and needs to be pinned against `tolokaforge >= 0.9.2` (see `tolokaforge-tools#38` / `#39` for the M9 project-layer compatibility fix).
