@@ -2325,6 +2325,7 @@ class LiveRunDisplay:
             in_startup = self._total_trials == 0
             focused_component_id = self._focused_component_id
             logs_shown = frozenset(self._component_logs_shown)
+            active_panel = self._active_panel
             # Top-level components widget is engine-only: tolokaforge's
             # own docker services + the gRPC runner client (rows whose
             # ``owner == "engine"``). Per-trial containers live in the
@@ -2372,6 +2373,7 @@ class LiveRunDisplay:
         if banner is not None:
             layout["banner"].update(self._render_banner(banner))
         if show_engine:
+            engine_border_style = "active" if active_panel is _Panel.ENGINE else "none"
             layout["engine_components"].update(
                 Panel(
                     _render_components_table(
@@ -2382,6 +2384,7 @@ class LiveRunDisplay:
                     ),
                     title="Engine Components",
                     padding=(0, 1),
+                    border_style=engine_border_style,
                 )
             )
         if boot_log_h > 0:
@@ -2429,6 +2432,7 @@ class LiveRunDisplay:
         visible = self._visible_cards()
         with self._lock:
             total_trials = self._total_trials
+            active_panel = self._active_panel
         index_width = max(len(str(total_trials)), 1) if total_trials else 1
         rendered: list[str] = []
         has_markup = False
@@ -2449,7 +2453,8 @@ class LiveRunDisplay:
             body = Text.from_markup("\n".join(rendered))
         else:
             body = Text("\n".join(rendered))
-        return Panel(body, title="Trials")
+        border_style = "active" if active_panel is _Panel.TRIALS else "none"
+        return Panel(body, title="Trials", border_style=border_style)
 
     def _render_right_pane(self) -> Panel:
         with self._lock:
@@ -2502,6 +2507,7 @@ class LiveRunDisplay:
             }
             focused_component_id = self._focused_component_id
             logs_shown = frozenset(self._component_logs_shown)
+            active_panel = self._active_panel
             visible = self._visible_cards()
             visible_total = len(visible)
             position = next(
@@ -2561,6 +2567,7 @@ class LiveRunDisplay:
         # uses the same components-table renderer as the top Engine
         # Components widget so ``[``/``]`` focus + ``l`` tail expansion
         # behave identically in both places.
+        infra_border_style = "active" if active_panel is _Panel.INFRASTRUCTURE else "muted"
         infra_panel = Panel(
             _render_components_table(
                 trial_components,
@@ -2569,7 +2576,7 @@ class LiveRunDisplay:
                 logs_shown,
             ),
             title="Infrastructure",
-            border_style="muted",
+            border_style=infra_border_style,
         )
         return Panel(Group(summary, infra_panel), title=title)
 
@@ -2608,7 +2615,7 @@ class LiveRunDisplay:
         # Manual-nav hint prepends a literal bracketed binding legend — the
         # prefix must be escape()'d so Rich does not consume it as an unknown
         # style tag.
-        hint = "[j/k or ↑↓ nav · H/L first/last · f follow · l logs] "
+        hint = "[Tab panel · j/k or ↑↓ nav · H/L first/last · f follow · l logs] "
         return Text.from_markup(_escape_markup(hint) + line)
 
 

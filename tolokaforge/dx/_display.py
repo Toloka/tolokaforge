@@ -58,6 +58,7 @@ THEME = Theme(
         "muted": "dim",
         "cost": "bold magenta",
         "link": "underline cyan",
+        "active": "bold cyan",
     }
 )
 

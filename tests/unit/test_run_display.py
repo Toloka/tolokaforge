@@ -2446,6 +2446,126 @@ def test_trial_provisioned_lifts_containers_into_components_model() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Stage 3 — visual indication of active panel + Tab-panel hint prefix
+# ---------------------------------------------------------------------------
+
+
+def test_active_panel_highlight_applies_to_trials_pane_when_trials_active() -> None:
+    """When TRIALS is the active panel, the left pane's Panel renders
+    with ``border_style="active"`` — the visual cue that keystrokes
+    route through the trials list."""
+    display = LiveRunDisplay(refresh_per_second=1000)
+    display._active_panel = _Panel.TRIALS
+
+    assert display._render_left_pane().border_style == "active"
+
+
+def test_active_panel_highlight_applies_to_engine_when_engine_active() -> None:
+    """When ENGINE is active, the top-level Engine Components widget
+    renders with ``border_style="active"``."""
+    from rich.panel import Panel
+
+    from tolokaforge.core.run_display_events import ComponentSnapshot
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    snap: ComponentSnapshot = {
+        "id": "engine/docker.service/runner",
+        "kind": "docker.service",
+        "phase": "healthy",
+        "detail": None,
+        "owner": "engine",
+    }
+    display.component_registered(snapshot=snap)
+    display._active_panel = _Panel.ENGINE
+
+    engine_panel = display._build_layout()["engine_components"].renderable
+    assert isinstance(engine_panel, Panel)
+    assert engine_panel.border_style == "active"
+
+
+def test_active_panel_highlight_applies_to_infrastructure_when_infrastructure_active(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When INFRASTRUCTURE is active, the per-trial Infrastructure
+    sub-panel inside the Focused pane renders with ``border_style="active"``
+    instead of its default ``"muted"``."""
+    from rich.console import Group
+    from rich.panel import Panel
+
+    from tolokaforge.core.run_display_events import ContainerSnapshot
+
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    containers: list[ContainerSnapshot] = [
+        {"name": "t-db-1", "service": "db", "state": "running", "health": "healthy", "ports": {}},
+    ]
+    display.trial_started(trial_id="t:0", task_id="t", trial_index=0, total_index=0)
+    display.trial_provisioned(trial_id="t:0", containers=containers, endpoints={})
+    display._active_panel = _Panel.INFRASTRUCTURE
+
+    focused = display._render_right_pane()
+    assert isinstance(focused.renderable, Group)
+    infra_panel = focused.renderable.renderables[-1]
+    assert isinstance(infra_panel, Panel)
+    assert infra_panel.border_style == "active"
+
+
+def test_active_panel_highlight_falls_back_when_active_panel_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Flipping the active panel from TRIALS to ENGINE toggles exactly
+    one panel: the trials pane drops back to its unstyled default and
+    the engine widget's border switches to ``"active"``. Locks the
+    invariant that the border style tracks :attr:`_active_panel` on the
+    frame it is rendered."""
+    from rich.panel import Panel
+
+    from tolokaforge.core.run_display_events import ComponentSnapshot
+
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    snap: ComponentSnapshot = {
+        "id": "engine/docker.service/runner",
+        "kind": "docker.service",
+        "phase": "healthy",
+        "detail": None,
+        "owner": "engine",
+    }
+    display.component_registered(snapshot=snap)
+
+    # TRIALS active — trials highlighted, engine inactive.
+    display._active_panel = _Panel.TRIALS
+    trials_before = display._render_left_pane().border_style
+    engine_before = display._build_layout()["engine_components"].renderable
+    assert isinstance(engine_before, Panel)
+    assert trials_before == "active"
+    assert engine_before.border_style == "none"
+
+    # Flip to ENGINE — exactly the two borders swap.
+    display._active_panel = _Panel.ENGINE
+    trials_after = display._render_left_pane().border_style
+    engine_after = display._build_layout()["engine_components"].renderable
+    assert isinstance(engine_after, Panel)
+    assert trials_after == "none"
+    assert engine_after.border_style == "active"
+
+
+def test_bottom_bar_hint_mentions_tab_panel_in_manual_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The manual-nav hint advertises ``Tab panel`` as its leading token
+    so operators discover panel-cycling from the status line."""
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    _seed_three_started_trials(display)
+
+    display._nav_next_trial()  # enter manual mode
+    bar = display._render_bottom_bar()
+
+    assert "Tab panel" in bar.plain
+
+
+# ---------------------------------------------------------------------------
 # Components widget — direct component_* events, auto-expand-on-fail
 # ---------------------------------------------------------------------------
 
@@ -3255,11 +3375,15 @@ def test_trial_provisioned_lazy_creates_card_when_started_missed() -> None:
 def test_left_pane_renders_global_index_prefix_at_fixed_width() -> None:
     from rich.console import Console
 
+    from tolokaforge.dx._display import THEME
+
     display = LiveRunDisplay(refresh_per_second=1000)
     display.run_started(total_trials=500, initial_completed=0)
     display.trial_started(trial_id="task_a:0", task_id="task_a", trial_index=0, total_index=16)
 
-    console = Console(width=80, force_terminal=True, color_system="truecolor", record=True)
+    console = Console(
+        width=80, force_terminal=True, color_system="truecolor", record=True, theme=THEME
+    )
     console.print(display._render_left_pane())
     body = console.export_text()
 
@@ -3271,11 +3395,15 @@ def test_left_pane_renders_global_index_prefix_at_fixed_width() -> None:
 def test_left_pane_prefix_width_adapts_to_total() -> None:
     from rich.console import Console
 
+    from tolokaforge.dx._display import THEME
+
     display = LiveRunDisplay(refresh_per_second=1000)
     display.run_started(total_trials=8, initial_completed=0)
     display.trial_started(trial_id="task_a:0", task_id="task_a", trial_index=0, total_index=2)
 
-    console = Console(width=80, force_terminal=True, color_system="truecolor", record=True)
+    console = Console(
+        width=80, force_terminal=True, color_system="truecolor", record=True, theme=THEME
+    )
     console.print(display._render_left_pane())
     body = console.export_text()
 
@@ -3644,7 +3772,7 @@ def test_bottom_bar_hint_appears_in_manual_mode_and_hides_in_auto_follow(
     display.run_started(total_trials=5, initial_completed=0)
     display.trial_started(trial_id="a:0", task_id="a", trial_index=0, total_index=0)
 
-    hint = "[j/k or ↑↓ nav · H/L first/last · f follow · l logs]"
+    hint = "[Tab panel · j/k or ↑↓ nav · H/L first/last · f follow · l logs]"
 
     # Auto-follow ON → hint absent, output byte-identical to pre-Stage-B.
     display._auto_follow = True
