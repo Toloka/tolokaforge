@@ -21,6 +21,7 @@ from tolokaforge.runner.models import ToolSchema
 from tolokaforge.runner.tool_factory import (
     BuiltinFileToolWrapper,
     BuiltinGenericToolWrapper,
+    PersistentShellToolWrapper,
     ToolConfigurationError,
     ToolFactory,
 )
@@ -53,6 +54,17 @@ def test_read_file_routes_to_file_wrapper(factory):
     )
     wrapper = factory._create_wrapper(schema)
     assert isinstance(wrapper, BuiltinFileToolWrapper)
+
+
+def test_bash_session_routes_to_persistent_shell_wrapper(factory):
+    schema = ToolSchema(
+        name="bash_session",
+        description="x",
+        parameters={"type": "object", "properties": {}},
+    )
+    wrapper = factory._create_wrapper(schema)
+    assert isinstance(wrapper, PersistentShellToolWrapper)
+    assert wrapper.has_lifecycle is True
 
 
 def test_mobile_end_to_end_through_native_adapter(factory):
