@@ -22,6 +22,7 @@ from tolokaforge.runner.tool_factory import (
     BuiltinFileToolWrapper,
     BuiltinGenericToolWrapper,
     PersistentShellToolWrapper,
+    StrReplaceEditorToolWrapper,
     ToolConfigurationError,
     ToolFactory,
 )
@@ -65,6 +66,17 @@ def test_bash_session_routes_to_persistent_shell_wrapper(factory):
     wrapper = factory._create_wrapper(schema)
     assert isinstance(wrapper, PersistentShellToolWrapper)
     assert wrapper.has_lifecycle is True
+
+
+def test_str_replace_editor_routes_to_editor_wrapper(factory):
+    schema = ToolSchema(
+        name="str_replace_editor",
+        description="x",
+        parameters={"type": "object", "properties": {}},
+    )
+    wrapper = factory._create_wrapper(schema)
+    assert isinstance(wrapper, StrReplaceEditorToolWrapper)
+    assert wrapper.has_lifecycle is False
 
 
 def test_mobile_end_to_end_through_native_adapter(factory):
