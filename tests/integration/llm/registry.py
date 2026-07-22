@@ -930,11 +930,34 @@ _ALL: list[MC] = [
     ),
     # -----------------------------------------------------------------
     # Gemini 3.5 Flash — GA Flash-tier successor to 3-flash-preview.
-    # Shares the Flash-lineage ``reasoning.encrypted`` envelope, so the
-    # same ``gemini`` preset routes it (no new preset entry needed). The
-    # certificate mirrors the 3-flash-preview posture as the starting
-    # baseline; capability deviations will be ratcheted in based on
-    # live ``pytest tests/integration/llm/ -k gemini-3.5-flash`` output.
+    # Shares the Flash-lineage ``reasoning.encrypted`` envelope. Routed via
+    # the model-specific ``gemini_35_flash_recursive`` preset (see
+    # model_presets.yaml) rather than the shared ``gemini`` preset: an
+    # auto-resolve run (Slack-requested integration, PR #560) found three
+    # engine-side schema-loss failures under the observe (``default``) preset
+    # that the shared ``gemini`` preset does NOT close, and the overlay adds
+    # ``GeminiRecursiveSchema`` (cycle-tolerant ``$ref`` inlining + synthetic
+    # scalar dict-map value field) and ``ScalarArrayDictMapResponse``
+    # (scalar-value unwrap + nested-object dict-map pivot) on top of the
+    # shared Gemini codec:
+    #
+    #   * RECURSIVE_REF_TOOL_CALL — all four shapes were 0/15 under observe
+    #     (StrictSchema raised "$ref resolution exceeded depth 16" in-engine on
+    #     the recursive ``TreeNode.children`` ref); the recursive sanitiser
+    #     makes them 5/5 on reprobe. Kept ``required``.
+    #   * DICT_MAP_TOOL_CALL — the base dict-map probe passed under observe, but
+    #     the ``scalar_values`` and ``nested_in_object`` variants were 0/15
+    #     (scalar value dropped on the wire; nested pivot never reached). The
+    #     overlay's scalar ``value`` carriage + one-level nested pivot make both
+    #     variants 5/5 on reprobe. Kept ``required``.
+    #   * DISCRIMINATED_UNION_TOOL_CALL — passed under observe on the flattened
+    #     Gemini schema; unchanged by the overlay. Kept ``required``.
+    #
+    # The five ``known_unsupported`` ceilings below are the observe-run
+    # ceilings (known_unsupported in decision.json): Flash emits
+    # ``reasoning.encrypted`` only (no readable/signed blocks → THINKING_*),
+    # and the ``gemini`` codec wires no cache markers / the synthetic
+    # auto-cache probe reads 0 (PROMPT_CACHING / IMPLICIT_PROMPT_CACHING).
     # -----------------------------------------------------------------
     MC(
         model_id="openrouter__google_gemini-3.5-flash",
@@ -997,6 +1020,67 @@ _ALL: list[MC] = [
                 # capability test would let us flip this to ``required``;
                 # until then the synthetic contract is unmet so we
                 # honestly declare ``known_unsupported``.
+                C.IMPLICIT_PROMPT_CACHING,
+            }
+        ),
+    ),
+    # -----------------------------------------------------------------
+    # Gemini 3.6 Flash - certified via the auto-resolve integration
+    # consolidated into PR #560 (observe run 2026-07-22, 31 probes x 15
+    # reps on the default preset; originally opened as PR #559). Routed
+    # through the SAME preset axes as its 3.5 sibling above
+    # (``gemini_recursive`` sanitizer + ``scalar_array_dict_map``
+    # response policy) - the observe signature was identical:
+    # recursive_ref x4 0/15 (in-engine $ref-depth crash) and the
+    # dict_map scalar_values + nested_in_object variants 0/15.
+    #
+    # Unlike 3.5, the 3.6 observe PASSED ``thinking_emits_blocks`` and
+    # ``unsigned_thinking_replay`` 15/15, so those are ``required`` here
+    # while they stay ceilings on the 3.5 cert.
+    # -----------------------------------------------------------------
+    MC(
+        model_id="openrouter__google_gemini-3.6-flash",
+        provider="openrouter",
+        name="google/gemini-3.6-flash",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.DICT_MAP_TOOL_CALL,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.THINKING_EMITS_BLOCKS,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.UNSIGNED_THINKING_REPLAY,
+                C.LEXICAL_TOOL_INVENTION,
+                # Fixed by the ``gemini_recursive`` schema sanitizer
+                # (finite wire schema for a genuinely recursive $ref);
+                # the generic gemini route crashed 0/15 in-engine here.
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # Genuine Flash-lineage provider ceilings (recorded from
+                # the observe baseline, not addressed by the preset):
+                # Gemini emits ``reasoning.encrypted`` blocks only, so
+                # there is no readable/signed block to replay round-trip;
+                # and no cache surface is exposed on the OpenRouter
+                # google/gemini-* routes (neither explicit cache_control
+                # nor a reproducible 2-call auto-cache read).
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.PROMPT_CACHING,
                 C.IMPLICIT_PROMPT_CACHING,
             }
         ),

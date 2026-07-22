@@ -47,6 +47,7 @@ __all__ = [
     "UnwrapInputResponse",
     "JsonCoerceResponse",
     "ArrayDictMapResponse",
+    "ScalarArrayDictMapResponse",
     "JsonRecursiveCoerceResponse",
     "ItemRecursiveUnwrapResponse",
     "MinimaxM3TagRecoveryResponse",
@@ -503,3 +504,107 @@ class MinimaxM3TagRecoveryResponse:
     ) -> dict[str, Any]:
         coerced = self._coerce.parse_arguments(arguments, param_types=param_types)
         return self._unwrap.parse_arguments(coerced, param_types=param_types)
+
+
+class ScalarArrayDictMapResponse(ArrayDictMapResponse):
+    """:class:`ArrayDictMapResponse` plus a **scalar** dict-map value unwrap.
+
+    Pairs with
+    :class:`~tolokaforge.core.llm.schema_sanitizer.GeminiRecursiveSchema`'s
+    ``carry_scalar_dict_map_value``: a ``Dict[str, int]`` / ``Dict[str, str]``
+    parameter is sent to the model as ``[{key, value}]`` (the scalar carried
+    under the synthetic ``value`` field). The inherited array → dict pivot turns
+    ``[{"key": "SKU-A", "value": 10}]`` into ``{"SKU-A": {"value": 10}}`` — one
+    step short of the ``{"SKU-A": 10}`` the tool's ``Dict[str, int]`` validator
+    wants. This subclass finishes the job by unwrapping every single-field
+    ``{"value": X}`` map entry back to the bare scalar ``X``.
+
+    The same unwrap also recovers the model's *native* wrapper quirk: a model
+    that ignores the array shape and emits ``{"SKU-A": {"value": 10}}`` directly
+    (observed on ``google/gemini-3.5-flash``, 15/15) lands on the identical
+    post-pivot shape, so both the array path and the native-wrapper path
+    converge here.
+
+    Scoped to ``dict_map`` params (via ``param_types``) so a genuine
+    object-valued map that happens to carry a field literally named ``value``
+    is never touched — and even within a dict-map, only a *single-key*
+    ``{"value": …}`` entry is unwrapped, so a multi-field value object is left
+    intact.
+
+    **Nested dict-maps.** The inherited pivot fires only at the root; a dict-map
+    *nested inside an object* param (``order.lines`` where ``order`` is an
+    object and ``lines`` is the ``Dict[str, T]``) is converted to the array
+    shape on the wire like any other dict-map, but the root-only pivot never
+    reaches it — the model then emits ``order.lines`` as the value-less array
+    and the tool rejects it (observed on ``google/gemini-3.5-flash``
+    ``dict_map__nested_in_object``, 0/15). This subclass recurses one level into
+    each ``object`` param and pivots any nested list whose items *all* carry the
+    synthetic ``key`` field back to a dict (and applies the same scalar-``value``
+    unwrap). The recursion is bounded to ``object`` params and keyed on the
+    ``key``-field item signature — the same schema-loss shape the sanitiser
+    produces — so it is a no-op on a genuine ``list[X]`` whose items don't carry
+    ``key``. Its exact reach across domains is data-bound (which nested fields
+    are dict-maps lives in the domain tool schemas, not the probe), so this arm
+    is flagged for a human domain-scope check before merge.
+    """
+
+    def parse_arguments(
+        self,
+        arguments: dict[str, Any],
+        *,
+        param_types: Mapping[str, str] | None = None,
+    ) -> dict[str, Any]:
+        result = super().parse_arguments(arguments, param_types=param_types)
+        if not param_types:
+            return result
+        out = dict(result)
+        for param_name, value in list(out.items()):
+            declared = param_types.get(param_name)
+            if declared == "dict_map" and isinstance(value, dict):
+                out[param_name] = self._unwrap_scalar_values(value)
+            elif declared == "object" and isinstance(value, dict):
+                out[param_name] = self._pivot_nested_dict_maps(value)
+        return out
+
+    @classmethod
+    def _unwrap_scalar_values(cls, mapping: dict[str, Any]) -> dict[str, Any]:
+        """Unwrap single-field ``{"value": X}`` map entries to the bare scalar."""
+        unwrapped: dict[str, Any] = {}
+        for k, v in mapping.items():
+            if isinstance(v, dict) and set(v.keys()) == {StrictSchema.VALUE_FIELD}:
+                unwrapped[k] = v[StrictSchema.VALUE_FIELD]
+            else:
+                unwrapped[k] = v
+        return unwrapped
+
+    @classmethod
+    def _pivot_nested_dict_maps(cls, obj: dict[str, Any]) -> dict[str, Any]:
+        """Recurse an ``object`` param, pivoting nested dict-map-shaped arrays
+        (``[{key, …}]``) back to ``Dict[str, T]`` and scalar-unwrapping the
+        result. Bounded to the ``key``-field item signature so genuine
+        ``list[X]`` values pass through untouched.
+        """
+        out: dict[str, Any] = {}
+        for field, value in obj.items():
+            if (
+                isinstance(value, list)
+                and value
+                and all(isinstance(item, dict) and cls.KEY_FIELD in item for item in value)
+            ):
+                pivoted: dict[str, Any] = {}
+                for item in value:
+                    item_copy = dict(item)
+                    key = str(item_copy.pop(cls.KEY_FIELD))
+                    pivoted[key] = item_copy
+                out[field] = cls._unwrap_scalar_values(pivoted)
+            elif isinstance(value, dict):
+                # A direct dict field one level in is either a native-wrapper
+                # dict-map (``{k: {"value": N}}``) to scalar-unwrap, or a plain
+                # nested object. Recovery is BOUNDED to this one level - the
+                # depth the observe evidence covers (``order.lines``) - so any
+                # deeper subtree passes through untouched. The scalar unwrap is
+                # a no-op on multi-field values, so plain objects are safe.
+                out[field] = cls._unwrap_scalar_values(value)
+            else:
+                out[field] = value
+        return out
