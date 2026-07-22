@@ -695,8 +695,9 @@ def _component_tail_visible(
         its buffered history when the toggle is on.
 
     Focus alone does NOT expand the tail — the operator selects the row
-    with ``[`` / ``]`` (highlight only) and then presses ``l`` to reveal
-    its history. This keeps navigation cheap on rows.
+    by Tabbing into its panel and walking to it with ``j`` / ``k`` (highlight
+    only), then presses ``l`` to reveal its history. This keeps navigation
+    cheap on rows.
     """
     tail = log_buffers.get(component["id"])
     if not tail:
@@ -1091,10 +1092,6 @@ class _KeyboardListener:
             self._display._toggle_auto_follow()
         elif key == "l":
             self._display._toggle_log_pane()
-        elif key == "[":
-            self._display._nav_prev_component()
-        elif key == "]":
-            self._display._nav_next_component()
         elif key == "\t":
             self._display._cycle_active_panel()
 
@@ -1191,10 +1188,12 @@ class LiveRunDisplay:
         # otherwise. Values are ``(ts, level, message)`` tuples so the
         # renderer needs no LogRecord fields.
         self._component_log_buffers: dict[str, deque[tuple[float, str, str]]] = {}
-        # Focused component id — the operator's ``[`` / ``]`` selection.
-        # ``None`` when nothing is selected. Highlighted with a leading
-        # ``▶ `` marker + reverse-video row style; the tail does not
-        # auto-expand on focus (see :attr:`_component_logs_shown`).
+        # Focused component id — mirrors the focused row of the currently-
+        # active component panel (:attr:`_engine_focused_id` on ENGINE,
+        # :attr:`_infra_focused_id` on INFRASTRUCTURE) and is ``None`` on
+        # TRIALS. Highlighted with a leading ``▶ `` marker + reverse-video
+        # row style; the tail does not auto-expand on focus (see
+        # :attr:`_component_logs_shown`).
         self._focused_component_id: str | None = None
         # Currently-active navigable panel. Determines where ``j`` / ``k`` /
         # ``H`` / ``L`` route their keystrokes and which panel ``l`` toggles.
@@ -1611,7 +1610,7 @@ class LiveRunDisplay:
             # ignores these — but the Focused pane's Infrastructure
             # sub-panel filters to the currently-focused trial's
             # containers and renders them with the same focus /
-            # log-tail machinery as the top widget, so ``[``/``]`` +
+            # log-tail machinery as the top widget, so ``j`` / ``k`` +
             # ``l`` can drill into any container the same way they
             # drill into an engine service.
             for container in containers:
@@ -1755,16 +1754,6 @@ class LiveRunDisplay:
         """Focus the previous visible trial (in :meth:`_visible_cards` order)."""
         with self._lock:
             self._focus_at_offset_locked(-1)
-
-    def _nav_next_component(self) -> None:
-        """Focus the next inspectable component (engine + focused trial's containers)."""
-        with self._lock:
-            self._nav_component_focus_locked(1)
-
-    def _nav_prev_component(self) -> None:
-        """Focus the previous inspectable component (engine + focused trial's containers)."""
-        with self._lock:
-            self._nav_component_focus_locked(-1)
 
     def _nav_next(self) -> None:
         """Advance focus by one row inside the currently-active panel."""
@@ -1928,14 +1917,6 @@ class LiveRunDisplay:
         rows.sort(key=lambda c: c["id"])
         return [c["id"] for c in rows]
 
-    def _inspectable_component_ids_locked(self) -> list[str]:
-        """All component ids the operator can focus RIGHT NOW — union of
-        the engine group and the focused-trial container group. Used as
-        the seed set when the operator presses ``[`` / ``]`` with no
-        prior focus. Caller MUST hold :attr:`_lock`.
-        """
-        return self._engine_component_ids_locked() + self._focused_trial_container_ids_locked()
-
     def _visible_panels_locked(self) -> list[_Panel]:
         """Panels rendered on the current frame, in Tab-cycle order.
 
@@ -1968,93 +1949,6 @@ class LiveRunDisplay:
         """
         if self._active_panel not in self._visible_panels_locked():
             self._active_panel = _Panel.TRIALS
-
-    def _current_component_group_locked(self) -> str | None:
-        """Group of the currently-focused component: ``"engine"`` /
-        ``"trial"`` / ``None`` (no focus, or focus points at a stale id).
-        Caller MUST hold :attr:`_lock`.
-        """
-        cid = self._focused_component_id
-        if cid is None:
-            return None
-        comp = self._components.get(cid)
-        if comp is None:
-            return None
-        owner = comp.get("owner") or ""
-        if owner == "engine":
-            return "engine"
-        if owner.startswith("trial/"):
-            return "trial"
-        return None
-
-    def _ids_for_group_locked(self, group: str) -> list[str]:
-        """Sorted component ids in ``group`` (``"engine"`` or ``"trial"``).
-        Caller MUST hold :attr:`_lock`.
-        """
-        if group == "engine":
-            return self._engine_component_ids_locked()
-        if group == "trial":
-            return self._focused_trial_container_ids_locked()
-        return []
-
-    def _nav_component_focus_locked(self, delta: int) -> None:
-        """Move :attr:`_focused_component_id` by ``delta`` **within its
-        current group** (engine or focused-trial containers).
-
-        ``[`` / ``]`` are now within-panel walks; ``Tab`` (see
-        :meth:`_nav_switch_component_panel_locked`) is the between-panels
-        jump. Wraps at each group's boundaries. When no component is
-        focused yet, seed from the engine group (first row on ``]``,
-        last row on ``[``); if that group is empty, fall back to the
-        focused-trial container group. Caller MUST hold :attr:`_lock`.
-        """
-        group = self._current_component_group_locked()
-        if group is not None:
-            ids = self._ids_for_group_locked(group)
-            if not ids:
-                return
-            idx = ids.index(self._focused_component_id) if self._focused_component_id in ids else 0
-            idx = (idx + delta) % len(ids)
-            self._focused_component_id = ids[idx]
-            self._refresh_live_locked()
-            return
-        # No current focus — seed from the engine group when possible,
-        # else the focused-trial container group.
-        for candidate in ("engine", "trial"):
-            ids = self._ids_for_group_locked(candidate)
-            if ids:
-                self._focused_component_id = ids[0 if delta >= 0 else -1]
-                self._refresh_live_locked()
-                return
-
-    def _nav_switch_component_panel_locked(self) -> None:
-        """Jump component focus between the two panels (engine ↔ trial).
-
-        Lands on the first row of the target group. When the target
-        group is empty, stay put — there is nothing to jump to. When
-        no component is focused yet, seed the engine group's first row
-        (Tab from a clean start behaves like ``]``). Caller MUST hold
-        :attr:`_lock`.
-        """
-        current = self._current_component_group_locked()
-        target = "trial" if current == "engine" else "engine"
-        ids = self._ids_for_group_locked(target)
-        if not ids:
-            if current is None:
-                fallback = self._ids_for_group_locked("engine") or self._ids_for_group_locked(
-                    "trial"
-                )
-                if fallback:
-                    self._focused_component_id = fallback[0]
-                    self._refresh_live_locked()
-            return
-        self._focused_component_id = ids[0]
-        self._refresh_live_locked()
-
-    def _nav_switch_component_panel(self) -> None:
-        """Public entry for the ``Tab`` handler. Delegates under :attr:`_lock`."""
-        with self._lock:
-            self._nav_switch_component_panel_locked()
 
     def _nav_first_trial(self) -> None:
         """Focus the first visible trial in :meth:`_visible_cards` order."""
@@ -2565,7 +2459,7 @@ class LiveRunDisplay:
         # "Infrastructure" sub-panel under the summary. Rich Group renders
         # both children in sequence within the outer Panel. The sub-panel
         # uses the same components-table renderer as the top Engine
-        # Components widget so ``[``/``]`` focus + ``l`` tail expansion
+        # Components widget so ``j`` / ``k`` focus + ``l`` tail expansion
         # behave identically in both places.
         infra_border_style = "active" if active_panel is _Panel.INFRASTRUCTURE else "muted"
         infra_panel = Panel(
