@@ -1,0 +1,32 @@
+combine:
+  method: weighted
+  weights:
+    state_checks: 0.6
+    transcript_rules: 0.4
+  pass_threshold: 0.8
+state_checks:
+  jsonpaths:
+    - path: "$.filesystem['/env/fs/agent-visible/CHANGELOG_DRAFT.md']"
+      contains: "STATUS: READY"
+      description: "Changelog placeholder finalized to READY via str_replace"
+    - path_glob: "/env/fs/agent-visible/release/*"
+      contains_ci: "changelog"
+      description: "Release notes authored under the persisted release/ directory"
+transcript_rules:
+  max_turns: 12
+  disallow_regex:
+    - "(?i)(cannot complete|unable to complete|i refuse)"
+  required_actions:
+    - action_id: "establish_session_state"
+      requestor: assistant
+      name: bash_session
+      arguments: {}
+      compare_args: []
+    - action_id: "edit_with_str_replace_editor"
+      requestor: assistant
+      name: str_replace_editor
+      arguments: {}
+      compare_args: []
+  communicate_info:
+    - info: "READY"
+      required: true

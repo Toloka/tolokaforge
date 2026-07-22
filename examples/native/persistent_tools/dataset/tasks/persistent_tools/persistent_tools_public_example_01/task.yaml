@@ -1,0 +1,23 @@
+task_id: "persistent_tools_public_example_01"
+name: "Release Notes Finalization"
+category: "persistent_tools"
+description: "Use a persistent bash session to establish a working directory, then edit and author files with the str_replace editor, relying on the session's persisted state across calls."
+initial_user_message: "Finalize the release notes. First use `bash_session` to create a `release` directory under `/work` and `cd` into it (later steps rely on this persisted working directory). Then use `str_replace_editor` to edit `/work/CHANGELOG_DRAFT.md`, replacing `STATUS: PENDING` with `STATUS: READY`. Next use `str_replace_editor` to create `/work/release/NOTES.md` summarizing the finalized changelog (mention it is derived from the changelog). Finally use `bash_session` to list the persisted `release` directory and view `NOTES.md` to confirm it was written there. Report `STATUS: READY` when done."
+initial_state:
+  filesystem:
+    copy:
+      - from: "fixtures/CHANGELOG_DRAFT.md"
+        to: "/env/fs/agent-visible/CHANGELOG_DRAFT.md"
+tools:
+  agent:
+    enabled: ["bash_session", "str_replace_editor"]
+  user:
+    enabled: []
+actors:
+  user:
+    backstory: "You are a release manager verifying that the assistant can hold shell state across calls and edit files safely. Acknowledge completion and end with ###STOP### once the assistant reports the release is READY and both files are in place."
+policies:
+  guidance:
+    - "Rely on the persisted working directory rather than re-establishing it in every command."
+    - "Prefer a targeted str_replace over rewriting the whole changelog."
+grading: "grading.yaml"

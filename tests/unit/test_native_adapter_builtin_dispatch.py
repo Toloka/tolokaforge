@@ -14,11 +14,12 @@ from pathlib import Path
 
 import pytest
 
-from tolokaforge.adapters.native import NativeAdapter
+from tolokaforge.adapters.native import NativeAdapter, _builtin_tool_schemas
 
 pytestmark = pytest.mark.unit
 
 _DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "tasks"
+_PERSISTENT_PACK = Path(__file__).resolve().parents[2] / "examples" / "native" / "persistent_tools"
 
 
 @pytest.fixture
@@ -76,3 +77,87 @@ def test_non_dict_per_tool_config_raises():
     )
     with pytest.raises(ValueError, match="tools.agent.mobile must be a mapping"):
         adapter.to_task_description("bad_mobile")
+
+
+@pytest.fixture
+def persistent_tools_adapter() -> NativeAdapter:
+    from tolokaforge.core.project_loader import load_project_config
+
+    project = load_project_config(_PERSISTENT_PACK / "project.yaml")
+    defaults = project.task_defaults.model_dump(exclude_defaults=True) or None
+    return NativeAdapter(
+        {
+            "tasks_glob": "dataset/tasks/**/task.yaml",
+            "base_dir": str(_PERSISTENT_PACK),
+            "project_task_defaults": defaults,
+        }
+    )
+
+
+def _agent_tool(td, name: str):
+    return next(t for t in td.agent_tools if t.name == name)
+
+
+def test_persistent_pack_advertises_bash_session_schema(persistent_tools_adapter):
+    """The example pack's ``bash_session: {}`` config must load through the
+    adapter as a source-less builtin advertising the full wire schema."""
+    td = persistent_tools_adapter.to_task_description("persistent_tools_public_example_01")
+    bash = _agent_tool(td, "bash_session")
+
+    assert bash.source is None
+    props = bash.parameters["properties"]
+    assert set(props) == {"command", "restart"}
+    assert props["command"]["type"] == "string"
+    assert props["restart"]["type"] == "boolean"
+    assert bash.parameters["required"] == []
+
+
+def test_persistent_pack_advertises_str_replace_editor_schema(persistent_tools_adapter):
+    """The editor's full parameter set (including the four-command enum and
+    the insert-specific ``insert_text``) must reach the built ToolSchema."""
+    td = persistent_tools_adapter.to_task_description("persistent_tools_public_example_01")
+    editor = _agent_tool(td, "str_replace_editor")
+
+    assert editor.source is None
+    props = editor.parameters["properties"]
+    assert set(props) == {
+        "command",
+        "path",
+        "view_range",
+        "file_text",
+        "old_str",
+        "new_str",
+        "insert_line",
+        "insert_text",
+    }
+    assert props["command"]["enum"] == ["view", "create", "str_replace", "insert"]
+    assert editor.parameters["required"] == ["command", "path"]
+    # ``insert`` carries its text in ``insert_text`` — not ``new_str`` (that
+    # is the ``str_replace`` replacement). Both must be advertised distinctly.
+    assert "insert_text" in props
+    assert "new_str" in props
+
+
+def test_builtin_schemas_survive_compose_tool_config():
+    """``_builtin_tool_schemas`` must extract full schemas for both tools even
+    under a compose ``tool_config`` — guards against a schema-extraction
+    failure being swallowed and a tool shipping an empty schema (#577)."""
+    compose_configs = {
+        "bash_session": {"service": "main", "compose_project_prefix": "trial-xyz"},
+        "str_replace_editor": {"service": "main", "compose_project_prefix": "trial-xyz"},
+    }
+    schemas = _builtin_tool_schemas(["bash_session", "str_replace_editor"], compose_configs)
+
+    assert set(schemas["bash_session"]["parameters"]["properties"]) == {"command", "restart"}
+    editor_props = schemas["str_replace_editor"]["parameters"]["properties"]
+    assert set(editor_props) == {
+        "command",
+        "path",
+        "view_range",
+        "file_text",
+        "old_str",
+        "new_str",
+        "insert_line",
+        "insert_text",
+    }
+    assert editor_props["command"]["enum"] == ["view", "create", "str_replace", "insert"]
