@@ -196,6 +196,40 @@ presets:
     content_policy: nova
     response_policy: standard
 
+  # google/gemini-3.5-flash — model-specific overlay landed via
+  # auto-resolve (Slack-requested integration, PR #560). Declared BEFORE the
+  # generic ``gemini`` preset so first-match-wins routing picks it up; it is
+  # the ``gemini`` preset PLUS two Flash-observed schema-loss fixes that the
+  # shared preset does not carry (scoped to THIS model's match globs so no
+  # sibling Gemini route is affected):
+  #
+  #   1. ``schema_sanitizer: gemini_recursive`` — ``GeminiSchema`` fully
+  #      inlines a recursive Pydantic ``$ref`` (``TreeNode.children:
+  #      list[TreeNode]``) and raises "$ref resolution exceeded depth 16"
+  #      IN-ENGINE before the request is sent, failing all four
+  #      ``recursive_ref`` shapes 0/15. ``GeminiRecursiveSchema`` inlines every
+  #      non-cyclic ref exactly like ``gemini`` but breaks a genuine
+  #      self-reference with a permissive open object, so the wire schema is
+  #      finite and the model emits the tree. It also carries a synthetic
+  #      ``value`` field for scalar-valued dict-maps (``Dict[str, int]``).
+  #   2. ``response_policy: scalar_array_dict_map`` — reverses the array-shaped
+  #      dict-map back to a native dict for BOTH the scalar-value case
+  #      (``{k: {"value": N}}`` → ``{k: N}``, closing
+  #      ``dict_map__scalar_values`` 0/15) and a dict-map nested one level
+  #      inside an object param (``order.lines``, closing
+  #      ``dict_map__nested_in_object`` 0/15 — the root-only reverse pivot in
+  #      ``array_dict_map`` never reached it).
+  #
+  # ``reasoning_codec: gemini`` matches the shared preset (decodes the Flash
+  # ``reasoning.encrypted`` envelope). Reprobe went 5/5 on every fix-target.
+  gemini_35_flash_recursive:
+    match:
+      - "google/gemini-3.5-flash"
+      - "openrouter/google/gemini-3.5-flash"
+    reasoning_codec: gemini
+    schema_sanitizer: gemini_recursive
+    response_policy: scalar_array_dict_map
+
   # Google Gemini family (3.x preview + 3.x GA + 2.5 backstop).
   # ``GeminiReasoningCodec`` decodes Gemini's OpenRouter
   # ``provider_specific_fields.reasoning_details`` envelope: handles

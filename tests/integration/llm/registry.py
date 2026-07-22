@@ -930,11 +930,34 @@ _ALL: list[MC] = [
     ),
     # -----------------------------------------------------------------
     # Gemini 3.5 Flash — GA Flash-tier successor to 3-flash-preview.
-    # Shares the Flash-lineage ``reasoning.encrypted`` envelope, so the
-    # same ``gemini`` preset routes it (no new preset entry needed). The
-    # certificate mirrors the 3-flash-preview posture as the starting
-    # baseline; capability deviations will be ratcheted in based on
-    # live ``pytest tests/integration/llm/ -k gemini-3.5-flash`` output.
+    # Shares the Flash-lineage ``reasoning.encrypted`` envelope. Routed via
+    # the model-specific ``gemini_35_flash_recursive`` preset (see
+    # model_presets.yaml) rather than the shared ``gemini`` preset: an
+    # auto-resolve run (Slack-requested integration, PR #560) found three
+    # engine-side schema-loss failures under the observe (``default``) preset
+    # that the shared ``gemini`` preset does NOT close, and the overlay adds
+    # ``GeminiRecursiveSchema`` (cycle-tolerant ``$ref`` inlining + synthetic
+    # scalar dict-map value field) and ``ScalarArrayDictMapResponse``
+    # (scalar-value unwrap + nested-object dict-map pivot) on top of the
+    # shared Gemini codec:
+    #
+    #   * RECURSIVE_REF_TOOL_CALL — all four shapes were 0/15 under observe
+    #     (StrictSchema raised "$ref resolution exceeded depth 16" in-engine on
+    #     the recursive ``TreeNode.children`` ref); the recursive sanitiser
+    #     makes them 5/5 on reprobe. Kept ``required``.
+    #   * DICT_MAP_TOOL_CALL — the base dict-map probe passed under observe, but
+    #     the ``scalar_values`` and ``nested_in_object`` variants were 0/15
+    #     (scalar value dropped on the wire; nested pivot never reached). The
+    #     overlay's scalar ``value`` carriage + one-level nested pivot make both
+    #     variants 5/5 on reprobe. Kept ``required``.
+    #   * DISCRIMINATED_UNION_TOOL_CALL — passed under observe on the flattened
+    #     Gemini schema; unchanged by the overlay. Kept ``required``.
+    #
+    # The five ``known_unsupported`` ceilings below are the observe-run
+    # ceilings (known_unsupported in decision.json): Flash emits
+    # ``reasoning.encrypted`` only (no readable/signed blocks → THINKING_*),
+    # and the ``gemini`` codec wires no cache markers / the synthetic
+    # auto-cache probe reads 0 (PROMPT_CACHING / IMPLICIT_PROMPT_CACHING).
     # -----------------------------------------------------------------
     MC(
         model_id="openrouter__google_gemini-3.5-flash",

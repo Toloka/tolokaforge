@@ -197,6 +197,22 @@ class StrictSchema:
     #: Name of the synthetic key field added when converting dict-maps → arrays.
     KEY_FIELD = "key"
 
+    #: Name of the synthetic value field added when converting a *scalar*-valued
+    #: dict-map (``Dict[str, int]`` / ``Dict[str, str]`` …) → array. Only emitted
+    #: when :attr:`carry_scalar_dict_map_value` is ``True``; see that flag.
+    VALUE_FIELD = "value"
+
+    #: When ``True``, a dict-map whose value schema is a **scalar** (no
+    #: ``properties`` to lift onto the synthetic items object) gets a synthetic
+    #: ``value`` field carrying that scalar schema, so the array items are
+    #: ``{key, value}`` rather than the value-less ``{key}`` that drops the
+    #: value entirely. The default ``False`` keeps the historical value-less
+    #: shape for every existing route (the value-typed dict-maps those routes
+    #: carry lift their own ``properties`` and are unaffected either way).
+    #: Subclasses that pair this with a scalar-aware response policy override
+    #: to ``True``. Reversed by :class:`ScalarArrayDictMapResponse`.
+    carry_scalar_dict_map_value: bool = False
+
     _MAX_REF_DEPTH = 16
 
     #: When ``True``, flatten ``oneOf`` discriminated unions into a single
@@ -659,10 +675,25 @@ class StrictSchema:
         for prop_name, prop_schema in value_props.items():
             items_props[prop_name] = prop_schema  # already sanitised above
 
+        items_required = [self.KEY_FIELD] + value_required
+
+        # Scalar-valued dict-map (``Dict[str, int]`` etc.): the value schema has
+        # no ``properties`` to lift, so without a synthetic ``value`` field the
+        # items object is just ``{key}`` and the map value is dropped on the
+        # wire — the model then invents a ``{"value": N}`` wrapper or emits a
+        # native dict, both of which fail the scalar-map contract. When the
+        # subclass opts in, carry the scalar schema under ``VALUE_FIELD`` so the
+        # value has a declared home; :class:`ScalarArrayDictMapResponse`
+        # reverses ``{key, value}`` back to the bare scalar.
+        if self.carry_scalar_dict_map_value and not value_props and sanitised_value:
+            items_props[self.VALUE_FIELD] = dict(sanitised_value)
+            items_props[self.VALUE_FIELD].setdefault("description", "The map value.")
+            items_required.append(self.VALUE_FIELD)
+
         items_schema: dict[str, Any] = {
             "type": "object",
             "properties": items_props,
-            "required": [self.KEY_FIELD] + value_required,
+            "required": items_required,
         }
 
         # Override type → array, set items, keep description
@@ -814,3 +845,97 @@ class GeminiSchema(StrictSchema):
     flatten_oneof_discriminator = True
     strip_parameters_root_description = False
     strip_re2_incompatible_patterns = False
+
+
+class GeminiRecursiveSchema(GeminiSchema):
+    """Gemini sanitiser that tolerates **self-referential** (cyclic) ``$ref``.
+
+    ``StrictSchema._inline_refs`` fully inlines every ``$ref`` and raises
+    ``"$ref resolution exceeded depth 16"`` the moment a ``$def`` references
+    itself (a Pydantic recursive model such as ``TreeNode.children:
+    list[TreeNode]`` compiles to exactly this cyclic ``$ref``). The raise
+    fires in-engine *before* the request is sent, so the whole trial fails
+    with a sanitiser ``ValueError`` rather than the model ever seeing the
+    tool. Observed on ``google/gemini-3.5-flash`` as ``test_recursive_ref_
+    tool_call`` failing 0/15 on all four shapes (simple / deep_chain /
+    wide_tree / nested_in_object).
+
+    This subclass inlines every *non-cyclic* ``$ref`` exactly as the parent
+    does, but breaks a genuine cycle by substituting a permissive open-object
+    schema (``{"type": "object", "additionalProperties": true}``) at the point
+    of re-entry. The declared schema is thus finite and Gemini receives a valid
+    tool spec; the *receiving* Pydantic validator still accepts an
+    arbitrary-depth nested tree, so a model that emits the full recursion
+    passes. Cycle detection is by def-name on the active resolution stack — a
+    diamond (the same def referenced twice on *different* branches) still
+    inlines on each branch; only a ref that re-enters a def already being
+    resolved on the current path is pruned.
+    """
+
+    #: Pair the recursive-ref tolerance with scalar dict-map value carriage —
+    #: both are Gemini-observed schema-loss surfaces on the same route.
+    carry_scalar_dict_map_value = True
+
+    @classmethod
+    def _inline_refs_in_tool(cls, tool: Any) -> Any:
+        if not isinstance(tool, dict):
+            return tool
+        func = tool.get("function")
+        if not isinstance(func, dict):
+            return tool
+        params = func.get("parameters")
+        if not isinstance(params, dict):
+            return tool
+        defs = params.get("$defs")
+        if not isinstance(defs, dict):
+            return tool
+        resolved_params = cls._inline_refs_cycle_tolerant(params, defs, active=())
+        if isinstance(resolved_params, dict):
+            resolved_params.pop("$defs", None)
+        new_func = dict(func)
+        new_func["parameters"] = resolved_params
+        new_tool = dict(tool)
+        new_tool["function"] = new_func
+        return new_tool
+
+    #: Substituted at the point a cyclic ``$ref`` re-enters a def already on
+    #: the active resolution stack. Permissive so the model can still emit the
+    #: recursive subtree; the receiving Pydantic validator enforces the shape.
+    _CYCLE_STUB: dict[str, Any] = {"type": "object", "additionalProperties": True}
+
+    @classmethod
+    def _inline_refs_cycle_tolerant(
+        cls, schema: Any, defs: dict[str, Any], active: tuple[str, ...]
+    ) -> Any:
+        """Inline ``$ref`` like the parent, but prune a ref that re-enters a
+        def already on the ``active`` resolution stack (a genuine cycle)
+        rather than recursing until the depth cap raises.
+        """
+        if isinstance(schema, list):
+            return [cls._inline_refs_cycle_tolerant(item, defs, active) for item in schema]
+        if not isinstance(schema, dict):
+            return schema
+        ref = schema.get("$ref")
+        if isinstance(ref, str) and ref.startswith("#/$defs/"):
+            target_name = ref.removeprefix("#/$defs/")
+            if target_name in active:
+                # Cyclic self-reference — stop inlining, emit a permissive
+                # open object so the wire schema stays finite.
+                return dict(cls._CYCLE_STUB)
+            target = defs.get(target_name)
+            if target is None:
+                raise ValueError(
+                    f"StrictSchema: $ref {ref!r} points to a missing "
+                    f"$defs entry. Available: {sorted(defs.keys())!r}"
+                )
+            resolved = cls._inline_refs_cycle_tolerant(target, defs, active + (target_name,))
+            siblings = {k: v for k, v in schema.items() if k != "$ref"}
+            if not siblings:
+                return resolved
+            if isinstance(resolved, dict):
+                merged = dict(resolved)
+                for k, v in siblings.items():
+                    merged[k] = cls._inline_refs_cycle_tolerant(v, defs, active)
+                return merged
+            return resolved
+        return {k: cls._inline_refs_cycle_tolerant(v, defs, active) for k, v in schema.items()}
