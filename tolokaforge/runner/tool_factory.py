@@ -55,8 +55,27 @@ from tolokaforge.tools.persistent_shell import (
     DockerComposeBashSession,
     LocalBashSession,
 )
+from tolokaforge.tools.str_replace_editor import (
+    DockerComposeEditor,
+    EditorBackend,
+    EditorError,
+    LocalFilesystemEditor,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_compose_container_name(trial_id: str, service: str, project_prefix: str) -> str:
+    """Container name for *service* in the per-trial compose stack.
+
+    Mirrors the per-trial project convention the compose lifecycle consumer
+    uses (project ``{prefix}{trial_id}``, container ``{project}_{service}``), so
+    an exec targets the same running container the stack brought up. The
+    ``bash_session`` and ``str_replace_editor`` compose backends share it so
+    both target the identical container.
+    """
+    project = f"{project_prefix}{trial_id.replace(':', '_')}"
+    return f"{project}_{service}"
 
 
 # =============================================================================
@@ -1236,14 +1255,7 @@ class PersistentShellToolWrapper(ToolWrapper):
 
     @staticmethod
     def _resolve_container_name(trial_id: str, service: str, project_prefix: str) -> str:
-        """Container name for *service* in the per-trial compose stack.
-
-        Mirrors the per-trial project convention the compose lifecycle consumer
-        uses (project ``{prefix}{trial_id}``, container ``{project}_{service}``),
-        so the exec targets the same running container the stack brought up.
-        """
-        project = f"{project_prefix}{trial_id.replace(':', '_')}"
-        return f"{project}_{service}"
+        return _resolve_compose_container_name(trial_id, service, project_prefix)
 
     async def _restart(self) -> str:
         assert self._session is not None
@@ -1261,6 +1273,93 @@ class PersistentShellToolWrapper(ToolWrapper):
         if result.exit_code not in (0, None):
             return f"{result.output}\n[exit code: {result.exit_code}]"
         return result.output
+
+
+# =============================================================================
+# Str-Replace Editor Tool Wrapper
+# =============================================================================
+
+
+class StrReplaceEditorToolWrapper(ToolWrapper):
+    """Runner-side executor for the ``str_replace_editor`` tool.
+
+    Stateless (no per-trial session), so ``has_lifecycle`` stays False. The
+    working root is the runner container's ``/work`` (same directory the file
+    tools and the shell's workdir target). A ``service`` key in ``tool_config``
+    selects the compose backend; its absence selects the local filesystem
+    engine. The wire schema is identical either way.
+    """
+
+    has_lifecycle = False
+
+    AGENT_WORK_DIR = "/work"
+
+    def __init__(self, tool_schema: ToolSchemaModel, trial_id: str):
+        super().__init__(tool_schema)
+        tool_config = tool_schema.tool_config or {}
+        self._service: str | None = tool_config.get("service")
+        self._project_prefix: str | None = tool_config.get("compose_project_prefix")
+        if self._service is not None and not self._project_prefix:
+            raise ToolConfigurationError(
+                self.name,
+                "str_replace_editor with a 'service' requires 'compose_project_prefix' to "
+                "resolve the running container name (the per-trial compose project "
+                "prefix used to bring the stack up)",
+            )
+        self._trial_id = trial_id
+        self._backend = self._new_backend()
+
+    def _new_backend(self) -> EditorBackend:
+        if self._service is None:
+            return LocalFilesystemEditor(self.AGENT_WORK_DIR)
+        assert self._project_prefix is not None  # validated in __init__
+        container = self._resolve_container_name(
+            self._trial_id, self._service, self._project_prefix
+        )
+        return DockerComposeEditor(container, base_path=self.AGENT_WORK_DIR)
+
+    @staticmethod
+    def _resolve_container_name(trial_id: str, service: str, project_prefix: str) -> str:
+        return _resolve_compose_container_name(trial_id, service, project_prefix)
+
+    async def execute(self, arguments: dict[str, Any]) -> str:
+        loop = asyncio.get_event_loop()
+        try:
+            return await loop.run_in_executor(None, self._dispatch, arguments)
+        except EditorError as exc:
+            raise ToolExecutionError(self.name, str(exc)) from exc
+
+    def _dispatch(self, arguments: dict[str, Any]) -> str:
+        command = arguments.get("command")
+        path = arguments.get("path")
+        if not path:
+            raise EditorError("'path' is required")
+        if command == "view":
+            return self._backend.view(path, arguments.get("view_range"))
+        if command == "create":
+            file_text = arguments.get("file_text")
+            if file_text is None:
+                raise EditorError("'file_text' is required for the 'create' command")
+            return self._backend.create(path, file_text)
+        if command == "str_replace":
+            old_str = arguments.get("old_str")
+            new_str = arguments.get("new_str")
+            if old_str is None or new_str is None:
+                raise EditorError(
+                    "'old_str' and 'new_str' are required for the 'str_replace' command"
+                )
+            return self._backend.str_replace(path, old_str, new_str)
+        if command == "insert":
+            insert_line = arguments.get("insert_line")
+            insert_text = arguments.get("insert_text")
+            if insert_line is None or insert_text is None:
+                raise EditorError(
+                    "'insert_line' and 'insert_text' are required for the 'insert' command"
+                )
+            return self._backend.insert(path, insert_line, insert_text)
+        raise EditorError(
+            f"unknown command: {command!r}; expected one of view/create/str_replace/insert"
+        )
 
 
 # =============================================================================
@@ -1389,6 +1488,8 @@ class ToolFactory:
                 return BuiltinFileToolWrapper(schema)
             if dispatch is builtin_registry.Dispatch.PERSISTENT_SHELL:
                 return PersistentShellToolWrapper(schema)
+            if dispatch is builtin_registry.Dispatch.EDITOR:
+                return StrReplaceEditorToolWrapper(schema, trial_id=self.trial_id)
             return BuiltinGenericToolWrapper(schema)
 
         source = schema.source

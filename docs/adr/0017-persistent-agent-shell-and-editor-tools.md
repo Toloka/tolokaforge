@@ -230,7 +230,7 @@ tolokaforge targets current Claude models, the tool ships four commands:
 | `text_editor_20250728` | Claude-4 | `str_replace_based_edit_tool` | view, create, str_replace, insert |
 
 **Parameter names (locked):** `command`, `path`, `view_range`, `file_text`,
-`old_str`, `new_str`, `insert_line`.
+`old_str`, `new_str`, `insert_line`, `insert_text`.
 
 **Per-command semantics.**
 
@@ -241,7 +241,7 @@ tolokaforge targets current Claude models, the tool ships four commands:
   already exists**.
 - **`str_replace`** — replaces `old_str` (exact match, including whitespace)
   with `new_str`; **fail-loud on a non-unique match and on a missing match**.
-- **`insert`** — inserts `new_str` at `insert_line`, the line number **after
+- **`insert`** — inserts `insert_text` at `insert_line`, the line number **after
   which** to insert; `insert_line=0` inserts before the first line.
 
 **Path validation.** Reject symlinks that escape the configured working root.

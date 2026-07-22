@@ -34,6 +34,8 @@ def test_list_builtins_covers_every_consumer_today():
         "search_kb",
         # session-lifetime persistent shell (#566)
         "bash_session",
+        # str-replace editor (#567)
+        "str_replace_editor",
     }
     assert expected == set(registry.list_builtins())
 
@@ -43,13 +45,14 @@ def test_dispatch_groups_are_disjoint_and_exhaustive():
     files = registry.list_for_dispatch(registry.Dispatch.FILES)
     rag = registry.list_for_dispatch(registry.Dispatch.RAG)
     shell = registry.list_for_dispatch(registry.Dispatch.PERSISTENT_SHELL)
-    groups = [generic, files, rag, shell]
+    editor = registry.list_for_dispatch(registry.Dispatch.EDITOR)
+    groups = [generic, files, rag, shell, editor]
     # Disjoint
     for i, a in enumerate(groups):
         for b in groups[i + 1 :]:
             assert a.isdisjoint(b)
     # Exhaustive
-    assert generic | files | rag | shell == registry.list_builtins()
+    assert generic | files | rag | shell | editor == registry.list_builtins()
 
 
 def test_bash_session_routes_to_persistent_shell_dispatch():
@@ -57,6 +60,13 @@ def test_bash_session_routes_to_persistent_shell_dispatch():
 
     assert registry.get_dispatch("bash_session") is registry.Dispatch.PERSISTENT_SHELL
     assert registry.get_class("bash_session") is PersistentShellTool
+
+
+def test_str_replace_editor_routes_to_editor_dispatch():
+    from tolokaforge.tools.str_replace_editor import StrReplaceEditorTool
+
+    assert registry.get_dispatch("str_replace_editor") is registry.Dispatch.EDITOR
+    assert registry.get_class("str_replace_editor") is StrReplaceEditorTool
 
 
 def test_bash_is_generic_not_files():
