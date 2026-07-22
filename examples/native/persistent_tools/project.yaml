@@ -1,0 +1,28 @@
+# Project spec for the persistent-tools example.
+#
+# One public task that drives the persistent shell (`bash_session`) and
+# the file editor (`str_replace_editor`) in their local variants. No
+# Docker substrate — both tools operate on the runner's `/work`, so
+# `default_environment` is omitted. See docs/PROJECTS.md for the full
+# Project model and docs/TOOLS.md for the tool contracts.
+
+name: "persistent-tools"
+version: 1
+description: >
+  Persistent shell and editor evaluation: the agent establishes working
+  state in a held bash session, then edits and creates files with the
+  str_replace editor, relying on the session's persisted working
+  directory across calls.
+
+tasks:
+  discovery:
+    glob: "dataset/tasks/**/task.yaml"
+
+# ── Task defaults — base for every task ─────────────────────────
+task_defaults:
+  adapter_type: "native"
+  max_turns: 12
+  actors:
+    user:
+      mode: "llm"
+      persona: "cooperative"
