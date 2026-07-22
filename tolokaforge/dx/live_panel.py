@@ -593,6 +593,52 @@ def _service_to_component(service: ServiceSnapshot, *, phase: str) -> ComponentS
     )
 
 
+def _container_to_component(container: ContainerSnapshot, *, trial_id: str) -> ComponentSnapshot:
+    """Adapter: lift a per-trial ``ContainerSnapshot`` into a ``ComponentSnapshot``.
+
+    Trial containers become first-class components under
+    ``owner="trial/<trial_id>"`` so they inherit the components model's
+    per-row log buffer + ``l``-toggle-on-focus surface. They do NOT
+    appear in the top-level Engine Components widget — that widget
+    filters to ``owner == "engine"``. They render in the per-trial
+    "Infrastructure" sub-panel inside the Focused pane instead.
+
+    ``detail`` carries the docker state + health + published ports so
+    the operator sees per-container context at a glance without a
+    separate ports column.
+    """
+    health = container.get("health")
+    state = container.get("state", "unknown")
+    comp_phase: ComponentPhase
+    if health == "healthy":
+        comp_phase = "healthy"
+    elif health == "unhealthy":
+        comp_phase = "unhealthy"
+    elif health == "starting":
+        comp_phase = "starting"
+    elif state == "running":
+        comp_phase = "healthy"
+    elif state in ("exited", "dead"):
+        comp_phase = "dead"
+    else:
+        comp_phase = "pending"
+    ports_summary = _summarise_ports(container.get("ports", {}))
+    detail_parts = [state]
+    if health:
+        detail_parts.append(health)
+    if ports_summary:
+        detail_parts.append(ports_summary)
+    return ComponentSnapshot(
+        id=build_component_id(
+            f"trial/{trial_id}", "container", container.get("service", "unknown")
+        ),
+        kind="container",
+        phase=comp_phase,
+        detail=" · ".join(detail_parts),
+        owner=f"trial/{trial_id}",
+    )
+
+
 def _map_docker_status_to_component_phase(docker_status: str, run_phase: str) -> ComponentPhase:
     """Map docker container ``status`` ∈ compose-status vocabulary to a
     :data:`ComponentPhase`.
@@ -790,30 +836,6 @@ def _render_boot_log_tail(
         border_style="muted",
         padding=(0, 1),
     )
-
-
-def _render_containers_table(containers: list[ContainerSnapshot]) -> Table:
-    """Compact per-container table for the focused-trial infra sub-panel.
-
-    Columns: service name / health glyph / port summary. Prefers the
-    compose ``service`` field (short — ``app-db``, ``runner``) over the
-    docker container ``name`` (long — ``tolokaforge-endpoint_add_0-532m7q73-app-db-1``)
-    so the right pane's narrow column stays readable. Falls back to the
-    docker name only when the reporter didn't populate ``service``.
-    """
-    table = Table(show_header=False, expand=True, pad_edge=False, box=None)
-    table.add_column("service", ratio=3, no_wrap=True)
-    table.add_column("", width=1, no_wrap=True)
-    table.add_column("ports", ratio=3, no_wrap=True)
-    for container in containers:
-        health = container.get("health") or container.get("state", "unknown")
-        display_name = container.get("service") or container.get("name", "")
-        table.add_row(
-            display_name,
-            _health_glyph(health),
-            _summarise_ports(container.get("ports", {})),
-        )
-    return table
 
 
 def _looks_like_auth_error(error_str: str) -> bool:
@@ -1138,13 +1160,15 @@ class LiveRunDisplay:
         # ``starting_services`` and ``services_ready`` transitions. Feeds
         # the mid-region widget until trials dispatch.
         self._services: list[ServiceSnapshot] | None = None
-        # Engine-scoped component monitoring table. Populated by the
-        # four ``component_*`` events plus the adapter shim that lifts
-        # legacy ``phase_changed(services=…)`` records into the same
-        # model. Per-trial containers do NOT flow through here — they
-        # render in the per-trial "Infrastructure" sub-panel inside
-        # the Focused pane off ``_TrialCard.containers`` directly. One
-        # row per stable component id; last-write-wins on update.
+        # Component monitoring table. Populated by the four
+        # ``component_*`` events plus adapter shims lifting
+        # ``phase_changed(services=…)`` (engine) and
+        # ``trial_provisioned(containers=…)`` (per-trial) records into
+        # the same model. Engine-owned rows render in the top-level
+        # Engine Components widget; per-trial rows render in the
+        # Focused pane's Infrastructure sub-panel scoped to the
+        # currently-focused trial. One row per stable component id;
+        # last-write-wins on update.
         self._components: dict[str, ComponentSnapshot] = {}
         # Per-component log tail. Bounded ring per id; rendered only when
         # the component is in an unhealthy phase, kept for post-mortem
@@ -1452,8 +1476,9 @@ class LiveRunDisplay:
 
         Same-id updates overwrite in place — this is what keeps per-attempt
         polling from scrolling the log stream. The
-        :func:`_service_to_component` adapter routes through here so the
-        wire shape is normalised regardless of the source.
+        :func:`_service_to_component` / :func:`_container_to_component`
+        adapters route through here so the wire shape is normalised
+        regardless of the source.
         """
         self._components[snapshot["id"]] = snapshot
 
@@ -1517,13 +1542,17 @@ class LiveRunDisplay:
         with self._lock:
             card = self._trials.get(trial_id) or self._lazy_card_locked(trial_id)
             card.containers = list(containers)
-            # Trial containers land in the per-trial "Infrastructure"
-            # sub-panel inside the Focused pane (rendered by
-            # :meth:`_render_right_pane` off ``card.containers``). They
-            # are intentionally NOT lifted into ``_components`` — the
-            # top-level components widget is engine-only, and duplicating
-            # task-declared containers there just clutters the layout
-            # when the operator can already see them per-trial.
+            # Lift each container into the components model under
+            # ``owner="trial/<trial_id>"``. The top-level Engine
+            # Components widget filters to ``owner == "engine"`` and
+            # ignores these — but the Focused pane's Infrastructure
+            # sub-panel filters to the currently-focused trial's
+            # containers and renders them with the same focus /
+            # log-tail machinery as the top widget, so ``[``/``]`` +
+            # ``l`` can drill into any container the same way they
+            # drill into an engine service.
+            for container in containers:
+                self._ingest_component_locked(_container_to_component(container, trial_id=trial_id))
             self._refresh_live_locked()
 
     def trial_completed(self, *, trial_id: str, binary_pass: bool, score: float | None) -> None:
@@ -1665,30 +1694,46 @@ class LiveRunDisplay:
             self._focus_at_offset_locked(-1)
 
     def _nav_next_component(self) -> None:
-        """Focus the next component in widget sort order (walks both panels)."""
+        """Focus the next inspectable component (engine + focused trial's containers)."""
         with self._lock:
             self._nav_component_focus_locked(1)
 
     def _nav_prev_component(self) -> None:
-        """Focus the previous component in widget sort order (walks both panels)."""
+        """Focus the previous inspectable component (engine + focused trial's containers)."""
         with self._lock:
             self._nav_component_focus_locked(-1)
+
+    def _inspectable_component_ids_locked(self) -> list[str]:
+        """Component ids the operator can currently focus with ``[`` / ``]``.
+
+        Union of engine-owned rows (rendered in the top Engine Components
+        widget) and the currently-focused trial's container rows
+        (rendered in the Focused pane's Infrastructure sub-panel). Other
+        trials' containers are not inspectable until their trial is
+        focused — the walk stays scoped to what is actually visible.
+        Sorted deterministically by ``(owner, id)``. Caller MUST hold
+        :attr:`_lock`.
+        """
+        focused_trial_owner = f"trial/{self._focused_trial_id}" if self._focused_trial_id else None
+        rows = [
+            comp
+            for comp in self._components.values()
+            if comp.get("owner") == "engine" or comp.get("owner") == focused_trial_owner
+        ]
+        rows.sort(key=lambda c: (c.get("owner") or "￿", c["id"]))
+        return [c["id"] for c in rows]
 
     def _nav_component_focus_locked(self, delta: int) -> None:
         """Move :attr:`_focused_component_id` by ``delta`` in visible sort order.
 
-        Visible = anything that :func:`_render_components_table` would
-        render (either engine-owned or trial-owned). Sort order matches
-        the widget: ``(owner, id)``. Wraps at boundaries. No-op when no
-        components are tracked. Caller MUST hold :attr:`_lock`.
+        Visible = union of engine components + focused-trial containers
+        (see :meth:`_inspectable_component_ids_locked`). Wraps at
+        boundaries. No-op when nothing inspectable. Caller MUST hold
+        :attr:`_lock`.
         """
-        if not self._components:
+        ids = self._inspectable_component_ids_locked()
+        if not ids:
             return
-        rows = sorted(
-            self._components.values(),
-            key=lambda c: (c.get("owner") or "￿", c["id"]),
-        )
-        ids = [c["id"] for c in rows]
         if self._focused_component_id in ids:
             idx = ids.index(self._focused_component_id)
             idx = (idx + delta) % len(ids)
@@ -1707,6 +1752,7 @@ class LiveRunDisplay:
                 return
             self._auto_follow = False
             self._focused_trial_id = visible[0].trial_id
+            self._clear_stale_container_focus_locked()
             self._refresh_live_locked()
 
     def _nav_last_trial(self) -> None:
@@ -1717,6 +1763,7 @@ class LiveRunDisplay:
                 return
             self._auto_follow = False
             self._focused_trial_id = visible[-1].trial_id
+            self._clear_stale_container_focus_locked()
             self._refresh_live_locked()
 
     def _toggle_auto_follow(self) -> None:
@@ -1732,6 +1779,7 @@ class LiveRunDisplay:
             if self._auto_follow and self._trials:
                 newest = max(self._trials.values(), key=lambda c: c.last_update_ts)
                 self._focused_trial_id = newest.trial_id
+                self._clear_stale_container_focus_locked()
             self._refresh_live_locked()
 
     def _toggle_log_pane(self) -> None:
@@ -1779,7 +1827,26 @@ class LiveRunDisplay:
             current_index = 0
         new_index = max(0, min(len(visible) - 1, current_index + delta))
         self._focused_trial_id = visible[new_index].trial_id
+        self._clear_stale_container_focus_locked()
         self._refresh_live_locked()
+
+    def _clear_stale_container_focus_locked(self) -> None:
+        """Drop ``_focused_component_id`` when it points at a container
+        of a trial that is no longer focused. Engine focus is preserved.
+        Caller MUST hold :attr:`_lock`.
+        """
+        cid = self._focused_component_id
+        if cid is None:
+            return
+        comp = self._components.get(cid)
+        if comp is None:
+            self._focused_component_id = None
+            return
+        owner = comp.get("owner") or ""
+        if not owner.startswith("trial/"):
+            return
+        if owner != f"trial/{self._focused_trial_id}":
+            self._focused_component_id = None
 
     # Internal helpers -----------------------------------------------
 
@@ -2067,6 +2134,26 @@ class LiveRunDisplay:
                 if card is not None
                 else None
             )
+            # Per-trial container components + their log-tail snapshot,
+            # used by the Infrastructure sub-panel below to render
+            # focus + expanded log tail alongside each container row.
+            trial_owner = f"trial/{trial_id}" if trial_id is not None else None
+            trial_components: dict[str, ComponentSnapshot] = (
+                {
+                    cid: comp
+                    for cid, comp in self._components.items()
+                    if comp.get("owner") == trial_owner
+                }
+                if trial_owner is not None
+                else {}
+            )
+            trial_component_log_buffers: dict[str, deque[tuple[float, str, str]]] = {
+                cid: deque(buf, maxlen=buf.maxlen)
+                for cid, buf in self._component_log_buffers.items()
+                if cid in trial_components
+            }
+            focused_component_id = self._focused_component_id
+            logs_shown = frozenset(self._component_logs_shown)
             visible = self._visible_cards()
             visible_total = len(visible)
             position = next(
@@ -2118,13 +2205,21 @@ class LiveRunDisplay:
         if call_line is not None:
             summary_lines.append(call_line)
         summary = Text("\n".join(summary_lines))
-        if not snapshot.containers:
+        if not trial_components:
             return Panel(summary, title=title)
         # Focused trial has a compose stack: append a compact
         # "Infrastructure" sub-panel under the summary. Rich Group renders
-        # both children in sequence within the outer Panel.
+        # both children in sequence within the outer Panel. The sub-panel
+        # uses the same components-table renderer as the top Engine
+        # Components widget so ``[``/``]`` focus + ``l`` tail expansion
+        # behave identically in both places.
         infra_panel = Panel(
-            _render_containers_table(snapshot.containers),
+            _render_components_table(
+                trial_components,
+                trial_component_log_buffers,
+                focused_component_id,
+                logs_shown,
+            ),
             title="Infrastructure",
             border_style="muted",
         )

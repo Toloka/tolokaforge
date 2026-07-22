@@ -1252,12 +1252,13 @@ def test_engine_components_widget_absent_when_no_engine_components_tracked() -> 
     assert "engine_components" not in child_names
 
 
-def test_trial_provisioned_does_not_surface_containers_in_top_widget() -> None:
-    """Per-trial containers do NOT flow into the top-level components
-    widget — they render only in the per-trial "Infrastructure" sub-panel
-    inside the Focused pane (off ``_TrialCard.containers``). Duplicating
-    them at the top would clutter the layout and confuse operators about
-    which panel owns which concern."""
+def test_trial_containers_registered_as_components_but_hidden_from_top_widget() -> None:
+    """``trial_provisioned(containers=[…])`` lifts each container into
+    ``_components`` under ``owner="trial/<trial_id>"`` so it inherits the
+    focus + log-tail machinery. The top-level Engine Components widget
+    filters to ``owner == "engine"`` and does NOT surface the container
+    — it renders only in the Focused pane's Infrastructure sub-panel.
+    No sibling top-level ``task_infrastructure`` region exists."""
     from tolokaforge.core.run_display_events import ContainerSnapshot, ServiceSnapshot
 
     display = LiveRunDisplay(refresh_per_second=1000)
@@ -1277,16 +1278,14 @@ def test_trial_provisioned_does_not_surface_containers_in_top_widget() -> None:
     display.trial_started(trial_id="task_a:0", task_id="task_a", trial_index=0, total_index=0)
     display.trial_provisioned(trial_id="task_a:0", containers=containers, endpoints={})
 
-    # Trial container info lives on the trial card (used by the Focused
-    # pane's Infrastructure sub-panel).
+    # Container is tracked in _components under its trial's owner.
+    assert "trial/task_a:0/container/db" in display._components
+    assert display._components["trial/task_a:0/container/db"]["owner"] == "trial/task_a:0"
+    # And on the trial card, for the Focused pane's Infrastructure sub-panel.
     assert display._trials["task_a:0"].containers == containers
-    # But NOT in the top-level components model — that stays engine-only.
-    assert not any(
-        (comp.get("owner") or "").startswith("trial/") for comp in display._components.values()
-    )
     layout = display._build_layout()
     child_names = {getattr(child, "name", None) for child in layout.children}
-    # Only the engine-components region renders; there is no separate
+    # Only the engine-components region renders at the top; no sibling
     # top-level task widget.
     assert "engine_components" in child_names
     assert "task_infrastructure" not in child_names
@@ -1302,6 +1301,82 @@ def test_mapper_created_and_services_ready_is_stopped_not_unhealthy() -> None:
     assert _map_docker_status_to_component_phase("created", "services_ready") == "stopped"
     # And the starting_services branch stays pending (declared but boot in-flight).
     assert _map_docker_status_to_component_phase("created", "starting_services") == "pending"
+
+
+def test_component_nav_includes_focused_trial_containers() -> None:
+    """``[`` / ``]`` walk the union of engine components and the currently-
+    focused trial's containers. Other trials' containers are NOT part of
+    the walk — they become inspectable only when their trial is focused."""
+    from tolokaforge.core.run_display_events import ContainerSnapshot, ServiceSnapshot
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    services: list[ServiceSnapshot] = [
+        {"name": "runner", "status": "running", "ports": {}, "role": "engine"},
+    ]
+    trial_a_containers: list[ContainerSnapshot] = [
+        {"name": "a-db-1", "service": "db", "state": "running", "health": "healthy", "ports": {}},
+    ]
+    trial_b_containers: list[ContainerSnapshot] = [
+        {"name": "b-db-1", "service": "db", "state": "running", "health": "healthy", "ports": {}},
+    ]
+    display.phase_changed(phase="services_ready", services=services)
+    display.trial_started(trial_id="a:0", task_id="a", trial_index=0, total_index=0)
+    display.trial_provisioned(trial_id="a:0", containers=trial_a_containers, endpoints={})
+    display.trial_started(trial_id="b:0", task_id="b", trial_index=0, total_index=1)
+    display.trial_provisioned(trial_id="b:0", containers=trial_b_containers, endpoints={})
+
+    # With trial b focused (last started under auto-follow), nav visits
+    # engine components and trial-b's containers only — not trial-a's.
+    assert display._focused_trial_id == "b:0"
+    ids = display._inspectable_component_ids_locked()
+    assert "engine/docker.service/runner" in ids
+    assert "trial/b:0/container/db" in ids
+    assert "trial/a:0/container/db" not in ids
+
+
+def test_switching_focused_trial_clears_stale_container_focus() -> None:
+    """When the operator flips the focused trial, any
+    ``_focused_component_id`` pointing at a container of the previous
+    trial is cleared. Engine focus is preserved across trial switches."""
+    from tolokaforge.core.run_display_events import ComponentSnapshot, ContainerSnapshot
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    for tid in ("a:0", "b:0"):
+        display.trial_started(trial_id=tid, task_id=tid.split(":")[0], trial_index=0, total_index=0)
+        containers: list[ContainerSnapshot] = [
+            {
+                "name": f"{tid}-db-1",
+                "service": "db",
+                "state": "running",
+                "health": "healthy",
+                "ports": {},
+            },
+        ]
+        display.trial_provisioned(trial_id=tid, containers=containers, endpoints={})
+
+    # Focus trial a and its container.
+    display._focused_trial_id = "a:0"
+    display._focused_component_id = "trial/a:0/container/db"
+    # Simulate trial-focus flip (called by the trial-nav callbacks); the
+    # helper clears the container focus that no longer maps to the
+    # newly-focused trial.
+    display._focused_trial_id = "b:0"
+    display._clear_stale_container_focus_locked()
+    assert display._focused_component_id is None
+
+    # Engine focus survives trial switches unchanged.
+    engine: ComponentSnapshot = {
+        "id": "engine/docker.service/runner",
+        "kind": "docker.service",
+        "phase": "healthy",
+        "detail": None,
+        "owner": "engine",
+    }
+    display.component_registered(snapshot=engine)
+    display._focused_component_id = engine["id"]
+    display._focused_trial_id = "a:0"
+    display._clear_stale_container_focus_locked()
+    assert display._focused_component_id == engine["id"]
 
 
 def test_component_nav_walks_engine_rows_and_wraps() -> None:
@@ -1514,11 +1589,14 @@ def test_engine_and_infrastructure_panel_titles() -> None:
     assert "task_infrastructure" not in child_names
 
 
-def test_trial_provisioned_populates_focused_pane_infrastructure_sub_panel() -> None:
-    """A ``trial_provisioned(containers=[…])`` event stores containers on
-    the trial card so the per-trial "Infrastructure" sub-panel inside the
-    Focused pane can render them. It does NOT lift them into the top-level
-    ``_components`` model."""
+def test_trial_provisioned_lifts_containers_into_components_model() -> None:
+    """A ``trial_provisioned(containers=[…])`` event lifts each container
+    into ``_components`` under ``owner="trial/<trial_id>"`` (so ``[``/``]``
+    focus and ``l``-toggle work on containers the same way they work on
+    engine services) AND stores them on the trial card (so the Focused
+    pane's Infrastructure sub-panel can filter to the focused trial's
+    containers). The container ``detail`` combines docker state, health,
+    and ports so operators see per-container context at a glance."""
     from tolokaforge.core.run_display_events import ContainerSnapshot
 
     display = LiveRunDisplay(refresh_per_second=1000)
@@ -1548,10 +1626,22 @@ def test_trial_provisioned_populates_focused_pane_infrastructure_sub_panel() -> 
     display.trial_started(trial_id="task_a:0", task_id="task_a", trial_index=0, total_index=0)
     display.trial_provisioned(trial_id="task_a:0", containers=containers, endpoints={})
 
-    # Containers hang off the trial card (used by the Focused pane).
+    # All three land in the components model, tagged with the trial owner.
+    expected_ids = {
+        "trial/task_a:0/container/db",
+        "trial/task_a:0/container/cache",
+        "trial/task_a:0/container/web",
+    }
+    assert expected_ids.issubset(display._components.keys())
+    for cid in expected_ids:
+        assert display._components[cid]["owner"] == "trial/task_a:0"
+    # Detail carries state · health · ports.
+    db = display._components["trial/task_a:0/container/db"]
+    assert "running" in db["detail"] and "healthy" in db["detail"] and "5432" in db["detail"]
+    # Web (still starting) is classified as phase="starting".
+    assert display._components["trial/task_a:0/container/web"]["phase"] == "starting"
+    # Containers ALSO hang off the trial card for the Focused pane.
     assert display._trials["task_a:0"].containers == containers
-    # None of them appear in the top-level components model.
-    assert display._components == {}
 
 
 # ---------------------------------------------------------------------------
