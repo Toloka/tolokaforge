@@ -52,6 +52,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# The ``container`` parent logger is pinned to ``propagate=False`` so records
+# emitted by a :class:`LogRouter` never reach the root logger's handlers — the
+# sole subscriber is a handler installed on ``container`` by the active
+# display (e.g. :class:`LiveRunDisplay._LogSink`). Without a display, records
+# drop silently instead of leaking to stderr.
+logging.getLogger("container").propagate = False
+
 
 class LogRouterState(str, Enum):
     """State of the LogRouter."""
@@ -164,13 +171,6 @@ class LogRouter(BaseModel):
 
     def model_post_init(self, __context: Any) -> None:
         """Initialize private attributes after model creation."""
-        # Create a child logger for this container. The ``container`` parent
-        # logger is pinned to ``propagate=False`` so records emitted here
-        # never reach the root logger's handlers — the sole subscriber is a
-        # handler installed on the ``container`` logger by the active
-        # display (e.g. :class:`LiveRunDisplay._LogSink`). Without a
-        # display, records drop silently instead of leaking to stderr.
-        logging.getLogger("container").propagate = False
         self._logger = logging.getLogger(f"container.{self.container_name}")
 
     @classmethod

@@ -720,6 +720,7 @@ class EngineStack(BaseModel):
         # change (e.g., enable_playwright on/off).
         existing = self._try_reuse_existing(container_name, svc)
         if existing:
+            reuse = False
             try:
                 running_image = existing.image_tag or ""
                 expected_image = image.full_tag
@@ -732,23 +733,33 @@ class EngineStack(BaseModel):
                     )
                     existing.destroy()
                 else:
-                    reuse_router = LogRouter.for_container(
-                        existing,
-                        component_id=component_id,
-                    )
-                    existing.attach_log_router(reuse_router)
-                    self._containers[name] = existing
-                    logger.info("Reusing existing healthy container '%s'", container_name)
-                    if svc.ports:
-                        port_map = self._extract_ports_from_container(container_name, svc)
-                        self._resolved_ports[name] = port_map
-                    return
+                    reuse = True
             except Exception as exc:
                 logger.warning("Failed to verify container image, recreating: %s", exc)
                 try:
                     existing.destroy()
                 except Exception:
                     pass
+
+            if reuse:
+                try:
+                    reuse_router = LogRouter.for_container(
+                        existing,
+                        component_id=component_id,
+                    )
+                    existing.attach_log_router(reuse_router)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to attach LogRouter to reused container %s: %s",
+                        container_name,
+                        exc,
+                    )
+                self._containers[name] = existing
+                logger.info("Reusing existing healthy container '%s'", container_name)
+                if svc.ports:
+                    port_map = self._extract_ports_from_container(container_name, svc)
+                    self._resolved_ports[name] = port_map
+                return
 
         # ── Determine network ───────────────────────────────────────
         network = None
