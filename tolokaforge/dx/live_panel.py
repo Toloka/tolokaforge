@@ -654,7 +654,7 @@ def _map_docker_status_to_component_phase(docker_status: str, run_phase: str) ->
 def _component_tail_visible(
     component: ComponentSnapshot,
     log_buffers: dict[str, deque[tuple[float, str, str]]],
-    focused_id: str | None = None,
+    logs_shown: frozenset[str] = frozenset(),
 ) -> bool:
     """Should the component's log tail render beneath its row?
 
@@ -662,15 +662,19 @@ def _component_tail_visible(
     (a) the component is NOT in a stable phase (``healthy`` / ``stopped``);
         rationale — a ``starting`` component with retry errors is worth
         showing NOW, not after the outer retry gives up. Or:
-    (b) the component is the operator's currently-focused row (via
-        ``[`` / ``]`` nav); rationale — the operator asked for it. Even
-        a stable healthy component reveals its buffered history on
-        focus.
+    (b) the operator has explicitly toggled logs on for this component
+        (via the ``l`` key on the focused component); rationale — the
+        operator asked for it. Even a stable healthy component reveals
+        its buffered history when the toggle is on.
+
+    Focus alone does NOT expand the tail — the operator selects the row
+    with ``[`` / ``]`` (highlight only) and then presses ``l`` to reveal
+    its history. This keeps navigation cheap on rows.
     """
     tail = log_buffers.get(component["id"])
     if not tail:
         return False
-    if focused_id is not None and component["id"] == focused_id:
+    if component["id"] in logs_shown:
         return True
     return component["phase"] not in _STABLE_PHASES
 
@@ -678,10 +682,10 @@ def _component_tail_visible(
 def _components_desired_height(
     components: dict[str, ComponentSnapshot],
     log_buffers: dict[str, deque[tuple[float, str, str]]],
-    focused_id: str | None = None,
+    logs_shown: frozenset[str] = frozenset(),
 ) -> int:
     """Row count the Components widget wants: one per component +
-    N per unhealthy component's expanded tail + 2 border rows.
+    N per component whose tail is currently expanded + 2 border rows.
 
     Callers use this to size the layout region; the widget's own render
     always fills exactly its granted rows (Rich crop-from-bottom).
@@ -690,7 +694,7 @@ def _components_desired_height(
         return 0
     row_count = len(components)
     for comp in components.values():
-        if _component_tail_visible(comp, log_buffers, focused_id):
+        if _component_tail_visible(comp, log_buffers, logs_shown):
             tail = log_buffers.get(comp["id"])
             if tail:
                 row_count += min(len(tail), _COMPONENT_TAIL_MAX_LINES)
@@ -701,13 +705,18 @@ def _render_components_table(
     components: dict[str, ComponentSnapshot],
     log_buffers: dict[str, deque[tuple[float, str, str]]],
     focused_id: str | None = None,
+    logs_shown: frozenset[str] = frozenset(),
 ) -> Text:
     """Render the components status widget as a flat multi-line ``Text``.
 
-    Rows: ``[icon] [id]  [phase]  [detail]``. Unhealthy components get
-    their last :data:`_COMPONENT_TAIL_MAX_LINES` log lines indented
-    beneath their row, prefixed with ``└─``. Empty component set renders
-    the "(no components tracked)" placeholder.
+    Rows: ``[icon] [id]  [phase]  [detail]``. Components with a visible
+    tail (see :func:`_component_tail_visible`) get their last
+    :data:`_COMPONENT_TAIL_MAX_LINES` log lines indented beneath the
+    row, prefixed with ``└─``. Empty component set renders the "(no
+    components tracked)" placeholder.
+
+    The focused row is highlighted with a leading ``▶ `` marker and a
+    full-row reverse-video style so it stands out regardless of theme.
 
     Kept flat (``Text`` inside ``Panel``, no Rich ``Table``) for the same
     reason as :func:`_render_services_table` — Table row-drop under a
@@ -730,15 +739,15 @@ def _render_components_table(
         icon = _COMPONENT_PHASE_ICONS.get(phase, "?")
         style = _COMPONENT_PHASE_STYLES.get(phase, "muted")
         detail = component.get("detail") or ""
-        # Focused row gets a ▶ marker in place of the two leading spaces
-        # and is rendered bold; every other row keeps its phase-derived
-        # style unchanged.
+        # Focused row: ▶ marker + reverse-video so the whole line
+        # inverts fg/bg. This reads as "selected" on every terminal
+        # theme without depending on a specific background colour.
         is_focused = focused_id is not None and component["id"] == focused_id
         prefix = "▶ " if is_focused else "  "
-        row_style = f"bold {style}" if is_focused else style
+        row_style = "reverse bold" if is_focused else style
         line = f"{prefix}{icon}  {component['id']:<{id_w}}  {phase:<{phase_w}}  {detail}".rstrip()
         text.append(line + "\n", style=row_style)
-        if _component_tail_visible(component, log_buffers, focused_id):
+        if _component_tail_visible(component, log_buffers, logs_shown):
             tail = log_buffers[component["id"]]
             for _ts, level, message in list(tail)[-_COMPONENT_TAIL_MAX_LINES:]:
                 text.append(
@@ -1174,11 +1183,17 @@ class LiveRunDisplay:
         # renderer needs no LogRecord fields.
         self._component_log_buffers: dict[str, deque[tuple[float, str, str]]] = {}
         # Focused component id — the operator's ``[`` / ``]`` selection.
-        # ``None`` when nothing is selected. Forces the focused row's
-        # tail to expand regardless of phase (as long as the buffer has
-        # entries) so operators can inspect any component on demand,
-        # even a stable healthy one.
+        # ``None`` when nothing is selected. Highlighted with a leading
+        # ``▶ `` marker + reverse-video row style; the tail does not
+        # auto-expand on focus (see :attr:`_component_logs_shown`).
         self._focused_component_id: str | None = None
+        # Component ids whose log tail the operator has explicitly
+        # toggled on via ``l`` while focused. Independent of phase:
+        # a healthy or stopped component with an entry in this set
+        # renders its buffered tail; an unhealthy component always
+        # renders its tail regardless. Cleared when the component is
+        # unregistered.
+        self._component_logs_shown: set[str] = set()
         # Top-of-panel error banner. Populated once the first auth-shaped
         # ``trial_failed`` fires so a bad key doesn't hide as ``fail 1``
         # in the counters. Tuple: (title, message, hint | None).
@@ -1427,11 +1442,14 @@ class LiveRunDisplay:
             buf.append((ts, level, message))
             # Refresh only if the tail is currently visible for this
             # component; otherwise the buffer grows silently for later
-            # inspection. Include the operator's focused-component id so
-            # tail appends refresh when the row is force-expanded by nav.
+            # inspection. Consult the operator's per-component log
+            # toggle so an appended line lands in an already-expanded
+            # tail even when the phase is stable.
             snap = self._components.get(component_id)
             if snap is not None and _component_tail_visible(
-                snap, self._component_log_buffers, self._focused_component_id
+                snap,
+                self._component_log_buffers,
+                frozenset(self._component_logs_shown),
             ):
                 self._refresh_live_locked()
 
@@ -1440,6 +1458,7 @@ class LiveRunDisplay:
         with self._lock:
             self._components.pop(component_id, None)
             self._component_log_buffers.pop(component_id, None)
+            self._component_logs_shown.discard(component_id)
             if self._focused_component_id == component_id:
                 self._focused_component_id = None
             self._refresh_live_locked()
@@ -1746,11 +1765,29 @@ class LiveRunDisplay:
             self._refresh_live_locked()
 
     def _toggle_log_pane(self) -> None:
-        """Flip :attr:`_show_logs_pane` — swap the focused pane body between the
-        summary and the focused trial's per-trial log tail. Leaves
-        :attr:`_auto_follow` untouched."""
+        """Context-sensitive log toggle.
+
+        When a component row is currently focused (via ``[`` / ``]``),
+        flip that component's entry in :attr:`_component_logs_shown` so
+        its buffered tail expands or collapses beneath its row. This
+        works for any phase — a stable healthy row still reveals its
+        history on demand.
+
+        When no component is focused, fall through to the pre-existing
+        trial-log behaviour: flip :attr:`_show_logs_pane` so the
+        focused-trial pane swaps between its structured summary and
+        the trial's log tail. :attr:`_auto_follow` is left untouched
+        in both branches.
+        """
         with self._lock:
-            self._show_logs_pane = not self._show_logs_pane
+            focused = self._focused_component_id
+            if focused is not None and focused in self._components:
+                if focused in self._component_logs_shown:
+                    self._component_logs_shown.discard(focused)
+                else:
+                    self._component_logs_shown.add(focused)
+            else:
+                self._show_logs_pane = not self._show_logs_pane
             self._refresh_live_locked()
 
     def _focus_at_offset_locked(self, delta: int) -> None:
@@ -1902,14 +1939,17 @@ class LiveRunDisplay:
             }
             in_startup = self._total_trials == 0
             focused_component_id = self._focused_component_id
-            # Widgets split by owner: engine components (docker services,
-            # gRPC client) → "Components" panel; per-trial task infrastructure
-            # (multi-container task services) → "Task Infrastructure" panel.
-            # The Task Infrastructure panel only appears when at least one
-            # trial component has been registered — non-multicontainer runs
-            # (built-in engine stack + tasks that ship no environment_manifest)
-            # never surface it. Both widgets consult the same
-            # ``_component_log_buffers`` for their tail rendering.
+            logs_shown = frozenset(self._component_logs_shown)
+            # Widgets split by owner: engine components (tolokaforge's
+            # own docker services + the gRPC runner client) → "Engine
+            # Components" panel; per-trial infrastructure (multi-
+            # container task services) → "Infrastructure" panel. The
+            # Infrastructure panel only appears when at least one trial
+            # component has been registered — non-multicontainer runs
+            # (built-in engine stack + tasks that ship no
+            # environment_manifest) never surface it. Both widgets
+            # consult the same ``_component_log_buffers`` for their
+            # tail rendering.
             engine_components = {
                 cid: comp for cid, comp in components.items() if comp.get("owner") == "engine"
             }
@@ -1927,14 +1967,12 @@ class LiveRunDisplay:
         total = max(12, viewport - 1)
         banner_h = 5 if banner is not None else 0
         engine_h = (
-            _components_desired_height(
-                engine_components, component_log_buffers, focused_component_id
-            )
+            _components_desired_height(engine_components, component_log_buffers, logs_shown)
             if show_engine
             else 0
         )
         task_h = (
-            _components_desired_height(task_components, component_log_buffers, focused_component_id)
+            _components_desired_height(task_components, component_log_buffers, logs_shown)
             if show_task
             else 0
         )
@@ -1970,9 +2008,12 @@ class LiveRunDisplay:
             layout["engine_components"].update(
                 Panel(
                     _render_components_table(
-                        engine_components, component_log_buffers, focused_component_id
+                        engine_components,
+                        component_log_buffers,
+                        focused_component_id,
+                        logs_shown,
                     ),
-                    title="Components",
+                    title="Engine Components",
                     padding=(0, 1),
                 )
             )
@@ -1980,9 +2021,12 @@ class LiveRunDisplay:
             layout["task_infrastructure"].update(
                 Panel(
                     _render_components_table(
-                        task_components, component_log_buffers, focused_component_id
+                        task_components,
+                        component_log_buffers,
+                        focused_component_id,
+                        logs_shown,
                     ),
-                    title="Task Infrastructure",
+                    title="Infrastructure",
                     padding=(0, 1),
                 )
             )

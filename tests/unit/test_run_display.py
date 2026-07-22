@@ -1350,10 +1350,11 @@ def test_component_nav_walks_visible_rows_and_wraps() -> None:
     assert display._focused_component_id == "trial/t:0/container/db"
 
 
-def test_focused_component_tail_expands_even_when_healthy() -> None:
-    """A healthy component's log tail is normally collapsed. Focusing it
-    via ``[`` / ``]`` force-expands the tail so operators can inspect
-    the buffered history on demand."""
+def test_focus_alone_does_not_expand_healthy_component_tail() -> None:
+    """Focusing a healthy component with ``[`` / ``]`` highlights the row
+    but does NOT auto-expand its log tail. The tail only appears when
+    the operator explicitly presses ``l`` (see the l-toggle tests).
+    Rationale: keep navigation cheap on layout rows."""
     from tolokaforge.core.run_display_events import ComponentSnapshot
     from tolokaforge.dx.live_panel import _component_tail_visible
 
@@ -1367,28 +1368,77 @@ def test_focused_component_tail_expands_even_when_healthy() -> None:
     }
     display.component_registered(snapshot=snap)
     display.component_log_appended(
-        component_id=snap["id"],
-        level="INFO",
-        message="attempt 1",
-        ts=0.0,
+        component_id=snap["id"], level="INFO", message="attempt 1", ts=0.0
+    )
+    display._nav_next_component()
+    assert display._focused_component_id == snap["id"]
+
+    # Focus alone leaves the tail collapsed on a healthy component.
+    assert not _component_tail_visible(
+        display._components[snap["id"]],
+        display._component_log_buffers,
+        frozenset(display._component_logs_shown),
     )
 
-    # Not focused → healthy component keeps tail collapsed.
-    assert not _component_tail_visible(
-        display._components[snap["id"]], display._component_log_buffers
+
+def test_l_toggle_expands_focused_healthy_component_tail() -> None:
+    """Pressing ``l`` on a focused component adds it to
+    ``_component_logs_shown``; the tail then renders even for a healthy
+    row. Pressing ``l`` again removes it and the tail collapses."""
+    from tolokaforge.core.run_display_events import ComponentSnapshot
+    from tolokaforge.dx.live_panel import _component_tail_visible
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    snap: ComponentSnapshot = {
+        "id": "engine/grpc.client/runner",
+        "kind": "grpc.client",
+        "phase": "healthy",
+        "detail": "ready",
+        "owner": "engine",
+    }
+    display.component_registered(snapshot=snap)
+    display.component_log_appended(
+        component_id=snap["id"], level="INFO", message="attempt 1", ts=0.0
     )
-    # Focused → tail expands.
+    display._nav_next_component()
+
+    display._toggle_log_pane()
+    assert snap["id"] in display._component_logs_shown
     assert _component_tail_visible(
         display._components[snap["id"]],
         display._component_log_buffers,
-        snap["id"],
+        frozenset(display._component_logs_shown),
     )
+
+    # Toggle off → tail collapses.
+    display._toggle_log_pane()
+    assert snap["id"] not in display._component_logs_shown
+    assert not _component_tail_visible(
+        display._components[snap["id"]],
+        display._component_log_buffers,
+        frozenset(display._component_logs_shown),
+    )
+
+
+def test_l_toggle_falls_through_to_trial_log_pane_when_no_component_focused() -> None:
+    """When no component is focused, ``l`` retains its pre-existing
+    meaning — flip the focused-trial log pane. Component-level toggle
+    only activates when the operator has explicitly navigated to a
+    component row."""
+    display = LiveRunDisplay(refresh_per_second=1000)
+    assert display._focused_component_id is None
+    initial = display._show_logs_pane
+
+    display._toggle_log_pane()
+    assert display._show_logs_pane is not initial
+    assert display._component_logs_shown == set()
 
 
 def test_component_focus_clears_when_focused_component_unregistered() -> None:
     """When the operator's focused component is removed (via
-    ``component_unregistered``), ``_focused_component_id`` resets to
-    ``None`` so nav doesn't dangle on a stale id."""
+    ``component_unregistered``), both ``_focused_component_id`` and any
+    matching ``_component_logs_shown`` entry drop so nav doesn't
+    dangle on a stale id and a reappearing component starts collapsed."""
     from tolokaforge.core.run_display_events import ComponentSnapshot
 
     display = LiveRunDisplay(refresh_per_second=1000)
@@ -1401,10 +1451,75 @@ def test_component_focus_clears_when_focused_component_unregistered() -> None:
     }
     display.component_registered(snapshot=snap)
     display._nav_next_component()
+    display._toggle_log_pane()
     assert display._focused_component_id == snap["id"]
+    assert snap["id"] in display._component_logs_shown
 
     display.component_unregistered(component_id=snap["id"])
     assert display._focused_component_id is None
+    assert snap["id"] not in display._component_logs_shown
+
+
+def test_focused_component_row_renders_with_reverse_highlight() -> None:
+    """The focused row is rendered with the ``▶ `` marker AND a
+    reverse-video style so it inverts fg/bg — the standard "selected"
+    terminal look, theme-agnostic."""
+    from tolokaforge.core.run_display_events import ComponentSnapshot
+    from tolokaforge.dx.live_panel import _render_components_table
+
+    snap: ComponentSnapshot = {
+        "id": "engine/grpc.client/runner",
+        "kind": "grpc.client",
+        "phase": "healthy",
+        "detail": "ready",
+        "owner": "engine",
+    }
+    components = {snap["id"]: snap}
+    text = _render_components_table(components, {}, snap["id"])
+    # ▶ marker present on the focused row.
+    assert "▶ " in text.plain
+    # Reverse-bold style is applied to at least one span (the focused row).
+    styles = {str(span.style) for span in text.spans}
+    assert any("reverse" in s for s in styles), styles
+
+
+def test_engine_and_infrastructure_panel_titles() -> None:
+    """The two component widgets are titled "Engine Components" and
+    "Infrastructure" respectively — the layout child names stay
+    ``engine_components`` / ``task_infrastructure`` internally."""
+    from rich.console import Console
+    from rich.panel import Panel
+
+    from tolokaforge.core.run_display_events import (
+        ContainerSnapshot,
+        ServiceSnapshot,
+    )
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    services: list[ServiceSnapshot] = [
+        {"name": "runner", "status": "running", "ports": {}, "role": "engine"},
+    ]
+    containers: list[ContainerSnapshot] = [
+        {"name": "t-db-1", "service": "db", "state": "running", "health": "healthy", "ports": {}},
+    ]
+    display.phase_changed(phase="services_ready", services=services)
+    display.trial_started(trial_id="t:0", task_id="t", trial_index=0, total_index=0)
+    display.trial_provisioned(trial_id="t:0", containers=containers, endpoints={})
+
+    layout = display._build_layout()
+    engine_panel = layout["engine_components"].renderable
+    task_panel = layout["task_infrastructure"].renderable
+    assert isinstance(engine_panel, Panel)
+    assert isinstance(task_panel, Panel)
+    # Panel titles read as user-facing labels.
+    console = Console(width=80, record=True, force_terminal=False, legacy_windows=False)
+    console.print(engine_panel)
+    console.print(task_panel)
+    dump = console.export_text()
+    assert "Engine Components" in dump
+    assert "Infrastructure" in dump
+    # The old titles must not appear.
+    assert "Task Infrastructure" not in dump
 
 
 def test_multicontainer_task_provisioned_surfaces_container_components() -> None:
