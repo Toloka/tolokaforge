@@ -27,7 +27,7 @@ from pydantic import BaseModel, Field, PrivateAttr, field_validator
 
 from tolokaforge.docker.health import HealthProbe, HealthProbeError, ProbeResult
 from tolokaforge.docker.image import Image
-from tolokaforge.docker.logging import LogRouter
+from tolokaforge.docker.logging import LogRouter, LogRouterError
 from tolokaforge.docker.mount import Mount
 from tolokaforge.docker.network import Network
 from tolokaforge.docker.policy import ResourcePolicy
@@ -921,6 +921,34 @@ class Container(BaseModel):
             ...     print(f"Logging to: {container.log_router.log_file}")
         """
         return self._log_router
+
+    def attach_log_router(self, log_router: LogRouter) -> None:
+        """Attach and start a LogRouter on an already-running container.
+
+        Used when a caller reuses a pre-existing container and therefore
+        skips :meth:`start` — the built-in router-wiring in ``start`` never
+        runs on that path, so this is the explicit hook that gives the
+        reuse path the same router lifecycle as the fresh-start path.
+
+        Args:
+            log_router: LogRouter to attach. It is started immediately.
+
+        Raises:
+            LogRouterError: If a router is already attached and running.
+
+        Example:
+            >>> router = LogRouter.for_container(container, component_id="...")
+            >>> container.attach_log_router(router)
+        """
+        if self._log_router is not None and self._log_router.is_running:
+            raise LogRouterError(
+                "attach",
+                self.name,
+                "A LogRouter is already attached and running on this container",
+            )
+
+        self._log_router = log_router
+        self._log_router.start()
 
     # =========================================================================
     # Async Methods
