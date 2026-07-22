@@ -1303,6 +1303,111 @@ def test_mapper_created_and_services_ready_is_stopped_not_unhealthy() -> None:
     assert _map_docker_status_to_component_phase("created", "starting_services") == "pending"
 
 
+def test_bracket_nav_walks_within_current_group_only() -> None:
+    """``[`` / ``]`` now walk WITHIN the currently-focused component
+    group (engine or focused-trial containers). Jumping between groups
+    is the ``Tab`` key's job. This test locks the within-group scope:
+    starting on an engine row, ``]`` visits only engine rows and wraps
+    at the last engine row rather than crossing into the container
+    group."""
+    from tolokaforge.core.run_display_events import ContainerSnapshot, ServiceSnapshot
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    services: list[ServiceSnapshot] = [
+        {"name": "db-service", "status": "running", "ports": {}, "role": "engine"},
+        {"name": "runner", "status": "running", "ports": {}, "role": "engine"},
+    ]
+    containers: list[ContainerSnapshot] = [
+        {"name": "t-app-1", "service": "app", "state": "running", "health": "healthy", "ports": {}},
+    ]
+    display.phase_changed(phase="services_ready", services=services)
+    display.trial_started(trial_id="t:0", task_id="t", trial_index=0, total_index=0)
+    display.trial_provisioned(trial_id="t:0", containers=containers, endpoints={})
+
+    # Focus an engine row; ] wraps to the next engine row, not into
+    # the container group.
+    display._focused_component_id = "engine/docker.service/db-service"
+    display._nav_next_component()
+    assert display._focused_component_id == "engine/docker.service/runner"
+    display._nav_next_component()  # wraps within engine
+    assert display._focused_component_id == "engine/docker.service/db-service"
+    # Container never reached without Tab.
+    assert display._focused_component_id != "trial/t:0/container/app"
+
+
+def test_tab_switches_component_focus_between_panels() -> None:
+    """``Tab`` (via :meth:`_nav_switch_component_panel`) jumps focus
+    between the engine group and the focused-trial container group.
+    Lands on the first row of the target group; a second ``Tab``
+    returns to the engine group's first row."""
+    from tolokaforge.core.run_display_events import ContainerSnapshot, ServiceSnapshot
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    services: list[ServiceSnapshot] = [
+        {"name": "runner", "status": "running", "ports": {}, "role": "engine"},
+    ]
+    containers: list[ContainerSnapshot] = [
+        {"name": "t-app-1", "service": "app", "state": "running", "health": "healthy", "ports": {}},
+    ]
+    display.phase_changed(phase="services_ready", services=services)
+    display.trial_started(trial_id="t:0", task_id="t", trial_index=0, total_index=0)
+    display.trial_provisioned(trial_id="t:0", containers=containers, endpoints={})
+
+    # From an engine row, Tab lands on the trial container's first row.
+    display._focused_component_id = "engine/docker.service/runner"
+    display._nav_switch_component_panel()
+    assert display._focused_component_id == "trial/t:0/container/app"
+    # Tab again → back to engine group.
+    display._nav_switch_component_panel()
+    assert display._focused_component_id == "engine/docker.service/runner"
+
+
+def test_tab_from_clean_start_seeds_engine_first_row() -> None:
+    """``Tab`` with no prior focus seeds the engine group's first row
+    (identical to pressing ``]`` from a clean start). If the engine
+    group is empty but the trial container group is not, seed from
+    there instead."""
+    from tolokaforge.core.run_display_events import ContainerSnapshot, ServiceSnapshot
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    services: list[ServiceSnapshot] = [
+        {"name": "runner", "status": "running", "ports": {}, "role": "engine"},
+    ]
+    display.phase_changed(phase="services_ready", services=services)
+    assert display._focused_component_id is None
+
+    display._nav_switch_component_panel()
+    assert display._focused_component_id == "engine/docker.service/runner"
+
+    # Now with only trial containers (no engine yet), Tab seeds from
+    # the container group.
+    display2 = LiveRunDisplay(refresh_per_second=1000)
+    containers: list[ContainerSnapshot] = [
+        {"name": "t-app-1", "service": "app", "state": "running", "health": "healthy", "ports": {}},
+    ]
+    display2.trial_started(trial_id="t:0", task_id="t", trial_index=0, total_index=0)
+    display2.trial_provisioned(trial_id="t:0", containers=containers, endpoints={})
+    display2._nav_switch_component_panel()
+    assert display2._focused_component_id == "trial/t:0/container/app"
+
+
+def test_tab_is_noop_when_target_group_empty_and_focus_exists() -> None:
+    """When the operator has focus in engine group and there is no
+    focused-trial container group to jump to, ``Tab`` leaves focus
+    where it is — no rescue leap sideways."""
+    from tolokaforge.core.run_display_events import ServiceSnapshot
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    services: list[ServiceSnapshot] = [
+        {"name": "runner", "status": "running", "ports": {}, "role": "engine"},
+    ]
+    display.phase_changed(phase="services_ready", services=services)
+    display._focused_component_id = "engine/docker.service/runner"
+
+    display._nav_switch_component_panel()
+    assert display._focused_component_id == "engine/docker.service/runner"
+
+
 def test_component_nav_includes_focused_trial_containers() -> None:
     """``[`` / ``]`` walk the union of engine components and the currently-
     focused trial's containers. Other trials' containers are NOT part of

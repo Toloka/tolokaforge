@@ -1081,6 +1081,8 @@ class _KeyboardListener:
             self._display._nav_prev_component()
         elif key == "]":
             self._display._nav_next_component()
+        elif key == "\t":
+            self._display._nav_switch_component_panel()
 
 
 class _NoopDisplayCtx:
@@ -1703,46 +1705,118 @@ class LiveRunDisplay:
         with self._lock:
             self._nav_component_focus_locked(-1)
 
-    def _inspectable_component_ids_locked(self) -> list[str]:
-        """Component ids the operator can currently focus with ``[`` / ``]``.
-
-        Union of engine-owned rows (rendered in the top Engine Components
-        widget) and the currently-focused trial's container rows
-        (rendered in the Focused pane's Infrastructure sub-panel). Other
-        trials' containers are not inspectable until their trial is
-        focused — the walk stays scoped to what is actually visible.
-        Sorted deterministically by ``(owner, id)``. Caller MUST hold
-        :attr:`_lock`.
-        """
-        focused_trial_owner = f"trial/{self._focused_trial_id}" if self._focused_trial_id else None
-        rows = [
-            comp
-            for comp in self._components.values()
-            if comp.get("owner") == "engine" or comp.get("owner") == focused_trial_owner
-        ]
-        rows.sort(key=lambda c: (c.get("owner") or "￿", c["id"]))
+    def _engine_component_ids_locked(self) -> list[str]:
+        """Sorted engine-owned component ids. Caller MUST hold :attr:`_lock`."""
+        rows = [comp for comp in self._components.values() if comp.get("owner") == "engine"]
+        rows.sort(key=lambda c: c["id"])
         return [c["id"] for c in rows]
 
-    def _nav_component_focus_locked(self, delta: int) -> None:
-        """Move :attr:`_focused_component_id` by ``delta`` in visible sort order.
+    def _focused_trial_container_ids_locked(self) -> list[str]:
+        """Sorted container ids of the currently-focused trial. Empty when
+        no trial is focused or the focused trial has no containers.
+        Caller MUST hold :attr:`_lock`.
+        """
+        if self._focused_trial_id is None:
+            return []
+        owner = f"trial/{self._focused_trial_id}"
+        rows = [comp for comp in self._components.values() if comp.get("owner") == owner]
+        rows.sort(key=lambda c: c["id"])
+        return [c["id"] for c in rows]
 
-        Visible = union of engine components + focused-trial containers
-        (see :meth:`_inspectable_component_ids_locked`). Wraps at
-        boundaries. No-op when nothing inspectable. Caller MUST hold
+    def _inspectable_component_ids_locked(self) -> list[str]:
+        """All component ids the operator can focus RIGHT NOW — union of
+        the engine group and the focused-trial container group. Used as
+        the seed set when the operator presses ``[`` / ``]`` with no
+        prior focus. Caller MUST hold :attr:`_lock`.
+        """
+        return self._engine_component_ids_locked() + self._focused_trial_container_ids_locked()
+
+    def _current_component_group_locked(self) -> str | None:
+        """Group of the currently-focused component: ``"engine"`` /
+        ``"trial"`` / ``None`` (no focus, or focus points at a stale id).
+        Caller MUST hold :attr:`_lock`.
+        """
+        cid = self._focused_component_id
+        if cid is None:
+            return None
+        comp = self._components.get(cid)
+        if comp is None:
+            return None
+        owner = comp.get("owner") or ""
+        if owner == "engine":
+            return "engine"
+        if owner.startswith("trial/"):
+            return "trial"
+        return None
+
+    def _ids_for_group_locked(self, group: str) -> list[str]:
+        """Sorted component ids in ``group`` (``"engine"`` or ``"trial"``).
+        Caller MUST hold :attr:`_lock`.
+        """
+        if group == "engine":
+            return self._engine_component_ids_locked()
+        if group == "trial":
+            return self._focused_trial_container_ids_locked()
+        return []
+
+    def _nav_component_focus_locked(self, delta: int) -> None:
+        """Move :attr:`_focused_component_id` by ``delta`` **within its
+        current group** (engine or focused-trial containers).
+
+        ``[`` / ``]`` are now within-panel walks; ``Tab`` (see
+        :meth:`_nav_switch_component_panel_locked`) is the between-panels
+        jump. Wraps at each group's boundaries. When no component is
+        focused yet, seed from the engine group (first row on ``]``,
+        last row on ``[``); if that group is empty, fall back to the
+        focused-trial container group. Caller MUST hold :attr:`_lock`.
+        """
+        group = self._current_component_group_locked()
+        if group is not None:
+            ids = self._ids_for_group_locked(group)
+            if not ids:
+                return
+            idx = ids.index(self._focused_component_id) if self._focused_component_id in ids else 0
+            idx = (idx + delta) % len(ids)
+            self._focused_component_id = ids[idx]
+            self._refresh_live_locked()
+            return
+        # No current focus — seed from the engine group when possible,
+        # else the focused-trial container group.
+        for candidate in ("engine", "trial"):
+            ids = self._ids_for_group_locked(candidate)
+            if ids:
+                self._focused_component_id = ids[0 if delta >= 0 else -1]
+                self._refresh_live_locked()
+                return
+
+    def _nav_switch_component_panel_locked(self) -> None:
+        """Jump component focus between the two panels (engine ↔ trial).
+
+        Lands on the first row of the target group. When the target
+        group is empty, stay put — there is nothing to jump to. When
+        no component is focused yet, seed the engine group's first row
+        (Tab from a clean start behaves like ``]``). Caller MUST hold
         :attr:`_lock`.
         """
-        ids = self._inspectable_component_ids_locked()
+        current = self._current_component_group_locked()
+        target = "trial" if current == "engine" else "engine"
+        ids = self._ids_for_group_locked(target)
         if not ids:
+            if current is None:
+                fallback = self._ids_for_group_locked("engine") or self._ids_for_group_locked(
+                    "trial"
+                )
+                if fallback:
+                    self._focused_component_id = fallback[0]
+                    self._refresh_live_locked()
             return
-        if self._focused_component_id in ids:
-            idx = ids.index(self._focused_component_id)
-            idx = (idx + delta) % len(ids)
-        else:
-            # No current focus → land on the first row when moving forward,
-            # last row when moving backward.
-            idx = 0 if delta >= 0 else len(ids) - 1
-        self._focused_component_id = ids[idx]
+        self._focused_component_id = ids[0]
         self._refresh_live_locked()
+
+    def _nav_switch_component_panel(self) -> None:
+        """Public entry for the ``Tab`` handler. Delegates under :attr:`_lock`."""
+        with self._lock:
+            self._nav_switch_component_panel_locked()
 
     def _nav_first_trial(self) -> None:
         """Focus the first visible trial in :meth:`_visible_cards` order."""
