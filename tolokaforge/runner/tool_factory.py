@@ -52,6 +52,7 @@ from tolokaforge.runner.rag_client import (
 from tolokaforge.tools.persistent_shell import (
     BashSession,
     CommandResult,
+    DockerComposeBashSession,
     LocalBashSession,
 )
 
@@ -1178,12 +1179,26 @@ class PersistentShellToolWrapper(ToolWrapper):
         # every builtin's ToolSchema.timeout_s to 30.0, so self.timeout_s can
         # never carry the ADR-locked 120s default or a task's configured value.
         self._timeout_s = float(tool_config.get("timeout_s", 120.0))
+        # Provider is a config axis: a `service` key selects the compose backend
+        # (docker exec into a running service container); its absence selects the
+        # local subprocess backend. The wire schema is identical either way.
+        self._service: str | None = tool_config.get("service")
+        self._project_prefix: str | None = tool_config.get("compose_project_prefix")
+        if self._service is not None and not self._project_prefix:
+            raise ToolConfigurationError(
+                self.name,
+                "bash_session with a 'service' requires 'compose_project_prefix' to "
+                "resolve the running container name (the per-trial compose project "
+                "prefix used to bring the stack up)",
+            )
+        self._trial_id: str | None = None
         self._session: BashSession | None = None
         self._cwd: str | None = None
 
     def start(self, ctx: "ToolLifecycleContext") -> None:
+        self._trial_id = ctx.trial_id
         self._cwd = ctx.work_dir if ctx.work_dir and os.path.isdir(ctx.work_dir) else None
-        session = LocalBashSession()
+        session = self._new_session()
         session.open(self._cwd)
         self._session = session
 
@@ -1209,11 +1224,32 @@ class PersistentShellToolWrapper(ToolWrapper):
         result = await loop.run_in_executor(None, self._session.run, command, self._timeout_s)
         return self._format_result(result)
 
+    def _new_session(self) -> BashSession:
+        """Construct (but do not open) the backend session from config."""
+        if self._service is None:
+            return LocalBashSession()
+        assert self._trial_id is not None and self._project_prefix is not None
+        container = self._resolve_container_name(
+            self._trial_id, self._service, self._project_prefix
+        )
+        return DockerComposeBashSession(container)
+
+    @staticmethod
+    def _resolve_container_name(trial_id: str, service: str, project_prefix: str) -> str:
+        """Container name for *service* in the per-trial compose stack.
+
+        Mirrors the per-trial project convention the compose lifecycle consumer
+        uses (project ``{prefix}{trial_id}``, container ``{project}_{service}``),
+        so the exec targets the same running container the stack brought up.
+        """
+        project = f"{project_prefix}{trial_id.replace(':', '_')}"
+        return f"{project}_{service}"
+
     async def _restart(self) -> str:
         assert self._session is not None
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, self._session.close)
-        session = LocalBashSession()
+        session = self._new_session()
         await loop.run_in_executor(None, session.open, self._cwd)
         self._session = session
         return "Shell session restarted; working directory and environment reset."
