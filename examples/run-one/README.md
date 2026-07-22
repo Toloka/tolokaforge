@@ -1,28 +1,58 @@
-# run-one example — `tolokaforge run-one` subprocess
+# run-one examples — `tolokaforge run-one` subprocess
 
-`drive_run_one.py` runs a single trial through the
+Two examples of driving trials through the
 [`tolokaforge run-one`](../../docs/API.md#tolokaforge-run-one) subprocess
-contract and prints the grade. It spawns `tolokaforge run-one`, sends one
-JSON-Lines `start` message built from a task in the bundled
-`examples/native/tool_use` pack, and reads the single `result` / `error` line
-back — the language-agnostic counterpart to the in-process
-[`examples/library/run_trial.py`](../library/run_trial.py).
+contract. Both read the same JSON-Lines wire (`"v":1`) and both target the
+bundled `examples/native/tool_use` task pack — pick the one that matches how
+far along your driver is.
 
-## Requirements
+Start with the [standalone runner guide](../../docs/STANDALONE_RUNNER.md) if
+you want the mental model + when-to-use guidance before touching code.
 
-- An LLM provider key in `.env` at the repo root (e.g. `OPENROUTER_API_KEY`),
-  exactly as a normal run needs.
-- A live runner: `make docker-up`.
+## `drive_run_one.py` — the "hello world"
 
-## Run
-
-From the repo root:
+One trial, one JSON message in, one JSON message out, print the grade. About
+90 lines, no aggregation, no comparison. Read this first if the wire format
+is new to you.
 
 ```bash
 uv run python examples/run-one/drive_run_one.py
 ```
 
-It prints the single trial's grade. The subprocess is spawned with its working
-directory at the task-pack root so the wire task's file assets (`grading.yaml`,
-`initial_state.json`, tools) resolve — a task crossing the wire carries no
-source directory of its own.
+## `drive_run_one_sweep.py` — end-user shape
+
+Runs both bundled `tool_use` tasks against two agent models
+(`anthropic/claude-sonnet-4.6` and `openai/gpt-4o` by default), each trial in
+its own isolated subprocess, and prints a per-task per-model comparison table
+plus per-model averages. Errors are dispatched by `error_type` rather than
+caught as tracebacks — a `run-one` driver never sees a Python traceback
+across the wire.
+
+```bash
+uv run python examples/run-one/drive_run_one_sweep.py
+```
+
+Override the model list with `TOLOKAFORGE_SWEEP_MODELS`:
+
+```bash
+TOLOKAFORGE_SWEEP_MODELS=anthropic/claude-sonnet-4.6 \
+    uv run python examples/run-one/drive_run_one_sweep.py
+```
+
+## Requirements
+
+Both examples need:
+
+- An LLM provider key in `.env` at the repo root (e.g. `OPENROUTER_API_KEY`),
+  exactly as a normal `tolokaforge run` needs.
+- A live runner: `make docker-up`.
+
+Each subprocess is spawned with its working directory at the task-pack root,
+so the wire task's file assets (`grading.yaml`, `initial_state.json`,
+fixtures, tool code) resolve — a task crossing the wire carries no source
+directory of its own.
+
+## In-process counterpart
+
+For the Python-in-process equivalent (no subprocess boundary, direct
+`TrialResult` return), see [`examples/library/run_trial.py`](../library/run_trial.py).
