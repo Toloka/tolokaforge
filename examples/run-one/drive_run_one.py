@@ -1,14 +1,14 @@
-"""Drive one trial through the ``tolokaforge agent`` subprocess contract.
+"""Drive one trial through the ``tolokaforge run-one`` subprocess contract.
 
-Spawns ``tolokaforge agent``, sends one JSON-Lines ``start`` message built from
-a task in the bundled ``examples/native/tool_use`` pack, reads the single
+Spawns ``tolokaforge run-one``, sends one JSON-Lines ``start`` message built
+from a task in the bundled ``examples/native/tool_use`` pack, reads the single
 ``result`` / ``error`` line, and prints the grade — the language-agnostic
 subprocess counterpart to ``examples/library/run_trial.py``.
 
 Needs an LLM key in ``.env`` (like every real run) and a live runner
 (``make docker-up``). Then, from the repo root::
 
-    uv run python examples/agent/drive_agent.py
+    uv run python examples/run-one/drive_run_one.py
 """
 
 import json
@@ -66,7 +66,7 @@ def main() -> None:
     # A wire task carries no source_dir, so its file assets resolve against the
     # subprocess working directory — spawn at the task-pack root.
     proc = subprocess.run(
-        [sys.executable, "-m", "tolokaforge.cli.main", "agent"],
+        [sys.executable, "-m", "tolokaforge.cli.main", "run-one"],
         input=json.dumps(start) + "\n",
         cwd=str(task_dir),
         env=os.environ.copy(),
@@ -76,7 +76,7 @@ def main() -> None:
 
     line = next((line for line in proc.stdout.splitlines() if line.strip()), None)
     if line is None:
-        print(f"agent produced no wire output (exit {proc.returncode}):\n{proc.stderr}")
+        print(f"run-one produced no wire output (exit {proc.returncode}):\n{proc.stderr}")
         raise SystemExit(1)
 
     message = json.loads(line)

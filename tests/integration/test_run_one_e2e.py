@@ -1,13 +1,13 @@
-"""Real-agent-loop parity lock for the ``tolokaforge agent`` subprocess.
+"""Real-agent-loop parity lock for the ``tolokaforge run-one`` subprocess.
 
-Spawns ``tolokaforge agent`` with ``runtime="shared" conductor="in_process"``
+Spawns ``tolokaforge run-one`` with ``runtime="shared" conductor="in_process"``
 against a live local runner and a cheap real LLM, and asserts the ADR wire
 contract end-to-end: exactly one ``result`` line, exit 0, and a grade matching
 what ``tolokaforge.run_trial(...)`` produces in-process for the same task +
 models (modulo timestamps / cost jitter). This is the only tier that drives the
 real agent loop (``register_trial`` / ``execute_tool`` / ``grade_trial``) across
 the subprocess boundary — the acceptance criterion that a downstream harness can
-spawn ``tolokaforge agent`` and observe the ADR-specified messages.
+spawn ``tolokaforge run-one`` and observe the ADR-specified messages.
 
 **Gated.** Needs Docker + a live runner (``make docker-up``) and a real LLM
 provider key. Skip-guarded on all three; runs in the push/nightly/gate lane,
@@ -47,7 +47,7 @@ _TASK_YAML = (
     _REPO_ROOT
     / "examples/native/tool_use/dataset/tasks/tool_use/tool_use_public_example_01/task.yaml"
 )
-_AGENT_CMD = [sys.executable, "-m", "tolokaforge.cli.main", "agent"]
+_RUN_ONE_CMD = [sys.executable, "-m", "tolokaforge.cli.main", "run-one"]
 
 
 def _docker_running() -> bool:
@@ -94,7 +94,7 @@ def _models(provider: str, model: str) -> dict[str, dict[str, Any]]:
     _pick_provider() is None,
     reason="Neither ANTHROPIC_API_KEY nor OPENROUTER_API_KEY is set",
 )
-def test_agent_subprocess_matches_run_trial_real_agent_loop() -> None:
+def test_run_one_subprocess_matches_run_trial_real_agent_loop() -> None:
     import tolokaforge
 
     provider, model = _pick_provider()  # type: ignore[misc]
@@ -112,7 +112,7 @@ def test_agent_subprocess_matches_run_trial_real_agent_loop() -> None:
     # subprocess cwd — spawn at the task-pack root. The subprocess inherits the
     # provider key from os.environ (exported by scripts/with_env.sh).
     proc = subprocess.run(
-        _AGENT_CMD,
+        _RUN_ONE_CMD,
         input=json.dumps(start) + "\n",
         cwd=str(task_dir),
         env=os.environ.copy(),
@@ -121,7 +121,7 @@ def test_agent_subprocess_matches_run_trial_real_agent_loop() -> None:
         timeout=900,
     )
     assert proc.returncode == 0, (
-        f"agent subprocess failed (rc={proc.returncode}):\n"
+        f"run-one subprocess failed (rc={proc.returncode}):\n"
         f"stdout:\n{proc.stdout[-4000:]}\nstderr:\n{proc.stderr[-4000:]}"
     )
     lines = [line for line in proc.stdout.splitlines() if line.strip()]

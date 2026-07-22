@@ -1,8 +1,8 @@
-"""Pure-function contract for ``tolokaforge agent``: envelope parse, error
+"""Pure-function contract for ``tolokaforge run-one``: envelope parse, error
 marshal, result marshal, and command registration — no subprocess, no services.
 
 The subprocess behaviour lock (canned stdin → expected stdout) lives in the
-canonical tier (``tests/canonical/test_agent_subprocess.py``).
+canonical tier (``tests/canonical/test_run_one_subprocess.py``).
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from tests.canonical._factories import make_trajectory
-from tolokaforge.cli.agent_command import (
+from tolokaforge.cli.run_one_command import (
     CancelMessage,
     ProtocolError,
     StartMessage,
@@ -130,7 +130,7 @@ class TestMarshalResult:
 
 
 class TestRegistration:
-    def test_agent_command_is_registered(self) -> None:
+    def test_run_one_command_is_registered(self) -> None:
         from tolokaforge.cli.main import cli
 
-        assert "agent" in cli.commands
+        assert "run-one" in cli.commands

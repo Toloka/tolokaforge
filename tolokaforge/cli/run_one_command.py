@@ -1,4 +1,4 @@
-"""``tolokaforge agent`` — run one trial as a subprocess over a JSON-Lines pipe.
+"""``tolokaforge run-one`` — run one trial as a subprocess over a JSON-Lines pipe.
 
 A wire adapter over :func:`tolokaforge.core.run_trial.run_trial`: read one
 ``start`` envelope on stdin, run the trial, write exactly one ``result`` /
@@ -178,7 +178,7 @@ def _install_signal_handlers() -> None:
             signal.signal(signum, _raise_cancelled)
 
 
-def _run_agent(in_stream: TextIO, out_stream: TextIO) -> int:
+def _run_one(in_stream: TextIO, out_stream: TextIO) -> int:
     """Drive one trial from ``in_stream``, writing the wire to ``out_stream``.
 
     The whole ``run_trial`` call sits inside the ``try`` so a signal-raised
@@ -218,8 +218,8 @@ def _reroute_stdout_to_stderr() -> TextIO:
     return os.fdopen(wire_fd, "w", encoding="utf-8")
 
 
-@click.command(name="agent")
-def agent() -> None:
+@click.command(name="run-one")
+def run_one() -> None:
     """Run one trial as a subprocess over a JSON-Lines pipe.
 
     Reads exactly one request envelope on stdin, runs a single trial, and writes
@@ -264,4 +264,4 @@ def agent() -> None:
     """
     _install_signal_handlers()
     wire_out = _reroute_stdout_to_stderr()
-    raise SystemExit(_run_agent(sys.stdin, wire_out))
+    raise SystemExit(_run_one(sys.stdin, wire_out))

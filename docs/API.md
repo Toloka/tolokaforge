@@ -61,9 +61,9 @@ Errors:
 - **`ProvisionError`** (`tolokaforge.core.runtime`) — the substrate
   failed to provision. Raised, not swallowed.
 
-## tolokaforge agent
+## tolokaforge run-one
 
-`tolokaforge agent` runs a single trial as a subprocess a harness in any
+`tolokaforge run-one` runs a single trial as a subprocess a harness in any
 language drives over a pipe — the subprocess wrapper of `run_trial`. It reads
 one request on stdin, runs one trial, and writes one terminal message on
 stdout.

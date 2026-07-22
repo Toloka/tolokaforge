@@ -1,4 +1,4 @@
-# 0019. Runtime independence — Protocol registries, `run_trial`, and the `tolokaforge agent` subprocess contract
+# 0019. Runtime independence — Protocol registries, `run_trial`, and the `tolokaforge run-one` subprocess contract
 
 - **Status:** Accepted
 - **Date:** 2026-07-21
@@ -12,14 +12,14 @@ Tolokaforge's runtime is built from swappable seams: [`RuntimeBackend`](0007-run
 
 1. **Entry-point registries** over the three existing Protocols, so a third-party `pip install` can register a backend / grader / conductor and have the orchestrator discover it.
 2. A top-level **`tolokaforge.run_trial(...)`** library entry, so a harness can run one trial in-process without reconstructing the orchestrator's wiring.
-3. A **`tolokaforge agent`** CLI subprocess mode with a stable wire contract, so a harness in any language can drive one trial over a pipe.
+3. A **`tolokaforge run-one`** CLI subprocess mode with a stable wire contract, so a harness in any language can drive one trial over a pipe.
 4. A **slim runner Docker image** plus a versioning story that says what "breaking" means per surface.
 
 None of this shape exists in code yet, and none of it is captured as an architectural decision. Discovery of the current state confirms the forces:
 
 - **Backend selection is task-driven, not name-driven.** `Orchestrator._construct_runtime_backend` (`orchestrator.py:749`) calls `_select_backend_from_tasks` (`orchestrator.py:644`), which picks `PerTrialRuntimeBackend` when any task's manifest requires per-trial materialisation, else `SharedStackRuntimeBackend`. The `orchestrator.runtime` config field (`models.py:538`) is only a **deprecated operator override** that emits a `DeprecationWarning` and is slated for retirement (`models.py:560–574`); its `docker` value is a legacy alias for `shared`.
 - **There is no registry.** Backend selection is a hard-coded dispatch, not a discovery lookup. Nothing lets an out-of-tree distribution contribute a backend.
-- **There is no library or subprocess entry.** `tolokaforge/__init__.py` exposes a lazy `__getattr__` public API with no `run_trial`; the single console script `tolokaforge = tolokaforge.cli.main:cli` has no `agent` subcommand.
+- **There is no library or subprocess entry.** `tolokaforge/__init__.py` exposes a lazy `__getattr__` public API with no `run_trial`; the single console script `tolokaforge = tolokaforge.cli.main:cli` has no `run-one` subcommand.
 - **The runner image is fat.** `runner.Dockerfile` builds from the full `tolokaforge` wheel plus a hand-maintained ~11-dependency block — 659 MB, on a python:3.12-slim base of ≈144 MB.
 
 The five downstream sub-issues (#536–#540) each need to cite one section of a single decision as their contract source. Locking the seam shape, registry mechanics, library signature, subprocess wire format, and versioning story as a Proposed ADR **before** those tickets land is what makes them independently implementable without re-litigating the interface. This ADR is that interface deliverable; it decides nothing about implementation code.
@@ -31,7 +31,7 @@ The five downstream sub-issues (#536–#540) each need to cite one section of a 
 - **Fail fast.** A duplicate registration, an unknown name, or a plugin that fails to import must surface loudly with an actionable message — never silent last-wins, never a swallowed import (AGENTS.md Core Rule).
 - **A single coherent versioning story.** One document that names what a breaking change is per surface, so all four seams share one compatibility contract rather than drifting apart across four ADRs.
 - **Same package, same wheel.** No multi-package split; runner independence is a packaging-extra and CLI-mode story, not a repository split (#305 constraint).
-- **Discoverable in ≤10 minutes.** A reader unfamiliar with the milestone can find the three group names, the `run_trial` signature, and how a harness talks to `tolokaforge agent` from this one file.
+- **Discoverable in ≤10 minutes.** A reader unfamiliar with the milestone can find the three group names, the `run_trial` signature, and how a harness talks to `tolokaforge run-one` from this one file.
 
 ## Considered Options
 
@@ -62,7 +62,7 @@ This ADR locks four surfaces:
 
 1. **Surface 1 — entry-point Protocol registries** (contract for **#536**). Three entry-point groups over the `RuntimeBackend` / `Conductor` / `TrialGrader` Protocols, their discovery mechanism, duplicate-name policy, and load-error surface. Fully specified in [Surface 1](#surface-1--entry-point-protocol-registries-536) below.
 2. **Surface 2 — `tolokaforge.run_trial(...)`** (contract for **#537**). The frozen library signature, its `TrialResult` return, its named error types, and the `runtime="auto"` selection model. Specified in [Surface 2](#surface-2--tolokaforgerun_trial-537) below.
-3. **Surface 3 — `tolokaforge agent` subprocess wire format** (contract for **#538**). The JSON-Lines framing, the `"v":1` protocol version, the `start` / `event` / `result` / `error` message shapes, termination signals, and the stable-vs-experimental split. Specified in [Surface 3](#surface-3--tolokaforge-agent-subprocess-wire-format-538) below.
+3. **Surface 3 — `tolokaforge run-one` subprocess wire format** (contract for **#538**). The JSON-Lines framing, the `"v":1` protocol version, the `start` / `event` / `result` / `error` message shapes, termination signals, and the stable-vs-experimental split. Specified in [Surface 3](#surface-3--tolokaforge-run-one-subprocess-wire-format-538) below.
 4. **Surface 4 — versioning, slim-image budget, and lifecycle**. What a breaking change is per surface and the CHANGELOG discipline ([4a](#4a--versioning--compatibility), contract for **#540**); the slim runner-image budget with measured baseline ([4b](#4b--slim-image-budget--policy), contract for **#539**); and this ADR's Proposed→Accepted lifecycle ([4c](#4c--adr-lifecycle), referenced by **#540**).
 
 ### Surface 1 — entry-point Protocol registries (#536)
@@ -126,9 +126,9 @@ def run_trial(
 
 `auto` is a **reserved parameter value, not a registrable backend name.** The sentinel is intercepted before the registry lookup, so a plug-in cannot register a backend under the name `auto` — Surface 1's fail-loud policy is preserved, and there is no ambiguity between the sentinel and a discovered name.
 
-### Surface 3 — `tolokaforge agent` subprocess wire format (#538)
+### Surface 3 — `tolokaforge run-one` subprocess wire format (#538)
 
-`tolokaforge agent` runs one trial as a subprocess a harness in any language drives over a pipe.
+`tolokaforge run-one` runs one trial as a subprocess a harness in any language drives over a pipe.
 
 **Framing.** JSON Lines — UTF-8, `\n`-delimited, one JSON object per line, on both stdin and stdout. Language-agnostic, streamable, and debuggable by piping; chosen over a length-prefixed binary framing for exactly those properties.
 
@@ -174,7 +174,7 @@ This milestone adds three compatibility surfaces. Each carries a breaking-change
 
 1. **Group names + built-in registration names.** Breaking = renaming or removing a group or a built-in name, or changing the duplicate / load-error semantics. Additive = a new registered name.
 2. **`run_trial` signature + return type** (published Python API). Breaking = removing or renaming a parameter, narrowing an accepted type, or changing the return type or the named error types. Additive = a new keyword-only parameter with a default.
-3. **`agent` wire format.** Breaking = any change to the envelope / framing, or to a required field of `start` / `result` / `error` under the current `v` — which requires a `v` bump. Additive = a new `event` subtype within the current `v`.
+3. **`run-one` wire format.** Breaking = any change to the envelope / framing, or to a required field of `start` / `result` / `error` under the current `v` — which requires a `v` bump. Additive = a new `event` subtype within the current `v`.
 
 **Experimental — not compatibility surfaces:** `event` message subtypes (they grow additively within `v`), and the internal registry-loader implementation.
 
@@ -200,7 +200,7 @@ Accepted at milestone #13 close-out (#540), matching the 0009 / 0010 / 0014 / 00
 
 ### Positive
 
-- External harnesses gain three documented ways to consume the runner — register a plugin, call `run_trial`, or drive `tolokaforge agent` — without a repository or package split.
+- External harnesses gain three documented ways to consume the runner — register a plugin, call `run_trial`, or drive `tolokaforge run-one` — without a repository or package split.
 - A single keystone gives all four seams one versioning contract, so downstream tickets #536–#540 each cite one section rather than re-deriving the compatibility rules.
 
 ### Negative / Trade-offs
