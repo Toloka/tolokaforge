@@ -1,6 +1,6 @@
 """File-editor tool matching Anthropic's ``str_replace_based_edit_tool`` contract.
 
-Three roles live here, mirroring :mod:`tolokaforge.tools.persistent_shell`:
+Four roles live here, mirroring :mod:`tolokaforge.tools.persistent_shell`:
 
 - :class:`StrReplaceEditorTool` is the *schema provider*. The builtin registry
   advertises its ``get_schema()`` to the LLM; it is never executed (the runner
@@ -9,16 +9,23 @@ Three roles live here, mirroring :mod:`tolokaforge.tools.persistent_shell`:
   the local and the compose engines implement.
 - :class:`LocalFilesystemEditor` is the local engine: in-process file operations
   rooted at a working directory.
+- :class:`DockerComposeEditor` is the compose engine: the same four commands
+  routed through ``docker exec`` into an already-running service container.
 
 The four commands ``view`` / ``create`` / ``str_replace`` / ``insert`` match the
 Claude-4 editor variants (``text_editor_20250429`` / ``text_editor_20250728``);
 ``undo_edit`` is absent, as in those variants. Every ambiguous or destructive
-operation fails loud by raising :class:`EditorError`.
+operation fails loud by raising :class:`EditorError`. The command-level text
+transforms and view rendering are shared free functions so both engines apply
+identical semantics.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
+import posixpath
+import subprocess
+import uuid
+from pathlib import Path, PurePosixPath
 from typing import Any, Protocol, runtime_checkable
 
 from tolokaforge.tools.registry import Tool, ToolCategory, ToolPolicy, ToolResult
@@ -29,6 +36,8 @@ _EDITOR_COMMANDS = ("view", "create", "str_replace", "insert")
 _MAX_OUTPUT_CHARS = 16384
 _HEAD_CHARS = 8192
 _TAIL_CHARS = 8192
+
+_DEFAULT_EXEC_TIMEOUT_S = 30.0
 
 
 class EditorError(Exception):
@@ -77,6 +86,47 @@ def _truncate_middle(text: str) -> str:
     return text[:_HEAD_CHARS] + marker + text[-_TAIL_CHARS:]
 
 
+def _render_view(text: str, view_range: list[int] | None, path: str) -> str:
+    """Render *text* as 1-indexed ``cat -n``-style line-numbered output."""
+    lines = text.splitlines(keepends=True)
+    start = 1
+    if view_range is not None:
+        if len(view_range) != 2:
+            raise EditorError("view_range must be [start, end]")
+        start, end = view_range
+        if start < 1 or start > len(lines):
+            raise EditorError(
+                f"view_range start {start} is out of range [1, {len(lines)}] for {path}"
+            )
+        if end == -1:
+            end = len(lines)
+        elif end < start:
+            raise EditorError(f"view_range end {end} is before start {start}")
+        else:
+            end = min(end, len(lines))
+        lines = lines[start - 1 : end]
+    return "".join(f"{i:>6}\t{line}" for i, line in enumerate(lines, start=start))
+
+
+def _replaced_once(content: str, old_str: str, new_str: str, path: str) -> str:
+    """Return *content* with the unique *old_str* replaced; fail loud on 0 or >1."""
+    count = content.count(old_str)
+    if count == 0:
+        raise EditorError(f"no match for old_str in {path}")
+    if count > 1:
+        raise EditorError(f"old_str is not unique in {path}: found {count} matches")
+    return content.replace(old_str, new_str, 1)
+
+
+def _inserted(content: str, insert_line: int, insert_text: str, path: str) -> str:
+    """Return *content* with *insert_text* spliced after line *insert_line*."""
+    lines = content.split("\n")
+    if insert_line < 0 or insert_line > len(lines):
+        raise EditorError(f"insert_line {insert_line} is out of range [0, {len(lines)}] for {path}")
+    new_lines = lines[:insert_line] + insert_text.split("\n") + lines[insert_line:]
+    return "\n".join(new_lines)
+
+
 class LocalFilesystemEditor:
     """In-process editor rooted at *base_path* on the local filesystem.
 
@@ -99,7 +149,7 @@ class LocalFilesystemEditor:
         if not resolved.is_file():
             raise EditorError(f"file not found: {path}")
         text = resolved.read_text(encoding="utf-8", errors="replace")
-        return _truncate_middle(self._format_file(text, view_range, path))
+        return _truncate_middle(_render_view(text, view_range, path))
 
     def create(self, path: str, file_text: str) -> str:
         resolved = self._resolve(path)
@@ -112,24 +162,13 @@ class LocalFilesystemEditor:
     def str_replace(self, path: str, old_str: str, new_str: str) -> str:
         resolved = self._resolve(path)
         content = self._read_strict(resolved, path)
-        count = content.count(old_str)
-        if count == 0:
-            raise EditorError(f"no match for old_str in {path}")
-        if count > 1:
-            raise EditorError(f"old_str is not unique in {path}: found {count} matches")
-        self._atomic_write(resolved, content.replace(old_str, new_str, 1))
+        self._atomic_write(resolved, _replaced_once(content, old_str, new_str, path))
         return f"Successfully replaced text in {path}"
 
     def insert(self, path: str, insert_line: int, insert_text: str) -> str:
         resolved = self._resolve(path)
         content = self._read_strict(resolved, path)
-        lines = content.split("\n")
-        if insert_line < 0 or insert_line > len(lines):
-            raise EditorError(
-                f"insert_line {insert_line} is out of range [0, {len(lines)}] for {path}"
-            )
-        new_lines = lines[:insert_line] + insert_text.split("\n") + lines[insert_line:]
-        self._atomic_write(resolved, "\n".join(new_lines))
+        self._atomic_write(resolved, _inserted(content, insert_line, insert_text, path))
         return f"Successfully inserted text at line {insert_line} in {path}"
 
     # -- internals ------------------------------------------------------------
@@ -158,27 +197,6 @@ class LocalFilesystemEditor:
         tmp.replace(resolved)
 
     @staticmethod
-    def _format_file(text: str, view_range: list[int] | None, path: str) -> str:
-        lines = text.splitlines(keepends=True)
-        start = 1
-        if view_range is not None:
-            if len(view_range) != 2:
-                raise EditorError("view_range must be [start, end]")
-            start, end = view_range
-            if start < 1 or start > len(lines):
-                raise EditorError(
-                    f"view_range start {start} is out of range [1, {len(lines)}] for {path}"
-                )
-            if end == -1:
-                end = len(lines)
-            elif end < start:
-                raise EditorError(f"view_range end {end} is before start {start}")
-            else:
-                end = min(end, len(lines))
-            lines = lines[start - 1 : end]
-        return "".join(f"{i:>6}\t{line}" for i, line in enumerate(lines, start=start))
-
-    @staticmethod
     def _view_directory(resolved: Path) -> str:
         entries = LocalFilesystemEditor._walk_two_levels(resolved)
         header = (
@@ -204,6 +222,200 @@ class LocalFilesystemEditor:
     @staticmethod
     def _skip(entry: Path) -> bool:
         return entry.name.startswith(".") or entry.name == "__pycache__"
+
+
+# ``realpath`` unavailable → exit 90; ``realpath`` present but resolution failed
+# → exit 91. Anything else the caller treats as a generic exec failure. The
+# missing-tail walk lets ``create`` resolve a not-yet-existing path the same way
+# the local engine's ``Path.resolve()`` does, while still following symlinks on
+# the existing prefix (so a symlink escape is caught inside the container).
+# ``$p`` is always absolute (the caller roots relative paths under ``/work``), so
+# no ``--`` end-of-options guard is needed — and busybox ``realpath`` rejects it.
+_REALPATH_SCRIPT = (
+    "command -v realpath >/dev/null 2>&1 || exit 90\n"
+    "p=$1\n"
+    "suffix=\n"
+    'while [ ! -e "$p" ] && [ "$p" != / ]; do\n'
+    '  suffix=/$(basename "$p")$suffix\n'
+    '  p=$(dirname "$p")\n'
+    "done\n"
+    'rp=$(realpath "$p") || exit 91\n'
+    'printf %s "$rp$suffix"\n'
+)
+
+_KIND_SCRIPT = (
+    'if [ -d "$1" ]; then printf dir; '
+    'elif [ -f "$1" ]; then printf file; '
+    'elif [ -e "$1" ]; then printf other; '
+    "else printf missing; fi\n"
+)
+
+_LIST_SCRIPT = (
+    'find "$1" -mindepth 1 -maxdepth 2 '
+    "'(' -name '.*' -o -name '__pycache__' ')' -prune -o -print\n"
+)
+
+_WRITE_SCRIPT = 'cat > "$2" && mv -- "$2" "$1"\n'
+
+_NO_REALPATH_EXIT = 90
+
+
+class DockerComposeEditor:
+    """Editor rooted at *base_path* inside an already-running compose service.
+
+    Implements the same :class:`EditorBackend` contract as
+    :class:`LocalFilesystemEditor`, but every command runs through
+    ``docker exec`` into *container_name* — an already-running service container
+    (brought up by the environment / another lifecycle consumer); this engine
+    never brings the stack up or down. File content
+    (``file_text``/``new_str``/``insert_text``) is piped on **stdin** to
+    ``docker exec -i``, never interpolated into the shell command string, and
+    paths are passed as positional ``sh`` arguments — so agent-controlled bytes
+    cannot inject shell commands.
+
+    Path resolution and containment run **inside the container** via
+    ``docker exec … realpath`` (a host realpath is meaningless for a container
+    path); a resolved path must stay under ``realpath(base_path)`` or the
+    operation fails loud. If ``realpath`` is absent from the target image the
+    engine fails loud rather than silently skipping validation.
+
+    Atomicity is weaker than the local engine: writes go to a temp file in the
+    target's directory and are ``mv``-swapped into place, so a completed write
+    is atomic, but an exec interrupted mid-write can leave the temp file behind
+    (the local engine's single-process temp+rename has no such window).
+    """
+
+    def __init__(
+        self, container_name: str, base_path: str = "/work", timeout_s: float | None = None
+    ) -> None:
+        self._container_name = container_name
+        self._base = base_path
+        self._timeout_s = timeout_s if timeout_s is not None else _DEFAULT_EXEC_TIMEOUT_S
+        self._base_real: str | None = None
+
+    @property
+    def container_name(self) -> str:
+        return self._container_name
+
+    def view(self, path: str, view_range: list[int] | None = None) -> str:
+        resolved = self._resolve(path)
+        kind = self._path_kind(resolved)
+        if kind == "dir":
+            if view_range is not None:
+                raise EditorError("view_range is not allowed when viewing a directory")
+            return _truncate_middle(self._list_directory(resolved))
+        if kind != "file":
+            raise EditorError(f"file not found: {path}")
+        return _truncate_middle(_render_view(self._read(resolved), view_range, path))
+
+    def create(self, path: str, file_text: str) -> str:
+        resolved = self._resolve(path)
+        if self._path_kind(resolved) != "missing":
+            raise EditorError(f"cannot create {path}: path already exists")
+        parent = posixpath.dirname(resolved)
+        self._exec('mkdir -p "$1"', parent)
+        self._write_atomic(resolved, file_text)
+        return f"File created successfully at {path}"
+
+    def str_replace(self, path: str, old_str: str, new_str: str) -> str:
+        resolved = self._resolve(path)
+        if self._path_kind(resolved) != "file":
+            raise EditorError(f"file not found: {path}")
+        content = self._read_strict(resolved, path)
+        self._write_atomic(resolved, _replaced_once(content, old_str, new_str, path))
+        return f"Successfully replaced text in {path}"
+
+    def insert(self, path: str, insert_line: int, insert_text: str) -> str:
+        resolved = self._resolve(path)
+        if self._path_kind(resolved) != "file":
+            raise EditorError(f"file not found: {path}")
+        content = self._read_strict(resolved, path)
+        self._write_atomic(resolved, _inserted(content, insert_line, insert_text, path))
+        return f"Successfully inserted text at line {insert_line} in {path}"
+
+    # -- internals ------------------------------------------------------------
+
+    def _resolve(self, path: str) -> str:
+        abs_path = path if path.startswith("/") else posixpath.join(self._base, path)
+        real = self._container_realpath(abs_path, path)
+        base_real = self._resolve_base()
+        if not PurePosixPath(real).is_relative_to(base_real):
+            raise EditorError(f"path {path} escapes the working root {self._base}")
+        return real
+
+    def _resolve_base(self) -> str:
+        if self._base_real is None:
+            self._base_real = self._container_realpath(self._base, self._base)
+        return self._base_real
+
+    def _container_realpath(self, abs_path: str, path: str) -> str:
+        result = self._exec(_REALPATH_SCRIPT, abs_path, allow_failure=True)
+        if result.returncode == _NO_REALPATH_EXIT:
+            raise EditorError(
+                f"'realpath' is unavailable in container {self._container_name}; "
+                f"cannot validate that {path} stays within {self._base}"
+            )
+        if result.returncode != 0:
+            raise EditorError(f"could not resolve path {path}: {self._stderr(result)}")
+        return result.stdout.decode("utf-8", errors="replace").strip()
+
+    def _path_kind(self, resolved: str) -> str:
+        return self._exec(_KIND_SCRIPT, resolved).stdout.decode("utf-8", "replace").strip()
+
+    def _list_directory(self, resolved: str) -> str:
+        raw = self._exec(_LIST_SCRIPT, resolved).stdout.decode("utf-8", "replace")
+        entries = sorted(line for line in raw.splitlines() if line)
+        header = (
+            f"Here are the files and directories up to 2 levels deep in {resolved}, "
+            f"excluding hidden items and __pycache__:"
+        )
+        return "\n".join([header, *entries])
+
+    def _read(self, resolved: str) -> str:
+        return self._read_bytes(resolved).decode("utf-8", errors="replace")
+
+    def _read_strict(self, resolved: str, path: str) -> str:
+        try:
+            return self._read_bytes(resolved).decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise EditorError(f"cannot edit non-UTF-8 file {path}: {exc}") from exc
+
+    def _read_bytes(self, resolved: str) -> bytes:
+        return self._exec('cat -- "$1"', resolved).stdout
+
+    def _write_atomic(self, resolved: str, content: str) -> None:
+        tmp = posixpath.join(posixpath.dirname(resolved), f".tf-editor-{uuid.uuid4().hex}.tmp")
+        self._exec(_WRITE_SCRIPT, resolved, tmp, stdin=content.encode("utf-8"))
+
+    def _exec(
+        self,
+        script: str,
+        *args: str,
+        stdin: bytes | None = None,
+        allow_failure: bool = False,
+    ) -> subprocess.CompletedProcess[bytes]:
+        cmd = ["docker", "exec"]
+        if stdin is not None:
+            cmd.append("-i")
+        cmd += [self._container_name, "sh", "-c", script, "_", *args]
+        try:
+            result = subprocess.run(
+                cmd, input=stdin, capture_output=True, timeout=self._timeout_s, check=False
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise EditorError(
+                f"docker exec into {self._container_name} timed out after {self._timeout_s:g}s"
+            ) from exc
+        if not allow_failure and result.returncode != 0:
+            raise EditorError(
+                f"docker exec into {self._container_name} failed "
+                f"(exit {result.returncode}): {self._stderr(result)}"
+            )
+        return result
+
+    @staticmethod
+    def _stderr(result: subprocess.CompletedProcess[bytes]) -> str:
+        return result.stderr.decode("utf-8", errors="replace").strip()
 
 
 class StrReplaceEditorTool(Tool):
