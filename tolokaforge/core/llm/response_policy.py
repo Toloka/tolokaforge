@@ -598,11 +598,13 @@ class ScalarArrayDictMapResponse(ArrayDictMapResponse):
                     pivoted[key] = item_copy
                 out[field] = cls._unwrap_scalar_values(pivoted)
             elif isinstance(value, dict):
-                # Either a nested object to recurse into, or a native-wrapper
-                # dict-map (``{k: {"value": N}}``) to scalar-unwrap. The scalar
-                # unwrap is a no-op on multi-field values, so applying it after
-                # the recursion is safe.
-                out[field] = cls._unwrap_scalar_values(cls._pivot_nested_dict_maps(value))
+                # A direct dict field one level in is either a native-wrapper
+                # dict-map (``{k: {"value": N}}``) to scalar-unwrap, or a plain
+                # nested object. Recovery is BOUNDED to this one level - the
+                # depth the observe evidence covers (``order.lines``) - so any
+                # deeper subtree passes through untouched. The scalar unwrap is
+                # a no-op on multi-field values, so plain objects are safe.
+                out[field] = cls._unwrap_scalar_values(value)
             else:
                 out[field] = value
         return out

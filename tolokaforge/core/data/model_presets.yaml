@@ -230,6 +230,22 @@ presets:
     schema_sanitizer: gemini_recursive
     response_policy: scalar_array_dict_map
 
+  # Gemini 3.6 Flash - same two Flash-observed schema-loss fixes as its 3.5
+  # sibling above, routed through the SAME ``gemini_recursive`` +
+  # ``scalar_array_dict_map`` classes: the 2026-07-22 observe signature was
+  # identical (recursive_ref crashed 0/15 in-engine; dict_map
+  # scalar_values/nested_in_object variants 0/15). Consolidated into PR #560
+  # from the parallel PR #559 run, whose standalone re-implementation was
+  # dropped in favor of these inheritance-based classes. Exact match globs
+  # only, listed BEFORE the generic ``gemini`` glob (first-match-wins).
+  gemini_36_flash_recursive:
+    match:
+      - "google/gemini-3.6-flash"
+      - "openrouter/google/gemini-3.6-flash"
+    reasoning_codec: gemini
+    schema_sanitizer: gemini_recursive
+    response_policy: scalar_array_dict_map
+
   # Google Gemini family (3.x preview + 3.x GA + 2.5 backstop).
   # ``GeminiReasoningCodec`` decodes Gemini's OpenRouter
   # ``provider_specific_fields.reasoning_details`` envelope: handles
