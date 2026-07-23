@@ -1163,6 +1163,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     kb_tools_withheld=list(judge_result.kb_tools_withheld),
                     state_diff_text=judge_result.state_diff or "",
                     read_tools_offered=list(judge_result.read_tools_offered),
+                    custom_system_prompt=judge_result.custom_system_prompt,
                 )
                 if judge_result.status is JudgeStatus.ERRORED:
                     # Fail loud: the judge component is incomplete, NOT zero. Leave
@@ -1347,10 +1348,13 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # when the effective customization asks for it. Absent/None → False.
         customization = llm_judge_config.customization
         disable_knowledge_search = bool(customization and customization.disable_knowledge_search)
+        custom_system_prompt = customization.system_prompt if customization else None
 
         def _run() -> JudgeResult:
             return LLMJudge(
-                judge_model_config, disable_knowledge_search=disable_knowledge_search
+                judge_model_config,
+                disable_knowledge_search=disable_knowledge_search,
+                custom_system_prompt=custom_system_prompt,
             ).run(
                 rubric=llm_judge_config.rubric,
                 agent_system_prompt=agent_system_prompt,

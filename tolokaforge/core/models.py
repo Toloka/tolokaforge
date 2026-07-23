@@ -391,6 +391,13 @@ class Grade(BaseModel):
     # state-diff can be large), mirroring the ``judge_transcript`` split. See
     # docs/OUTPUT_FORMAT.md.
     judge_inputs: JudgeInputs | None = None
+    # Whether the judge ran with a custom system-prompt body
+    # (grading.llm_judge.customization.system_prompt). Tri-state: ``None`` when no
+    # judge ran, ``False``/``True`` when a judge ran with the default / a custom
+    # prompt. Serialized inline in ``grade.yaml``. The full custom text is recorded
+    # in ``task.yaml.grading_config.llm_judge.customization``, not here. See
+    # docs/OUTPUT_FORMAT.md.
+    judge_custom_prompt: bool | None = None
 
 
 class Trajectory(BaseModel):

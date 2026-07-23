@@ -558,6 +558,7 @@ judge_kb_gating:                # the judge's knowledge-search gating; null unle
   knowledge_search_disabled: false  # config withheld the judge's KB tools (authoritative replay signal)
   offered: [search_kb]         # KB-tagged tools the judge was offered (audit detail)
   withheld: []                 # KB-tagged tools withheld by config (audit detail)
+judge_custom_prompt: false      # null (no judge) | false (default prompt) | true (custom prompt)
 ```
 
 Score scale: `0.0` ≤ `score` ≤ `1.0`. `binary_pass` is the harness-level
@@ -566,10 +567,10 @@ credit).
 
 ### Rubric-judge fields
 
-`criterion_results`, `judge_status`, `judge_usage`, and `judge_kb_gating`
-are populated only when an LLM rubric judge ran (`grading.llm_judge`
-configured). See [`docs/GRADING.md`](GRADING.md) for the rubric mechanism
-and the two weighting layers.
+`criterion_results`, `judge_status`, `judge_usage`, `judge_kb_gating`, and
+`judge_custom_prompt` are populated only when an LLM rubric judge ran
+(`grading.llm_judge` configured). See [`docs/GRADING.md`](GRADING.md) for the
+rubric mechanism and the two weighting layers.
 
 * `criterion_results` — one entry per rubric criterion: `id`, `met`
   (binary verdict; for graded criteria, whether it cleared the author's
@@ -599,6 +600,13 @@ and the two weighting layers.
   tools the judge actually got, and those config withheld. An empty
   `withheld` on a disabled judge means the agent had no KB tool to gate. See
   [`docs/GRADING.md`](GRADING.md#judge-kb-faithfulness).
+* `judge_custom_prompt` — whether the judge ran with a custom system-prompt
+  body (`grading.llm_judge.customization.system_prompt`). Tri-state: `null`
+  when no judge ran, `false` when the judge used the default prompt, `true`
+  when a custom prompt replaced the default body (the marker contract is always
+  appended regardless). The full custom text is not copied here — it lives in
+  `task.yaml.grading_config.llm_judge.customization`, one file over in the same
+  bundle. See [`docs/GRADING.md`](GRADING.md#customizing-the-judges-system-prompt).
 
 ## `trials/{task_id}/{trial_index}/judge_trajectory.yaml`
 
@@ -719,8 +727,16 @@ judge_model_source: override        # or "recorded"
 rubric_source: recorded             # or "override"
 knowledge_search_mode: recorded     # recorded | on | off
 knowledge_search_disabled: false
+custom_system_prompt: false         # whether a custom judge prompt was in effect
+custom_prompt_source: null          # "recorded" | "override" | null (default prompt)
 fidelity_mode: full                 # "full" (state_diff rebuilt) or "fallback" (old bundle, no state_diff)
 ```
+
+`custom_system_prompt` / `custom_prompt_source` are resolved independently of the
+rubric: a `--grading` override replaces the prompt only when it carries its own
+`llm_judge.customization.system_prompt`, so a rubric-only override over a
+custom-prompted bundle reads `rubric_source: override` while
+`custom_prompt_source: recorded`. See [`docs/JUDGE_REPLAY.md`](JUDGE_REPLAY.md#custom-judge-system-prompt).
 
 ### `replay_report.yaml`
 

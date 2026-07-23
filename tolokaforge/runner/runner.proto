@@ -282,6 +282,11 @@ message JudgeReport {
   // KB surface lives in kb_tools_offered / kb_tools_withheld. Offline replay
   // declares which live backends to shim from this list.
   repeated string read_tools_offered = 13;
+  // Whether the judge ran with a custom system-prompt body
+  // (grading.llm_judge.customization.system_prompt). The harness always appends
+  // the marker contract regardless. The full custom text is recorded in
+  // task.yaml.grading_config, not here — this is the honest bool.
+  bool custom_system_prompt = 14;
 }
 
 // Outcome of running the rubric judge. Keeps a judge malfunction distinct from a

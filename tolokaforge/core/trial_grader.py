@@ -249,8 +249,10 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
     judge_transcript: list[dict[str, Any]] | None = None
     judge_kb_gating: JudgeKbGating | None = None
     judge_inputs: JudgeInputs | None = None
+    judge_custom_prompt: bool | None = None
     raw_report = raw_grade.get("judge_report")
     if raw_report:
+        judge_custom_prompt = raw_report.get("custom_system_prompt", False)
         judge_usage = JudgeUsage(
             calls=raw_report.get("calls", 0),
             prompt_tokens=raw_report.get("prompt_tokens", 0),
@@ -297,4 +299,5 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
         judge_transcript=judge_transcript,
         judge_kb_gating=judge_kb_gating,
         judge_inputs=judge_inputs,
+        judge_custom_prompt=judge_custom_prompt,
     )

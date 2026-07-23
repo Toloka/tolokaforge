@@ -27,18 +27,21 @@ from pathlib import Path
 import pytest
 import yaml
 from click.testing import CliRunner
+from pydantic import ValidationError
 
 from tests.unit.grading.test_judge import ScriptedClient
 from tolokaforge.core.grading.judge import JudgeStatus as JudgeRunStatus
 from tolokaforge.core.grading.replay import (
     REPLAY_UNAVAILABLE,
     FidelityMode,
+    GradingOverride,
     KnowledgeSearchMode,
     MissingReplayInputError,
     OfflineDBReader,
     OfflineKnowledgeSearch,
     ProvenanceSource,
     ReplayOutcomeStatus,
+    ReplayProvenance,
     TrialEligibility,
     classify_trial,
     discover_trial_bundles,
@@ -102,6 +105,7 @@ def _write_bundle(
     judge_inputs: JudgeInputs | None,
     with_rubric: bool = True,
     kb_gating: JudgeKbGating | None = None,
+    recorded_system_prompt: str | None = None,
 ) -> Trajectory:
     """Write a new-shape bundle via the real writer; return the source trajectory."""
     writer = FileArtifactWriter()
@@ -109,7 +113,13 @@ def _write_bundle(
     writer.write_trajectory(trial_dir, trajectory)
     writer.write_prompts(trial_dir, _AGENT_PROMPT, "user-sim prompt")
 
-    grading_config = {"llm_judge": {"rubric": _RUBRIC}} if with_rubric else {"llm_judge": None}
+    if with_rubric:
+        llm_judge: dict = {"rubric": _RUBRIC}
+        if recorded_system_prompt is not None:
+            llm_judge["customization"] = {"system_prompt": recorded_system_prompt}
+        grading_config = {"llm_judge": llm_judge}
+    else:
+        grading_config = {"llm_judge": None}
     writer.write_task(
         trial_dir,
         {
@@ -309,6 +319,137 @@ def test_knowledge_search_override_forces_gating(tmp_path: Path) -> None:
     assert recorded_result.kb_tools_withheld == ("search_kb",)
 
 
+def _grading_override(system_prompt: str | None = None) -> GradingOverride:
+    from tolokaforge.runner.models import Rubric
+
+    return GradingOverride(
+        rubric=Rubric.model_validate(_RUBRIC), custom_system_prompt=system_prompt
+    )
+
+
+def test_recorded_custom_prompt_is_reconstructed_and_stamped(tmp_path: Path) -> None:
+    """A bundle whose task.yaml records a custom system prompt reconstructs it, the
+    judge is constructed with it, and provenance stamps RECORDED."""
+    trial_dir = tmp_path / "trials" / "refund_task" / "0"
+    _write_bundle(
+        trial_dir,
+        judge_status=JudgeStatus.COMPLETED,
+        judge_inputs=JudgeInputs(read_tools_offered=[]),
+        recorded_system_prompt="Grade strictly against the refund policy handbook.",
+    )
+
+    inputs = read_replay_inputs(trial_dir)
+
+    assert inputs.custom_system_prompt == "Grade strictly against the refund policy handbook."
+    assert inputs.provenance.custom_system_prompt is True
+    assert inputs.provenance.custom_prompt_source is ProvenanceSource.RECORDED
+
+    # The one production judge is actually constructed with the custom prompt.
+    result = replay_trial(inputs, judge_client=_submit_report_client())
+    assert result.custom_system_prompt is True
+
+
+def test_grading_override_custom_prompt_wins_over_recorded(tmp_path: Path) -> None:
+    """A --grading override carrying its own customization.system_prompt replaces
+    the recorded prompt; provenance stamps OVERRIDE."""
+    trial_dir = tmp_path / "trials" / "refund_task" / "0"
+    _write_bundle(
+        trial_dir,
+        judge_status=JudgeStatus.COMPLETED,
+        judge_inputs=JudgeInputs(read_tools_offered=[]),
+        recorded_system_prompt="Recorded judge voice.",
+    )
+
+    inputs = read_replay_inputs(
+        trial_dir, grading_override=_grading_override("Override judge voice.")
+    )
+
+    assert inputs.custom_system_prompt == "Override judge voice."
+    assert inputs.provenance.custom_system_prompt is True
+    assert inputs.provenance.custom_prompt_source is ProvenanceSource.OVERRIDE
+
+
+def test_no_recorded_customization_yields_no_custom_prompt(tmp_path: Path) -> None:
+    """An old-shape bundle with no recorded customization ⇒ default prompt: None,
+    provenance False, source None (the declared fallback)."""
+    trial_dir = tmp_path / "trials" / "refund_task" / "0"
+    _write_bundle(
+        trial_dir,
+        judge_status=JudgeStatus.COMPLETED,
+        judge_inputs=JudgeInputs(read_tools_offered=[]),
+    )
+
+    inputs = read_replay_inputs(trial_dir)
+
+    assert inputs.custom_system_prompt is None
+    assert inputs.provenance.custom_system_prompt is False
+    assert inputs.provenance.custom_prompt_source is None
+
+
+def test_rubric_only_override_preserves_recorded_custom_prompt(tmp_path: Path) -> None:
+    """A --grading override supplying a rubric but NO customization.system_prompt,
+    over a bundle that DOES record a custom prompt.
+    The recorded prompt survives (source RECORDED) while the rubric is OVERRIDE —
+    rubric and prompt resolution are independent; a rubric-only override never
+    clears the recorded prompt."""
+    trial_dir = tmp_path / "trials" / "refund_task" / "0"
+    _write_bundle(
+        trial_dir,
+        judge_status=JudgeStatus.COMPLETED,
+        judge_inputs=JudgeInputs(read_tools_offered=[]),
+        recorded_system_prompt="Recorded judge voice.",
+    )
+
+    inputs = read_replay_inputs(trial_dir, grading_override=_grading_override(None))
+
+    assert inputs.custom_system_prompt == "Recorded judge voice."
+    assert inputs.provenance.custom_prompt_source is ProvenanceSource.RECORDED
+    assert inputs.provenance.rubric_source is ProvenanceSource.OVERRIDE
+
+
+@pytest.mark.parametrize("bad_value", ["", "   ", 7], ids=["empty", "whitespace", "non-string"])
+def test_blank_or_non_string_recorded_custom_prompt_fails_loud(
+    tmp_path: Path, bad_value: object
+) -> None:
+    """A recorded ``customization.system_prompt`` that is blank or not a string is a
+    corrupted or hand-edited bundle, not a default prompt — replay refuses it with a
+    named error instead of silently judging with an unintended prompt.
+
+    Exercised under a rubric-only ``--grading`` override: that path skips the
+    ``LLMJudgeConfig`` validation of the recorded block (which already rejects a
+    blank prompt when no override is supplied), so the prompt resolver is the only
+    guard left."""
+    trial_dir = tmp_path / "trials" / "refund_task" / "0"
+    _write_bundle(
+        trial_dir,
+        judge_status=JudgeStatus.COMPLETED,
+        judge_inputs=JudgeInputs(read_tools_offered=[]),
+        recorded_system_prompt="Recorded judge voice.",
+    )
+    task = yaml.safe_load((trial_dir / "task.yaml").read_text())
+    task["grading_config"]["llm_judge"]["customization"]["system_prompt"] = bad_value
+    (trial_dir / "task.yaml").write_text(yaml.safe_dump(task))
+
+    with pytest.raises(MissingReplayInputError, match="blank or not a string"):
+        read_replay_inputs(trial_dir, grading_override=_grading_override(None))
+
+
+def test_provenance_rejects_incoherent_custom_prompt_stamp() -> None:
+    """``ReplayProvenance`` machine-enforces its invariant: ``custom_prompt_source``
+    is set exactly when ``custom_system_prompt`` is True."""
+    with pytest.raises(ValidationError, match="custom_prompt_source"):
+        ReplayProvenance(
+            judge_model="openrouter/openai/gpt-4.1-mini",
+            judge_model_source=ProvenanceSource.RECORDED,
+            rubric_source=ProvenanceSource.RECORDED,
+            knowledge_search_mode=KnowledgeSearchMode.RECORDED,
+            knowledge_search_disabled=False,
+            custom_system_prompt=False,
+            custom_prompt_source=ProvenanceSource.RECORDED,
+            fidelity_mode=FidelityMode.FULL,
+        )
+
+
 def _completed_bundle(trial_dir: Path) -> None:
     _write_bundle(
         trial_dir,
@@ -364,7 +505,9 @@ def test_not_applicable_trial_reported_skipped_even_with_grading_override(tmp_pa
     outcomes = run_replay_batch(
         source,
         replay_id="r1",
-        rubric_override=Rubric.model_validate(_RUBRIC),
+        grading_override=GradingOverride(
+            rubric=Rubric.model_validate(_RUBRIC), custom_system_prompt=None
+        ),
         dry_run=True,
     )
 

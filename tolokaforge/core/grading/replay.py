@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ValidationError, model_validator
 
 from tolokaforge.core.grading.judge import (
     DBReader,
@@ -55,6 +55,7 @@ from tolokaforge.tools.registry import Tool, ToolCategory, ToolPolicy, ToolResul
 __all__ = [
     "REPLAY_UNAVAILABLE",
     "FidelityMode",
+    "GradingOverride",
     "KnowledgeSearchMode",
     "MissingReplayInputError",
     "OfflineDBReader",
@@ -73,7 +74,7 @@ __all__ = [
     "classify_trial",
     "discover_trial_bundles",
     "emit_replay_report",
-    "load_grading_rubric",
+    "load_grading_override",
     "read_replay_inputs",
     "replay_trial",
     "run_replay_batch",
@@ -213,9 +214,28 @@ class ReplayProvenance(BaseModel):
     rubric_source: ProvenanceSource
     knowledge_search_mode: KnowledgeSearchMode
     knowledge_search_disabled: bool
+    # Whether a custom judge system prompt was in effect for this replay, and where
+    # it came from — RECORDED (the bundle's task.yaml customization) or OVERRIDE (a
+    # --grading override carrying one). Resolved independently of the rubric: a
+    # rubric-only override never clears a recorded custom prompt.
+    custom_system_prompt: bool
+    custom_prompt_source: ProvenanceSource | None
     fidelity_mode: FidelityMode
 
     model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def _custom_prompt_fields_coherent(self) -> ReplayProvenance:
+        """``custom_prompt_source`` is set exactly when ``custom_system_prompt`` is
+        True — a source without a prompt (or a prompt without a source) is a bug in
+        the resolver, not a valid stamp."""
+        if self.custom_system_prompt != (self.custom_prompt_source is not None):
+            raise ValueError(
+                "custom_system_prompt must be True exactly when custom_prompt_source "
+                f"is set (got custom_system_prompt={self.custom_system_prompt}, "
+                f"custom_prompt_source={self.custom_prompt_source})"
+            )
+        return self
 
 
 @dataclass(frozen=True)
@@ -229,6 +249,7 @@ class ReplayInputs:
     state_diff: str | None
     judge_model_config: ModelConfig
     disable_knowledge_search: bool
+    custom_system_prompt: str | None
     provenance: ReplayProvenance
     db_reader: DBReader | None = None
     kb_search: KnowledgeSearch | None = None
@@ -246,21 +267,41 @@ def _load_yaml(path: Path) -> dict[str, Any] | None:
     return loaded if isinstance(loaded, dict) else None
 
 
-def load_grading_rubric(grading_path: Path) -> Rubric:
-    """Parse a supplied ``grading.yaml`` override into its :class:`Rubric`.
+@dataclass(frozen=True)
+class GradingOverride:
+    """A ``--grading`` override: a rubric plus an optional custom judge prompt.
 
-    Accepts either a full grading document (``llm_judge.rubric: …``) or a bare
-    ``rubric:`` mapping, so an operator can point ``--grading`` at a task's grading
-    file or a hand-authored rubric snippet. Fails loud if neither carries a rubric.
+    Both live under ``llm_judge`` in the override document, so one file swaps the
+    rubric AND (when it carries a ``customization.system_prompt``) the judge prompt.
+    ``custom_system_prompt`` is ``None`` when the override carries no prompt — a
+    rubric-only override, which leaves any recorded prompt untouched at resolution.
+    """
+
+    rubric: Rubric
+    custom_system_prompt: str | None
+
+
+def load_grading_override(grading_path: Path) -> GradingOverride:
+    """Parse a supplied ``grading.yaml`` override into a :class:`GradingOverride`.
+
+    Accepts either a full grading document (``llm_judge.rubric: …``, optionally with
+    ``llm_judge.customization.system_prompt``) or a bare ``rubric:`` mapping, so an
+    operator can point ``--grading`` at a task's grading file or a hand-authored
+    rubric snippet. Fails loud if neither carries a rubric. A bare ``rubric:``
+    mapping carries no custom prompt.
     """
     data = _load_yaml(grading_path)
     if data is None:
         raise MissingReplayInputError(f"grading override {grading_path} is not a YAML mapping")
     llm_judge = data.get("llm_judge")
     if isinstance(llm_judge, dict) and "rubric" in llm_judge:
-        return LLMJudgeConfig.model_validate(llm_judge).rubric
+        config = LLMJudgeConfig.model_validate(llm_judge)
+        custom = config.customization.system_prompt if config.customization else None
+        return GradingOverride(rubric=config.rubric, custom_system_prompt=custom)
     if "rubric" in data:
-        return Rubric.model_validate(data["rubric"])
+        return GradingOverride(
+            rubric=Rubric.model_validate(data["rubric"]), custom_system_prompt=None
+        )
     raise MissingReplayInputError(
         f"grading override {grading_path} has no llm_judge.rubric or rubric block"
     )
@@ -299,6 +340,33 @@ def _resolve_rubric(
         "no rubric: the bundle's task.yaml has no grading_config.llm_judge.rubric "
         "and no --grading override was supplied"
     )
+
+
+def _resolve_custom_prompt(
+    trial_dir: Path, task: dict[str, Any] | None, grading_override: GradingOverride | None
+) -> tuple[str | None, ProvenanceSource | None]:
+    """Resolve the judge's custom system prompt independently of the rubric.
+
+    The override prompt wins only when the override actually carries one; otherwise
+    the recorded prompt survives — a rubric-only ``--grading`` override must never
+    silently clear a recorded custom prompt to the default. ``None`` (default
+    prompt) only when neither the override nor the recorded config carries one.
+    A recorded value that is blank or not a string fails loud — the writer never
+    records one, so it is a corrupted or hand-edited bundle, not a default prompt.
+    """
+    if grading_override is not None and grading_override.custom_system_prompt is not None:
+        return grading_override.custom_system_prompt, ProvenanceSource.OVERRIDE
+    llm_judge = ((task or {}).get("grading_config") or {}).get("llm_judge")
+    customization = llm_judge.get("customization") if isinstance(llm_judge, dict) else None
+    recorded = customization.get("system_prompt") if isinstance(customization, dict) else None
+    if recorded is None:
+        return None, None
+    if not isinstance(recorded, str) or not recorded.strip():
+        raise MissingReplayInputError(
+            f"recorded customization.system_prompt in {trial_dir / 'task.yaml'} "
+            "is blank or not a string"
+        )
+    return recorded, ProvenanceSource.RECORDED
 
 
 def _resolve_judge_model(
@@ -364,7 +432,7 @@ def _offline_read_surface(
 def read_replay_inputs(
     trial_dir: Path,
     *,
-    rubric_override: Rubric | None = None,
+    grading_override: GradingOverride | None = None,
     judge_model_override: str | None = None,
     knowledge_search: KnowledgeSearchMode = KnowledgeSearchMode.RECORDED,
 ) -> ReplayInputs:
@@ -395,7 +463,11 @@ def read_replay_inputs(
     if trajectory_raw is None:
         raise MissingReplayInputError(f"no transcript: {trial_dir / 'trajectory.yaml'} is missing")
 
+    rubric_override = grading_override.rubric if grading_override is not None else None
     rubric, rubric_source = _resolve_rubric(task, rubric_override)
+    custom_system_prompt, custom_prompt_source = _resolve_custom_prompt(
+        trial_dir, task, grading_override
+    )
     judge_model_config, judge_model_source = _resolve_judge_model(task, judge_model_override)
 
     trajectory = Trajectory.model_validate(trajectory_raw)
@@ -423,6 +495,8 @@ def read_replay_inputs(
         rubric_source=rubric_source,
         knowledge_search_mode=knowledge_search,
         knowledge_search_disabled=disable_knowledge_search,
+        custom_system_prompt=custom_system_prompt is not None,
+        custom_prompt_source=custom_prompt_source,
         fidelity_mode=fidelity_mode,
     )
 
@@ -433,6 +507,7 @@ def read_replay_inputs(
         state_diff=state_diff,
         judge_model_config=judge_model_config,
         disable_knowledge_search=disable_knowledge_search,
+        custom_system_prompt=custom_system_prompt,
         db_reader=db_reader,
         kb_search=kb_search,
         extra_read_tools=extra_read_tools,
@@ -457,6 +532,7 @@ def replay_trial(inputs: ReplayInputs, *, judge_client: LLMClient | None = None)
     judge = LLMJudge(
         inputs.judge_model_config,
         disable_knowledge_search=inputs.disable_knowledge_search,
+        custom_system_prompt=inputs.custom_system_prompt,
         llm_client=judge_client,
     )
     return judge.run(
@@ -572,6 +648,7 @@ def build_replay_grade(result: JudgeResult) -> Grade:
             state_diff_text=result.state_diff,
             read_tools_offered=list(result.read_tools_offered),
         ),
+        judge_custom_prompt=result.custom_system_prompt,
     )
 
 
@@ -610,7 +687,7 @@ def run_replay_batch(
     *,
     replay_id: str,
     trial: Path | None = None,
-    rubric_override: Rubric | None = None,
+    grading_override: GradingOverride | None = None,
     judge_model_override: str | None = None,
     knowledge_search: KnowledgeSearchMode = KnowledgeSearchMode.RECORDED,
     dry_run: bool = False,
@@ -646,7 +723,7 @@ def run_replay_batch(
                 continue
             inputs = read_replay_inputs(
                 bundle,
-                rubric_override=rubric_override,
+                grading_override=grading_override,
                 judge_model_override=judge_model_override,
                 knowledge_search=knowledge_search,
             )

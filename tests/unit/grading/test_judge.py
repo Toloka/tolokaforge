@@ -11,7 +11,13 @@ from __future__ import annotations
 
 import pytest
 
-from tolokaforge.core.grading.judge import _JUDGE_SYSTEM_PROMPT, JudgeStatus, LLMJudge
+from tolokaforge.core.grading.judge import (
+    _JUDGE_MARKER_CONTRACT,
+    _JUDGE_SYSTEM_PROMPT,
+    JudgeStatus,
+    LLMJudge,
+    _compose_judge_system_prompt,
+)
 from tolokaforge.core.llm.client import GenerationResult
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.models import Message, MessageRole, ModelConfig, ToolCall
@@ -32,6 +38,7 @@ _LLM_JUDGE_CTOR_KEYS = (
     "episode_timeout_s",
     "submit_report_retries",
     "disable_knowledge_search",
+    "custom_system_prompt",
     "logger",
 )
 
@@ -58,7 +65,7 @@ class ScriptedClient:
 
     Each entry is either a list of ``(tool_name, arguments)`` tuples (emitted as
     tool calls) or a plain string (assistant text, no tool calls). Records the
-    tools/messages it was driven with for assertions.
+    system prompt/tools/messages it was driven with for assertions.
     """
 
     def __init__(self, script: list):
@@ -66,11 +73,13 @@ class ScriptedClient:
         self._i = 0
         self.calls = 0
         self.seen_tool_names: list[str] = []
+        self.seen_system: str | None = None
 
     def generate(
         self, system, messages, tools, tool_choice="auto", observation=None
     ) -> GenerationResult:
         self.calls += 1
+        self.seen_system = system
         self.seen_tool_names = [t["function"]["name"] for t in tools]
         if self._i >= len(self._script):
             return GenerationResult(text="(no more script)", tool_calls=[], usage=Usage())
@@ -1138,3 +1147,64 @@ def test_judge_system_prompt_carries_contract_tokens(token):
     not the full text.
     """
     assert token in _JUDGE_SYSTEM_PROMPT
+
+
+# ---------------------------------------------------------------------------
+# Custom system prompt — body replacement with an always-appended marker
+# ---------------------------------------------------------------------------
+
+_MARKER_TOKENS = ("VERDICT: MET", "VERDICT: NOT MET", "SCORE:")
+
+
+def test_compose_none_is_byte_for_byte_default():
+    """No custom prompt yields the default prompt unchanged, byte-for-byte."""
+    assert _compose_judge_system_prompt(None) == _JUDGE_SYSTEM_PROMPT
+
+
+def test_compose_custom_body_replaces_and_appends_marker():
+    """A custom body leads the prompt but cannot drop the marker contract: the
+    composed prompt starts with the custom text and still carries the full marker
+    contract with every enforced token."""
+    composed = _compose_judge_system_prompt("Custom judge voice.")
+
+    assert composed.startswith("Custom judge voice.")
+    assert _JUDGE_MARKER_CONTRACT in composed
+    for token in _MARKER_TOKENS:
+        assert token in composed
+
+
+@pytest.mark.parametrize("token", _MARKER_TOKENS)
+def test_marker_contract_is_the_single_source_of_the_tokens(token):
+    """The marker tokens live in ``_JUDGE_MARKER_CONTRACT`` — the one place the
+    default and every custom prompt draw the enforced contract from."""
+    assert token in _JUDGE_MARKER_CONTRACT
+
+
+def test_custom_system_prompt_recorded_on_result():
+    """A judge constructed with a custom prompt records ``custom_system_prompt``
+    True on its result and sends the custom body at the head of the system prompt
+    it puts on the wire; the default records False."""
+    rubric = _binary_rubric()
+
+    custom_client = ScriptedClient([[("submit_report", _submit_args(refund_done=True))]])
+    custom = _run_llm_judge(
+        rubric=rubric,
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="",
+        transcript=[],
+        custom_system_prompt="Grade only the refund.",
+        llm_client=custom_client,
+    )
+    assert custom.custom_system_prompt is True
+    assert custom_client.seen_system is not None
+    assert custom_client.seen_system.startswith("Grade only the refund.")
+    assert _JUDGE_MARKER_CONTRACT in custom_client.seen_system
+
+    default = _run_llm_judge(
+        rubric=rubric,
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="",
+        transcript=[],
+        llm_client=ScriptedClient([[("submit_report", _submit_args(refund_done=True))]]),
+    )
+    assert default.custom_system_prompt is False

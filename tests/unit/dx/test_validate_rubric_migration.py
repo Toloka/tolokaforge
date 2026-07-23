@@ -149,6 +149,7 @@ def test_validate_accepts_customization_block(tmp_path: Path):
         llm_judge:
           customization:
             disable_knowledge_search: true
+            system_prompt: "Grade strictly against the policy handbook."
           rubric:
             criteria:
               - id: refund_amount
@@ -211,8 +212,10 @@ def _grading_with_customization(customization_block: str) -> str:
     [
         ("disable_knowledge_search: sometimes", "disable_knowledge_search"),
         ("typo_key: true", "typo_key"),
+        ("system_prompt: 123", "system_prompt"),
+        ('system_prompt: ""', "empty"),
     ],
-    ids=["malformed_value", "unknown_key"],
+    ids=["malformed_value", "unknown_key", "malformed_system_prompt_type", "empty_system_prompt"],
 )
 def test_validate_grading_yaml_rejects_malformed_customization(
     tmp_path: Path, customization_block: str, match: str
@@ -247,8 +250,10 @@ def test_validate_grading_yaml_skips_customization_without_rubric(tmp_path: Path
     [
         ({"disable_knowledge_search": "sometimes"}, "disable_knowledge_search"),
         ({"typo_key": True}, "typo_key"),
+        ({"system_prompt": 123}, "system_prompt"),
+        ({"system_prompt": ""}, "empty"),
     ],
-    ids=["malformed_value", "unknown_key"],
+    ids=["malformed_value", "unknown_key", "malformed_system_prompt_type", "empty_system_prompt"],
 )
 def test_project_grading_defaults_reject_malformed_customization(customization: dict, match: str):
     """The project-defaults layer (``grading_defaults.llm_judge.customization``) is
