@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from tolokaforge.core.grading.judge import JudgeStatus, LLMJudge
+from tolokaforge.core.grading.judge import _JUDGE_SYSTEM_PROMPT, JudgeStatus, LLMJudge
 from tolokaforge.core.llm.client import GenerationResult
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.models import Message, MessageRole, ModelConfig, ToolCall
@@ -1105,3 +1105,36 @@ def test_state_diff_injected_into_opening_context():
         llm_client=client,
     )
     assert "STATE-DIFF-MARKER" in captured["first_user"]
+
+
+# ---------------------------------------------------------------------------
+# System-prompt contract tokens: the invariants a future reword must not drop
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "VERDICT: MET",
+        "VERDICT: NOT MET",
+        "SCORE: <value in [0,1]>",
+        "positive evidence",
+        "the criterion FAILS",
+    ],
+    ids=[
+        "marker_binary_met",
+        "marker_binary_not_met",
+        "marker_graded_score",
+        "positive_evidence_rule",
+        "absent_behavior_fails",
+    ],
+)
+def test_judge_system_prompt_carries_contract_tokens(token):
+    """The judge system prompt must carry the enforced marker tokens and the
+    positive-evidence rule. The marker form is what ``parse_submit_report``
+    validates (dropping it burns retries); the positive-evidence rule is the
+    grading stance itself. The maintainer prose is theirs to reword — these
+    tokens are the invariants a reword must preserve, so the lock scopes to them,
+    not the full text.
+    """
+    assert token in _JUDGE_SYSTEM_PROMPT

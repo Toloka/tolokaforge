@@ -89,6 +89,14 @@ gating only. The judge writes each criterion's justification first, then its
 verdict, and ends the justification with a `VERDICT: MET` / `VERDICT: NOT MET`
 (binary) or `SCORE: <value>` (graded) marker line.
 
+Each criterion is graded as written and self-contained — the judge checks only
+what the criterion's text names, importing no outside expectations — with the
+agent's transcript and, when present, the database state diff as the primary
+evidence and the read-only tools reserved for what those do not settle; a
+criterion passes only on positive evidence that the described behaviour occurred,
+and behaviour that never occurred FAILS unless the criterion's own text says it
+passes when the situation never arises.
+
 - **Verdict/justification consistency:** the submitted verdict must agree with
   the justification's trailing marker — the marker is read from the final
   non-empty line only (whitespace-tolerant, case-insensitive; `NOT MET` matched
