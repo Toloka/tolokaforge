@@ -54,6 +54,8 @@ def component_unregistered(self, *, component_id: str) -> None: ...
 
 **The generic escape hatch for any startup subsystem** — an emitter can tag its own `logger.*` calls with `extra={"component_id": ...}` and `_LogSink` routes them to the tagged component's tail automatically, at the natural log level. No downgrade to DEBUG, no bespoke wiring per subsystem. The gRPC runner-connect loop and `GrpcRunnerClient.health_check` are the reference users; docker-service startup, HealthProbe retries, and any future k8s / SSH reporter can opt in the same way.
 
+**Docker containers stream automatically.** `LogRouter` (`tolokaforge/docker/logging.py`) tails each container's stdout/stderr on a daemon thread and emits every line through Python `logging` with `extra={"component_id": ...}`. `_LogSink` picks the record up like any other tagged emission and routes it into the same per-component tail. Every backend that owns docker containers — `EngineStack` for the built-in services, `SharedStackRuntimeBackend` for a task-declared shared stack, `PerTrialRuntimeBackend` for per-trial compose stacks — attaches a router per container with the `component_id` matching the row the same backend publishes via `component_registered` / `component_status_changed`, so status and logs address the same row.
+
 ### Namespace convention
 
 - `engine/…` — the run's engine-level infrastructure (Docker services, gRPC runner client, EngineStack).
@@ -90,6 +92,7 @@ Per-attempt `logger.info` at `shared_stack_runtime.py:193` is downgraded to `log
 
 - **Compact happy path.** A cold-Docker startup renders one Components row per service + one for the runner client, all transitioning `starting → healthy`. No per-attempt log lines scroll.
 - **Auto-expand-on-fail.** A component that fails during a run resurfaces the widget with its tail. The operator never hunts for context.
+- **Complete log channel for docker containers.** `LogRouter` fills the tail with real stdout/stderr for every engine service and per-trial container the run owns, keyed on the same `component_id` the reporter uses for status — so the row an operator scrolls to via `[` / `]` and reveals via `l` always shows the container's own output, not just tagged records from the surrounding subsystems.
 - **Pluggable transport.** A future `K8sRuntimeBackend` implements the same events. Zero panel work.
 - **Backwards compatible.** Every existing caller keeps working via the adapter shims. Out-of-tree implementers of `RunDisplayEvents` inherit the no-ops via structural typing.
 - **Debuggable.** `-v` (`--verbose`) surfaces per-attempt DEBUG records for diagnosis. The panel view stays calm at INFO+.

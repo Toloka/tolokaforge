@@ -1208,6 +1208,11 @@ class LiveRunDisplay:
         # so their records surface through the panel instead of being silently
         # dropped once their bypass handler is removed. Removed on ``__exit__``.
         self._added_child_sinks: list[tuple[logging.Logger, _LogSink]] = []
+        # ``_LogSink`` attached to the ``container`` parent logger, paired
+        # with the logger for symmetric detach in ``__exit__``. Docker log
+        # streaming pins ``container`` to ``propagate=False`` so this is
+        # the sole subscriber for records tagged by :class:`LogRouter`.
+        self._container_log_sink: tuple[logging.Logger, _LogSink] | None = None
         # Env-gated diagnostic tap on the real stderr stream, populated
         # in ``__enter__`` when ``TOLOKAFORGE_STDERR_PROBE`` is set.
         self._stderr_probe: _StderrProbe | None = None
@@ -1292,6 +1297,20 @@ class LiveRunDisplay:
             root.removeHandler(handler)
             root.addHandler(sink)
             self._replaced_log_handlers.append((handler, sink))
+        # ``LogRouter`` pins the ``container`` parent logger to
+        # ``propagate=False`` so docker container log records never reach
+        # the root sink installed above. Attach a dedicated ``_LogSink``
+        # here so those records — including any tagged with a
+        # ``component_id`` — land in the panel's component tail buffers.
+        container_logger = logging.getLogger("container")
+        container_sink = _LogSink(
+            print_above=_print_above,
+            formatter=None,
+            buffer=self._log_buffer,
+            route_component_log=self._route_component_log,
+        )
+        container_logger.addHandler(container_sink)
+        self._container_log_sink = (container_logger, container_sink)
         self._sweep_child_bypass_handlers(dangerous_streams, _print_above)
         self._keyboard = _KeyboardListener(self)
         self._keyboard.__enter__()
@@ -1307,6 +1326,10 @@ class LiveRunDisplay:
         for logger_obj, handler in self._removed_child_handlers:
             logger_obj.addHandler(handler)
         self._removed_child_handlers = []
+        if self._container_log_sink is not None:
+            container_logger, container_sink = self._container_log_sink
+            container_logger.removeHandler(container_sink)
+            self._container_log_sink = None
         root = logging.getLogger()
         for original, sink in self._replaced_log_handlers:
             root.removeHandler(sink)

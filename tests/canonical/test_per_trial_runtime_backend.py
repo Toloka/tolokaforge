@@ -93,6 +93,11 @@ class _FakeCompose:
             raise KeyError(service_name)
         return _FakeContainer(self.exposed_services[service_name])
 
+    def get_containers(self) -> list[Any]:
+        # Empty by default — tests that need router construction populate
+        # a purpose-built fake with declared containers.
+        return []
+
 
 class _FakeContainer:
     def __init__(self, ports: dict[int, int]) -> None:
