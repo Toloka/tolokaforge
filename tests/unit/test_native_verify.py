@@ -47,7 +47,7 @@ def test_native_verify_executes_live_server_and_deterministic_replay(tmp_path: P
     report = verify_native_tasks(str(domain / "testcases" / "*" / "task.yaml"))
 
     assert report.passed
-    assert len(report.cases) == 2
+    assert len(report.cases) == 4
     assert all(case.passed for case in report.cases)
 
 

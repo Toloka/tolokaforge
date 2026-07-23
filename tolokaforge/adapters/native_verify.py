@@ -217,7 +217,7 @@ def _append_consumer_surface_checks(case: NativeCaseVerification, task_file: Pat
     case.checks.append(
         NativeVerificationCheck(
             name="grading_component_survival",
-            passed=not dropped,
+            passed=bool(report.components) and not dropped,
             detail=detail or "no positively weighted grading components declared",
         )
     )

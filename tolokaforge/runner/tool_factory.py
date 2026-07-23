@@ -50,6 +50,7 @@ from tolokaforge.runner.rag_client import (
     RAGServiceError,
     SearchResponse,
 )
+from tolokaforge.runner.tool_result import tool_error_message
 from tolokaforge.tools.persistent_shell import (
     BashSession,
     CommandResult,
@@ -611,8 +612,9 @@ class MCPServerToolWrapper(ToolWrapper):
     JSON-RPC requests.
     """
 
-    # Shared server processes (one per script)
-    _servers: dict[str, MCPServerProcess] = {}
+    # One subprocess per native task trial.  All public tool wrappers for the
+    # same trial share it, while separate trials remain state-isolated.
+    _servers: dict[tuple[str, str], MCPServerProcess] = {}
 
     def __init__(
         self,
@@ -628,11 +630,18 @@ class MCPServerToolWrapper(ToolWrapper):
 
     def _get_server(self) -> MCPServerProcess:
         """Get or create the MCP server process."""
-        if self.server_script not in self._servers:
+        key = (self.server_script, self.trial_id)
+        if key not in self._servers:
             server = MCPServerProcess(script_path=self.server_script)
             server.start()
-            self._servers[self.server_script] = server
-        return self._servers[self.server_script]
+            self._servers[key] = server
+        return self._servers[key]
+
+    def close_server(self) -> None:
+        """Stop and forget this trial's shared native MCP subprocess."""
+        server = self._servers.pop((self.server_script, self.trial_id), None)
+        if server is not None:
+            server.stop()
 
     async def execute(self, arguments: dict[str, Any]) -> str:
         """
@@ -659,6 +668,10 @@ class MCPServerToolWrapper(ToolWrapper):
             result = await loop.run_in_executor(
                 None, lambda: server.send_request("tools/call", params)
             )
+
+            error_message = tool_error_message(result)
+            if error_message is not None:
+                raise ToolExecutionError(self.name, error_message)
 
             # MCP server tools may modify state - assume true if successful
             state_changed = True

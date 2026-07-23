@@ -8,9 +8,9 @@ exact surface that rejected the content.
 
 The ``vetchain_ops_seed10`` fixture is the REAL seed-10 workspace that died
 live on 2026-07-17 (bg4t4d0jg): ``testcases/sent_mut_001/grading.yaml``
-authored ``state_checks`` with golden actions but no ``combine`` and no
-``enabled: true``; it passed golden replay and then killed the run at trial
-registration with zero diagnosis.
+authored ``state_checks`` with golden actions but no active grading weight
+and no ``enabled: true``. It passed golden replay despite having no
+production grading power.
 """
 
 from __future__ import annotations
@@ -55,28 +55,23 @@ def test_d16_seed10_grading_fails_citing_the_rejecting_surface() -> None:
     # The old blind spot: machinery replay still passes.
     assert _check(case, "golden_replay").passed
 
-    # All three surfaces were exercised; the report cites WHICH one rejected.
+    # All three production parsers accept the current YAML shape.
     assert _check(case, "consumer_adapter_load").passed
-    core = _check(case, "consumer_core_grading_config")
-    assert not core.passed
-    assert "combine" in core.detail
+    assert _check(case, "consumer_core_grading_config").passed
     assert _check(case, "consumer_runner_translation").passed
 
-    # Active-weight survival: the only weighted component evaluates to nothing
-    # because ``hash`` was authored without ``enabled: true``.
+    # Native verification adds the missing acceptance rule: a testcase with no
+    # positively weighted component has no grading power and must fail closed.
     survival = _check(case, "grading_component_survival")
     assert not survival.passed
-    (component,) = case.grading_components
-    assert component.component == "state_checks"
-    assert component.present and not component.evaluable and not component.survived
-    assert "enabled" in component.reason
+    assert "no positively weighted" in survival.detail
+    assert case.grading_components == []
 
 
-def test_weighted_llm_judge_without_model_ref_is_a_dropped_component(
+def test_legacy_scalar_llm_judge_is_rejected_by_current_consumers(
     tmp_path: Path,
 ) -> None:
-    """core allows model_ref=None, the runner requires it, the adapter omits
-    the judge — the silent drop must surface as a dropped-component finding."""
+    """The retired scalar/output-schema judge shape must fail closed."""
     domain = tmp_path / "notes"
     shutil.copytree(NOTES_DOMAIN, domain)
     grading = domain / "testcases" / "add_first_note" / "grading.yaml"
@@ -109,27 +104,22 @@ llm_judge:
 
     assert not report.passed
     (case,) = report.cases
-    # Every surface individually accepts the content — that is the trap.
+    # Task discovery accepts the YAML location, but both grading consumers
+    # reject the retired judge representation.
     assert _check(case, "consumer_adapter_load").passed
-    assert _check(case, "consumer_core_grading_config").passed
-    assert _check(case, "consumer_runner_translation").passed
+    assert not _check(case, "consumer_core_grading_config").passed
+    assert not _check(case, "consumer_runner_translation").passed
 
     survival = _check(case, "grading_component_survival")
     assert not survival.passed
-    fates = {component.component: component for component in case.grading_components}
-    assert fates["transcript_rules"].survived
-    judge = fates["llm_judge"]
-    assert not judge.present and not judge.survived
-    assert "model_ref" in judge.reason
-    assert judge.weight == 0.5
-    assert judge.declared_in == "source_combine"
+    assert all(not component.survived for component in case.grading_components)
 
 
 def test_fully_valid_case_passes_all_consumer_surfaces() -> None:
     report = verify_native_tasks(str(NOTES_DOMAIN / "testcases" / "*" / "task.yaml"))
 
     assert report.passed
-    assert len(report.cases) == 2
+    assert len(report.cases) == 4
     for case in report.cases:
         for name in CONSUMER_CHECKS:
             assert _check(case, name).passed, name

@@ -7,20 +7,17 @@ consumers, each with a different schema appetite:
    via :meth:`NativeAdapter.get_task` (task discovery, shared-domain merge,
    ``TaskConfig`` validation).
 2. **Core grading parse** — :meth:`NativeAdapter.get_grading_config` parses
-   the core :class:`tolokaforge.core.models.GradingConfig`, which REQUIRES
-   ``combine``. Artifact persistence calls this at run end.
+   the core :class:`tolokaforge.core.models.GradingConfig`. Artifact
+   persistence calls this at run end.
 3. **Runner translation** — :meth:`NativeAdapter.to_task_description`
    translates everything into ``tolokaforge.runner.models`` for trial
-   registration. Optional core fields become required here (e.g.
-   ``llm_judge.model_ref``) and the adapter SILENTLY OMITS components it
-   cannot translate, so a positively weighted component can vanish without
-   any error.
+   registration. Every positively weighted component must remain evaluable
+   after that translation.
 
 A task tree that satisfies only some surfaces passes authoring and golden
-replay, then dies (or silently loses grading power) downstream — the D16
-class: a ``grading.yaml`` with ``state_checks`` but no ``combine`` replayed
-cleanly, then trial registration/persistence rejected it with zero authored
-diagnosis.
+replay, then dies (or silently loses grading power) downstream. Native
+verification also rejects a tree with no positively weighted grading
+component.
 
 This module exercises all three surfaces with the REAL production functions
 (never reimplementations) and additionally checks **active-weight survival**:
@@ -149,7 +146,7 @@ def check_consumer_surfaces(task_file: Path) -> NativeConsumerReport:
             ConsumerSurfaceFinding(
                 surface="core_grading_config",
                 passed=True,
-                detail="core GradingConfig parsed (combine present)",
+                detail="core GradingConfig parsed",
             )
         )
     except Exception as exc:
@@ -329,15 +326,6 @@ def _llm_judge_fate(
 ) -> tuple[bool, bool, str]:
     if runner_grading.llm_judge is not None:
         return True, True, "survived: runner judge configured"
-    source_judge = source_grading.get("llm_judge")
-    if isinstance(source_judge, dict) and not source_judge.get("model_ref"):
-        return (
-            False,
-            False,
-            "llm_judge weighted in source but SILENTLY DROPPED in translation: "
-            "model_ref missing (optional in core models, required by the runner, "
-            "so the adapter omits the judge)",
-        )
     return False, False, "llm_judge absent from the translated runner config"
 
 
