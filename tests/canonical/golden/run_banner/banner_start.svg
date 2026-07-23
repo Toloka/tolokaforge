@@ -1,0 +1,64 @@
+<svg class="rich-terminal" viewBox="0 0 994 98.8" xmlns="http://www.w3.org/2000/svg">
+    <!-- Generated with Rich https://www.textualize.io -->
+    <style>
+
+    @font-face {
+        font-family: "Fira Code";
+        src: local("FiraCode-Regular"),
+                url("https://cdnjs.cloudflare.com/ajax/libs/firacode/6.2.0/woff2/FiraCode-Regular.woff2") format("woff2"),
+                url("https://cdnjs.cloudflare.com/ajax/libs/firacode/6.2.0/woff/FiraCode-Regular.woff") format("woff");
+        font-style: normal;
+        font-weight: 400;
+    }
+    @font-face {
+        font-family: "Fira Code";
+        src: local("FiraCode-Bold"),
+                url("https://cdnjs.cloudflare.com/ajax/libs/firacode/6.2.0/woff2/FiraCode-Bold.woff2") format("woff2"),
+                url("https://cdnjs.cloudflare.com/ajax/libs/firacode/6.2.0/woff/FiraCode-Bold.woff") format("woff");
+        font-style: bold;
+        font-weight: 700;
+    }
+
+    .tolokaforge-run-banner-matrix {
+        font-family: Fira Code, monospace;
+        font-size: 20px;
+        line-height: 24.4px;
+        font-variant-east-asian: full-width;
+    }
+
+    .tolokaforge-run-banner-title {
+        font-size: 18px;
+        font-weight: bold;
+        font-family: arial;
+    }
+
+    .tolokaforge-run-banner-r1 { fill: #666666 }
+.tolokaforge-run-banner-r2 { fill: #000000 }
+.tolokaforge-run-banner-r3 { fill: #0000ff;text-decoration: underline; }
+    </style>
+
+    <defs>
+    <clipPath id="tolokaforge-run-banner-clip-terminal">
+      <rect x="0" y="0" width="975.0" height="47.8" />
+    </clipPath>
+    <clipPath id="tolokaforge-run-banner-line-0">
+    <rect x="0" y="1.5" width="976" height="24.65"/>
+            </clipPath>
+    </defs>
+
+    <rect fill="#ffffff" stroke="rgba(255,255,255,0.35)" stroke-width="1" x="1" y="1" width="992" height="96.8" rx="8"/><text class="tolokaforge-run-banner-title" fill="#000000" text-anchor="middle" x="496" y="27">tolokaforge&#160;run</text>
+            <g transform="translate(26,22)">
+            <circle cx="0" cy="0" r="7" fill="#ff5f57"/>
+            <circle cx="22" cy="0" r="7" fill="#febc2e"/>
+            <circle cx="44" cy="0" r="7" fill="#28c840"/>
+            </g>
+        
+    <g transform="translate(9, 41)" clip-path="url(#tolokaforge-run-banner-clip-terminal)">
+    
+    <g class="tolokaforge-run-banner-matrix">
+    <text class="tolokaforge-run-banner-r1" x="0" y="20" textLength="12.2" clip-path="url(#tolokaforge-run-banner-line-0)">→</text><text class="tolokaforge-run-banner-r2" x="12.2" y="20" textLength="500.2" clip-path="url(#tolokaforge-run-banner-line-0)">&#160;Run:&#160;run_20260715_120000_20260715_120001</text><text class="tolokaforge-run-banner-r2" x="976" y="20" textLength="12.2" clip-path="url(#tolokaforge-run-banner-line-0)">
+</text><text class="tolokaforge-run-banner-r1" x="0" y="44.4" textLength="12.2" clip-path="url(#tolokaforge-run-banner-line-1)">→</text><text class="tolokaforge-run-banner-r2" x="12.2" y="44.4" textLength="109.8" clip-path="url(#tolokaforge-run-banner-line-1)">&#160;Report:&#160;</text><text class="tolokaforge-run-banner-r3" x="122" y="44.4" textLength="744.2" clip-path="url(#tolokaforge-run-banner-line-1)">file:///Users/ci/results/run_20260715_120000_20260715_120001/</text><text class="tolokaforge-run-banner-r2" x="976" y="44.4" textLength="12.2" clip-path="url(#tolokaforge-run-banner-line-1)">
+</text>
+    </g>
+    </g>
+</svg>

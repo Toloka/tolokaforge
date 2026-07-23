@@ -34,10 +34,12 @@ from typing import Any
 
 from pydantic import BaseModel, Field, PrivateAttr
 
+from tolokaforge.core.run_display_events import build_component_id
 from tolokaforge.docker.config import DockerConfig
 from tolokaforge.docker.container import Container, ContainerStatus
 from tolokaforge.docker.health import HealthProbe, HealthProbeError
 from tolokaforge.docker.image import Image
+from tolokaforge.docker.logging import LogRouter
 from tolokaforge.docker.mount import Mount
 from tolokaforge.docker.network import Network
 from tolokaforge.docker.policy import ResourcePolicy
@@ -710,12 +712,15 @@ class EngineStack(BaseModel):
         image = self._images[name]
         container_name = f"{self.prefix}-{name}"
 
+        component_id = build_component_id("engine", "docker.service", name)
+
         # ── Try to reuse an existing healthy container ──────────────
         # Verify the running container's image tag matches the freshly-built
         # tag; otherwise we'd silently keep a stale container after a build_arg
         # change (e.g., enable_playwright on/off).
         existing = self._try_reuse_existing(container_name, svc)
         if existing:
+            reuse = False
             try:
                 running_image = existing.image_tag or ""
                 expected_image = image.full_tag
@@ -728,18 +733,33 @@ class EngineStack(BaseModel):
                     )
                     existing.destroy()
                 else:
-                    self._containers[name] = existing
-                    logger.info("Reusing existing healthy container '%s'", container_name)
-                    if svc.ports:
-                        port_map = self._extract_ports_from_container(container_name, svc)
-                        self._resolved_ports[name] = port_map
-                    return
+                    reuse = True
             except Exception as exc:
                 logger.warning("Failed to verify container image, recreating: %s", exc)
                 try:
                     existing.destroy()
                 except Exception:
                     pass
+
+            if reuse:
+                try:
+                    reuse_router = LogRouter.for_container(
+                        existing,
+                        component_id=component_id,
+                    )
+                    existing.attach_log_router(reuse_router)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to attach LogRouter to reused container %s: %s",
+                        container_name,
+                        exc,
+                    )
+                self._containers[name] = existing
+                logger.info("Reusing existing healthy container '%s'", container_name)
+                if svc.ports:
+                    port_map = self._extract_ports_from_container(container_name, svc)
+                    self._resolved_ports[name] = port_map
+                return
 
         # ── Determine network ───────────────────────────────────────
         network = None
@@ -790,8 +810,12 @@ class EngineStack(BaseModel):
                 if net_name in self._networks:
                     self._networks[net_name].attach(container.container_id)
 
-        # Start container
-        container.start()
+        # Attach a LogRouter so container stdout/stderr streams into the
+        # panel's per-component tail. The component id matches the one
+        # published for this service by the ServiceSnapshot adapter so the
+        # status row and the log tail address the same component.
+        log_router = LogRouter.for_container(container, component_id=component_id)
+        container.start(log_router=log_router)
         self._containers[name] = container
 
         # Track resolved ports

@@ -15,17 +15,23 @@ A benchmarking harness for evaluating tool-using LLM agents. Multi-turn agent/us
 ## Installation
 
 ```bash
-pip install tolokaforge                # core
+pip install tolokaforge                # library only (headless / server)
+pip install "tolokaforge[dx]"          # + terminal CLI (Rich panels, banners)
 pip install "tolokaforge[browser]"     # + Playwright
 pip install "tolokaforge[all]"         # everything
 ```
+
+The `[dx]` extras install the terminal front-end that owns the `tolokaforge` CLI — Rich panels, banners, and the Click command tree. Without them the library still imports (`from tolokaforge.core.orchestrator import Orchestrator`), and the `tolokaforge` console script prints an install hint pointing at `pip install 'tolokaforge[dx]'`. Front-end pluggability is recorded in [ADR-0019](docs/architecture/adr/0019-front-end-plugin-namespace.md).
 
 Dev install:
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 uv sync
+uv tool install --editable '.[dx]' --python 3.12   # exposes `tolokaforge` on PATH
 ```
+
+The last line installs the `tolokaforge` command globally (into `~/.local/bin/`). `--editable` keeps it pointing at your working tree so `git pull` updates it. All examples below assume `tolokaforge` is on PATH; if you skip the install step, prefix every command with `uv run` (e.g. `uv run tolokaforge run …`).
 
 ### GitHub Codespaces
 
@@ -46,12 +52,14 @@ See [Python Package Guide](docs/PYTHON_PACKAGE.md) for all extras and programmat
 cp .env.example .env
 
 # 2. Run one of the included examples
-uv run tolokaforge run --config examples/native/coding/run_configs/dev.yaml
+tolokaforge run --config examples/native/coding/run_configs/dev.yaml
 
 # 3. Check results
-uv run tolokaforge status --run-dir results/coding_example
-uv run tolokaforge analyze --trajectory results/coding_example/trials/<task_id>/0/trajectory.yaml
+tolokaforge status --run-dir results/coding_example
+tolokaforge analyze --trajectory results/coding_example/trials/<task_id>/0/trajectory.yaml
 ```
+
+Running `tolokaforge` with no subcommand drops into an interactive shell with tab-completion of every subcommand and flag — see [docs/CLI.md](docs/CLI.md) § Interactive shell.
 
 That's it. Docker services for browser / mobile / RAG tasks start automatically via
 [`auto_start_services`](tolokaforge/core/models.py) (default: `true`).
@@ -83,7 +91,7 @@ To write your own benchmark, copy a working example as a starting point:
 ```bash
 cp examples/native/coding/run_configs/dev.yaml my_run.yaml
 $EDITOR my_run.yaml         # change model, tasks_glob, output_dir
-uv run tolokaforge run --config my_run.yaml
+tolokaforge run --config my_run.yaml
 ```
 
 Every example under [`examples/`](examples/) ships a `run_config.yaml` next to its
@@ -107,7 +115,7 @@ that stack is scoped:
 Pick per-run via the CLI flag or the config key:
 
 ```bash
-uv run tolokaforge run --config my_run.yaml --runtime per_trial
+tolokaforge run --config my_run.yaml --runtime per_trial
 ```
 
 ```yaml

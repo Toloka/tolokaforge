@@ -285,6 +285,61 @@ connect" (caller's problem).
 
 This means the compose `--wait` gate (which already blocks until every container reports healthy) is the only latency `provision()` adds beyond the compose CLI itself. First RPC call pays the connect cost; subsequent calls hit a warm client.
 
+## Reporting component status
+
+Runtime backends can — and, for user-facing runs, should — report the status of every independently-monitored runtime entity they own (docker services, gRPC clients, containers, future k8s pods) through the [Components monitoring seam](adr/0021-component-monitoring-seam.md). This is what makes the panel's status board work; without it, infrastructure health becomes free-form log lines that scroll into the general stream.
+
+Every reporter follows the same three-step contract:
+
+```python
+from tolokaforge.core.run_display_events import (
+    ComponentSnapshot,
+    RunDisplayEvents,
+    build_component_id,
+)
+
+class MyBackend:
+    def __init__(self, *, events: RunDisplayEvents | None = None) -> None:
+        self._events = events if events is not None else _NULL_EVENTS
+
+    def start_service(self, name: str) -> None:
+        cid = build_component_id("engine", "docker.service", name)
+        # 1. Register at first-sight.
+        self._events.component_registered(snapshot=ComponentSnapshot(
+            id=cid, kind="docker.service", phase="starting",
+            detail="waiting for health probe", owner="engine",
+        ))
+        try:
+            self._probe_health()
+            # 2. Terminal status.
+            self._events.component_status_changed(snapshot=ComponentSnapshot(
+                id=cid, kind="docker.service", phase="healthy",
+                detail="port 50051 reachable", owner="engine",
+            ))
+        except HealthProbeFailed as exc:
+            # 3. Unhealthy → auto-expand log tail.
+            self._events.component_status_changed(snapshot=ComponentSnapshot(
+                id=cid, kind="docker.service", phase="unhealthy",
+                detail=str(exc), owner="engine",
+            ))
+            self._events.component_log_appended(
+                component_id=cid, level="ERROR",
+                message=f"health probe failed: {exc}", ts=time.time(),
+            )
+            raise
+```
+
+Guidelines:
+
+- **One row per `id`.** Reuse the same id string on every update — the panel keys on it and updates the row in place. Per-attempt polling loops fire `component_status_changed` with a fresh `detail` string; no log line scrolls.
+- **Tag existing `logger.*` calls with `extra={"component_id": ...}`.** This is the generic escape hatch — any subsystem that already emits log records (including WARNING / ERROR ones) can opt into the component-tail visualisation by adding the tag. `_LogSink` inspects `record.component_id` and routes tagged records to the component's tail buffer instead of the general ring + `print_above` channel. The log record keeps its real level (external log processors, `-v` inspection, post-mortem artefacts all see it correctly); only the panel-side visualisation is switched.
+- **Docker containers stream their stdout/stderr into the component tail automatically via `LogRouter`** — see `tolokaforge/docker/logging.py`. Reporters that own docker containers attach one router per container and set `component_id` to the same id the status snapshot uses — `engine/docker.service/<name>` for engine services, `trial/<trial_id>/container/<service>` for per-trial containers. The router emits each stdout/stderr line through Python `logging` tagged with that `component_id`, and `_LogSink` routes it into the tail like any other tagged record. `Container.start(log_router=…)` and `Container.attach_log_router(...)` are the wiring surfaces; `EngineStack`, `SharedStackRuntimeBackend`, and `PerTrialRuntimeBackend` are the reference callers.
+- **Use `component_log_appended` for records not already on the `logging` bus.** Direct-Python events (probe outcomes, correlation ids from a third-party SDK) that never went through `logger.*` can be pushed straight into the tail via the event method.
+- **Namespace by ownership.** `engine/…` for run-level infrastructure; `trial/<trial_id>/…` for per-trial substrate; `worker/<n>/…` for future worker-thread components. Any transport-native namespace (e.g. `k8s/<pod-name>`) is up to the reporter.
+- **`events=None` is legal.** Backends constructed outside the orchestrator (tests, scripts) fall through to `_NULL_EVENTS` and behave as pre-M11.2 — no events, no reporting overhead.
+
+The reference wiring lives in `tolokaforge/core/shared_stack_runtime.py`. `GrpcRunnerClient.connect()` reports the retry loop as one `engine/grpc.client/runner` row that transitions `starting → healthy` (or `starting → unhealthy` on timeout). Every `logger.*` call in the retry loop and `health_check()` carries `extra={"component_id": "engine/grpc.client/runner"}`, so `_LogSink` compacts the per-attempt ERROR / INFO records into the tail beneath that row instead of scrolling them above the panel. Legacy callers that only fire `phase_changed(services=[…])` populate the widget via the adapter shim in `tolokaforge/dx/live_panel.py:_service_to_component`.
+
 ## Teardown + cleanup
 
 `teardown(handle)` is idempotent, per ADR-0010. It performs, in order:

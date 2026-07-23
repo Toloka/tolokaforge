@@ -34,7 +34,7 @@ def _write_yaml(path: Path, data: dict) -> None:
 def _drive_cli_loader(config_path: Path) -> RunConfig:
     """Replay the sequence the CLI uses. Returns the effective RunConfig.
 
-    Kept in sync with ``tolokaforge.cli.main.run``:
+    Kept in sync with ``tolokaforge.dx.cli.main.run``:
     1. Read the YAML at *config_path*.
     2. Detect the enclosing project layout.
     3. Load ``project.yaml`` or synthesise a default.

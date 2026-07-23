@@ -14,6 +14,7 @@ bumped and this document is updated in the same commit.
 
 ```
 {output_dir}/
+├── LIMIT_HIT.json                          ← only when a budget hit cut the run short
 ├── services/                              ← run-level per-service compose logs (shared-stack materialise failure only)
 │   ├── {service}.log
 │   └── _capture.yaml                      ← manifest (capture_reason: materialise_error)
@@ -56,6 +57,34 @@ rolled up run-wide in `aggregate.json` → `captured_service_logs` (see
 * Every trial bundle is **self-contained** — every artifact needed to
   audit the trial lives inside a single `trials/{task_id}/{trial_index}/`
   directory. There is no results-root sidecar tree.
+
+## `LIMIT_HIT.json`
+
+Written under `{output_dir}/` on the first budget crossing during a
+`tolokaforge run` — cost, wall-time, or terminated-trial count — and
+absent on natural completion. Records which budget fired first, the
+configured threshold, the counter's value at the moment of the hit, and
+the time the hit was detected. Read by the CLI after `Orchestrator.run()`
+returns to shape the `⏸ Run stopped (<reason>)` end banner (see
+[`docs/CLI.md`](CLI.md) § Cost, time, and sample limits).
+
+```json
+{
+  "which": "cost",
+  "threshold": 5.0,
+  "value_at_hit": 5.03,
+  "timestamp": "2026-07-15T12:34:56Z"
+}
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `which` | `"cost"` \| `"time"` \| `"sample"` | Which budget crossed its threshold first. Additional values are rejected by the writer. |
+| `threshold` | float | The limit as configured — `--cost-limit` USD or `--time-limit` seconds. Numeric type is `float` for uniform on-disk shape; integer limits round-trip losslessly. |
+| `value_at_hit` | float | The counter's value at the moment of the hit. May exceed `threshold` on the last increment (e.g. a $0.02 trial pushing spend from $4.99 to $5.01 records `value_at_hit=5.01`). |
+| `timestamp` | ISO 8601 UTC string | When the hit was detected. Formatted `YYYY-MM-DDTHH:MM:SSZ` with an explicit `Z` suffix. |
+
+Written via [`tolokaforge.core.budgets.write_limit_hit_marker`](../tolokaforge/core/budgets.py); the on-disk shape is locked by the `LimitHitMarker` Pydantic model (`extra="forbid"`). A resumed run that hits a fresh limit overwrites an existing marker — the file always reflects the current run state, not a history.
 
 ## `trials/{task_id}/{trial_index}/tools_schemas.yaml`
 

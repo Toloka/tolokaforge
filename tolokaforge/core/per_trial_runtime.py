@@ -53,10 +53,11 @@ from tolokaforge.core.compose_materialisation import (
     write_capture_manifest,
 )
 from tolokaforge.core.models import SeedRef
-from tolokaforge.core.run_display_events import ContainerSnapshot
+from tolokaforge.core.run_display_events import ContainerSnapshot, build_component_id
 from tolokaforge.core.runtime import EnvHandle, IsolationMode, ProvisionError
 from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient, RunnerClient
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, EnvEndpoints
+from tolokaforge.docker.logging import LogRouter
 from tolokaforge.runner.models import EnvironmentManifest
 
 if TYPE_CHECKING:
@@ -91,6 +92,14 @@ class _LocalEnvHandle:
     Read by :meth:`PerTrialRuntimeBackend.capture_service_logs` so the
     trial-body-failure path captures every service without re-parsing the
     (already torn-down) manifest."""
+    log_routers: tuple[LogRouter, ...] = ()
+    """Per-container ``LogRouter`` snapshot, one per compose container
+    that exposed a docker ``ID`` at provision time. Empty tuple when
+    every container failed to yield a router (compose ran but router
+    construction raised for each container) or when the compose stack
+    was empty. :meth:`PerTrialRuntimeBackend.teardown` stops every
+    router BEFORE ``shutdown_compose`` so the streaming threads exit
+    before the docker log streams are severed."""
 
 
 @dataclass
@@ -176,7 +185,13 @@ class PerTrialRuntimeBackend:
         del timeout, retry_interval
 
     def close(self) -> None:
-        """Close every connected per-trial runner client. Idempotent."""
+        """Close every connected per-trial runner client. Idempotent.
+
+        Per-container ``LogRouter`` teardown lives on :meth:`teardown`,
+        not here: the orchestrator's per-trial ``finally`` calls
+        ``teardown`` on every provisioned handle, so no handle-level
+        router bookkeeping is needed at the class level.
+        """
         for trial_id in list(self._connected_trials):
             client = self._clients.get(trial_id)
             if client is None:
@@ -291,6 +306,8 @@ class PerTrialRuntimeBackend:
         # to first per-trial RPC use — see :attr:`_connected_trials`.
         client = GrpcRunnerClient(runner_address=f"{runner_host}:{runner_host_port}")
         self._clients[spec.trial_id] = client
+
+        log_routers = self._attach_log_routers(spec.trial_id, compose)
         return _LocalEnvHandle(
             trial_id=spec.trial_id,
             compose=compose,
@@ -299,6 +316,7 @@ class PerTrialRuntimeBackend:
             temp_dir=temp_dir,
             endpoints=endpoints,
             service_names=service_names,
+            log_routers=log_routers,
         )
 
     def await_ready(self, handle: EnvHandle) -> None:
@@ -334,6 +352,16 @@ class PerTrialRuntimeBackend:
             except Exception:  # noqa: BLE001 — best-effort
                 logger.exception(
                     "PerTrialRuntimeBackend.teardown: runner client close failed for %s",
+                    handle.trial_id,
+                )
+        for router in handle.log_routers:
+            try:
+                router.stop()
+            except Exception:  # noqa: BLE001 — teardown must never mask compose cleanup
+                logger.exception(
+                    "PerTrialRuntimeBackend.teardown: log router stop failed for "
+                    "container %r (trial %s)",
+                    router.container_name,
                     handle.trial_id,
                 )
         shutdown_compose(handle.compose)
@@ -502,6 +530,48 @@ class PerTrialRuntimeBackend:
                 ) from exc
 
     # ---- Internal helpers ----
+
+    def _attach_log_routers(self, trial_id: str, compose: DockerCompose) -> tuple[LogRouter, ...]:
+        """Build and start a :class:`LogRouter` per compose container.
+
+        Called after ``compose.start()``, reset recipes, and endpoint
+        resolution succeed — the stack is already up and every provision
+        failure path above this point has already run its cleanup, so a
+        router-only failure here must NOT abort provisioning. Each router
+        is constructed and started inside its own ``try/except`` so a
+        single failure logs and is skipped while sibling routers still
+        attach.
+
+        Component id mirrors what :func:`_container_to_component`
+        publishes for the same container so the status row and the log
+        tail share one component id.
+        """
+        routers: list[LogRouter] = []
+        for container in compose.get_containers():
+            if not container.ID:
+                continue
+            try:
+                router = LogRouter(
+                    container_name=container.Name or container.Service or "unknown",
+                    container_id=container.ID,
+                    component_id=build_component_id(
+                        f"trial/{trial_id}",
+                        "container",
+                        container.Service or "unknown",
+                    ),
+                )
+                router.start()
+            except Exception:  # noqa: BLE001 — router failure must not abort provisioning
+                logger.exception(
+                    "PerTrialRuntimeBackend: failed to attach log router for "
+                    "container %r (service=%r, trial=%s)",
+                    container.Name,
+                    container.Service,
+                    trial_id,
+                )
+                continue
+            routers.append(router)
+        return tuple(routers)
 
     def _capture_provision_failure_logs(
         self,

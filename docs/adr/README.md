@@ -41,10 +41,12 @@ Day-to-day implementation choices that don't affect the system shape do *not* ne
 | [0008](0008-conductor-protocol.md) | `Conductor` Protocol — per-trial executor seam | Accepted |
 | [0009](0009-environment-manifest.md) | `EnvironmentManifest` — typed schema for per-trial multicontainer environments | Accepted |
 | [0010](0010-runtime-backend-provisioning-contract.md) | `RuntimeBackend` provisioning contract — `provision` / `await_ready` / `endpoints` / `teardown` | Accepted |
-| [0011](0011-seam-and-declaration-conventions.md) | Seam-definition and data-declaration conventions for new components | Proposed |
+| [0011](0011-seam-and-declaration-conventions.md) | Seam-definition and data-declaration conventions for new components | Accepted |
 | [0013](0013-runtime-backend-per-trial-rpc-methods.md) | `RuntimeBackend` owns per-trial RPC methods — collapse `DockerRunnerAdapter` | Accepted |
 | [0014](0014-trial-grader-protocol.md) | `TrialGrader` Protocol — swappable trial-grading strategy | Accepted |
 | [0015](0015-trial-executor-protocol.md) | `TrialExecutor` Protocol — per-trial substrate-lifecycle seam | Accepted |
 | [0016](0016-runtime-backend-comparison.md) | Runtime backend comparison: `shared` vs `per_trial` (lifecycle axis) | Accepted |
 | [0017](0017-persistent-agent-shell-and-editor-tools.md) | Persistent agent shell + first-class editor tools + tool-lifecycle evolution | Proposed |
 | [0018](0018-multi-container-under-shared-runtime.md) | Multi-container capability under shared runtime (composition axis) | Accepted |
+| [0019](0019-front-end-plugin-namespace.md) | Front-end pluggability via `tolokaforge.dx` | Accepted |
+| [0021](0021-component-monitoring-seam.md) | Component-oriented monitoring — `ComponentSnapshot` / `component_*` events, panel widget with auto-expand-on-fail | Accepted |

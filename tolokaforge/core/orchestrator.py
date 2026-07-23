@@ -12,6 +12,12 @@ from pathlib import Path
 from typing import Any
 
 from tolokaforge.adapters import BaseAdapter, ensure_registered_adapter, get_adapter
+from tolokaforge.core.budgets import (
+    BudgetHit,
+    CompositeBudget,
+    CostBudget,
+    write_limit_hit_marker,
+)
 from tolokaforge.core.compose_materialisation import LogCaptureConfig
 from tolokaforge.core.conductor import (
     Conductor,
@@ -164,6 +170,31 @@ def _run_needs_full_stack(tasks: list[Any], stack_requirements: Any) -> bool:
     return _tasks_need_full_stack(tasks)
 
 
+def resolve_run_directory(base_output_dir: str | Path) -> tuple[str, Path]:
+    """Return ``(run_id, output_dir)`` for a run rooted at ``base_output_dir``.
+
+    ``base_output_dir`` is treated as a base name — the returned
+    ``output_dir`` is a sibling under ``Path(base_output_dir).parent``
+    named ``<basename>_<YYYYMMDD_HHMMSS>``. The timestamp is sourced from
+    :func:`datetime.now` at call time, so successive invocations produce
+    distinct paths (within one-second resolution). The returned
+    ``output_dir`` is NOT ``.resolve()``d — banner rendering and disk I/O
+    apply their own resolution.
+
+    Raises :class:`ValueError` with a message naming ``evaluation.output_dir``
+    when the basename is empty (``.``, ``/``, ``""``).
+    """
+    base_name = Path(base_output_dir).name
+    if not base_name:
+        raise ValueError(
+            f"run requires evaluation.output_dir with a non-empty basename; got {base_output_dir!r}"
+        )
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_id = f"{base_name}_{timestamp}"
+    output_dir = Path(base_output_dir).parent / run_id
+    return run_id, output_dir
+
+
 _DEFAULT_DB_SERVICE_URL = "http://tolokaforge-db-service:8000"
 """Runner-perspective DB service URL the docker stack injects into the runner
 container at start (`tolokaforge/docker/stacks/core.py`). The orchestrator
@@ -249,14 +280,19 @@ def _build_env_endpoints(runner_address: str) -> EnvEndpoints:
 class OrchestratorDeps:
     """Pluggable seams the :class:`Orchestrator` delegates to.
 
-    Packs the four independent injection points (per-trial artifact
-    writer, run-level aggregate writer, execution runtime, per-trial
-    executor factory) into a single frozen record so the constructor
-    doesn't grow a kwarg per seam. Default construction preserves the
-    legacy behaviour: fresh :class:`FileArtifactWriter` /
-    :class:`FileAggregateWriter` defaults, no runtime backend override
-    (``run()`` builds :class:`DockerRuntime`), no factory override
-    (``_build_conductor`` builds :class:`InProcessConductor`).
+    Packs the injection points into a single frozen record so the
+    constructor doesn't grow a kwarg per seam. Default construction
+    preserves the legacy behaviour: fresh :class:`FileArtifactWriter`
+    / :class:`FileAggregateWriter` defaults, no runtime backend override,
+    no conductor factory override, no budget, no agent-client factory
+    (``run()`` constructs a bare :class:`LLMClient` for the agent).
+
+    ``agent_client_factory`` — when set, called with the resolved agent
+    :class:`ModelConfig` to produce the wire client. The CLI wires
+    :class:`FallbackLLMClient` through this seam when
+    ``--fallback-models`` is passed. The returned object must
+    duck-type :class:`LLMClient` (``config``, ``capabilities``,
+    ``generate``) — the conductor reads all three.
     """
 
     artifact_writer: TrialArtifactWriter = field(default_factory=FileArtifactWriter)
@@ -264,6 +300,8 @@ class OrchestratorDeps:
     runtime_backend: RuntimeBackend | None = None
     conductor_factory: ConductorFactory | None = None
     events: RunDisplayEvents = field(default_factory=_NullRunDisplayEvents)
+    budget: CompositeBudget | None = None
+    agent_client_factory: Callable[[ModelConfig], LLMClient] | None = None
 
 
 class Orchestrator:
@@ -313,6 +351,22 @@ class Orchestrator:
         self._injected_runtime_backend: RuntimeBackend | None = resolved_deps.runtime_backend
         self._conductor_factory: ConductorFactory | None = resolved_deps.conductor_factory
         self._events: RunDisplayEvents = resolved_deps.events
+        # Budget composite driving the graceful-shutdown path. ``None``
+        # means "no CLI budget flag AND no legacy ``compute.max_budget_usd``";
+        # ``run()`` promotes the legacy field to a :class:`CostBudget`
+        # composite when it fires so both entry points share the same
+        # code path.
+        self._injected_budget: CompositeBudget | None = resolved_deps.budget
+        # Factory the CLI wires when ``--fallback-models`` is passed;
+        # produces the agent-side wire client at ``run()`` / ``run_worker()``
+        # time. ``None`` means "build a bare :class:`LLMClient`".
+        self._agent_client_factory: Callable[[ModelConfig], LLMClient] | None = (
+            resolved_deps.agent_client_factory
+        )
+        # Set to ``"<cost|time|sample> limit"`` on the first budget hit
+        # and read by the CLI to shape the run-end banner. ``None`` for
+        # runs that reached natural completion.
+        self._stopped_reason: str | None = None
         # Per-run cache of resolved ``TaskDescription`` objects keyed by
         # task_id. ``adapter.to_task_description()`` reads the system
         # prompt, tool schemas, fixtures, and base64-bundles the task_dir
@@ -329,21 +383,11 @@ class Orchestrator:
         log_level = logging.DEBUG if verbose else logging.INFO
         self.logger = get_logger("orchestrator", level=log_level, strict=strict)
 
-        # Configure standard Python logging for Docker modules so their
-        # progress messages (image building, container startup, health checks)
-        # are visible to the user.  These modules use logging.getLogger(__name__)
-        # which defaults to WARNING without explicit configuration.
-        docker_logger = logging.getLogger("tolokaforge.docker")
-        if not docker_logger.handlers:
-            handler = logging.StreamHandler()
-            handler.setFormatter(
-                logging.Formatter(
-                    "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-                    datefmt="%Y-%m-%d %H:%M:%S",
-                )
-            )
-            docker_logger.addHandler(handler)
-        docker_logger.setLevel(log_level)
+        # Docker submodules use `logging.getLogger(__name__)`; the root
+        # handler installed by `configure_root_logging` renders them via
+        # propagation. Set the namespace threshold so INFO-level progress
+        # messages emit even when root sits at WARNING.
+        logging.getLogger("tolokaforge.docker").setLevel(log_level)
 
     def _create_adapter(self) -> BaseAdapter:
         """Create adapter based on configuration"""
@@ -393,6 +437,35 @@ class Orchestrator:
         self.logger.info("Creating adapter", type=adapter_type, params=params)
         return get_adapter(adapter_type, params)
 
+    def _resolve_budget(self, *, initial_cost_usd: float) -> CompositeBudget | None:
+        """Return the budget composite driving graceful shutdown.
+
+        Preference order:
+
+        1. ``deps.budget`` — a composite the CLI or a test built with all
+           active limits and its own cost seed.
+        2. Legacy ``compute.max_budget_usd`` — promoted to a single
+           :class:`CostBudget` seeded with ``initial_cost_usd`` (spend
+           already recorded under the run directory), so resumed runs
+           re-enter with prior cost counted.
+
+        Returns ``None`` when neither is set — the wait loop skips the
+        budget branch entirely.
+        """
+        if self._injected_budget is not None:
+            return self._injected_budget
+        legacy_cost_limit = self.config.effective_max_budget_usd
+        if legacy_cost_limit is None:
+            return None
+        return CompositeBudget(
+            [
+                CostBudget(
+                    limit_usd=legacy_cost_limit,
+                    initial_cost_usd=initial_cost_usd,
+                )
+            ]
+        )
+
     @staticmethod
     def _collect_existing_cost(output_dir: Path) -> float:
         """Aggregate already-recorded trial cost from output artifacts."""
@@ -413,6 +486,34 @@ class Orchestrator:
         return total_cost
 
     @staticmethod
+    def _is_auth_failure(trajectory: Trajectory) -> bool:
+        """Return True when a trajectory terminated on a provider auth error.
+
+        Auth errors are deterministic — the same request will fail the same
+        way on retry — so they classify as non-retryable regardless of the
+        broader ``API_ERROR`` bucket. Signal comes from the trailing SYSTEM
+        message the loop appends on ``TerminationReason.API_ERROR``:
+        ``"API error: LLM API call failed: … AuthenticationError …"``.
+        """
+        if trajectory.termination_reason != TerminationReason.API_ERROR:
+            return False
+        messages = getattr(trajectory, "messages", None) or []
+        for msg in reversed(messages):
+            content = getattr(msg, "content", None)
+            if not isinstance(content, str):
+                continue
+            # Match litellm-wrapped provider auth strings.
+            if "AuthenticationError" in content:
+                return True
+            if '"code":401' in content or '"code": 401' in content:
+                return True
+            if '"code":403' in content or '"code": 403' in content:
+                return True
+            # Only inspect the most recent narrative-carrying message.
+            break
+        return False
+
+    @staticmethod
     def _is_retryable_trajectory(trajectory: Trajectory) -> bool:
         """Classify retryable infrastructure failures.
 
@@ -425,8 +526,14 @@ class Orchestrator:
         daemon flake) from deterministic config faults, this branch will
         gate on that finer signal; today, fail-fast preserves diagnostic
         clarity and matches AGENTS.md rule 1.
+
+        Auth-shaped ``API_ERROR`` trajectories short-circuit to
+        non-retryable via :meth:`_is_auth_failure` — bad keys are
+        deterministic across attempts.
         """
         if trajectory.termination_reason == TerminationReason.PROVISION_ERROR:
+            return False
+        if Orchestrator._is_auth_failure(trajectory):
             return False
         if trajectory.status in (TrialStatus.ERROR, TrialStatus.TIMEOUT):
             return True
@@ -677,60 +784,6 @@ class Orchestrator:
             return override
         return self._select_backend_from_tasks()
 
-    def _admit_capabilities(self, runtime_backend: RuntimeBackend) -> None:
-        """Refuse to start the run if ``compute.capabilities`` names any
-        capability the selected backend does not advertise.
-
-        Read from ``config.compute.capabilities`` (empty when the run
-        config omits the ``compute`` block or its capabilities list).
-        The admission gate itself lives in
-        :mod:`tolokaforge.core.backend_capabilities`.
-        """
-        from tolokaforge.core.backend_capabilities import check_admission
-
-        requested: list[Any] = []
-        if self.config.compute is not None:
-            requested = list(self.config.compute.capabilities)
-        advertised = getattr(runtime_backend, "advertised_capabilities", frozenset())
-        check_admission(requested, advertised)
-
-    def _emit_environment_identities(self) -> None:
-        """Log the sha256 identity of every task's resolved environment
-        manifest at info level.
-
-        Observability only — the digest is stable over the compose file
-        bytes, ``stack_inputs``, the per-service isolation map, and the
-        referenced seed digests, so equal manifests emit equal
-        identities across runs. Consumers of the identity for
-        materialisation dedup land later per the public roadmap.
-        """
-        from tolokaforge.core.env_identity import resolve_environment_identity
-
-        if self.adapter is None:
-            return
-        seed_digests: dict[str, str] = {}
-        if self.project is not None and self.project.assets is not None:
-            seed_digests = {name: seed.digest for name, seed in self.project.assets.seeds.items()}
-        for task in self.tasks:
-            task_desc = self._task_desc_cache.get(task.task_id)
-            if task_desc is None:
-                task_desc = self.adapter.to_task_description(task.task_id)
-                self._task_desc_cache[task.task_id] = task_desc
-            manifest = task_desc.environment_manifest
-            if manifest is None:
-                continue
-            referenced_digests = {
-                spec.reset.seed: seed_digests[spec.reset.seed]
-                for spec in manifest.services.values()
-                if spec.reset is not None and spec.reset.seed in seed_digests
-            }
-            identity = resolve_environment_identity(manifest, referenced_digests)
-            self.logger.info(
-                "run.environment_identity",
-                task_id=task.task_id,
-                environment_identity=identity,
-            )
-
     def _build_log_capture(self, output_dir: Path) -> LogCaptureConfig:
         """Build the run's per-service log-capture policy from ``compute``.
 
@@ -763,6 +816,10 @@ class Orchestrator:
         passed the shared backend materialises the task-declared compose
         stack once per run at ``connect`` time; without it the backend
         connects to the built-in shared engine at ``runner_address``.
+
+        ``log_capture`` is threaded onto the per-trial backend so its
+        provision-failure path can capture per-service logs before
+        teardown.
 
         Called when no backend is injected via
         ``Orchestrator.__init__(runtime_backend=...)``.
@@ -799,11 +856,13 @@ class Orchestrator:
                 run_id=run_id,
                 seeds=seeds,
                 log_capture=log_capture,
+                events=self._events,
             )
         return SharedStackRuntimeBackend(
             runner_address=runner_address,
             endpoints=_build_env_endpoints(runner_address),
             seeds=seeds,
+            events=self._events,
         )
 
     def _project_seed_registry(self) -> dict[str, Any]:
@@ -891,6 +950,11 @@ class Orchestrator:
         ``trial_executor.execute`` to the worker pool in place of
         ``conductor.run``; the bracket runs on the worker thread so
         provisioning parallelism equals worker count.
+
+        Threads :attr:`_events` in so the executor can fire
+        ``trial_provisioned`` after :meth:`RuntimeBackend.await_ready`
+        returns — the runtime is the only place with a handle on the
+        materialised infrastructure snapshot.
 
         ``output_dir`` is the run's output root, threaded so the executor can
         amend a trial's ``metrics.yaml`` with host-side per-trial values.
@@ -1186,27 +1250,35 @@ class Orchestrator:
             )
         return None
 
-    def run(self) -> None:
-        """Execute all tasks with configured trials"""
-        # The canonical ``run_id`` is computed here once and threaded
-        # through the run state, the engine run-state file (so workers
-        # read the same value), and every ``TrialSpec`` via
-        # ``_build_trial_spec``. ``run()`` treats
-        # ``config.evaluation.output_dir`` as a base name and appends a
-        # timestamp (so successive runs land in sibling directories);
-        # ``prepare_run`` treats its ``output_dir`` arg as the fully-
-        # qualified run directory verbatim. Symmetric fail-fast: an empty
-        # basename (``.``, ``/``) is rejected before any disk writes.
-        base_output_dir = self.config.evaluation.output_dir
-        base_name = Path(base_output_dir).name
-        if not base_name:
+    def run(
+        self,
+        *,
+        run_id: str | None = None,
+        output_dir: Path | None = None,
+    ) -> Path:
+        """Execute all tasks with configured trials.
+
+        Returns the resolved absolute path of the timestamped run directory
+        created by this invocation. The path is the same directory the
+        orchestrator wrote every trial artifact, report, and run-state file
+        into; callers publish or open it after the run completes.
+
+        Callers that need to know the run directory before ``run()`` returns
+        (e.g. the CLI, which prints a banner naming the directory before the
+        run begins) resolve it via :func:`resolve_run_directory` and pass the
+        pair back in via ``run_id`` and ``output_dir``. When both are
+        ``None``, ``run()`` calls :func:`resolve_run_directory` itself. Both
+        must be supplied together — supplying exactly one raises
+        :class:`ValueError`.
+        """
+        if (run_id is None) != (output_dir is None):
+            missing = "output_dir" if run_id is not None else "run_id"
             raise ValueError(
-                f"run requires evaluation.output_dir with a non-empty basename; "
-                f"got {base_output_dir!r}"
+                f"Orchestrator.run requires run_id and output_dir together; missing {missing}"
             )
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        run_id = f"{base_name}_{timestamp}"
-        output_dir = Path(base_output_dir).parent / run_id
+        if run_id is None:
+            run_id, output_dir = resolve_run_directory(self.config.evaluation.output_dir)
+        assert output_dir is not None
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # Ensure TypeSense is started and tasks are loaded
@@ -1287,8 +1359,14 @@ class Orchestrator:
             judge_model=(f"{judge_config.provider}/{judge_config.name}" if judge_config else None),
         )
 
-        # Instantiate agent client in orchestrator process
-        agent_client = LLMClient(agent_config)
+        # Instantiate agent client in orchestrator process. The factory
+        # seam routes through :class:`FallbackLLMClient` when the CLI
+        # wired ``--fallback-models``; otherwise the bare client ships.
+        agent_client = (
+            self._agent_client_factory(agent_config)
+            if self._agent_client_factory is not None
+            else LLMClient(agent_config)
+        )
         request_limiter: GlobalRateLimiter | None = None
         if self.config.effective_max_requests_per_second is not None:
             request_limiter = GlobalRateLimiter(self.config.effective_max_requests_per_second)
@@ -1350,7 +1428,7 @@ class Orchestrator:
                     self.logger.info("Creating service stack (db-service + runner)")
                     stack_factory = core_stack
                 service_stack = stack_factory(**core_stack_kwargs)
-                per_trial_mode = self._resolve_effective_runtime_choice() == "per_trial"
+                per_trial_mode = self.config.orchestrator.runtime == "per_trial"
                 # In per_trial mode OR shared+env_manifest mode the built-in engine
                 # containers go unused — the task-declared compose stack owns the
                 # runner + db-service. The engine images still need to be BUILT so
@@ -1362,8 +1440,24 @@ class Orchestrator:
                         "Preparing Docker engine images (task-declared-stack mode: "
                         "images built + aliased, built-in containers not started)..."
                     )
+                    # Fire the same phase_changed pair the shared branch fires,
+                    # so the Components widget populates during the (long)
+                    # image-build window instead of staying empty until the
+                    # first trial provisions. Snapshots carry declared status
+                    # only — the engine containers themselves are never
+                    # started in task-declared-stack mode.
+                    self._events.phase_changed(
+                        phase="starting_services",
+                        detail="building engine images",
+                        services=_declared_engine_service_snapshots(service_stack),
+                    )
                     service_stack.build_and_prepare()
                     self._ensure_engine_image_local_aliases(service_stack)
+                    self._events.phase_changed(
+                        phase="services_ready",
+                        detail="engine images ready (per-trial stacks own runtime)",
+                        services=_declared_engine_service_snapshots(service_stack),
+                    )
                     runner_address = None
                     self.logger.info("EngineStack prepared (images ready, no containers started)")
                 else:
@@ -1414,7 +1508,6 @@ class Orchestrator:
         if runner_address is None:
             runner_address = os.environ.get("EXECUTOR_ADDRESS", "executor:50051")
 
-        log_capture = self._build_log_capture(output_dir)
         runtime_backend: RuntimeBackend
         if self._injected_runtime_backend is not None:
             runtime_backend = self._injected_runtime_backend
@@ -1423,17 +1516,14 @@ class Orchestrator:
                 runner_address,
                 env_manifest=run_env_manifest,
                 run_id=run_id,
-                log_capture=log_capture,
             )
         self._events.phase_changed(phase="connecting_runtime")
         runtime_backend.connect()
         self.logger.info("Runtime backend connected")
         self._verify_isolation_compatibility(runtime_backend)
-        self._admit_capabilities(runtime_backend)
-        self._emit_environment_identities()
 
         env_endpoints = _build_env_endpoints(runner_address)
-        if self._resolve_effective_runtime_choice() == "per_trial" or run_env_manifest is not None:
+        if self.config.orchestrator.runtime == "per_trial" or run_env_manifest is not None:
             # Per-trial backend resolves fresh endpoints per trial via
             # ``endpoints(handle)``. Shared+env_manifest resolves them once
             # at connect time from the materialised stack. In both cases the
@@ -1486,19 +1576,26 @@ class Orchestrator:
         if recovered > 0:
             self.logger.warning("Recovered stale in-flight attempts", recovered=recovered)
 
-        budget_limit = self.config.effective_max_budget_usd
         total_cost_usd = self._collect_existing_cost(output_dir)
-        budget_exhausted = False
         total_trials_scheduled = len(pending_trials)
         if total_cost_usd > 0:
             self.logger.info("Loaded existing run spend", total_cost_usd=round(total_cost_usd, 6))
-        if budget_limit is not None and total_cost_usd >= budget_limit:
-            budget_exhausted = True
-            self.logger.warning(
-                "Budget already exhausted at run start; no trials will be scheduled",
-                budget_limit_usd=budget_limit,
-                total_cost_usd=round(total_cost_usd, 6),
-            )
+        budget = self._resolve_budget(initial_cost_usd=total_cost_usd)
+        budget_exhausted = False
+        last_hit: BudgetHit | None = None
+        if budget is not None:
+            hit = budget.poll()
+            if hit is not None:
+                budget_exhausted = True
+                last_hit = hit
+                self._stopped_reason = f"{hit.which} limit"
+                write_limit_hit_marker(output_dir, hit)
+                self.logger.warning(
+                    "Budget already exhausted at run start; no trials will be scheduled",
+                    limit_kind=hit.which,
+                    threshold=hit.threshold,
+                    value_at_hit=round(hit.value_at_hit, 6),
+                )
 
         lease_seconds = max(300, self.config.orchestrator.timeouts.episode_s * 2)
         lease_owner = f"orchestrator:{os.getpid()}"
@@ -1591,6 +1688,8 @@ class Orchestrator:
                         self.results.append(trajectory)
                         trial_cost = trajectory.metrics.cost_usd or 0.0
                         total_cost_usd += trial_cost
+                        if budget is not None:
+                            budget.record_generation_cost(trial_cost)
 
                         # Retry transient infra failures based on queue retry policy.
                         if self._is_retryable_trajectory(trajectory):
@@ -1628,6 +1727,8 @@ class Orchestrator:
                                     error=f"Retry limit reached after transient failure: {reason}",
                                     retryable=True,
                                 )
+                                if budget is not None:
+                                    budget.record_trial_terminated()
                             self.logger.info(
                                 "Trial failed (transient)",
                                 task_id=task_id,
@@ -1656,6 +1757,8 @@ class Orchestrator:
                                 ),
                                 score=trajectory.grade.score if trajectory.grade else None,
                             )
+                            if budget is not None:
+                                budget.record_trial_terminated()
 
                             self.logger.info(
                                 "Trial completed",
@@ -1688,17 +1791,26 @@ class Orchestrator:
                                 error=str(e),
                                 retryable=True,
                             )
+                            if budget is not None:
+                                budget.record_trial_terminated()
 
-                    # Stop scheduling new work once budget cap is reached.
-                    if budget_limit is not None and total_cost_usd >= budget_limit:
-                        if not budget_exhausted:
+                    # Stop scheduling new work once any active budget cap is reached.
+                    if budget is not None and not budget_exhausted:
+                        hit = budget.poll()
+                        if hit is not None:
                             budget_exhausted = True
+                            last_hit = hit
+                            self._stopped_reason = f"{hit.which} limit"
+                            write_limit_hit_marker(output_dir, hit)
                             self.logger.warning(
                                 "Budget limit reached; no new trials will be scheduled",
-                                budget_limit_usd=budget_limit,
+                                limit_kind=hit.which,
+                                threshold=hit.threshold,
+                                value_at_hit=round(hit.value_at_hit, 6),
                                 total_cost_usd=round(total_cost_usd, 6),
                                 remaining_trials=run_queue.get_counts().get("pending", 0),
                             )
+                    if budget_exhausted:
                         continue
 
                     while len(active_futures) < self.config.effective_workers and submit_one():
@@ -1712,7 +1824,8 @@ class Orchestrator:
                 "Run paused due to budget cap",
                 pending_trials=remaining,
                 total_scheduled_trials=total_trials_scheduled - remaining,
-                budget_limit_usd=budget_limit,
+                limit_kind=last_hit.which if last_hit is not None else None,
+                threshold=last_hit.threshold if last_hit is not None else None,
                 total_cost_usd=round(total_cost_usd, 6),
             )
         else:
@@ -1745,7 +1858,9 @@ class Orchestrator:
         # Generate reports
         self._generate_reports(output_dir)
 
-        self._events.run_finished(output_dir=output_dir.resolve())
+        resolved_output_dir = output_dir.resolve()
+        self._events.run_finished(output_dir=resolved_output_dir)
+        return resolved_output_dir
 
     def run_worker(self, output_dir: Path, max_attempts: int | None = None) -> dict[str, Any]:
         """Run as a worker consuming attempts from the durable queue.
@@ -1801,7 +1916,11 @@ class Orchestrator:
             judge_model=(f"{judge_config.provider}/{judge_config.name}" if judge_config else None),
         )
 
-        agent_client = LLMClient(agent_config)
+        agent_client = (
+            self._agent_client_factory(agent_config)
+            if self._agent_client_factory is not None
+            else LLMClient(agent_config)
+        )
         request_limiter: GlobalRateLimiter | None = None
         if self.config.effective_max_requests_per_second is not None:
             request_limiter = GlobalRateLimiter(self.config.effective_max_requests_per_second)
@@ -1824,18 +1943,13 @@ class Orchestrator:
                 "runs, or drop the manifest and use the built-in shared stack."
             )
 
-        log_capture = self._build_log_capture(output_dir)
         runtime_backend: RuntimeBackend
         if self._injected_runtime_backend is not None:
             runtime_backend = self._injected_runtime_backend
         else:
-            runtime_backend = self._construct_runtime_backend(
-                runner_address, log_capture=log_capture
-            )
+            runtime_backend = self._construct_runtime_backend(runner_address)
         runtime_backend.connect()
         self._verify_isolation_compatibility(runtime_backend)
-        self._admit_capabilities(runtime_backend)
-        self._emit_environment_identities()
 
         env_endpoints = _build_env_endpoints(runner_address)
         self.logger.info(
@@ -1867,6 +1981,20 @@ class Orchestrator:
         )
         if recovered > 0:
             self.logger.warning("Worker recovered stale in-flight attempts", recovered=recovered)
+
+        # Silent on fresh queues (no completions yet) — the reattach line is
+        # for operators joining an in-progress run, not for cold starts.
+        queue_counts = run_queue.get_counts()
+        if queue_counts.get("completed", 0) > 0:
+            self.logger.info(
+                f"Reattaching to run dir {run_id}: "
+                f"{queue_counts['completed']}/{queue_counts['total']} completed, "
+                f"{queue_counts['pending']} pending in queue.",
+                run_id=run_id,
+                completed=queue_counts["completed"],
+                total=queue_counts["total"],
+                pending=queue_counts["pending"],
+            )
 
         budget_limit = self.config.effective_max_budget_usd
         total_cost_usd = self._collect_existing_cost(output_dir)

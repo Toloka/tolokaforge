@@ -409,6 +409,11 @@ class ModelConfig(BaseModel):
     capabilities: dict[str, Any] | None = None  # Override auto-detected model capabilities
     # OpenRouter-only provider routing; rejected for other providers by the validator below.
     openrouter: OpenRouterConfig | None = None
+    # Ordered fallback chain. When a hard failure hits the primary
+    # model, subsequent turns for the affected trial use the next entry
+    # in this list. Empty list (default) → no fallback wrapper. See
+    # docs/CONFIG.md § Fallback models.
+    fallbacks: list["ModelConfig"] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _reject_openrouter_on_other_providers(self) -> "ModelConfig":
@@ -860,6 +865,12 @@ class ObservabilityConfig(BaseModel):
     tracing: TracingConfig | None = None
     metrics: MetricsConfig | None = None
     logging: LoggingConfig | None = None
+    pricing_overlay_path: Path | str | None = None
+    """Optional JSON or YAML overlay merged onto the shipped pricing
+    table before the orchestrator is constructed. Same schema as
+    ``tolokaforge/core/data/pricing.json``. Applied globally for the
+    run's lifetime; used when a model the shipped table does not price
+    (or prices incorrectly) is in use."""
 
 
 _DUAL_HOME_COMPUTE_ALIASES: tuple[tuple[str, str], ...] = (

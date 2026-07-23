@@ -140,6 +140,30 @@ It requires a shared Postgres DSN via either:
 - workflow input `queue_postgres_dsn`, or
 - repo secret `TOLOKAFORGE_QUEUE_POSTGRES_DSN`.
 
+## Resuming a queue-worker run
+
+Workers restart into a resumable state without a flag: the durable queue is the source of truth for pending / leased / completed / failed attempts, and `worker --run-dir <existing>` leases only `pending` items. Restart the same command against the same run directory (SQLite) or the same Postgres DSN (distributed) and the worker picks up whatever wasn't finished.
+
+```bash
+uv run tolokaforge worker --config path/to/run.yaml --run-dir results/queue_run
+```
+
+On reattach to a run directory whose queue holds completed attempts, the worker emits an INFO log line naming the run and the queue state:
+
+```
+14:32:07.918 | INFO | completed=42 pending=8 run_id=queue_run total=50 | Reattaching to run dir queue_run: 42/50 completed, 8 pending in queue.
+```
+
+Completions and behavioural failures already in the queue stay marked as such — the worker never re-executes them. Retryable in-flight leases whose lease expired are recovered on reattach (logged as `Worker recovered stale in-flight attempts`) and returned to `pending` so a fresh lease attempt runs them.
+
+To restart a queue from scratch, pass `--reset-queue` to `prepare`:
+
+```bash
+uv run tolokaforge prepare --config path/to/run.yaml --run-dir results/queue_run --reset-queue
+```
+
+`--reset-queue` clears every attempt row before re-enqueueing. Without it, `prepare` refuses to re-enqueue over a populated queue (logged as `Queue already populated; skipping enqueue`) so a re-`prepare` on a working directory is a safe no-op.
+
 ## Retries, Rate Limits, and Budget
 
 Execution controls interact as follows:

@@ -26,6 +26,78 @@ from typing import Literal, Protocol, TypedDict, runtime_checkable
 
 LLMCallRole = Literal["agent", "user", "judge", "grader"]
 
+ComponentKind = Literal[
+    "docker.service",
+    "grpc.client",
+    "container",
+    "k8s.pod",
+    "process",
+    "remote",
+]
+"""What kind of runtime entity a component is.
+
+The kind is transport-agnostic: ``docker.service`` and ``k8s.pod`` are
+peers, not one nested inside the other. The panel groups by kind and by
+:attr:`ComponentSnapshot.owner` — never by transport-specific fields.
+Extend the literal set when a new reporter shape is added; the panel's
+renderer falls back to the raw string for unknown kinds.
+"""
+
+ComponentPhase = Literal[
+    "pending",
+    "starting",
+    "healthy",
+    "degraded",
+    "unhealthy",
+    "stopped",
+    "dead",
+]
+"""Lifecycle phase of a monitored component.
+
+Transitions are event-driven; the reporter fires
+:meth:`RunDisplayEvents.component_status_changed` at every phase edge.
+``degraded`` / ``unhealthy`` / ``dead`` auto-expand the component's log
+tail beneath its row in the panel; ``healthy`` collapses the tail again.
+"""
+
+
+class ComponentSnapshot(TypedDict):
+    """Wire shape for a single component's status.
+
+    Fired via :meth:`RunDisplayEvents.component_registered` on first sight
+    and :meth:`RunDisplayEvents.component_status_changed` on every
+    subsequent transition. The panel keys on :attr:`id` — repeated fires
+    with the same id update the same row in place, so per-attempt polling
+    updates the ``detail`` field without scrolling the log stream.
+
+    - ``id`` — stable identity, conventionally
+      ``"{namespace}/{kind}/{instance}"``. Build via
+      :func:`build_component_id`.
+    - ``kind`` — the reporter's transport-agnostic label
+      (:data:`ComponentKind`).
+    - ``phase`` — current lifecycle phase (:data:`ComponentPhase`).
+    - ``detail`` — one-line adornment for the current phase
+      (``"attempt 7, elapsed=6.2s/30s"`` while probing;
+      ``"port 50051 reachable"`` on healthy).
+    - ``owner`` — grouping key for the widget (``"engine"``,
+      ``"trial/tool_use/0"``, ``"worker/3"``). ``None`` means "no group".
+    """
+
+    id: str
+    kind: ComponentKind
+    phase: ComponentPhase
+    detail: str | None
+    owner: str | None
+
+
+def build_component_id(namespace: str, kind: ComponentKind, instance: str) -> str:
+    """Construct a canonical component id: ``"{namespace}/{kind}/{instance}"``.
+
+    Every reporter should route through this helper so the panel's id-key
+    invariant (one row per component) stays consistent across reporters.
+    """
+    return f"{namespace}/{kind}/{instance}"
+
 
 class ServiceSnapshot(TypedDict):
     """One row of the panel's service-status widget.
@@ -233,6 +305,51 @@ class RunDisplayEvents(Protocol):
         the caller does with the reraised exception.
         """
 
+    def component_registered(self, *, snapshot: ComponentSnapshot) -> None:
+        """Announce a new component the display should start tracking.
+
+        First-sight fire for a component id. Subsequent updates reuse
+        :meth:`component_status_changed` — the id keys the row. Idempotent
+        on repeat: implementations MUST tolerate multiple registrations
+        of the same id (last snapshot wins).
+        """
+
+    def component_status_changed(self, *, snapshot: ComponentSnapshot) -> None:
+        """Update a component's phase / detail without adding a new row.
+
+        Fired on every lifecycle transition and every ``detail``-only
+        refresh (e.g. per-probe-attempt updates). The panel keys on
+        ``snapshot["id"]``; unknown ids are treated as an implicit
+        register.
+        """
+
+    def component_log_appended(
+        self,
+        *,
+        component_id: str,
+        level: str,
+        message: str,
+        ts: float,
+    ) -> None:
+        """Attach a log line to a specific component's tail buffer.
+
+        Kept distinct from the panel's general log ring so component
+        chatter never scrolls above the panel. The tail is rendered only
+        while the component is in ``degraded`` / ``unhealthy`` / ``dead``
+        — healthy components stay one compact row. ``ts`` is monotonic
+        wall-clock (``time.time()``); ``level`` matches Python's
+        ``logging`` level names (``"INFO"``, ``"WARNING"``, ``"ERROR"``).
+        """
+
+    def component_unregistered(self, *, component_id: str) -> None:
+        """Drop a component from the display's tracking set.
+
+        Optional — long-lived components can stay registered for the
+        life of the run. Called at teardown so the widget doesn't carry
+        stopped-and-cleaned-up rows forward. The tail buffer is dropped
+        alongside the row.
+        """
+
 
 @dataclass(frozen=True)
 class LLMCallObservation:
@@ -272,12 +389,19 @@ class _NullRunDisplayEvents:
     def llm_call_started(self, **_: object) -> None: ...
     def llm_call_finished(self, **_: object) -> None: ...
     def llm_retry_scheduled(self, **_: object) -> None: ...
+    def component_registered(self, **_: object) -> None: ...
+    def component_status_changed(self, **_: object) -> None: ...
+    def component_log_appended(self, **_: object) -> None: ...
+    def component_unregistered(self, **_: object) -> None: ...
 
 
 _NULL_EVENTS: RunDisplayEvents = _NullRunDisplayEvents()
 
 
 __all__ = [
+    "ComponentKind",
+    "ComponentPhase",
+    "ComponentSnapshot",
     "ContainerSnapshot",
     "LLMCallObservation",
     "LLMCallRole",
@@ -285,4 +409,5 @@ __all__ = [
     "ServiceSnapshot",
     "_NULL_EVENTS",
     "_NullRunDisplayEvents",
+    "build_component_id",
 ]
