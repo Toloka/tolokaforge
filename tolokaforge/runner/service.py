@@ -17,6 +17,7 @@ Usage:
 """
 
 import asyncio
+import copy
 import hashlib
 import inspect
 import json
@@ -674,6 +675,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             trial_context.agent_tools = dict(reconstructed.agent_tools.items())
             trial_context.user_tools = dict(reconstructed.user_tools.items())
 
+            # Native MCP servers own their state in a subprocess.  Seed each
+            # unique per-trial server before any tool is exposed to the agent.
+            self._run_async(self._reset_mcp_servers(trial_context))
+
             logger.info(
                 f"RegisterTrial: {trial_id} - Reconstructed "
                 f"{len(reconstructed.agent_tools)} agent tools, "
@@ -681,6 +686,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             )
         except ToolReconstructionError as e:
             # FAIL FAST: Tool reconstruction failure is a critical error
+            self._close_mcp_servers(trial_context)
             logger.error(f"RegisterTrial: Failed to reconstruct tools: {e}")
             return pb2.RegisterTrialResponse(
                 success=False,
@@ -688,6 +694,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             )
         except Exception as e:
             # FAIL FAST: Any other error during tool reconstruction
+            self._close_mcp_servers(trial_context)
             logger.error(f"RegisterTrial: Unexpected error reconstructing tools: {e}")
             return pb2.RegisterTrialResponse(
                 success=False,
@@ -1460,8 +1467,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         """Sync an MCP server's in-memory state to the db-service via diff mutations.
 
         Computes inserts / updates / deletes for every table and applies them
-        through ``db_client.mutate``.  Records are keyed on the ``id`` field
-        (falling back to ``_id``).
+        through ``db_client.mutate``.  Records are keyed using the registered
+        ``TableSchema.primary_key`` for that table.
 
         Args:
             trial_id:  Trial identifier used by db-service.
@@ -1469,14 +1476,32 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         """
         current_response = await self.db_client.get_state(trial_id)
         current_state: dict[str, list[dict]] = current_response.data
+        trial_context = self.trials.get(trial_id)
+        if trial_context is None:
+            raise RuntimeError(f"cannot sync MCP state for unknown trial {trial_id!r}")
+        primary_keys = {
+            schema.table_name: schema.primary_key
+            for schema in trial_context.task_description.initial_state.schemas
+        }
 
-        for table_name, new_records in mcp_state.items():
+        for table_name in sorted(set(current_state) | set(mcp_state)):
+            new_records = mcp_state.get(table_name, [])
             current_records = current_state.get(table_name, [])
             if current_records == new_records:
                 continue
 
-            before_by_id = {self._mcp_record_id(r): r for r in current_records}
-            after_by_id = {self._mcp_record_id(r): r for r in new_records}
+            primary_key = primary_keys.get(table_name)
+            if primary_key is None:
+                records = [*current_records, *new_records]
+                if records and all("id" in record for record in records):
+                    primary_key = "id"
+                else:
+                    raise RuntimeError(
+                        f"MCP state table {table_name!r} has no registered primary key"
+                    )
+
+            before_by_id = self._mcp_records_by_id(table_name, primary_key, current_records)
+            after_by_id = self._mcp_records_by_id(table_name, primary_key, new_records)
 
             operations: list[dict] = []
             for rid, rec in after_by_id.items():
@@ -1484,10 +1509,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     operations.append({"op": "insert", "record": rec})
             for rid, rec in after_by_id.items():
                 if rid in before_by_id and before_by_id[rid] != rec:
-                    operations.append({"op": "upsert", "record": rec, "key": "id"})
+                    operations.append({"op": "upsert", "record": rec, "key": primary_key})
             for rid in before_by_id:
                 if rid not in after_by_id:
-                    operations.append({"op": "delete", "filter": {"id": rid}})
+                    operations.append({"op": "delete", "filter": {primary_key: rid}})
 
             if operations:
                 await self.db_client.mutate(trial_id, table_name, operations)
@@ -1496,9 +1521,59 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 )
 
     @staticmethod
-    def _mcp_record_id(record: dict) -> Any:
-        """Return the primary-key value of a record (``id`` or ``_id``)."""
-        return record.get("id") or record.get("_id")
+    def _mcp_records_by_id(
+        table_name: str,
+        primary_key: str,
+        records: list[dict],
+    ) -> dict[Any, dict]:
+        """Index records by a required, unique registered primary key."""
+        indexed: dict[Any, dict] = {}
+        for record in records:
+            if primary_key not in record:
+                raise RuntimeError(
+                    f"MCP state record in {table_name!r} is missing primary key {primary_key!r}"
+                )
+            record_id = record[primary_key]
+            if record_id in indexed:
+                raise RuntimeError(
+                    f"MCP state table {table_name!r} has duplicate primary key "
+                    f"{primary_key}={record_id!r}"
+                )
+            indexed[record_id] = record
+        return indexed
+
+    @staticmethod
+    def _unique_mcp_server_wrappers(
+        trial_context: TrialContextRuntime,
+    ) -> list[MCPServerToolWrapper]:
+        """Return one wrapper per native MCP subprocess for a trial."""
+        unique: dict[tuple[str, str], MCPServerToolWrapper] = {}
+        for tool in [
+            *trial_context.agent_tools.values(),
+            *trial_context.user_tools.values(),
+        ]:
+            if isinstance(tool, MCPServerToolWrapper):
+                unique.setdefault((tool.server_script, tool.trial_id), tool)
+        return list(unique.values())
+
+    async def _reset_mcp_servers(
+        self,
+        trial_context: TrialContextRuntime,
+    ) -> None:
+        """Reset every native MCP subprocess to an isolated initial state."""
+        initial_tables = trial_context.task_description.initial_state.tables
+        loop = asyncio.get_event_loop()
+        for wrapper in self._unique_mcp_server_wrappers(trial_context):
+            state = copy.deepcopy(initial_tables)
+            await loop.run_in_executor(
+                None,
+                lambda wrapper=wrapper, state=state: wrapper.reset_state(state),
+            )
+
+    def _close_mcp_servers(self, trial_context: TrialContextRuntime) -> None:
+        """Stop every native MCP subprocess owned by a trial."""
+        for wrapper in self._unique_mcp_server_wrappers(trial_context):
+            wrapper.close_server()
 
     # =========================================================================
     # GetState - Debug endpoint to inspect current state
@@ -1795,6 +1870,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # Clear tool call history in trial context
         if trial_id in self.trials:
             trial_context = self.trials[trial_id]
+            await self._reset_mcp_servers(trial_context)
             trial_context.clear_history()
 
             # Stop any per-trial lifecycle tools started during registration.
@@ -1946,6 +2022,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         if self.mcp_gateway is not None:
             self.mcp_gateway.unregister(trial_id)
         if trial_context is not None:
+            self._close_mcp_servers(trial_context)
             for tool in list(trial_context.agent_tools.values()) + list(
                 trial_context.user_tools.values()
             ):
