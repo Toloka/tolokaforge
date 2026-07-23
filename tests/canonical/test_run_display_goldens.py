@@ -145,6 +145,7 @@ def _render_svg(
         width=width,
         force_terminal=True,
         color_system="truecolor",
+        theme=THEME,
     )
     display = LiveRunDisplay(
         refresh_per_second=1000,
@@ -418,6 +419,7 @@ def _render_inflight_retry_svg(width: int) -> str:
         width=width,
         force_terminal=True,
         color_system="truecolor",
+        theme=THEME,
     )
     display = LiveRunDisplay(refresh_per_second=1000, max_trial_rows=20)
     _replay_inflight_retry(display)

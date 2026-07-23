@@ -32,6 +32,7 @@ from tolokaforge.dx.live_panel import (
     _BottomBarStats,
     _format_bottom_bar,
     _NoopDisplayCtx,
+    _Panel,
 )
 
 pytestmark = pytest.mark.unit
@@ -1303,140 +1304,640 @@ def test_mapper_created_and_services_ready_is_stopped_not_unhealthy() -> None:
     assert _map_docker_status_to_component_phase("created", "starting_services") == "pending"
 
 
-def test_bracket_nav_walks_within_current_group_only() -> None:
-    """``[`` / ``]`` now walk WITHIN the currently-focused component
-    group (engine or focused-trial containers). Jumping between groups
-    is the ``Tab`` key's job. This test locks the within-group scope:
-    starting on an engine row, ``]`` visits only engine rows and wraps
-    at the last engine row rather than crossing into the container
-    group."""
-    from tolokaforge.core.run_display_events import ContainerSnapshot, ServiceSnapshot
+def test_active_panel_defaults_to_trials() -> None:
+    """A fresh :class:`LiveRunDisplay` starts with the Trials panel active
+    so keystrokes always have a well-defined destination even before any
+    component has registered."""
+    display = LiveRunDisplay(refresh_per_second=1000)
+    assert display._active_panel is _Panel.TRIALS
+
+
+def test_visible_panels_returns_trials_only_at_start() -> None:
+    """With no components registered and no focused trial, only the
+    Trials panel is visible."""
+    display = LiveRunDisplay(refresh_per_second=1000)
+    assert display._visible_panels_locked() == [_Panel.TRIALS]
+
+
+def test_visible_panels_includes_engine_when_engine_component_registered() -> None:
+    """Registering any engine-owned component makes the Engine panel
+    visible in the Tab cycle."""
+    from tolokaforge.core.run_display_events import ComponentSnapshot
 
     display = LiveRunDisplay(refresh_per_second=1000)
-    services: list[ServiceSnapshot] = [
-        {"name": "db-service", "status": "running", "ports": {}, "role": "engine"},
-        {"name": "runner", "status": "running", "ports": {}, "role": "engine"},
-    ]
+    snap: ComponentSnapshot = {
+        "id": "engine/docker.service/runner",
+        "kind": "docker.service",
+        "phase": "healthy",
+        "detail": None,
+        "owner": "engine",
+    }
+    display.component_registered(snapshot=snap)
+
+    visible = display._visible_panels_locked()
+    assert _Panel.ENGINE in visible
+    assert visible == [_Panel.TRIALS, _Panel.ENGINE]
+
+
+def test_visible_panels_includes_infrastructure_when_focused_trial_has_containers() -> None:
+    """When a trial is focused and has at least one container, the
+    Infrastructure panel joins the Tab cycle."""
+    from tolokaforge.core.run_display_events import ContainerSnapshot
+
+    display = LiveRunDisplay(refresh_per_second=1000)
     containers: list[ContainerSnapshot] = [
-        {"name": "t-app-1", "service": "app", "state": "running", "health": "healthy", "ports": {}},
+        {"name": "t-db-1", "service": "db", "state": "running", "health": "healthy", "ports": {}},
     ]
-    display.phase_changed(phase="services_ready", services=services)
     display.trial_started(trial_id="t:0", task_id="t", trial_index=0, total_index=0)
     display.trial_provisioned(trial_id="t:0", containers=containers, endpoints={})
 
-    # Focus an engine row; ] wraps to the next engine row, not into
-    # the container group.
-    display._focused_component_id = "engine/docker.service/db-service"
-    display._nav_next_component()
-    assert display._focused_component_id == "engine/docker.service/runner"
-    display._nav_next_component()  # wraps within engine
-    assert display._focused_component_id == "engine/docker.service/db-service"
-    # Container never reached without Tab.
-    assert display._focused_component_id != "trial/t:0/container/app"
+    assert display._focused_trial_id == "t:0"
+    assert _Panel.INFRASTRUCTURE in display._visible_panels_locked()
 
 
-def test_tab_switches_component_focus_between_panels() -> None:
-    """``Tab`` (via :meth:`_nav_switch_component_panel`) jumps focus
-    between the engine group and the focused-trial container group.
-    Lands on the first row of the target group; a second ``Tab``
-    returns to the engine group's first row."""
-    from tolokaforge.core.run_display_events import ContainerSnapshot, ServiceSnapshot
+def test_visible_panels_omits_infrastructure_when_show_logs_pane_active() -> None:
+    """Infrastructure only renders under the Focused pane's summary
+    branch. When the operator flips the trial-log view on, the
+    Infrastructure panel is not visible even if the focused trial has
+    containers."""
+    from tolokaforge.core.run_display_events import ContainerSnapshot
 
     display = LiveRunDisplay(refresh_per_second=1000)
-    services: list[ServiceSnapshot] = [
-        {"name": "runner", "status": "running", "ports": {}, "role": "engine"},
-    ]
     containers: list[ContainerSnapshot] = [
-        {"name": "t-app-1", "service": "app", "state": "running", "health": "healthy", "ports": {}},
+        {"name": "t-db-1", "service": "db", "state": "running", "health": "healthy", "ports": {}},
     ]
-    display.phase_changed(phase="services_ready", services=services)
     display.trial_started(trial_id="t:0", task_id="t", trial_index=0, total_index=0)
     display.trial_provisioned(trial_id="t:0", containers=containers, endpoints={})
+    display._show_logs_pane = True
 
-    # From an engine row, Tab lands on the trial container's first row.
-    display._focused_component_id = "engine/docker.service/runner"
-    display._nav_switch_component_panel()
-    assert display._focused_component_id == "trial/t:0/container/app"
-    # Tab again → back to engine group.
-    display._nav_switch_component_panel()
-    assert display._focused_component_id == "engine/docker.service/runner"
+    assert _Panel.INFRASTRUCTURE not in display._visible_panels_locked()
 
 
-def test_tab_from_clean_start_seeds_engine_first_row() -> None:
-    """``Tab`` with no prior focus seeds the engine group's first row
-    (identical to pressing ``]`` from a clean start). If the engine
-    group is empty but the trial container group is not, seed from
-    there instead."""
-    from tolokaforge.core.run_display_events import ContainerSnapshot, ServiceSnapshot
+def test_ensure_active_panel_visible_falls_back_to_trials_when_active_panel_disappears() -> None:
+    """When the currently-active panel is no longer visible,
+    :meth:`_ensure_active_panel_visible_locked` snaps the active panel
+    back to Trials so keystrokes still route somewhere."""
+    display = LiveRunDisplay(refresh_per_second=1000)
+    display._active_panel = _Panel.ENGINE
+
+    # No engine components have been registered — ENGINE is not visible.
+    assert _Panel.ENGINE not in display._visible_panels_locked()
+
+    display._ensure_active_panel_visible_locked()
+
+    assert display._active_panel is _Panel.TRIALS
+
+
+def test_ensure_active_panel_visible_no_op_when_active_panel_still_visible() -> None:
+    """When the active panel is still visible on the current frame,
+    :meth:`_ensure_active_panel_visible_locked` leaves it unchanged."""
+    from tolokaforge.core.run_display_events import ComponentSnapshot
 
     display = LiveRunDisplay(refresh_per_second=1000)
-    services: list[ServiceSnapshot] = [
-        {"name": "runner", "status": "running", "ports": {}, "role": "engine"},
-    ]
-    display.phase_changed(phase="services_ready", services=services)
-    assert display._focused_component_id is None
+    snap: ComponentSnapshot = {
+        "id": "engine/docker.service/runner",
+        "kind": "docker.service",
+        "phase": "healthy",
+        "detail": None,
+        "owner": "engine",
+    }
+    display.component_registered(snapshot=snap)
+    display._active_panel = _Panel.ENGINE
 
-    display._nav_switch_component_panel()
-    assert display._focused_component_id == "engine/docker.service/runner"
+    display._ensure_active_panel_visible_locked()
 
-    # Now with only trial containers (no engine yet), Tab seeds from
-    # the container group.
-    display2 = LiveRunDisplay(refresh_per_second=1000)
+    assert display._active_panel is _Panel.ENGINE
+
+
+# ---------------------------------------------------------------------------
+# Stage 2 — panel-modal dispatch
+# ---------------------------------------------------------------------------
+
+
+def _seed_all_panels_visible(display: LiveRunDisplay) -> None:
+    """Register two engine components + one trial with two containers so
+    :meth:`_visible_panels_locked` returns all three panels in Tab order."""
+    from tolokaforge.core.run_display_events import ComponentSnapshot, ContainerSnapshot
+
+    engine_a: ComponentSnapshot = {
+        "id": "engine/docker.service/db",
+        "kind": "docker.service",
+        "phase": "healthy",
+        "detail": None,
+        "owner": "engine",
+    }
+    engine_b: ComponentSnapshot = {
+        "id": "engine/docker.service/runner",
+        "kind": "docker.service",
+        "phase": "healthy",
+        "detail": None,
+        "owner": "engine",
+    }
     containers: list[ContainerSnapshot] = [
-        {"name": "t-app-1", "service": "app", "state": "running", "health": "healthy", "ports": {}},
+        {"name": "t-a-1", "service": "a", "state": "running", "health": "healthy", "ports": {}},
+        {"name": "t-b-1", "service": "b", "state": "running", "health": "healthy", "ports": {}},
     ]
-    display2.trial_started(trial_id="t:0", task_id="t", trial_index=0, total_index=0)
-    display2.trial_provisioned(trial_id="t:0", containers=containers, endpoints={})
-    display2._nav_switch_component_panel()
-    assert display2._focused_component_id == "trial/t:0/container/app"
+    display.component_registered(snapshot=engine_a)
+    display.component_registered(snapshot=engine_b)
+    display.run_started(total_trials=2, initial_completed=0)
+    display.trial_started(trial_id="t:0", task_id="t", trial_index=0, total_index=0)
+    display.trial_started(trial_id="t:1", task_id="t", trial_index=1, total_index=1)
+    display.trial_provisioned(trial_id="t:1", containers=containers, endpoints={})
 
 
-def test_tab_is_noop_when_target_group_empty_and_focus_exists() -> None:
-    """When the operator has focus in engine group and there is no
-    focused-trial container group to jump to, ``Tab`` leaves focus
-    where it is — no rescue leap sideways."""
-    from tolokaforge.core.run_display_events import ServiceSnapshot
+def _dispatch(display: LiveRunDisplay, key: str) -> None:
+    """Route ``key`` through :class:`_KeyboardListener._dispatch` without
+    a background thread or termios. Exercises the real dispatch table."""
+    from tolokaforge.dx.live_panel import _KeyboardListener
 
+    listener = _KeyboardListener(display, stdin=_FakeStdin(isatty=True))
+    listener._dispatch(key)
+
+
+@pytest.mark.parametrize(
+    ("key", "panel"),
+    [
+        (k, p)
+        for k in ("j", "k", "H", "L")
+        for p in (_Panel.TRIALS, _Panel.ENGINE, _Panel.INFRASTRUCTURE)
+    ],
+)
+def test_dispatch_row_nav_keys_route_to_active_panel(
+    monkeypatch: pytest.MonkeyPatch, key: str, panel: _Panel
+) -> None:
+    """``j`` / ``k`` / ``H`` / ``L`` all route through the panel-modal
+    verbs. Verified by patching each verb to record its invocation and
+    asserting exactly one call regardless of active panel — the routing
+    is uniform across the three panels."""
+    _install_incrementing_now(monkeypatch)
     display = LiveRunDisplay(refresh_per_second=1000)
-    services: list[ServiceSnapshot] = [
-        {"name": "runner", "status": "running", "ports": {}, "role": "engine"},
-    ]
-    display.phase_changed(phase="services_ready", services=services)
-    display._focused_component_id = "engine/docker.service/runner"
+    _seed_all_panels_visible(display)
+    display._active_panel = panel
+    verb_map = {"j": "_nav_next", "k": "_nav_prev", "H": "_nav_first", "L": "_nav_last"}
+    called: list[str] = []
+    verb_name = verb_map[key]
+    monkeypatch.setattr(display, verb_name, lambda: called.append(verb_name))
 
-    display._nav_switch_component_panel()
-    assert display._focused_component_id == "engine/docker.service/runner"
+    _dispatch(display, key)
+
+    assert called == [verb_name]
 
 
-def test_component_nav_includes_focused_trial_containers() -> None:
-    """``[`` / ``]`` walk the union of engine components and the currently-
-    focused trial's containers. Other trials' containers are NOT part of
-    the walk — they become inspectable only when their trial is focused."""
-    from tolokaforge.core.run_display_events import ContainerSnapshot, ServiceSnapshot
-
+@pytest.mark.parametrize("panel", [_Panel.TRIALS, _Panel.ENGINE, _Panel.INFRASTRUCTURE])
+def test_dispatch_tab_calls_cycle_active_panel(
+    monkeypatch: pytest.MonkeyPatch, panel: _Panel
+) -> None:
+    """``Tab`` routes to :meth:`_cycle_active_panel` regardless of the
+    currently-active panel."""
+    _install_incrementing_now(monkeypatch)
     display = LiveRunDisplay(refresh_per_second=1000)
-    services: list[ServiceSnapshot] = [
-        {"name": "runner", "status": "running", "ports": {}, "role": "engine"},
-    ]
-    trial_a_containers: list[ContainerSnapshot] = [
-        {"name": "a-db-1", "service": "db", "state": "running", "health": "healthy", "ports": {}},
-    ]
-    trial_b_containers: list[ContainerSnapshot] = [
-        {"name": "b-db-1", "service": "db", "state": "running", "health": "healthy", "ports": {}},
-    ]
-    display.phase_changed(phase="services_ready", services=services)
-    display.trial_started(trial_id="a:0", task_id="a", trial_index=0, total_index=0)
-    display.trial_provisioned(trial_id="a:0", containers=trial_a_containers, endpoints={})
-    display.trial_started(trial_id="b:0", task_id="b", trial_index=0, total_index=1)
-    display.trial_provisioned(trial_id="b:0", containers=trial_b_containers, endpoints={})
+    _seed_all_panels_visible(display)
+    display._active_panel = panel
+    called: list[str] = []
+    monkeypatch.setattr(display, "_cycle_active_panel", lambda: called.append("cycle"))
 
-    # With trial b focused (last started under auto-follow), nav visits
-    # engine components and trial-b's containers only — not trial-a's.
+    _dispatch(display, "\t")
+
+    assert called == ["cycle"]
+
+
+@pytest.mark.parametrize("panel", [_Panel.TRIALS, _Panel.ENGINE, _Panel.INFRASTRUCTURE])
+def test_dispatch_f_routes_to_toggle_auto_follow(
+    monkeypatch: pytest.MonkeyPatch, panel: _Panel
+) -> None:
+    """``f`` always calls :meth:`_toggle_auto_follow`; the verb itself
+    handles the "not on TRIALS → no-op" contract."""
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    _seed_all_panels_visible(display)
+    display._active_panel = panel
+    called: list[str] = []
+    monkeypatch.setattr(display, "_toggle_auto_follow", lambda: called.append("f"))
+
+    _dispatch(display, "f")
+
+    assert called == ["f"]
+
+
+@pytest.mark.parametrize("panel", [_Panel.TRIALS, _Panel.ENGINE, _Panel.INFRASTRUCTURE])
+def test_dispatch_l_routes_to_toggle_log_pane(
+    monkeypatch: pytest.MonkeyPatch, panel: _Panel
+) -> None:
+    """``l`` always calls :meth:`_toggle_log_pane`; the verb itself
+    routes on :attr:`_active_panel`."""
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    _seed_all_panels_visible(display)
+    display._active_panel = panel
+    called: list[str] = []
+    monkeypatch.setattr(display, "_toggle_log_pane", lambda: called.append("l"))
+
+    _dispatch(display, "l")
+
+    assert called == ["l"]
+
+
+def test_nav_next_on_trials_moves_trial_focus(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``_nav_next`` on the Trials panel walks the trial list (existing
+    :meth:`_focus_at_offset_locked` semantics)."""
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    _seed_three_started_trials(display)
+    assert display._active_panel is _Panel.TRIALS
+
+    display._nav_next()
+
     assert display._focused_trial_id == "b:0"
-    ids = display._inspectable_component_ids_locked()
-    assert "engine/docker.service/runner" in ids
-    assert "trial/b:0/container/db" in ids
-    assert "trial/a:0/container/db" not in ids
+
+
+def test_nav_next_on_engine_walks_engine_rows(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``_nav_next`` on the Engine panel walks engine rows and wraps.
+    Both :attr:`_engine_focused_id` and :attr:`_focused_component_id`
+    are kept in sync."""
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    _seed_all_panels_visible(display)
+    engine_ids = display._engine_component_ids_locked()
+    display._active_panel = _Panel.ENGINE
+    display._engine_focused_id = engine_ids[0]
+    display._focused_component_id = engine_ids[0]
+
+    display._nav_next()
+
+    assert display._engine_focused_id == engine_ids[1]
+    assert display._focused_component_id == engine_ids[1]
+
+    display._nav_next()  # wraps
+    assert display._engine_focused_id == engine_ids[0]
+
+
+def test_nav_prev_on_engine_walks_backwards_and_wraps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_nav_prev`` on the Engine panel walks backwards and wraps at
+    the first row."""
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    _seed_all_panels_visible(display)
+    engine_ids = display._engine_component_ids_locked()
+    display._active_panel = _Panel.ENGINE
+    display._engine_focused_id = engine_ids[0]
+
+    display._nav_prev()  # wraps to last
+
+    assert display._engine_focused_id == engine_ids[-1]
+
+
+def test_nav_next_on_infrastructure_walks_containers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_nav_next`` on the Infrastructure panel walks the focused
+    trial's containers (wraps). Sync updates
+    :attr:`_infra_focused_id` and :attr:`_focused_component_id`."""
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    _seed_all_panels_visible(display)
+    infra_ids = display._focused_trial_container_ids_locked()
+    display._active_panel = _Panel.INFRASTRUCTURE
+    display._infra_focused_id = infra_ids[0]
+    display._focused_component_id = infra_ids[0]
+
+    display._nav_next()
+
+    assert display._infra_focused_id == infra_ids[1]
+    assert display._focused_component_id == infra_ids[1]
+
+
+def test_nav_first_and_last_on_engine(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``_nav_first`` / ``_nav_last`` on the Engine panel jump to the
+    first / last row of the engine group."""
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    _seed_all_panels_visible(display)
+    engine_ids = display._engine_component_ids_locked()
+    display._active_panel = _Panel.ENGINE
+
+    display._nav_last()
+    assert display._engine_focused_id == engine_ids[-1]
+
+    display._nav_first()
+    assert display._engine_focused_id == engine_ids[0]
+
+
+def test_nav_first_and_last_on_infrastructure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_nav_first`` / ``_nav_last`` on the Infrastructure panel jump
+    to the first / last container of the focused trial."""
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    _seed_all_panels_visible(display)
+    infra_ids = display._focused_trial_container_ids_locked()
+    display._active_panel = _Panel.INFRASTRUCTURE
+
+    display._nav_last()
+    assert display._infra_focused_id == infra_ids[-1]
+
+    display._nav_first()
+    assert display._infra_focused_id == infra_ids[0]
+
+
+def test_tab_cycles_visible_panels_in_stable_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Tab cycles TRIALS → ENGINE → INFRASTRUCTURE → TRIALS when all
+    three panels are visible."""
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    _seed_all_panels_visible(display)
+    display._focused_trial_id = "t:1"
+    assert display._active_panel is _Panel.TRIALS
+
+    display._cycle_active_panel()
+    assert display._active_panel is _Panel.ENGINE
+
+    display._cycle_active_panel()
+    assert display._active_panel is _Panel.INFRASTRUCTURE
+
+    display._cycle_active_panel()
+    assert display._active_panel is _Panel.TRIALS
+
+
+def test_tab_skips_absent_panels(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With engine components but no focused-trial containers, Tab
+    cycles TRIALS ↔ ENGINE and skips INFRASTRUCTURE entirely."""
+    from tolokaforge.core.run_display_events import ComponentSnapshot
+
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    engine: ComponentSnapshot = {
+        "id": "engine/docker.service/runner",
+        "kind": "docker.service",
+        "phase": "healthy",
+        "detail": None,
+        "owner": "engine",
+    }
+    display.component_registered(snapshot=engine)
+
+    display._cycle_active_panel()
+    assert display._active_panel is _Panel.ENGINE
+
+    display._cycle_active_panel()
+    assert display._active_panel is _Panel.TRIALS
+
+
+def test_tab_lands_on_first_row_when_no_prior_focus_for_target_panel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The first Tab into ENGINE seeds :attr:`_engine_focused_id` with
+    the first engine row and mirrors that id to
+    :attr:`_focused_component_id`."""
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    _seed_all_panels_visible(display)
+    engine_ids = display._engine_component_ids_locked()
+    assert display._engine_focused_id is None
+
+    display._cycle_active_panel()
+
+    assert display._active_panel is _Panel.ENGINE
+    assert display._engine_focused_id == engine_ids[0]
+    assert display._focused_component_id == engine_ids[0]
+
+
+def test_tab_restores_prior_focus_when_hopping_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The remembered per-panel focus survives a Tab away-and-back
+    cycle: focus row 2 in ENGINE, Tab past to TRIALS, Tab back to
+    ENGINE, focus is still on row 2."""
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    _seed_all_panels_visible(display)
+    display._focused_trial_id = "t:0"  # a trial without containers so cycle is TRIALS/ENGINE
+    engine_ids = display._engine_component_ids_locked()
+
+    display._cycle_active_panel()  # → ENGINE, seeds first row
+    display._nav_next()  # move to second engine row
+    assert display._engine_focused_id == engine_ids[1]
+
+    display._cycle_active_panel()  # → TRIALS
+    display._cycle_active_panel()  # → ENGINE (restore)
+
+    assert display._active_panel is _Panel.ENGINE
+    assert display._engine_focused_id == engine_ids[1]
+    assert display._focused_component_id == engine_ids[1]
+
+
+def test_f_is_noop_when_active_panel_is_not_trials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pressing ``f`` while ENGINE or INFRASTRUCTURE is active leaves
+    :attr:`_auto_follow` and focus untouched — auto-follow is a
+    trial-lifecycle concept only."""
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    _seed_all_panels_visible(display)
+    display._focused_trial_id = "t:1"
+    display._auto_follow = False
+    focus_before = display._focused_trial_id
+
+    display._active_panel = _Panel.ENGINE
+    display._toggle_auto_follow()
+    assert display._auto_follow is False
+    assert display._focused_trial_id == focus_before
+
+    display._active_panel = _Panel.INFRASTRUCTURE
+    display._toggle_auto_follow()
+    assert display._auto_follow is False
+    assert display._focused_trial_id == focus_before
+
+
+def test_l_flips_show_logs_pane_when_trials_active() -> None:
+    """``l`` on the Trials panel flips :attr:`_show_logs_pane` and
+    leaves :attr:`_component_logs_shown` alone."""
+    display = LiveRunDisplay(refresh_per_second=1000)
+    assert display._active_panel is _Panel.TRIALS
+    assert display._show_logs_pane is False
+
+    display._toggle_log_pane()
+
+    assert display._show_logs_pane is True
+    assert display._component_logs_shown == set()
+
+
+def test_l_flips_component_logs_shown_when_engine_active_with_focused_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``l`` on the Engine panel flips the focused engine row's entry
+    in :attr:`_component_logs_shown` and leaves
+    :attr:`_show_logs_pane` alone."""
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    _seed_all_panels_visible(display)
+    display._cycle_active_panel()  # TRIALS → ENGINE, seeds first engine row
+    focused = display._engine_focused_id
+    assert focused is not None
+
+    display._toggle_log_pane()
+
+    assert focused in display._component_logs_shown
+    assert display._show_logs_pane is False
+
+    display._toggle_log_pane()
+
+    assert focused not in display._component_logs_shown
+
+
+def test_l_flips_component_logs_shown_when_infrastructure_active_with_focused_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``l`` on the Infrastructure panel flips the focused container
+    row's entry in :attr:`_component_logs_shown`."""
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    _seed_all_panels_visible(display)
+    display._focused_trial_id = "t:1"
+    display._active_panel = _Panel.INFRASTRUCTURE
+    infra_ids = display._focused_trial_container_ids_locked()
+    display._infra_focused_id = infra_ids[0]
+    display._focused_component_id = infra_ids[0]
+
+    display._toggle_log_pane()
+
+    assert infra_ids[0] in display._component_logs_shown
+    assert display._show_logs_pane is False
+
+
+def test_l_is_noop_when_engine_active_but_no_row_focused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When ENGINE is active with no engine components (the visibility
+    guard normally prevents this state), ``l`` is a no-op: no
+    ``_component_logs_shown`` mutation and no ``_show_logs_pane`` flip."""
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    display._active_panel = _Panel.ENGINE
+    assert display._engine_focused_id is None
+    assert display._show_logs_pane is False
+
+    display._toggle_log_pane()
+
+    assert display._component_logs_shown == set()
+    assert display._show_logs_pane is False
+
+
+def test_active_panel_falls_back_to_trials_when_last_engine_component_unregisters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unregistering the last engine component while ENGINE is active
+    resets :attr:`_active_panel` back to TRIALS."""
+    from tolokaforge.core.run_display_events import ComponentSnapshot
+
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    engine: ComponentSnapshot = {
+        "id": "engine/docker.service/runner",
+        "kind": "docker.service",
+        "phase": "healthy",
+        "detail": None,
+        "owner": "engine",
+    }
+    display.component_registered(snapshot=engine)
+    display._active_panel = _Panel.ENGINE
+    display._engine_focused_id = engine["id"]
+
+    display.component_unregistered(component_id=engine["id"])
+
+    assert display._active_panel is _Panel.TRIALS
+    assert display._engine_focused_id is None
+
+
+def test_active_panel_falls_back_to_trials_when_focused_trial_containers_disappear(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unregistering the last container of the focused trial while
+    INFRASTRUCTURE is active resets :attr:`_active_panel` to TRIALS."""
+    from tolokaforge.core.run_display_events import ContainerSnapshot
+
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    containers: list[ContainerSnapshot] = [
+        {"name": "t-a-1", "service": "a", "state": "running", "health": "healthy", "ports": {}},
+    ]
+    display.trial_started(trial_id="t:0", task_id="t", trial_index=0, total_index=0)
+    display.trial_provisioned(trial_id="t:0", containers=containers, endpoints={})
+    infra_id = display._focused_trial_container_ids_locked()[0]
+    display._active_panel = _Panel.INFRASTRUCTURE
+    display._infra_focused_id = infra_id
+
+    display.component_unregistered(component_id=infra_id)
+
+    assert display._active_panel is _Panel.TRIALS
+    assert display._infra_focused_id is None
+
+
+def test_active_panel_falls_back_to_trials_when_operator_toggles_show_logs_pane_on_from_infrastructure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Infrastructure sub-panel only renders under the Focused
+    pane's summary branch. Flipping :attr:`_show_logs_pane` on removes
+    it from the visible set, so :meth:`_ensure_active_panel_visible_locked`
+    snaps back to TRIALS. Locked by simulating the defence-in-depth
+    path: active = INFRASTRUCTURE + ``_show_logs_pane`` flipped on
+    yields active = TRIALS."""
+    from tolokaforge.core.run_display_events import ContainerSnapshot
+
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    containers: list[ContainerSnapshot] = [
+        {"name": "t-a-1", "service": "a", "state": "running", "health": "healthy", "ports": {}},
+    ]
+    display.trial_started(trial_id="t:0", task_id="t", trial_index=0, total_index=0)
+    display.trial_provisioned(trial_id="t:0", containers=containers, endpoints={})
+    display._active_panel = _Panel.INFRASTRUCTURE
+    assert _Panel.INFRASTRUCTURE in display._visible_panels_locked()
+
+    display._show_logs_pane = True
+    display._ensure_active_panel_visible_locked()
+
+    assert _Panel.INFRASTRUCTURE not in display._visible_panels_locked()
+    assert display._active_panel is _Panel.TRIALS
+
+
+def test_trial_flip_clears_infra_focus_and_falls_back_when_new_trial_has_no_containers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Flipping the focused trial (via ``j`` on TRIALS) clears
+    :attr:`_infra_focused_id` when its owner no longer matches the
+    focused trial. If the new focused trial has no containers,
+    :attr:`_active_panel` falls back to TRIALS."""
+    from tolokaforge.core.run_display_events import ContainerSnapshot
+
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    display.run_started(total_trials=2, initial_completed=0)
+    display.trial_started(trial_id="a:0", task_id="a", trial_index=0, total_index=0)
+    containers_a: list[ContainerSnapshot] = [
+        {"name": "a-1", "service": "a", "state": "running", "health": "healthy", "ports": {}},
+    ]
+    display.trial_provisioned(trial_id="a:0", containers=containers_a, endpoints={})
+    display.trial_started(trial_id="b:0", task_id="b", trial_index=0, total_index=1)
+    # Focus trial a and seed infra focus on its container.
+    display._focused_trial_id = "a:0"
+    infra_id = display._focused_trial_container_ids_locked()[0]
+    display._active_panel = _Panel.INFRASTRUCTURE
+    display._infra_focused_id = infra_id
+    display._focused_component_id = infra_id
+
+    # Now flip focus to trial b (no containers) — routed via the trials-nav
+    # helper so the stale-container clear + visibility guard both fire.
+    display._focused_trial_id = "b:0"
+    display._clear_stale_container_focus_locked()
+
+    assert display._infra_focused_id is None
+    assert display._focused_component_id is None
+    assert display._active_panel is _Panel.TRIALS
 
 
 def test_switching_focused_trial_clears_stale_container_focus() -> None:
@@ -1484,48 +1985,11 @@ def test_switching_focused_trial_clears_stale_container_focus() -> None:
     assert display._focused_component_id == engine["id"]
 
 
-def test_component_nav_walks_engine_rows_and_wraps() -> None:
-    """``[`` / ``]`` walk focus across engine-component rows in
-    (owner, id) sort order and wrap at the boundaries. Since the
-    top-level widget is engine-only, nav is scoped to engine rows;
-    per-trial containers live in the Focused pane's Infrastructure
-    sub-panel and are not part of this walk."""
-    from tolokaforge.core.run_display_events import ComponentSnapshot
-
-    display = LiveRunDisplay(refresh_per_second=1000)
-    runner: ComponentSnapshot = {
-        "id": "engine/docker.service/runner",
-        "kind": "docker.service",
-        "phase": "healthy",
-        "detail": None,
-        "owner": "engine",
-    }
-    grpc_client: ComponentSnapshot = {
-        "id": "engine/grpc.client/runner",
-        "kind": "grpc.client",
-        "phase": "healthy",
-        "detail": None,
-        "owner": "engine",
-    }
-    display.component_registered(snapshot=runner)
-    display.component_registered(snapshot=grpc_client)
-
-    # Sort order: (owner, id) — docker.service before grpc.client.
-    display._nav_next_component()
-    assert display._focused_component_id == "engine/docker.service/runner"
-    display._nav_next_component()
-    assert display._focused_component_id == "engine/grpc.client/runner"
-    display._nav_next_component()  # wraps
-    assert display._focused_component_id == "engine/docker.service/runner"
-    display._nav_prev_component()  # wraps backwards
-    assert display._focused_component_id == "engine/grpc.client/runner"
-
-
 def test_focus_alone_does_not_expand_healthy_component_tail() -> None:
-    """Focusing a healthy component with ``[`` / ``]`` highlights the row
-    but does NOT auto-expand its log tail. The tail only appears when
-    the operator explicitly presses ``l`` (see the l-toggle tests).
-    Rationale: keep navigation cheap on layout rows."""
+    """Tabbing into the Engine panel seeds focus on the first engine row
+    and highlights it, but does NOT auto-expand its log tail. The tail
+    only appears when the operator explicitly presses ``l`` (see the
+    l-toggle tests). Rationale: keep navigation cheap on layout rows."""
     from tolokaforge.core.run_display_events import ComponentSnapshot
     from tolokaforge.dx.live_panel import _component_tail_visible
 
@@ -1541,7 +2005,8 @@ def test_focus_alone_does_not_expand_healthy_component_tail() -> None:
     display.component_log_appended(
         component_id=snap["id"], level="INFO", message="attempt 1", ts=0.0
     )
-    display._nav_next_component()
+    display._cycle_active_panel()  # TRIALS → ENGINE, seeds first engine row
+    assert display._active_panel is _Panel.ENGINE
     assert display._focused_component_id == snap["id"]
 
     # Focus alone leaves the tail collapsed on a healthy component.
@@ -1571,7 +2036,10 @@ def test_l_toggle_expands_focused_healthy_component_tail() -> None:
     display.component_log_appended(
         component_id=snap["id"], level="INFO", message="attempt 1", ts=0.0
     )
-    display._nav_next_component()
+    # Tab into the Engine panel so ``l`` targets the focused engine row.
+    display._cycle_active_panel()
+    assert display._active_panel is _Panel.ENGINE
+    assert display._engine_focused_id == snap["id"]
 
     display._toggle_log_pane()
     assert snap["id"] in display._component_logs_shown
@@ -1592,12 +2060,11 @@ def test_l_toggle_expands_focused_healthy_component_tail() -> None:
 
 
 def test_l_toggle_falls_through_to_trial_log_pane_when_no_component_focused() -> None:
-    """When no component is focused, ``l`` retains its pre-existing
-    meaning — flip the focused-trial log pane. Component-level toggle
-    only activates when the operator has explicitly navigated to a
-    component row."""
+    """With the default active panel (:data:`_Panel.TRIALS`), ``l`` flips
+    the focused-trial log pane. Component-level toggles only activate
+    when the operator Tabs into a component panel."""
     display = LiveRunDisplay(refresh_per_second=1000)
-    assert display._focused_component_id is None
+    assert display._active_panel is _Panel.TRIALS
     initial = display._show_logs_pane
 
     display._toggle_log_pane()
@@ -1621,13 +2088,15 @@ def test_component_focus_clears_when_focused_component_unregistered() -> None:
         "owner": "engine",
     }
     display.component_registered(snapshot=snap)
-    display._nav_next_component()
+    display._cycle_active_panel()
     display._toggle_log_pane()
     assert display._focused_component_id == snap["id"]
+    assert display._engine_focused_id == snap["id"]
     assert snap["id"] in display._component_logs_shown
 
     display.component_unregistered(component_id=snap["id"])
     assert display._focused_component_id is None
+    assert display._engine_focused_id is None
     assert snap["id"] not in display._component_logs_shown
 
 
@@ -1696,12 +2165,12 @@ def test_engine_and_infrastructure_panel_titles() -> None:
 
 def test_trial_provisioned_lifts_containers_into_components_model() -> None:
     """A ``trial_provisioned(containers=[…])`` event lifts each container
-    into ``_components`` under ``owner="trial/<trial_id>"`` (so ``[``/``]``
-    focus and ``l``-toggle work on containers the same way they work on
-    engine services) AND stores them on the trial card (so the Focused
-    pane's Infrastructure sub-panel can filter to the focused trial's
-    containers). The container ``detail`` combines docker state, health,
-    and ports so operators see per-container context at a glance."""
+    into ``_components`` under ``owner="trial/<trial_id>"`` (so ``j`` /
+    ``k`` focus and ``l``-toggle work on containers the same way they
+    work on engine services) AND stores them on the trial card (so the
+    Focused pane's Infrastructure sub-panel can filter to the focused
+    trial's containers). The container ``detail`` combines docker state,
+    health, and ports so operators see per-container context at a glance."""
     from tolokaforge.core.run_display_events import ContainerSnapshot
 
     display = LiveRunDisplay(refresh_per_second=1000)
@@ -1747,6 +2216,126 @@ def test_trial_provisioned_lifts_containers_into_components_model() -> None:
     assert display._components["trial/task_a:0/container/web"]["phase"] == "starting"
     # Containers ALSO hang off the trial card for the Focused pane.
     assert display._trials["task_a:0"].containers == containers
+
+
+# ---------------------------------------------------------------------------
+# Stage 3 — visual indication of active panel + Tab-panel hint prefix
+# ---------------------------------------------------------------------------
+
+
+def test_active_panel_highlight_applies_to_trials_pane_when_trials_active() -> None:
+    """When TRIALS is the active panel, the left pane's Panel renders
+    with ``border_style="active"`` — the visual cue that keystrokes
+    route through the trials list."""
+    display = LiveRunDisplay(refresh_per_second=1000)
+    display._active_panel = _Panel.TRIALS
+
+    assert display._render_left_pane().border_style == "active"
+
+
+def test_active_panel_highlight_applies_to_engine_when_engine_active() -> None:
+    """When ENGINE is active, the top-level Engine Components widget
+    renders with ``border_style="active"``."""
+    from rich.panel import Panel
+
+    from tolokaforge.core.run_display_events import ComponentSnapshot
+
+    display = LiveRunDisplay(refresh_per_second=1000)
+    snap: ComponentSnapshot = {
+        "id": "engine/docker.service/runner",
+        "kind": "docker.service",
+        "phase": "healthy",
+        "detail": None,
+        "owner": "engine",
+    }
+    display.component_registered(snapshot=snap)
+    display._active_panel = _Panel.ENGINE
+
+    engine_panel = display._build_layout()["engine_components"].renderable
+    assert isinstance(engine_panel, Panel)
+    assert engine_panel.border_style == "active"
+
+
+def test_active_panel_highlight_applies_to_infrastructure_when_infrastructure_active(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When INFRASTRUCTURE is active, the per-trial Infrastructure
+    sub-panel inside the Focused pane renders with ``border_style="active"``
+    instead of its default ``"muted"``."""
+    from rich.console import Group
+    from rich.panel import Panel
+
+    from tolokaforge.core.run_display_events import ContainerSnapshot
+
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    containers: list[ContainerSnapshot] = [
+        {"name": "t-db-1", "service": "db", "state": "running", "health": "healthy", "ports": {}},
+    ]
+    display.trial_started(trial_id="t:0", task_id="t", trial_index=0, total_index=0)
+    display.trial_provisioned(trial_id="t:0", containers=containers, endpoints={})
+    display._active_panel = _Panel.INFRASTRUCTURE
+
+    focused = display._render_right_pane()
+    assert isinstance(focused.renderable, Group)
+    infra_panel = focused.renderable.renderables[-1]
+    assert isinstance(infra_panel, Panel)
+    assert infra_panel.border_style == "active"
+
+
+def test_active_panel_highlight_falls_back_when_active_panel_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Flipping the active panel from TRIALS to ENGINE toggles exactly
+    one panel: the trials pane drops back to its unstyled default and
+    the engine widget's border switches to ``"active"``. Locks the
+    invariant that the border style tracks :attr:`_active_panel` on the
+    frame it is rendered."""
+    from rich.panel import Panel
+
+    from tolokaforge.core.run_display_events import ComponentSnapshot
+
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    snap: ComponentSnapshot = {
+        "id": "engine/docker.service/runner",
+        "kind": "docker.service",
+        "phase": "healthy",
+        "detail": None,
+        "owner": "engine",
+    }
+    display.component_registered(snapshot=snap)
+
+    # TRIALS active — trials highlighted, engine inactive.
+    display._active_panel = _Panel.TRIALS
+    trials_before = display._render_left_pane().border_style
+    engine_before = display._build_layout()["engine_components"].renderable
+    assert isinstance(engine_before, Panel)
+    assert trials_before == "active"
+    assert engine_before.border_style == "none"
+
+    # Flip to ENGINE — exactly the two borders swap.
+    display._active_panel = _Panel.ENGINE
+    trials_after = display._render_left_pane().border_style
+    engine_after = display._build_layout()["engine_components"].renderable
+    assert isinstance(engine_after, Panel)
+    assert trials_after == "none"
+    assert engine_after.border_style == "active"
+
+
+def test_bottom_bar_hint_mentions_tab_panel_in_manual_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The manual-nav hint advertises ``Tab panel`` as its leading token
+    so operators discover panel-cycling from the status line."""
+    _install_incrementing_now(monkeypatch)
+    display = LiveRunDisplay(refresh_per_second=1000)
+    _seed_three_started_trials(display)
+
+    display._nav_next_trial()  # enter manual mode
+    bar = display._render_bottom_bar()
+
+    assert "Tab panel" in bar.plain
 
 
 # ---------------------------------------------------------------------------
@@ -2559,11 +3148,15 @@ def test_trial_provisioned_lazy_creates_card_when_started_missed() -> None:
 def test_left_pane_renders_global_index_prefix_at_fixed_width() -> None:
     from rich.console import Console
 
+    from tolokaforge.dx._display import THEME
+
     display = LiveRunDisplay(refresh_per_second=1000)
     display.run_started(total_trials=500, initial_completed=0)
     display.trial_started(trial_id="task_a:0", task_id="task_a", trial_index=0, total_index=16)
 
-    console = Console(width=80, force_terminal=True, color_system="truecolor", record=True)
+    console = Console(
+        width=80, force_terminal=True, color_system="truecolor", record=True, theme=THEME
+    )
     console.print(display._render_left_pane())
     body = console.export_text()
 
@@ -2575,11 +3168,15 @@ def test_left_pane_renders_global_index_prefix_at_fixed_width() -> None:
 def test_left_pane_prefix_width_adapts_to_total() -> None:
     from rich.console import Console
 
+    from tolokaforge.dx._display import THEME
+
     display = LiveRunDisplay(refresh_per_second=1000)
     display.run_started(total_trials=8, initial_completed=0)
     display.trial_started(trial_id="task_a:0", task_id="task_a", trial_index=0, total_index=2)
 
-    console = Console(width=80, force_terminal=True, color_system="truecolor", record=True)
+    console = Console(
+        width=80, force_terminal=True, color_system="truecolor", record=True, theme=THEME
+    )
     console.print(display._render_left_pane())
     body = console.export_text()
 
@@ -2948,7 +3545,7 @@ def test_bottom_bar_hint_appears_in_manual_mode_and_hides_in_auto_follow(
     display.run_started(total_trials=5, initial_completed=0)
     display.trial_started(trial_id="a:0", task_id="a", trial_index=0, total_index=0)
 
-    hint = "[j/k or ↑↓ nav · H/L first/last · f follow · l logs]"
+    hint = "[Tab panel · j/k or ↑↓ nav · H/L first/last · f follow · l logs]"
 
     # Auto-follow ON → hint absent, output byte-identical to pre-Stage-B.
     display._auto_follow = True
