@@ -2,12 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
-## Unreleased
+## v0.10.0 (2026-07-23)
 
 ### Feat
 
-- **tools**: session-lifetime bash tool matching Anthropic `bash_20250124` — new `bash_session` schema (input: `command` string + `restart` bool) with two providers selectable purely by tool config: a local subprocess and a docker-compose `docker exec` into a running service (`tool_config: {service, compose_project_prefix}`). Identical wire schema either way. Additive; existing `bash` builtin unchanged.
-- **tools**: str_replace_editor builtin matching Anthropic `str_replace_based_edit_tool` (`text_editor_20250429`/`text_editor_20250728` variants, four commands `view`/`create`/`str_replace`/`insert`, no `undo_edit`). Two providers selectable purely by tool config: a local filesystem engine and a docker-compose engine that routes every command through `docker exec` into a running service (`tool_config: {service, compose_project_prefix}`). Identical wire schema either way; file content is piped on stdin (never shell-interpolated) and path containment is validated inside the container. Note: `create` fails loud on existing path (integrator-choice deviation from Anthropic's overwrite reference).
+- **cli**: Improved Terminal DX (#460)
+- **tools**: persistent agent shell + first-class editor tools (M25 consolidation) (#587)
+- **runtime**: per-service network_access opt-out on ServiceSpec (untrusted-sibling partitioning) (#588)
 
 ## v0.9.3 (2026-07-22)
 
