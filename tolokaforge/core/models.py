@@ -30,6 +30,7 @@ from tolokaforge.runner.models import LLMJudgeConfig as LLMJudgeConfig
 from tolokaforge.runner.models import ResetSpec as ResetSpec
 from tolokaforge.runner.models import Rubric as Rubric
 from tolokaforge.runner.models import ServiceIsolation as ServiceIsolation
+from tolokaforge.runner.models import ServiceNetworkAccess as ServiceNetworkAccess
 from tolokaforge.runner.models import ServiceSpec as ServiceSpec
 from tolokaforge.runner.models import StackPatch as StackPatch
 
