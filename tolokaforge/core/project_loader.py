@@ -51,6 +51,7 @@ from tolokaforge.core.models import (
     EnvironmentManifest,
     EnvironmentPatch,
     GradingCombineConfig,
+    JudgeCustomization,
     ProjectConfig,
     ServiceSpec,
     TaskDefaults,
@@ -470,6 +471,24 @@ def resolve_effective_grading_combine(
     """
     merged = deep_merge(project_combine or {}, task_combine or {})
     return GradingCombineConfig(**merged)
+
+
+def resolve_effective_judge_customization(
+    project_customization: dict[str, Any] | None,
+    task_customization: dict[str, Any] | None,
+) -> JudgeCustomization:
+    """Resolve a task's effective judge ``customization`` from the project
+    default layered under the task's own ``llm_judge.customization``.
+
+    ``task_customization`` wins field-by-field; a field neither layer sets falls
+    through to :class:`JudgeCustomization`'s tri-state default (``None`` =
+    faithful). Both inputs are raw parsed dicts, so an unset task key is simply
+    absent and never overrides a set project key — the tri-state is preserved
+    (mirrors :func:`resolve_effective_grading_combine`; do not merge
+    ``model_dump`` views, which would materialise ``None`` and clobber it).
+    """
+    merged = deep_merge(project_customization or {}, task_customization or {})
+    return JudgeCustomization(**merged)
 
 
 # ── High-level loader entry point ──────────────────────────────────────

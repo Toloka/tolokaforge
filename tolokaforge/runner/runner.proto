@@ -256,6 +256,45 @@ message JudgeReport {
   // recorded transcript is the source of truth for "what did the judge see /
   // do". Empty string when no transcript was captured.
   string transcript_json = 7;
+  // Number of submit_report attempts rejected for a verdict/justification marker
+  // mismatch on this trial (distinct from generic schema rejections). 0 when the
+  // judge's verdicts all matched their justifications.
+  int32 consistency_rejections = 8;
+  // Whether the judge was constructed to withhold knowledge-search tools
+  // (grading.llm_judge.customization.disable_knowledge_search). The authoritative
+  // replay signal: true means config withheld KB, regardless of whether the
+  // agent had any KB tool this trial.
+  bool knowledge_search_disabled = 9;
+  // KB-tagged tools the judge was actually offered this trial (e.g. search_kb, a
+  // search_policy passthrough). Audit detail.
+  repeated string kb_tools_offered = 10;
+  // KB-tagged tools the agent had this trial that the judge withheld by config.
+  // Empty when nothing was gated (flag off, or agent had no KB). Audit detail.
+  repeated string kb_tools_withheld = 11;
+  // The initial -> final DB state-delta string the judge was handed as its
+  // primary outcome view (the agent's own edits; see _build_judge_state_diff).
+  // Empty string when no diff was built (non-DB task, or a DB read hiccup
+  // degraded to no diff). Offline replay rebuilds the judge's opening message
+  // from this exact string.
+  string state_diff_text = 12;
+  // Non-KB read-only tools the judge was offered this trial: get_db_state /
+  // query_db (a DB reader was supplied) and read_file (a workspace existed). The
+  // KB surface lives in kb_tools_offered / kb_tools_withheld. Offline replay
+  // declares which live backends to shim from this list.
+  repeated string read_tools_offered = 13;
+  // Whether the judge ran with a custom system-prompt body
+  // (grading.llm_judge.customization.system_prompt). The harness always appends
+  // the marker contract regardless. The full custom text is recorded in
+  // task.yaml.grading_config, not here — this is the honest bool.
+  bool custom_system_prompt = 14;
+  // Whether the harness embedded the agent's policy / system prompt in the
+  // judge's opening-message evidence
+  // (grading.llm_judge.customization.include_agent_system_prompt). Explicit
+  // presence (optional): the semantic default is true (include), which fights
+  // proto3's false wire default, so the host must distinguish "field absent
+  // (legacy sender)" from "present and false" to avoid recording a false
+  // "gated out" for a run that included the policy.
+  optional bool include_agent_system_prompt = 15;
 }
 
 // Outcome of running the rubric judge. Keeps a judge malfunction distinct from a

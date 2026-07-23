@@ -167,6 +167,12 @@ to the agent model. See [GRADING.md](GRADING.md#llm-judge-rubric-grading) for th
 judge mechanism, the two weighting layers, the required-gate semantics, and the
 fail-loud ERRORED status.
 
+Authors write **only criteria** (never justifications). The judge, on the output
+side, ends every per-criterion justification with a trailing `VERDICT: MET` /
+`VERDICT: NOT MET` (binary) or `SCORE: <value>` (graded) marker line that must
+match its verdict; the marker is kept verbatim in each `criterion_results`
+justification in `grade.yaml`.
+
 ### Environment Variables
 
 | Variable | Description |
@@ -327,7 +333,7 @@ grade = engine.grade_trajectory(trajectory: Trajectory, final_env_state: dict)
 # Returns: Grade with binary_pass, score, components, reasons, state_diff
 # (deterministic components only — GradingEngine does NOT run the rubric judge)
 #
-# The rubric judge runs Runner-side (see core/grading/judge.run_rubric_judge),
+# The rubric judge runs Runner-side (see core/grading/judge.LLMJudge),
 # taking the run-level judge ModelConfig carried on TrialSpec.judge_model_config
 # (sourced from RunConfig.models["judge"]).
 ```

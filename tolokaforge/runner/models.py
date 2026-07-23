@@ -453,6 +453,48 @@ class CriterionResult(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class JudgeCustomization(BaseModel):
+    """Judge tool-surface customization, sibling of ``rubric`` under ``llm_judge``.
+
+    Tri-state ``disable_knowledge_search``: ``None`` (unset) means the faithful
+    default (the judge is offered whatever knowledge-search tools the agent had);
+    ``True`` withholds every knowledge-search tool from the judge's surface;
+    ``False`` explicitly keeps them (so a task can override a project default that
+    disabled them). Layered project→task by :func:`resolve_effective_judge_customization`.
+
+    ``system_prompt`` replaces the default judge system-prompt body; the harness
+    always appends the marker contract, so a custom prompt can never break
+    ``submit_report`` validation. ``None`` (unset) keeps the default prompt; a task
+    sets ``null`` to reset a project-level custom prompt back to the default. An
+    empty or whitespace-only string is rejected at load — a marker-only prompt is
+    almost certainly a mistake.
+
+    Tri-state ``include_agent_system_prompt``: ``None`` (unset) and ``True`` both
+    embed the agent's policy / system prompt in the judge's opening-message
+    evidence (today's behaviour); ``False`` omits that section so a self-contained
+    rubric grades without the agent's framing. Evidence gating, distinct from
+    ``system_prompt`` (which is the judge's own wording). A task sets ``true`` or
+    ``null`` to re-include over a project ``false``.
+    """
+
+    disable_knowledge_search: bool | None = None
+    system_prompt: str | None = None
+    include_agent_system_prompt: bool | None = None
+
+    model_config = {"extra": "forbid"}
+
+    @field_validator("system_prompt")
+    @classmethod
+    def _reject_blank_system_prompt(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError(
+                "grading.llm_judge.customization.system_prompt must not be empty or "
+                "whitespace-only; omit the key (or set it to null) to use the default "
+                "judge prompt."
+            )
+        return value
+
+
 class LLMJudgeConfig(BaseModel):
     """LLM-based grading configuration.
 
@@ -462,9 +504,12 @@ class LLMJudgeConfig(BaseModel):
     derived from the rubric's criteria (Stage 3), not author-specified. The
     judge *model* is no longer pinned here: it lives at the run level under
     ``RunConfig.models["judge"]`` and rides ``TrialSpec.judge_model_config``.
+    ``customization`` is attached only when a config layer sets it, so a task
+    with no customization block serializes an identical config.
     """
 
     rubric: Rubric  # Structured grading rubric
+    customization: JudgeCustomization | None = None
 
     model_config = {"extra": "forbid"}
 

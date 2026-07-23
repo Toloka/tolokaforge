@@ -34,6 +34,8 @@ from tolokaforge.core.models import (
     CriterionResult,
     Grade,
     GradeComponents,
+    JudgeInputs,
+    JudgeKbGating,
     JudgeStatus,
     JudgeUsage,
     TerminationReason,
@@ -205,6 +207,24 @@ def _build_judge_messages_json(
     return json.dumps(messages)
 
 
+def split_leading_system_message(
+    messages: list[dict[str, Any]],
+) -> tuple[str, list[dict[str, Any]]]:
+    """Split the judge wire messages into ``(agent_system_prompt, transcript)``.
+
+    Inverse of the leading-system-message prepend in
+    :func:`_build_judge_messages_json`: the agent's policy is the transcript's
+    leading ``system`` message, lifted out so it is injected as the judge's
+    view of the agent policy rather than replayed as a conversational turn.
+    Returns ``("", messages)`` unchanged when there is no leading system
+    message. Shared by the runner's grading path and the offline judge replay
+    so both reconstruct the judge's ``run()`` inputs identically.
+    """
+    if messages and str(messages[0].get("role", "")).lower() == "system":
+        return str(messages[0].get("content", "") or ""), list(messages[1:])
+    return "", list(messages)
+
+
 def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
     """Materialise a :class:`Grade` from the runner's ``grade_trial`` dict.
 
@@ -227,8 +247,16 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
 
     judge_usage: JudgeUsage | None = None
     judge_transcript: list[dict[str, Any]] | None = None
+    judge_kb_gating: JudgeKbGating | None = None
+    judge_inputs: JudgeInputs | None = None
+    judge_custom_prompt: bool | None = None
+    judge_agent_prompt_included: bool | None = None
     raw_report = raw_grade.get("judge_report")
     if raw_report:
+        judge_custom_prompt = raw_report.get("custom_system_prompt", False)
+        # Default include: a legacy/skewed runner that never carried field 15
+        # graded with the agent policy present, so its faithful value is True.
+        judge_agent_prompt_included = raw_report.get("include_agent_system_prompt", True)
         judge_usage = JudgeUsage(
             calls=raw_report.get("calls", 0),
             prompt_tokens=raw_report.get("prompt_tokens", 0),
@@ -236,6 +264,18 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
             reasoning_tokens=raw_report.get("reasoning_tokens", 0),
             cost_usd=raw_report.get("cost_usd", 0.0),
             tool_calls=raw_report.get("tool_calls", 0),
+            consistency_rejections=raw_report.get("consistency_rejections", 0),
+        )
+        judge_kb_gating = JudgeKbGating(
+            knowledge_search_disabled=raw_report.get("knowledge_search_disabled", False),
+            offered=list(raw_report.get("kb_tools_offered", [])),
+            withheld=list(raw_report.get("kb_tools_withheld", [])),
+        )
+        # The judge's non-derivable run() inputs. An empty state_diff_text is the
+        # wire encoding of "no diff was built" — map it back to None.
+        judge_inputs = JudgeInputs(
+            state_diff_text=raw_report.get("state_diff_text") or None,
+            read_tools_offered=list(raw_report.get("read_tools_offered", [])),
         )
         raw_transcript = raw_report.get("transcript_json")
         if raw_transcript:
@@ -261,4 +301,8 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
         judge_status=JudgeStatus.from_proto(raw_grade.get("judge_status", 0)),
         judge_usage=judge_usage,
         judge_transcript=judge_transcript,
+        judge_kb_gating=judge_kb_gating,
+        judge_inputs=judge_inputs,
+        judge_custom_prompt=judge_custom_prompt,
+        judge_agent_prompt_included=judge_agent_prompt_included,
     )

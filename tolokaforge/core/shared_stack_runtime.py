@@ -536,7 +536,24 @@ class GrpcRunnerClient:
                             "reasoning_tokens": grade.judge_report.reasoning_tokens,
                             "cost_usd": grade.judge_report.cost_usd,
                             "tool_calls": grade.judge_report.tool_calls,
+                            "consistency_rejections": grade.judge_report.consistency_rejections,
                             "transcript_json": grade.judge_report.transcript_json,
+                            "knowledge_search_disabled": grade.judge_report.knowledge_search_disabled,
+                            "kb_tools_offered": list(grade.judge_report.kb_tools_offered),
+                            "kb_tools_withheld": list(grade.judge_report.kb_tools_withheld),
+                            "state_diff_text": grade.judge_report.state_diff_text,
+                            "read_tools_offered": list(grade.judge_report.read_tools_offered),
+                            "custom_system_prompt": grade.judge_report.custom_system_prompt,
+                            # Omitted when the sending runner has no field 15 (legacy
+                            # or version-skewed), so the parse-side include default
+                            # fires rather than proto3's false wire default.
+                            **(
+                                {
+                                    "include_agent_system_prompt": grade.judge_report.include_agent_system_prompt
+                                }
+                                if grade.judge_report.HasField("include_agent_system_prompt")
+                                else {}
+                            ),
                         }
                         if grade.HasField("judge_report")
                         else None

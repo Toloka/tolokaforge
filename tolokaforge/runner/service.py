@@ -33,12 +33,13 @@ from typing import Any
 import grpc
 from pydantic import ValidationError
 
-from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, run_rubric_judge
+from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, LLMJudge
 from tolokaforge.core.grading.judge_tools import DelegatingReadTool
 from tolokaforge.core.grading.kb_search import KnowledgeSearch, RagServiceKnowledgeSearch
 from tolokaforge.core.grading.state_diff import render_state_diff
 from tolokaforge.core.models import CriterionResult, LLMJudgeConfig, ModelConfig
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, TrialSpec
+from tolokaforge.core.trial_grader import split_leading_system_message
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner import runner_pb2_grpc
 from tolokaforge.runner.db_client import (
@@ -1155,7 +1156,15 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     reasoning_tokens=judge_result.usage.reasoning_tokens,
                     cost_usd=judge_result.usage.cost_usd,
                     tool_calls=judge_result.usage.tool_calls,
+                    consistency_rejections=judge_result.usage.consistency_rejections,
                     transcript_json=json.dumps(list(judge_result.transcript)),
+                    knowledge_search_disabled=judge_result.knowledge_search_disabled,
+                    kb_tools_offered=list(judge_result.kb_tools_offered),
+                    kb_tools_withheld=list(judge_result.kb_tools_withheld),
+                    state_diff_text=judge_result.state_diff or "",
+                    read_tools_offered=list(judge_result.read_tools_offered),
+                    custom_system_prompt=judge_result.custom_system_prompt,
+                    include_agent_system_prompt=judge_result.include_agent_system_prompt,
                 )
                 if judge_result.status is JudgeStatus.ERRORED:
                     # Fail loud: the judge component is incomplete, NOT zero. Leave
@@ -1250,7 +1259,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         """Run the read-only rubric judge for one trial.
 
         Async/sync bridge: ``_grade_trial_async`` runs ON the dedicated event
-        loop thread. The judge loop (``run_rubric_judge``) is synchronous and the
+        loop thread. The judge loop (``LLMJudge.run``) is synchronous and the
         DB client is async, so we run the judge in a *thread executor*
         (``run_in_executor``) and give its read-only DB tools a ``DBReader`` that
         bridges each call back to this loop via
@@ -1276,13 +1285,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 return {"results": fut.result(timeout=30.0).results}
 
         # Agent policy comes from the transcript's leading system message (the
-        # only oracle-free policy signal the runner has). Stripped from the
+        # only oracle-free policy signal the runner has). Split from the
         # transcript so it is injected as policy, not replayed as a turn.
-        agent_system_prompt = ""
-        transcript = list(llm_messages)
-        if transcript and str(transcript[0].get("role", "")).lower() == "system":
-            agent_system_prompt = str(transcript[0].get("content", "") or "")
-            transcript = transcript[1:]
+        agent_system_prompt, transcript = split_leading_system_message(list(llm_messages))
 
         # search_kb only when a KnowledgeSearch was resolved for THIS trial at
         # setup — the SAME per-trial index the agent's KB tool searched. Faithful
@@ -1338,10 +1343,27 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             )
             state_diff_text = None
 
+        # Judge-side tool gating. The agent's tool surface is
+        # untouched: the runner still resolves kb_search / extra_read_tools
+        # faithfully above; the judge withholds the KB-tagged ones by construction
+        # when the effective customization asks for it. Absent/None → False.
+        customization = llm_judge_config.customization
+        disable_knowledge_search = bool(customization and customization.disable_knowledge_search)
+        custom_system_prompt = customization.system_prompt if customization else None
+        include_agent_system_prompt = (
+            customization.include_agent_system_prompt
+            if customization and customization.include_agent_system_prompt is not None
+            else True
+        )
+
         def _run() -> JudgeResult:
-            return run_rubric_judge(
+            return LLMJudge(
+                judge_model_config,
+                disable_knowledge_search=disable_knowledge_search,
+                custom_system_prompt=custom_system_prompt,
+                include_agent_system_prompt=include_agent_system_prompt,
+            ).run(
                 rubric=llm_judge_config.rubric,
-                model_config=judge_model_config,
                 agent_system_prompt=agent_system_prompt,
                 transcript=transcript,
                 db_reader=_LoopBridgeDBReader(),
@@ -1476,6 +1498,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     description=schema.description,
                     parameters=schema.parameters,
                     invoke=_make_invoke(agent_tool),
+                    knowledge_search=True,
                 )
             )
 
@@ -2133,8 +2156,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             trial_context.clear_kb_search()
             del self.trials[trial_id]
 
-        # KNOWN PRE-EXISTING LIMITATION (issue #95, judge_kb_resolver Stage 5):
-        # the mcp_core TypeSense client handle registered by
+        # KNOWN LIMITATION: the mcp_core TypeSense client handle registered by
         # ``_init_typesense_for_trial`` (via mcp_core's
         # ``initialize_typesense_for_domain``) is NOT torn down here. mcp_core is
         # an optional, lazily-imported dependency that is not importable in this

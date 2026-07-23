@@ -17,6 +17,15 @@ from tolokaforge.core.budgets import LimitHitMarker, make_budget
 from tolokaforge.core.dry_run import load_tasks_for_dry_run, materialize_dry_run_sample
 from tolokaforge.core.duration import parse_duration
 from tolokaforge.core.engine_run_state import read_persisted_presets_file
+from tolokaforge.core.grading.replay import (
+    KnowledgeSearchMode,
+    ReplayOutcomeStatus,
+    ReplayReport,
+    TrialReplayOutcome,
+    emit_replay_report,
+    load_grading_override,
+    run_replay_batch,
+)
 from tolokaforge.core.llm.client import LLMClient
 from tolokaforge.core.llm.fallback_client import FallbackLLMClient
 from tolokaforge.core.llm.presets import (
@@ -160,6 +169,7 @@ class _GroupedCommandsGroup(click.Group):
         "status": "Runs",
         "analyze": "Runs",
         "browse": "Runs",
+        "rejudge": "Runs",
         "validate": "Tasks",
         "docker": "Docker",
         "config": "Config",
@@ -773,6 +783,160 @@ def run(
     emit_artifact_path(output_dir)
 
 
+def _print_rejudge_summary(
+    outcomes: list[TrialReplayOutcome], *, replay_id: str, source: Path, dry_run: bool
+) -> None:
+    """Print the batch disposition per trial + the aggregate counts."""
+    label = "Would re-judge" if dry_run else "Re-judged"
+    for outcome in outcomes:
+        rel = outcome.bundle
+        if outcome.status is ReplayOutcomeStatus.SKIPPED_NOT_APPLICABLE:
+            console.print(f"[yellow]skip (not applicable)[/yellow] {rel}")
+        elif outcome.status is ReplayOutcomeStatus.FAILED:
+            console.print(f"[red]failed[/red] {rel} — {outcome.reason}")
+        else:
+            prov = outcome.provenance
+            model = prov.judge_model if prov else "?"
+            console.print(
+                f"[green]{label.lower()}[/green] {rel} "
+                f"[dim](judge={model}, rubric={prov.rubric_source.value if prov else '?'}, "
+                f"kb={prov.knowledge_search_mode.value if prov else '?'}, "
+                f"fidelity={prov.fidelity_mode.value if prov else '?'})[/dim]"
+            )
+
+    eligible = sum(
+        o.status in (ReplayOutcomeStatus.REPLAYED, ReplayOutcomeStatus.WOULD_REPLAY)
+        for o in outcomes
+    )
+    skipped = sum(o.status is ReplayOutcomeStatus.SKIPPED_NOT_APPLICABLE for o in outcomes)
+    failed = sum(o.status is ReplayOutcomeStatus.FAILED for o in outcomes)
+    console.print(
+        f"\n[bold]{label}:[/bold] {eligible} eligible, "
+        f"{skipped} skipped-not-applicable, {failed} failed-with-reason"
+    )
+    if not dry_run and eligible:
+        console.print(f"Replay artifacts: {source / 'replays' / replay_id}")
+
+
+def _print_replay_report(report: ReplayReport) -> None:
+    """Print the per-run comparison summary (agreement + deltas + judge spend)."""
+    rate = "n/a" if report.agreement_rate is None else f"{report.agreement_rate:.1%}"
+    delta = (
+        "n/a"
+        if report.aggregate_llm_judge_delta is None
+        else f"{report.aggregate_llm_judge_delta:+.3f}"
+    )
+    console.print(
+        f"[bold]Agreement:[/bold] {rate} "
+        f"({report.criteria_agreed}/{report.criteria_compared} criteria); "
+        f"[bold]aggregate llm_judge delta:[/bold] {delta}"
+    )
+    usage = report.replay_usage
+    console.print(
+        f"[bold]Judge spend:[/bold] ${usage.cost_usd:.4f} "
+        f"({usage.calls} calls, {usage.prompt_tokens}+{usage.completion_tokens} tokens)"
+    )
+    console.print(f"[dim]{report.carried_components}[/dim]")
+
+
+@cli.command(name="rejudge")
+@click.option(
+    "--source",
+    required=True,
+    type=click.Path(exists=True, file_okay=False),
+    help=(
+        "Recorded run dir (trials/<task>/<idx> subtree), a flat collection of trial "
+        "bundle dirs, or a single bundle dir. A directory is a bundle iff it contains "
+        "grade.yaml + task.yaml."
+    ),
+)
+@click.option(
+    "--trial",
+    default=None,
+    type=click.Path(exists=True, file_okay=False),
+    help="Re-judge a single bundle dir instead of the whole --source (default: whole source).",
+)
+@click.option(
+    "--judge-model",
+    default=None,
+    help=(
+        "Override the judge model as <provider>/<model> "
+        "(e.g. openrouter/openai/gpt-4.1-mini), temperature 0. "
+        "Default: the recorded model_config.judge."
+    ),
+)
+@click.option(
+    "--grading",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False),
+    help=(
+        "Override the rubric with a supplied grading.yaml (or a bare rubric mapping). "
+        "Required for old bundles that did not record a rubric. Default: the recorded rubric."
+    ),
+)
+@click.option(
+    "--knowledge-search",
+    "knowledge_search",
+    type=click.Choice([m.value for m in KnowledgeSearchMode]),
+    default=KnowledgeSearchMode.RECORDED.value,
+    help=(
+        "Judge knowledge-search gating: 'recorded' honours the bundle's recorded "
+        "gating, 'on'/'off' force it. Default: recorded."
+    ),
+)
+@click.option(
+    "--replay-id",
+    default=None,
+    help="Name for this replay's artifact subdirectory (default: timestamped id).",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Discover + classify + resolve inputs and print what would replay, spending nothing.",
+)
+def rejudge(
+    source: str,
+    trial: str | None,
+    judge_model: str | None,
+    grading: str | None,
+    knowledge_search: str,
+    replay_id: str | None,
+    dry_run: bool,
+):
+    """Re-judge the rubric stage of recorded trials offline (judge-only spend).
+
+    Re-executes only the rubric judge over recorded trajectories — no agent re-run,
+    no live services — so judge changes (schema, prompt, wording, model) can be
+    A/B-tested against a recorded run. Execution is sequential with no concurrency
+    cap; inspect --dry-run first. Exits non-zero when any trial fails to classify
+    or reconstruct (the report for the replayed subset is still written). See
+    docs/JUDGE_REPLAY.md.
+    """
+    source_path = Path(source)
+    replay_id = replay_id or f"replay_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    grading_override = load_grading_override(Path(grading)) if grading else None
+
+    console.print(f"[bold blue]Re-judging trials under {source_path}...[/bold blue]")
+    outcomes = run_replay_batch(
+        source_path,
+        replay_id=replay_id,
+        trial=Path(trial) if trial else None,
+        grading_override=grading_override,
+        judge_model_override=judge_model,
+        knowledge_search=KnowledgeSearchMode(knowledge_search),
+        dry_run=dry_run,
+    )
+    _print_rejudge_summary(outcomes, replay_id=replay_id, source=source_path, dry_run=dry_run)
+
+    if not dry_run:
+        report = emit_replay_report(outcomes, source=source_path, replay_id=replay_id)
+        if report is not None:
+            _print_replay_report(report)
+
+    if any(o.status is ReplayOutcomeStatus.FAILED for o in outcomes):
+        raise SystemExit(1)
+
+
 @cli.command(name="prepare")
 @click.option(
     "--config", required=True, type=click.Path(exists=True), help="Path to run config YAML"
@@ -1052,7 +1216,7 @@ def validate(tasks: str):
 def _collect_run_spend_and_tokens(run_dir: Path) -> tuple[float, int, int]:
     """Aggregate spend / prompt-tokens / completion-tokens from per-trial metrics.
 
-    Reads the Stage-5 ``metrics.yaml`` shape: ``usage.prompt_tokens`` /
+    Reads the ``metrics.yaml`` usage shape: ``usage.prompt_tokens`` /
     ``usage.completion_tokens`` (plus cache and reasoning counters, ignored
     here — they are surfaced by the aggregate reporter under ``tools/``).
     """

@@ -1,10 +1,14 @@
-"""`tolokaforge validate` rejects the pre-Stage-2 free-text rubric shape.
+"""Load-time schema rejection of the ``grading.llm_judge`` block.
 
-Rubric grading moved from a free-text ``rubric: str`` (+ ignored
-``output_schema``) blob to a structured ``Rubric``. The migration is an
-intentional, non-back-compatible break (docs/RUBRIC_GRADING_DESIGN.md). ``validate``
-must catch the old shape at validate time with a message that names the field
-and shows the new shape — not defer the failure to run time.
+Two contracts are locked here, both surfacing at load time (``validate`` /
+``validate_grading_yaml``), not deferred to run time:
+
+* The removed free-text ``rubric: str`` (+ ignored ``output_schema``) shape is
+  an intentional, non-back-compatible break (docs/RUBRIC_GRADING_DESIGN.md) —
+  rejected with a message that names the field and shows the new shape.
+* The ``llm_judge.customization`` block (and its project-defaults twin
+  ``grading_defaults.llm_judge.customization``) rejects malformed values and
+  unknown keys, the message naming the offending field.
 """
 
 from __future__ import annotations
@@ -16,6 +20,7 @@ import pytest
 from click.testing import CliRunner
 
 from tolokaforge.adapters._task_loader import validate_grading_yaml
+from tolokaforge.core.models import GradingDefaults
 from tolokaforge.dx.cli.main import cli
 
 pytestmark = pytest.mark.unit
@@ -132,6 +137,32 @@ def test_validate_accepts_structured_rubric(tmp_path: Path):
     assert "1 valid, 0 invalid" in result.stderr
 
 
+def test_validate_accepts_customization_block(tmp_path: Path):
+    """A well-formed ``llm_judge.customization`` block passes ``tolokaforge validate``."""
+    task_file = _write_task(
+        tmp_path / "customized_rubric",
+        """
+        combine:
+          method: weighted
+          weights:
+            llm_judge: 1.0
+        llm_judge:
+          customization:
+            disable_knowledge_search: true
+            system_prompt: "Grade strictly against the policy handbook."
+          rubric:
+            criteria:
+              - id: refund_amount
+                description: "Reply quotes the correct refund amount"
+                kind: binary
+                weight: 1.0
+        """,
+    )
+
+    result = CliRunner(mix_stderr=False).invoke(cli, ["validate", "--tasks", str(task_file)])
+    assert "1 valid, 0 invalid" in result.stderr
+
+
 def test_validate_grading_yaml_rejects_removed_output_schema(tmp_path: Path):
     """The output_schema field is gone; its presence is a loud migration error."""
     grading = tmp_path / "grading.yaml"
@@ -151,3 +182,97 @@ def test_validate_grading_yaml_rejects_removed_output_schema(tmp_path: Path):
 
     with pytest.raises(ValueError, match="output_schema has been removed"):
         validate_grading_yaml(grading)
+
+
+# ---------------------------------------------------------------------------
+# llm_judge.customization schema rejection — task + project layers
+# ---------------------------------------------------------------------------
+
+
+def _grading_with_customization(customization_block: str) -> str:
+    """A valid rubric grading.yaml carrying a customization sub-block. The rubric
+    is REQUIRED: ``validate_grading_yaml`` constructs ``LLMJudgeConfig`` only when a
+    rubric (or ``model_ref``) is present, so without it the malformed block is never
+    validated and the check false-greens."""
+    return f"""
+    llm_judge:
+      rubric:
+        criteria:
+          - id: a
+            description: d
+            kind: binary
+            weight: 1.0
+      customization:
+    {textwrap.indent(textwrap.dedent(customization_block).strip(), "        ")}
+    """
+
+
+@pytest.mark.parametrize(
+    "customization_block, match",
+    [
+        ("disable_knowledge_search: sometimes", "disable_knowledge_search"),
+        ("typo_key: true", "typo_key"),
+        ("system_prompt: 123", "system_prompt"),
+        ('system_prompt: ""', "empty"),
+        ("include_agent_system_prompt: sometimes", "include_agent_system_prompt"),
+    ],
+    ids=[
+        "malformed_value",
+        "unknown_key",
+        "malformed_system_prompt_type",
+        "empty_system_prompt",
+        "malformed_include_agent_system_prompt_type",
+    ],
+)
+def test_validate_grading_yaml_rejects_malformed_customization(
+    tmp_path: Path, customization_block: str, match: str
+):
+    grading = tmp_path / "grading.yaml"
+    grading.write_text(textwrap.dedent(_grading_with_customization(customization_block)).strip())
+
+    with pytest.raises(Exception, match=match):
+        validate_grading_yaml(grading)
+
+
+def test_validate_grading_yaml_skips_customization_without_rubric(tmp_path: Path):
+    """Without a rubric, ``validate_grading_yaml`` never constructs ``LLMJudgeConfig``,
+    so a malformed customization is NOT caught here — the reason the rejection
+    fixtures above must carry a valid rubric to avoid a false green."""
+    grading = tmp_path / "grading.yaml"
+    grading.write_text(
+        textwrap.dedent(
+            """
+            llm_judge:
+              customization:
+                disable_knowledge_search: sometimes
+            """
+        ).strip()
+    )
+
+    validate_grading_yaml(grading)  # no rubric/model_ref → no validation, no raise
+
+
+@pytest.mark.parametrize(
+    "customization, match",
+    [
+        ({"disable_knowledge_search": "sometimes"}, "disable_knowledge_search"),
+        ({"typo_key": True}, "typo_key"),
+        ({"system_prompt": 123}, "system_prompt"),
+        ({"system_prompt": ""}, "empty"),
+        ({"include_agent_system_prompt": "sometimes"}, "include_agent_system_prompt"),
+    ],
+    ids=[
+        "malformed_value",
+        "unknown_key",
+        "malformed_system_prompt_type",
+        "empty_system_prompt",
+        "malformed_include_agent_system_prompt_type",
+    ],
+)
+def test_project_grading_defaults_reject_malformed_customization(customization: dict, match: str):
+    """The project-defaults layer (``grading_defaults.llm_judge.customization``) is
+    locked at project-config parse time. ``GradingDefaults`` has no ``extra="forbid"``,
+    so the rejection rests entirely on ``LLMJudgeDefaults`` / ``JudgeCustomization``
+    each carrying it."""
+    with pytest.raises(Exception, match=match):
+        GradingDefaults(llm_judge={"customization": customization})
