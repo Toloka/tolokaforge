@@ -220,6 +220,13 @@ class ReplayProvenance(BaseModel):
     # rubric-only override never clears a recorded custom prompt.
     custom_system_prompt: bool
     custom_prompt_source: ProvenanceSource | None
+    # Whether the agent policy was embedded in the judge's evidence for this replay,
+    # and where the decision came from — RECORDED (the bundle's task.yaml
+    # customization) or OVERRIDE (a --grading override carrying it); None when
+    # defaulted (no recorded value, no override), which is always the include
+    # default. Resolved independently of the rubric.
+    include_agent_system_prompt: bool
+    agent_prompt_source: ProvenanceSource | None
     fidelity_mode: FidelityMode
 
     model_config = {"extra": "forbid"}
@@ -237,6 +244,20 @@ class ReplayProvenance(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _agent_prompt_fields_coherent(self) -> ReplayProvenance:
+        """A defaulted stamp (``agent_prompt_source is None``) can only be the
+        include default — an explicit ``true`` or ``false`` both carry a source. The
+        one-way implication ``source is None ⟹ include is True``; unlike the custom
+        prompt this is NOT a biconditional, because an explicit-true value carries a
+        source yet still includes."""
+        if self.agent_prompt_source is None and self.include_agent_system_prompt is not True:
+            raise ValueError(
+                "include_agent_system_prompt must be True when agent_prompt_source is "
+                f"None (got include_agent_system_prompt={self.include_agent_system_prompt})"
+            )
+        return self
+
 
 @dataclass(frozen=True)
 class ReplayInputs:
@@ -251,6 +272,7 @@ class ReplayInputs:
     disable_knowledge_search: bool
     custom_system_prompt: str | None
     provenance: ReplayProvenance
+    include_agent_system_prompt: bool = True
     db_reader: DBReader | None = None
     kb_search: KnowledgeSearch | None = None
     extra_read_tools: list[Tool] = field(default_factory=list)
@@ -269,16 +291,18 @@ def _load_yaml(path: Path) -> dict[str, Any] | None:
 
 @dataclass(frozen=True)
 class GradingOverride:
-    """A ``--grading`` override: a rubric plus an optional custom judge prompt.
+    """A ``--grading`` override: a rubric plus optional judge customization.
 
-    Both live under ``llm_judge`` in the override document, so one file swaps the
-    rubric AND (when it carries a ``customization.system_prompt``) the judge prompt.
-    ``custom_system_prompt`` is ``None`` when the override carries no prompt — a
-    rubric-only override, which leaves any recorded prompt untouched at resolution.
+    All live under ``llm_judge`` in the override document, so one file swaps the
+    rubric AND (when it carries them) the judge prompt / agent-policy gating.
+    ``custom_system_prompt`` / ``include_agent_system_prompt`` are ``None`` when the
+    override carries neither — a rubric-only override, which leaves any recorded
+    value untouched at resolution.
     """
 
     rubric: Rubric
     custom_system_prompt: str | None
+    include_agent_system_prompt: bool | None
 
 
 def load_grading_override(grading_path: Path) -> GradingOverride:
@@ -297,10 +321,19 @@ def load_grading_override(grading_path: Path) -> GradingOverride:
     if isinstance(llm_judge, dict) and "rubric" in llm_judge:
         config = LLMJudgeConfig.model_validate(llm_judge)
         custom = config.customization.system_prompt if config.customization else None
-        return GradingOverride(rubric=config.rubric, custom_system_prompt=custom)
+        include_agent = (
+            config.customization.include_agent_system_prompt if config.customization else None
+        )
+        return GradingOverride(
+            rubric=config.rubric,
+            custom_system_prompt=custom,
+            include_agent_system_prompt=include_agent,
+        )
     if "rubric" in data:
         return GradingOverride(
-            rubric=Rubric.model_validate(data["rubric"]), custom_system_prompt=None
+            rubric=Rubric.model_validate(data["rubric"]),
+            custom_system_prompt=None,
+            include_agent_system_prompt=None,
         )
     raise MissingReplayInputError(
         f"grading override {grading_path} has no llm_judge.rubric or rubric block"
@@ -365,6 +398,37 @@ def _resolve_custom_prompt(
         raise MissingReplayInputError(
             f"recorded customization.system_prompt in {trial_dir / 'task.yaml'} "
             "is blank or not a string"
+        )
+    return recorded, ProvenanceSource.RECORDED
+
+
+def _resolve_include_agent_system_prompt(
+    trial_dir: Path, task: dict[str, Any] | None, grading_override: GradingOverride | None
+) -> tuple[bool, ProvenanceSource | None]:
+    """Resolve whether the agent policy is embedded in the judge's evidence.
+
+    The override wins only when it carries an explicit value; otherwise the
+    recorded task-config value survives — a rubric-only ``--grading`` override must
+    never silently flip a recorded gating. Defaults to ``(True, None)`` (include —
+    old bundles and bundles with no recorded value graded with the policy present).
+    A recorded value that is not a bool fails loud — the writer never records one,
+    so it is a corrupted or hand-edited bundle.
+    """
+    if grading_override is not None and grading_override.include_agent_system_prompt is not None:
+        return grading_override.include_agent_system_prompt, ProvenanceSource.OVERRIDE
+    llm_judge = ((task or {}).get("grading_config") or {}).get("llm_judge")
+    customization = llm_judge.get("customization") if isinstance(llm_judge, dict) else None
+    recorded = (
+        customization.get("include_agent_system_prompt")
+        if isinstance(customization, dict)
+        else None
+    )
+    if recorded is None:
+        return True, None
+    if not isinstance(recorded, bool):
+        raise MissingReplayInputError(
+            f"recorded customization.include_agent_system_prompt in "
+            f"{trial_dir / 'task.yaml'} is not a bool"
         )
     return recorded, ProvenanceSource.RECORDED
 
@@ -468,6 +532,9 @@ def read_replay_inputs(
     custom_system_prompt, custom_prompt_source = _resolve_custom_prompt(
         trial_dir, task, grading_override
     )
+    include_agent_system_prompt, agent_prompt_source = _resolve_include_agent_system_prompt(
+        trial_dir, task, grading_override
+    )
     judge_model_config, judge_model_source = _resolve_judge_model(task, judge_model_override)
 
     trajectory = Trajectory.model_validate(trajectory_raw)
@@ -497,6 +564,8 @@ def read_replay_inputs(
         knowledge_search_disabled=disable_knowledge_search,
         custom_system_prompt=custom_system_prompt is not None,
         custom_prompt_source=custom_prompt_source,
+        include_agent_system_prompt=include_agent_system_prompt,
+        agent_prompt_source=agent_prompt_source,
         fidelity_mode=fidelity_mode,
     )
 
@@ -508,6 +577,7 @@ def read_replay_inputs(
         judge_model_config=judge_model_config,
         disable_knowledge_search=disable_knowledge_search,
         custom_system_prompt=custom_system_prompt,
+        include_agent_system_prompt=include_agent_system_prompt,
         db_reader=db_reader,
         kb_search=kb_search,
         extra_read_tools=extra_read_tools,
@@ -533,6 +603,7 @@ def replay_trial(inputs: ReplayInputs, *, judge_client: LLMClient | None = None)
         inputs.judge_model_config,
         disable_knowledge_search=inputs.disable_knowledge_search,
         custom_system_prompt=inputs.custom_system_prompt,
+        include_agent_system_prompt=inputs.include_agent_system_prompt,
         llm_client=judge_client,
     )
     return judge.run(
@@ -649,6 +720,7 @@ def build_replay_grade(result: JudgeResult) -> Grade:
             read_tools_offered=list(result.read_tools_offered),
         ),
         judge_custom_prompt=result.custom_system_prompt,
+        judge_agent_prompt_included=result.include_agent_system_prompt,
     )
 
 

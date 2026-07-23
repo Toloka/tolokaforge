@@ -106,6 +106,7 @@ def _write_bundle(
     with_rubric: bool = True,
     kb_gating: JudgeKbGating | None = None,
     recorded_system_prompt: str | None = None,
+    recorded_include_agent_system_prompt: bool | None = None,
 ) -> Trajectory:
     """Write a new-shape bundle via the real writer; return the source trajectory."""
     writer = FileArtifactWriter()
@@ -115,8 +116,13 @@ def _write_bundle(
 
     if with_rubric:
         llm_judge: dict = {"rubric": _RUBRIC}
+        customization: dict = {}
         if recorded_system_prompt is not None:
-            llm_judge["customization"] = {"system_prompt": recorded_system_prompt}
+            customization["system_prompt"] = recorded_system_prompt
+        if recorded_include_agent_system_prompt is not None:
+            customization["include_agent_system_prompt"] = recorded_include_agent_system_prompt
+        if customization:
+            llm_judge["customization"] = customization
         grading_config = {"llm_judge": llm_judge}
     else:
         grading_config = {"llm_judge": None}
@@ -319,11 +325,15 @@ def test_knowledge_search_override_forces_gating(tmp_path: Path) -> None:
     assert recorded_result.kb_tools_withheld == ("search_kb",)
 
 
-def _grading_override(system_prompt: str | None = None) -> GradingOverride:
+def _grading_override(
+    system_prompt: str | None = None, include_agent_system_prompt: bool | None = None
+) -> GradingOverride:
     from tolokaforge.runner.models import Rubric
 
     return GradingOverride(
-        rubric=Rubric.model_validate(_RUBRIC), custom_system_prompt=system_prompt
+        rubric=Rubric.model_validate(_RUBRIC),
+        custom_system_prompt=system_prompt,
+        include_agent_system_prompt=include_agent_system_prompt,
     )
 
 
@@ -446,6 +456,129 @@ def test_provenance_rejects_incoherent_custom_prompt_stamp() -> None:
             knowledge_search_disabled=False,
             custom_system_prompt=False,
             custom_prompt_source=ProvenanceSource.RECORDED,
+            include_agent_system_prompt=True,
+            agent_prompt_source=None,
+            fidelity_mode=FidelityMode.FULL,
+        )
+
+
+def test_recorded_agent_prompt_gating_is_reconstructed_and_stamped(tmp_path: Path) -> None:
+    """A bundle whose task.yaml records ``include_agent_system_prompt: false``
+    reconstructs the gating, the judge is constructed with it, and provenance stamps
+    RECORDED."""
+    trial_dir = tmp_path / "trials" / "refund_task" / "0"
+    _write_bundle(
+        trial_dir,
+        judge_status=JudgeStatus.COMPLETED,
+        judge_inputs=JudgeInputs(read_tools_offered=[]),
+        recorded_include_agent_system_prompt=False,
+    )
+
+    inputs = read_replay_inputs(trial_dir)
+
+    assert inputs.include_agent_system_prompt is False
+    assert inputs.provenance.include_agent_system_prompt is False
+    assert inputs.provenance.agent_prompt_source is ProvenanceSource.RECORDED
+
+    result = replay_trial(inputs, judge_client=_submit_report_client())
+    assert result.include_agent_system_prompt is False
+
+
+def test_grading_override_agent_prompt_gating_wins_over_recorded(tmp_path: Path) -> None:
+    """A --grading override carrying an explicit include_agent_system_prompt replaces
+    the recorded value; provenance stamps OVERRIDE."""
+    trial_dir = tmp_path / "trials" / "refund_task" / "0"
+    _write_bundle(
+        trial_dir,
+        judge_status=JudgeStatus.COMPLETED,
+        judge_inputs=JudgeInputs(read_tools_offered=[]),
+        recorded_include_agent_system_prompt=False,
+    )
+
+    inputs = read_replay_inputs(
+        trial_dir, grading_override=_grading_override(include_agent_system_prompt=True)
+    )
+
+    assert inputs.include_agent_system_prompt is True
+    assert inputs.provenance.include_agent_system_prompt is True
+    assert inputs.provenance.agent_prompt_source is ProvenanceSource.OVERRIDE
+
+
+def test_no_recorded_agent_prompt_gating_yields_include_default(tmp_path: Path) -> None:
+    """A bundle with no recorded gating ⇒ include default: True, source None (old
+    bundles graded with the policy present)."""
+    trial_dir = tmp_path / "trials" / "refund_task" / "0"
+    _write_bundle(
+        trial_dir,
+        judge_status=JudgeStatus.COMPLETED,
+        judge_inputs=JudgeInputs(read_tools_offered=[]),
+    )
+
+    inputs = read_replay_inputs(trial_dir)
+
+    assert inputs.include_agent_system_prompt is True
+    assert inputs.provenance.include_agent_system_prompt is True
+    assert inputs.provenance.agent_prompt_source is None
+
+
+def test_rubric_only_override_preserves_recorded_agent_prompt_gating(tmp_path: Path) -> None:
+    """A --grading override supplying a rubric but NO include_agent_system_prompt,
+    over a bundle that DOES record ``false``: the recorded gating survives (source
+    RECORDED) while the rubric is OVERRIDE — gating and rubric resolve
+    independently; a rubric-only override never flips a recorded gating."""
+    trial_dir = tmp_path / "trials" / "refund_task" / "0"
+    _write_bundle(
+        trial_dir,
+        judge_status=JudgeStatus.COMPLETED,
+        judge_inputs=JudgeInputs(read_tools_offered=[]),
+        recorded_include_agent_system_prompt=False,
+    )
+
+    inputs = read_replay_inputs(trial_dir, grading_override=_grading_override(None))
+
+    assert inputs.include_agent_system_prompt is False
+    assert inputs.provenance.agent_prompt_source is ProvenanceSource.RECORDED
+    assert inputs.provenance.rubric_source is ProvenanceSource.OVERRIDE
+
+
+def test_non_bool_recorded_agent_prompt_gating_fails_loud(tmp_path: Path) -> None:
+    """A recorded ``customization.include_agent_system_prompt`` that is not a bool is
+    a corrupted or hand-edited bundle — replay refuses it with a named error rather
+    than silently defaulting. Exercised under a rubric-only ``--grading`` override so
+    the resolver is the only guard (that path skips ``LLMJudgeConfig`` validation of
+    the recorded block)."""
+    trial_dir = tmp_path / "trials" / "refund_task" / "0"
+    _write_bundle(
+        trial_dir,
+        judge_status=JudgeStatus.COMPLETED,
+        judge_inputs=JudgeInputs(read_tools_offered=[]),
+        recorded_include_agent_system_prompt=False,
+    )
+    task = yaml.safe_load((trial_dir / "task.yaml").read_text())
+    task["grading_config"]["llm_judge"]["customization"][
+        "include_agent_system_prompt"
+    ] = "sometimes"
+    (trial_dir / "task.yaml").write_text(yaml.safe_dump(task))
+
+    with pytest.raises(MissingReplayInputError, match="include_agent_system_prompt"):
+        read_replay_inputs(trial_dir, grading_override=_grading_override(None))
+
+
+def test_provenance_rejects_incoherent_agent_prompt_stamp() -> None:
+    """``ReplayProvenance`` machine-enforces the one-way implication: a defaulted
+    stamp (``agent_prompt_source`` None) can only carry the include default, so
+    ``include_agent_system_prompt=False`` with no source is rejected."""
+    with pytest.raises(ValidationError, match="include_agent_system_prompt"):
+        ReplayProvenance(
+            judge_model="openrouter/openai/gpt-4.1-mini",
+            judge_model_source=ProvenanceSource.RECORDED,
+            rubric_source=ProvenanceSource.RECORDED,
+            knowledge_search_mode=KnowledgeSearchMode.RECORDED,
+            knowledge_search_disabled=False,
+            custom_system_prompt=False,
+            custom_prompt_source=None,
+            include_agent_system_prompt=False,
+            agent_prompt_source=None,
             fidelity_mode=FidelityMode.FULL,
         )
 
@@ -506,7 +639,9 @@ def test_not_applicable_trial_reported_skipped_even_with_grading_override(tmp_pa
         source,
         replay_id="r1",
         grading_override=GradingOverride(
-            rubric=Rubric.model_validate(_RUBRIC), custom_system_prompt=None
+            rubric=Rubric.model_validate(_RUBRIC),
+            custom_system_prompt=None,
+            include_agent_system_prompt=None,
         ),
         dry_run=True,
     )

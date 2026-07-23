@@ -739,6 +739,8 @@ knowledge_search_mode: recorded     # recorded | on | off
 knowledge_search_disabled: false
 custom_system_prompt: false         # whether a custom judge prompt was in effect
 custom_prompt_source: null          # "recorded" | "override" | null (default prompt)
+include_agent_system_prompt: true   # whether the agent policy was embedded in the judge's evidence
+agent_prompt_source: null           # "recorded" | "override" | null (defaulted to include)
 fidelity_mode: full                 # "full" (state_diff rebuilt) or "fallback" (old bundle, no state_diff)
 ```
 
@@ -747,6 +749,13 @@ rubric: a `--grading` override replaces the prompt only when it carries its own
 `llm_judge.customization.system_prompt`, so a rubric-only override over a
 custom-prompted bundle reads `rubric_source: override` while
 `custom_prompt_source: recorded`. See [`docs/JUDGE_REPLAY.md`](JUDGE_REPLAY.md#custom-judge-system-prompt).
+
+`include_agent_system_prompt` / `agent_prompt_source` follow the same independent
+resolution for the agent-policy gating: a `--grading` override flips the gating only
+when it carries its own `llm_judge.customization.include_agent_system_prompt`, and
+`agent_prompt_source` is `null` exactly when the gating defaulted to include (no
+recorded value, no override). See
+[`docs/JUDGE_REPLAY.md`](JUDGE_REPLAY.md#agent-policy-evidence-gating).
 
 ### `replay_report.yaml`
 

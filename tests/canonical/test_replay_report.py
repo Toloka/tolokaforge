@@ -54,6 +54,8 @@ def _provenance() -> ReplayProvenance:
         knowledge_search_disabled=False,
         custom_system_prompt=False,
         custom_prompt_source=None,
+        include_agent_system_prompt=True,
+        agent_prompt_source=None,
         fidelity_mode=FidelityMode.FULL,
     )
 

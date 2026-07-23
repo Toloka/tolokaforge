@@ -518,6 +518,7 @@ def _write_live_grade(tmp_path: Path, result) -> tuple[dict, dict]:
             offered=list(result.kb_tools_offered),
             withheld=list(result.kb_tools_withheld),
         ),
+        judge_agent_prompt_included=result.include_agent_system_prompt,
     )
     trial_dir = tmp_path / "trials" / "judge_customization" / "0"
     FileArtifactWriter().write_grade(trial_dir, grade)
@@ -587,3 +588,39 @@ def test_rubric_judge_live_judge_customization_baseline(tmp_path):
     assert gating["knowledge_search_disabled"] is False
     assert gating["offered"] == ["search_kb"]
     assert gating["withheld"] == []
+
+
+# ---------------------------------------------------------------------------
+# Judge customization acceptance — include_agent_system_prompt end-to-end
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(_MODEL_REF is None, reason="No OPENROUTER_API_KEY / OPENAI_API_KEY set")
+def test_rubric_judge_live_agent_prompt_gating_omits_policy(tmp_path):
+    """With ``include_agent_system_prompt=False`` the real judge grades end-to-end
+    with NO agent-policy section in its opening-message evidence: grading completes,
+    no consistency rejections, the recorded ``judge_trajectory.yaml`` opening message
+    carries neither the policy-framing sentence nor the agent prompt text, and
+    ``grade.yaml`` records ``judge_agent_prompt_included: false``."""
+    judge = LLMJudge(
+        model_config_from_ref(_MODEL_REF),
+        max_turns=10,
+        episode_timeout_s=180,
+        include_agent_system_prompt=False,
+    )
+    result = judge.run(
+        rubric=_rubric(),
+        agent_system_prompt=_AGENT_SYSTEM_PROMPT,
+        transcript=_TRANSCRIPT,
+        db_reader=_DictDBReader(_DB_STATE),
+    )
+
+    assert result.status is JudgeStatus.COMPLETED, result.reasons
+    assert result.usage.consistency_rejections == 0, result.reasons
+    assert result.include_agent_system_prompt is False
+
+    grade_yaml, traj_yaml = _write_live_grade(tmp_path, result)
+    assert grade_yaml["judge_agent_prompt_included"] is False
+    opening = traj_yaml["messages"][0]["content"]
+    assert "The agent under evaluation operated under this policy" not in opening
+    assert _AGENT_SYSTEM_PROMPT not in opening
