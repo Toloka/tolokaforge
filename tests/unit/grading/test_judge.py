@@ -11,7 +11,13 @@ from __future__ import annotations
 
 import pytest
 
-from tolokaforge.core.grading.judge import _JUDGE_SYSTEM_PROMPT, JudgeStatus, LLMJudge
+from tolokaforge.core.grading.judge import (
+    _JUDGE_MARKER_CONTRACT,
+    _JUDGE_SYSTEM_PROMPT,
+    JudgeStatus,
+    LLMJudge,
+    _compose_judge_system_prompt,
+)
 from tolokaforge.core.llm.client import GenerationResult
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.models import Message, MessageRole, ModelConfig, ToolCall
@@ -32,6 +38,7 @@ _LLM_JUDGE_CTOR_KEYS = (
     "episode_timeout_s",
     "submit_report_retries",
     "disable_knowledge_search",
+    "custom_system_prompt",
     "logger",
 )
 
@@ -1138,3 +1145,59 @@ def test_judge_system_prompt_carries_contract_tokens(token):
     not the full text.
     """
     assert token in _JUDGE_SYSTEM_PROMPT
+
+
+# ---------------------------------------------------------------------------
+# Custom system prompt — body replacement with an always-appended marker
+# ---------------------------------------------------------------------------
+
+_MARKER_TOKENS = ("VERDICT: MET", "VERDICT: NOT MET", "SCORE:")
+
+
+def test_compose_none_is_byte_for_byte_default():
+    """No custom prompt yields the default prompt unchanged, byte-for-byte."""
+    assert _compose_judge_system_prompt(None) == _JUDGE_SYSTEM_PROMPT
+
+
+def test_compose_custom_body_replaces_and_appends_marker():
+    """A custom body leads the prompt but cannot drop the marker contract: the
+    composed prompt starts with the custom text and still carries the full marker
+    contract with every enforced token."""
+    composed = _compose_judge_system_prompt("Custom judge voice.")
+
+    assert composed.startswith("Custom judge voice.")
+    assert _JUDGE_MARKER_CONTRACT in composed
+    for token in _MARKER_TOKENS:
+        assert token in composed
+
+
+@pytest.mark.parametrize("token", _MARKER_TOKENS)
+def test_marker_contract_is_the_single_source_of_the_tokens(token):
+    """The marker tokens live in ``_JUDGE_MARKER_CONTRACT`` — the one place the
+    default and every custom prompt draw the enforced contract from."""
+    assert token in _JUDGE_MARKER_CONTRACT
+
+
+def test_custom_system_prompt_recorded_on_result():
+    """A judge constructed with a custom prompt records ``custom_system_prompt``
+    True on its result; the default records False."""
+    rubric = _binary_rubric()
+
+    custom = _run_llm_judge(
+        rubric=rubric,
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="",
+        transcript=[],
+        custom_system_prompt="Grade only the refund.",
+        llm_client=ScriptedClient([[("submit_report", _submit_args(refund_done=True))]]),
+    )
+    assert custom.custom_system_prompt is True
+
+    default = _run_llm_judge(
+        rubric=rubric,
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="",
+        transcript=[],
+        llm_client=ScriptedClient([[("submit_report", _submit_args(refund_done=True))]]),
+    )
+    assert default.custom_system_prompt is False

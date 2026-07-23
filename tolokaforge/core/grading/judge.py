@@ -184,6 +184,10 @@ class JudgeResult:
     # ``knowledge_search_disabled=True`` with an empty ``kb_tools_withheld``.
     kb_tools_withheld: tuple[str, ...] = ()
     knowledge_search_disabled: bool = False
+    # Whether the judge ran with a custom system-prompt body (the default marker
+    # contract is always appended regardless). The full custom text is recorded in
+    # the bundle's ``task.yaml`` grading config, not here — this is the honest bool.
+    custom_system_prompt: bool = False
     # Non-KB read-only tools the judge was offered this trial: ``get_db_state`` /
     # ``query_db`` (a DB reader was supplied), ``read_file`` (a workspace existed).
     # The KB surface is ``kb_tools_offered`` / ``kb_tools_withheld``. Recorded so an
@@ -325,7 +329,10 @@ def _answer_terminating_submit_report(
 # Prompt construction (narrow input surface, by construction)
 # ---------------------------------------------------------------------------
 
-_JUDGE_SYSTEM_PROMPT = (
+#: The judge's grading stance. A custom ``system_prompt`` replaces this body; the
+#: marker contract below is always appended, so a custom voice can never break
+#: ``submit_report`` validation.
+_JUDGE_SYSTEM_PROMPT_BODY = (
     "You are a strict, evidence-based grading judge. You evaluate an AI agent's "
     "work against a rubric of independent criteria. Each criterion is "
     "self-contained: its text states everything that must be checked. Grade each "
@@ -343,12 +350,33 @@ _JUDGE_SYSTEM_PROMPT = (
     "the described behavior occurred as stated. If the behavior a criterion "
     "describes never occurred in the trajectory, the criterion FAILS — unless the "
     "criterion's own text explicitly states that it passes when the situation "
-    "never arises. For every criterion, write the evidence-based justification "
+    "never arises."
+)
+
+#: The enforced output contract — the marker form ``parse_submit_report`` validates.
+#: Appended to every judge system prompt (default or custom); the sole source of
+#: the marker sentence.
+_JUDGE_MARKER_CONTRACT = (
+    "For every criterion, write the evidence-based justification "
     "first and commit the verdict after it; end each justification with a final "
     "line 'VERDICT: MET' or 'VERDICT: NOT MET' (binary) / 'SCORE: <value in "
     "[0,1]>' (graded), and make that criterion's verdict field match it. When you "
     "have judged every criterion, call submit_report exactly once."
 )
+
+_JUDGE_SYSTEM_PROMPT = f"{_JUDGE_SYSTEM_PROMPT_BODY} {_JUDGE_MARKER_CONTRACT}"
+
+
+def _compose_judge_system_prompt(custom_system_prompt: str | None) -> str:
+    """Compose the judge system prompt, always ending with the marker contract.
+
+    ``None`` yields the byte-for-byte default prompt; a custom body replaces the
+    default grading stance while the marker contract stays appended, so
+    ``submit_report`` validation can never be silently broken.
+    """
+    if custom_system_prompt is None:
+        return _JUDGE_SYSTEM_PROMPT
+    return f"{custom_system_prompt.strip()}\n\n{_JUDGE_MARKER_CONTRACT}"
 
 
 def _format_transcript(transcript: list[dict[str, Any]]) -> str:
@@ -624,6 +652,8 @@ class LLMJudge:
     Construction-time config is *how to run the LLM judge* — the run-level
     ``model_config``, the turn / wall-time / retry budgets, ``disable_knowledge_search``
     (withhold every KB-tagged tool from the judge's surface, per ADR-0019), an
+    optional ``custom_system_prompt`` (replace the default grading-stance body; the
+    marker contract is always appended), an
     optionally injected ``llm_client`` (tests pass a scripted client; production
     passes ``None`` and the judge builds one ``LLMClient(model_config)`` per
     :meth:`run`), and the logger. :meth:`run` carries only the per-trial evidence.
@@ -637,6 +667,7 @@ class LLMJudge:
         episode_timeout_s: int = DEFAULT_JUDGE_EPISODE_TIMEOUT_S,
         submit_report_retries: int = DEFAULT_SUBMIT_REPORT_RETRIES,
         disable_knowledge_search: bool = False,
+        custom_system_prompt: str | None = None,
         llm_client: LLMClient | None = None,
         logger: StructuredLogger | None = None,
     ) -> None:
@@ -645,6 +676,7 @@ class LLMJudge:
         self._episode_timeout_s = episode_timeout_s
         self._submit_report_retries = submit_report_retries
         self._disable_knowledge_search = disable_knowledge_search
+        self._custom_system_prompt = custom_system_prompt
         self._llm_client = llm_client
         self._logger = logger
 
@@ -716,7 +748,9 @@ class LLMJudge:
             )
         ]
         rubric_brief = _build_rubric_brief(rubric)
-        system_prompt = f"{_JUDGE_SYSTEM_PROMPT}\n\n{rubric_brief}"
+        system_prompt = (
+            f"{_compose_judge_system_prompt(self._custom_system_prompt)}\n\n{rubric_brief}"
+        )
 
         attempts = 0
         while True:
@@ -731,6 +765,7 @@ class LLMJudge:
                     kb_tools_offered,
                     kb_tools_withheld,
                     self._disable_knowledge_search,
+                    self._custom_system_prompt is not None,
                     read_tools_offered,
                     state_diff,
                 )
@@ -745,6 +780,7 @@ class LLMJudge:
                     kb_tools_offered,
                     kb_tools_withheld,
                     self._disable_knowledge_search,
+                    self._custom_system_prompt is not None,
                     read_tools_offered,
                     state_diff,
                 )
@@ -764,12 +800,12 @@ class LLMJudge:
                     )
                     return _errored(
                         metrics,
-                        f"submit_report invalid after {self._submit_report_retries} "
-                        f"retries: {exc}",
+                        f"submit_report invalid after {self._submit_report_retries} retries: {exc}",
                         messages,
                         kb_tools_offered,
                         kb_tools_withheld,
                         self._disable_knowledge_search,
+                        self._custom_system_prompt is not None,
                         read_tools_offered,
                         state_diff,
                     )
@@ -816,6 +852,7 @@ class LLMJudge:
                 kb_tools_offered=kb_tools_offered,
                 kb_tools_withheld=kb_tools_withheld,
                 knowledge_search_disabled=self._disable_knowledge_search,
+                custom_system_prompt=self._custom_system_prompt is not None,
                 read_tools_offered=read_tools_offered,
                 state_diff=state_diff,
                 transcript=_serialize_judge_transcript(messages),
@@ -829,6 +866,7 @@ def _errored(
     kb_tools_offered: tuple[str, ...],
     kb_tools_withheld: tuple[str, ...],
     knowledge_search_disabled: bool,
+    custom_system_prompt: bool,
     read_tools_offered: tuple[str, ...],
     state_diff: str | None,
 ) -> JudgeResult:
@@ -850,6 +888,7 @@ def _errored(
         kb_tools_offered=kb_tools_offered,
         kb_tools_withheld=kb_tools_withheld,
         knowledge_search_disabled=knowledge_search_disabled,
+        custom_system_prompt=custom_system_prompt,
         read_tools_offered=read_tools_offered,
         state_diff=state_diff,
         transcript=_serialize_judge_transcript(messages),
