@@ -1347,10 +1347,13 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # when the effective customization asks for it. Absent/None → False.
         customization = llm_judge_config.customization
         disable_knowledge_search = bool(customization and customization.disable_knowledge_search)
+        custom_system_prompt = customization.system_prompt if customization else None
 
         def _run() -> JudgeResult:
             return LLMJudge(
-                judge_model_config, disable_knowledge_search=disable_knowledge_search
+                judge_model_config,
+                disable_knowledge_search=disable_knowledge_search,
+                custom_system_prompt=custom_system_prompt,
             ).run(
                 rubric=llm_judge_config.rubric,
                 agent_system_prompt=agent_system_prompt,

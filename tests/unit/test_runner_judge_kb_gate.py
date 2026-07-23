@@ -426,6 +426,56 @@ def test_grade_llm_judge_constructs_with_effective_disable_flag(
         service.shutdown()
 
 
+@pytest.mark.parametrize(
+    "customization, expected",
+    [
+        (None, None),
+        ({"disable_knowledge_search": True}, None),
+        ({"system_prompt": "Grade against the refund policy."}, "Grade against the refund policy."),
+    ],
+    ids=["absent", "customization_without_prompt", "explicit_prompt"],
+)
+def test_grade_llm_judge_constructs_with_effective_custom_prompt(
+    monkeypatch, customization, expected
+):
+    """``_grade_llm_judge`` computes the effective ``system_prompt`` from the merged
+    customization and constructs the judge with it — ``None`` when no layer set it."""
+    from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, JudgeUsage
+    from tolokaforge.core.models import ModelConfig
+    from tolokaforge.runner.models import JudgeCustomization, LLMJudgeConfig, Rubric
+
+    captured: dict = {}
+
+    class _SpyJudge:
+        def __init__(self, model_config, *, custom_system_prompt=None, **_kw):
+            captured["prompt"] = custom_system_prompt
+
+        def run(self, **_kwargs):
+            return JudgeResult(
+                status=JudgeStatus.COMPLETED, usage=JudgeUsage(), reasons="ok", score=1.0
+            )
+
+    monkeypatch.setattr("tolokaforge.runner.service.LLMJudge", _SpyJudge)
+
+    service = _service(None)
+    try:
+        rubric = Rubric(criteria=[{"id": "a", "description": "d", "kind": "binary", "weight": 1.0}])
+        cfg = LLMJudgeConfig(
+            rubric=rubric,
+            customization=(
+                JudgeCustomization(**customization) if customization is not None else None
+            ),
+        )
+        ctx = _JudgeCtx(ModelConfig(provider="openai", name="gpt-4o-mini", temperature=0.0))
+        fut = asyncio.run_coroutine_threadsafe(
+            service._grade_llm_judge("t:0", cfg, [], ctx), service._loop
+        )
+        fut.result(timeout=5.0)
+        assert captured["prompt"] == expected
+    finally:
+        service.shutdown()
+
+
 def test_grade_trial_populates_judge_report_kb_gating(monkeypatch):
     """The ``JudgeResult`` audit fields cross into ``pb2.JudgeReport`` unswapped:
     ``knowledge_search_disabled`` / ``kb_tools_offered`` / ``kb_tools_withheld``

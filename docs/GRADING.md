@@ -224,6 +224,38 @@ Likewise the mcp_core TypeSense client handle registered at trial setup is not
 torn down at cleanup — a documented, bounded pre-existing leak (no confirmable
 deregister API in mcp_core's registry); see the runner's `cleanup_trial`.
 
+### Customizing the judge's system prompt
+
+When a pack's grading philosophy needs a different judge voice than the default,
+set `grading.llm_judge.customization.system_prompt` (a sibling of `rubric`,
+alongside `disable_knowledge_search`) to a full replacement of the judge's
+**grading-stance body**. The harness **always appends the enforced marker
+contract** — the sentence instructing the judge to end each justification with a
+`VERDICT:` / `SCORE:` marker and call `submit_report` exactly once — so a custom
+prompt can never silently break `submit_report` validation. The marker is
+non-overridable by construction; a custom body cannot drop it.
+
+```yaml
+llm_judge:
+  customization:
+    system_prompt: |
+      You are grading a customer-support transcript against the refund policy.
+      Reward precise policy citations; penalise unsupported claims.
+  rubric:
+    criteria:
+      - id: cites_policy
+        description: "Reply cites the applicable refund clause"
+        kind: binary
+        weight: 1.0
+```
+
+The setting layers project→task: a task-level `system_prompt` overrides a project
+default, omitting the key inherits the project value, and a task sets
+`system_prompt: null` to reset a project-level custom prompt back to the default.
+An empty or whitespace-only string is rejected loudly at load. When absent, the
+judge runs with the byte-for-byte default prompt. The full custom text is recorded
+in the bundle's `task.yaml.grading_config`.
+
 ### Fail-loud: the ERRORED status
 
 If the judge malfunctions — repeated malformed `submit_report` past its retry

@@ -231,3 +231,54 @@ def test_task_false_overrides_project_true(tmp_path: Path):
 
     assert judge.customization is not None
     assert judge.customization.disable_knowledge_search is False
+
+
+def test_system_prompt_task_string_overrides_project_string(tmp_path: Path):
+    """A task ``system_prompt`` string wins over a project ``system_prompt`` string."""
+    adapter = _build_task(
+        tmp_path,
+        _rubric_grading({"system_prompt": "Task judge voice."}),
+        project_task_defaults=_judge_defaults({"system_prompt": "Project judge voice."}),
+    )
+    judge = adapter.to_task_description("rubric_task").grading.llm_judge
+
+    assert judge.customization is not None
+    assert judge.customization.system_prompt == "Task judge voice."
+
+
+def test_system_prompt_inherited_when_task_key_absent(tmp_path: Path):
+    """A task with no ``system_prompt`` key inherits the project string (absent
+    never clears a set project default)."""
+    adapter = _build_task(
+        tmp_path,
+        _rubric_grading(),
+        project_task_defaults=_judge_defaults({"system_prompt": "Project judge voice."}),
+    )
+    judge = adapter.to_task_description("rubric_task").grading.llm_judge
+
+    assert judge.customization is not None
+    assert judge.customization.system_prompt == "Project judge voice."
+
+
+def test_system_prompt_task_null_resets_project_string_to_default(tmp_path: Path):
+    """A task ``system_prompt: null`` (key present, value null) resets a project
+    string back to the default prompt — distinct from omitting the key, which
+    inherits. ``deep_merge`` treats a present null as an override."""
+    adapter = _build_task(
+        tmp_path,
+        _rubric_grading({"system_prompt": None}),
+        project_task_defaults=_judge_defaults({"system_prompt": "Project judge voice."}),
+    )
+    judge = adapter.to_task_description("rubric_task").grading.llm_judge
+
+    assert judge.customization is not None
+    assert judge.customization.system_prompt is None
+
+
+def test_system_prompt_none_when_no_layer_sets_it(tmp_path: Path):
+    """Both layers unset ⇒ ``system_prompt is None`` (the default judge prompt)."""
+    adapter = _build_task(tmp_path, _rubric_grading({"disable_knowledge_search": True}))
+    judge = adapter.to_task_description("rubric_task").grading.llm_judge
+
+    assert judge.customization is not None
+    assert judge.customization.system_prompt is None

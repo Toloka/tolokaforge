@@ -461,11 +461,30 @@ class JudgeCustomization(BaseModel):
     ``True`` withholds every knowledge-search tool from the judge's surface;
     ``False`` explicitly keeps them (so a task can override a project default that
     disabled them). Layered project→task by :func:`resolve_effective_judge_customization`.
+
+    ``system_prompt`` replaces the default judge system-prompt body; the harness
+    always appends the marker contract, so a custom prompt can never break
+    ``submit_report`` validation. ``None`` (unset) keeps the default prompt; a task
+    sets ``null`` to reset a project-level custom prompt back to the default. An
+    empty or whitespace-only string is rejected at load — a marker-only prompt is
+    almost certainly a mistake.
     """
 
     disable_knowledge_search: bool | None = None
+    system_prompt: str | None = None
 
     model_config = {"extra": "forbid"}
+
+    @field_validator("system_prompt")
+    @classmethod
+    def _reject_blank_system_prompt(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError(
+                "grading.llm_judge.customization.system_prompt must not be empty or "
+                "whitespace-only; omit the key (or set it to null) to use the default "
+                "judge prompt."
+            )
+        return value
 
 
 class LLMJudgeConfig(BaseModel):
