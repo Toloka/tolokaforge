@@ -84,6 +84,9 @@ logger = logging.getLogger(__name__)
 # Service version
 SERVICE_VERSION = "1.0.0"
 
+# Session working root handed to lifecycle tools as ``ToolLifecycleContext.work_dir``.
+AGENT_WORK_DIR = "/work"
+
 # The documented read-only mcp_core TypeSense KB connector the agent uses. The
 # judge is allowed to reuse this ONE reconstructed tool (read-only passthrough)
 # so it reads the same corpus the agent did. It is a closed (mcp_core) tool, not
@@ -661,6 +664,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         lifecycle_ctx = ToolLifecycleContext(
             trial_id=trial_id,
             artifacts_dir=str(artifacts_dir) if artifacts_dir is not None else None,
+            work_dir=AGENT_WORK_DIR,
         )
         for tool in trial_context.agent_tools.values():
             if getattr(tool, "has_lifecycle", False):

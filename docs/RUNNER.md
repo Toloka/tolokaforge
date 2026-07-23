@@ -64,6 +64,29 @@ provisioning them per the manifest's isolation rules. See
 [RUNTIME_BACKENDS.md](RUNTIME_BACKENDS.md) for
 the backend lifecycle.
 
+## Tool Lifecycle
+
+Some tools own per-trial resources — a compose stack, a long-lived
+subprocess — that must be provisioned when a trial starts and torn down when
+it resets. The runner manages this generically off a single capability, never
+off adapter identity: a `ToolWrapper` sets `has_lifecycle = True`, and the
+runner calls `start()` on `RegisterTrial` and `stop()` on `ResetTrial` for
+every tool that declares it. Tools without the capability are untouched.
+
+`start()` receives a `ToolLifecycleContext`:
+
+- `trial_id` — the trial the resource belongs to (used for per-trial naming).
+- `artifacts_dir` — the extracted task-artifacts path, or `None`.
+- `work_dir` — the per-trial session working root a tool seeds its
+  shell/subprocess `cwd` from, or `None`.
+
+The context is a frozen value object; tools read it, never mutate it.
+
+A session-lifetime tool follows one pattern: open its resource in `start()`
+(seeding `cwd` from `work_dir`), hold it across every `execute()` call, and
+tear it down in `stop()`. The resource — and its identity, e.g. a subprocess
+PID — is stable for the life of the trial and gone once `stop()` returns.
+
 ## Local Queue Run (SQLite)
 
 ```bash

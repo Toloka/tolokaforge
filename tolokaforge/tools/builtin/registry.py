@@ -32,12 +32,19 @@ class Dispatch(StrEnum):
     choice. ``GENERIC`` tools receive ``ToolSchema.tool_config`` as
     constructor kwargs; ``FILES`` tools take ``WORK_DIR`` from the runner
     container layout; ``RAG`` tools take a ``rag_client`` + ``trial_id``
-    bound by the runner factory.
+    bound by the runner factory; ``PERSISTENT_SHELL`` tools are lifecycle
+    wrappers that hold a bash session for the trial, selecting a local or
+    compose backend from ``tool_config`` without a second dispatch branch.
+    ``EDITOR`` tools are stateless file editors matching Anthropic's
+    ``str_replace_based_edit_tool``, selecting a local or compose backend from
+    ``tool_config``.
     """
 
     GENERIC = "generic"
     FILES = "files"
     RAG = "rag"
+    PERSISTENT_SHELL = "persistent_shell"
+    EDITOR = "editor"
 
 
 _REGISTRY: dict[str, tuple[BuiltinToolEntry, Dispatch]] = {
@@ -84,6 +91,14 @@ _REGISTRY: dict[str, tuple[BuiltinToolEntry, Dispatch]] = {
     "search_kb": (
         BuiltinToolEntry("tolokaforge.tools.builtin.rag_search", "SearchKBTool"),
         Dispatch.RAG,
+    ),
+    "bash_session": (
+        BuiltinToolEntry("tolokaforge.tools.persistent_shell", "PersistentShellTool"),
+        Dispatch.PERSISTENT_SHELL,
+    ),
+    "str_replace_editor": (
+        BuiltinToolEntry("tolokaforge.tools.str_replace_editor", "StrReplaceEditorTool"),
+        Dispatch.EDITOR,
     ),
 }
 
