@@ -19,10 +19,10 @@
       "environment": {
         "HTTPS_PROXY": "http://tolokaforge_netpolicy_proxy:3128",
         "HTTP_PROXY": "http://tolokaforge_netpolicy_proxy:3128",
-        "NO_PROXY": "runner,db-service,tool-bridge,bash,tolokaforge_netpolicy_proxy,localhost,127.0.0.1",
+        "NO_PROXY": "runner,db-service,tool_bridge_service,bash,tolokaforge_netpolicy_proxy,localhost,127.0.0.1",
         "http_proxy": "http://tolokaforge_netpolicy_proxy:3128",
         "https_proxy": "http://tolokaforge_netpolicy_proxy:3128",
-        "no_proxy": "runner,db-service,tool-bridge,bash,tolokaforge_netpolicy_proxy,localhost,127.0.0.1"
+        "no_proxy": "runner,db-service,tool_bridge_service,bash,tolokaforge_netpolicy_proxy,localhost,127.0.0.1"
       },
       "healthcheck": {
         "interval": "2s",
@@ -96,14 +96,14 @@
         "./squid.conf:/etc/squid/squid.conf:ro"
       ]
     },
-    "tool-bridge": {
+    "tool_bridge_service": {
       "environment": {
         "HTTPS_PROXY": "http://tolokaforge_netpolicy_proxy:3128",
         "HTTP_PROXY": "http://tolokaforge_netpolicy_proxy:3128",
-        "NO_PROXY": "runner,db-service,tool-bridge,bash,tolokaforge_netpolicy_proxy,localhost,127.0.0.1",
+        "NO_PROXY": "runner,db-service,tool_bridge_service,bash,tolokaforge_netpolicy_proxy,localhost,127.0.0.1",
         "http_proxy": "http://tolokaforge_netpolicy_proxy:3128",
         "https_proxy": "http://tolokaforge_netpolicy_proxy:3128",
-        "no_proxy": "runner,db-service,tool-bridge,bash,tolokaforge_netpolicy_proxy,localhost,127.0.0.1"
+        "no_proxy": "runner,db-service,tool_bridge_service,bash,tolokaforge_netpolicy_proxy,localhost,127.0.0.1"
       },
       "healthcheck": {
         "interval": "2s",

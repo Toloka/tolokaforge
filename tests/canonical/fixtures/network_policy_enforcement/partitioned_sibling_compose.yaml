@@ -34,7 +34,7 @@ services:
       retries: 30
       start_period: 3s
 
-  tool-bridge:
+  tool_bridge_service:
     image: nginx:1.27-alpine
     ports:
       - "80"

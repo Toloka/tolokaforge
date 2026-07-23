@@ -447,6 +447,33 @@ class TestCleanupPartialMaterialisation:
         cleanup_partial_materialisation(None, tmp_path / "does-not-exist")
 
 
+class TestNetpolicyConstants:
+    """Lock the leaf-module contract that both
+    :mod:`tolokaforge.core.compose_materialisation` and
+    :mod:`tolokaforge.runner.models` depend on."""
+
+    def test_harness_reserved_networks_covers_both_injected_names(self) -> None:
+        from tolokaforge.core.netpolicy_constants import (
+            HARNESS_RESERVED_NETWORKS,
+            NETPOLICY_EDGE_NETWORK,
+            NETPOLICY_INTERNAL_NETWORK,
+        )
+
+        assert frozenset({NETPOLICY_INTERNAL_NETWORK, NETPOLICY_EDGE_NETWORK}) == (
+            HARNESS_RESERVED_NETWORKS
+        )
+
+    def test_compose_materialisation_reexports_leaf_constants(self) -> None:
+        import tolokaforge.core.compose_materialisation as compose_mat
+        import tolokaforge.core.netpolicy_constants as leaf
+
+        assert compose_mat.NETPOLICY_INTERNAL_NETWORK is leaf.NETPOLICY_INTERNAL_NETWORK
+        assert compose_mat.NETPOLICY_EDGE_NETWORK is leaf.NETPOLICY_EDGE_NETWORK
+        assert compose_mat.NETPOLICY_PROXY_SERVICE is leaf.NETPOLICY_PROXY_SERVICE
+        assert compose_mat.NETPOLICY_PROXY_PORT is leaf.NETPOLICY_PROXY_PORT
+        assert compose_mat.NETPOLICY_PROXY_IMAGE is leaf.NETPOLICY_PROXY_IMAGE
+
+
 def _minimal_compose() -> dict:
     """Two services, no task-declared networks (join the compose default)."""
     return {
