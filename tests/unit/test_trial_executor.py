@@ -131,6 +131,38 @@ class TestTeardownAlwaysFires:
         assert backend.call_log.cleanup_trial_calls == ["task-1:0"]
 
 
+class TestCleanupFailsClosed:
+    """A shared runner must not advance after it failed to release a trial."""
+
+    def test_cleanup_exception_overrides_successful_body(self) -> None:
+        backend = InMemoryRuntimeBackend()
+
+        def _raising_cleanup(_trial_id: str) -> dict[str, object]:
+            raise RuntimeError("runner unavailable")
+
+        backend.cleanup_trial = _raising_cleanup  # type: ignore[method-assign]
+        executor, _, conductor, _ = _make_executor(backend=backend)
+
+        with pytest.raises(RuntimeError, match="runner cleanup failed.*runner unavailable"):
+            executor.execute(make_trial_spec(), make_task_config())
+
+        assert len(conductor.call_log.runs) == 1
+        assert backend.call_log.torn_down_trials == ["task-1:0"]
+
+    def test_cleanup_non_success_overrides_successful_body(self) -> None:
+        backend = InMemoryRuntimeBackend()
+        backend.cleanup_trial = MagicMock(  # type: ignore[method-assign]
+            return_value={"success": False, "error": "DB row retained"}
+        )
+        executor, _, conductor, _ = _make_executor(backend=backend)
+
+        with pytest.raises(RuntimeError, match="runner cleanup failed.*DB row retained"):
+            executor.execute(make_trial_spec(), make_task_config())
+
+        assert len(conductor.call_log.runs) == 1
+        assert backend.call_log.torn_down_trials == ["task-1:0"]
+
+
 class TestProvisionErrorBranches:
     """ProvisionError at any stage yields a synthesised failed
     :class:`TrialResult` with ``TerminationReason.PROVISION_ERROR`` and

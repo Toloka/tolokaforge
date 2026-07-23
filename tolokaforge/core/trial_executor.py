@@ -153,8 +153,10 @@ class ProvisioningTrialExecutor:
                 stage=e.stage,
                 error=e.reason,
             )
-            self._safe_cleanup_trial(spec.trial_id, task_id, trial_idx)
-            self._safe_teardown(handle, task_id, trial_idx)
+            try:
+                self._cleanup_trial_or_raise(spec.trial_id, task_id, trial_idx)
+            finally:
+                self._safe_teardown(handle, task_id, trial_idx)
             result = _synthesize_provision_failure_result(spec, e)
             self._write_provision_failure_bundle(result.trajectory, e)
             return result
@@ -184,8 +186,10 @@ class ProvisioningTrialExecutor:
             self._capture_service_logs(handle, result, task_id, trial_idx)
             return result
         finally:
-            self._safe_cleanup_trial(spec.trial_id, task_id, trial_idx)
-            self._safe_teardown(handle, task_id, trial_idx)
+            try:
+                self._cleanup_trial_or_raise(spec.trial_id, task_id, trial_idx)
+            finally:
+                self._safe_teardown(handle, task_id, trial_idx)
 
     def _capture_service_logs(
         self, handle: EnvHandle, result: TrialResult, task_id: str, trial_idx: int
@@ -308,7 +312,7 @@ class ProvisioningTrialExecutor:
             trial_index=trial_idx,
         )
 
-    def _safe_cleanup_trial(self, trial_id: str, task_id: str, trial_idx: int) -> None:
+    def _cleanup_trial_or_raise(self, trial_id: str, task_id: str, trial_idx: int) -> None:
         """Release runner registration, DB state, and native MCP processes.
 
         This lifecycle step belongs inside the executor bracket so every
@@ -317,22 +321,28 @@ class ProvisioningTrialExecutor:
         """
         try:
             result = self.runtime_backend.cleanup_trial(trial_id)
-        except Exception as cleanup_err:  # noqa: BLE001 — preserve primary result
-            self.logger.warning(
-                "Trial cleanup raised; continuing",
-                task_id=task_id,
-                trial_index=trial_idx,
-                error=str(cleanup_err),
+        except Exception as cleanup_err:
+            self._amend_trial_metrics(
+                task_id,
+                trial_idx,
+                {"runner_cleanup": {"success": False, "error": str(cleanup_err)}},
             )
-            return
+            raise RuntimeError(
+                f"runner cleanup failed for {trial_id}: {cleanup_err}"
+            ) from cleanup_err
         if not result.get("success"):
-            self.logger.warning(
-                "Trial cleanup returned non-success; continuing",
-                task_id=task_id,
-                trial_index=trial_idx,
-                error=result.get("error"),
+            error = result.get("error") or "unknown cleanup failure"
+            self._amend_trial_metrics(
+                task_id,
+                trial_idx,
+                {"runner_cleanup": {"success": False, "error": error}},
             )
-            return
+            raise RuntimeError(f"runner cleanup failed for {trial_id}: {error}")
+        self._amend_trial_metrics(
+            task_id,
+            trial_idx,
+            {"runner_cleanup": {"success": True, "error": None}},
+        )
         self.logger.info(
             "Trial runner state cleanup complete",
             task_id=task_id,
