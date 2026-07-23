@@ -97,7 +97,10 @@ stack), not of lifecycle:
   applied by `enforce_network_policy` during materialisation. Under
   `no_internet`, task services join an injected `internal: true` network while
   the runner keeps a non-internal edge network for control-plane and grading
-  egress.
+  egress. A per-service opt-out, `services.<name>.network_access: restricted`,
+  excludes the named service from the injected shared internal network (and,
+  under `limited_internet`, from the proxy-env injection) so it sees only the
+  networks its compose entry declares.
 
 See [ADR-0018](adr/0018-multi-container-under-shared-runtime.md) § "Network
 policy enforcement" for the enforcement table and [SECURITY.md](SECURITY.md)

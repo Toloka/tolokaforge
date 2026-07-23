@@ -34,6 +34,13 @@ import yaml
 from testcontainers.compose import DockerCompose
 from testcontainers.compose.compose import ComposeContainer
 
+from tolokaforge.core.netpolicy_constants import (
+    NETPOLICY_EDGE_NETWORK,
+    NETPOLICY_INTERNAL_NETWORK,
+    NETPOLICY_PROXY_IMAGE,
+    NETPOLICY_PROXY_PORT,
+    NETPOLICY_PROXY_SERVICE,
+)
 from tolokaforge.core.run_display_events import ContainerSnapshot
 from tolokaforge.core.trial import EnvEndpoints, NetworkPolicy
 
@@ -71,33 +78,6 @@ First match wins; ``None`` returned if no match is exposed."""
 # ---------------------------------------------------------------------------
 
 
-NETPOLICY_INTERNAL_NETWORK = "tolokaforge_netpolicy_internal"
-"""Injected ``internal: true`` network every task service joins under
-``no_internet``. No public egress; inter-service DNS stays intact because
-every service shares it. Compose prefixes it with the per-run/per-trial
-project name, so the fully-qualified network is unique on the daemon and
-cannot collide with a task-declared network of the same base name."""
-
-NETPOLICY_EDGE_NETWORK = "tolokaforge_netpolicy_edge"
-"""Injected non-internal network the runner service *additionally* joins
-under ``no_internet``, so its published gRPC port stays host-reachable and
-it retains egress for in-container LLM-as-judge grading."""
-
-NETPOLICY_PROXY_SERVICE = "tolokaforge_netpolicy_proxy"
-"""Injected forward-proxy sidecar under ``limited_internet``. Sits on both
-the internal and edge networks; every application service's HTTP(S) egress is
-routed through it, and it forwards only to the declared allowlist."""
-
-NETPOLICY_PROXY_PORT = 3128
-"""Port the injected squid proxy listens on. Application services'
-``HTTP(S)_PROXY`` env vars point here."""
-
-NETPOLICY_PROXY_IMAGE = (
-    "ubuntu/squid@sha256:6a097f68bae708cedbabd6188d68c7e2e7a38cedd05a176e1cc0ba29e3bbe029"
-)
-"""Digest-pinned squid image (Canonical ``ubuntu/squid:6.6-24.04_beta``).
-Pinned by digest, not tag, because Canonical's tag channels are mutable."""
-
 SQUID_CONFIG_FILENAME = "squid.conf"
 """Basename of the generated squid config written into the copied project
 context dir; the proxy service bind-mounts it read-only."""
@@ -113,33 +93,39 @@ def enforce_network_policy(
     policy: NetworkPolicy,
     runner_service: str,
     allowlist: list[str],
+    restricted_services: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     """Return a compose doc rewritten to enforce ``policy``.
 
     ``full_internet`` returns ``compose_doc`` unchanged (same object);
-    ``allowlist`` is ignored. ``no_internet`` returns a deep copy in which
-    every service joins the injected :data:`NETPOLICY_INTERNAL_NETWORK`
-    (``internal: true`` — no egress), any task-declared network is forced
-    ``internal: true`` too, and ``runner_service`` additionally joins the
-    non-internal :data:`NETPOLICY_EDGE_NETWORK`; ``allowlist`` is ignored.
+    ``allowlist`` and ``restricted_services`` are ignored. ``no_internet``
+    returns a deep copy in which every service **not named in
+    ``restricted_services``** joins the injected
+    :data:`NETPOLICY_INTERNAL_NETWORK` (``internal: true`` — no egress),
+    any task-declared network is forced ``internal: true`` too, and
+    ``runner_service`` additionally joins the non-internal
+    :data:`NETPOLICY_EDGE_NETWORK`; ``allowlist`` is ignored.
 
     ``limited_internet`` returns a deep copy that keeps the same internal/edge
     topology but additionally injects the :data:`NETPOLICY_PROXY_SERVICE`
-    forward proxy (on both networks) and points every application service's
-    ``HTTP(S)_PROXY`` at it; the runner keeps direct edge egress and is not
-    proxied. The proxy's squid config — which encodes ``allowlist`` — is
-    written separately by :func:`apply_network_policy_to_compose_file` /
+    forward proxy (on both networks) and points every non-restricted
+    application service's ``HTTP(S)_PROXY`` at it; restricted services get
+    neither the injected-net attach nor the proxy env — they see only the
+    networks their compose entry declares. The runner keeps direct edge egress
+    and is not proxied. The proxy's squid config — which encodes ``allowlist``
+    — is written separately by :func:`apply_network_policy_to_compose_file` /
     :func:`render_squid_config`; this function only rewrites topology.
 
-    ``runner_service`` is guaranteed present in ``services`` by
-    :class:`EnvironmentManifest` validation.
+    ``runner_service`` is guaranteed present in ``services``, and never
+    contained in ``restricted_services``, by :class:`EnvironmentManifest`
+    validation.
     """
     if policy is NetworkPolicy.FULL_INTERNET:
         return compose_doc
     doc = copy.deepcopy(compose_doc)
     if policy is NetworkPolicy.LIMITED_INTERNET:
-        return _enforce_limited_internet(doc, runner_service, allowlist)
-    return _enforce_no_internet(doc, runner_service)
+        return _enforce_limited_internet(doc, runner_service, allowlist, restricted_services)
+    return _enforce_no_internet(doc, runner_service, restricted_services)
 
 
 def _inject_isolation_networks(doc: dict[str, Any]) -> None:
@@ -156,10 +142,14 @@ def _inject_isolation_networks(doc: dict[str, Any]) -> None:
     networks[NETPOLICY_EDGE_NETWORK] = {}
 
 
-def _enforce_no_internet(doc: dict[str, Any], runner_service: str) -> dict[str, Any]:
+def _enforce_no_internet(
+    doc: dict[str, Any], runner_service: str, restricted_services: frozenset[str]
+) -> dict[str, Any]:
     _inject_isolation_networks(doc)
     services: dict[str, Any] = doc["services"]
     for service_name, service in services.items():
+        if service_name in restricted_services:
+            continue
         attachments = [NETPOLICY_INTERNAL_NETWORK]
         if service_name == runner_service:
             attachments.append(NETPOLICY_EDGE_NETWORK)
@@ -168,7 +158,10 @@ def _enforce_no_internet(doc: dict[str, Any], runner_service: str) -> dict[str, 
 
 
 def _enforce_limited_internet(
-    doc: dict[str, Any], runner_service: str, allowlist: list[str]
+    doc: dict[str, Any],
+    runner_service: str,
+    allowlist: list[str],
+    restricted_services: frozenset[str],
 ) -> dict[str, Any]:
     if not allowlist:
         raise ValueError(
@@ -180,6 +173,8 @@ def _enforce_limited_internet(
     no_proxy = ",".join([*services, NETPOLICY_PROXY_SERVICE, "localhost", "127.0.0.1"])
     proxy_url = f"http://{NETPOLICY_PROXY_SERVICE}:{NETPOLICY_PROXY_PORT}"
     for service_name, service in services.items():
+        if service_name in restricted_services:
+            continue
         if service_name == runner_service:
             service["networks"] = _merge_service_networks(
                 service.get("networks"), [NETPOLICY_INTERNAL_NETWORK, NETPOLICY_EDGE_NETWORK]
@@ -303,7 +298,11 @@ def _merge_service_networks(existing: Any, additions: list[str]) -> Any:
 
 
 def apply_network_policy_to_compose_file(
-    compose_file: Path, policy: NetworkPolicy, runner_service: str, allowlist: list[str]
+    compose_file: Path,
+    policy: NetworkPolicy,
+    runner_service: str,
+    allowlist: list[str],
+    restricted_services: frozenset[str] = frozenset(),
 ) -> None:
     """Read ``compose_file``, apply :func:`enforce_network_policy`, and write
     the result back in place. ``full_internet`` leaves the file byte-identical
@@ -315,7 +314,9 @@ def apply_network_policy_to_compose_file(
     resolves."""
     with compose_file.open() as f:
         doc = yaml.safe_load(f)
-    transformed = enforce_network_policy(doc, policy, runner_service, allowlist)
+    transformed = enforce_network_policy(
+        doc, policy, runner_service, allowlist, restricted_services
+    )
     if transformed is doc:
         return
     with compose_file.open("w") as f:

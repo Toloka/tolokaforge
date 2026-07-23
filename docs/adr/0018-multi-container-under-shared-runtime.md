@@ -15,6 +15,7 @@
 - **Deciders:** @CiroGamboa
 - **Supersedes:** ADR-0009 (isolation surface only)
 - **Superseded by:** —
+- **Amended-by:** #581 (per-service network_access opt-out — 2026-07-22)
 
 ## TL;DR
 
@@ -332,9 +333,9 @@ in place by `enforce_network_policy` (`compose_materialisation.py`), then
 
 | Value | Enforcement |
 |---|---|
-| `no_internet` (default) | Every task service is attached to an injected `internal: true` network (`tolokaforge_netpolicy_internal`), and any network the task already declared is forced `internal: true`. No application service can reach the public internet; inter-service DNS is intact because every service shares the internal network. The `runner_service` is *additionally* attached to a non-internal edge network (`tolokaforge_netpolicy_edge`). |
+| `no_internet` (default) | Every task service (unless opted out via `network_access: restricted`) is attached to an injected `internal: true` network (`tolokaforge_netpolicy_internal`), and any network the task already declared is forced `internal: true`. No application service can reach the public internet; inter-service DNS is intact because every non-restricted service shares the internal network. The `runner_service` is *additionally* attached to a non-internal edge network (`tolokaforge_netpolicy_edge`). |
 | `full_internet` | The compose file is run unchanged; the transform is identity. |
-| `limited_internet` | A digest-pinned `ubuntu/squid` forward-proxy sidecar (`tolokaforge_netpolicy_proxy`) is injected on both the internal network and a non-internal edge network. Every application service is attached to the internal network only and has its `HTTP(S)_PROXY` pointed at the sidecar; the sidecar is default-deny, permits CONNECT to 443 only, and allows egress solely to the hosts in `manifest.limited_internet_allowlist` (rendered as squid `dstdomain` ACLs). Non-allowlisted egress is refused by the proxy (HTTP 403). The `runner_service` joins the edge network directly (not proxied), exactly as under `no_internet`. |
+| `limited_internet` | A digest-pinned `ubuntu/squid` forward-proxy sidecar (`tolokaforge_netpolicy_proxy`) is injected on both the internal network and a non-internal edge network. Every application service (unless opted out via `network_access: restricted`) is attached to the internal network only and has its `HTTP(S)_PROXY` pointed at the sidecar; the sidecar is default-deny, permits CONNECT to 443 only, and allows egress solely to the hosts in `manifest.limited_internet_allowlist` (rendered as squid `dstdomain` ACLs). Non-allowlisted egress is refused by the proxy (HTTP 403). The `runner_service` joins the edge network directly (not proxied), exactly as under `no_internet`. |
 
 The injected network names are prefixed by compose with the per-run /
 per-trial project name, so they are unique on the daemon and cannot collide
@@ -359,7 +360,8 @@ per-host allowlist cannot be expressed declaratively in compose. The transform
 therefore injects an `ubuntu/squid` forward-proxy sidecar
 (`tolokaforge_netpolicy_proxy`, pinned by digest) that sits on **both** the
 injected `internal: true` network and the non-internal edge network. Every
-application service is attached to the internal network only — no direct egress
+application service (unless opted out via `network_access: restricted`) is
+attached to the internal network only — no direct egress
 — and carries `HTTP_PROXY`/`HTTPS_PROXY` (and lowercase variants) pointed at
 `http://tolokaforge_netpolicy_proxy:3128`, with `NO_PROXY` listing every compose
 service name plus `localhost,127.0.0.1` so inter-service and loopback traffic

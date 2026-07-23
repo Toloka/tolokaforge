@@ -116,7 +116,8 @@ Field reference:
 | `runner_service` | no | `"default"` | Which compose service is the tolokaforge runner. Must be a service declared in the compose file. |
 | `services.<name>.isolation` | no | `"ephemeral"` | Per-service posture: `"shared"` (long-lived across trials), `"reset"` (fresh container per trial + `reset.seed` recipe reapplied at each provision), `"ephemeral"` (fresh container per trial, no seed). Backend selection is task-driven — any `reset`/`ephemeral` service routes the run to `PerTrialRuntimeBackend` automatically. See the [multi-container guide](MULTI_CONTAINER_GUIDE.md#choosing-isolation) for how to pick. |
 | `services.<name>.reset.seed` | when `isolation: reset` | — | Name of the seed to apply on each provision. Must exist in the project's `assets.seeds` registry. See [`docs/RESET_RECIPES.md`](RESET_RECIPES.md) for the four seed kinds (`sql_dump` / `filesystem_dir` / `redis_dump` / `bare`). |
-| `network_policy` | no | `"no_internet"` | Public-egress posture for the task's application services. `no_internet` (default) attaches every task service to an `internal` docker network so no service can reach the public internet; `full_internet` runs the compose file unchanged; `limited_internet` permits egress only to the hosts in `limited_internet_allowlist` via an injected forward proxy. See below. |
+| `services.<name>.network_access` | no | `"default"` | Per-service opt-out from the harness-injected shared internal network. `"default"` (existing behaviour) attaches the service to `tolokaforge_netpolicy_internal` under `no_internet` and `limited_internet` and injects `HTTP(S)_PROXY` env under `limited_internet`. `"restricted"` skips both — the service joins only the networks its compose entry declares (which are still forced `internal: true`). Use for an untrusted sibling that must not reach other harness-injected services. See the [multi-container guide](MULTI_CONTAINER_GUIDE.md#partitioning-an-untrusted-sibling). |
+| `network_policy` | no | `"no_internet"` | Public-egress posture for the task's application services. `no_internet` (default) attaches every task service (unless opted out via `services.<name>.network_access: restricted`) to an `internal` docker network so no service can reach the public internet; `full_internet` runs the compose file unchanged; `limited_internet` permits egress only to the hosts in `limited_internet_allowlist` via an injected forward proxy. See below. |
 | `limited_internet_allowlist` | when `network_policy: limited_internet` | `[]` | Hosts application services may egress to under `limited_internet`. Each entry is a DNS hostname — exact (`api.openai.com`) or leading-wildcard subdomain (`*.openai.com`). Non-empty iff `network_policy` is `limited_internet` (validated at load). See below. |
 
 `network_policy` enforcement (docker backends):
@@ -127,7 +128,9 @@ Field reference:
   non-internal edge network so its published gRPC port stays host-reachable
   and it retains egress for in-container LLM-as-judge grading. The contract
   is scoped to application services — egress of tools the agent executes
-  *inside* the runner is not blocked (#325).
+  *inside* the runner is not blocked (#325). Individual services can opt out
+  of the shared internal network via `services.<name>.network_access:
+  restricted` — see above.
 - `full_internet` — the compose file runs verbatim; every service keeps
   whatever egress its networks allow.
 - `limited_internet` — application services join the injected `internal: true`

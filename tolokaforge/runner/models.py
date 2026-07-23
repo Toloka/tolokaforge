@@ -28,6 +28,7 @@ from tolokaforge.core.deprecations import (
     coerce_network_policy_case,
     coerce_security_context_aliases,
 )
+from tolokaforge.core.netpolicy_constants import HARNESS_RESERVED_NETWORKS
 
 # =============================================================================
 # Enums (from TASK_DESCRIPTION_SCHEMA.md)
@@ -681,6 +682,27 @@ ServiceIsolation = Literal["shared", "reset", "ephemeral"]
 """
 
 
+ServiceNetworkAccess = Literal["default", "restricted"]
+"""Per-service network-access vocabulary.
+
+* ``default`` — the harness attaches the service to the shared internal
+  network it injects to enforce :class:`NetworkPolicy` (under
+  ``no_internet`` this is ``tolokaforge_netpolicy_internal``; under
+  ``limited_internet`` the service also receives the proxy-env
+  variables that route egress through the allowlisted squid). Every
+  first-party sibling service (runner, db-service, rag) reaches every
+  other on that shared network.
+* ``restricted`` — the service joins only the networks declared for it
+  in the compose file (a task-owned network), not the harness-injected
+  shared network. Under ``limited_internet`` the service also receives
+  no proxy-env variables — an untrusted sibling cannot reach the
+  runner, db-service, rag, or the internet-egress squid. The compose
+  file must declare a non-empty ``networks:`` block for the service so
+  it has somewhere to attach; the manifest validator rejects a
+  ``restricted`` service that lacks one.
+"""
+
+
 class ResetSpec(BaseModel):
     """Seed pointer for a service labelled ``reset``. Names the entry in
     ``project.assets.seeds`` whose recipe restores the service to a
@@ -708,6 +730,11 @@ class ServiceSpec(BaseModel):
     reset: ResetSpec | None = None
     """Reset recipe pointer. Required for ``isolation="reset"``, forbidden
     for the other labels."""
+
+    network_access: ServiceNetworkAccess = "default"
+    """Per-service network-access label — see :data:`ServiceNetworkAccess`.
+    Orthogonal to :attr:`isolation` and :attr:`reset`; every combination
+    is legal."""
 
     model_config = {"extra": "forbid"}
 
@@ -949,6 +976,52 @@ def _check_services_keys(
                 f"EnvironmentManifest.services has entry {key!r} that does not "
                 f"match any declared compose service; compose declares "
                 f"{sorted(compose_services)!r}."
+            )
+
+
+def _check_runner_not_restricted(
+    manifest_services: dict[str, ServiceSpec], runner_service: str
+) -> None:
+    spec = manifest_services.get(runner_service)
+    if spec is not None and spec.network_access == "restricted":
+        raise ValueError(
+            f"EnvironmentManifest.runner_service = {runner_service!r} cannot be "
+            "marked network_access='restricted'; the runner needs its shared "
+            "internal network attach to reach db-service / rag and its edge "
+            "attach to reach control-plane. Restrict an untrusted sibling "
+            "instead."
+        )
+
+
+def _check_restricted_services_have_own_networks(
+    compose_services: dict[str, dict[str, Any]],
+    manifest_services: dict[str, ServiceSpec],
+) -> None:
+    for name, spec in manifest_services.items():
+        if spec.network_access != "restricted":
+            continue
+        body = compose_services.get(name, {})
+        networks = body.get("networks")
+        if not isinstance(networks, (list, dict)) or not networks:
+            raise ValueError(
+                f"compose service {name!r} is marked "
+                "network_access='restricted' but declares no compose "
+                "`networks:` block; declare a task-owned network for it to "
+                "attach to (e.g. `networks: [task_net]` with a top-level "
+                "`networks: {task_net: {}}` entry)."
+            )
+        declared_names = set(networks) if isinstance(networks, dict) else set(networks)
+        reserved = sorted(declared_names & HARNESS_RESERVED_NETWORKS)
+        if reserved:
+            raise ValueError(
+                f"compose service {name!r} is marked "
+                f"network_access='restricted' but declares harness-reserved "
+                f"network(s) {reserved!r} in its `networks:` block; these "
+                "names are owned by the network-policy transform and "
+                "attaching to them would defeat the partitioning primitive. "
+                "Declare a task-owned network instead (e.g. "
+                "`networks: [task_net]` with a top-level "
+                "`networks: {task_net: {}}` entry)."
             )
 
 
@@ -1215,6 +1288,21 @@ class EnvironmentManifest(BaseModel):
             return True
         return any(spec.isolation != "shared" for spec in self.services.values())
 
+    @property
+    def restricted_services(self) -> frozenset[str]:
+        """Names of services marked ``network_access="restricted"``.
+
+        Substrate-facing single source of truth for the derivation:
+        every runtime backend that enforces network topology reads this
+        property and threads the set through to the compose
+        materialisation transform, so restricted services skip the
+        harness-injected shared internal network attach (and, under
+        ``limited_internet``, the proxy-env injection).
+        """
+        return frozenset(
+            name for name, spec in self.services.items() if spec.network_access == "restricted"
+        )
+
     _compose_content: dict[str, Any] = PrivateAttr(default_factory=dict)
     """Parsed compose file contents cached at construction time. Populated
     by the model_validator; returned verbatim from :meth:`load_compose`."""
@@ -1270,6 +1358,8 @@ class EnvironmentManifest(BaseModel):
         _check_runner_service_declared(services, self.runner_service)
         _check_initial_state_keys(services, self.initial_state)
         _check_services_keys(services, self.services)
+        _check_runner_not_restricted(self.services, self.runner_service)
+        _check_restricted_services_have_own_networks(services, self.services)
         _check_endpoint_services_declared(services, self.db_service, self.rag_service)
         self._compose_content = content
         return self

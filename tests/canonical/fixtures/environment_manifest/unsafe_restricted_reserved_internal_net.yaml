@@ -1,0 +1,9 @@
+networks:
+  tolokaforge_netpolicy_internal: {}
+services:
+  default:
+    image: tolokaforge/runner:0.5.0
+  sibling:
+    image: nginx:1.27-alpine
+    networks:
+      - tolokaforge_netpolicy_internal

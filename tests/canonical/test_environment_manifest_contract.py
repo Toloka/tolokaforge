@@ -178,6 +178,156 @@ class TestServiceIsolationContract:
 
 
 # ---------------------------------------------------------------------------
+# ServiceNetworkAccess — per-service network-access vocabulary
+# ---------------------------------------------------------------------------
+
+
+class TestServiceNetworkAccessContract:
+    def test_default_network_access_is_default(self) -> None:
+        spec = ServiceSpec(isolation="shared")
+        assert spec.network_access == "default"
+
+    def test_restricted_network_access_round_trips(self) -> None:
+        spec = ServiceSpec(isolation="shared", network_access="restricted")
+        assert spec.network_access == "restricted"
+        reloaded = ServiceSpec.model_validate_json(spec.model_dump_json())
+        assert reloaded == spec
+
+    def test_unknown_network_access_label_is_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            ServiceSpec(isolation="shared", network_access="banana")
+
+    @pytest.mark.parametrize("isolation", ["shared", "reset", "ephemeral"])
+    @pytest.mark.parametrize("network_access", ["default", "restricted"])
+    def test_axes_are_orthogonal(self, isolation: str, network_access: str) -> None:
+        """Every ``(isolation, network_access)`` combination is legal —
+        no cross-field validator ties them together."""
+        kwargs: dict[str, object] = {"isolation": isolation, "network_access": network_access}
+        if isolation == "reset":
+            kwargs["reset"] = ResetSpec(seed="baseline")
+        spec = ServiceSpec(**kwargs)  # type: ignore[arg-type]
+        assert spec.isolation == isolation
+        assert spec.network_access == network_access
+
+    def test_runner_service_cannot_be_restricted(self) -> None:
+        with pytest.raises(ValidationError, match="runner_service"):
+            EnvironmentManifest(
+                compose_file=_fixture("safe_restricted_sibling.yaml"),
+                runner_service="default",
+                services={
+                    "default": ServiceSpec(isolation="shared", network_access="restricted"),
+                },
+            )
+
+    def test_restricted_service_without_compose_networks_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match=r"'db'.*network_access='restricted'"):
+            EnvironmentManifest(
+                compose_file=_fixture("safe_two_service.yaml"),
+                services={
+                    "db": ServiceSpec(isolation="shared", network_access="restricted"),
+                },
+            )
+
+    @pytest.mark.parametrize(
+        ("fixture_name", "reserved_network"),
+        [
+            (
+                "unsafe_restricted_reserved_internal_net.yaml",
+                "tolokaforge_netpolicy_internal",
+            ),
+            (
+                "unsafe_restricted_reserved_edge_net.yaml",
+                "tolokaforge_netpolicy_edge",
+            ),
+        ],
+    )
+    def test_restricted_service_rejecting_harness_reserved_network(
+        self, fixture_name: str, reserved_network: str
+    ) -> None:
+        """A restricted service that pre-declares a harness-owned network in
+        its compose ``networks:`` block is rejected: attaching to the injected
+        network would defeat the partitioning primitive, since the transform
+        skips restricted services and leaves their ``networks:`` verbatim."""
+        with pytest.raises(ValidationError) as exc_info:
+            EnvironmentManifest(
+                compose_file=_fixture(fixture_name),
+                runner_service="default",
+                services={
+                    "default": ServiceSpec(isolation="shared"),
+                    "sibling": ServiceSpec(isolation="shared", network_access="restricted"),
+                },
+            )
+        message = str(exc_info.value)
+        assert "'sibling'" in message
+        assert reserved_network in message
+        assert "task-owned network" in message
+
+    def test_restricted_service_with_list_networks_constructs(self) -> None:
+        m = EnvironmentManifest(
+            compose_file=_fixture("safe_restricted_sibling.yaml"),
+            runner_service="default",
+            services={
+                "default": ServiceSpec(isolation="shared"),
+                "sibling": ServiceSpec(isolation="shared", network_access="restricted"),
+            },
+        )
+        assert m.services["sibling"].network_access == "restricted"
+
+    def test_restricted_service_with_mapping_networks_constructs(self, tmp_path: Path) -> None:
+        compose = tmp_path / "compose.yaml"
+        compose.write_text(
+            "networks:\n"
+            "  task_net: {}\n"
+            "services:\n"
+            "  default:\n"
+            "    image: tolokaforge/runner:0.5.0\n"
+            "  sibling:\n"
+            "    image: nginx:1.27-alpine\n"
+            "    networks:\n"
+            "      task_net:\n"
+            "        aliases: [sibling-alias]\n"
+        )
+        m = EnvironmentManifest(
+            compose_file=compose,
+            runner_service="default",
+            services={
+                "default": ServiceSpec(isolation="shared"),
+                "sibling": ServiceSpec(isolation="shared", network_access="restricted"),
+            },
+        )
+        assert m.services["sibling"].network_access == "restricted"
+
+    def test_restricted_services_property_returns_frozenset_of_restricted_names(self) -> None:
+        m = EnvironmentManifest(
+            compose_file=_fixture("safe_restricted_sibling.yaml"),
+            runner_service="default",
+            services={
+                "default": ServiceSpec(isolation="shared"),
+                "sibling": ServiceSpec(isolation="shared", network_access="restricted"),
+            },
+        )
+        assert m.restricted_services == frozenset({"sibling"})
+        assert isinstance(m.restricted_services, frozenset)
+
+    def test_restricted_services_property_is_empty_when_none_marked(self) -> None:
+        m = EnvironmentManifest(
+            compose_file=_fixture("safe_two_service.yaml"),
+            services={
+                "db": ServiceSpec(isolation="shared"),
+                "default": ServiceSpec(isolation="shared"),
+            },
+        )
+        assert m.restricted_services == frozenset()
+        assert isinstance(m.restricted_services, frozenset)
+
+    def test_restricted_services_property_is_empty_when_services_map_empty(self) -> None:
+        m = EnvironmentManifest(compose_file=_fixture("safe_one_service.yaml"))
+        assert m.services == {}
+        assert m.restricted_services == frozenset()
+        assert isinstance(m.restricted_services, frozenset)
+
+
+# ---------------------------------------------------------------------------
 # EnvironmentManifest — happy-path construction + defaults
 # ---------------------------------------------------------------------------
 
@@ -620,8 +770,16 @@ class TestManifestWireShape:
         assert wire["rag_port"] is None
         assert wire["network_policy"] == "no_internet"
         assert wire["services"] == {
-            "db": {"isolation": "reset", "reset": {"seed": "baseline"}},
-            "default": {"isolation": "shared", "reset": None},
+            "db": {
+                "isolation": "reset",
+                "reset": {"seed": "baseline"},
+                "network_access": "default",
+            },
+            "default": {
+                "isolation": "shared",
+                "reset": None,
+                "network_access": "default",
+            },
         }
         assert wire["initial_state"] == {"db": {"from_": "./fixtures/seed.sql", "kind": "sql"}}
         assert wire["security_context_defaults"] == {

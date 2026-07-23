@@ -840,6 +840,7 @@ class SharedStackRuntimeBackend:
                 manifest.network_policy,
                 manifest.runner_service,
                 manifest.limited_internet_allowlist,
+                restricted_services=manifest.restricted_services,
             )
             compose = DockerCompose(
                 context=str(temp_dir),
