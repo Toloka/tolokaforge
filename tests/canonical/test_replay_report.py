@@ -52,6 +52,8 @@ def _provenance() -> ReplayProvenance:
         rubric_source=ProvenanceSource.RECORDED,
         knowledge_search_mode=KnowledgeSearchMode.RECORDED,
         knowledge_search_disabled=False,
+        custom_system_prompt=False,
+        custom_prompt_source=None,
         fidelity_mode=FidelityMode.FULL,
     )
 

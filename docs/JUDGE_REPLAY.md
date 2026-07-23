@@ -39,7 +39,7 @@ uv run tolokaforge rejudge --source <run-dir> \
 | `--source` | A run dir (`trials/<task>/<idx>/` subtree), a flat collection of bundle dirs, or a single bundle dir. A directory is a trial bundle iff it directly contains `grade.yaml` + `task.yaml`. |
 | `--trial` | Re-judge a single bundle dir instead of the whole `--source`. |
 | `--judge-model` | Override the judge model as `<provider>/<model>` (e.g. `openrouter/openai/gpt-4.1-mini`), temperature 0. Default: the recorded `model_config.judge`. |
-| `--grading` | Override the rubric with a supplied `grading.yaml` (or a bare `rubric:` mapping). Required for old bundles that recorded no rubric. Default: the recorded rubric. |
+| `--grading` | Override the rubric — and, when the file carries `llm_judge.customization.system_prompt`, the judge's custom prompt — with a supplied `grading.yaml` (or a bare `rubric:` mapping). Required for old bundles that recorded no rubric. Default: the recorded rubric and prompt. |
 | `--knowledge-search` | `recorded` (honour the bundle's recorded gating), `on`, or `off`. Default: `recorded`. Forcing `on` for a bundle with no recorded KB gating cannot conjure a KB tool: the replay grade records `offered: []` and the provenance records the mode — observable, not silent. |
 | `--replay-id` | Name for the artifact subdirectory. Default: a timestamped id. |
 | `--dry-run` | Discover, classify, and resolve inputs, then report what would replay — spending nothing. |
@@ -85,6 +85,23 @@ judge therefore grades knowing what it could not inspect, and the marker is
 visible in the replay's `judge_trajectory.yaml`. Reconstructing real recorded
 state so the offline judge can inspect it is tracked separately (issue #525).
 
+## Custom judge system prompt
+
+If the recorded run's judge used a custom system prompt
+(`grading.llm_judge.customization.system_prompt`), replay reconstructs it from the
+bundle's `task.yaml` — the same source as the rubric — and re-runs the judge with
+it (the marker contract is always appended, so the reconstructed prompt still
+validates `submit_report`). An old bundle with no recorded customization replays
+with the default prompt (the declared fallback).
+
+The rubric and the custom prompt resolve **independently**. A `--grading` override
+replaces the prompt **only when its own `llm_judge.customization.system_prompt` is
+set**; a rubric-only override leaves the recorded prompt in effect and never
+resets it to the default. `replay_provenance.yaml` stamps both
+`custom_system_prompt` (whether one was in effect) and `custom_prompt_source`
+(`recorded` / `override`), so a rubric-only override over a custom-prompted bundle
+reads `rubric_source: override` while `custom_prompt_source: recorded`.
+
 ## New-vs-old bundle replayability
 
 - **New bundles** (recorded with a `judge_inputs.yaml`) replay at **full
@@ -105,8 +122,8 @@ trial:
 - `grade.yaml`, `judge_trajectory.yaml`, `judge_inputs.yaml` — the same formats as
   a normal trial bundle (so a replay bundle is itself replayable).
 - `replay_provenance.yaml` — the judge model used, whether each of the judge
-  model / rubric / KB-gating came from the bundle or an override, and the fidelity
-  mode.
+  model / rubric / KB-gating / custom prompt came from the bundle or an override,
+  and the fidelity mode.
 
 The batch also writes one `replays/<replay_id>/replay_report.yaml` — the per-run
 comparison against the recorded originals.

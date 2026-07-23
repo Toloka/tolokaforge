@@ -65,8 +65,13 @@ _RUBRIC = {
 }
 
 
-def _write_recorded_bundle(trial_dir: Path) -> None:
-    """A transcript-only trial whose recorded judge verdict is met=true."""
+def _write_recorded_bundle(trial_dir: Path, *, custom_system_prompt: str | None = None) -> None:
+    """A transcript-only trial whose recorded judge verdict is met=true.
+
+    When ``custom_system_prompt`` is set, it is recorded under
+    ``grading_config.llm_judge.customization.system_prompt`` so a replay
+    reconstructs the custom-prompted judge from the bundle.
+    """
     now = datetime.now(UTC)
     writer = FileArtifactWriter()
     writer.write_trajectory(
@@ -86,12 +91,15 @@ def _write_recorded_bundle(trial_dir: Path) -> None:
         ),
     )
     writer.write_prompts(trial_dir, _AGENT_PROMPT, "user-sim prompt")
+    llm_judge: dict = {"rubric": _RUBRIC}
+    if custom_system_prompt is not None:
+        llm_judge["customization"] = {"system_prompt": custom_system_prompt}
     writer.write_task(
         trial_dir,
         {
             "task_id": "refund_task",
             "trial_index": 0,
-            "grading_config": {"llm_judge": {"rubric": _RUBRIC}},
+            "grading_config": {"llm_judge": llm_judge},
         },
     )
     writer.write_grade(
@@ -142,3 +150,44 @@ def test_rejudge_reproduces_recorded_verdict_with_judge_only_spend(tmp_path: Pat
 
     # The replay bundle landed under replays/ and the original is intact.
     assert (source / "replays" / "live" / "trials" / "refund_task" / "0" / "grade.yaml").exists()
+
+
+@pytest.mark.skipif(_judge_model_ref() is None, reason="no provider key for the judge model")
+def test_custom_prompted_judge_completes_with_marker_intact(tmp_path: Path) -> None:
+    """A bundle recording a custom judge system prompt re-judges end-to-end with a
+    real model: the judge COMPLETES, the marker contract survives the custom body
+    (no consistency rejections), and the replay grade.yaml records
+    judge_custom_prompt: true — issue acceptance criterion 6."""
+    import yaml
+
+    source = tmp_path / "run"
+    _write_recorded_bundle(
+        source / "trials" / "refund_task" / "0",
+        custom_system_prompt=(
+            "You are a meticulous refund auditor. Grade only whether the agent quoted "
+            "the exact refund amount to the customer; ignore tone and everything else."
+        ),
+    )
+
+    outcomes = run_replay_batch(
+        source,
+        replay_id="live",
+        judge_model_override=_judge_model_ref(),
+    )
+
+    assert len(outcomes) == 1
+    outcome = outcomes[0]
+    assert outcome.status is ReplayOutcomeStatus.REPLAYED, outcome.reason
+    result = outcome.result
+    assert result is not None and result.status is JudgeStatus.COMPLETED
+
+    # The custom body did not break submit_report: the appended marker contract
+    # was honoured, so no verdict/justification marker mismatches were rejected.
+    assert result.usage.consistency_rejections == 0
+    # The judge ran with the reconstructed custom prompt.
+    assert result.custom_system_prompt is True
+
+    # The replay grade.yaml honestly records that a custom prompt was in effect.
+    replay_grade_path = source / "replays" / "live" / "trials" / "refund_task" / "0" / "grade.yaml"
+    replay_grade = yaml.safe_load(replay_grade_path.read_text())
+    assert replay_grade["judge_custom_prompt"] is True

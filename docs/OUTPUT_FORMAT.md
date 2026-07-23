@@ -727,8 +727,16 @@ judge_model_source: override        # or "recorded"
 rubric_source: recorded             # or "override"
 knowledge_search_mode: recorded     # recorded | on | off
 knowledge_search_disabled: false
+custom_system_prompt: false         # whether a custom judge prompt was in effect
+custom_prompt_source: null          # "recorded" | "override" | null (default prompt)
 fidelity_mode: full                 # "full" (state_diff rebuilt) or "fallback" (old bundle, no state_diff)
 ```
+
+`custom_system_prompt` / `custom_prompt_source` are resolved independently of the
+rubric: a `--grading` override replaces the prompt only when it carries its own
+`llm_judge.customization.system_prompt`, so a rubric-only override over a
+custom-prompted bundle reads `rubric_source: override` while
+`custom_prompt_source: recorded`. See [`docs/JUDGE_REPLAY.md`](JUDGE_REPLAY.md#custom-judge-system-prompt).
 
 ### `replay_report.yaml`
 

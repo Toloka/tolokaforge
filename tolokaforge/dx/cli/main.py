@@ -23,7 +23,7 @@ from tolokaforge.core.grading.replay import (
     ReplayReport,
     TrialReplayOutcome,
     emit_replay_report,
-    load_grading_rubric,
+    load_grading_override,
     run_replay_batch,
 )
 from tolokaforge.core.llm.client import LLMClient
@@ -914,14 +914,14 @@ def rejudge(
     """
     source_path = Path(source)
     replay_id = replay_id or f"replay_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    rubric_override = load_grading_rubric(Path(grading)) if grading else None
+    grading_override = load_grading_override(Path(grading)) if grading else None
 
     console.print(f"[bold blue]Re-judging trials under {source_path}...[/bold blue]")
     outcomes = run_replay_batch(
         source_path,
         replay_id=replay_id,
         trial=Path(trial) if trial else None,
-        rubric_override=rubric_override,
+        grading_override=grading_override,
         judge_model_override=judge_model,
         knowledge_search=KnowledgeSearchMode(knowledge_search),
         dry_run=dry_run,
