@@ -117,7 +117,7 @@ The gating resolves **independently** of the rubric, like the custom prompt. A
 `llm_judge.customization.include_agent_system_prompt` is set**; a rubric-only
 override leaves the recorded gating in effect. `replay_provenance.yaml` stamps
 `include_agent_system_prompt` (the effective decision) and `agent_prompt_source`
-(`recorded` / `override`, or absent when defaulted to the include default), so a
+(`recorded` / `override`, or `null` when the gating defaulted to include), so a
 rubric-only override over a gated bundle reads `rubric_source: override` while
 `agent_prompt_source: recorded`.
 

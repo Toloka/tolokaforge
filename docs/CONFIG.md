@@ -371,9 +371,10 @@ embedded in the judge's opening-message evidence: unset/`true` include it (the
 default), `false` omits it (evidence gating, distinct from `system_prompt`'s
 wording). Omitting the block leaves the judge at the faithful default. All fields
 layer project→task (a project default under
-`grading_defaults.llm_judge.customization`, task wins; `system_prompt: null` or
-`include_agent_system_prompt: null` / `true` at the task layer resets a project
-value) — see [PROJECTS.md](PROJECTS.md#task-override-semantics). A malformed value,
+`grading_defaults.llm_judge.customization`, task wins; `system_prompt: null`
+resets a project prompt; `include_agent_system_prompt: true` (explicit
+re-include) or `null` (reset) both override a project `false`) — see
+[PROJECTS.md](PROJECTS.md#task-override-semantics). A malformed value,
 an empty/whitespace-only `system_prompt`, or an unknown key under `customization`
 is rejected loudly at load. See
 [GRADING.md](GRADING.md#llm-judge-rubric-grading) for the judge mechanism, the

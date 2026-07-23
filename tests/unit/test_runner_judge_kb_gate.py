@@ -596,6 +596,9 @@ def test_grade_trial_populates_judge_report_kb_gating(monkeypatch):
         assert report.state_diff_text == "orders[1]: open -> shipped"
         assert list(report.read_tools_offered) == ["get_db_state", "query_db"]
         assert report.custom_system_prompt is True
+        # Field 15 is proto3 `optional`: an unset field also reads False through
+        # the accessor, so presence is what proves the servicer populated it.
+        assert report.HasField("include_agent_system_prompt")
         assert report.include_agent_system_prompt is False
     finally:
         service.shutdown()

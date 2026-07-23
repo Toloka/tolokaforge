@@ -271,8 +271,8 @@ class ReplayInputs:
     judge_model_config: ModelConfig
     disable_knowledge_search: bool
     custom_system_prompt: str | None
+    include_agent_system_prompt: bool
     provenance: ReplayProvenance
-    include_agent_system_prompt: bool = True
     db_reader: DBReader | None = None
     kb_search: KnowledgeSearch | None = None
     extra_read_tools: list[Tool] = field(default_factory=list)
