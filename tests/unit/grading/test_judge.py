@@ -16,6 +16,7 @@ from tolokaforge.core.grading.judge import (
     _JUDGE_SYSTEM_PROMPT,
     JudgeStatus,
     LLMJudge,
+    _build_opening_message,
     _compose_judge_system_prompt,
 )
 from tolokaforge.core.llm.client import GenerationResult
@@ -39,6 +40,7 @@ _LLM_JUDGE_CTOR_KEYS = (
     "submit_report_retries",
     "disable_knowledge_search",
     "custom_system_prompt",
+    "include_agent_system_prompt",
     "logger",
 )
 
@@ -1116,6 +1118,39 @@ def test_state_diff_injected_into_opening_context():
     assert "STATE-DIFF-MARKER" in captured["first_user"]
 
 
+def test_opening_message_default_embeds_agent_policy_byte_for_byte():
+    """The default embeds the agent-policy section, and passing the default kwarg
+    explicitly changes nothing — byte-for-byte the ungated call."""
+    transcript = [{"role": "user", "content": "do the thing"}]
+    ungated = _build_opening_message("AGENT-POLICY-MARKER", transcript, "orders: 1 modified")
+    explicit_default = _build_opening_message(
+        "AGENT-POLICY-MARKER",
+        transcript,
+        "orders: 1 modified",
+        include_agent_system_prompt=True,
+    )
+    assert ungated == explicit_default
+    assert "The agent under evaluation operated under this policy" in ungated
+    assert "AGENT-POLICY-MARKER" in ungated
+
+
+def test_opening_message_gated_omits_agent_policy_section():
+    """When gated, the agent-policy section is absent entirely — neither the
+    policy-framing sentence nor the agent prompt text appears — while the
+    transcript and state sections are untouched."""
+    transcript = [{"role": "user", "content": "do the thing"}]
+    gated = _build_opening_message(
+        "AGENT-POLICY-MARKER",
+        transcript,
+        "orders: 1 modified",
+        include_agent_system_prompt=False,
+    )
+    assert "The agent under evaluation operated under this policy" not in gated
+    assert "AGENT-POLICY-MARKER" not in gated
+    assert "do the thing" in gated
+    assert "orders: 1 modified" in gated
+
+
 # ---------------------------------------------------------------------------
 # System-prompt contract tokens: the invariants a future reword must not drop
 # ---------------------------------------------------------------------------
@@ -1208,3 +1243,33 @@ def test_custom_system_prompt_recorded_on_result():
         llm_client=ScriptedClient([[("submit_report", _submit_args(refund_done=True))]]),
     )
     assert default.custom_system_prompt is False
+
+
+def test_include_agent_system_prompt_recorded_on_result():
+    """A judge constructed gated withholds the agent-policy section from the
+    opening message it sends and records ``include_agent_system_prompt`` False on
+    its result; default construction embeds the policy and records True."""
+    rubric = _binary_rubric()
+
+    gated_client = MessageCapturingClient([[("submit_report", _submit_args(refund_done=True))]])
+    gated = _run_llm_judge(
+        rubric=rubric,
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="SECRET-AGENT-POLICY-MARKER",
+        transcript=[{"role": "user", "content": "do the thing"}],
+        db_reader=FakeDBReader(),
+        include_agent_system_prompt=False,
+        llm_client=gated_client,
+    )
+    assert gated.include_agent_system_prompt is False
+    assert "SECRET-AGENT-POLICY-MARKER" not in gated_client.snapshots[0][0].content
+
+    default = _run_llm_judge(
+        rubric=rubric,
+        model_config=_JUDGE_MODEL,
+        agent_system_prompt="SECRET-AGENT-POLICY-MARKER",
+        transcript=[{"role": "user", "content": "do the thing"}],
+        db_reader=FakeDBReader(),
+        llm_client=ScriptedClient([[("submit_report", _submit_args(refund_done=True))]]),
+    )
+    assert default.include_agent_system_prompt is True

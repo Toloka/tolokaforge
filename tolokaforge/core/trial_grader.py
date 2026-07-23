@@ -250,9 +250,13 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
     judge_kb_gating: JudgeKbGating | None = None
     judge_inputs: JudgeInputs | None = None
     judge_custom_prompt: bool | None = None
+    judge_agent_prompt_included: bool | None = None
     raw_report = raw_grade.get("judge_report")
     if raw_report:
         judge_custom_prompt = raw_report.get("custom_system_prompt", False)
+        # Default include: a legacy/skewed runner that never carried field 15
+        # graded with the agent policy present, so its faithful value is True.
+        judge_agent_prompt_included = raw_report.get("include_agent_system_prompt", True)
         judge_usage = JudgeUsage(
             calls=raw_report.get("calls", 0),
             prompt_tokens=raw_report.get("prompt_tokens", 0),
@@ -300,4 +304,5 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
         judge_kb_gating=judge_kb_gating,
         judge_inputs=judge_inputs,
         judge_custom_prompt=judge_custom_prompt,
+        judge_agent_prompt_included=judge_agent_prompt_included,
     )

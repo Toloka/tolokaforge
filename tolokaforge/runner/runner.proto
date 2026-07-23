@@ -287,6 +287,14 @@ message JudgeReport {
   // the marker contract regardless. The full custom text is recorded in
   // task.yaml.grading_config, not here — this is the honest bool.
   bool custom_system_prompt = 14;
+  // Whether the harness embedded the agent's policy / system prompt in the
+  // judge's opening-message evidence
+  // (grading.llm_judge.customization.include_agent_system_prompt). Explicit
+  // presence (optional): the semantic default is true (include), which fights
+  // proto3's false wire default, so the host must distinguish "field absent
+  // (legacy sender)" from "present and false" to avoid recording a false
+  // "gated out" for a run that included the policy.
+  optional bool include_agent_system_prompt = 15;
 }
 
 // Outcome of running the rubric judge. Keeps a judge malfunction distinct from a

@@ -39,7 +39,7 @@ uv run tolokaforge rejudge --source <run-dir> \
 | `--source` | A run dir (`trials/<task>/<idx>/` subtree), a flat collection of bundle dirs, or a single bundle dir. A directory is a trial bundle iff it directly contains `grade.yaml` + `task.yaml`. |
 | `--trial` | Re-judge a single bundle dir instead of the whole `--source`. |
 | `--judge-model` | Override the judge model as `<provider>/<model>` (e.g. `openrouter/openai/gpt-4.1-mini`), temperature 0. Default: the recorded `model_config.judge`. |
-| `--grading` | Override the rubric — and, when the file carries `llm_judge.customization.system_prompt`, the judge's custom prompt — with a supplied `grading.yaml` (or a bare `rubric:` mapping). Required for old bundles that recorded no rubric. Default: the recorded rubric and prompt. |
+| `--grading` | Override the rubric — and, when the file carries them, the judge's custom prompt (`llm_judge.customization.system_prompt`) and agent-policy gating (`llm_judge.customization.include_agent_system_prompt`) — with a supplied `grading.yaml` (or a bare `rubric:` mapping). Required for old bundles that recorded no rubric. Default: the recorded rubric, prompt, and gating. |
 | `--knowledge-search` | `recorded` (honour the bundle's recorded gating), `on`, or `off`. Default: `recorded`. Forcing `on` for a bundle with no recorded KB gating cannot conjure a KB tool: the replay grade records `offered: []` and the provenance records the mode — observable, not silent. |
 | `--replay-id` | Name for the artifact subdirectory. Default: a timestamped id. |
 | `--dry-run` | Discover, classify, and resolve inputs, then report what would replay — spending nothing. |
@@ -101,6 +101,25 @@ resets it to the default. `replay_provenance.yaml` stamps both
 `custom_system_prompt` (whether one was in effect) and `custom_prompt_source`
 (`recorded` / `override`), so a rubric-only override over a custom-prompted bundle
 reads `rubric_source: override` while `custom_prompt_source: recorded`.
+
+## Agent-policy evidence gating
+
+If the recorded run gated the agent's policy out of the judge's evidence
+(`grading.llm_judge.customization.include_agent_system_prompt: false`), replay
+reconstructs the gating from the bundle's `task.yaml` — the same source as the
+rubric — and re-runs the judge with it, so the replayed opening message withholds
+the agent policy exactly as the recorded run did. An old bundle with no recorded
+value replays with the agent policy **included** (the declared fallback: old runs
+graded with the policy present).
+
+The gating resolves **independently** of the rubric, like the custom prompt. A
+`--grading` override flips it **only when its own
+`llm_judge.customization.include_agent_system_prompt` is set**; a rubric-only
+override leaves the recorded gating in effect. `replay_provenance.yaml` stamps
+`include_agent_system_prompt` (the effective decision) and `agent_prompt_source`
+(`recorded` / `override`, or `null` when the gating defaulted to include), so a
+rubric-only override over a gated bundle reads `rubric_source: override` while
+`agent_prompt_source: recorded`.
 
 ## New-vs-old bundle replayability
 

@@ -188,6 +188,12 @@ class JudgeResult:
     # contract is always appended regardless). The full custom text is recorded in
     # the bundle's ``task.yaml`` grading config, not here — this is the honest bool.
     custom_system_prompt: bool = False
+    # Whether the harness was configured to embed the agent's policy / system
+    # prompt in the judge's opening-message evidence. Records the construction
+    # setting, not whether a block physically appeared — a trial with an empty
+    # agent prompt still reads ``True`` when the setting is default/on. Default
+    # ``True``: the harness includes the agent policy unless gated off.
+    include_agent_system_prompt: bool = True
     # Non-KB read-only tools the judge was offered this trial: ``get_db_state`` /
     # ``query_db`` (a DB reader was supplied), ``read_file`` (a workspace existed).
     # The KB surface is ``kb_tools_offered`` / ``kb_tools_withheld``. Recorded so an
@@ -454,6 +460,8 @@ def _build_opening_message(
     agent_system_prompt: str,
     transcript: list[dict[str, Any]],
     state_diff: str | None = None,
+    *,
+    include_agent_system_prompt: bool = True,
 ) -> str:
     """Inject the agent's policy (system prompt) + transcript into the judge context.
 
@@ -463,11 +471,16 @@ def _build_opening_message(
     it reveals nothing about the expected answer, only the agent's own edits. The
     judge is steered to read the diff first and reach for ``get_db_state`` /
     ``query_db`` only to confirm post-conditions the diff does not settle.
+
+    When ``include_agent_system_prompt`` is ``False`` the agent-policy section is
+    omitted from the evidence entirely (not blanked to a placeholder), regardless
+    of the ``agent_system_prompt`` content — self-contained rubrics that do not
+    want the agent's framing in the judge's context.
     """
     policy_block = (
         f"The agent under evaluation operated under this policy / system prompt:\n"
         f"---\n{agent_system_prompt.strip()}\n---\n\n"
-        if agent_system_prompt and agent_system_prompt.strip()
+        if include_agent_system_prompt and agent_system_prompt and agent_system_prompt.strip()
         else ""
     )
     if state_diff and state_diff.strip():
@@ -653,7 +666,9 @@ class LLMJudge:
     ``model_config``, the turn / wall-time / retry budgets, ``disable_knowledge_search``
     (withhold every KB-tagged tool from the judge's surface, per ADR-0019), an
     optional ``custom_system_prompt`` (replace the default grading-stance body; the
-    marker contract is always appended), an
+    marker contract is always appended), ``include_agent_system_prompt`` (embed the
+    agent's policy in the judge's opening-message evidence — default on; gate off for
+    self-contained rubrics), an
     optionally injected ``llm_client`` (tests pass a scripted client; production
     passes ``None`` and the judge builds one ``LLMClient(model_config)`` per
     :meth:`run`), and the logger. :meth:`run` carries only the per-trial evidence.
@@ -668,6 +683,7 @@ class LLMJudge:
         submit_report_retries: int = DEFAULT_SUBMIT_REPORT_RETRIES,
         disable_knowledge_search: bool = False,
         custom_system_prompt: str | None = None,
+        include_agent_system_prompt: bool = True,
         llm_client: LLMClient | None = None,
         logger: StructuredLogger | None = None,
     ) -> None:
@@ -677,6 +693,7 @@ class LLMJudge:
         self._submit_report_retries = submit_report_retries
         self._disable_knowledge_search = disable_knowledge_search
         self._custom_system_prompt = custom_system_prompt
+        self._include_agent_system_prompt = include_agent_system_prompt
         self._llm_client = llm_client
         self._logger = logger
 
@@ -744,7 +761,12 @@ class LLMJudge:
         messages: list[Message] = [
             Message(
                 role=MessageRole.USER,
-                content=_build_opening_message(agent_system_prompt, transcript, state_diff),
+                content=_build_opening_message(
+                    agent_system_prompt,
+                    transcript,
+                    state_diff,
+                    include_agent_system_prompt=self._include_agent_system_prompt,
+                ),
             )
         ]
         rubric_brief = _build_rubric_brief(rubric)
@@ -766,6 +788,7 @@ class LLMJudge:
                     kb_tools_withheld,
                     knowledge_search_disabled=self._disable_knowledge_search,
                     custom_system_prompt=self._custom_system_prompt is not None,
+                    include_agent_system_prompt=self._include_agent_system_prompt,
                     read_tools_offered=read_tools_offered,
                     state_diff=state_diff,
                 )
@@ -781,6 +804,7 @@ class LLMJudge:
                     kb_tools_withheld,
                     knowledge_search_disabled=self._disable_knowledge_search,
                     custom_system_prompt=self._custom_system_prompt is not None,
+                    include_agent_system_prompt=self._include_agent_system_prompt,
                     read_tools_offered=read_tools_offered,
                     state_diff=state_diff,
                 )
@@ -806,6 +830,7 @@ class LLMJudge:
                         kb_tools_withheld,
                         knowledge_search_disabled=self._disable_knowledge_search,
                         custom_system_prompt=self._custom_system_prompt is not None,
+                        include_agent_system_prompt=self._include_agent_system_prompt,
                         read_tools_offered=read_tools_offered,
                         state_diff=state_diff,
                     )
@@ -853,6 +878,7 @@ class LLMJudge:
                 kb_tools_withheld=kb_tools_withheld,
                 knowledge_search_disabled=self._disable_knowledge_search,
                 custom_system_prompt=self._custom_system_prompt is not None,
+                include_agent_system_prompt=self._include_agent_system_prompt,
                 read_tools_offered=read_tools_offered,
                 state_diff=state_diff,
                 transcript=_serialize_judge_transcript(messages),
@@ -868,6 +894,7 @@ def _errored(
     *,
     knowledge_search_disabled: bool,
     custom_system_prompt: bool,
+    include_agent_system_prompt: bool,
     read_tools_offered: tuple[str, ...],
     state_diff: str | None,
 ) -> JudgeResult:
@@ -890,6 +917,7 @@ def _errored(
         kb_tools_withheld=kb_tools_withheld,
         knowledge_search_disabled=knowledge_search_disabled,
         custom_system_prompt=custom_system_prompt,
+        include_agent_system_prompt=include_agent_system_prompt,
         read_tools_offered=read_tools_offered,
         state_diff=state_diff,
         transcript=_serialize_judge_transcript(messages),

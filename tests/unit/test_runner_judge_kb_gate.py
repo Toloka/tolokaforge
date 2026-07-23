@@ -476,12 +476,65 @@ def test_grade_llm_judge_constructs_with_effective_custom_prompt(
         service.shutdown()
 
 
+@pytest.mark.parametrize(
+    "customization, expected",
+    [
+        (None, True),
+        ({"disable_knowledge_search": True}, True),
+        ({"include_agent_system_prompt": False}, False),
+        ({"include_agent_system_prompt": True}, True),
+    ],
+    ids=["absent", "customization_without_key", "explicit_false", "explicit_true"],
+)
+def test_grade_llm_judge_constructs_with_effective_include_agent_system_prompt(
+    monkeypatch, customization, expected
+):
+    """``_grade_llm_judge`` computes the effective ``include_agent_system_prompt``
+    from the merged customization and constructs the judge with it — defaulting to
+    ``True`` (include) when no layer sets it, not collapsing an unset flag to
+    ``False``."""
+    from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, JudgeUsage
+    from tolokaforge.core.models import ModelConfig
+    from tolokaforge.runner.models import JudgeCustomization, LLMJudgeConfig, Rubric
+
+    captured: dict = {}
+
+    class _SpyJudge:
+        def __init__(self, model_config, *, include_agent_system_prompt=True, **_kw):
+            captured["include"] = include_agent_system_prompt
+
+        def run(self, **_kwargs):
+            return JudgeResult(
+                status=JudgeStatus.COMPLETED, usage=JudgeUsage(), reasons="ok", score=1.0
+            )
+
+    monkeypatch.setattr("tolokaforge.runner.service.LLMJudge", _SpyJudge)
+
+    service = _service(None)
+    try:
+        rubric = Rubric(criteria=[{"id": "a", "description": "d", "kind": "binary", "weight": 1.0}])
+        cfg = LLMJudgeConfig(
+            rubric=rubric,
+            customization=(
+                JudgeCustomization(**customization) if customization is not None else None
+            ),
+        )
+        ctx = _JudgeCtx(ModelConfig(provider="openai", name="gpt-4o-mini", temperature=0.0))
+        fut = asyncio.run_coroutine_threadsafe(
+            service._grade_llm_judge("t:0", cfg, [], ctx), service._loop
+        )
+        fut.result(timeout=5.0)
+        assert captured["include"] is expected
+    finally:
+        service.shutdown()
+
+
 def test_grade_trial_populates_judge_report_kb_gating(monkeypatch):
     """The ``JudgeResult`` audit fields cross into ``pb2.JudgeReport`` unswapped:
     ``knowledge_search_disabled`` / ``kb_tools_offered`` / ``kb_tools_withheld`` /
-    ``custom_system_prompt`` plus the replay inputs ``state_diff_text`` /
-    ``read_tools_offered`` land on ``response.grade.judge_report`` exactly as the
-    judge reported them."""
+    ``custom_system_prompt`` / ``include_agent_system_prompt`` plus the replay inputs
+    ``state_diff_text`` / ``read_tools_offered`` land on ``response.grade.judge_report``
+    exactly as the judge reported them."""
     from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, JudgeUsage
     from tolokaforge.core.models import ModelConfig
     from tolokaforge.runner import runner_pb2 as pb2
@@ -504,6 +557,7 @@ def test_grade_trial_populates_judge_report_kb_gating(monkeypatch):
                 state_diff="orders[1]: open -> shipped",
                 read_tools_offered=("get_db_state", "query_db"),
                 custom_system_prompt=True,
+                include_agent_system_prompt=False,
             )
 
     monkeypatch.setattr("tolokaforge.runner.service.LLMJudge", _SpyJudge)
@@ -542,6 +596,10 @@ def test_grade_trial_populates_judge_report_kb_gating(monkeypatch):
         assert report.state_diff_text == "orders[1]: open -> shipped"
         assert list(report.read_tools_offered) == ["get_db_state", "query_db"]
         assert report.custom_system_prompt is True
+        # Field 15 is proto3 `optional`: an unset field also reads False through
+        # the accessor, so presence is what proves the servicer populated it.
+        assert report.HasField("include_agent_system_prompt")
+        assert report.include_agent_system_prompt is False
     finally:
         service.shutdown()
 

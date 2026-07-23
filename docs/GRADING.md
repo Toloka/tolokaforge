@@ -256,6 +256,42 @@ An empty or whitespace-only string is rejected loudly at load. When absent, the
 judge runs with the byte-for-byte default prompt. The full custom text is recorded
 in the bundle's `task.yaml.grading_config`.
 
+### Gating the agent's policy out of the judge's evidence
+
+By default the judge's opening-message evidence includes the agent's own policy /
+system prompt, so the judge can see the framing the agent operated under. For a
+pack whose rubric is fully self-contained, embedding the agent policy can bias the
+judge toward the agent's framing or leak instructions that supersede the rubric.
+Set `grading.llm_judge.customization.include_agent_system_prompt: false` (a sibling
+of `rubric`, alongside `disable_knowledge_search` / `system_prompt`) and the
+agent-policy section is **removed from the judge's opening message, not stubbed** —
+the judge grades against the transcript, the state diff, and the rubric alone.
+
+This is **evidence gating**, distinct from `system_prompt` (which changes the
+judge's own *wording*): it controls what evidence the harness assembles, not how
+the judge is instructed to grade. It is **judge-side only** — the agent's own
+system prompt and tool surface are untouched.
+
+```yaml
+llm_judge:
+  customization:
+    include_agent_system_prompt: false
+  rubric:
+    criteria:
+      - id: cites_policy
+        description: "Reply cites the applicable refund clause"
+        kind: binary
+        weight: 1.0
+```
+
+The setting is tri-state and layers project→task: unset and `true` both include the
+agent policy (today's behaviour); `false` omits it; a task sets `true` or `null` to
+re-include over a project `false`. When absent, the opening message is byte-for-byte
+the default. The effective decision is recorded in `grade.yaml` as
+`judge_agent_prompt_included`. See
+[PROJECTS.md](PROJECTS.md#task-override-semantics) and
+[CONFIG.md](CONFIG.md#grading-specification-gradingyaml).
+
 ### Fail-loud: the ERRORED status
 
 If the judge malfunctions — repeated malformed `submit_report` past its retry
