@@ -1292,6 +1292,8 @@ class StrReplaceEditorToolWrapper(ToolWrapper):
 
     has_lifecycle = False
 
+    # Hardcoded to match service.py's AGENT_WORK_DIR — this wrapper is
+    # has_lifecycle=False, so it never sees ToolLifecycleContext.work_dir.
     AGENT_WORK_DIR = "/work"
 
     def __init__(self, tool_schema: ToolSchemaModel, trial_id: str):

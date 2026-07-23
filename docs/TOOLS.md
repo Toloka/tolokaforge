@@ -92,6 +92,17 @@ The compose variant resolves its target container as
 replaced by `_`; both compose tools share this resolution so they target the
 identical container.
 
+> **Compose runtime seam.** A default `docker compose up` names containers
+> `<project>-<service>-<N>` (hyphens plus an ordinal index) — that scheme does
+> not match the wrapper's `<compose_project_prefix><trial_id>_<service>`
+> resolution, so a generic per-trial runtime brings up containers the compose
+> tools cannot reach. Until this reconciles, a task pack enabling the compose
+> variant must pin `container_name:` on the target service to exactly what the
+> wrapper resolves, or the first `docker exec` fails with a no-such-container
+> error. Tracked as
+> [#585](https://github.com/Toloka/tolokaforge/issues/585). The local variants
+> are unaffected.
+
 **When to use.** Prefer `bash_session` for multi-step workflows that need a
 persistent cwd, environment, or shell functions across turns. Use the legacy
 per-call [`bash`](#built-in-tools) for one-shot allowlisted commands.
