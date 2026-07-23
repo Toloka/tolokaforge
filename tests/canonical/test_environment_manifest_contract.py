@@ -228,6 +228,40 @@ class TestServiceNetworkAccessContract:
                 },
             )
 
+    @pytest.mark.parametrize(
+        ("fixture_name", "reserved_network"),
+        [
+            (
+                "unsafe_restricted_reserved_internal_net.yaml",
+                "tolokaforge_netpolicy_internal",
+            ),
+            (
+                "unsafe_restricted_reserved_edge_net.yaml",
+                "tolokaforge_netpolicy_edge",
+            ),
+        ],
+    )
+    def test_restricted_service_rejecting_harness_reserved_network(
+        self, fixture_name: str, reserved_network: str
+    ) -> None:
+        """A restricted service that pre-declares a harness-owned network in
+        its compose ``networks:`` block is rejected: attaching to the injected
+        network would defeat the partitioning primitive, since the transform
+        skips restricted services and leaves their ``networks:`` verbatim."""
+        with pytest.raises(ValidationError) as exc_info:
+            EnvironmentManifest(
+                compose_file=_fixture(fixture_name),
+                runner_service="default",
+                services={
+                    "default": ServiceSpec(isolation="shared"),
+                    "sibling": ServiceSpec(isolation="shared", network_access="restricted"),
+                },
+            )
+        message = str(exc_info.value)
+        assert "'sibling'" in message
+        assert reserved_network in message
+        assert "task-owned network" in message
+
     def test_restricted_service_with_list_networks_constructs(self) -> None:
         m = EnvironmentManifest(
             compose_file=_fixture("safe_restricted_sibling.yaml"),

@@ -410,7 +410,7 @@ all rejected at manifest load.
 
 How it is enforced: the provisioner injects a digest-pinned `ubuntu/squid`
 forward-proxy sidecar and points every application service's `HTTP(S)_PROXY`
-at it. The proxy is default-deny and forwards only to allowlisted hosts;
+(unless opted out via `network_access: restricted`) at it. The proxy is default-deny and forwards only to allowlisted hosts;
 everything else is refused with HTTP 403. HTTPS egress goes through the proxy
 via CONNECT tunnelling with no TLS interception — the allowlist matches on the
 target hostname, so pinned certificates keep working and there is no CA to

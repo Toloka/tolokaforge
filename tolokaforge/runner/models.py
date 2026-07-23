@@ -992,6 +992,20 @@ def _check_runner_not_restricted(
         )
 
 
+_HARNESS_RESERVED_NETWORKS: frozenset[str] = frozenset(
+    {
+        "tolokaforge_netpolicy_internal",
+        "tolokaforge_netpolicy_edge",
+    }
+)
+"""Injected network names the network-policy transform in
+:mod:`tolokaforge.core.compose_materialisation` (``NETPOLICY_INTERNAL_NETWORK``
+/ ``NETPOLICY_EDGE_NETWORK`` — source of truth) owns. A restricted service
+that pre-declares one of these in its compose ``networks:`` block would
+silently defeat the partitioning primitive, since the transform skips
+restricted services and leaves their ``networks:`` verbatim."""
+
+
 def _check_restricted_services_have_own_networks(
     compose_services: dict[str, dict[str, Any]],
     manifest_services: dict[str, ServiceSpec],
@@ -1007,6 +1021,19 @@ def _check_restricted_services_have_own_networks(
                 "network_access='restricted' but declares no compose "
                 "`networks:` block; declare a task-owned network for it to "
                 "attach to (e.g. `networks: [task_net]` with a top-level "
+                "`networks: {task_net: {}}` entry)."
+            )
+        declared_names = set(networks) if isinstance(networks, dict) else set(networks)
+        reserved = sorted(declared_names & _HARNESS_RESERVED_NETWORKS)
+        if reserved:
+            raise ValueError(
+                f"compose service {name!r} is marked "
+                f"network_access='restricted' but declares harness-reserved "
+                f"network(s) {reserved!r} in its `networks:` block; these "
+                "names are owned by the network-policy transform and "
+                "attaching to them would defeat the partitioning primitive. "
+                "Declare a task-owned network instead (e.g. "
+                "`networks: [task_net]` with a top-level "
                 "`networks: {task_net: {}}` entry)."
             )
 

@@ -557,9 +557,8 @@ class TestEnforceNetworkPolicy:
         assert result["services"]["sibling"]["networks"] == [NETPOLICY_INTERNAL_NETWORK]
 
     def test_no_internet_default_service_still_joins_internal_net(self) -> None:
-        """With an empty ``restricted_services`` the transform stays
-        identical to the pre-partition behaviour — every service joins
-        the injected internal net."""
+        """With an empty ``restricted_services`` every service joins the
+        injected internal net — this is the identity case of the transform."""
         result = enforce_network_policy(
             _minimal_compose(),
             NetworkPolicy.NO_INTERNET,
