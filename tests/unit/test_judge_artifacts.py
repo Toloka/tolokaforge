@@ -39,7 +39,7 @@ _KB_DISABLED = JudgeKbGating(
 )
 
 
-def _judge_grade(kb_gating: JudgeKbGating = _KB_OFFERED) -> Grade:
+def _judge_grade(kb_gating: JudgeKbGating = _KB_OFFERED, custom_prompt: bool = False) -> Grade:
     return Grade(
         binary_pass=True,
         score=0.8,
@@ -85,15 +85,17 @@ def _judge_grade(kb_gating: JudgeKbGating = _KB_OFFERED) -> Grade:
             state_diff_text="orders[1]: status open -> shipped",
             read_tools_offered=["get_db_state", "query_db"],
         ),
+        judge_custom_prompt=custom_prompt,
     )
 
 
 @pytest.mark.parametrize(
-    "kb_gating, expected_gating",
+    "kb_gating, expected_gating, custom_prompt",
     [
         (
             _KB_OFFERED,
             {"knowledge_search_disabled": False, "offered": ["search_kb"], "withheld": []},
+            False,
         ),
         (
             _KB_DISABLED,
@@ -102,17 +104,18 @@ def _judge_grade(kb_gating: JudgeKbGating = _KB_OFFERED) -> Grade:
                 "offered": [],
                 "withheld": ["search_kb", "search_policy"],
             },
+            True,
         ),
     ],
-    ids=["kb_offered", "kb_disabled_withheld"],
+    ids=["kb_offered_default_prompt", "kb_disabled_withheld_custom_prompt"],
 )
 def test_write_grade_emits_breakdown_usage_and_transcript_sidecar(
-    tmp_path: Path, kb_gating: JudgeKbGating, expected_gating: dict
+    tmp_path: Path, kb_gating: JudgeKbGating, expected_gating: dict, custom_prompt: bool
 ) -> None:
     writer = FileArtifactWriter()
     trial_dir = tmp_path / "trials" / "task_a" / "0"
 
-    writer.write_grade(trial_dir, _judge_grade(kb_gating))
+    writer.write_grade(trial_dir, _judge_grade(kb_gating, custom_prompt))
 
     grade_path = trial_dir / "grade.yaml"
     transcript_path = trial_dir / "judge_trajectory.yaml"
@@ -141,6 +144,10 @@ def test_write_grade_emits_breakdown_usage_and_transcript_sidecar(
     # unlike the transcript sidecar) — both the offered and the disabled/withheld
     # shapes serialize verbatim.
     assert grade["judge_kb_gating"] == expected_gating
+
+    # Whether the judge ran with a custom system prompt lands inline as a scalar
+    # bool; the full custom text lives in task.yaml.grading_config, not here.
+    assert grade["judge_custom_prompt"] is custom_prompt
 
     # The transcript is NOT inlined into grade.yaml — it lives in the sidecar.
     assert "judge_transcript" not in grade
@@ -176,9 +183,10 @@ def test_write_grade_without_judge_writes_no_transcript_sidecar(tmp_path: Path) 
     assert not (trial_dir / "judge_trajectory.yaml").exists()
     # No judge ran ⇒ no inputs sidecar either.
     assert not (trial_dir / "judge_inputs.yaml").exists()
-    # No judge ran ⇒ no gating record.
+    # No judge ran ⇒ no gating record and a null custom-prompt scalar.
     grade = yaml.safe_load((trial_dir / "grade.yaml").read_text())
     assert grade.get("judge_kb_gating") is None
+    assert grade.get("judge_custom_prompt") is None
 
 
 def test_errored_judge_usage_and_partial_transcript_persist(tmp_path: Path) -> None:

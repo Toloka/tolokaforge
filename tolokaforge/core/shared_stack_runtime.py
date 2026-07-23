@@ -543,6 +543,7 @@ class GrpcRunnerClient:
                             "kb_tools_withheld": list(grade.judge_report.kb_tools_withheld),
                             "state_diff_text": grade.judge_report.state_diff_text,
                             "read_tools_offered": list(grade.judge_report.read_tools_offered),
+                            "custom_system_prompt": grade.judge_report.custom_system_prompt,
                         }
                         if grade.HasField("judge_report")
                         else None

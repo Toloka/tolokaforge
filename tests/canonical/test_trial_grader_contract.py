@@ -165,6 +165,46 @@ class TestJudgeKbGatingRoundTrip:
         assert parsed.judge_kb_gating is None
 
 
+class TestJudgeCustomPromptRoundTrip:
+    """Whether the judge ran with a custom system prompt survives proto → dict →
+    ``Grade`` as a tri-state scalar: ``True``/``False`` when a judge ran, ``None``
+    when none did. The full custom text lives in ``task.yaml.grading_config``."""
+
+    def test_custom_prompt_true_round_trips(self) -> None:
+        from tolokaforge.core.trial_grader import _parse_grade_result
+        from tolokaforge.runner import runner_pb2
+
+        report = runner_pb2.JudgeReport(custom_system_prompt=True)
+        grade = runner_pb2.Grade(binary_pass=True, score=1.0, judge_report=report)
+
+        parsed = _parse_grade_result(_grade_dict_from_proto(grade))
+
+        assert parsed.judge_custom_prompt is True
+
+    def test_default_prompt_round_trips_as_false(self) -> None:
+        from tolokaforge.core.trial_grader import _parse_grade_result
+        from tolokaforge.runner import runner_pb2
+
+        # A judge that ran with the default prompt: the wire carries False (proto3
+        # bool default), which must reconstruct as False, not None.
+        report = runner_pb2.JudgeReport(custom_system_prompt=False)
+        grade = runner_pb2.Grade(binary_pass=True, score=1.0, judge_report=report)
+
+        parsed = _parse_grade_result(_grade_dict_from_proto(grade))
+
+        assert parsed.judge_custom_prompt is False
+
+    def test_absent_judge_report_yields_none(self) -> None:
+        from tolokaforge.core.trial_grader import _parse_grade_result
+        from tolokaforge.runner import runner_pb2
+
+        grade = runner_pb2.Grade(binary_pass=True, score=1.0)  # no judge_report
+
+        parsed = _parse_grade_result(_grade_dict_from_proto(grade))
+
+        assert parsed.judge_custom_prompt is None
+
+
 class TestJudgeInputsRoundTrip:
     """The judge's non-derivable ``run()`` inputs — the exact ``state_diff`` string
     and the non-KB read-tool surface — survive proto → dict → ``Grade`` intact.
