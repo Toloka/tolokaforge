@@ -66,6 +66,31 @@ from tolokaforge.tools.str_replace_editor import (
 
 logger = logging.getLogger(__name__)
 
+_MCP_ENV_ALLOWLIST = {
+    "CURRENT_CONVERSATION_TIME",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "MCP_STRICT_MODE",
+    "PATH",
+    "PYTHONHOME",
+    "PYTHONPATH",
+    "TMPDIR",
+}
+
+
+def _mcp_subprocess_env() -> dict[str, str]:
+    """Build a minimal MCP environment without runner/provider secrets."""
+
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key in _MCP_ENV_ALLOWLIST
+    }
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    environment["PYTHONUNBUFFERED"] = "1"
+    return environment
+
 
 def _resolve_compose_container_name(trial_id: str, service: str, project_prefix: str) -> str:
     """Container name for *service* in the per-trial compose stack.
@@ -474,6 +499,7 @@ class MCPServerProcess(BaseModel):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            env=_mcp_subprocess_env(),
         )
 
         # MCP initialization handshake

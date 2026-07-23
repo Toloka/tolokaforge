@@ -14,9 +14,25 @@ from tolokaforge.runner.tool_factory import (
     MCPServerProcess,
     MCPServerToolWrapper,
     ToolExecutionError,
+    _mcp_subprocess_env,
 )
 
 pytestmark = pytest.mark.unit
+
+
+def test_native_mcp_subprocess_environment_excludes_runner_secrets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "must-not-leak")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "must-not-leak")
+    monkeypatch.setenv("CURRENT_CONVERSATION_TIME", "2026-07-23T12:00:00Z")
+
+    environment = _mcp_subprocess_env()
+
+    assert "OPENROUTER_API_KEY" not in environment
+    assert "AWS_SECRET_ACCESS_KEY" not in environment
+    assert environment["CURRENT_CONVERSATION_TIME"] == "2026-07-23T12:00:00Z"
+    assert environment["PYTHONUNBUFFERED"] == "1"
 
 
 def _task_description() -> TaskDescription:
