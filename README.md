@@ -9,6 +9,7 @@ A benchmarking harness for evaluating tool-using LLM agents. Multi-turn agent/us
 - **MCP-Compatible Tooling** – Tasks declare tools via Model Context Protocol or built-ins.
 - **Deterministic Grading** – JSONPath assertions, state hashes, transcript rules, optional LLM judges.
 - **Rich Metrics** – pass@k, cost/token estimates, latency percentiles, failure attribution.
+- **Interactive Terminal** – Optional Rich Live panel with trial list, live counters, budgets, and on-demand Docker container log inspection; panel-modal keyboard nav (`Tab` / `j` / `k` / `l`). See [docs/CLI.md § Keyboard navigation](docs/CLI.md#keyboard-navigation).
 - **Distributed Runner** – SQLite for local runs, Postgres for multi-machine execution.
 - **Bring-Your-Own Models** – Any provider supported by LiteLLM (OpenAI, Anthropic, Google, Azure, Bedrock, Ollama, OpenRouter, and more).
 
@@ -60,6 +61,8 @@ tolokaforge analyze --trajectory results/coding_example/trials/<task_id>/0/traje
 ```
 
 Running `tolokaforge` with no subcommand drops into an interactive shell with tab-completion of every subcommand and flag — see [docs/CLI.md](docs/CLI.md) § Interactive shell.
+
+Under `--display=rich` (the default on a TTY), `tolokaforge run` opens a live panel with a trial list, focused-trial summary, budgets, and a components monitor. `Tab` cycles between panels (Trials / Engine Components / per-trial Infrastructure); `j` / `k` walk rows within the active panel; `l` on any focused row reveals its live Docker stdout / stderr. Full cheatsheet in [docs/CLI.md § Keyboard navigation](docs/CLI.md#keyboard-navigation). All non-rich modes (`--display=plain|log|none`) work unchanged and keep the classic `tolokaforge status` / `tolokaforge analyze` / `tolokaforge browse` subcommands available.
 
 That's it. Docker services for browser / mobile / RAG tasks start automatically via
 [`auto_start_services`](tolokaforge/core/models.py) (default: `true`).
