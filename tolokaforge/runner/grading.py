@@ -1067,30 +1067,13 @@ def evaluate_llm_judge(
 
     transcript_text = _format_transcript_for_judge(llm_messages)
 
-    structured_rubric = llm_judge_config.get("structured_rubric")
-    if structured_rubric is not None:
-        criterion_ids = [
-            criterion.get("id")
-            for criterion in structured_rubric.get("criteria", [])
-            if isinstance(criterion, dict)
-        ]
-        system_prompt = (
-            "You are a grading judge. Evaluate every criterion in the provided "
-            "structured rubric independently against the agent transcript. "
-            "Respond ONLY with a JSON object containing 'criteria', an object "
-            "whose keys are exactly the criterion IDs and whose values are JSON "
-            "booleans, plus 'reasons', a concise string. Do not return an overall "
-            "score; the runner computes it deterministically. Required IDs: "
-            f"{criterion_ids!r}.\n\nRubric:\n{rubric}"
-        )
-    else:
-        system_prompt = (
-            "You are a grading judge. Evaluate the following agent transcript "
-            "against the provided rubric. Respond ONLY with a JSON object containing "
-            "'score' (float 0.0-1.0) and 'reasons' (string explaining the score). "
-            "No other text.\n\n"
-            f"Rubric:\n{rubric}"
-        )
+    system_prompt = (
+        "You are a grading judge. Evaluate the following agent transcript "
+        "against the provided rubric. Respond ONLY with a JSON object containing "
+        "'score' (float 0.0-1.0) and 'reasons' (string explaining the score). "
+        "No other text.\n\n"
+        f"Rubric:\n{rubric}"
+    )
 
     user_prompt = f"Transcript to evaluate:\n\n{transcript_text}"
 
@@ -1110,13 +1093,6 @@ def evaluate_llm_judge(
             return 0.0, "LLM judge returned empty response"
 
         result = _parse_judge_json(content)
-        if structured_rubric is not None:
-            score, reasons = _score_structured_judge_result(
-                structured_rubric,
-                result,
-            )
-            logger.info("Structured LLM judge evaluation: score=%.2f", score)
-            return score, reasons
         score = max(0.0, min(1.0, float(result.get("score", 0.0))))
         reasons = str(result.get("reasons", result.get("reasoning", "")))
         logger.info("LLM judge evaluation: score=%.2f", score)
@@ -1125,69 +1101,6 @@ def evaluate_llm_judge(
     except Exception as e:
         logger.error("LLM judge evaluation failed: %s", e, exc_info=True)
         return 0.0, f"LLM judge failed: {e}"
-
-
-def _score_structured_judge_result(
-    rubric: dict[str, Any],
-    result: dict[str, Any],
-) -> tuple[float, str]:
-    """Apply binary weights and hard gates to criterion-level judge output."""
-    criteria = rubric.get("criteria")
-    if not isinstance(criteria, list) or not criteria:
-        raise ValueError("structured rubric has no criteria")
-
-    configured: dict[str, dict[str, Any]] = {}
-    for criterion in criteria:
-        if not isinstance(criterion, dict):
-            raise ValueError("structured rubric criterion is not an object")
-        criterion_id = criterion.get("id")
-        weight = criterion.get("weight")
-        if (
-            not isinstance(criterion_id, str)
-            or not criterion_id
-            or criterion_id in configured
-            or criterion.get("kind") != "binary"
-            or not isinstance(weight, (int, float))
-            or isinstance(weight, bool)
-            or weight <= 0
-            or not isinstance(criterion.get("required"), bool)
-        ):
-            raise ValueError("structured rubric criterion is invalid")
-        configured[criterion_id] = criterion
-
-    decisions = result.get("criteria")
-    if not isinstance(decisions, dict):
-        raise ValueError("structured judge response has no criteria object")
-    expected_ids = set(configured)
-    actual_ids = set(decisions)
-    if actual_ids != expected_ids:
-        missing = sorted(expected_ids - actual_ids)
-        extra = sorted(actual_ids - expected_ids)
-        raise ValueError(f"structured judge criterion IDs differ: missing={missing}, extra={extra}")
-    if any(type(value) is not bool for value in decisions.values()):
-        raise ValueError("structured judge decisions must be JSON booleans")
-
-    failed_required = sorted(
-        criterion_id
-        for criterion_id, criterion in configured.items()
-        if criterion["required"] and not decisions[criterion_id]
-    )
-    total_weight = sum(float(criterion["weight"]) for criterion in configured.values())
-    earned_weight = sum(
-        float(configured[criterion_id]["weight"])
-        for criterion_id, passed in decisions.items()
-        if passed
-    )
-    score = 0.0 if failed_required else earned_weight / total_weight
-    passed_ids = sorted(criterion_id for criterion_id, passed in decisions.items() if passed)
-    failed_ids = sorted(criterion_id for criterion_id, passed in decisions.items() if not passed)
-    model_reasons = result.get("reasons", "")
-    if not isinstance(model_reasons, str):
-        raise ValueError("structured judge reasons must be a string")
-    summary = f"passed={passed_ids}; failed={failed_ids}; failed_required={failed_required}"
-    if model_reasons:
-        summary += f"; {model_reasons}"
-    return score, summary
 
 
 def _parse_judge_json(text: str) -> dict[str, Any]:
