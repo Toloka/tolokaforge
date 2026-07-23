@@ -421,8 +421,8 @@ For the full design see
 
 ### Partitioning an untrusted sibling
 
-`network_policy` governs *public* egress; every application service under
-`no_internet` and `limited_internet` still shares the harness-injected
+`network_policy` governs *public* egress; by default, application services
+under `no_internet` and `limited_internet` share the harness-injected
 `tolokaforge_netpolicy_internal` network, so any service can DNS-resolve and
 dial any other on port paths the compose file exposes (e.g. an untrusted
 `bash` sibling could `curl http://db-service:8000/update` or
