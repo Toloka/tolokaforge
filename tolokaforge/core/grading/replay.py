@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ValidationError, model_validator
 
 from tolokaforge.core.grading.judge import (
     DBReader,
@@ -216,14 +216,26 @@ class ReplayProvenance(BaseModel):
     knowledge_search_disabled: bool
     # Whether a custom judge system prompt was in effect for this replay, and where
     # it came from — RECORDED (the bundle's task.yaml customization) or OVERRIDE (a
-    # --grading override carrying one). ``custom_prompt_source`` is None exactly when
-    # ``custom_system_prompt`` is False (the default prompt). Resolved independently
-    # of the rubric: a rubric-only override never clears a recorded custom prompt.
+    # --grading override carrying one). Resolved independently of the rubric: a
+    # rubric-only override never clears a recorded custom prompt.
     custom_system_prompt: bool
     custom_prompt_source: ProvenanceSource | None
     fidelity_mode: FidelityMode
 
     model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def _custom_prompt_fields_coherent(self) -> ReplayProvenance:
+        """``custom_prompt_source`` is set exactly when ``custom_system_prompt`` is
+        True — a source without a prompt (or a prompt without a source) is a bug in
+        the resolver, not a valid stamp."""
+        if self.custom_system_prompt != (self.custom_prompt_source is not None):
+            raise ValueError(
+                "custom_system_prompt must be True exactly when custom_prompt_source "
+                f"is set (got custom_system_prompt={self.custom_system_prompt}, "
+                f"custom_prompt_source={self.custom_prompt_source})"
+            )
+        return self
 
 
 @dataclass(frozen=True)
@@ -331,7 +343,7 @@ def _resolve_rubric(
 
 
 def _resolve_custom_prompt(
-    task: dict[str, Any] | None, grading_override: GradingOverride | None
+    trial_dir: Path, task: dict[str, Any] | None, grading_override: GradingOverride | None
 ) -> tuple[str | None, ProvenanceSource | None]:
     """Resolve the judge's custom system prompt independently of the rubric.
 
@@ -339,15 +351,22 @@ def _resolve_custom_prompt(
     the recorded prompt survives — a rubric-only ``--grading`` override must never
     silently clear a recorded custom prompt to the default. ``None`` (default
     prompt) only when neither the override nor the recorded config carries one.
+    A recorded value that is blank or not a string fails loud — the writer never
+    records one, so it is a corrupted or hand-edited bundle, not a default prompt.
     """
     if grading_override is not None and grading_override.custom_system_prompt is not None:
         return grading_override.custom_system_prompt, ProvenanceSource.OVERRIDE
     llm_judge = ((task or {}).get("grading_config") or {}).get("llm_judge")
-    if isinstance(llm_judge, dict):
-        customization = llm_judge.get("customization")
-        if isinstance(customization, dict) and customization.get("system_prompt") is not None:
-            return customization["system_prompt"], ProvenanceSource.RECORDED
-    return None, None
+    customization = llm_judge.get("customization") if isinstance(llm_judge, dict) else None
+    recorded = customization.get("system_prompt") if isinstance(customization, dict) else None
+    if recorded is None:
+        return None, None
+    if not isinstance(recorded, str) or not recorded.strip():
+        raise MissingReplayInputError(
+            f"recorded customization.system_prompt in {trial_dir / 'task.yaml'} "
+            "is blank or not a string"
+        )
+    return recorded, ProvenanceSource.RECORDED
 
 
 def _resolve_judge_model(
@@ -446,7 +465,9 @@ def read_replay_inputs(
 
     rubric_override = grading_override.rubric if grading_override is not None else None
     rubric, rubric_source = _resolve_rubric(task, rubric_override)
-    custom_system_prompt, custom_prompt_source = _resolve_custom_prompt(task, grading_override)
+    custom_system_prompt, custom_prompt_source = _resolve_custom_prompt(
+        trial_dir, task, grading_override
+    )
     judge_model_config, judge_model_source = _resolve_judge_model(task, judge_model_override)
 
     trajectory = Trajectory.model_validate(trajectory_raw)

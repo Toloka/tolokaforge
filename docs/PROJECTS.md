@@ -810,14 +810,14 @@ When neither layer sets the field, the config is byte-identical to a task with n
 customization block at all. The block is judge-side only — it never changes the
 agent's tools (see [GRADING.md](GRADING.md#judge-kb-faithfulness)).
 
-`customization.system_prompt` layers the same way, with one distinction the
-tri-state `disable_knowledge_search` does not have. It is a `str | None` that
+`customization.system_prompt` layers the same way. It is a `str | None` that
 replaces the judge's default grading-stance body (the harness always appends the
 marker contract). A task-level string overrides a project default; **omitting the
 key inherits the project value**, while **`system_prompt: null` (key present,
-value null) resets a project-level custom prompt back to the default** — `null` is
-the reset, and an empty string `""` is rejected loudly at load, not treated as a
-reset:
+value null) resets a project-level custom prompt back to the default**. Present-key
+`null` overriding and absent-key inheriting is how the merge treats every field,
+not a property of this one. An empty string `""` is rejected loudly at load, not
+treated as a reset:
 
 ```yaml
 # tasks/policy_graded/grading.yaml

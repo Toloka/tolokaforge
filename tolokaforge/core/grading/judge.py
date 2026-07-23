@@ -764,10 +764,10 @@ class LLMJudge:
                     messages,
                     kb_tools_offered,
                     kb_tools_withheld,
-                    self._disable_knowledge_search,
-                    self._custom_system_prompt is not None,
-                    read_tools_offered,
-                    state_diff,
+                    knowledge_search_disabled=self._disable_knowledge_search,
+                    custom_system_prompt=self._custom_system_prompt is not None,
+                    read_tools_offered=read_tools_offered,
+                    state_diff=state_diff,
                 )
 
             if termination.captured_args is None:
@@ -779,10 +779,10 @@ class LLMJudge:
                     messages,
                     kb_tools_offered,
                     kb_tools_withheld,
-                    self._disable_knowledge_search,
-                    self._custom_system_prompt is not None,
-                    read_tools_offered,
-                    state_diff,
+                    knowledge_search_disabled=self._disable_knowledge_search,
+                    custom_system_prompt=self._custom_system_prompt is not None,
+                    read_tools_offered=read_tools_offered,
+                    state_diff=state_diff,
                 )
 
             try:
@@ -804,10 +804,10 @@ class LLMJudge:
                         messages,
                         kb_tools_offered,
                         kb_tools_withheld,
-                        self._disable_knowledge_search,
-                        self._custom_system_prompt is not None,
-                        read_tools_offered,
-                        state_diff,
+                        knowledge_search_disabled=self._disable_knowledge_search,
+                        custom_system_prompt=self._custom_system_prompt is not None,
+                        read_tools_offered=read_tools_offered,
+                        state_diff=state_diff,
                     )
                 logger.warning(
                     "Judge submit_report invalid; re-prompting", attempt=attempts, error=str(exc)
@@ -865,6 +865,7 @@ def _errored(
     messages: list[Message],
     kb_tools_offered: tuple[str, ...],
     kb_tools_withheld: tuple[str, ...],
+    *,
     knowledge_search_disabled: bool,
     custom_system_prompt: bool,
     read_tools_offered: tuple[str, ...],

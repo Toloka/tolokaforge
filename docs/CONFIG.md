@@ -328,9 +328,12 @@ llm_judge:                                 # the judge MODEL is set once per run
     disable_knowledge_search: true         # tri-state (unset | true | false):
                                            # true withholds every knowledge-search
                                            # tool from the JUDGE (agent untouched)
-    system_prompt: |                       # optional str | None: replace the judge's
-      Grade strictly against the policy.   # default grading-stance body; the marker
-                                           # contract is always appended by the harness
+                                           # system_prompt (optional str | null):
+                                           # replace the judge's default grading-stance
+                                           # body; the marker contract is always
+                                           # appended by the harness
+    system_prompt: |
+      Grade strictly against the policy.
   rubric:                                  # structured Rubric (NOT free text)
     reference: |                           # optional author-written ground truth
       The correct order total is $42.50 with apple_pay.

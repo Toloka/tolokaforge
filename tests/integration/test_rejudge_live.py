@@ -157,7 +157,7 @@ def test_custom_prompted_judge_completes_with_marker_intact(tmp_path: Path) -> N
     """A bundle recording a custom judge system prompt re-judges end-to-end with a
     real model: the judge COMPLETES, the marker contract survives the custom body
     (no consistency rejections), and the replay grade.yaml records
-    judge_custom_prompt: true — issue acceptance criterion 6."""
+    judge_custom_prompt: true."""
     import yaml
 
     source = tmp_path / "run"
