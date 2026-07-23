@@ -66,6 +66,7 @@ class TestHappyPathBracket:
         assert backend.call_log.provisioned_trials == [spec.trial_id]
         assert backend.call_log.await_ready_calls == [spec.trial_id]
         assert backend.call_log.endpoints_calls == [spec.trial_id]
+        assert backend.call_log.cleanup_trial_calls == [spec.trial_id]
         assert backend.call_log.torn_down_trials == [spec.trial_id]
         assert len(conductor.call_log.runs) == 1
         assert conductor.call_log.runs[0]["trial_id"] == spec.trial_id
@@ -85,6 +86,21 @@ class TestHappyPathBracket:
         # saw on the wire, so we check the call was made (endpoints_calls) and
         # trust the copy semantics.
         assert conductor.call_log.runs[0]["trial_id"] == prelim.trial_id
+
+    def test_two_successes_cleanup_first_before_second_finishes(self) -> None:
+        executor, backend, conductor, _ = _make_executor()
+        first = make_trial_spec()
+        second = first.model_copy(update={"trial_id": "task-2:0"})
+
+        executor.execute(first, make_task_config())
+        assert backend.call_log.cleanup_trial_calls == [first.trial_id]
+
+        executor.execute(second, make_task_config())
+        assert backend.call_log.cleanup_trial_calls == [
+            first.trial_id,
+            second.trial_id,
+        ]
+        assert len(conductor.call_log.runs) == 2
 
     def test_success_emits_structured_logs(self) -> None:
         executor, _, _, logger = _make_executor()
@@ -112,6 +128,7 @@ class TestTeardownAlwaysFires:
             executor.execute(make_trial_spec(), make_task_config())
 
         assert backend.call_log.torn_down_trials, "teardown must fire on body exception"
+        assert backend.call_log.cleanup_trial_calls == ["task-1:0"]
 
 
 class TestProvisionErrorBranches:

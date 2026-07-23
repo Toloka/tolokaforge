@@ -1036,6 +1036,18 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         if state_checks_config:
             golden_actions = state_checks_config.golden_actions
 
+        # Native MCP servers own the authoritative live state during an
+        # episode.  Synchronise it once before *any* DB-backed grading
+        # consumer runs.  Previously only hash grading performed this bridge,
+        # which meant JSONPath-only and DB-probe tasks graded the stale
+        # initial state.
+        if state_checks_config and (
+            state_checks_config.hash_enabled
+            or state_checks_config.jsonpath_checks
+            or state_checks_config.db_probes
+        ):
+            await self._sync_trial_mcp_state(trial_id, trial_context)
+
         # A) HASH-BASED GRADING
         # Run hash grading when hash_enabled is set (even with empty golden_actions,
         # which represents refusal tasks where the expected state == initial state).
@@ -1536,23 +1548,12 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             HashGradingResult with hash_match, hash_score, and optional state_diff
         """
         # Detect MCP server wrappers — their state lives in a subprocess, not
-        # in the db-service, so we must sync before hashing and reset the MCP
-        # subprocess state when the db-service is reset.
+        # in the db-service.  _grade_trial_async synchronises the agent's final
+        # state before entering this method; this method still owns resetting
+        # the subprocess while it computes the reference result.
         mcp_wrapper = self._find_mcp_server_wrapper(trial_context)
 
         # 1. Get current trial stable hash
-        # For MCP_SERVER tasks the db-service was never updated during the trial
-        # (the MCP subprocess holds state in memory), so sync first.
-        if mcp_wrapper is not None:
-            logger.info(f"GradeTrial: {trial_id} - Syncing MCP server state to db-service (trial)")
-            try:
-                loop = asyncio.get_event_loop()
-                mcp_state = await loop.run_in_executor(None, mcp_wrapper.get_state)
-                await self._sync_mcp_state_to_db(trial_id, mcp_state)
-            except Exception as e:
-                logger.error(f"GradeTrial: Failed to sync MCP state before trial_hash: {e}")
-                raise
-
         trial_hash = await self.db_client.get_stable_hash(
             trial_id, numeric_string_fields=numeric_string_fields
         )
@@ -1636,6 +1637,16 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 logger.error(traceback.format_exc())
                 golden_action_errors.append(err_msg)
 
+        # A broken reference program is a grading-system failure, never a
+        # partially useful expected state.  Continuing here allowed a failed
+        # golden replay whose partial state happened to match the agent state
+        # to receive a perfect hash score.
+        if golden_action_errors:
+            raise RuntimeError(
+                "golden replay failed; no grade was produced: "
+                + " | ".join(golden_action_errors)
+            )
+
         # For MCP_SERVER tasks: sync subprocess state to db-service so the
         # hash reflects what the golden actions actually produced.
         if mcp_wrapper is not None:
@@ -1707,6 +1718,26 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             if isinstance(wrapper, MCPServerToolWrapper):
                 return wrapper
         return None
+
+    async def _sync_trial_mcp_state(
+        self,
+        trial_id: str,
+        trial_context: "TrialContextRuntime",
+    ) -> None:
+        """Copy authoritative native MCP state into the grading database.
+
+        This is deliberately shared by every DB-backed grading method.  A
+        missing MCP wrapper is a no-op; a present wrapper that cannot provide
+        valid state fails closed rather than letting consumers inspect stale
+        initial data.
+        """
+        mcp_wrapper = self._find_mcp_server_wrapper(trial_context)
+        if mcp_wrapper is None:
+            return
+        logger.info(f"GradeTrial: {trial_id} - Syncing MCP server state to db-service")
+        loop = asyncio.get_event_loop()
+        mcp_state = await loop.run_in_executor(None, mcp_wrapper.get_state)
+        await self._sync_mcp_state_to_db(trial_id, mcp_state)
 
     async def _sync_mcp_state_to_db(
         self,
@@ -1880,15 +1911,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # caller gets the real final state instead of the stale initial state.
         trial_context = self.trials.get(trial_id)
         if trial_context is not None:
-            mcp_wrapper = self._find_mcp_server_wrapper(trial_context)
-            if mcp_wrapper is not None:
-                try:
-                    loop = asyncio.get_event_loop()
-                    mcp_state = await loop.run_in_executor(None, mcp_wrapper.get_state)
-                    await self._sync_mcp_state_to_db(trial_id, mcp_state)
-                    logger.debug(f"GetState: synced MCP subprocess state for {trial_id}")
-                except Exception as e:
-                    logger.warning(f"GetState: could not sync MCP state for {trial_id}: {e}")
+            await self._sync_trial_mcp_state(trial_id, trial_context)
 
         if request.include_unstable:
             # Get full state
@@ -2208,8 +2231,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         # Tear down per-trial resources before forgetting their wrappers.
         trial_context = self.trials.pop(trial_id, None)
-        if self.mcp_gateway is not None:
-            self.mcp_gateway.unregister(trial_id)
+        mcp_gateway = getattr(self, "mcp_gateway", None)
+        if mcp_gateway is not None:
+            mcp_gateway.unregister(trial_id)
         if trial_context is not None:
             # Explicit teardown of the per-trial judge KnowledgeSearch. Dropping
             # the context already permits GC, but clearing here documents intent

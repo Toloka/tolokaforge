@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from tolokaforge.runner import runner_pb2 as pb2
-from tolokaforge.runner.models import TaskDescription, ToolSchema
+from tolokaforge.runner.models import GoldenAction, TaskDescription, ToolSchema
 from tolokaforge.runner.service import RunnerServiceImpl, TrialContextRuntime
 from tolokaforge.runner.tool_factory import (
     MCPServerProcess,
@@ -241,3 +241,52 @@ def test_mcp_server_registry_isolated_and_released_per_trial(
     assert (second.server_script, "native:1") in MCPServerToolWrapper._servers
     second.close_server()
     assert not MCPServerToolWrapper._servers
+
+
+@pytest.mark.asyncio
+async def test_failed_golden_replay_cannot_grade_unchanged_state_as_pass() -> None:
+    """A broken reference call is a grading error, not a partial golden."""
+    service = object.__new__(RunnerServiceImpl)
+    wrapper = _wrapper()
+    wrapper.get_state = MagicMock(
+        return_value={
+            "cases": [
+                {"case_id": "CASE-1", "status": "open"},
+                {"case_id": "CASE-2", "status": "open"},
+            ]
+        }
+    )
+    wrapper.reset_state = MagicMock()
+    wrapper.execute = AsyncMock(side_effect=ToolExecutionError("update_case", "bad golden"))
+    context = TrialContextRuntime("native:0", _task_description())
+    context.agent_tools = {"update_case": wrapper}
+    service.db_client = MagicMock()
+    service.db_client.get_stable_hash = AsyncMock(return_value="same-hash")
+    service.db_client.create_snapshot = AsyncMock()
+    service.db_client.reset_trial = AsyncMock()
+
+    with pytest.raises(RuntimeError, match="golden replay failed"):
+        await service._execute_hash_grading(
+            "native:0",
+            context,
+            [GoldenAction(tool_name="update_case", arguments={})],
+        )
+
+    # The implementation must fail before it computes a partial golden hash.
+    service.db_client.get_stable_hash.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_shared_mcp_sync_feeds_non_hash_state_consumers() -> None:
+    """JSONPath/DB grading can invoke the same authoritative state bridge."""
+    service = object.__new__(RunnerServiceImpl)
+    wrapper = _wrapper()
+    live_state = {"cases": [{"case_id": "CASE-1", "status": "closed"}]}
+    wrapper.get_state = MagicMock(return_value=live_state)
+    context = TrialContextRuntime("native:0", _task_description())
+    context.agent_tools = {"update_case": wrapper}
+    service._sync_mcp_state_to_db = AsyncMock()
+
+    await service._sync_trial_mcp_state("native:0", context)
+
+    service._sync_mcp_state_to_db.assert_awaited_once_with("native:0", live_state)

@@ -277,6 +277,7 @@ class Orchestrator:
         strict: bool = False,
         deps: OrchestratorDeps | None = None,
         project: ProjectConfig | None = None,
+        config_path: Path | None = None,
     ):
         self.config = config
         self.resume = resume
@@ -289,6 +290,7 @@ class Orchestrator:
         # the orchestrator without a project; the CLI always resolves an
         # enclosing ``project.yaml``.
         self.project = project
+        self.config_path = config_path.resolve() if config_path is not None else None
         self.tasks: list[TaskConfig] = []
         self.results: list[Trajectory] = []
         self.state_manager: RunStateManager | None = None
@@ -1242,7 +1244,11 @@ class Orchestrator:
             task_ids = [task.task_id for task in self.tasks]
             run_state = self.state_manager.initialize_run(
                 run_id=run_id,
-                config_path=str(self.config.evaluation.output_dir),
+                config_path=(
+                    str(self.config_path)
+                    if self.config_path is not None
+                    else "<programmatic RunConfig>"
+                ),
                 task_ids=task_ids,
                 repeats=self.config.orchestrator.repeats,
             )
@@ -1605,9 +1611,6 @@ class Orchestrator:
                                 retryable=True,
                             )
                             if should_retry:
-                                self._cleanup_runner_state_for_retry(
-                                    runtime_backend, task_id, trial_idx
-                                )
                                 self.logger.warning(
                                     "Retrying trial after transient failure",
                                     task_id=task_id,
@@ -1675,11 +1678,7 @@ class Orchestrator:
                             error=str(e),
                             will_retry=should_retry,
                         )
-                        if should_retry:
-                            self._cleanup_runner_state_for_retry(
-                                runtime_backend, task_id, trial_idx
-                            )
-                        else:
+                        if not should_retry:
                             # Mark as failed only when retries are exhausted.
                             run_state.mark_failed(task_id, trial_idx, str(e))
                             self.state_manager.save_state(run_state)

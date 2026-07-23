@@ -288,7 +288,12 @@ def run(
     # Create orchestrator with flags. Pass the resolved project so the
     # adapter picks up project.task_defaults on task load.
     orchestrator = Orchestrator(
-        run_config, resume=resume, verbose=verbose, strict=strict, project=project
+        run_config,
+        resume=resume,
+        verbose=verbose,
+        strict=strict,
+        project=project,
+        config_path=Path(config),
     )
 
     # Load tasks
@@ -357,7 +362,12 @@ def prepare(
         console.print(f"[cyan]Preset overlay: {overlay_path}[/cyan]")
 
     orchestrator = Orchestrator(
-        run_config, resume=False, verbose=verbose, strict=strict, project=project
+        run_config,
+        resume=False,
+        verbose=verbose,
+        strict=strict,
+        project=project,
+        config_path=Path(config),
     )
     orchestrator.load_tasks()
     summary = orchestrator.prepare_run(Path(run_dir), reset_queue=reset_queue)
@@ -416,7 +426,12 @@ def worker(
         console.print(f"[cyan]Preset overlay: {overlay_path}[/cyan]")
 
     orchestrator = Orchestrator(
-        run_config, resume=False, verbose=verbose, strict=strict, project=project
+        run_config,
+        resume=False,
+        verbose=verbose,
+        strict=strict,
+        project=project,
+        config_path=Path(config),
     )
     orchestrator.load_tasks()
     summary = orchestrator.run_worker(Path(run_dir), max_attempts=max_attempts)
