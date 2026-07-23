@@ -523,6 +523,79 @@ class TestEnforceNetworkPolicy:
         assert NETPOLICY_INTERNAL_NETWORK in nets
         assert NETPOLICY_EDGE_NETWORK in nets
 
+    def test_no_internet_restricted_service_skips_internal_net(self) -> None:
+        """A service in ``restricted_services`` is left untouched by the
+        transform — no injected internal-net attachment, no injected edge
+        net — while non-restricted siblings and the runner keep their
+        default attachments."""
+        doc = {
+            "services": {
+                "runner": {"image": "r:local"},
+                "app-service": {
+                    "image": "nginx:1.27-alpine",
+                    "networks": ["tool_bridge"],
+                },
+                "sibling": {"image": "nginx:1.27-alpine"},
+            },
+            "networks": {"tool_bridge": {}},
+        }
+        result = enforce_network_policy(
+            doc,
+            NetworkPolicy.NO_INTERNET,
+            "runner",
+            [],
+            frozenset({"app-service"}),
+        )
+
+        assert result["services"]["app-service"]["networks"] == ["tool_bridge"]
+        assert NETPOLICY_INTERNAL_NETWORK not in result["services"]["app-service"]["networks"]
+        assert NETPOLICY_EDGE_NETWORK not in result["services"]["app-service"]["networks"]
+        assert result["services"]["runner"]["networks"] == [
+            NETPOLICY_INTERNAL_NETWORK,
+            NETPOLICY_EDGE_NETWORK,
+        ]
+        assert result["services"]["sibling"]["networks"] == [NETPOLICY_INTERNAL_NETWORK]
+
+    def test_no_internet_default_service_still_joins_internal_net(self) -> None:
+        """With an empty ``restricted_services`` the transform stays
+        identical to the pre-partition behaviour — every service joins
+        the injected internal net."""
+        result = enforce_network_policy(
+            _minimal_compose(),
+            NetworkPolicy.NO_INTERNET,
+            "runner",
+            [],
+            frozenset(),
+        )
+
+        for service in result["services"].values():
+            assert NETPOLICY_INTERNAL_NETWORK in service["networks"]
+
+    def test_no_internet_task_declared_network_still_forced_internal_for_restricted(
+        self,
+    ) -> None:
+        """A restricted service that joins a task-declared network still
+        sees that network forced ``internal: true`` — restricted services
+        stay egress-blocked at the docker-network level; they just do not
+        gain the harness's inter-service reachability layer."""
+        doc = {
+            "services": {
+                "runner": {"image": "r:local"},
+                "app-service": {"image": "nginx:1.27-alpine", "networks": ["tool_bridge"]},
+            },
+            "networks": {"tool_bridge": {"driver": "bridge"}},
+        }
+        result = enforce_network_policy(
+            doc,
+            NetworkPolicy.NO_INTERNET,
+            "runner",
+            [],
+            frozenset({"app-service"}),
+        )
+
+        assert result["networks"]["tool_bridge"]["internal"] is True
+        assert result["networks"]["tool_bridge"]["driver"] == "bridge"
+
 
 class TestEnforceLimitedInternet:
     ALLOWLIST = ["api.openai.com", "*.example.com"]
@@ -578,6 +651,49 @@ class TestEnforceLimitedInternet:
         ]["app-service"]
         assert app["environment"]["EXISTING"] == "1"
         assert "HTTP_PROXY" in app["environment"]
+
+    def test_restricted_service_gets_no_proxy_env(self) -> None:
+        """A restricted service sees neither the injected internal-net
+        attach nor the proxy-env injection under ``limited_internet``;
+        the proxy sidecar is still injected on both nets (the point is
+        the restricted service cannot reach it); a non-restricted sibling
+        keeps both."""
+        doc = {
+            "services": {
+                "runner": {"image": "r:local"},
+                "app-service": {
+                    "image": "nginx",
+                    "environment": {"EXISTING": "1"},
+                    "networks": ["tool_bridge"],
+                },
+                "sibling": {"image": "nginx"},
+            },
+            "networks": {"tool_bridge": {}},
+        }
+        result = enforce_network_policy(
+            doc,
+            NetworkPolicy.LIMITED_INTERNET,
+            "runner",
+            self.ALLOWLIST,
+            frozenset({"app-service"}),
+        )
+
+        restricted = result["services"]["app-service"]
+        assert restricted["networks"] == ["tool_bridge"]
+        assert NETPOLICY_INTERNAL_NETWORK not in restricted["networks"]
+        assert restricted["environment"] == {"EXISTING": "1"}
+        assert "HTTP_PROXY" not in restricted["environment"]
+        assert "HTTPS_PROXY" not in restricted["environment"]
+        assert "http_proxy" not in restricted["environment"]
+        assert "https_proxy" not in restricted["environment"]
+
+        proxy = result["services"][NETPOLICY_PROXY_SERVICE]
+        assert proxy["networks"] == [NETPOLICY_INTERNAL_NETWORK, NETPOLICY_EDGE_NETWORK]
+
+        sibling = result["services"]["sibling"]
+        assert NETPOLICY_INTERNAL_NETWORK in sibling["networks"]
+        assert "HTTP_PROXY" in sibling["environment"]
+        assert "HTTPS_PROXY" in sibling["environment"]
 
 
 class TestRenderSquidConfig:
@@ -651,3 +767,29 @@ class TestApplyNetworkPolicyToComposeFile:
         assert "acl allowed_dsts dstdomain api.openai.com" in squid_conf.read_text()
         doc = yaml.safe_load(compose.read_text())
         assert doc["services"][NETPOLICY_PROXY_SERVICE]["image"] == NETPOLICY_PROXY_IMAGE
+
+    def test_no_internet_restricted_services_kwarg_threaded(self, tmp_path: Path) -> None:
+        """``restricted_services`` reaches the transform through the
+        file-level entry point: a restricted service is absent from the
+        rewritten compose file's injected-net attachments."""
+        import yaml
+
+        compose = tmp_path / "compose.yaml"
+        compose.write_text(
+            "services:\n"
+            "  runner:\n    image: r:local\n"
+            "  app:\n    image: nginx\n    networks: [tool_bridge]\n"
+            "networks:\n  tool_bridge: {}\n"
+        )
+        apply_network_policy_to_compose_file(
+            compose,
+            NetworkPolicy.NO_INTERNET,
+            "runner",
+            [],
+            restricted_services=frozenset({"app"}),
+        )
+
+        doc = yaml.safe_load(compose.read_text())
+        assert NETPOLICY_INTERNAL_NETWORK not in doc["services"]["app"]["networks"]
+        assert doc["services"]["app"]["networks"] == ["tool_bridge"]
+        assert NETPOLICY_INTERNAL_NETWORK in doc["services"]["runner"]["networks"]

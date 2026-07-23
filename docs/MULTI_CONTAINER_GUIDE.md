@@ -419,6 +419,87 @@ keeps direct edge egress for LLM-judge grading, exactly as under `no_internet`.
 For the full design see
 [ADR-0018](adr/0018-multi-container-under-shared-runtime.md#network-policy-enforcement).
 
+### Partitioning an untrusted sibling
+
+`network_policy` governs *public* egress; every application service under
+`no_internet` and `limited_internet` still shares the harness-injected
+`tolokaforge_netpolicy_internal` network, so any service can DNS-resolve and
+dial any other on port paths the compose file exposes (e.g. an untrusted
+`bash` sibling could `curl http://db-service:8000/update` or
+`grpcurl runner:50051 ExecuteTool`). When one sibling in the stack is
+untrusted — an agent-controlled shell whose only intended egress is a curated
+tool-bridge service, for example — mark it `network_access: restricted` in
+the manifest so it joins only the networks its compose entry declares.
+
+Shape:
+
+1. Declare a task network in the compose file and list only the services the
+   untrusted sibling is allowed to talk to on it:
+
+   ```yaml
+   # environment.compose.yaml
+   services:
+     runner:
+       image: tolokaforge-runner:local
+       # ...
+     tool-bridge:
+       image: my-org/tool-bridge:v1.0.0
+       networks: [tool_bridge]
+     bash:
+       image: bash:5.2-alpine3.20
+       networks: [tool_bridge]
+   networks:
+     tool_bridge: {}
+   ```
+
+2. Mark the untrusted sibling `restricted` in the manifest:
+
+   ```yaml
+   # project.yaml (or task.yaml environment_manifest)
+   default_environment:
+     stack:
+       compose_file: ./environment.compose.yaml
+       runner_service: runner
+     services:
+       bash:
+         isolation: ephemeral
+         network_access: restricted
+     network_policy: no_internet
+   ```
+
+Guarantees the harness enforces on the restricted service:
+
+- **No shared-internal-net attach.** The service does not join
+  `tolokaforge_netpolicy_internal`; it cannot resolve or dial any sibling
+  (runner, db-service, rag) via the harness-injected network.
+- **Task-declared networks are still `internal: true`.** The `tool_bridge`
+  network above stays egress-blocked at the docker-network level, so the
+  restricted service still has no public internet — the compose file's own
+  `networks:` topology is the positive expression of "who this service *can*
+  talk to".
+- **No proxy env under `limited_internet`.** A restricted service receives no
+  `HTTP_PROXY` / `HTTPS_PROXY` (nor lowercase variants); the squid sidecar is
+  on the harness-injected nets the restricted service does not join, so the
+  proxy is unreachable by design. An injected `HTTP_PROXY` would produce
+  confusing "connection refused" symptoms rather than the fail-loud isolation
+  the operator asked for.
+
+Two invariants fail loud at manifest load:
+
+- **The runner cannot be `restricted`.** The runner must remain reachable
+  from application services and must keep its injected edge network for
+  LLM-judge grading.
+- **A `restricted` service's compose entry must declare its own `networks:`
+  block.** A restricted service with no declared networks would attach to
+  nothing under `no_internet` / `limited_internet` and never come up — the
+  validator refuses the shape at load rather than surface a mysterious
+  docker error later.
+
+Reachability is topological, not authorial: if the compose file joins the
+restricted service to a network that a first-party service (db-service,
+runner) also joins, the task author has *granted* that reachability by
+construction. See also [`SECURITY.md`](SECURITY.md).
+
 ## Adding another service
 
 Starting a brand-new pack instead of adapting the walkthrough? See

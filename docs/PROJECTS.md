@@ -1604,6 +1604,63 @@ reviewable entry for the specific service that needs it.
 paramount; you don't trust unlabelled services to be safe to
 share.
 
+### Network partitioning — excluding a service from the shared internal network
+
+`network_policy` governs *public* egress. Every application service
+under `no_internet` and `limited_internet` still shares the
+harness-injected `tolokaforge_netpolicy_internal` network, so any
+sibling can DNS-resolve and dial any other on ports the compose file
+exposes. For a stack that includes an untrusted sibling (an
+agent-controlled `bash` container whose only intended egress is a
+curated tool-bridge service, for example), `services.<name>.network_access`
+opts the named service out of the injected shared network.
+
+Two labels:
+
+- **`default`** — the harness auto-joins the service to the injected
+  shared internal network under `no_internet` and `limited_internet`,
+  and injects `HTTP(S)_PROXY` env under `limited_internet`. Every
+  service defaults to this.
+- **`restricted`** — the service joins **only** the networks its
+  compose entry declares. The harness does *not* attach the injected
+  shared internal net and does *not* inject proxy env. Task-declared
+  networks the service joins are still forced `internal: true`, so a
+  restricted service remains egress-blocked at the docker-network
+  level — it just does not gain the harness's inter-service
+  reachability layer.
+
+Two invariants fail loud at manifest load:
+
+- The `runner_service` cannot be `restricted` (it must remain
+  reachable from application services and keep its injected edge
+  network for LLM-judge grading).
+- A `restricted` service's compose entry must declare a non-empty
+  `networks:` block (a restricted service with nowhere to attach
+  would never come up).
+
+```yaml
+# environment.compose.yaml — declare the task network on the sibling
+services:
+  bash:
+    image: bash:5.2-alpine3.20
+    networks: [tool_bridge]
+networks:
+  tool_bridge: {}
+```
+
+```yaml
+# project.yaml — mark the sibling restricted
+default_environment:
+  services:
+    bash:
+      isolation: ephemeral
+      network_access: restricted
+```
+
+See [`docs/MULTI_CONTAINER_GUIDE.md`](MULTI_CONTAINER_GUIDE.md#partitioning-an-untrusted-sibling)
+for the walkthrough and [`docs/SECURITY.md`](SECURITY.md#task-declared-stack-case-b--case-c)
+for the threat-model treatment.
+
 ## Services and backends — scaffolding
 
 > Per-service isolation, seed-backed reset recipes, and the

@@ -1,0 +1,131 @@
+{
+  "networks": {
+    "tolokaforge_netpolicy_edge": {},
+    "tolokaforge_netpolicy_internal": {
+      "internal": true
+    },
+    "tool_bridge": {
+      "internal": true
+    }
+  },
+  "services": {
+    "bash": {
+      "image": "bash:5.2-alpine3.20",
+      "networks": [
+        "tool_bridge"
+      ]
+    },
+    "db-service": {
+      "environment": {
+        "HTTPS_PROXY": "http://tolokaforge_netpolicy_proxy:3128",
+        "HTTP_PROXY": "http://tolokaforge_netpolicy_proxy:3128",
+        "NO_PROXY": "runner,db-service,tool-bridge,bash,tolokaforge_netpolicy_proxy,localhost,127.0.0.1",
+        "http_proxy": "http://tolokaforge_netpolicy_proxy:3128",
+        "https_proxy": "http://tolokaforge_netpolicy_proxy:3128",
+        "no_proxy": "runner,db-service,tool-bridge,bash,tolokaforge_netpolicy_proxy,localhost,127.0.0.1"
+      },
+      "healthcheck": {
+        "interval": "2s",
+        "retries": 30,
+        "start_period": "3s",
+        "test": [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"
+        ],
+        "timeout": "3s"
+      },
+      "image": "tolokaforge-db-service:local",
+      "networks": [
+        "tolokaforge_netpolicy_internal"
+      ],
+      "ports": [
+        "8000"
+      ]
+    },
+    "runner": {
+      "depends_on": {
+        "db-service": {
+          "condition": "service_healthy"
+        }
+      },
+      "environment": {
+        "DB_SERVICE_URL": "http://db-service:8000"
+      },
+      "healthcheck": {
+        "interval": "2s",
+        "retries": 30,
+        "start_period": "5s",
+        "test": [
+          "CMD",
+          "python",
+          "-c",
+          "import grpc; grpc.channel_ready_future(grpc.insecure_channel('localhost:50051')).result(timeout=2)"
+        ],
+        "timeout": "3s"
+      },
+      "image": "tolokaforge-runner:local",
+      "networks": [
+        "tolokaforge_netpolicy_internal",
+        "tolokaforge_netpolicy_edge"
+      ],
+      "ports": [
+        "50051"
+      ]
+    },
+    "tolokaforge_netpolicy_proxy": {
+      "healthcheck": {
+        "interval": "2s",
+        "retries": 30,
+        "start_period": "3s",
+        "test": [
+          "CMD",
+          "bash",
+          "-c",
+          "echo > /dev/tcp/127.0.0.1/3128"
+        ],
+        "timeout": "3s"
+      },
+      "image": "ubuntu/squid@sha256:6a097f68bae708cedbabd6188d68c7e2e7a38cedd05a176e1cc0ba29e3bbe029",
+      "networks": [
+        "tolokaforge_netpolicy_internal",
+        "tolokaforge_netpolicy_edge"
+      ],
+      "volumes": [
+        "./squid.conf:/etc/squid/squid.conf:ro"
+      ]
+    },
+    "tool-bridge": {
+      "environment": {
+        "HTTPS_PROXY": "http://tolokaforge_netpolicy_proxy:3128",
+        "HTTP_PROXY": "http://tolokaforge_netpolicy_proxy:3128",
+        "NO_PROXY": "runner,db-service,tool-bridge,bash,tolokaforge_netpolicy_proxy,localhost,127.0.0.1",
+        "http_proxy": "http://tolokaforge_netpolicy_proxy:3128",
+        "https_proxy": "http://tolokaforge_netpolicy_proxy:3128",
+        "no_proxy": "runner,db-service,tool-bridge,bash,tolokaforge_netpolicy_proxy,localhost,127.0.0.1"
+      },
+      "healthcheck": {
+        "interval": "2s",
+        "retries": 30,
+        "start_period": "3s",
+        "test": [
+          "CMD",
+          "wget",
+          "-q",
+          "-O-",
+          "http://localhost/"
+        ],
+        "timeout": "3s"
+      },
+      "image": "nginx:1.27-alpine",
+      "networks": [
+        "tool_bridge",
+        "tolokaforge_netpolicy_internal"
+      ],
+      "ports": [
+        "80"
+      ]
+    }
+  }
+}
