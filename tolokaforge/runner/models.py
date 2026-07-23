@@ -300,12 +300,34 @@ class TranscriptRulesConfig(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class LLMJudgeCriterion(BaseModel):
+    """One machine-scored binary criterion for structured LLM judging."""
+
+    id: str
+    description: str
+    weight: float
+    kind: Literal["binary"] = "binary"
+    required: bool = False
+
+    model_config = {"extra": "forbid"}
+
+
+class StructuredLLMRubric(BaseModel):
+    """Criterion contract whose aggregation is performed outside the LLM."""
+
+    reference: str
+    criteria: list[LLMJudgeCriterion]
+
+    model_config = {"extra": "forbid"}
+
+
 class LLMJudgeConfig(BaseModel):
     """LLM-based grading configuration."""
 
     model_ref: str  # "openrouter/anthropic/claude-sonnet-4.5"
     rubric: str  # Grading rubric text
     output_schema: dict[str, Any]  # Expected output format
+    structured_rubric: StructuredLLMRubric | None = None
 
     model_config = {"extra": "forbid"}
 

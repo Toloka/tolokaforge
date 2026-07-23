@@ -16,6 +16,7 @@ import pytest
 from tolokaforge.runner.grading import (
     _format_transcript_for_judge,
     _parse_judge_json,
+    _score_structured_judge_result,
     build_grade_reasons,
     combine_grade_components,
     evaluate_llm_judge,
@@ -149,6 +150,121 @@ def test_evaluate_llm_judge_empty_response_returns_zero():
 
     assert score == 0.0
     assert "empty" in reasons.lower()
+
+
+def _structured_rubric():
+    return {
+        "reference": "Expected behavior.",
+        "criteria": [
+            {
+                "id": "required_check",
+                "description": "Required behavior happened.",
+                "weight": 2.0,
+                "kind": "binary",
+                "required": True,
+            },
+            {
+                "id": "optional_check",
+                "description": "Optional behavior happened.",
+                "weight": 1.0,
+                "kind": "binary",
+                "required": False,
+            },
+        ],
+    }
+
+
+def test_structured_judge_score_is_weighted_in_code():
+    score, reasons = _score_structured_judge_result(
+        _structured_rubric(),
+        {
+            "criteria": {
+                "required_check": True,
+                "optional_check": False,
+            },
+            "reasons": "Required action was visible.",
+        },
+    )
+
+    assert score == pytest.approx(2 / 3)
+    assert "failed=['optional_check']" in reasons
+
+
+def test_structured_judge_required_failure_forces_zero():
+    score, reasons = _score_structured_judge_result(
+        _structured_rubric(),
+        {
+            "criteria": {
+                "required_check": False,
+                "optional_check": True,
+            },
+            "reasons": "Required action was missing.",
+        },
+    )
+
+    assert score == 0.0
+    assert "failed_required=['required_check']" in reasons
+
+
+@pytest.mark.parametrize(
+    "decisions, message",
+    [
+        ({"required_check": True}, "criterion IDs differ"),
+        (
+            {
+                "required_check": True,
+                "optional_check": False,
+                "invented": True,
+            },
+            "criterion IDs differ",
+        ),
+        (
+            {"required_check": 1, "optional_check": False},
+            "JSON booleans",
+        ),
+    ],
+)
+def test_structured_judge_fails_closed_on_malformed_decisions(decisions, message):
+    with pytest.raises(ValueError, match=message):
+        _score_structured_judge_result(
+            _structured_rubric(),
+            {"criteria": decisions, "reasons": ""},
+        )
+
+
+def test_evaluate_structured_judge_ignores_model_supplied_score():
+    cfg = {
+        "model_ref": "openai/gpt-4o-mini",
+        "rubric": "Evaluate each criterion.",
+        "structured_rubric": _structured_rubric(),
+    }
+    fake_response = _mock_completion_response(
+        '{"score":1.0,"criteria":{"required_check":false,'
+        '"optional_check":true},"reasons":"required missing"}'
+    )
+
+    with patch("litellm.completion", return_value=fake_response):
+        score, reasons = evaluate_llm_judge(cfg, [{"role": "assistant", "content": "done"}])
+
+    assert score == 0.0
+    assert "failed_required=['required_check']" in reasons
+
+
+def test_evaluate_structured_judge_omission_returns_zero():
+    cfg = {
+        "model_ref": "openai/gpt-4o-mini",
+        "rubric": "Evaluate each criterion.",
+        "structured_rubric": _structured_rubric(),
+    }
+    fake_response = _mock_completion_response(
+        '{"criteria":{"required_check":true},"reasons":"partial"}'
+    )
+
+    with patch("litellm.completion", return_value=fake_response):
+        score, reasons = evaluate_llm_judge(cfg, [{"role": "assistant", "content": "done"}])
+
+    assert score == 0.0
+    assert "criterion IDs differ" in reasons
 
 
 # ---------------------------------------------------------------------------
