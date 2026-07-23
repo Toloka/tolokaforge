@@ -460,12 +460,12 @@ class TestLLMJudgePlaceholderStatus:
 
         score, binary_pass = combine_grade_components(components, grading_config)
 
-        assert (
-            score == 0.0
-        ), f"Score should be 0.0 when configured grading has no evaluated components, got {score}"
-        assert (
-            binary_pass is False
-        ), "binary_pass should be False when grading was configured but nothing evaluated"
+        assert score == 0.0, (
+            f"Score should be 0.0 when configured grading has no evaluated components, got {score}"
+        )
+        assert binary_pass is False, (
+            "binary_pass should be False when grading was configured but nothing evaluated"
+        )
 
     def test_combine_grade_components_passes_when_nothing_configured(self):
         """
@@ -578,6 +578,87 @@ class TestTranscriptRulesEvaluation:
         rules = [{"type": "max_turns", "max": 5, "count_method": "user_messages"}]
 
         result = evaluate_transcript_rules(messages, [], rules)
+
+        assert result.passed is False
+        assert result.score == 0.0
+
+    def test_typed_config_bundle_enforces_every_required_action(self):
+        """Runner-serialized transcript config must not pass as one unknown rule."""
+        tool_history = [
+            {
+                "tool_name": "get_employee",
+                "arguments": {"employee_id": "EMP-1"},
+                "executor": "agent",
+                "status": "success",
+            }
+        ]
+        bundle = {
+            "must_contain": [],
+            "disallow_regex": [],
+            "max_turns": None,
+            "tool_expectations": None,
+            "required_actions": [
+                {
+                    "action_id": "employee",
+                    "requestor": "assistant",
+                    "name": "get_employee",
+                    "arguments": {"employee_id": "EMP-1"},
+                    "compare_args": ["employee_id"],
+                },
+                {
+                    "action_id": "timecard",
+                    "requestor": "assistant",
+                    "name": "get_timecard",
+                    "arguments": {"employee_id": "EMP-1", "period": "CURRENT"},
+                    "compare_args": ["employee_id", "period"],
+                },
+            ],
+            "communicate_info": [],
+        }
+
+        result = evaluate_transcript_rules([], tool_history, [bundle])
+
+        assert result.passed is False
+        assert result.score == 0.5
+        assert [detail.rule_type for detail in result.details] == [
+            "required_tool_call",
+            "required_tool_call",
+        ]
+
+    def test_typed_config_bundle_passes_when_behavior_is_present(self):
+        messages = [{"role": "assistant", "content": "Work order WKO-1 created."}]
+        tool_history = [
+            {
+                "tool_name": "create_work_order",
+                "arguments": {"asset_id": "AST-1"},
+                "executor": "agent",
+                "status": "success",
+            }
+        ]
+        bundle = {
+            "must_contain": ["WKO-1"],
+            "disallow_regex": ["secret-[0-9]+"],
+            "max_turns": 3,
+            "tool_expectations": None,
+            "required_actions": [
+                {
+                    "action_id": "work_order",
+                    "requestor": "assistant",
+                    "name": "create_work_order",
+                    "arguments": {"asset_id": "AST-1", "priority": "high"},
+                    "compare_args": ["asset_id"],
+                }
+            ],
+            "communicate_info": [],
+        }
+
+        result = evaluate_transcript_rules(messages, tool_history, [bundle])
+
+        assert result.passed is True
+        assert result.score == 1.0
+
+    def test_unknown_transcript_rule_fails_closed(self):
+        result = evaluate_transcript_rules([], [], [{"type": "misspelled_rule"}])
 
         assert result.passed is False
         assert result.score == 0.0

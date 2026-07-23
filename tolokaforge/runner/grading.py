@@ -210,6 +210,7 @@ def evaluate_transcript_rules(
         TranscriptEvaluationResult with pass, score, and details
     """
     details: list[TranscriptRuleResult] = []
+    rules = _expand_transcript_rule_bundles(rules)
 
     if not rules:
         return TranscriptEvaluationResult(passed=True, score=1.0, details=[])
@@ -232,6 +233,94 @@ def evaluate_transcript_rules(
     return TranscriptEvaluationResult(passed=all_passed, score=score, details=details)
 
 
+def _expand_transcript_rule_bundles(
+    rules: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Expand a serialized ``TranscriptRulesConfig`` into executable rules.
+
+    The Runner receives the typed transcript configuration as one mapping, while
+    :func:`evaluate_transcript_rules` historically expected a list of
+    ``{"type": ...}`` records. Treating that mapping as an unknown rule made
+    every native transcript contract pass without evaluation. Explicit legacy
+    rules remain unchanged; typed bundles are expanded fail-closed.
+    """
+    expanded: list[dict[str, Any]] = []
+    for rule in rules:
+        if rule.get("type"):
+            expanded.append(rule)
+            continue
+
+        recognized = False
+        for text in rule.get("must_contain", []) or []:
+            expanded.append({"type": "must_contain", "text": text})
+            recognized = True
+        for pattern in rule.get("disallow_regex", []) or []:
+            expanded.append(
+                {
+                    "type": "must_not_contain",
+                    "text": pattern,
+                    "regex": True,
+                }
+            )
+            recognized = True
+
+        max_turns = rule.get("max_turns")
+        if max_turns is not None:
+            expanded.append(
+                {
+                    "type": "max_turns",
+                    "max": max_turns,
+                    "count_method": "assistant_messages",
+                }
+            )
+            recognized = True
+
+        for action in rule.get("required_actions", []) or []:
+            arguments = action.get("arguments", {}) or {}
+            compare_args = action.get("compare_args")
+            if compare_args is not None:
+                arguments = {key: arguments.get(key) for key in compare_args}
+            requestor = action.get("requestor")
+            expanded.append(
+                {
+                    "type": "required_tool_call",
+                    "tool_name": action.get("name", ""),
+                    "arguments": arguments,
+                    "executor": (
+                        "agent"
+                        if requestor == "assistant"
+                        else "user"
+                        if requestor == "user"
+                        else None
+                    ),
+                    "action_id": action.get("action_id", ""),
+                }
+            )
+            recognized = True
+
+        for item in rule.get("communicate_info", []) or []:
+            if item.get("required", True):
+                expanded.append({"type": "must_contain", "text": item.get("info", "")})
+                recognized = True
+
+        expectations = rule.get("tool_expectations") or {}
+        for tool_name in expectations.get("required_tools", []) or []:
+            expanded.append({"type": "required_tool_call", "tool_name": tool_name})
+            recognized = True
+        for tool_name in expectations.get("disallowed_tools", []) or []:
+            expanded.append({"type": "forbidden_tool_call", "tool_name": tool_name})
+            recognized = True
+
+        if not recognized:
+            expanded.append(
+                {
+                    "type": "invalid_transcript_rule",
+                    "raw_rule": rule,
+                }
+            )
+    return expanded
+
+
 def _evaluate_single_rule(
     rule_type: str,
     rule: dict[str, Any],
@@ -245,10 +334,23 @@ def _evaluate_single_rule(
         result_dict = _evaluate_must_not_contain(rule, messages)
     elif rule_type == "required_tool_call":
         result_dict = _evaluate_required_tool_call(rule, tool_history)
+    elif rule_type == "forbidden_tool_call":
+        required = _evaluate_required_tool_call(
+            {**rule, "min_calls": 1},
+            tool_history,
+        )
+        result_dict = {
+            "passed": not required["passed"],
+            "message": (
+                f"Forbidden {required['message']}"
+                if required["passed"]
+                else f"Forbidden tool '{rule.get('tool_name', '')}' was not called"
+            ),
+        }
     elif rule_type == "max_turns":
         result_dict = _evaluate_max_turns(rule, messages)
     else:
-        result_dict = {"passed": True, "message": f"Unknown rule type: {rule_type}"}
+        result_dict = {"passed": False, "message": f"Unknown rule type: {rule_type}"}
 
     return TranscriptRuleResult(
         rule_type=rule_type,
