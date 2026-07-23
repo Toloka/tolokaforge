@@ -334,6 +334,10 @@ llm_judge:                                 # the judge MODEL is set once per run
                                            # appended by the harness
     system_prompt: |
       Grade strictly against the policy.
+    include_agent_system_prompt: false     # tri-state (unset | true | false):
+                                           # false omits the agent's policy from the
+                                           # judge's opening-message evidence
+                                           # (evidence gating; agent untouched)
   rubric:                                  # structured Rubric (NOT free text)
     reference: |                           # optional author-written ground truth
       The correct order total is $42.50 with apple_pay.
@@ -361,13 +365,17 @@ settings. `disable_knowledge_search` is tri-state (`unset` | `true` | `false`):
 `search_kb`, the `search_policy` passthrough, any future KB backend) — the
 *agent's* tools are untouched. `system_prompt` (`str | None`) replaces the judge's
 default grading-stance body; the harness always appends the marker contract, so a
-custom prompt can never break `submit_report` validation. Omitting the block
-leaves the judge at the faithful default. Both fields layer project→task (a
-project default under `grading_defaults.llm_judge.customization`, task wins;
-`system_prompt: null` at the task layer resets a project-level custom prompt to
-the default) — see [PROJECTS.md](PROJECTS.md#task-override-semantics). A malformed
-value, an empty/whitespace-only `system_prompt`, or an unknown key under
-`customization` is rejected loudly at load. See
+custom prompt can never break `submit_report` validation.
+`include_agent_system_prompt` (`bool | None`) controls whether the agent's policy is
+embedded in the judge's opening-message evidence: unset/`true` include it (the
+default), `false` omits it (evidence gating, distinct from `system_prompt`'s
+wording). Omitting the block leaves the judge at the faithful default. All fields
+layer project→task (a project default under
+`grading_defaults.llm_judge.customization`, task wins; `system_prompt: null` or
+`include_agent_system_prompt: null` / `true` at the task layer resets a project
+value) — see [PROJECTS.md](PROJECTS.md#task-override-semantics). A malformed value,
+an empty/whitespace-only `system_prompt`, or an unknown key under `customization`
+is rejected loudly at load. See
 [GRADING.md](GRADING.md#llm-judge-rubric-grading) for the judge mechanism, the
 two weighting layers, and the fail-loud ERRORED status.
 

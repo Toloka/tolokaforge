@@ -398,6 +398,13 @@ class Grade(BaseModel):
     # in ``task.yaml.grading_config.llm_judge.customization``, not here. See
     # docs/OUTPUT_FORMAT.md.
     judge_custom_prompt: bool | None = None
+    # Whether the harness embedded the agent's policy / system prompt in the judge's
+    # opening-message evidence
+    # (grading.llm_judge.customization.include_agent_system_prompt). Tri-state:
+    # ``None`` when no judge ran, ``True``/``False`` when a judge ran with the agent
+    # policy included / gated out. Serialized inline in ``grade.yaml``. See
+    # docs/OUTPUT_FORMAT.md.
+    judge_agent_prompt_included: bool | None = None
 
 
 class Trajectory(BaseModel):

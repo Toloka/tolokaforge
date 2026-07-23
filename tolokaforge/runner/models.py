@@ -468,10 +468,18 @@ class JudgeCustomization(BaseModel):
     sets ``null`` to reset a project-level custom prompt back to the default. An
     empty or whitespace-only string is rejected at load — a marker-only prompt is
     almost certainly a mistake.
+
+    Tri-state ``include_agent_system_prompt``: ``None`` (unset) and ``True`` both
+    embed the agent's policy / system prompt in the judge's opening-message
+    evidence (today's behaviour); ``False`` omits that section so a self-contained
+    rubric grades without the agent's framing. Evidence gating, distinct from
+    ``system_prompt`` (which is the judge's own wording). A task sets ``true`` or
+    ``null`` to re-include over a project ``false``.
     """
 
     disable_knowledge_search: bool | None = None
     system_prompt: str | None = None
+    include_agent_system_prompt: bool | None = None
 
     model_config = {"extra": "forbid"}
 

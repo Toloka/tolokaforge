@@ -205,6 +205,80 @@ class TestJudgeCustomPromptRoundTrip:
         assert parsed.judge_custom_prompt is None
 
 
+class TestJudgeAgentPromptInclusionRoundTrip:
+    """Whether the harness embedded the agent policy in the judge's evidence
+    survives proto → dict → ``Grade`` as a tri-state scalar. Two defaults are held
+    apart deliberately: a same-version report that never set field 15 (version
+    skew) yields ``True`` on the live path, while a persisted grade mapping missing
+    the key round-trips to ``None`` through pydantic."""
+
+    def test_included_true_round_trips(self) -> None:
+        from tolokaforge.core.trial_grader import _parse_grade_result
+        from tolokaforge.runner import runner_pb2
+
+        report = runner_pb2.JudgeReport(include_agent_system_prompt=True)
+        grade = runner_pb2.Grade(binary_pass=True, score=1.0, judge_report=report)
+
+        parsed = _parse_grade_result(_grade_dict_from_proto(grade))
+
+        assert parsed.judge_agent_prompt_included is True
+
+    def test_gated_false_round_trips(self) -> None:
+        from tolokaforge.core.trial_grader import _parse_grade_result
+        from tolokaforge.runner import runner_pb2
+
+        report = runner_pb2.JudgeReport(include_agent_system_prompt=False)
+        grade = runner_pb2.Grade(binary_pass=True, score=1.0, judge_report=report)
+
+        parsed = _parse_grade_result(_grade_dict_from_proto(grade))
+
+        assert parsed.judge_agent_prompt_included is False
+
+    def test_absent_judge_report_yields_none(self) -> None:
+        from tolokaforge.core.trial_grader import _parse_grade_result
+        from tolokaforge.runner import runner_pb2
+
+        grade = runner_pb2.Grade(binary_pass=True, score=1.0)  # no judge_report
+
+        parsed = _parse_grade_result(_grade_dict_from_proto(grade))
+
+        assert parsed.judge_agent_prompt_included is None
+
+    def test_field_unset_omits_dict_key_and_defaults_to_included(self) -> None:
+        """A same-version report with field 15 unset (a legacy/skewed sender): the
+        ``HasField``-gated dict write omits the key, so the parse-side default fires
+        and reconstructs ``True`` — the run graded with the policy present."""
+        from tolokaforge.core.trial_grader import _parse_grade_result
+        from tolokaforge.runner import runner_pb2
+
+        report = runner_pb2.JudgeReport(custom_system_prompt=True)  # field 15 left unset
+        assert report.HasField("include_agent_system_prompt") is False
+        grade = runner_pb2.Grade(binary_pass=True, score=1.0, judge_report=report)
+
+        grade_dict = _grade_dict_from_proto(grade)
+        assert "include_agent_system_prompt" not in grade_dict["judge_report"]
+
+        parsed = _parse_grade_result(grade_dict)
+
+        assert parsed.judge_agent_prompt_included is True
+
+    def test_ondisk_grade_missing_key_loads_as_none(self) -> None:
+        """A persisted ``grade.yaml`` from before this field: loaded via ``Grade``
+        pydantic validation (not the live proto path), a missing
+        ``judge_agent_prompt_included`` key defaults to ``None`` — no
+        judge-inclusion fact recorded — distinct from the live-path ``True``."""
+        grade = Grade.model_validate(
+            {
+                "binary_pass": True,
+                "score": 1.0,
+                "judge_status": "completed",
+                "judge_custom_prompt": False,
+            }
+        )
+
+        assert grade.judge_agent_prompt_included is None
+
+
 class TestJudgeInputsRoundTrip:
     """The judge's non-derivable ``run()`` inputs — the exact ``state_diff`` string
     and the non-KB read-tool surface — survive proto → dict → ``Grade`` intact.

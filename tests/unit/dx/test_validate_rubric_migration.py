@@ -214,8 +214,15 @@ def _grading_with_customization(customization_block: str) -> str:
         ("typo_key: true", "typo_key"),
         ("system_prompt: 123", "system_prompt"),
         ('system_prompt: ""', "empty"),
+        ("include_agent_system_prompt: sometimes", "include_agent_system_prompt"),
     ],
-    ids=["malformed_value", "unknown_key", "malformed_system_prompt_type", "empty_system_prompt"],
+    ids=[
+        "malformed_value",
+        "unknown_key",
+        "malformed_system_prompt_type",
+        "empty_system_prompt",
+        "malformed_include_agent_system_prompt_type",
+    ],
 )
 def test_validate_grading_yaml_rejects_malformed_customization(
     tmp_path: Path, customization_block: str, match: str
@@ -252,8 +259,15 @@ def test_validate_grading_yaml_skips_customization_without_rubric(tmp_path: Path
         ({"typo_key": True}, "typo_key"),
         ({"system_prompt": 123}, "system_prompt"),
         ({"system_prompt": ""}, "empty"),
+        ({"include_agent_system_prompt": "sometimes"}, "include_agent_system_prompt"),
     ],
-    ids=["malformed_value", "unknown_key", "malformed_system_prompt_type", "empty_system_prompt"],
+    ids=[
+        "malformed_value",
+        "unknown_key",
+        "malformed_system_prompt_type",
+        "empty_system_prompt",
+        "malformed_include_agent_system_prompt_type",
+    ],
 )
 def test_project_grading_defaults_reject_malformed_customization(customization: dict, match: str):
     """The project-defaults layer (``grading_defaults.llm_judge.customization``) is

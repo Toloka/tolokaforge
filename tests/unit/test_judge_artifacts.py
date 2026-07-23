@@ -39,7 +39,11 @@ _KB_DISABLED = JudgeKbGating(
 )
 
 
-def _judge_grade(kb_gating: JudgeKbGating = _KB_OFFERED, custom_prompt: bool = False) -> Grade:
+def _judge_grade(
+    kb_gating: JudgeKbGating = _KB_OFFERED,
+    custom_prompt: bool = False,
+    agent_prompt_included: bool = True,
+) -> Grade:
     return Grade(
         binary_pass=True,
         score=0.8,
@@ -86,16 +90,18 @@ def _judge_grade(kb_gating: JudgeKbGating = _KB_OFFERED, custom_prompt: bool = F
             read_tools_offered=["get_db_state", "query_db"],
         ),
         judge_custom_prompt=custom_prompt,
+        judge_agent_prompt_included=agent_prompt_included,
     )
 
 
 @pytest.mark.parametrize(
-    "kb_gating, expected_gating, custom_prompt",
+    "kb_gating, expected_gating, custom_prompt, agent_prompt_included",
     [
         (
             _KB_OFFERED,
             {"knowledge_search_disabled": False, "offered": ["search_kb"], "withheld": []},
             False,
+            True,
         ),
         (
             _KB_DISABLED,
@@ -105,17 +111,22 @@ def _judge_grade(kb_gating: JudgeKbGating = _KB_OFFERED, custom_prompt: bool = F
                 "withheld": ["search_kb", "search_policy"],
             },
             True,
+            False,
         ),
     ],
-    ids=["kb_offered_default_prompt", "kb_disabled_withheld_custom_prompt"],
+    ids=["kb_offered_default_prompt_agent_included", "kb_disabled_custom_prompt_agent_gated"],
 )
 def test_write_grade_emits_breakdown_usage_and_transcript_sidecar(
-    tmp_path: Path, kb_gating: JudgeKbGating, expected_gating: dict, custom_prompt: bool
+    tmp_path: Path,
+    kb_gating: JudgeKbGating,
+    expected_gating: dict,
+    custom_prompt: bool,
+    agent_prompt_included: bool,
 ) -> None:
     writer = FileArtifactWriter()
     trial_dir = tmp_path / "trials" / "task_a" / "0"
 
-    writer.write_grade(trial_dir, _judge_grade(kb_gating, custom_prompt))
+    writer.write_grade(trial_dir, _judge_grade(kb_gating, custom_prompt, agent_prompt_included))
 
     grade_path = trial_dir / "grade.yaml"
     transcript_path = trial_dir / "judge_trajectory.yaml"
@@ -148,6 +159,10 @@ def test_write_grade_emits_breakdown_usage_and_transcript_sidecar(
     # Whether the judge ran with a custom system prompt lands inline as a scalar
     # bool; the full custom text lives in task.yaml.grading_config, not here.
     assert grade["judge_custom_prompt"] is custom_prompt
+
+    # Whether the harness embedded the agent policy in the judge's evidence lands
+    # inline as a scalar bool beside judge_custom_prompt.
+    assert grade["judge_agent_prompt_included"] is agent_prompt_included
 
     # The transcript is NOT inlined into grade.yaml — it lives in the sidecar.
     assert "judge_transcript" not in grade
@@ -187,6 +202,7 @@ def test_write_grade_without_judge_writes_no_transcript_sidecar(tmp_path: Path) 
     grade = yaml.safe_load((trial_dir / "grade.yaml").read_text())
     assert grade.get("judge_kb_gating") is None
     assert grade.get("judge_custom_prompt") is None
+    assert grade.get("judge_agent_prompt_included") is None
 
 
 def test_errored_judge_usage_and_partial_transcript_persist(tmp_path: Path) -> None:

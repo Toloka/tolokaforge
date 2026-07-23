@@ -832,6 +832,31 @@ llm_judge:
         weight: 1.0
 ```
 
+`customization.include_agent_system_prompt` layers the same way. It is a `bool |
+None` that controls whether the harness embeds the agent's policy / system prompt
+in the judge's opening-message evidence. Unset and `true` both include it (today's
+behaviour); `false` omits it so a self-contained rubric grades without the agent's
+framing. A task **sets `include_agent_system_prompt: true` or `null` to re-include
+over a project `false`**, while **omitting the key inherits the project value** —
+the same present-null-resets / absent-inherits merge as every field:
+
+```yaml
+# tasks/self_contained_rubric/grading.yaml
+llm_judge:
+  customization:
+    include_agent_system_prompt: false   # grade this rubric without the agent's policy
+  rubric:
+    criteria:
+      - id: cites_policy
+        description: "Cites the applicable policy section"
+        kind: binary
+        weight: 1.0
+```
+
+This gates *evidence*, not the judge's wording — distinct from `system_prompt`. It
+is judge-side only (see
+[GRADING.md](GRADING.md#gating-the-agents-policy-out-of-the-judges-evidence)).
+
 ### Full override — replace entirely
 
 Some fields replace instead of merge:

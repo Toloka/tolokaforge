@@ -282,3 +282,69 @@ def test_system_prompt_none_when_no_layer_sets_it(tmp_path: Path):
 
     assert judge.customization is not None
     assert judge.customization.system_prompt is None
+
+
+def test_include_agent_system_prompt_task_true_overrides_project_false(tmp_path: Path):
+    """A task ``true`` re-includes the agent policy over a project ``false``."""
+    adapter = _build_task(
+        tmp_path,
+        _rubric_grading({"include_agent_system_prompt": True}),
+        project_task_defaults=_judge_defaults({"include_agent_system_prompt": False}),
+    )
+    judge = adapter.to_task_description("rubric_task").grading.llm_judge
+
+    assert judge.customization is not None
+    assert judge.customization.include_agent_system_prompt is True
+
+
+def test_include_agent_system_prompt_task_false_overrides_project_true(tmp_path: Path):
+    """A task ``false`` gates the agent policy out over a project ``true``."""
+    adapter = _build_task(
+        tmp_path,
+        _rubric_grading({"include_agent_system_prompt": False}),
+        project_task_defaults=_judge_defaults({"include_agent_system_prompt": True}),
+    )
+    judge = adapter.to_task_description("rubric_task").grading.llm_judge
+
+    assert judge.customization is not None
+    assert judge.customization.include_agent_system_prompt is False
+
+
+def test_include_agent_system_prompt_inherited_when_task_key_absent(tmp_path: Path):
+    """A task with no ``include_agent_system_prompt`` key inherits the project
+    value (absent never clears a set project default)."""
+    adapter = _build_task(
+        tmp_path,
+        _rubric_grading(),
+        project_task_defaults=_judge_defaults({"include_agent_system_prompt": False}),
+    )
+    judge = adapter.to_task_description("rubric_task").grading.llm_judge
+
+    assert judge.customization is not None
+    assert judge.customization.include_agent_system_prompt is False
+
+
+def test_include_agent_system_prompt_task_null_resets_project_value_to_default(tmp_path: Path):
+    """A task ``include_agent_system_prompt: null`` (key present, value null)
+    resets a project ``false`` back to the include default — distinct from
+    omitting the key, which inherits. ``deep_merge`` treats a present null as an
+    override; the resolved ``None`` means the default (include)."""
+    adapter = _build_task(
+        tmp_path,
+        _rubric_grading({"include_agent_system_prompt": None}),
+        project_task_defaults=_judge_defaults({"include_agent_system_prompt": False}),
+    )
+    judge = adapter.to_task_description("rubric_task").grading.llm_judge
+
+    assert judge.customization is not None
+    assert judge.customization.include_agent_system_prompt is None
+
+
+def test_include_agent_system_prompt_none_when_no_layer_sets_it(tmp_path: Path):
+    """Both layers unset ⇒ ``include_agent_system_prompt is None`` (the include
+    default)."""
+    adapter = _build_task(tmp_path, _rubric_grading({"disable_knowledge_search": True}))
+    judge = adapter.to_task_description("rubric_task").grading.llm_judge
+
+    assert judge.customization is not None
+    assert judge.customization.include_agent_system_prompt is None
