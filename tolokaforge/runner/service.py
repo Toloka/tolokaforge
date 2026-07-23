@@ -1100,6 +1100,12 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 ),
             )
 
+        # Freeze the episode's tool history before any grader-owned tool
+        # execution. Hash grading replays golden actions through the same tool
+        # wrappers, which may append to ``trial_context.tool_call_history``;
+        # transcript rules must evaluate only behavior produced by the agent.
+        episode_tool_history = [record.model_dump() for record in trial_context.tool_call_history]
+
         # Get state_checks config (may contain golden_actions)
         state_checks_config = grading_config.state_checks
         golden_actions: list[GoldenAction] = []
@@ -1168,8 +1174,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 # Continue with empty messages - tool history may still be useful
 
         if transcript_rules_config:
-            # Convert tool call history to dicts for grading
-            tool_history = [r.model_dump() for r in trial_context.tool_call_history]
+            tool_history = episode_tool_history
 
             # Skip transcript grading if no messages and rules require them
             if llm_messages or tool_history:

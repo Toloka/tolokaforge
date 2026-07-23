@@ -281,10 +281,11 @@ def _expand_transcript_rule_bundles(
             if compare_args is not None:
                 arguments = {key: arguments.get(key) for key in compare_args}
             requestor = action.get("requestor")
+            tool_name = action.get("tool_name") or action.get("name", "")
             expanded.append(
                 {
                     "type": "required_tool_call",
-                    "tool_name": action.get("name", ""),
+                    "tool_name": tool_name,
                     "arguments": arguments,
                     "executor": (
                         "agent"
@@ -467,7 +468,7 @@ def _evaluate_required_tool_call(
     required_executor = rule.get("executor")
 
     if not tool_name:
-        return {"passed": True, "message": "No tool_name specified, rule passes"}
+        return {"passed": False, "message": "Required tool rule has no tool_name"}
 
     matching_calls = 0
 
