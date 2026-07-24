@@ -1770,14 +1770,19 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 )
 
     def _id_fields_for_trial(self, trial_id: str) -> dict[str, str]:
-        """Return the id_fields map declared by the trial's grading config, or ``{}``."""
-        trial = self.trials.get(trial_id)
-        if trial is None or trial.task_description is None:
+        """Return the id_fields map declared by the trial's grading config, or ``{}``.
+
+        Callers of ``_sync_mcp_state_to_db`` (GradeTrial, GetState) always guard
+        that the trial is registered before invoking, so indexed access here is
+        deliberate — a missing trial is a bug in the caller.
+        """
+        trial = self.trials[trial_id]
+        if trial.task_description is None:
             return {}
         grading = trial.task_description.grading
         if grading is None or grading.state_checks is None:
             return {}
-        return dict(grading.state_checks.id_fields)
+        return grading.state_checks.id_fields
 
     # =========================================================================
     # GetState - Debug endpoint to inspect current state

@@ -66,7 +66,7 @@ async def test_defaults_to_id_key_unchanged():
 
     (_table, ops) = wrapper.db_proxy._async_proxy.db_client.mutations[-1]
     upsert = next(op for op in ops if op["op"] == "upsert")
-    assert upsert["key"] == "id"  # byte-for-byte compatible with pre-fix behavior
+    assert upsert["key"] == "id"
 
 
 async def test_missing_key_raises_on_diff_side():

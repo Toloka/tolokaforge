@@ -69,25 +69,53 @@ def compute_diff_ops(
 ) -> list[dict[str, Any]]:
     """Compute the mutation ops that transform ``before`` into ``after``.
 
-    Emits ``insert`` for records only in ``after``, ``upsert`` for records
-    present in both but changed, and ``delete`` for records only in ``before``.
-    Records are indexed by the table's configured key (see
-    :func:`id_field_for_table`); a record missing that key raises.
+    Emits ops in the order ``[inserts, upserts, deletes]`` so downstream
+    consumers see the same batch shape as the pre-refactor call sites. Records
+    are indexed by the table's configured key (see :func:`id_field_for_table`);
+    a record missing that key or sharing its key with another record in the
+    same list raises :class:`IdFieldResolutionError`.
     """
     key = id_field_for_table(table, id_fields)
-    before_by_id = {_record_value(r, table, key): r for r in before}
-    after_by_id = {_record_value(r, table, key): r for r in after}
+    before_by_id = _index_by_key(before, table, key, side="before")
+    after_by_id = _index_by_key(after, table, key, side="after")
 
     ops: list[dict[str, Any]] = []
     for rid, rec in after_by_id.items():
         if rid not in before_by_id:
             ops.append({"op": "insert", "record": rec})
-        elif before_by_id[rid] != rec:
+    for rid, rec in after_by_id.items():
+        if rid in before_by_id and before_by_id[rid] != rec:
             ops.append({"op": "upsert", "record": rec, "key": key})
     for rid in before_by_id:
         if rid not in after_by_id:
             ops.append({"op": "delete", "filter": {key: rid}})
     return ops
+
+
+def _index_by_key(
+    records: list[dict[str, Any]],
+    table: str,
+    key: str,
+    *,
+    side: str,
+) -> dict[Any, dict[str, Any]]:
+    """Index ``records`` by ``record[key]``; raise on duplicate keys.
+
+    A duplicate resolved key would silently drop every record but the last —
+    the same class of silent-collapse the id_fields resolver was introduced
+    to close.
+    """
+    indexed: dict[Any, dict[str, Any]] = {}
+    for record in records:
+        rid = _record_value(record, table, key)
+        if rid in indexed:
+            raise IdFieldResolutionError(
+                f"Duplicate {key!r}={rid!r} in {side} state for table {table!r}; "
+                f"two records share the same resolved primary key. "
+                f"Fix the source data or the state_checks.id_fields entry."
+            )
+        indexed[rid] = record
+    return indexed
 
 
 def check_id_fields_reference_known_tables(

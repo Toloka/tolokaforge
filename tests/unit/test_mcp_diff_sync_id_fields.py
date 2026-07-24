@@ -87,14 +87,10 @@ async def test_missing_key_raises_on_diff_side():
     assert "lots" in str(ei.value)
 
 
-async def test_missing_trial_yields_empty_id_fields():
-    # Defensive: GetState uses self.trials.get(trial_id); if the servicer is
-    # asked to sync for a trial it never registered (edge case), the id_fields
-    # lookup must degrade to {} rather than raise a KeyError.
-    servicer = _make_servicer(id_fields=None, current_state={"items": []})
-    servicer.trials = {}  # trial:0 not registered
-    new_state = {"items": [{"id": "X1"}]}
-
-    await servicer._sync_mcp_state_to_db("trial:0", new_state)
-    _table, ops = servicer.db_client.mutations[-1]
-    assert ops[0]["op"] == "insert"
+async def test_no_op_when_state_unchanged():
+    servicer = _make_servicer(
+        id_fields=None,
+        current_state={"items": [{"id": "X1", "name": "a"}]},
+    )
+    await servicer._sync_mcp_state_to_db("trial:0", {"items": [{"id": "X1", "name": "a"}]})
+    assert servicer.db_client.mutations == []

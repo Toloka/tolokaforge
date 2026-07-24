@@ -67,14 +67,11 @@ class TestNativeAdapterCanon:
 
 
 class TestWidgetsIdFieldsCanon:
-    """Canonical coverage for a non-``id``-keyed table with declared ``id_fields``.
+    """Canonical coverage for a table keyed by a non-``id`` column.
 
-    Every other snapshot in this suite serializes ``id_fields: {}`` because the
-    existing fixtures happen to be id-keyed. This fixture locks in the
-    round-trip for the shape production packs actually use (tau_manufacturing
-    lot_id, travel_marketplace reservation_id, etc.) — so a regression that
-    drops or renames ``id_fields`` / ``relaxed_validation`` on the runner-side
-    ``StateChecksConfig`` fails the snapshot immediately.
+    The fixture declares ``id_fields: {widgets: widget_id}`` and asserts the
+    runner-side ``StateChecksConfig`` serializes both ``id_fields`` and
+    ``relaxed_validation`` in the emitted grading config.
     """
 
     def test_grading_config(self, native_adapter, canon_snapshot):
