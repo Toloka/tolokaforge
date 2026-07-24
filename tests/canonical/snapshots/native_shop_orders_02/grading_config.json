@@ -43,6 +43,7 @@
       ],
       "weight": 0.6
     },
+    "id_fields": {},
     "jsonpaths": [
       {
         "description": "First order is assigned ID O-001",
@@ -80,7 +81,8 @@
         "path": "$.db.products[1].stock"
       }
     ],
-    "numeric_string_fields": []
+    "numeric_string_fields": [],
+    "relaxed_validation": false
   },
   "transcript_rules": {
     "communicate_info": [

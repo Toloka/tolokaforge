@@ -35,6 +35,7 @@ from pydantic import BaseModel, Field
 
 from tolokaforge.runner.db_client import DBServiceClient
 from tolokaforge.runner.db_proxy import DBServiceProxy, SyncDBServiceProxy
+from tolokaforge.runner.id_resolution import compute_diff_ops
 from tolokaforge.runner.models import (
     InvocationStyle,
 )
@@ -210,10 +211,12 @@ class TauSyncToolWrapper(ToolWrapper):
         tool_schema: ToolSchemaModel,
         tool_class: type,
         db_proxy: SyncDBServiceProxy,
+        id_fields: dict[str, str] | None = None,
     ):
         super().__init__(tool_schema)
         self.tool_class = tool_class
         self.db_proxy = db_proxy
+        self._id_fields: dict[str, str] = dict(id_fields or {})
         self._tool_instance = None
 
     async def execute(self, arguments: dict[str, Any]) -> str:
@@ -273,56 +276,24 @@ class TauSyncToolWrapper(ToolWrapper):
             raise
 
     async def _sync_state_changes(self, before: dict[str, Any], after: dict[str, Any]) -> None:
-        """
-        Detect and sync state changes to DB Service.
+        """Detect and sync state changes to DB Service.
 
-        This compares the state before and after tool execution
-        and pushes any changes to the DB Service.
+        Keys are resolved per table from ``state_checks.id_fields`` (default
+        ``"id"``); a record missing its resolved key raises fail-loud rather
+        than collapsing all keyless records to a single ``None`` bucket.
         """
-        # For each table, detect changes
-        all_tables = set(before.keys()) | set(after.keys())
-
-        for table_name in all_tables:
+        for table_name in set(before) | set(after):
             before_records = before.get(table_name, [])
             after_records = after.get(table_name, [])
-
-            # Skip if no changes
             if before_records == after_records:
                 continue
-
-            # Build operations for changes
-            operations = []
-
-            # Index records by ID for comparison
-            before_by_id = {self._get_record_id(r): r for r in before_records}
-            after_by_id = {self._get_record_id(r): r for r in after_records}
-
-            # Find inserts (in after but not in before)
-            for record_id, record in after_by_id.items():
-                if record_id not in before_by_id:
-                    operations.append({"op": "insert", "record": record})
-
-            # Find updates (in both but different)
-            for record_id, after_record in after_by_id.items():
-                if record_id in before_by_id:
-                    before_record = before_by_id[record_id]
-                    if before_record != after_record:
-                        operations.append({"op": "upsert", "record": after_record, "key": "id"})
-
-            # Find deletes (in before but not in after)
-            for record_id in before_by_id:
-                if record_id not in after_by_id:
-                    operations.append({"op": "delete", "filter": {"id": record_id}})
-
-            # Apply operations to DB Service
+            operations = compute_diff_ops(
+                before_records, after_records, table_name, self._id_fields
+            )
             if operations:
                 await self.db_proxy._async_proxy.db_client.mutate(
                     trial_id=self.db_proxy.trial_id, table_name=table_name, operations=operations
                 )
-
-    def _get_record_id(self, record: dict[str, Any]) -> Any:
-        """Get the ID of a record."""
-        return record.get("id") or record.get("_id")
 
 
 # =============================================================================
@@ -1389,6 +1360,7 @@ class ToolFactory:
         rag_client: RAGServiceClient | None = None,
         db_table_names: list[str] | None = None,
         initial_state_data: dict[str, list[dict]] | None = None,
+        id_fields: dict[str, str] | None = None,
     ):
         """
         Initialize the tool factory.
@@ -1401,17 +1373,24 @@ class ToolFactory:
                            These are the source of truth for table name registration.
             initial_state_data: Optional dict mapping table names to their records.
                                Used for ID field matching during model registration.
+            id_fields: Optional per-table primary-key overrides (table_name -> key
+                       field), from grading config state_checks.id_fields. Forwarded
+                       to the DB proxy and to TauSyncToolWrapper diff-sync so key
+                       resolution is data-driven; a table absent resolves to ``"id"``.
         """
         self.db_client = db_client
         self.trial_id = trial_id
         self.rag_client = rag_client
         self.db_table_names = db_table_names or []
         self._initial_state_data = initial_state_data or {}
+        self.id_fields = dict(id_fields or {})
         self._claimed_tables: set[str] = set()
 
         # Create DB proxies for tools
         # Pass db_table_names so the proxy can resolve table names for unregistered models
-        self._async_proxy = DBServiceProxy(db_client, trial_id, db_table_names=self.db_table_names)
+        self._async_proxy = DBServiceProxy(
+            db_client, trial_id, db_table_names=self.db_table_names, id_fields=self.id_fields
+        )
         self._sync_proxy = SyncDBServiceProxy(self._async_proxy)
 
     def reconstruct_tools(
@@ -1528,6 +1507,7 @@ class ToolFactory:
                 tool_schema=schema,
                 tool_class=tool_class,
                 db_proxy=self._sync_proxy,
+                id_fields=self.id_fields,
             )
         except ImportError as e:
             raise ToolImportError(schema.name, f"Cannot import module '{module_path}': {e}")

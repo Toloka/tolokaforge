@@ -66,6 +66,28 @@ class TestNativeAdapterCanon:
         snap.assert_match(actual, "grading_config.json")
 
 
+class TestWidgetsIdFieldsCanon:
+    """Canonical coverage for a table keyed by a non-``id`` column.
+
+    The fixture declares ``id_fields: {widgets: widget_id}`` and asserts the
+    runner-side ``StateChecksConfig`` serializes both ``id_fields`` and
+    ``relaxed_validation`` in the emitted grading config.
+    """
+
+    def test_grading_config(self, native_adapter, canon_snapshot):
+        grading = native_adapter.get_grading_config("widgets_id_fields")
+        snap = canon_snapshot("native_widgets_id_fields")
+        snap.assert_match(grading.model_dump(mode="json"), "grading_config.json")
+
+    def test_task_description_carries_id_fields(self, native_adapter):
+        # Full to_task_description round-trip: initial_state.tables and the
+        # declared id_fields survive to the runner-facing TaskDescription.
+        td = native_adapter.to_task_description("widgets_id_fields")
+        assert td.grading.state_checks.id_fields == {"widgets": "widget_id"}
+        assert td.grading.state_checks.relaxed_validation is False
+        assert td.initial_state and "widgets" in td.initial_state.tables
+
+
 class TestNativeAdapterDomainCanon:
     """Canonical tests for the shared-domain layout.
 

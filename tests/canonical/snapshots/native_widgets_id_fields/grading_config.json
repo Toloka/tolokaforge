@@ -3,8 +3,8 @@
     "method": "weighted",
     "pass_threshold": 0.7,
     "weights": {
-      "state_checks": 0.6,
-      "transcript_rules": 0.4
+      "state_checks": 1.0,
+      "transcript_rules": 0.0
     }
   },
   "custom_checks": null,
@@ -14,7 +14,9 @@
     "db_probes": [],
     "env_assertions": [],
     "hash": null,
-    "id_fields": {},
+    "id_fields": {
+      "widgets": "widget_id"
+    },
     "jsonpaths": [],
     "numeric_string_fields": [],
     "relaxed_validation": false
@@ -22,15 +24,9 @@
   "transcript_rules": {
     "communicate_info": [],
     "disallow_regex": [],
-    "max_turns": 15,
+    "max_turns": 5,
     "must_contain": [],
     "required_actions": [],
-    "tool_expectations": {
-      "disallowed_tools": [],
-      "required_tools": [
-        "browser",
-        "write_file"
-      ]
-    }
+    "tool_expectations": null
   }
 }

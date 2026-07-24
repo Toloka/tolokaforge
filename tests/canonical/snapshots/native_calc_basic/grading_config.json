@@ -14,8 +14,10 @@
     "db_probes": [],
     "env_assertions": [],
     "hash": null,
+    "id_fields": {},
     "jsonpaths": [],
-    "numeric_string_fields": []
+    "numeric_string_fields": [],
+    "relaxed_validation": false
   },
   "transcript_rules": {
     "communicate_info": [],
