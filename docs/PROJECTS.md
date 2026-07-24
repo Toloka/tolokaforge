@@ -707,6 +707,10 @@ task_defaults:
         # weight those.
         state_checks: 0.5
         llm_judge: 0.5
+    llm_judge:                       # project-default judge customization (no rubric here)
+      customization:
+        disable_knowledge_search: true  # withhold the judge's KB tools by default;
+                                        # a task may override with `false`
   timeouts:
     trial_seconds: 600
     tool_call_seconds: 60
@@ -780,6 +784,78 @@ The task's resolved manifest = resolve(`project.default_environment`,
 [Patches and the resolved environment document](#patches-and-the-resolved-environment-document).
 Touching `stack.inputs` alone deep-merges: the task stays on the
 project's compose file, with one substituted variable changed.
+
+The same deep-merge governs `grading_defaults.llm_judge.customization`. Its
+`disable_knowledge_search` is **tri-state**: unset (the faithful default — the
+judge keeps whatever KB tools the agent had), `true`, or `false`. A task's own
+`grading.yaml` under `llm_judge.customization` wins field-by-field, and because an
+unset task key never overrides a set project key, a task can flip a
+project-disabled judge back on with an explicit `false`:
+
+```yaml
+# tasks/self_contained_rubric/grading.yaml
+llm_judge:
+  customization:
+    disable_knowledge_search: false   # this task's rubric needs the agent's KB;
+                                      # override a project default that disabled it
+  rubric:
+    criteria:
+      - id: cites_policy
+        description: "Cites the applicable policy section"
+        kind: binary
+        weight: 1.0
+```
+
+When neither layer sets the field, the config is byte-identical to a task with no
+customization block at all. The block is judge-side only — it never changes the
+agent's tools (see [GRADING.md](GRADING.md#judge-kb-faithfulness)).
+
+`customization.system_prompt` layers the same way. It is a `str | None` that
+replaces the judge's default grading-stance body (the harness always appends the
+marker contract). A task-level string overrides a project default; **omitting the
+key inherits the project value**, while **`system_prompt: null` (key present,
+value null) resets a project-level custom prompt back to the default**. Present-key
+`null` overriding and absent-key inheriting is how the merge treats every field,
+not a property of this one. An empty string `""` is rejected loudly at load, not
+treated as a reset:
+
+```yaml
+# tasks/policy_graded/grading.yaml
+llm_judge:
+  customization:
+    system_prompt: null   # revert to the default judge prompt over a project custom one
+  rubric:
+    criteria:
+      - id: cites_policy
+        description: "Cites the applicable policy section"
+        kind: binary
+        weight: 1.0
+```
+
+`customization.include_agent_system_prompt` layers the same way. It is a `bool |
+None` that controls whether the harness embeds the agent's policy / system prompt
+in the judge's opening-message evidence. Unset and `true` both include it (today's
+behaviour); `false` omits it so a self-contained rubric grades without the agent's
+framing. A task **sets `include_agent_system_prompt: true` or `null` to re-include
+over a project `false`**, while **omitting the key inherits the project value** —
+the same present-null-resets / absent-inherits merge as every field:
+
+```yaml
+# tasks/self_contained_rubric/grading.yaml
+llm_judge:
+  customization:
+    include_agent_system_prompt: false   # grade this rubric without the agent's policy
+  rubric:
+    criteria:
+      - id: cites_policy
+        description: "Cites the applicable policy section"
+        kind: binary
+        weight: 1.0
+```
+
+This gates *evidence*, not the judge's wording — distinct from `system_prompt`. It
+is judge-side only (see
+[GRADING.md](GRADING.md#gating-the-agents-policy-out-of-the-judges-evidence)).
 
 ### Full override — replace entirely
 
@@ -1603,6 +1679,63 @@ reviewable entry for the specific service that needs it.
 **Pick this when:** trials mutate state destructively; safety is
 paramount; you don't trust unlabelled services to be safe to
 share.
+
+### Network partitioning — excluding a service from the shared internal network
+
+`network_policy` governs *public* egress. Every application service
+under `no_internet` and `limited_internet` still shares the
+harness-injected `tolokaforge_netpolicy_internal` network, so any
+sibling can DNS-resolve and dial any other on ports the compose file
+exposes. For a stack that includes an untrusted sibling (an
+agent-controlled `bash` container whose only intended egress is a
+curated tool-bridge service, for example), `services.<name>.network_access`
+opts the named service out of the injected shared network.
+
+Two labels:
+
+- **`default`** — the harness auto-joins the service to the injected
+  shared internal network under `no_internet` and `limited_internet`,
+  and injects `HTTP(S)_PROXY` env under `limited_internet`. Every
+  service defaults to this.
+- **`restricted`** — the service joins **only** the networks its
+  compose entry declares. The harness does *not* attach the injected
+  shared internal net and does *not* inject proxy env. Task-declared
+  networks the service joins are still forced `internal: true`, so a
+  restricted service remains egress-blocked at the docker-network
+  level — it just does not gain the harness's inter-service
+  reachability layer.
+
+Two invariants fail loud at manifest load:
+
+- The `runner_service` cannot be `restricted` (it must remain
+  reachable from application services and keep its injected edge
+  network for LLM-judge grading).
+- A `restricted` service's compose entry must declare a non-empty
+  `networks:` block (a restricted service with nowhere to attach
+  would never come up).
+
+```yaml
+# environment.compose.yaml — declare the task network on the sibling
+services:
+  bash:
+    image: bash:5.2-alpine3.20
+    networks: [tool_bridge]
+networks:
+  tool_bridge: {}
+```
+
+```yaml
+# project.yaml — mark the sibling restricted
+default_environment:
+  services:
+    bash:
+      isolation: ephemeral
+      network_access: restricted
+```
+
+See [`docs/MULTI_CONTAINER_GUIDE.md`](MULTI_CONTAINER_GUIDE.md#partitioning-an-untrusted-sibling)
+for the walkthrough and [`docs/SECURITY.md`](SECURITY.md#task-declared-stack-case-b--case-c)
+for the threat-model treatment.
 
 ## Services and backends — scaffolding
 

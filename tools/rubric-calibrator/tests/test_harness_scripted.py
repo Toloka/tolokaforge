@@ -180,5 +180,9 @@ class _RouterJudge:
         args = {"reasons": "scripted"}
         for cid, verdict in verdicts.items():
             args[cid] = verdict
-            args[f"{cid}_justification"] = f"scripted reasoning for {cid}"
+            if isinstance(verdict, bool):
+                marker = "VERDICT: MET" if verdict else "VERDICT: NOT MET"
+            else:
+                marker = f"SCORE: {verdict}"
+            args[f"{cid}_justification"] = f"scripted reasoning for {cid}\n{marker}"
         return _tool_call_result(args)

@@ -6,6 +6,7 @@ from typing import Any
 
 from tolokaforge.core.llm import GenerationResult, LLMClient, UserSimulator
 from tolokaforge.core.logging import StructuredLogger, init_trial_logger
+from tolokaforge.core.logging_context import trial_id_scope
 from tolokaforge.core.loop import (
     LoopConfig,
     MetricsSink,
@@ -176,137 +177,141 @@ class TrialRunner:
         """
         # Initialize trial logger
         trial_id = f"{self.task_id}:{self.trial_index}"
-        self.logger = init_trial_logger(trial_id, self.verbose, self.strict)
+        # Bind the trial identity for the whole execution so every log record
+        # emitted here and in the tool-calling loop it drives is tagged for the
+        # panel's per-trial log view.
+        with trial_id_scope(trial_id):
+            self.logger = init_trial_logger(trial_id, self.verbose, self.strict)
 
-        self.logger.info(
-            "Starting trial execution",
-            task_id=self.task_id,
-            trial_index=self.trial_index,
-            max_turns=self.max_turns,
-        )
-
-        self.start_time = time.time()
-        start_ts = datetime.now(tz=timezone.utc)
-        status = TrialStatus.COMPLETED  # Optimistic default
-        termination_reason: TerminationReason | None = None
-
-        # Per-trial × role observations threaded into the agent's LLM client
-        # (via the loop) and into the user-simulator's ``reply`` call sites so
-        # the RunDisplayEvents trio (started / finished / retry_scheduled)
-        # fires with the correct ``trial_id`` + ``role``. The ``LLMClient`` is
-        # shared across concurrent trials — the identity must ride the call,
-        # not the client.
-        self._user_observation = LLMCallObservation(
-            events=self._events, trial_id=trial_id, role="user"
-        )
-
-        try:
-            self._seed_first_user_message(initial_user_message)
-
-            outcome = ToolCallingLoop(
-                llm_client=self.agent_client,
-                tool_executor=self.tool_executor,
-                tool_schemas=self.tool_schemas,
-                config=LoopConfig(
-                    max_turns=self.max_turns,
-                    episode_timeout_s=self.episode_timeout_s,
-                ),
-                metrics=_AgentMetricsSink(
-                    self.metrics,
-                    events=self._events,
-                    trial_id=trial_id,
-                ),
-                should_terminate=self._agent_termination,
-                user_turn=self._agent_user_turn,
-                request_limiter=self.request_limiter,
-                normalize_tool_arguments=self._normalize_tool_arguments,
-                logger=self.logger,
-                call_observation=LLMCallObservation(
-                    events=self._events, trial_id=trial_id, role="agent"
-                ),
-            ).run(system_prompt, self.messages, self.start_time)
-
-            status = outcome.status
-            termination_reason = outcome.termination_reason
-            if outcome.captured_effective_system_prompt is not None:
-                self._effective_system_prompt = outcome.captured_effective_system_prompt
-                self._effective_system_prompt_captured = True
-
-        except Exception as e:
-            # Catch-all for initialization errors (first-user-message generation)
-            status = TrialStatus.ERROR
-            termination_reason = TerminationReason.ERROR
-            self.logger.error(
-                "Trial initialization error", error=str(e), error_type=type(e).__name__
+            self.logger.info(
+                "Starting trial execution",
+                task_id=self.task_id,
+                trial_index=self.trial_index,
+                max_turns=self.max_turns,
             )
-            # Add system message for initialization error
-            self.messages.append(
-                Message(
-                    role=MessageRole.SYSTEM,
-                    content=f"Trial initialization error: {str(e)}. Dialogue terminated.",
-                    ts=datetime.now(tz=timezone.utc),
+
+            self.start_time = time.time()
+            start_ts = datetime.now(tz=timezone.utc)
+            status = TrialStatus.COMPLETED  # Optimistic default
+            termination_reason: TerminationReason | None = None
+
+            # Per-trial × role observations threaded into the agent's LLM client
+            # (via the loop) and into the user-simulator's ``reply`` call sites so
+            # the RunDisplayEvents trio (started / finished / retry_scheduled)
+            # fires with the correct ``trial_id`` + ``role``. The ``LLMClient`` is
+            # shared across concurrent trials — the identity must ride the call,
+            # not the client.
+            self._user_observation = LLMCallObservation(
+                events=self._events, trial_id=trial_id, role="user"
+            )
+
+            try:
+                self._seed_first_user_message(initial_user_message)
+
+                outcome = ToolCallingLoop(
+                    llm_client=self.agent_client,
+                    tool_executor=self.tool_executor,
+                    tool_schemas=self.tool_schemas,
+                    config=LoopConfig(
+                        max_turns=self.max_turns,
+                        episode_timeout_s=self.episode_timeout_s,
+                    ),
+                    metrics=_AgentMetricsSink(
+                        self.metrics,
+                        events=self._events,
+                        trial_id=trial_id,
+                    ),
+                    should_terminate=self._agent_termination,
+                    user_turn=self._agent_user_turn,
+                    request_limiter=self.request_limiter,
+                    normalize_tool_arguments=self._normalize_tool_arguments,
+                    logger=self.logger,
+                    call_observation=LLMCallObservation(
+                        events=self._events, trial_id=trial_id, role="agent"
+                    ),
+                ).run(system_prompt, self.messages, self.start_time)
+
+                status = outcome.status
+                termination_reason = outcome.termination_reason
+                if outcome.captured_effective_system_prompt is not None:
+                    self._effective_system_prompt = outcome.captured_effective_system_prompt
+                    self._effective_system_prompt_captured = True
+
+            except Exception as e:
+                # Catch-all for initialization errors (first-user-message generation)
+                status = TrialStatus.ERROR
+                termination_reason = TerminationReason.ERROR
+                self.logger.error(
+                    "Trial initialization error", error=str(e), error_type=type(e).__name__
                 )
+                # Add system message for initialization error
+                self.messages.append(
+                    Message(
+                        role=MessageRole.SYSTEM,
+                        content=f"Trial initialization error: {str(e)}. Dialogue terminated.",
+                        ts=datetime.now(tz=timezone.utc),
+                    )
+                )
+                if self.strict:
+                    raise
+
+            # Finalize metrics
+            end_ts = datetime.now(tz=timezone.utc)
+            self.metrics.latency_total_s = time.time() - self.start_time
+            self.metrics.turns = len([m for m in self.messages if m.role == MessageRole.ASSISTANT])
+
+            # Calculate tool success rate (combine agent and user tool logs)
+            tool_logs = self.tool_executor.get_logs()
+            user_tool_logs = self.user_tool_executor.get_logs() if self.user_tool_executor else []
+
+            # Combine logs and mark source
+            combined_logs = [{**log, "executor": "agent"} for log in tool_logs] + [
+                {**log, "executor": "user"} for log in user_tool_logs
+            ]
+
+            if combined_logs:
+                success_count = sum(1 for log in combined_logs if log.get("success", False))
+                self.metrics.tool_success_rate = success_count / len(combined_logs)
+                self.metrics.tool_calls = len(combined_logs)
+
+            self.logger.info(
+                "Trial execution finished",
+                status=status.value,
+                turns=self.metrics.turns,
+                tool_calls=self.metrics.tool_calls,
+                latency_s=self.metrics.latency_total_s,
             )
-            if self.strict:
-                raise
 
-        # Finalize metrics
-        end_ts = datetime.now(tz=timezone.utc)
-        self.metrics.latency_total_s = time.time() - self.start_time
-        self.metrics.turns = len([m for m in self.messages if m.role == MessageRole.ASSISTANT])
+            # Stage 7 (P5) — pull simulator prompt from the (possibly None)
+            # attribute exposed by UserSimulator. LLM mode populates it on every
+            # reply; scripted mode leaves it None. Overwrite our cached copy on
+            # every trial-end so that if a follow-up reply revised the prompt,
+            # we land the latest version. Guard against non-string values
+            # (e.g. MagicMock in tests) — a real UserSimulator never populates a
+            # non-string-non-None value, but silently coercing garbage onto the
+            # Trajectory would violate AGENTS.md rule #1.
+            sim_prompt = getattr(self.user_simulator, "last_system_prompt", None)
+            if isinstance(sim_prompt, str) and sim_prompt:
+                self._user_system_prompt_captured = sim_prompt
 
-        # Calculate tool success rate (combine agent and user tool logs)
-        tool_logs = self.tool_executor.get_logs()
-        user_tool_logs = self.user_tool_executor.get_logs() if self.user_tool_executor else []
+            # Create trajectory with status and termination reason. Both
+            # system prompts are read off the runner via the
+            # :attr:`effective_system_prompt` / :attr:`user_system_prompt`
+            # properties and persisted by the orchestrator into
+            # ``prompts.yaml`` — they no longer ride on Trajectory.
+            trajectory = Trajectory(
+                task_id=self.task_id,
+                trial_index=self.trial_index,
+                start_ts=start_ts,
+                end_ts=end_ts,
+                status=status,
+                termination_reason=termination_reason,
+                messages=self.messages,
+                metrics=self.metrics,
+                tool_log=combined_logs,
+            )
 
-        # Combine logs and mark source
-        combined_logs = [{**log, "executor": "agent"} for log in tool_logs] + [
-            {**log, "executor": "user"} for log in user_tool_logs
-        ]
-
-        if combined_logs:
-            success_count = sum(1 for log in combined_logs if log.get("success", False))
-            self.metrics.tool_success_rate = success_count / len(combined_logs)
-            self.metrics.tool_calls = len(combined_logs)
-
-        self.logger.info(
-            "Trial execution finished",
-            status=status.value,
-            turns=self.metrics.turns,
-            tool_calls=self.metrics.tool_calls,
-            latency_s=self.metrics.latency_total_s,
-        )
-
-        # Stage 7 (P5) — pull simulator prompt from the (possibly None)
-        # attribute exposed by UserSimulator. LLM mode populates it on every
-        # reply; scripted mode leaves it None. Overwrite our cached copy on
-        # every trial-end so that if a follow-up reply revised the prompt,
-        # we land the latest version. Guard against non-string values
-        # (e.g. MagicMock in tests) — a real UserSimulator never populates a
-        # non-string-non-None value, but silently coercing garbage onto the
-        # Trajectory would violate AGENTS.md rule #1.
-        sim_prompt = getattr(self.user_simulator, "last_system_prompt", None)
-        if isinstance(sim_prompt, str) and sim_prompt:
-            self._user_system_prompt_captured = sim_prompt
-
-        # Create trajectory with status and termination reason. Both
-        # system prompts are read off the runner via the
-        # :attr:`effective_system_prompt` / :attr:`user_system_prompt`
-        # properties and persisted by the orchestrator into
-        # ``prompts.yaml`` — they no longer ride on Trajectory.
-        trajectory = Trajectory(
-            task_id=self.task_id,
-            trial_index=self.trial_index,
-            start_ts=start_ts,
-            end_ts=end_ts,
-            status=status,
-            termination_reason=termination_reason,
-            messages=self.messages,
-            metrics=self.metrics,
-            tool_log=combined_logs,
-        )
-
-        return trajectory
+            return trajectory
 
     def _is_done(self, text: str) -> bool:
         """Check if agent signals completion"""

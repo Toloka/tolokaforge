@@ -33,10 +33,12 @@ from tolokaforge.runner.models import Criterion as Criterion
 from tolokaforge.runner.models import CriterionResult as CriterionResult
 from tolokaforge.runner.models import EnvironmentManifest as EnvironmentManifest
 from tolokaforge.runner.models import EnvironmentPatch as EnvironmentPatch
+from tolokaforge.runner.models import JudgeCustomization as JudgeCustomization
 from tolokaforge.runner.models import LLMJudgeConfig as LLMJudgeConfig
 from tolokaforge.runner.models import ResetSpec as ResetSpec
 from tolokaforge.runner.models import Rubric as Rubric
 from tolokaforge.runner.models import ServiceIsolation as ServiceIsolation
+from tolokaforge.runner.models import ServiceNetworkAccess as ServiceNetworkAccess
 from tolokaforge.runner.models import ServiceSpec as ServiceSpec
 from tolokaforge.runner.models import StackPatch as StackPatch
 
@@ -238,10 +240,10 @@ class Metrics(BaseModel):
 
         Pydantic's native dataclass serialisation works, but wrapping it here
         keeps the output-writer contract explicit and guarantees
-        ``model_dump(mode="json")`` always yields a ``dict`` — Stage 5c of
-        the plan requires this for the trajectory writer. Per-call records
-        are emitted via :func:`dataclasses.asdict` so future
-        :class:`ProviderRawCall` fields are surfaced automatically.
+        ``model_dump(mode="json")`` always yields a ``dict``, which the
+        trajectory writer requires. Per-call records are emitted via
+        :func:`dataclasses.asdict` so future :class:`ProviderRawCall` fields
+        are surfaced automatically.
         """
         return {
             "prompt_tokens": value.prompt_tokens,
@@ -306,6 +308,46 @@ class JudgeUsage(BaseModel):
     reasoning_tokens: int = 0
     cost_usd: float = 0.0
     tool_calls: int = 0
+    consistency_rejections: int = 0
+
+    model_config = {"extra": "forbid"}
+
+
+class JudgeKbGating(BaseModel):
+    """The rubric judge's knowledge-search gating for this trial (host-side model).
+
+    Kept distinct from :class:`JudgeUsage` (which stays strictly token/cost
+    accounting): this is the audit + replay record of *which* KB tools the judge
+    was offered and which config withheld. ``knowledge_search_disabled`` is the
+    authoritative replay signal — ``True`` means
+    ``grading.llm_judge.customization.disable_knowledge_search`` withheld KB,
+    regardless of whether the agent had a KB tool this trial. ``offered`` /
+    ``withheld`` are supporting audit detail; an empty ``withheld`` on a disabled
+    judge means the agent had no KB tool to gate.
+    """
+
+    knowledge_search_disabled: bool
+    offered: list[str]
+    withheld: list[str]
+
+    model_config = {"extra": "forbid"}
+
+
+class JudgeInputs(BaseModel):
+    """The judge's non-derivable ``LLMJudge.run()`` inputs, recorded for offline replay.
+
+    The transcript, agent policy, rubric, and judge model are already structured in
+    sibling artifacts (``trajectory.yaml``, ``prompts.yaml``, ``task.yaml``); this
+    records only what a replay cannot otherwise reconstruct: the exact
+    ``state_diff`` string the judge saw (``None`` when no diff was built) and its
+    non-KB read-tool surface (``get_db_state`` / ``query_db`` / ``read_file`` — the
+    KB surface lives in :class:`JudgeKbGating`). Written to a sidecar
+    ``judge_inputs.yaml``, never inlined in ``grade.yaml`` (the diff can be large).
+    See docs/OUTPUT_FORMAT.md.
+    """
+
+    state_diff_text: str | None = None
+    read_tools_offered: list[str] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 
@@ -345,6 +387,31 @@ class Grade(BaseModel):
     # so the grade stays scannable (mirrors the trajectory/prompts split). See
     # docs/OUTPUT_FORMAT.md. ``None`` when no judge ran or none was captured.
     judge_transcript: list[dict[str, Any]] | None = None
+    # The judge's knowledge-search gating for this trial (offered / withheld / whether
+    # config disabled KB). ``None`` when no judge ran. Serialized inline in
+    # ``grade.yaml`` (a scalar/lists block, unlike the transcript sidecar). Separate
+    # from ``judge_usage``, which stays token/cost only. See docs/OUTPUT_FORMAT.md.
+    judge_kb_gating: JudgeKbGating | None = None
+    # The judge's non-derivable ``run()`` inputs (state-diff string + non-KB
+    # read-tool surface). ``None`` when no judge ran. Excluded from the
+    # ``grade.yaml`` payload and written to a sidecar ``judge_inputs.yaml`` (the
+    # state-diff can be large), mirroring the ``judge_transcript`` split. See
+    # docs/OUTPUT_FORMAT.md.
+    judge_inputs: JudgeInputs | None = None
+    # Whether the judge ran with a custom system-prompt body
+    # (grading.llm_judge.customization.system_prompt). Tri-state: ``None`` when no
+    # judge ran, ``False``/``True`` when a judge ran with the default / a custom
+    # prompt. Serialized inline in ``grade.yaml``. The full custom text is recorded
+    # in ``task.yaml.grading_config.llm_judge.customization``, not here. See
+    # docs/OUTPUT_FORMAT.md.
+    judge_custom_prompt: bool | None = None
+    # Whether the harness embedded the agent's policy / system prompt in the judge's
+    # opening-message evidence
+    # (grading.llm_judge.customization.include_agent_system_prompt). Tri-state:
+    # ``None`` when no judge ran, ``True``/``False`` when a judge ran with the agent
+    # policy included / gated out. Serialized inline in ``grade.yaml``. See
+    # docs/OUTPUT_FORMAT.md.
+    judge_agent_prompt_included: bool | None = None
 
 
 class Trajectory(BaseModel):
@@ -415,6 +482,11 @@ class ModelConfig(BaseModel):
     capabilities: dict[str, Any] | None = None  # Override auto-detected model capabilities
     # OpenRouter-only provider routing; rejected for other providers by the validator below.
     openrouter: OpenRouterConfig | None = None
+    # Ordered fallback chain. When a hard failure hits the primary
+    # model, subsequent turns for the affected trial use the next entry
+    # in this list. Empty list (default) → no fallback wrapper. See
+    # docs/CONFIG.md § Fallback models.
+    fallbacks: list["ModelConfig"] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _reject_openrouter_on_other_providers(self) -> "ModelConfig":
@@ -880,6 +952,12 @@ class ObservabilityConfig(BaseModel):
     tracing: TracingConfig | None = None
     metrics: MetricsConfig | None = None
     logging: LoggingConfig | None = None
+    pricing_overlay_path: Path | str | None = None
+    """Optional JSON or YAML overlay merged onto the shipped pricing
+    table before the orchestrator is constructed. Same schema as
+    ``tolokaforge/core/data/pricing.json``. Applied globally for the
+    run's lifetime; used when a model the shipped table does not price
+    (or prices incorrectly) is in use."""
 
 
 _DUAL_HOME_COMPUTE_ALIASES: tuple[tuple[str, str], ...] = (
@@ -1426,6 +1504,19 @@ class GradingConfig(BaseModel):
     custom_checks: dict[str, Any] | None = None  # CustomChecksConfig as dict for flexibility
 
 
+class LLMJudgeDefaults(BaseModel):
+    """Project-level judge defaults under ``grading_defaults.llm_judge``.
+
+    Carries only ``customization`` — a project default never carries a rubric
+    (that is required per-task on :class:`LLMJudgeConfig`). ``customization``
+    deep-merges under each task's own ``llm_judge.customization``, tri-state
+    preserved (an unset task key never overrides a set project key)."""
+
+    customization: JudgeCustomization | None = None
+
+    model_config = {"extra": "forbid"}
+
+
 class GradingDefaults(BaseModel):
     """Grading defaults applied to every task via ``task_defaults``. A
     task's own ``grading.yaml.combine`` deep-merges on top."""
@@ -1433,6 +1524,7 @@ class GradingDefaults(BaseModel):
     model_config = {"extra": "ignore"}
 
     combine: GradingCombineConfig | None = None
+    llm_judge: LLMJudgeDefaults | None = None
 
 
 class TaskDefaults(BaseModel):

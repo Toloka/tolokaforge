@@ -507,6 +507,12 @@
       "cache_read": 0.15,
       "cache_write": 0.083333
     },
+    "google/gemini-3.6-flash": {
+      "input": 1.5,
+      "output": 7.5,
+      "cache_read": 0.15,
+      "cache_write": 0.083333
+    },
     "google/gemini-pro": {
       "input": 0.5,
       "output": 1.5

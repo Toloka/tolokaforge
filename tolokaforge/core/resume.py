@@ -1,13 +1,70 @@
 """Resume/retry support for interrupted runs"""
 
 import json
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
 from pydantic import BaseModel
 
+from tolokaforge.core.engine_run_state import read_persisted_run_id
 from tolokaforge.core.logging import get_logger
+
+
+@dataclass(frozen=True)
+class ResumePlan:
+    """Summary of what a resumed invocation will replay.
+
+    ``already_done`` matches :meth:`RunStateManager.is_completed`: trials
+    that either passed or failed behaviourally (retry-exhausted) will be
+    skipped. ``to_retry`` is everything else — pending, running, and
+    infra-failed trials that should re-execute.
+    """
+
+    run_id: str
+    total: int
+    completed: int
+    already_done: int
+    to_retry: int
+    is_complete: bool
+
+
+def resolve_resume_run_directory(run_dir: Path) -> tuple[str, Path]:
+    """Return ``(run_id, run_dir)`` for an existing resumable run directory.
+
+    The canonical ``run_id`` is read from ``<run_dir>/engine_run_state.json``
+    (written by ``prepare`` / the orchestrator on first run). When that file
+    is absent — e.g. a legacy CLI run that predates engine state persistence —
+    the ``run_id`` in ``<run_dir>/run_state.json`` is used. If neither file
+    is present, falls through to ``run_dir.name`` only when at least one of
+    them exists; a directory lacking both raises ``RuntimeError``.
+
+    The returned ``run_dir`` is passed through unchanged (no ``.resolve()``),
+    matching :func:`tolokaforge.core.orchestrator.resolve_run_directory`.
+    """
+    run_dir = Path(run_dir)
+    engine_state_present = (run_dir / "engine_run_state.json").exists()
+    run_state_present = (run_dir / "run_state.json").exists()
+
+    if not engine_state_present and not run_state_present:
+        raise RuntimeError(
+            f"{run_dir} is not a resumable run directory: no engine_run_state.json "
+            "or run_state.json present. Run `tolokaforge run` first (without --resume) "
+            "to create one."
+        )
+
+    run_id = read_persisted_run_id(run_dir)
+    if run_id:
+        return run_id, run_dir
+
+    if run_state_present:
+        data = json.loads((run_dir / "run_state.json").read_text())
+        persisted = data.get("run_id")
+        if persisted:
+            return persisted, run_dir
+
+    return run_dir.name, run_dir
 
 
 class TrialState(BaseModel):
@@ -239,6 +296,36 @@ class RunStateManager:
             ),
             "can_resume": len(pending) > 0,
         }
+
+    def describe_resume_plan(self) -> ResumePlan | None:
+        """Summarise what a resumed invocation would replay.
+
+        Uses :meth:`is_completed` semantics for the ``already_done`` count
+        (completed + behavioural-failed trials are skipped; pending, running,
+        and infra-failed trials are replayed). Returns ``None`` when
+        ``run_state.json`` is absent, matching :meth:`get_resume_info`.
+        """
+        run_state = self.load_state()
+        if run_state is None:
+            return None
+
+        completed = 0
+        already_done = 0
+        for trial in run_state.trials.values():
+            if trial.status == "completed":
+                completed += 1
+            if self.is_completed(trial.task_id, trial.trial_index):
+                already_done += 1
+
+        to_retry = run_state.total_trials - already_done
+        return ResumePlan(
+            run_id=run_state.run_id,
+            total=run_state.total_trials,
+            completed=completed,
+            already_done=already_done,
+            to_retry=to_retry,
+            is_complete=to_retry == 0,
+        )
 
     def mark_run_completed(self):
         """Mark entire run as completed"""

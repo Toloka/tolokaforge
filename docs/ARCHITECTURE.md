@@ -119,7 +119,7 @@ Component-level detail (CLI commands, the run-queue client, SecretManager, indiv
 
 | Block | Responsibility | Source | Detail |
 |---|---|---|---|
-| **CLI** | User-facing commands. `run` executes locally end-to-end; `prepare` + `worker` split a run for distributed execution. | `tolokaforge/cli` | — |
+| **CLI** | User-facing commands. `run` executes locally end-to-end; `prepare` + `worker` split a run for distributed execution. | `tolokaforge/dx` | — |
 | **Orchestrator + Core** | Loads run config, instantiates the adapter, builds the task list, manages the attempt queue, runs trials, aggregates grades and metrics, writes artifacts. | `tolokaforge/core` (`orchestrator.py`, `grading/`, `metrics.py`, `search/`) | [`docs/RUNNER.md`](RUNNER.md) |
 | **TrialRunner** | One instance per trial. Owns the agent–user message loop, calls the LLM for both agent and user simulator turns, and dispatches every tool call as a gRPC `ExecuteTool` RPC to the Runner service. | `tolokaforge/core/runner.py` | — |
 | **Adapter Layer** | Resolves a benchmark format into `(TaskConfig, tools, grading, environment, docker_stack_requirements, task_description)`. Built-in `native` plus plugins discovered via the `tolokaforge.adapters` entry-point group. | `tolokaforge/adapters` + `external_adapters/` | [`docs/ADAPTER_ARCHITECTURE.md`](ADAPTER_ARCHITECTURE.md) |

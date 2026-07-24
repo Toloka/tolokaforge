@@ -41,7 +41,7 @@ def _reset_singleton():
 def restore_log_record_factory():
     """Reset the LogRecord factory to vanilla for the test, then restore.
 
-    Other test modules transitively import ``tolokaforge.cli.main``, which
+    Other test modules transitively import ``tolokaforge.dx.cli.main``, which
     calls ``install_global_redactor()`` at module-import time. Without
     forcing a baseline, that leaked wrapper makes idempotency / installation
     tests order-dependent.

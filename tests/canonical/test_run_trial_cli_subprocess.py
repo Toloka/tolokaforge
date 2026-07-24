@@ -32,7 +32,7 @@ from tolokaforge.runner import run_trial
 pytestmark = pytest.mark.canonical
 
 _AGENT = {"provider": "openai", "name": "gpt-4"}
-_RUN_TRIAL_CLI_CMD = [sys.executable, "-m", "tolokaforge.cli.main", "run-trial"]
+_RUN_TRIAL_CLI_CMD = [sys.executable, "-m", "tolokaforge.dx.cli.main", "run-trial"]
 
 
 @pytest.fixture
@@ -162,7 +162,7 @@ def test_sigterm_while_blocked_is_cancelled(flat_pack: Path) -> None:
     """SIGTERM while the subprocess blocks reading stdin → one ``cancelled`` line.
 
     The SIGTERM/SIGINT handler installs only after the (heavy)
-    ``tolokaforge.cli.main`` import and Click dispatch; a SIGTERM arriving
+    ``tolokaforge.dx.cli.main`` import and Click dispatch; a SIGTERM arriving
     before that kills the process by default disposition
     (``returncode == -SIGTERM``). To stay non-flaky on slow CI we escalate the
     warmup across fresh spawns until the handler is provably active (a clean

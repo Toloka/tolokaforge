@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from tolokaforge.core.resume import RunState, RunStateManager, TrialState
+from tolokaforge.core.resume import ResumePlan, RunState, RunStateManager, TrialState
 
 pytestmark = pytest.mark.unit
 
@@ -266,3 +266,115 @@ class TestRunStateManager:
 
             resume_info = manager.get_resume_info()
             assert resume_info is None
+
+
+@pytest.mark.unit
+class TestDescribeResumePlan:
+    """Behaviour of :meth:`RunStateManager.describe_resume_plan`."""
+
+    def test_returns_none_when_state_file_missing(self, tmp_path: Path) -> None:
+        manager = RunStateManager(tmp_path)
+        assert manager.describe_resume_plan() is None
+
+    def test_all_pending_reports_zero_done(self, tmp_path: Path) -> None:
+        manager = RunStateManager(tmp_path)
+        manager.initialize_run(run_id="fresh", config_path="c.yaml", task_ids=["a", "b"], repeats=1)
+
+        plan = manager.describe_resume_plan()
+
+        assert plan == ResumePlan(
+            run_id="fresh",
+            total=2,
+            completed=0,
+            already_done=0,
+            to_retry=2,
+            is_complete=False,
+        )
+
+    def test_all_passed_is_complete(self, tmp_path: Path) -> None:
+        manager = RunStateManager(tmp_path)
+        run_state = manager.initialize_run(
+            run_id="done", config_path="c.yaml", task_ids=["a", "b"], repeats=1
+        )
+        run_state.mark_completed("a", 0, binary_pass=True, score=1.0)
+        run_state.mark_completed("b", 0, binary_pass=True, score=1.0)
+        manager.save_state(run_state)
+
+        plan = manager.describe_resume_plan()
+
+        assert plan is not None
+        assert plan.is_complete is True
+        assert plan.total == 2
+        assert plan.completed == 2
+        assert plan.already_done == 2
+        assert plan.to_retry == 0
+
+    def test_behavioural_failure_counts_as_already_done(self, tmp_path: Path) -> None:
+        manager = RunStateManager(tmp_path)
+        run_state = manager.initialize_run(
+            run_id="mixed", config_path="c.yaml", task_ids=["a"], repeats=2
+        )
+        run_state.mark_completed("a", 0, binary_pass=True, score=1.0)
+        # Second trial completed but did not pass, and has no infra-error
+        # signature on disk — the retry-exhausted / behavioural-failure case.
+        run_state.mark_completed("a", 1, binary_pass=False, score=0.0)
+        manager.save_state(run_state)
+
+        plan = manager.describe_resume_plan()
+
+        assert plan is not None
+        assert plan.completed == 2
+        assert plan.already_done == 2
+        assert plan.to_retry == 0
+        assert plan.is_complete is True
+
+    def test_infra_failure_counted_in_to_retry(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        manager = RunStateManager(tmp_path)
+        run_state = manager.initialize_run(
+            run_id="infra", config_path="c.yaml", task_ids=["a"], repeats=2
+        )
+        run_state.mark_completed("a", 0, binary_pass=True, score=1.0)
+        run_state.mark_completed("a", 1, binary_pass=False, score=0.0)
+        manager.save_state(run_state)
+
+        def _fake_infra(_self, task_id: str, trial_index: int) -> bool:
+            return task_id == "a" and trial_index == 1
+
+        monkeypatch.setattr(RunStateManager, "_has_infrastructure_error", _fake_infra)
+
+        plan = manager.describe_resume_plan()
+
+        assert plan is not None
+        assert plan.completed == 2
+        assert plan.already_done == 1
+        assert plan.to_retry == 1
+        assert plan.is_complete is False
+
+    def test_partial_mixed_state(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """One passed + one behavioural-failed + one infra-failed + one pending."""
+        manager = RunStateManager(tmp_path)
+        run_state = manager.initialize_run(
+            run_id="mixed4", config_path="c.yaml", task_ids=["a", "b", "c", "d"], repeats=1
+        )
+        run_state.mark_completed("a", 0, binary_pass=True, score=1.0)
+        run_state.mark_completed("b", 0, binary_pass=False, score=0.0)  # behavioural
+        run_state.mark_completed("c", 0, binary_pass=False, score=0.0)  # infra (below)
+        # d:0 stays pending
+        manager.save_state(run_state)
+
+        def _fake_infra(_self, task_id: str, trial_index: int) -> bool:
+            return task_id == "c"
+
+        monkeypatch.setattr(RunStateManager, "_has_infrastructure_error", _fake_infra)
+
+        plan = manager.describe_resume_plan()
+
+        assert plan is not None
+        assert plan.run_id == "mixed4"
+        assert plan.total == 4
+        assert plan.completed == 3  # a, b, c reached "completed" status
+        assert plan.already_done == 2  # a (pass) + b (behavioural)
+        assert plan.to_retry == 2  # c (infra) + d (pending)
+        assert plan.is_complete is False

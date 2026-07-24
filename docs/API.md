@@ -124,7 +124,7 @@ because a task crossing the wire carries no source directory. Spawn the
 subprocess with `cwd` at the task-pack root, or send a fully-inline task that
 references no on-disk files.
 
-See `docs/adr/0019-runtime-independence.md` § Surface 3 for the full contract.
+See `docs/adr/0022-runtime-independence.md` § Surface 3 for the full contract.
 
 ## Orchestrator
 
@@ -132,7 +132,7 @@ See `docs/adr/0019-runtime-independence.md` § Surface 3 for the full contract.
 from tolokaforge.core.orchestrator import Orchestrator
 
 orchestrator = Orchestrator(config, output_dir="results")
-results = orchestrator.run()
+run_dir = orchestrator.run()  # returns the resolved Path of the timestamped run dir
 ```
 
 ## TrialRunner

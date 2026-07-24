@@ -350,7 +350,7 @@ Full spec, including the (experimental) `event` progress subtypes and the
 ## Compatibility guarantees
 
 Three surfaces are versioned commitments — the milestone-13 ADR
-([`docs/adr/0019-runtime-independence.md`](adr/0019-runtime-independence.md))
+([`docs/adr/0022-runtime-independence.md`](adr/0022-runtime-independence.md))
 locks them:
 
 1. **Entry-point group names + built-in registration names.** New built-ins
@@ -409,7 +409,7 @@ before building a plug-in that leans heavily on the current model.
   mechanics.
 - [`docs/RUNNER.md`](RUNNER.md) — the batch orchestration flow (prepare /
   worker / status, distributed workers). Different tool for a different job.
-- [`docs/adr/0019-runtime-independence.md`](adr/0019-runtime-independence.md)
+- [`docs/adr/0022-runtime-independence.md`](adr/0022-runtime-independence.md)
   — the design decision this guide describes, with rationale and the
   compatibility-surfaces table.
 - [`examples/library/`](../examples/library/) — Python library-entry example.

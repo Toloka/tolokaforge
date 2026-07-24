@@ -6,7 +6,7 @@ the gRPC protocol definitions and service implementation used for
 Host ↔ Runner communication.
 
 Components:
-- ``run_trial`` — single-trial library entry (ADR-0019 § Surface 2)
+- ``run_trial`` — single-trial library entry (ADR-0022 § Surface 2)
 - Protocol definitions (runner_pb2, runner_pb2_grpc)
 - DB Service client (db_client)
 - Runner service implementation (service)
@@ -61,7 +61,7 @@ def __getattr__(name: str):
 
 
 __all__ = [
-    # Library entry (ADR-0019 § Surface 2)
+    # Library entry (ADR-0022 § Surface 2)
     "run_trial",
     # Request/Response messages
     "RegisterTrialRequest",

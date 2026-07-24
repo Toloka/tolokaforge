@@ -11,7 +11,13 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from tests.canonical._factories import make_trajectory
-from tolokaforge.cli.run_trial_command import (
+from tolokaforge.core.plugin_registry import (
+    RUNTIME_BACKENDS_GROUP,
+    UnknownImplementationError,
+)
+from tolokaforge.core.runtime import ProvisionError
+from tolokaforge.core.trial import TrialResult
+from tolokaforge.dx.cli.run_trial_command import (
     CancelMessage,
     ProtocolError,
     StartMessage,
@@ -20,12 +26,6 @@ from tolokaforge.cli.run_trial_command import (
     marshal_result,
     parse_envelope,
 )
-from tolokaforge.core.plugin_registry import (
-    RUNTIME_BACKENDS_GROUP,
-    UnknownImplementationError,
-)
-from tolokaforge.core.runtime import ProvisionError
-from tolokaforge.core.trial import TrialResult
 
 pytestmark = pytest.mark.unit
 
@@ -131,6 +131,6 @@ class TestMarshalResult:
 
 class TestRegistration:
     def test_run_trial_cli_command_is_registered(self) -> None:
-        from tolokaforge.cli.main import cli
+        from tolokaforge.dx.cli.main import cli
 
         assert "run-trial" in cli.commands

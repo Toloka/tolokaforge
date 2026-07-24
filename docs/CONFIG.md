@@ -324,6 +324,20 @@ transcript_rules:
 
 llm_judge:                                 # the judge MODEL is set once per run
                                            # under models.judge — NOT here
+  customization:                           # optional; sibling of rubric
+    disable_knowledge_search: true         # tri-state (unset | true | false):
+                                           # true withholds every knowledge-search
+                                           # tool from the JUDGE (agent untouched)
+                                           # system_prompt (optional str | null):
+                                           # replace the judge's default grading-stance
+                                           # body; the marker contract is always
+                                           # appended by the harness
+    system_prompt: |
+      Grade strictly against the policy.
+    include_agent_system_prompt: false     # tri-state (unset | true | false):
+                                           # false omits the agent's policy from the
+                                           # judge's opening-message evidence
+                                           # (evidence gating; agent untouched)
   rubric:                                  # structured Rubric (NOT free text)
     reference: |                           # optional author-written ground truth
       The correct order total is $42.50 with apple_pay.
@@ -340,10 +354,29 @@ llm_judge:                                 # the judge MODEL is set once per run
 ```
 
 The rubric is a structured `Rubric` (per-criterion scoring + a required gate),
-not a free-text blob; the old `rubric: "<text>"` shape, the `output_schema`
-field, and the per-task judge-model field were all removed. The judge **model**
-is now a run-level role (`models.judge`, see above) — separate from the agent
-under test, with no default and no fallback. See
+not a free-text blob; a free-text `rubric: "<text>"`, an `output_schema` field,
+or a per-task judge-model field is rejected at load with a migration message.
+The judge **model** is a run-level role (`models.judge`, see above) — separate
+from the agent under test, with no default and no fallback.
+
+`customization` is an optional block, sibling of `rubric`, holding judge-side
+settings. `disable_knowledge_search` is tri-state (`unset` | `true` | `false`):
+`true` removes every knowledge-search tool from the judge's schema (rag
+`search_kb`, the `search_policy` passthrough, any future KB backend) — the
+*agent's* tools are untouched. `system_prompt` (`str | None`) replaces the judge's
+default grading-stance body; the harness always appends the marker contract, so a
+custom prompt can never break `submit_report` validation.
+`include_agent_system_prompt` (`bool | None`) controls whether the agent's policy is
+embedded in the judge's opening-message evidence: unset/`true` include it (the
+default), `false` omits it (evidence gating, distinct from `system_prompt`'s
+wording). Omitting the block leaves the judge at the faithful default. All fields
+layer project→task (a project default under
+`grading_defaults.llm_judge.customization`, task wins; `system_prompt: null`
+resets a project prompt; `include_agent_system_prompt: true` (explicit
+re-include) or `null` (reset) both override a project `false`) — see
+[PROJECTS.md](PROJECTS.md#task-override-semantics). A malformed value,
+an empty/whitespace-only `system_prompt`, or an unknown key under `customization`
+is rejected loudly at load. See
 [GRADING.md](GRADING.md#llm-judge-rubric-grading) for the judge mechanism, the
 two weighting layers, and the fail-loud ERRORED status.
 

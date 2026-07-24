@@ -42,6 +42,35 @@ scripts/with_env.sh uv run pytest tests/ -v
 
 Under `-n auto`, `tests/integration/reset_recipes/conftest.py` assigns each xdist worker a unique `COMPOSE_PROJECT_NAME` for the reset-recipe suite, whose stacks all share the `compose` basename and would otherwise collide across workers. The rest of the integration suite derives per-test project names from slug-encoded `make_project_temp_dir` basenames, so it stays in disjoint namespaces without the env pin.
 
+### Regenerating the well-formed judge payload fixture
+
+`tests/unit/grading/data/wellformed_submit_report.json` is a real judge's
+well-formed `submit_report` payload (markers matching their verdicts). The unit
+test `tests/unit/grading/test_rubric.py::TestWellFormedLivePayload` re-validates
+it with no spend. To recapture it from a live judge run (real provider, small
+spend), set `TF_CAPTURE_JUDGE_PAYLOAD=1` — the mid-tier (gpt-4.1-mini) case of
+the marker acceptance test writes the fixture:
+
+```bash
+TF_CAPTURE_JUDGE_PAYLOAD=1 scripts/with_env.sh uv run pytest \
+  tests/integration/test_rubric_judge_live.py::test_rubric_judge_live_markers_match_verdicts \
+  -m integration
+```
+
+The rejection fixtures alongside it (`ae_bdg_*_submit_report.json`) are **frozen
+historical captures** — see `tests/unit/grading/data/README.md`; never
+regenerate those.
+
+### Live rubric-judge retry recovery
+
+`tests/integration/test_rubric_judge_live.py::test_rubric_judge_live_recovers_through_forced_retry`
+drives a real OpenAI-family judge through the `submit_report` retry path. The
+model's tool call is real on both turns; the test forces exactly one validation
+rejection (by patching `parse_submit_report` as bound in the judge module) so the
+retry fires deterministically, then asserts the live provider accepts the
+repaired tool-call/tool-result sequence (COMPLETED, no 400). Key-gated on
+`OPENROUTER_API_KEY` / `OPENAI_API_KEY`; skips without a key.
+
 ## Directory Structure
 
 ```

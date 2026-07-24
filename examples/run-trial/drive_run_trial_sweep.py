@@ -95,7 +95,7 @@ def _run_single_trial(task_yaml: Path, model: str) -> TrialOutcome:
 
     began = time.monotonic()
     proc = subprocess.run(
-        [sys.executable, "-m", "tolokaforge.cli.main", "run-trial"],
+        [sys.executable, "-m", "tolokaforge.dx.cli.main", "run-trial"],
         input=json.dumps(start) + "\n",
         cwd=str(task_dir),
         env=os.environ.copy(),

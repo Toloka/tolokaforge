@@ -48,7 +48,7 @@ _TASK_YAML = (
     _REPO_ROOT
     / "examples/native/tool_use/dataset/tasks/tool_use/tool_use_public_example_01/task.yaml"
 )
-_RUN_TRIAL_CLI_CMD = [sys.executable, "-m", "tolokaforge.cli.main", "run-trial"]
+_RUN_TRIAL_CLI_CMD = [sys.executable, "-m", "tolokaforge.dx.cli.main", "run-trial"]
 
 
 def _docker_running() -> bool:

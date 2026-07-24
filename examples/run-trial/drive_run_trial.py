@@ -66,7 +66,7 @@ def main() -> None:
     # A wire task carries no source_dir, so its file assets resolve against the
     # subprocess working directory — spawn at the task-pack root.
     proc = subprocess.run(
-        [sys.executable, "-m", "tolokaforge.cli.main", "run-trial"],
+        [sys.executable, "-m", "tolokaforge.dx.cli.main", "run-trial"],
         input=json.dumps(start) + "\n",
         cwd=str(task_dir),
         env=os.environ.copy(),

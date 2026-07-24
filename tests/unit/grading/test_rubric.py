@@ -6,12 +6,16 @@ Pins real behaviour of the three pure rubric functions:
 - ``aggregate_rubric`` — required-gate + weighted average.
 """
 
+import json
+from pathlib import Path
+
 import pytest
 
 from tolokaforge.core.grading.rubric import (
     GRADED_MET_THRESHOLD,
     SUBMIT_REPORT_TOOL_NAME,
     SubmitReportValidationError,
+    VerdictConsistencyError,
     aggregate_rubric,
     build_submit_report_tool,
     parse_submit_report,
@@ -20,10 +24,20 @@ from tolokaforge.runner.models import Criterion, Rubric
 
 pytestmark = pytest.mark.unit
 
+_DATA_DIR = Path(__file__).parent / "data"
+
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
 # ---------------------------------------------------------------------------
+
+
+def _binary_marker(met: bool) -> str:
+    return "VERDICT: MET" if met else "VERDICT: NOT MET"
+
+
+def _score_marker(score: float) -> str:
+    return f"SCORE: {score}"
 
 
 def _mixed_rubric() -> Rubric:
@@ -51,9 +65,9 @@ def _mixed_rubric() -> Rubric:
 def _valid_args(refund_met: bool = True, tone_score: float = 1.0) -> dict:
     return {
         "refund_amount": refund_met,
-        "refund_amount_justification": "Quoted $328.50.",
+        "refund_amount_justification": f"Quoted $328.50.\n{_binary_marker(refund_met)}",
         "tone": tone_score,
-        "tone_justification": "Courteous throughout.",
+        "tone_justification": f"Courteous throughout.\n{_score_marker(tone_score)}",
         "reasons": "Overall good.",
     }
 
@@ -95,6 +109,36 @@ class TestBuildSubmitReportTool:
             "reasons",
         } == required
         assert params["properties"]["reasons"]["type"] == "string"
+
+    def test_justification_ordered_before_verdict_in_properties_and_required(self) -> None:
+        # Reason-then-answer: each criterion's justification field is emitted
+        # before its verdict field so a schema-ordered generator writes the
+        # reasoning before committing the verdict token. reasons stays last.
+        params = build_submit_report_tool(_mixed_rubric())["function"]["parameters"]
+        assert list(params["properties"]) == [
+            "refund_amount_justification",
+            "refund_amount",
+            "tone_justification",
+            "tone",
+            "reasons",
+        ]
+        assert params["required"] == [
+            "refund_amount_justification",
+            "refund_amount",
+            "tone_justification",
+            "tone",
+            "reasons",
+        ]
+
+    def test_marker_contract_present_in_field_descriptions(self) -> None:
+        props = build_submit_report_tool(_mixed_rubric())["function"]["parameters"]["properties"]
+        # Binary justification instructs the VERDICT marker; verdict field says it must match.
+        assert "VERDICT: MET" in props["refund_amount_justification"]["description"]
+        assert "VERDICT: NOT MET" in props["refund_amount_justification"]["description"]
+        assert "VERDICT:" in props["refund_amount"]["description"]
+        # Graded justification instructs the SCORE marker; verdict field says it must match.
+        assert "SCORE:" in props["tone_justification"]["description"]
+        assert "SCORE:" in props["tone"]["description"]
 
 
 # ===================================================================
@@ -182,6 +226,230 @@ class TestParseSubmitReportFailLoud:
 
 
 # ===================================================================
+# parse_submit_report — verdict/justification marker consistency
+# ===================================================================
+
+
+class TestVerdictConsistency:
+    def test_binary_marker_matching_flag_accepts(self) -> None:
+        # met=True with a trailing VERDICT: MET, met=False with VERDICT: NOT MET.
+        parse_submit_report(_valid_args(refund_met=True), _mixed_rubric())
+        parse_submit_report(_valid_args(refund_met=False), _mixed_rubric())
+
+    def test_graded_marker_within_tolerance_accepts(self) -> None:
+        args = _valid_args(tone_score=0.80)
+        args["tone_justification"] = "Warm but a touch terse.\nSCORE: 0.83"  # |0.83-0.80| <= 0.05
+        parse_submit_report(args, _mixed_rubric())
+
+    def test_missing_marker_rejected(self) -> None:
+        args = _valid_args()
+        args["refund_amount_justification"] = "Quoted $328.50."  # no marker line
+        with pytest.raises(VerdictConsistencyError) as exc:
+            parse_submit_report(args, _mixed_rubric())
+        assert "refund_amount" in str(exc.value)
+        assert "missing" in str(exc.value).lower()
+
+    def test_contradicting_binary_marker_rejected_quotes_both_sides(self) -> None:
+        args = _valid_args(refund_met=False)
+        args["refund_amount_justification"] = "On reflection it is fine.\nVERDICT: MET"
+        with pytest.raises(VerdictConsistencyError) as exc:
+            parse_submit_report(args, _mixed_rubric())
+        msg = str(exc.value)
+        assert "refund_amount" in msg
+        assert "VERDICT: MET" in msg  # the marker line
+        assert "met=False" in msg  # the submitted flag
+
+    def test_graded_marker_outside_tolerance_rejected(self) -> None:
+        args = _valid_args(tone_score=0.70)
+        args["tone_justification"] = "Reads well overall.\nSCORE: 0.80"  # |0.80-0.70| > 0.05
+        with pytest.raises(VerdictConsistencyError) as exc:
+            parse_submit_report(args, _mixed_rubric())
+        assert "tone" in str(exc.value)
+        assert "SCORE: 0.80" in str(exc.value)
+
+    def test_graded_marker_at_tolerance_boundary_accepted(self) -> None:
+        # Nominal |0.65 - 0.6| == 0.05 sits exactly on the tolerance; binary
+        # float noise must not tip it over into a rejection.
+        args = _valid_args(tone_score=0.6)
+        args["tone_justification"] = "Mostly courteous, a little curt.\nSCORE: 0.65"
+        parse_submit_report(args, _mixed_rubric())
+
+    def test_embedded_keyword_is_not_a_marker(self) -> None:
+        # "subscore: 0.7" must not match the SCORE: marker — the keyword needs
+        # a non-letter boundary on its left, so this is a missing-marker reject.
+        args = _valid_args(tone_score=0.7)
+        args["tone_justification"] = "Reads well.\nOverall subscore: 0.7"
+        with pytest.raises(VerdictConsistencyError) as exc:
+            parse_submit_report(args, _mixed_rubric())
+        assert "missing" in str(exc.value).lower()
+
+    def test_marker_read_from_final_line_only_anchoring(self) -> None:
+        # A "NOT MET" phrase mid-text must not false-match: the marker is the
+        # final non-empty line, which here says MET and matches met=True.
+        args = _valid_args(refund_met=True)
+        args["refund_amount_justification"] = (
+            "At first glance this looked NOT MET, but re-reading the reply it is "
+            "correct.\nVERDICT: MET"
+        )
+        results = parse_submit_report(args, _mixed_rubric())
+        refund = next(r for r in results if r.id == "refund_amount")
+        assert refund.met is True
+
+    def test_marker_matching_is_whitespace_and_case_tolerant(self) -> None:
+        args = _valid_args(refund_met=True)
+        args["refund_amount_justification"] = "Correct amount.\n  verdict :  met  "
+        parse_submit_report(args, _mixed_rubric())
+
+    def test_marker_appended_inline_to_final_sentence_accepted(self) -> None:
+        # Real models append the marker to the closing sentence rather than on a
+        # line of its own: the last VERDICT: on the final line is the verdict.
+        args = _valid_args(refund_met=True)
+        args["refund_amount_justification"] = (
+            "The order status is 'refunded', so the refund was issued. VERDICT: MET"
+        )
+        results = parse_submit_report(args, _mixed_rubric())
+        assert next(r for r in results if r.id == "refund_amount").met is True
+
+    def test_graded_marker_appended_inline_accepted(self) -> None:
+        args = _valid_args(tone_score=0.8)
+        args["tone_justification"] = "Warm and clear throughout. SCORE: 0.8"
+        results = parse_submit_report(args, _mixed_rubric())
+        assert next(r for r in results if r.id == "tone").score == pytest.approx(0.8)
+
+    def test_justification_including_marker_stored_verbatim(self) -> None:
+        args = _valid_args(refund_met=True)
+        text = "Quoted $328.50 exactly.\nVERDICT: MET"
+        args["refund_amount_justification"] = text
+        results = parse_submit_report(args, _mixed_rubric())
+        refund = next(r for r in results if r.id == "refund_amount")
+        assert refund.justification == text  # marker kept, nothing stripped
+
+    def test_consistency_error_is_a_submit_report_validation_error(self) -> None:
+        # The judge loop's ``except SubmitReportValidationError`` must keep catching
+        # consistency rejections.
+        assert issubclass(VerdictConsistencyError, SubmitReportValidationError)
+
+
+# ===================================================================
+# parse_submit_report — recorded v0.7.0 field-report rejection fixtures
+# ===================================================================
+
+
+def _recorded_payload(name: str) -> dict:
+    return json.loads((_DATA_DIR / f"{name}_submit_report.json").read_text())
+
+
+def _no_internal_references_rubric() -> Rubric:
+    # The bug criterion in isolation: a single binary criterion so the rejection
+    # message names ``no_internal_references`` (the real contradiction), matching
+    # the criterion these frozen captures document.
+    return Rubric(
+        criteria=[
+            Criterion(
+                id="no_internal_references",
+                description="Employee-facing messages surface no internal references",
+                kind="binary",
+            )
+        ]
+    )
+
+
+def _wellformed_live_rubric() -> Rubric:
+    # Matches the rubric the golden payload was captured under
+    # (tests/integration/test_rubric_judge_live.py::_rubric).
+    return Rubric(
+        reference="The correct refund for order o_1001 is $328.50 and it must be issued.",
+        criteria=[
+            Criterion(
+                id="refund_issued",
+                description="The order's refund was actually issued (status refunded).",
+                kind="binary",
+                required=True,
+                weight=1.0,
+            ),
+            Criterion(
+                id="amount_quoted",
+                description="The agent quoted the correct refund amount to the customer.",
+                expected="$328.50",
+                kind="binary",
+                weight=1.0,
+            ),
+            Criterion(
+                id="tone",
+                description="The reply is polite and professional.",
+                kind="graded",
+                weight=0.5,
+            ),
+        ],
+    )
+
+
+class TestWellFormedLivePayload:
+    """A real judge's well-formed submit_report payload passes validation.
+
+    ``data/wellformed_submit_report.json`` is a captured live-judge payload
+    (markers appended inline to each closing sentence, as real models emit them);
+    regenerable by re-running the live acceptance test with
+    ``TF_CAPTURE_JUDGE_PAYLOAD=1`` (see ``tests/README.md``). Fast, no spend —
+    proves real-model output conforms to the marker contract.
+    """
+
+    def test_captured_payload_parses_and_markers_match(self) -> None:
+        payload = _recorded_payload("wellformed")
+        rubric = _wellformed_live_rubric()
+        results = parse_submit_report(payload, rubric)  # raises on any marker mismatch
+        assert {r.id for r in results} == {"refund_issued", "amount_quoted", "tone"}
+        # Every justification carries its marker verbatim.
+        for r in results:
+            assert "VERDICT:" in r.justification or "SCORE:" in r.justification
+
+
+class TestRecordedRejectionFixtures:
+    """The v0.7.0 field-report captures are rejected under the new contract.
+
+    FROZEN HISTORICAL CAPTURES — see ``data/README.md``. Not regenerable; never
+    re-canonized.
+    """
+
+    @pytest.mark.parametrize("trial", ["ae_bdg_002_1", "ae_bdg_003_0"])
+    def test_raw_recorded_payload_rejected_for_missing_marker(self, trial: str) -> None:
+        # (a) The verbatim v0.7.0 payload carries no marker → missing-marker reject.
+        payload = _recorded_payload(trial)
+        args = {
+            "no_internal_references": payload["no_internal_references"],
+            "no_internal_references_justification": payload["no_internal_references_justification"],
+        }
+        with pytest.raises(VerdictConsistencyError) as exc:
+            parse_submit_report(args, _no_internal_references_rubric())
+        assert "no_internal_references" in str(exc.value)
+        assert "missing" in str(exc.value).lower()
+
+    @pytest.mark.parametrize("trial", ["ae_bdg_002_1", "ae_bdg_003_0"])
+    def test_real_justification_plus_reconstructed_marker_rejected_for_contradiction(
+        self, trial: str
+    ) -> None:
+        # (b) "real justification + reconstructed marker": the verbatim v0.7.0
+        # justification (its text concludes the criterion IS met) with a
+        # VERDICT: MET line appended — exactly what the fixed judge would emit —
+        # while the boolean stays false. No real marker-contradiction payload can
+        # exist until the new schema ships, so the marker is reconstructed.
+        payload = _recorded_payload(trial)
+        assert payload["no_internal_references"] is False
+        args = {
+            "no_internal_references": False,
+            "no_internal_references_justification": (
+                payload["no_internal_references_justification"] + "\nVERDICT: MET"
+            ),
+        }
+        with pytest.raises(VerdictConsistencyError) as exc:
+            parse_submit_report(args, _no_internal_references_rubric())
+        msg = str(exc.value)
+        assert "no_internal_references" in msg
+        assert "VERDICT: MET" in msg
+        assert "met=False" in msg
+
+
+# ===================================================================
 # aggregate_rubric
 # ===================================================================
 
@@ -250,9 +518,9 @@ class TestAggregateRubric:
         results = parse_submit_report(
             {
                 "a": True,
-                "a_justification": "j",
+                "a_justification": "j\nVERDICT: MET",
                 "b": True,
-                "b_justification": "j",
+                "b_justification": "j\nVERDICT: MET",
                 "reasons": "r",
             },
             rubric,
@@ -273,9 +541,9 @@ class TestAggregateRubric:
         results = parse_submit_report(
             {
                 "a": True,
-                "a_justification": "j",
+                "a_justification": "j\nVERDICT: MET",
                 "b": False,
-                "b_justification": "j",
+                "b_justification": "j\nVERDICT: NOT MET",
                 "reasons": "r",
             },
             rubric,
@@ -294,7 +562,7 @@ class TestAggregateRubric:
             ]
         )
         results = parse_submit_report(
-            {"only": 0.5, "only_justification": "j", "reasons": "r"}, rubric
+            {"only": 0.5, "only_justification": "j\nSCORE: 0.5", "reasons": "r"}, rubric
         )
         with pytest.raises(SubmitReportValidationError) as exc:
             aggregate_rubric(rubric, results)

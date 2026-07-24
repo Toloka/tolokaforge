@@ -1,15 +1,15 @@
 """Golden calibration fixture — schema + loader.
 
-Stage 6 of ``docs/RUBRIC_GRADING_DESIGN.md``. A fixture is the human-authored ground
+A fixture is the human-authored ground
 truth a rubric judge is calibrated against. It bundles everything
-``run_rubric_judge`` needs to grade one episode plus the human's per-criterion
+``LLMJudge`` needs to grade one episode plus the human's per-criterion
 labels to compare against:
 
 * ``rubric`` — the structured :class:`~tolokaforge.runner.models.Rubric` under test;
 * ``transcript`` — the agent's messages (role/content/tool_calls), including the
   policy/system message context is carried separately via ``agent_system_prompt``;
 * ``final_db_state`` — optional tables for the in-memory ``DBReader`` (reused from
-  the Stage-4 live test pattern) so the judge can inspect final state with no
+  the live judge test pattern) so the judge can inspect final state with no
   runner stack;
 * ``workspace`` — optional path (relative to the fixture file) the judge's
   ``read_file`` tool reads, for tasks that produce files;

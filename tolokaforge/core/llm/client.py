@@ -202,17 +202,29 @@ def _is_dict_map_array_shape(schema: dict[str, Any]) -> bool:
 def _should_retry_exception(exc: BaseException) -> bool:
     """Predicate for the outer :class:`tenacity.Retrying` controller in ``generate``.
 
-    Returns ``True`` for all transient errors **except**
-    :class:`LLMApiTimeoutError` — which is already the result of an
-    exhausted per-call retry budget inside
-    :meth:`LLMClient._call_completion_with_timeout_retry` and so must
-    not cascade into another ``stop_after_attempt(5)`` multiplier.
+    Returns ``True`` for all transient errors, with two exclusions:
 
-    Rate limits (429) ride the same outer exponential backoff as other
-    errors — the long waits (up to 60s between attempts) give the
-    provider quota time to recover.
+    - :class:`LLMApiTimeoutError` — already the result of an exhausted
+      per-call retry budget inside
+      :meth:`LLMClient._call_completion_with_timeout_retry`; must not
+      cascade into another ``stop_after_attempt(5)`` multiplier.
+    - :class:`openai.AuthenticationError` — deterministic 401/403 that
+      does not become truthy by retrying. Litellm wraps provider auth
+      failures in this class regardless of the underlying vendor, so a
+      single ``isinstance`` check covers OpenAI, OpenRouter, Anthropic,
+      Google, and every other supported provider. Retrying wastes ~32s
+      of exponential-backoff wall time per trial and hides the actual
+      failure signal from the operator.
+
+    Rate limits (429) still ride the same outer exponential backoff as
+    other transient errors — the long waits (up to 60s between attempts)
+    give provider quota time to recover.
     """
-    return not isinstance(exc, LLMApiTimeoutError)
+    if isinstance(exc, LLMApiTimeoutError):
+        return False
+    if isinstance(exc, openai.AuthenticationError):
+        return False
+    return True
 
 
 # Native finish_reason values that indicate the upstream provider produced

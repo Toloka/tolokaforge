@@ -25,9 +25,18 @@ from tests.canonical._factories import make_task_description
 from tolokaforge.core.compose_materialisation import RUNNER_PORT_DEFAULT
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.trial import EnvEndpoints, EnvironmentManifest, NetworkPolicy, TrialSpec
+from tolokaforge.runner.models import ServiceSpec
 
 RUNNER_SERVICE = "runner"
 APP_SERVICE = "app"
+TOOL_BRIDGE_SERVICE = "tool_bridge_service"
+RESTRICTED_SIBLING_SERVICE = "restricted_sibling"
+UNRESTRICTED_SIBLING_SERVICE = "unrestricted_sibling"
+TOOL_BRIDGE_NETWORK = "tool_bridge"
+
+BRIDGE_OK_BODY = "bridge-ok"
+"""Body served by ``tool_bridge_service`` — the target the restricted
+sibling IS allowed to reach."""
 
 PUBLIC_IP_URL = "http://1.1.1.1"
 """Raw-IP public target — probes egress without touching DNS."""
@@ -70,6 +79,51 @@ _COMPOSE_TEMPLATE = f"""
 COMPOSE = textwrap.dedent(_COMPOSE_TEMPLATE).strip()
 
 
+_PARTITIONING_TEMPLATE = f"""
+    services:
+      {RUNNER_SERVICE}:
+        image: "nginx:alpine"
+        command:
+          - sh
+          - -c
+          - |
+            printf 'server {{ listen {RUNNER_PORT_DEFAULT}; location / {{ return 200 "{RUNNER_OK_BODY}\\n"; }} }}' > /etc/nginx/conf.d/default.conf && exec nginx -g 'daemon off;'
+        ports:
+          - "{RUNNER_PORT_DEFAULT}"
+        healthcheck:
+          test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:{RUNNER_PORT_DEFAULT}/"]
+          interval: 2s
+          timeout: 3s
+          retries: 30
+      {TOOL_BRIDGE_SERVICE}:
+        image: "nginx:alpine"
+        command:
+          - sh
+          - -c
+          - |
+            printf 'server {{ listen 80; location / {{ return 200 "{BRIDGE_OK_BODY}\\n"; }} }}' > /etc/nginx/conf.d/default.conf && exec nginx -g 'daemon off;'
+        networks:
+          - {TOOL_BRIDGE_NETWORK}
+        healthcheck:
+          test: ["CMD", "wget", "-Y", "off", "-q", "-O", "-", "http://127.0.0.1/"]
+          interval: 2s
+          timeout: 3s
+          retries: 30
+      {RESTRICTED_SIBLING_SERVICE}:
+        image: "curlimages/curl:8.10.1"
+        entrypoint: ["sleep", "3600"]
+        networks:
+          - {TOOL_BRIDGE_NETWORK}
+      {UNRESTRICTED_SIBLING_SERVICE}:
+        image: "curlimages/curl:8.10.1"
+        entrypoint: ["sleep", "3600"]
+    networks:
+      {TOOL_BRIDGE_NETWORK}: {{}}
+    """
+
+PARTITIONING_COMPOSE = textwrap.dedent(_PARTITIONING_TEMPLATE).strip()
+
+
 def write_manifest(
     compose_dir: Path, policy: NetworkPolicy, allowlist: list[str] | None = None
 ) -> EnvironmentManifest:
@@ -86,6 +140,30 @@ def write_manifest(
         runner_service=RUNNER_SERVICE,
         network_policy=policy,
         limited_internet_allowlist=allowlist or [],
+    )
+
+
+def write_partitioning_manifest(
+    compose_dir: Path, policy: NetworkPolicy, allowlist: list[str] | None = None
+) -> EnvironmentManifest:
+    """Write :data:`PARTITIONING_COMPOSE` and return a manifest that marks
+    ``restricted_sibling`` as ``network_access="restricted"``; every other
+    service defaults to ``"default"`` and continues to join the harness
+    topology."""
+    compose_dir.mkdir(parents=True, exist_ok=True)
+    compose_file = compose_dir / "docker-compose.yml"
+    compose_file.write_text(PARTITIONING_COMPOSE + "\n")
+    return EnvironmentManifest(
+        compose_file=compose_file,
+        runner_service=RUNNER_SERVICE,
+        network_policy=policy,
+        limited_internet_allowlist=allowlist or [],
+        services={
+            RESTRICTED_SIBLING_SERVICE: ServiceSpec(
+                isolation="ephemeral", network_access="restricted"
+            ),
+            UNRESTRICTED_SIBLING_SERVICE: ServiceSpec(isolation="ephemeral"),
+        },
     )
 
 
@@ -118,11 +196,19 @@ def run_curl(
     process (never raises on non-zero exit). A blocked egress surfaces as a
     non-zero return code (curl 6 = DNS failure, 7 = connection refused,
     28 = timeout); a reachable target returns 0 with the body on stdout."""
+    return run_curl_from(compose, APP_SERVICE, url, max_time=max_time)
+
+
+def run_curl_from(
+    compose: DockerCompose, service: str, url: str, *, max_time: int = 10
+) -> subprocess.CompletedProcess:
+    """Exec ``curl <url>`` from ``service`` (any curl-capable container in
+    the stack). Same exit-code semantics as :func:`run_curl`."""
     cmd = [
         *compose.docker_compose_command(),
         "exec",
         "-T",
-        APP_SERVICE,
+        service,
         "curl",
         "--max-time",
         str(max_time),

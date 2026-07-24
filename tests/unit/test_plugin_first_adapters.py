@@ -6,6 +6,10 @@ method), the open ``adapter_type`` string, and the host-side registry guard — 
 new adapter can be added as an entry-point package with zero engine edits.
 """
 
+import asyncio
+import dataclasses
+import subprocess
+
 import pytest
 
 from tolokaforge.adapters import (
@@ -75,6 +79,63 @@ class TestToolLifecycleCapability:
         # Must not raise — the runner calls these on every tool generically.
         tool.start(ToolLifecycleContext(trial_id="t:0"))
         tool.stop()
+
+    def test_context_defaults_optional_fields_to_none(self):
+        ctx = ToolLifecycleContext(trial_id="t:0")
+        assert ctx.artifacts_dir is None
+        assert ctx.work_dir is None
+
+    def test_context_carries_all_fields_and_is_frozen(self):
+        ctx = ToolLifecycleContext(trial_id="t:0", artifacts_dir="/a", work_dir="/work")
+        assert (ctx.trial_id, ctx.artifacts_dir, ctx.work_dir) == ("t:0", "/a", "/work")
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            ctx.work_dir = "/other"
+
+    def test_session_lifetime_tool_holds_subprocess_across_execute(self, tmp_path):
+        """A session-lifetime tool opens a subprocess in start() seeded from
+        ctx.work_dir, holds it across execute() calls, and tears it down in stop()."""
+
+        from tolokaforge.runner.models import ToolSchema
+
+        class _SessionTool(ToolWrapper):
+            has_lifecycle = True
+
+            def __init__(self, schema):
+                super().__init__(schema)
+                self._process = None
+
+            def start(self, ctx):
+                self._process = subprocess.Popen(
+                    ["sh", "-c", "while :; do read line; echo pid=$$; done"],
+                    cwd=ctx.work_dir,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    text=True,
+                )
+
+            async def execute(self, arguments):
+                assert self._process is not None
+                self._process.stdin.write("go\n")
+                self._process.stdin.flush()
+                return self._process.stdout.readline().strip()
+
+            def stop(self):
+                if self._process is not None:
+                    self._process.terminate()
+                    self._process.wait(timeout=5)
+
+        tool = _SessionTool(ToolSchema(name="session", description="", parameters={}))
+        tool.start(ToolLifecycleContext(trial_id="t:0", work_dir=str(tmp_path)))
+        try:
+            first = asyncio.run(tool.execute({}))
+            second = asyncio.run(tool.execute({}))
+            assert first == second  # same long-lived process across calls
+            pid = tool._process.pid
+            assert tool._process.poll() is None  # still alive between calls
+        finally:
+            tool.stop()
+        assert tool._process.poll() is not None  # dead after stop()
+        assert f"pid={pid}" == first
 
 
 class TestHostSideAdapterTypeGuard:

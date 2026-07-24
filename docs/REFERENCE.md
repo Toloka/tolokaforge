@@ -167,6 +167,12 @@ to the agent model. See [GRADING.md](GRADING.md#llm-judge-rubric-grading) for th
 judge mechanism, the two weighting layers, the required-gate semantics, and the
 fail-loud ERRORED status.
 
+Authors write **only criteria** (never justifications). The judge, on the output
+side, ends every per-criterion justification with a trailing `VERDICT: MET` /
+`VERDICT: NOT MET` (binary) or `SCORE: <value>` (graded) marker line that must
+match its verdict; the marker is kept verbatim in each `criterion_results`
+justification in `grade.yaml`.
+
 ### Environment Variables
 
 | Variable | Description |
@@ -188,18 +194,46 @@ fail-loud ERRORED status.
 #### Orchestrator
 
 ```python
-from tolokaforge.core.orchestrator import Orchestrator
-
-orchestrator = Orchestrator(
-    config: Dict[str, Any],     # Run configuration
-    output_dir: str = "output",
-    workers: int = 1,
+from pathlib import Path
+from tolokaforge.core.orchestrator import (
+    Orchestrator,
+    OrchestratorDeps,
+    resolve_run_directory,
 )
 
-results = orchestrator.run()                    # Execute evaluation
-results = orchestrator.resume(run_id="...")     # Resume partial run
-errors = orchestrator.validate_tasks("glob")    # Validate without running
+orchestrator = Orchestrator(
+    config,                         # RunConfig — validated run configuration
+    resume=False,                   # True re-runs only pending / infra-failed trials
+    verbose=False,                  # DEBUG level on the orchestrator's structured logger
+    strict=False,                   # Raise on any ERROR log record
+    deps=OrchestratorDeps(...),     # Optional injection seams (writers, backend, events, budget)
+    project=None,                   # Optional ProjectConfig (project.yaml layered defaults)
+)
+
+run_id, run_dir = resolve_run_directory(config.evaluation.output_dir)
+run_dir = orchestrator.run(run_id=run_id, output_dir=run_dir)
+# Returns the absolute run-dir path. When run_id and output_dir are both None,
+# run() calls resolve_run_directory() itself.
 ```
+
+Resume-in-place uses the same entry point with `resume=True` and an existing run directory:
+
+```python
+from tolokaforge.core.resume import resolve_resume_run_directory
+
+run_id, run_dir = resolve_resume_run_directory(Path("results/prior_run_20260714_193042"))
+orchestrator = Orchestrator(config, resume=True)
+orchestrator.run(run_id=run_id, output_dir=run_dir)
+```
+
+The queue-worker path uses two symmetric entry points:
+
+```python
+orchestrator.prepare_run(Path("results/queue_run"), reset_queue=False)
+orchestrator.run_worker(Path("results/queue_run"), max_attempts=None)
+```
+
+`prepare_run` seeds the durable queue from the loaded tasks; `run_worker` leases and executes only `pending` attempts, so restarting a worker against a populated queue is inherent resume (an INFO log line names the reattach counts).
 
 #### TrialRunner
 
@@ -299,7 +333,7 @@ grade = engine.grade_trajectory(trajectory: Trajectory, final_env_state: dict)
 # Returns: Grade with binary_pass, score, components, reasons, state_diff
 # (deterministic components only — GradingEngine does NOT run the rubric judge)
 #
-# The rubric judge runs Runner-side (see core/grading/judge.run_rubric_judge),
+# The rubric judge runs Runner-side (see core/grading/judge.LLMJudge),
 # taking the run-level judge ModelConfig carried on TrialSpec.judge_model_config
 # (sourced from RunConfig.models["judge"]).
 ```

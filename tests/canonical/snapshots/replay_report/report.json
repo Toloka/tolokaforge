@@ -1,0 +1,80 @@
+{
+  "aggregate_llm_judge_delta": -0.5,
+  "aggregate_original_llm_judge": 1.0,
+  "aggregate_replay_llm_judge": 0.5,
+  "agreement_rate": 0.5,
+  "carried_components": "Non-judge grade components (state checks, transcript rules, db-probes) are carried from the recorded grade, not recomputed by replay.",
+  "criteria_agreed": 1,
+  "criteria_compared": 2,
+  "judge_model": "openrouter/openai/gpt-4.1-mini",
+  "replay_id": "snap",
+  "replay_usage": {
+    "calls": 5,
+    "completion_tokens": 100,
+    "cost_usd": 0.05,
+    "prompt_tokens": 500,
+    "reasoning_tokens": 0
+  },
+  "trials": [
+    {
+      "bucket": "comparable",
+      "bundle": "trials/agree/0",
+      "criteria": [
+        {
+          "id": "refund_amount",
+          "met_agrees": true,
+          "original_met": true,
+          "original_score": 1.0,
+          "replay_met": true,
+          "replay_score": 1.0,
+          "score_delta": 0.0
+        }
+      ],
+      "llm_judge_delta": 0.0,
+      "original_llm_judge": 1.0,
+      "replay_llm_judge": 1.0
+    },
+    {
+      "bucket": "comparable",
+      "bundle": "trials/disagree/0",
+      "criteria": [
+        {
+          "id": "tone",
+          "met_agrees": false,
+          "original_met": true,
+          "original_score": 1.0,
+          "replay_met": false,
+          "replay_score": 0.0,
+          "score_delta": -1.0
+        }
+      ],
+      "llm_judge_delta": -1.0,
+      "original_llm_judge": 1.0,
+      "replay_llm_judge": 0.0
+    },
+    {
+      "bucket": "original_errored",
+      "bundle": "trials/orig_errored/0",
+      "criteria": [],
+      "llm_judge_delta": null,
+      "original_llm_judge": null,
+      "replay_llm_judge": 1.0
+    },
+    {
+      "bucket": "original_no_verdict",
+      "bundle": "trials/orig_no_verdict/0",
+      "criteria": [],
+      "llm_judge_delta": null,
+      "original_llm_judge": null,
+      "replay_llm_judge": 1.0
+    },
+    {
+      "bucket": "replay_errored",
+      "bundle": "trials/replay_errored/0",
+      "criteria": [],
+      "llm_judge_delta": null,
+      "original_llm_judge": 1.0,
+      "replay_llm_judge": null
+    }
+  ]
+}

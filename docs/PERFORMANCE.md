@@ -35,7 +35,7 @@ evaluation:
 ```
 
 ```bash
-python -m tolokaforge.cli.main run --config mock_load_test.yaml
+python -m tolokaforge.dx.cli.main run --config mock_load_test.yaml
 ```
 
 Configuration highlights:

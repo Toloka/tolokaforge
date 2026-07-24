@@ -1,6 +1,6 @@
 """Live end-to-end test of the read-only rubric judge against a real LLM.
 
-Runs ``run_rubric_judge`` over a small rubric + a canned transcript + a tiny
+Runs ``LLMJudge`` over a small rubric + a canned transcript + a tiny
 in-memory DB state, using a cheap real model through the agent's
 ``LLMClient`` / ``build_capabilities`` path (so tool schemas/calls are
 provider-correct). The judge is agentic and its tool-call ordering is not
@@ -18,15 +18,19 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from pathlib import Path
 
 import pytest
+import yaml
 
 from tests.utils.docker_helpers import is_docker_daemon_available, newest_image_id
 from tolokaforge.core.grading.judge import (
     JudgeStatus,
+    LLMJudge,
     model_config_from_ref,
-    run_rubric_judge,
 )
+from tolokaforge.core.grading.kb_search import SearchHit
+from tolokaforge.core.grading.rubric import SubmitReportValidationError, parse_submit_report
 from tolokaforge.docker import builder
 from tolokaforge.runner.models import Rubric
 
@@ -35,6 +39,18 @@ pytestmark = [
     pytest.mark.requires_api,
     pytest.mark.llm,
 ]
+
+#: Golden well-formed submit_report payload captured from a real judge run. The
+#: unit test ``test_rubric.py::TestWellFormedLivePayload`` re-validates it with no
+#: spend. Regenerate by setting ``TF_CAPTURE_JUDGE_PAYLOAD=1`` when running the
+#: acceptance test below (see ``tests/README.md``).
+_WELLFORMED_FIXTURE = (
+    Path(__file__).resolve().parents[1]
+    / "unit"
+    / "grading"
+    / "data"
+    / "wellformed_submit_report.json"
+)
 
 
 def _pick_model() -> str | None:
@@ -130,14 +146,12 @@ def _rubric() -> Rubric:
 
 @pytest.mark.skipif(_MODEL_REF is None, reason="No OPENROUTER_API_KEY / OPENAI_API_KEY set")
 def test_rubric_judge_live_passes_good_transcript():
-    result = run_rubric_judge(
+    judge = LLMJudge(model_config_from_ref(_MODEL_REF), max_turns=10, episode_timeout_s=180)
+    result = judge.run(
         rubric=_rubric(),
-        model_config=model_config_from_ref(_MODEL_REF),
         agent_system_prompt=_AGENT_SYSTEM_PROMPT,
         transcript=_TRANSCRIPT,
         db_reader=_DictDBReader(_DB_STATE),
-        max_turns=10,
-        episode_timeout_s=180,
     )
 
     # The judge must COMPLETE (not error) and produce one result per criterion.
@@ -174,15 +188,13 @@ def test_rubric_judge_live_with_state_diff_injected():
     # Sanity: the renderer produced the transition the judge should grade on.
     assert "status:" in state_diff and "refunded" in state_diff
 
-    result = run_rubric_judge(
+    judge = LLMJudge(model_config_from_ref(_MODEL_REF), max_turns=10, episode_timeout_s=180)
+    result = judge.run(
         rubric=_rubric(),
-        model_config=model_config_from_ref(_MODEL_REF),
         agent_system_prompt=_AGENT_SYSTEM_PROMPT,
         transcript=_TRANSCRIPT,
         db_reader=_DictDBReader(_DB_STATE),
         state_diff=state_diff,
-        max_turns=10,
-        episode_timeout_s=180,
     )
 
     # Passing the diff must not break the live path: judge completes, gate holds,
@@ -203,14 +215,12 @@ def test_rubric_judge_live_gate_fails_when_refund_missing():
         {"role": "user", "content": "Cancel order o_1001 and refund me."},
         {"role": "assistant", "content": "Sorry, I cannot process that right now."},
     ]
-    result = run_rubric_judge(
+    judge = LLMJudge(model_config_from_ref(_MODEL_REF), max_turns=10, episode_timeout_s=180)
+    result = judge.run(
         rubric=_rubric(),
-        model_config=model_config_from_ref(_MODEL_REF),
         agent_system_prompt=_AGENT_SYSTEM_PROMPT,
         transcript=transcript,
         db_reader=_DictDBReader(pending_state),
-        max_turns=10,
-        episode_timeout_s=180,
     )
 
     assert result.status is JudgeStatus.COMPLETED, result.reasons
@@ -277,14 +287,12 @@ def test_rubric_judge_live_against_real_db_service(db_test_client):
     assert init.status_code == 200, init.text
 
     reader = _RealDbServiceReader(db_test_client, trial_id)
-    result = run_rubric_judge(
+    judge = LLMJudge(model_config_from_ref(_MODEL_REF), max_turns=10, episode_timeout_s=180)
+    result = judge.run(
         rubric=_rubric(),
-        model_config=model_config_from_ref(_MODEL_REF),
         agent_system_prompt=_AGENT_SYSTEM_PROMPT,
         transcript=_TRANSCRIPT,
         db_reader=reader,
-        max_turns=10,
-        episode_timeout_s=180,
     )
 
     # The judge grades correctly against the real service (o_1001 is refunded).
@@ -409,3 +417,316 @@ def test_rubric_judge_runs_inside_slim_runner_image():
     assert payload["status"] == JudgeStatus.COMPLETED.name, payload
     assert payload["gate_failed"] is False, payload
     assert payload["score"] is not None and payload["score"] >= 0.7, payload
+
+
+# ---------------------------------------------------------------------------
+# Marker-consistency acceptance — real providers across judge tiers/families
+# ---------------------------------------------------------------------------
+
+
+def _acceptance_models() -> list[tuple[str, str]]:
+    """(label, model_ref) pairs for the marker-acceptance run, gated on keys.
+
+    Mid: a mid-tier GPT-class model that reliably terminates the agentic
+    grading loop — also the golden-fixture capture source. Weak: a smaller,
+    different-family OpenRouter model that stresses the marker format
+    instruction. Strong: the Anthropic judge model the committed rejection
+    fixtures came from (``tests/unit/grading/data/README.md``). It is routed
+    via OpenRouter because the judge pins ``temperature=0.0`` and the native
+    Anthropic API rejects sampling params on Opus 4.8, while OpenRouter strips
+    them. All three ride a single OpenRouter key.
+    """
+    if not os.environ.get("OPENROUTER_API_KEY"):
+        return []
+    return [
+        ("mid", "openrouter/openai/gpt-4.1-mini"),
+        ("weak", "openrouter/meta-llama/llama-3.3-70b-instruct"),
+        ("strong", "openrouter/anthropic/claude-opus-4.8"),
+    ]
+
+
+def _extract_submit_args(result) -> dict | None:
+    """The LAST submit_report arguments the judge emitted, from its transcript.
+
+    On a retried run earlier submit_report calls are the REJECTED payloads; the
+    final one is the accepted, well-formed payload the golden fixture wants.
+    """
+    args = None
+    for msg in result.transcript:
+        for tc in msg.get("tool_calls") or []:
+            if tc.get("name") == "submit_report":
+                args = tc.get("arguments")
+    return args
+
+
+@pytest.mark.skipif(not _acceptance_models(), reason="No OPENROUTER_API_KEY set")
+@pytest.mark.parametrize("label,model_ref", _acceptance_models(), ids=lambda v: v)
+def test_rubric_judge_live_markers_match_verdicts(label: str, model_ref: str):
+    """A well-formed transcript → COMPLETED with every justification's marker
+    matching its verdict and no consistency rejections, across judge tiers and
+    families (mid GPT-class, weak open-weights, strong Anthropic-family).
+
+    Set ``TF_CAPTURE_JUDGE_PAYLOAD=1`` to (re)capture the mid model's real
+    well-formed submit_report payload into the golden fixture the unit acceptance
+    test re-validates without spend.
+    """
+    rubric = _rubric()
+    judge = LLMJudge(model_config_from_ref(model_ref), max_turns=10, episode_timeout_s=180)
+    result = judge.run(
+        rubric=rubric,
+        agent_system_prompt=_AGENT_SYSTEM_PROMPT,
+        transcript=_TRANSCRIPT,
+        db_reader=_DictDBReader(_DB_STATE),
+    )
+
+    assert result.status is JudgeStatus.COMPLETED, result.reasons
+    # No submit_report attempt was rejected for a verdict/justification mismatch.
+    assert result.usage.consistency_rejections == 0, result.reasons
+    # Every criterion carries a justification whose trailing marker matches its
+    # verdict — re-validated independently through parse_submit_report (raises
+    # VerdictConsistencyError on any mismatch).
+    replay: dict = {"reasons": result.reasons}
+    kinds = {c.id: c.kind for c in rubric.criteria}
+    for cr in result.criterion_results:
+        assert cr.justification.strip(), f"{cr.id} justification empty"
+        replay[f"{cr.id}_justification"] = cr.justification
+        replay[cr.id] = cr.met if kinds[cr.id] == "binary" else cr.score
+    parse_submit_report(replay, rubric)  # must not raise
+
+    if label == "mid" and os.environ.get("TF_CAPTURE_JUDGE_PAYLOAD") == "1":
+        captured = _extract_submit_args(result)
+        assert captured is not None, "no submit_report call found in transcript"
+        _WELLFORMED_FIXTURE.write_text(json.dumps(captured, indent=2, ensure_ascii=False) + "\n")
+
+
+# ---------------------------------------------------------------------------
+# Retry recovery — OpenAI-family judge survives a rejected submit_report
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(_MODEL_REF is None, reason="No OPENROUTER_API_KEY / OPENAI_API_KEY set")
+def test_rubric_judge_live_recovers_through_forced_retry(monkeypatch):
+    """A real OpenAI-family judge recovers through the ``submit_report`` retry.
+
+    The model's tool call is 100% real on both turns — the only thing forced is
+    the harness's *validation decision*: ``parse_submit_report`` (as bound in the
+    judge module) rejects the first real payload exactly once, then delegates to
+    the real validator. This is the path a genuine weak-model miss takes: real
+    model → first submit_report → rejection → repaired retry sequence → live
+    provider round-trip → recovery. The assertion under test — the live provider
+    accepts the repaired tool-call/tool-result sequence rather than 400-ing on an
+    unanswered ``tool_call_id`` — is fully real.
+    """
+    from tolokaforge.core.grading import judge as judge_module
+
+    real_parse = judge_module.parse_submit_report
+    parse_calls = {"n": 0}
+
+    def _reject_first_then_delegate(tool_args, rubric):
+        parse_calls["n"] += 1
+        if parse_calls["n"] == 1:
+            raise SubmitReportValidationError(
+                "forced rejection to exercise the retry path (test only)"
+            )
+        return real_parse(tool_args, rubric)
+
+    monkeypatch.setattr(judge_module, "parse_submit_report", _reject_first_then_delegate)
+
+    judge = LLMJudge(model_config_from_ref(_MODEL_REF), max_turns=10, episode_timeout_s=180)
+    result = judge.run(
+        rubric=_rubric(),
+        agent_system_prompt=_AGENT_SYSTEM_PROMPT,
+        transcript=_TRANSCRIPT,
+        db_reader=_DictDBReader(_DB_STATE),
+    )
+
+    # The first real submit_report was rejected, and a second generation reached
+    # the validator — i.e. the live provider accepted the repaired retry sequence.
+    # A 400 on the retry would raise a BadRequestError the judge catches and turns
+    # into ERRORED before parse is called a second time, so this only holds when
+    # the repaired sequence was accepted.
+    assert parse_calls["n"] >= 2, result.reasons
+    assert result.status is JudgeStatus.COMPLETED, result.reasons
+    assert result.score is not None
+    # The forced rejection is a generic SubmitReportValidationError, not a
+    # VerdictConsistencyError, so the consistency counter is unaffected.
+    assert result.usage.consistency_rejections == 0
+    # The injected rejection is preserved in the audit transcript as the tool
+    # result for the rejected submit_report call.
+    rejection_results = [
+        m
+        for m in result.transcript
+        if m.get("role") == "tool"
+        and m.get("tool_call_id")
+        and "rejected" in (m.get("content") or "")
+    ]
+    assert rejection_results, "no injected rejection role=tool result in the transcript"
+
+
+# ---------------------------------------------------------------------------
+# Judge customization acceptance — disable_knowledge_search end-to-end
+# ---------------------------------------------------------------------------
+
+
+class _StubKnowledgeSearch:
+    """In-memory ``KnowledgeSearch`` giving the judge a KB tool to offer/withhold.
+
+    The LLM is real; the KB backend is a stub (mirroring ``_DictDBReader`` for the
+    DB). Its presence is what matters: with the flag off the judge is offered
+    ``search_kb``; with it on the judge withholds it, so ``withheld`` is non-empty.
+    """
+
+    def search(self, query: str, top_k: int = 5, alpha: float = 0.5) -> list[SearchHit]:
+        return [
+            SearchHit(
+                doc_id="policy_1",
+                source="refund_policy.md",
+                score=0.9,
+                text="Refunds are issued to the original payment method within 30 days.",
+            )
+        ]
+
+
+def _tool_names_in_transcript(transcript) -> list[str]:
+    return [tc["name"] for m in transcript for tc in (m.get("tool_calls") or [])]
+
+
+def _write_live_grade(tmp_path: Path, result) -> tuple[dict, dict]:
+    """Materialise the live judge result into real ``grade.yaml`` +
+    ``judge_trajectory.yaml`` via the production :class:`FileArtifactWriter`, then
+    read both back. The proto→dict→Grade field mapping is contract-locked in
+    ``tests/canonical/test_trial_grader_contract.py``; here we assert the written
+    bundle carries the live judge's gating record."""
+    from tolokaforge.core.models import Grade, GradeComponents, JudgeKbGating
+    from tolokaforge.core.models import JudgeStatus as HostJudgeStatus
+    from tolokaforge.core.models import JudgeUsage as HostJudgeUsage
+    from tolokaforge.core.output.artifacts import FileArtifactWriter
+
+    grade = Grade(
+        binary_pass=bool(result.binary_pass),
+        score=result.score if result.score is not None else 0.0,
+        components=GradeComponents(llm_judge=result.score if result.score is not None else -1.0),
+        reasons=result.reasons,
+        criterion_results=list(result.criterion_results),
+        judge_status=HostJudgeStatus(result.status.value),
+        judge_usage=HostJudgeUsage(
+            calls=result.usage.calls,
+            prompt_tokens=result.usage.prompt_tokens,
+            completion_tokens=result.usage.completion_tokens,
+            reasoning_tokens=result.usage.reasoning_tokens,
+            cost_usd=result.usage.cost_usd,
+            tool_calls=result.usage.tool_calls,
+            consistency_rejections=result.usage.consistency_rejections,
+        ),
+        judge_transcript=list(result.transcript),
+        judge_kb_gating=JudgeKbGating(
+            knowledge_search_disabled=result.knowledge_search_disabled,
+            offered=list(result.kb_tools_offered),
+            withheld=list(result.kb_tools_withheld),
+        ),
+        judge_agent_prompt_included=result.include_agent_system_prompt,
+    )
+    trial_dir = tmp_path / "trials" / "judge_customization" / "0"
+    FileArtifactWriter().write_grade(trial_dir, grade)
+    grade_yaml = yaml.safe_load((trial_dir / "grade.yaml").read_text())
+    traj_yaml = yaml.safe_load((trial_dir / "judge_trajectory.yaml").read_text())
+    return grade_yaml, traj_yaml
+
+
+@pytest.mark.skipif(_MODEL_REF is None, reason="No OPENROUTER_API_KEY / OPENAI_API_KEY set")
+def test_rubric_judge_live_judge_customization_disabled(tmp_path):
+    """With ``disable_knowledge_search=True`` the real judge grades end-to-end with
+    NO KB tool in its surface: none offered, ``search_kb`` withheld, no KB call in
+    the trajectory, and ``grade.yaml`` records the gating (the authoritative
+    replay signal)."""
+    judge = LLMJudge(
+        model_config_from_ref(_MODEL_REF),
+        max_turns=10,
+        episode_timeout_s=180,
+        disable_knowledge_search=True,
+    )
+    result = judge.run(
+        rubric=_rubric(),
+        agent_system_prompt=_AGENT_SYSTEM_PROMPT,
+        transcript=_TRANSCRIPT,
+        db_reader=_DictDBReader(_DB_STATE),
+        kb_search=_StubKnowledgeSearch(),
+    )
+
+    # Grading completes end-to-end without the KB tool.
+    assert result.status is JudgeStatus.COMPLETED, result.reasons
+    # No KB tool in the judge's toolset; the agent's search_kb was withheld.
+    assert result.kb_tools_offered == ()
+    assert "search_kb" in result.kb_tools_withheld
+    assert result.knowledge_search_disabled is True
+    # No KB search call in the judge's trajectory (the tool was never offered).
+    assert "search_kb" not in _tool_names_in_transcript(result.transcript)
+
+    grade_yaml, traj_yaml = _write_live_grade(tmp_path, result)
+    gating = grade_yaml["judge_kb_gating"]
+    assert gating["knowledge_search_disabled"] is True
+    assert gating["offered"] == []
+    assert gating["withheld"]  # non-empty — the agent had a KB tool that was withheld
+    assert "search_kb" not in _tool_names_in_transcript(traj_yaml["messages"])
+
+
+@pytest.mark.skipif(_MODEL_REF is None, reason="No OPENROUTER_API_KEY / OPENAI_API_KEY set")
+def test_rubric_judge_live_judge_customization_baseline(tmp_path):
+    """Without the flag the judge is offered the SAME KB tool the agent had —
+    the faithful baseline: ``search_kb`` offered, nothing withheld, and
+    ``grade.yaml`` records ``knowledge_search_disabled: false``."""
+    judge = LLMJudge(model_config_from_ref(_MODEL_REF), max_turns=10, episode_timeout_s=180)
+    result = judge.run(
+        rubric=_rubric(),
+        agent_system_prompt=_AGENT_SYSTEM_PROMPT,
+        transcript=_TRANSCRIPT,
+        db_reader=_DictDBReader(_DB_STATE),
+        kb_search=_StubKnowledgeSearch(),
+    )
+
+    assert result.status is JudgeStatus.COMPLETED, result.reasons
+    assert result.kb_tools_offered == ("search_kb",)
+    assert result.kb_tools_withheld == ()
+    assert result.knowledge_search_disabled is False
+
+    grade_yaml, _ = _write_live_grade(tmp_path, result)
+    gating = grade_yaml["judge_kb_gating"]
+    assert gating["knowledge_search_disabled"] is False
+    assert gating["offered"] == ["search_kb"]
+    assert gating["withheld"] == []
+
+
+# ---------------------------------------------------------------------------
+# Judge customization acceptance — include_agent_system_prompt end-to-end
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(_MODEL_REF is None, reason="No OPENROUTER_API_KEY / OPENAI_API_KEY set")
+def test_rubric_judge_live_agent_prompt_gating_omits_policy(tmp_path):
+    """With ``include_agent_system_prompt=False`` the real judge grades end-to-end
+    with NO agent-policy section in its opening-message evidence: grading completes,
+    no consistency rejections, the recorded ``judge_trajectory.yaml`` opening message
+    carries neither the policy-framing sentence nor the agent prompt text, and
+    ``grade.yaml`` records ``judge_agent_prompt_included: false``."""
+    judge = LLMJudge(
+        model_config_from_ref(_MODEL_REF),
+        max_turns=10,
+        episode_timeout_s=180,
+        include_agent_system_prompt=False,
+    )
+    result = judge.run(
+        rubric=_rubric(),
+        agent_system_prompt=_AGENT_SYSTEM_PROMPT,
+        transcript=_TRANSCRIPT,
+        db_reader=_DictDBReader(_DB_STATE),
+    )
+
+    assert result.status is JudgeStatus.COMPLETED, result.reasons
+    assert result.usage.consistency_rejections == 0, result.reasons
+    assert result.include_agent_system_prompt is False
+
+    grade_yaml, traj_yaml = _write_live_grade(tmp_path, result)
+    assert grade_yaml["judge_agent_prompt_included"] is False
+    opening = traj_yaml["messages"][0]["content"]
+    assert "The agent under evaluation operated under this policy" not in opening
+    assert _AGENT_SYSTEM_PROMPT not in opening

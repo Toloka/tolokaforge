@@ -1,10 +1,9 @@
 """Real-LLM calibration over the committed golden fixture (gated on a key).
 
-Runs the full calibration pipeline — real ``run_rubric_judge`` over the bundled
+Runs the full calibration pipeline — real ``LLMJudge`` over the bundled
 golden fixture with a cheap model — and asserts it completes and produces a
 report. It does NOT assert an exact agreement number: the judge is agentic and
-nondeterministic even at temperature 0 (Stage-4 design note), so pinning κ would
-be flaky. The deterministic agreement maths is pinned by ``test_metrics.py`` and
+nondeterministic even at temperature 0, so pinning κ would be flaky. The deterministic agreement maths is pinned by ``test_metrics.py`` and
 the plumbing by ``test_harness_scripted.py``.
 
 Run with:

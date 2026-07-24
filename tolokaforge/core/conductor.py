@@ -58,6 +58,7 @@ from tolokaforge.core.run_display_events import (
 from tolokaforge.core.runner import TrialRunner
 from tolokaforge.core.runtime import RuntimeBackend
 from tolokaforge.core.stuck import StuckDetector
+from tolokaforge.core.system_prompt import build_system_prompt
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, TrialResult, TrialSpec
 from tolokaforge.core.trial_grader import TrialGrader
 
@@ -865,150 +866,7 @@ class InProcessConductor:
     def _build_system_prompt(
         self, task: TaskConfig, tool_schemas: list[dict[str, Any]], task_dir: Path
     ) -> str:
-        """Build system prompt for task
-
-        Priority:
-        1. task.policies['agent_system_prompt'] (inline string)
-        2. task.system_prompt == "__adapter__" -> use adapter.get_system_prompt()
-        3. task.system_prompt (file path)
-        4. main_policy.md pattern (legacy)
-        5. Minimal default
-
-        Note: Tool schemas should NOT be in system prompt - they're sent via function calling API
-        """
-
-        # 1. Check for inline agent_system_prompt in policies
-        if "agent_system_prompt" in task.policies:
-            return task.policies["agent_system_prompt"]
-
-        # 2. Check for adapter-based system prompt
-        if task.system_prompt == "__adapter__" and self.adapter:
-            adapter_prompt = self.adapter.get_system_prompt(task.task_id)
-            if adapter_prompt:
-                AGENT_INSTRUCTION = """You are a customer service agent that helps the user according to the <policy> provided below.
-In each turn you can either:
-- Send a message to the user.
-- Make a tool call using the provided functions.
-You cannot do both at the same time.
-
-When you need to use a tool, use the function calling mechanism - do NOT output JSON in your message text.
-Always include every required function argument in the tool call itself (do not omit fields).
-Try to be helpful and always follow the policy.
-"""
-
-                return f"""<instructions>
-{AGENT_INSTRUCTION}
-</instructions>
-<policy>
-{adapter_prompt}
-</policy>"""
-
-        # 3. Check for system_prompt file path
-        if task.system_prompt and task.system_prompt != "__adapter__":
-            system_prompt_path = task_dir / task.system_prompt
-            if system_prompt_path.exists():
-                return system_prompt_path.read_text()
-
-        # 3. Check for main_policy.md + additional system prompt file structure (legacy)
-        main_policy_path = task_dir.parent / "main_policy.md"  # One level up from task dir
-        if not main_policy_path.exists():
-            main_policy_path = task_dir / "main_policy.md"  # Try task dir itself
-
-        if main_policy_path.exists() and task.system_prompt:
-            # Load main policy
-            with open(main_policy_path) as f:
-                main_policy = f.read()
-
-            # Load additional policy file
-            additional_policy_path = task_dir.parent / task.system_prompt
-            if not additional_policy_path.exists():
-                additional_policy_path = task_dir / task.system_prompt
-
-            if additional_policy_path.exists():
-                with open(additional_policy_path) as f:
-                    additional_policy = f.read()
-
-                # Concatenate policies with XML tags
-                domain_policy = (
-                    "<main_policy>\n"
-                    + main_policy
-                    + "\n</main_policy>\n"
-                    + "<tech_support_policy>\n"
-                    + additional_policy
-                    + "\n</tech_support_policy>"
-                )
-            else:
-                # Fallback: just use main policy if additional policy file not found
-                domain_policy = main_policy
-
-            AGENT_INSTRUCTION = """You are a customer service agent that helps the user according to the <policy> provided below.
-In each turn you can either:
-- Send a message to the user.
-- Make a tool call using the provided functions.
-You cannot do both at the same time.
-
-When you need to use a tool, use the function calling mechanism - do NOT output JSON in your message text.
-Always include every required function argument in the tool call itself (do not omit fields).
-Try to be helpful and always follow the policy."""
-
-            # Tools are passed separately to LLM API, NOT in system prompt
-            prompt = f"""<instructions>
-{AGENT_INSTRUCTION}
-</instructions>
-<policy>
-{domain_policy}
-</policy>"""
-            return prompt
-
-        # Single-file system prompt
-        elif task.system_prompt:
-            system_prompt_path = task_dir / task.system_prompt
-            if system_prompt_path.exists():
-                with open(system_prompt_path) as f:
-                    domain_policy = f.read()
-
-                AGENT_INSTRUCTION = """You are a customer service agent that helps the user according to the <policy> provided below.
-In each turn you can either:
-- Send a message to the user.
-- Make a tool call using the provided functions.
-You cannot do both at the same time.
-
-When you need to use a tool, use the function calling mechanism - do NOT output JSON in your message text.
-Always include every required function argument in the tool call itself (do not omit fields).
-Try to be helpful and always follow the policy."""
-
-                prompt = f"""<instructions>
-{AGENT_INSTRUCTION}
-</instructions>
-<policy>
-{domain_policy}
-</policy>"""
-                return prompt
-
-        # 4. Minimal default fallback
-        # Tool schemas are sent separately via function calling API, NOT in system prompt
-        # Enrich the default prompt with task-specific context when available.
-        parts = ["You are a helpful assistant."]
-
-        # Add task guidance from policies
-        guidance = task.policies.get("guidance", []) if task.policies else []
-        if guidance:
-            parts.append("\nGuidance:")
-            for g in guidance:
-                parts.append(f"- {g}")
-
-        # Add browser URL if configured so the agent knows where to navigate
-        browser_config = task.tools.agent.get("browser", {}) if task.tools else {}
-        if isinstance(browser_config, dict):
-            browser_url = browser_config.get("initial_url")
-            if browser_url:
-                parts.append(f"\nThe web portal is available at: {browser_url}")
-                parts.append(
-                    "Navigate to this URL to access the portal content. "
-                    "Do not guess other URLs or ports."
-                )
-
-        return "\n".join(parts)
+        return build_system_prompt(task=task, task_dir=task_dir, adapter=self.adapter)
 
 
 def in_process_conductor_factory(ctx: ConductorContext) -> InProcessConductor:

@@ -87,6 +87,18 @@ class _RecordingEvents:
     def llm_retry_scheduled(self, **kwargs: Any) -> None:
         self.calls.append(("llm_retry_scheduled", kwargs))
 
+    def component_registered(self, **kwargs: Any) -> None:
+        self.calls.append(("component_registered", kwargs))
+
+    def component_status_changed(self, **kwargs: Any) -> None:
+        self.calls.append(("component_status_changed", kwargs))
+
+    def component_log_appended(self, **kwargs: Any) -> None:
+        self.calls.append(("component_log_appended", kwargs))
+
+    def component_unregistered(self, **kwargs: Any) -> None:
+        self.calls.append(("component_unregistered", kwargs))
+
     def kinds(self) -> list[str]:
         return [name for name, _ in self.calls]
 

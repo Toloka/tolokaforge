@@ -14,6 +14,7 @@ bumped and this document is updated in the same commit.
 
 ```
 {output_dir}/
+├── LIMIT_HIT.json                          ← only when a budget hit cut the run short
 ├── services/                              ← run-level per-service compose logs (shared-stack materialise failure only)
 │   ├── {service}.log
 │   └── _capture.yaml                      ← manifest (capture_reason: materialise_error)
@@ -26,6 +27,7 @@ bumped and this document is updated in the same commit.
             ├── metrics.yaml
             ├── grade.yaml
             ├── judge_trajectory.yaml       ← rubric-judge transcript (only when an LLM judge ran)
+            ├── judge_inputs.yaml           ← rubric-judge structured inputs for replay (only when an LLM judge ran)
             ├── logs.yaml
             ├── prompts.yaml                ← agent + user-sim system prompts
             ├── tools_schemas.yaml          ← post-policy tool list
@@ -56,6 +58,34 @@ rolled up run-wide in `aggregate.json` → `captured_service_logs` (see
 * Every trial bundle is **self-contained** — every artifact needed to
   audit the trial lives inside a single `trials/{task_id}/{trial_index}/`
   directory. There is no results-root sidecar tree.
+
+## `LIMIT_HIT.json`
+
+Written under `{output_dir}/` on the first budget crossing during a
+`tolokaforge run` — cost, wall-time, or terminated-trial count — and
+absent on natural completion. Records which budget fired first, the
+configured threshold, the counter's value at the moment of the hit, and
+the time the hit was detected. Read by the CLI after `Orchestrator.run()`
+returns to shape the `⏸ Run stopped (<reason>)` end banner (see
+[`docs/CLI.md`](CLI.md) § Cost, time, and sample limits).
+
+```json
+{
+  "which": "cost",
+  "threshold": 5.0,
+  "value_at_hit": 5.03,
+  "timestamp": "2026-07-15T12:34:56Z"
+}
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `which` | `"cost"` \| `"time"` \| `"sample"` | Which budget crossed its threshold first. Additional values are rejected by the writer. |
+| `threshold` | float | The limit as configured — `--cost-limit` USD or `--time-limit` seconds. Numeric type is `float` for uniform on-disk shape; integer limits round-trip losslessly. |
+| `value_at_hit` | float | The counter's value at the moment of the hit. May exceed `threshold` on the last increment (e.g. a $0.02 trial pushing spend from $4.99 to $5.01 records `value_at_hit=5.01`). |
+| `timestamp` | ISO 8601 UTC string | When the hit was detected. Formatted `YYYY-MM-DDTHH:MM:SSZ` with an explicit `Z` suffix. |
+
+Written via [`tolokaforge.core.budgets.write_limit_hit_marker`](../tolokaforge/core/budgets.py); the on-disk shape is locked by the `LimitHitMarker` Pydantic model (`extra="forbid"`). A resumed run that hits a fresh limit overwrites an existing marker — the file always reflects the current run state, not a history.
 
 ## `trials/{task_id}/{trial_index}/tools_schemas.yaml`
 
@@ -319,8 +349,7 @@ the block is safe to share and stable across hosts.
 
 ## `trials/{task_id}/{trial_index}/metrics.yaml`
 
-The flat `tokens_input` / `tokens_output` pair was removed in Stage 5
-(P7) — `usage` is now a nested block that carries the full
+`usage` is a nested block that carries the full
 [`tolokaforge.core.llm.usage.Usage`](../tolokaforge/core/llm/usage.py:1)
 dataclass. Anthropic cache counters + reasoning-budget spend are
 first-class fields; a `provider_raw` dump of the litellm usage block is
@@ -524,6 +553,13 @@ judge_usage:                    # the judge's OWN token spend; null unless an LL
   reasoning_tokens: 0
   cost_usd: 0.0142
   tool_calls: 4
+  consistency_rejections: 0    # submit_report attempts rejected for a verdict/justification mismatch
+judge_kb_gating:                # the judge's knowledge-search gating; null unless an LLM judge ran
+  knowledge_search_disabled: false  # config withheld the judge's KB tools (authoritative replay signal)
+  offered: [search_kb]         # KB-tagged tools the judge was offered (audit detail)
+  withheld: []                 # KB-tagged tools withheld by config (audit detail)
+judge_custom_prompt: false      # null (no judge) | false (default prompt) | true (custom prompt)
+judge_agent_prompt_included: true  # null (no judge) | false (agent policy gated out) | true (included)
 ```
 
 Score scale: `0.0` ≤ `score` ≤ `1.0`. `binary_pass` is the harness-level
@@ -532,10 +568,11 @@ credit).
 
 ### Rubric-judge fields
 
-`criterion_results`, `judge_status`, and `judge_usage` are populated only
-when an LLM rubric judge ran (`grading.llm_judge` configured). See
-[`docs/GRADING.md`](GRADING.md) for the rubric mechanism and the two
-weighting layers.
+`criterion_results`, `judge_status`, `judge_usage`, `judge_kb_gating`,
+`judge_custom_prompt`, and `judge_agent_prompt_included` are populated only when an
+LLM rubric judge ran (`grading.llm_judge` configured). See
+[`docs/GRADING.md`](GRADING.md) for the rubric mechanism and the two weighting
+layers.
 
 * `criterion_results` — one entry per rubric criterion: `id`, `met`
   (binary verdict; for graded criteria, whether it cleared the author's
@@ -552,6 +589,34 @@ weighting layers.
   agent's `metrics.yaml` `usage`. The judge runs a separate LLM inside
   the Runner; this records what *grading* cost. Populated for both
   `completed` and `errored` runs (an errored judge still spent tokens).
+  `consistency_rejections` counts how many times the judge's `submit_report`
+  was rejected for a verdict/justification mismatch (marker missing or
+  marker/verdict conflict) on this trial — distinct from generic schema
+  rejections, and `0` when every verdict matched its justification.
+* `judge_kb_gating` — the judge's knowledge-search gating for this trial,
+  kept separate from `judge_usage` (which stays strictly token/cost).
+  `knowledge_search_disabled` is the **authoritative signal**:
+  `true` means `grading.llm_judge.customization.disable_knowledge_search`
+  withheld the judge's KB tools, regardless of whether the agent had any KB
+  tool. `offered` and `withheld` are supporting audit detail — the KB-tagged
+  tools the judge actually got, and those config withheld. An empty
+  `withheld` on a disabled judge means the agent had no KB tool to gate. See
+  [`docs/GRADING.md`](GRADING.md#judge-kb-faithfulness).
+* `judge_custom_prompt` — whether the judge ran with a custom system-prompt
+  body (`grading.llm_judge.customization.system_prompt`). Tri-state: `null`
+  when no judge ran, `false` when the judge used the default prompt, `true`
+  when a custom prompt replaced the default body (the marker contract is always
+  appended regardless). The full custom text is not copied here — it lives in
+  `task.yaml.grading_config.llm_judge.customization`, one file over in the same
+  bundle. See [`docs/GRADING.md`](GRADING.md#customizing-the-judges-system-prompt).
+* `judge_agent_prompt_included` — whether the harness embedded the agent's policy /
+  system prompt in the judge's opening-message evidence
+  (`grading.llm_judge.customization.include_agent_system_prompt`). Tri-state: `null`
+  when no judge ran, `false` when the agent policy was gated out of the judge's
+  evidence, `true` when it was included. Records the effective *setting*, not
+  whether a block physically appeared — a trial with an empty agent prompt still
+  reads `true` under the default. See
+  [`docs/GRADING.md`](GRADING.md#gating-the-agents-policy-out-of-the-judges-evidence).
 
 ## `trials/{task_id}/{trial_index}/judge_trajectory.yaml`
 
@@ -592,6 +657,39 @@ the source of truth for *what the judge saw and did*. For an `errored`
 judge it carries the partial transcript up to the failure, which is the
 most useful debugging artifact.
 
+## `trials/{task_id}/{trial_index}/judge_inputs.yaml`
+
+The rubric judge's non-derivable `run()` inputs — written **only** when an
+LLM judge ran (absent file ⇒ no judge inputs for this trial). This is the
+record an offline **judge replay** reads to re-execute the judge over the
+recorded trajectory without live services: everything else the judge
+consumed is already structured elsewhere (the transcript in
+`trajectory.yaml`, the agent policy in `prompts.yaml`, the rubric + judge
+model in `task.yaml`), so this file carries only what a replay cannot
+otherwise reconstruct. Kept out of `grade.yaml` — the state-diff string can
+be large — for the same reason the transcript lives in its own sidecar.
+
+```yaml
+state_diff_text: |
+  orders[o1]: status open -> shipped
+  order_items[i1]: qty 1 -> 2
+read_tools_offered:
+  - get_db_state
+  - query_db
+```
+
+* `state_diff_text` — the exact `initial → final` state-delta string the
+  judge was handed as its primary outcome view (the agent's own edits, not
+  the trial-vs-golden diff, so it reveals nothing about the expected
+  answer). `null` when no diff was built (a non-DB task, or a DB read hiccup
+  degraded grading to no diff). A replay rebuilds the judge's opening
+  message from this exact string.
+* `read_tools_offered` — the non-KB read-only tools the judge was actually
+  offered this trial: `get_db_state` / `query_db` (a DB reader was supplied)
+  and `read_file` (a workspace existed). The KB read surface lives in
+  `grade.yaml` `judge_kb_gating`. A replay declares which of these live
+  backends it must shim offline.
+
 ## `trials/{task_id}/{trial_index}/logs.yaml`
 
 ```yaml
@@ -619,6 +717,93 @@ Structured trial-level logs emitted by
 log call; `context` carries arbitrary key/value pairs the call site
 attached.
 
+## `replays/{replay_id}/`
+
+Written by `tolokaforge rejudge` (see [`docs/JUDGE_REPLAY.md`](JUDGE_REPLAY.md)) —
+an **additive** subtree under the source run dir. Originals are never modified;
+each replay lands in its own `replays/{replay_id}/` directory. Per re-judged
+trial, mirroring the source path, replay writes a `grade.yaml`,
+`judge_trajectory.yaml`, and `judge_inputs.yaml` (the same formats documented
+above, so a replay bundle is itself replayable) plus a `replay_provenance.yaml`.
+The batch also writes one `replays/{replay_id}/replay_report.yaml`.
+
+### `replay_provenance.yaml`
+
+How one trial's replay inputs were resolved:
+
+```yaml
+judge_model: openrouter/openai/gpt-4.1-mini
+judge_model_source: override        # or "recorded"
+rubric_source: recorded             # or "override"
+knowledge_search_mode: recorded     # recorded | on | off
+knowledge_search_disabled: false
+custom_system_prompt: false         # whether a custom judge prompt was in effect
+custom_prompt_source: null          # "recorded" | "override" | null (default prompt)
+include_agent_system_prompt: true   # whether the agent policy was embedded in the judge's evidence
+agent_prompt_source: null           # "recorded" | "override" | null (defaulted to include)
+fidelity_mode: full                 # "full" (state_diff rebuilt) or "fallback" (old bundle, no state_diff)
+```
+
+`custom_system_prompt` / `custom_prompt_source` are resolved independently of the
+rubric: a `--grading` override replaces the prompt only when it carries its own
+`llm_judge.customization.system_prompt`, so a rubric-only override over a
+custom-prompted bundle reads `rubric_source: override` while
+`custom_prompt_source: recorded`. See [`docs/JUDGE_REPLAY.md`](JUDGE_REPLAY.md#custom-judge-system-prompt).
+
+`include_agent_system_prompt` / `agent_prompt_source` follow the same independent
+resolution for the agent-policy gating: a `--grading` override flips the gating only
+when it carries its own `llm_judge.customization.include_agent_system_prompt`, and
+`agent_prompt_source` is `null` exactly when the gating defaulted to include (no
+recorded value, no override). See
+[`docs/JUDGE_REPLAY.md`](JUDGE_REPLAY.md#agent-policy-evidence-gating).
+
+### `replay_report.yaml`
+
+The per-run comparison of the replay against the recorded originals:
+
+```yaml
+replay_id: replay_20260718_010425
+judge_model: openrouter/openai/gpt-4.1-mini
+criteria_compared: 2            # denominator: criteria in COMPARABLE trials only
+criteria_agreed: 1
+agreement_rate: 0.5             # null when nothing was comparable
+aggregate_original_llm_judge: 1.0
+aggregate_replay_llm_judge: 0.5
+aggregate_llm_judge_delta: -0.5
+replay_usage:                   # judge-only spend, summed across replayed trials
+  calls: 5
+  prompt_tokens: 500
+  completion_tokens: 100
+  reasoning_tokens: 0
+  cost_usd: 0.05
+carried_components: "Non-judge grade components ... are carried ..., not recomputed by replay."
+trials:
+  - bundle: trials/refund_task/0
+    bucket: comparable          # comparable | original_errored | original_no_verdict | replay_errored
+    original_llm_judge: 1.0
+    replay_llm_judge: 1.0
+    llm_judge_delta: 0.0
+    criteria:
+      - id: refund_amount
+        original_met: true
+        original_score: 1.0
+        replay_met: true
+        replay_score: 1.0
+        met_agrees: true
+        score_delta: 0.0
+```
+
+* **`agreement_rate`** is the fraction of criteria whose `met` matches, computed
+  **only** over `comparable` trials (both the recorded and the replay judge
+  produced per-criterion verdicts). Trials in the `original_errored`,
+  `original_no_verdict`, or `replay_errored` buckets carry the available side's
+  result but are **excluded from the denominator** — a broken grader is never
+  counted as a disagreement, and a replay error is never a fabricated `0`.
+* **Non-judge components are carried, not recomputed** — the deterministic
+  state/transcript/db-probe components stay as recorded; replay only re-runs the
+  `llm_judge` component (the aggregate deltas are over that component).
+* Not-applicable (non-judge) trials never enter the report.
+
 ## Reading Output Files
 
 ```python
@@ -638,6 +823,7 @@ def load_trial(trial_dir: Path) -> dict:
         "metrics",
         "grade",
         "judge_trajectory",
+        "judge_inputs",
         "logs",
         "prompts",
         "tools_schemas",

@@ -1,4 +1,4 @@
-"""Top-level single-trial library entry point (ADR-0019 § Surface 2).
+"""Top-level single-trial library entry point (ADR-0022 § Surface 2).
 
 Composes the minimum single-trial wiring the :class:`~tolokaforge.core.orchestrator.Orchestrator`
 composes today — LLM client, adapter, runtime backend, conductor, trial

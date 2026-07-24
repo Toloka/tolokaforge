@@ -153,16 +153,21 @@ grading:
   deterministic oracle (`golden_actions`, `expected_hash`, `jsonpath_checks`) is
   **never** piped to the judge: that would cause path-matching bias and defeat
   path-independence. The judge's input surface is exactly
-  `{agent_system_prompt, transcript, rubric, read-only tools}`.
+  `{agent_system_prompt, transcript, rubric, read-only tools, state_diff}`.
 * **Harness-owned read-only tools.** The judge gets a fixed read-only allowlist —
   DB reads (`get_db_state` / `query_db`), a KB search mirroring the agent's
   (`search_kb` for rag-service or the reused `search_policy` for TypeSense — see
   *Judge KB faithfulness* below), `read_file` (only when the agent produced a
   workspace), and the rubric-derived `submit_report`. No `write`, no `compute`.
 * **Single call, per-criterion output.** The judge inspects the final state, then
-  calls `submit_report` once with `{met, score, justification}` for every
-  criterion (its arg schema is generated from the rubric and validated with
-  Pydantic).
+  calls `submit_report` once with `{justification, met|score}` for every criterion
+  (its arg schema is generated from the rubric). For each criterion the schema
+  places the justification **before** the verdict field, so the verdict is written
+  after the reasoning (reason-then-answer). Each justification must end with a
+  `VERDICT: MET` / `VERDICT: NOT MET` (binary) or `SCORE: <value>` (graded) marker
+  line, and the submitted verdict must match it — a missing or contradicting
+  marker is rejected (see *Fail-loud* below). The marker is stored verbatim in the
+  `criterion_results` justification.
 
 ### Judge KB faithfulness
 
@@ -185,11 +190,29 @@ capability is therefore resolved **per-trial to mirror the agent's** (issue #95)
 * **None** — if the agent had no KB tool, the judge gets none. You cannot
   penalise an agent for information it could not access.
 
+**Disabling knowledge search per task or project.** For a task whose rubric is
+fully self-contained, letting the judge pull policy context the author
+deliberately superseded is a correctness risk. Set
+`grading.llm_judge.customization.disable_knowledge_search: true` (a sibling of
+`rubric`) and the judge's tool surface carries **no** knowledge-search tool — the
+rag `search_kb`, the `search_policy` passthrough, and any future KB backend are
+**removed from the judge's schema, not stubbed**. This is **judge-side only**: the
+*agent's* KB tools for the same task are untouched; the runner still resolves the
+agent's KB faithfully and the judge withholds it by construction. Every non-KB
+read tool (DB reads, `read_file`) is unaffected. The setting is tri-state and
+layers project→task — see
+[PROJECTS.md](PROJECTS.md#task-override-semantics) and
+[CONFIG.md](CONFIG.md#grading-specification-gradingyaml). When absent, behaviour
+is exactly as above.
+
 **Seeing which backend was used.** The judge's `reasons` (surfaced into the grade
 output's `reasons`) always ends with a `Judge KB: …` note — `Judge KB: search_kb`,
-`Judge KB: search_policy`, or `Judge KB: none offered`. The `JudgeResult` also
-carries the structured `kb_tools_offered` tuple. This is the visible "graded
-with / without KB" signal. "none offered" is **observability, not an error** — we
+`Judge KB: search_policy`, or `Judge KB: none offered`. When knowledge search was
+disabled by config and the agent actually had a KB tool to withhold, the note
+reads `Judge KB: none offered (disabled by config)`, distinguishing a deliberate
+gate from a rubric that simply needed no KB. The `JudgeResult` also carries the
+structured `kb_tools_offered` tuple. This is the visible "graded with / without
+KB" signal. "none offered" is **observability, not an error** — we
 cannot statically know whether a given rubric needs a KB, so a KB-less judge
 still `COMPLETED`; the note simply makes the gap auditable. The judge's own
 `judge_trajectory.yaml` records which KB tools it actually *called*.
@@ -201,6 +224,74 @@ Likewise the mcp_core TypeSense client handle registered at trial setup is not
 torn down at cleanup — a documented, bounded pre-existing leak (no confirmable
 deregister API in mcp_core's registry); see the runner's `cleanup_trial`.
 
+### Customizing the judge's system prompt
+
+When a pack's grading philosophy needs a different judge voice than the default,
+set `grading.llm_judge.customization.system_prompt` (a sibling of `rubric`,
+alongside `disable_knowledge_search`) to a full replacement of the judge's
+**grading-stance body**. The harness **always appends the enforced marker
+contract** — the sentence instructing the judge to end each justification with a
+`VERDICT:` / `SCORE:` marker and call `submit_report` exactly once — so a custom
+prompt can never silently break `submit_report` validation. The marker is
+non-overridable by construction; a custom body cannot drop it.
+
+```yaml
+llm_judge:
+  customization:
+    system_prompt: |
+      You are grading a customer-support transcript against the refund policy.
+      Reward precise policy citations; penalise unsupported claims.
+  rubric:
+    criteria:
+      - id: cites_policy
+        description: "Reply cites the applicable refund clause"
+        kind: binary
+        weight: 1.0
+```
+
+The setting layers project→task: a task-level `system_prompt` overrides a project
+default, omitting the key inherits the project value, and a task sets
+`system_prompt: null` to reset a project-level custom prompt back to the default.
+An empty or whitespace-only string is rejected loudly at load. When absent, the
+judge runs with the byte-for-byte default prompt. The full custom text is recorded
+in the bundle's `task.yaml.grading_config`.
+
+### Gating the agent's policy out of the judge's evidence
+
+By default the judge's opening-message evidence includes the agent's own policy /
+system prompt, so the judge can see the framing the agent operated under. For a
+pack whose rubric is fully self-contained, embedding the agent policy can bias the
+judge toward the agent's framing or leak instructions that supersede the rubric.
+Set `grading.llm_judge.customization.include_agent_system_prompt: false` (a sibling
+of `rubric`, alongside `disable_knowledge_search` / `system_prompt`) and the
+agent-policy section is **removed from the judge's opening message, not stubbed** —
+the judge grades against the transcript, the state diff, and the rubric alone.
+
+This is **evidence gating**, distinct from `system_prompt` (which changes the
+judge's own *wording*): it controls what evidence the harness assembles, not how
+the judge is instructed to grade. It is **judge-side only** — the agent's own
+system prompt and tool surface are untouched.
+
+```yaml
+llm_judge:
+  customization:
+    include_agent_system_prompt: false
+  rubric:
+    criteria:
+      - id: cites_policy
+        description: "Reply cites the applicable refund clause"
+        kind: binary
+        weight: 1.0
+```
+
+The setting is tri-state and layers project→task: unset and `true` both include the
+agent policy (today's behaviour); `false` omits it; a task sets `true` or `null` to
+re-include over a project `false`. When absent, the opening message is byte-for-byte
+the default. The effective decision is recorded in `grade.yaml` as
+`judge_agent_prompt_included`. See
+[PROJECTS.md](PROJECTS.md#task-override-semantics) and
+[CONFIG.md](CONFIG.md#grading-specification-gradingyaml).
+
 ### Fail-loud: the ERRORED status
 
 If the judge malfunctions — repeated malformed `submit_report` past its retry
@@ -209,6 +300,21 @@ marks the grade `judge_status: errored`. It **never** falls back to `0.0` or
 `0.5` (AGENTS.md rule 1). An errored `llm_judge` component is left *unscored* and
 **excluded from the weighted combine** — it is not read as a zero. Reviewers see
 `judge_status: errored` in `grade.yaml`; downstream analytics must branch on it.
+
+A submitted verdict that disagrees with its justification's trailing
+`VERDICT:` / `SCORE:` marker (or a justification missing that marker) is a
+malformed `submit_report`: the criterion is named and both sides quoted, the judge
+is re-prompted, and on retry exhaustion the trial rides the same ERRORED path — an
+unverifiable verdict is never accepted as a grade.
+
+The rejection is delivered on the wire as the **tool result** for the rejected
+`submit_report` call: the retry sequence answers every `tool_call_id` on the
+terminating assistant message with an adjacent `role=tool` result — the
+`submit_report` id carries the rejection reason plus the corrective instruction,
+and any read/search call the judge emitted in that same turn (never executed —
+`submit_report` ends the turn before tools run) carries an honest "not executed"
+note. This is a provider-valid tool-call/tool-result cycle, so the re-prompt
+gives the judge a genuine second attempt on every provider.
 
 ### Required-gate semantics
 

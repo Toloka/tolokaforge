@@ -1,0 +1,56 @@
+services:
+  runner:
+    image: tolokaforge-runner:local
+    environment:
+      DB_SERVICE_URL: "http://db-service:8000"
+    ports:
+      - "50051"
+    depends_on:
+      db-service:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import grpc; grpc.channel_ready_future(grpc.insecure_channel('localhost:50051')).result(timeout=2)"
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+  db-service:
+    image: tolokaforge-db-service:local
+    ports:
+      - "8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 3s
+
+  tool_bridge_service:
+    image: nginx:1.27-alpine
+    ports:
+      - "80"
+    networks:
+      - tool_bridge
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost/"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 3s
+
+  bash:
+    image: bash:5.2-alpine3.20
+    networks:
+      - tool_bridge
+
+networks:
+  tool_bridge: {}

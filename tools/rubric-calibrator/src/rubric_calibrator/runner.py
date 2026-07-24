@@ -1,11 +1,11 @@
 """Calibration runner — drives the REAL rubric judge over golden fixtures.
 
-Stage 6 of ``docs/RUBRIC_GRADING_DESIGN.md``. For each fixture this:
+For each fixture this:
 
 1. builds an in-memory, jsonpath-evaluating :class:`DictDBReader` over the
-   fixture's ``final_db_state`` (the exact Stage-4 live-test pattern, reused so
+   fixture's ``final_db_state`` (the exact live-judge-test pattern, reused so
    calibration runs the real judge with no runner / gRPC stack);
-2. calls :func:`tolokaforge.core.grading.judge.run_rubric_judge`;
+2. calls :meth:`tolokaforge.core.grading.judge.LLMJudge.run`;
 3. on COMPLETED, pairs each criterion's judge verdict against the fixture's human
    label into a :class:`~rubric_calibrator.metrics.CriterionObservation`;
 4. on ERRORED, records the fixture id as a calibration *failure* (no pairs) — an
@@ -13,7 +13,7 @@ Stage 6 of ``docs/RUBRIC_GRADING_DESIGN.md``. For each fixture this:
 
 The LLM call is confined here; the metric maths lives in ``metrics.py`` and is
 tested without inference. A scripted ``llm_client`` may be injected (the same
-``LoopLLMClient`` shape the Stage-4 tests use) to exercise this plumbing
+``LoopLLMClient`` shape the judge unit tests use) to exercise this plumbing
 deterministically.
 """
 
@@ -27,8 +27,8 @@ from tolokaforge.core.grading.judge import (
     JudgeResult,
     JudgeStatus,
     JudgeUsage,
+    LLMJudge,
     model_config_from_ref,
-    run_rubric_judge,
 )
 from tolokaforge.core.grading.kb_search import KnowledgeSearch, RagServiceKnowledgeSearch
 
@@ -147,22 +147,22 @@ def judge_fixture(
 
     # The calibrator's CLI surface keeps a string ``--model-ref``; convert it to
     # a run-level ModelConfig at this boundary (the judge no longer takes a ref).
-    kwargs: dict[str, Any] = {
-        "rubric": fixture.rubric,
-        "model_config": model_config_from_ref(model_ref),
-        "agent_system_prompt": fixture.agent_system_prompt,
-        "transcript": fixture.transcript,
-        "db_reader": db_reader,
-        "kb_search": kb_search,
-        "workspace_dir": workspace_dir,
-        "llm_client": llm_client,
-    }
+    # Model, injected client, and budgets are construction-time config; the
+    # per-fixture evidence rides ``run()``.
+    judge_kwargs: dict[str, Any] = {"llm_client": llm_client}
     if max_turns is not None:
-        kwargs["max_turns"] = max_turns
+        judge_kwargs["max_turns"] = max_turns
     if episode_timeout_s is not None:
-        kwargs["episode_timeout_s"] = episode_timeout_s
+        judge_kwargs["episode_timeout_s"] = episode_timeout_s
 
-    result = run_rubric_judge(**kwargs)
+    result = LLMJudge(model_config_from_ref(model_ref), **judge_kwargs).run(
+        rubric=fixture.rubric,
+        agent_system_prompt=fixture.agent_system_prompt,
+        transcript=fixture.transcript,
+        db_reader=db_reader,
+        kb_search=kb_search,
+        workspace_dir=workspace_dir,
+    )
 
     if result.status is not JudgeStatus.COMPLETED:
         return FixtureOutcome(
@@ -196,6 +196,7 @@ def _sum_usage(outcomes: list[FixtureOutcome]) -> JudgeUsage:
         reasoning_tokens=sum(o.judge_result.usage.reasoning_tokens for o in outcomes),
         cost_usd=sum(o.judge_result.usage.cost_usd for o in outcomes),
         tool_calls=sum(o.judge_result.usage.tool_calls for o in outcomes),
+        consistency_rejections=sum(o.judge_result.usage.consistency_rejections for o in outcomes),
     )
 
 

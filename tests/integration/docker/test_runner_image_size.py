@@ -1,10 +1,10 @@
-"""Size budget for the built ``tolokaforge-runner`` image (ADR-0019 §4b).
+"""Size budget for the built ``tolokaforge-runner`` image (ADR-0022 §4b).
 
 Enforces the uncompressed-size ceiling the slim-runner work commits to. Reads
 the size of the locally built runner image straight from the Docker daemon and
 asserts it stays under a single named ceiling.
 
-Recorded baseline (provenance, mirroring ADR-0019 §4b):
+Recorded baseline (provenance, mirroring ADR-0022 §4b):
 
 - **659 MB** — measured 2026-07-20 via ``docker images`` on a freshly built
   ``tolokaforge-runner`` (image ID ``325b9be60fa8``), matching the ADR baseline.
@@ -38,7 +38,7 @@ from tolokaforge.docker import builder
 pytestmark = [pytest.mark.integration, pytest.mark.requires_docker]
 
 RUNNER_IMAGE_SIZE_CEILING_MB = 405
-"""≤ 405 MB per ADR-0019 §4b — the multi-stage slim runner budget.
+"""≤ 405 MB per ADR-0022 §4b — the multi-stage slim runner budget.
 
 The slim image measures 390.2 MB (40.8% under the 659 MB baseline); the ceiling
 is that measurement plus ~15 MB slack, which absorbs future minor dependency

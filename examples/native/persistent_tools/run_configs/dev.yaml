@@ -1,0 +1,26 @@
+# Persistent-tools example — one public task exercising the persistent
+# shell (`bash_session`) and the str_replace editor. Requires a real LLM
+# provider key in .env. Run via
+#   scripts/with_env.sh uv run tolokaforge run --config examples/native/persistent_tools/run_configs/dev.yaml
+models:
+  agent:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.0
+    max_tokens: 4096
+  user:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.2
+
+orchestrator:
+  workers: 1
+  repeats: 1
+  max_turns: 12
+  queue_backend: sqlite
+
+evaluation:
+  projects:
+    - "examples/native/persistent_tools/dataset"
+  tasks_glob: "**/task.yaml"
+  output_dir: "results/persistent_tools_example"

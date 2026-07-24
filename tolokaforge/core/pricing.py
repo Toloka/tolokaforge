@@ -28,6 +28,8 @@ import json
 import logging
 from pathlib import Path
 
+import yaml
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -69,15 +71,91 @@ def _load_pricing(path: Path | None = None) -> dict[str, dict[str, float]]:
         return {}
 
 
-def reload_pricing(path: Path | None = None) -> None:
-    """Reload the pricing table, optionally from a custom file.
+def reload_pricing(
+    path: Path | None = None,
+    *,
+    overlay_path: Path | str | None = None,
+) -> None:
+    """Reload the pricing table, optionally overlaying a user-supplied file.
 
-    This is useful for testing or when the pricing data has been updated.
-    Mutates :data:`MODEL_PRICING` in-place so that existing references see
-    the updated data.
+    Loading order (each layer merged field-level onto the next):
+
+    1. Shipped ``tolokaforge/core/data/pricing.json``. Passing ``path``
+       replaces this baseline entirely.
+    2. ``overlay_path`` — JSON or YAML with the same schema as the shipped
+       table. Suffix-detected: ``.json`` → JSON; ``.yaml`` / ``.yml`` →
+       YAML. Missing file → :class:`FileNotFoundError`. Malformed file →
+       :class:`ValueError` naming the parse failure. Unknown suffix →
+       :class:`ValueError`.
+
+    Field-level merge: overlay entries override matching fields in the
+    baseline; new model ids are additive; baseline fields absent from the
+    overlay survive. Matches :func:`pricing_updater.fetcher.write_pricing_json`
+    merge semantics.
+
+    Mutates :data:`MODEL_PRICING` in-place so existing references see the
+    updated data.
     """
     MODEL_PRICING.clear()
     MODEL_PRICING.update(_load_pricing(path))
+    if overlay_path is not None:
+        _apply_overlay(MODEL_PRICING, Path(overlay_path))
+
+
+def _apply_overlay(
+    base: dict[str, dict[str, float]],
+    overlay_path: Path,
+) -> None:
+    """Merge a pricing overlay file into ``base`` in place.
+
+    Raises
+    ------
+    FileNotFoundError
+        If ``overlay_path`` does not exist.
+    ValueError
+        If the suffix is unsupported, the file is malformed, or the payload
+        is not shaped like a pricing table.
+    """
+    if not overlay_path.exists():
+        raise FileNotFoundError(f"pricing overlay not found: {overlay_path}")
+    suffix = overlay_path.suffix.lower()
+    text = overlay_path.read_text()
+    if suffix == ".json":
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"invalid JSON in pricing overlay {overlay_path}: {exc}") from exc
+    elif suffix in (".yaml", ".yml"):
+        try:
+            data = yaml.safe_load(text)
+        except yaml.YAMLError as exc:
+            raise ValueError(f"invalid YAML in pricing overlay {overlay_path}: {exc}") from exc
+    else:
+        raise ValueError(
+            f"unsupported pricing overlay suffix {suffix!r} for {overlay_path}: "
+            "expected .json, .yaml, or .yml"
+        )
+
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"pricing overlay {overlay_path} must be a mapping, got {type(data).__name__}"
+        )
+    models = data.get("models", data)
+    if not isinstance(models, dict):
+        raise ValueError(
+            f"pricing overlay {overlay_path} 'models' entry must be a mapping, "
+            f"got {type(models).__name__}"
+        )
+
+    for model_id, fields in models.items():
+        if not isinstance(fields, dict):
+            raise ValueError(
+                f"pricing overlay {overlay_path} entry for {model_id!r} "
+                f"must be a mapping, got {type(fields).__name__}"
+            )
+        merged = dict(base.get(model_id, {}))
+        merged.update(fields)
+        base[model_id] = merged
 
 
 # Initialise on import

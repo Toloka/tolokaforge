@@ -50,7 +50,7 @@ pytestmark = [
 
 _FIXTURE_DIR = Path(__file__).parent.parent / "fixtures" / "tolokaforge_plugin_fixture"
 _GOLDEN = Path(__file__).parent.parent / "data" / "run_trial_capstone_golden.jsonl"
-_RUN_TRIAL_CLI_CMD = [sys.executable, "-m", "tolokaforge.cli.main", "run-trial"]
+_RUN_TRIAL_CLI_CMD = [sys.executable, "-m", "tolokaforge.dx.cli.main", "run-trial"]
 _AGENT_MODEL = {"provider": "openai", "name": "gpt-4"}
 _TASK_ID = "capstone"
 

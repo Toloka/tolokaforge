@@ -246,7 +246,7 @@ def test_slim_runner_image_run_trial_cli_subprocess_shared_stack() -> None:
     # subprocess cwd — spawn at the task-pack root. The provider key is inherited
     # from os.environ (exported by scripts/with_env.sh).
     proc = subprocess.run(
-        [sys.executable, "-m", "tolokaforge.cli.main", "run-trial"],
+        [sys.executable, "-m", "tolokaforge.dx.cli.main", "run-trial"],
         input=json.dumps(start) + "\n",
         cwd=str(task_dir),
         env=os.environ.copy(),
