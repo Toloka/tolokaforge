@@ -1419,6 +1419,25 @@ class StateChecksConfig(BaseModel):
     # core GradingEngine path (to_hashable) and the runner path
     # (compute_stable_hash). See core/hash.py compute_stable_hash.
     numeric_string_fields: list[str] = Field(default_factory=list)
+    # Opt-in, per-table: primary-key field for a table whose key is not the literal
+    # "id" (e.g. {"widgets": "widget_id"}). A table absent from the map
+    # resolves to "id", so id-keyed domains need nothing here. Threaded to the runner
+    # DB proxy so upsert/delete/lookup key resolution is config-driven rather than
+    # introspecting model source (which breaks when the domain source is not on disk).
+    id_fields: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("id_fields")
+    @classmethod
+    def _validate_id_fields(cls, value: dict[str, str]) -> dict[str, str]:
+        for table, field in value.items():
+            if not (isinstance(table, str) and table.strip()):
+                raise ValueError(f"state_checks.id_fields has a blank table name: {table!r}")
+            if not (isinstance(field, str) and field.strip()):
+                raise ValueError(
+                    f"state_checks.id_fields[{table!r}] must be a non-empty key field, "
+                    f"got {field!r}"
+                )
+        return value
 
 
 class CommunicateInfo(BaseModel):

@@ -13,6 +13,7 @@
     "db_probes": [],
     "env_assertions": [],
     "hash": null,
+    "id_fields": {},
     "jsonpaths": [
       {
         "description": "items remain empty (no-op task)",

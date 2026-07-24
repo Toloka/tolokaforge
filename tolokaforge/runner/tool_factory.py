@@ -1389,6 +1389,7 @@ class ToolFactory:
         rag_client: RAGServiceClient | None = None,
         db_table_names: list[str] | None = None,
         initial_state_data: dict[str, list[dict]] | None = None,
+        id_fields: dict[str, str] | None = None,
     ):
         """
         Initialize the tool factory.
@@ -1401,17 +1402,23 @@ class ToolFactory:
                            These are the source of truth for table name registration.
             initial_state_data: Optional dict mapping table names to their records.
                                Used for ID field matching during model registration.
+            id_fields: Optional per-table primary-key overrides (table_name -> key
+                       field), from grading config state_checks.id_fields. Forwarded
+                       to the DB proxy; a table absent from the map resolves to "id".
         """
         self.db_client = db_client
         self.trial_id = trial_id
         self.rag_client = rag_client
         self.db_table_names = db_table_names or []
         self._initial_state_data = initial_state_data or {}
+        self.id_fields = dict(id_fields or {})
         self._claimed_tables: set[str] = set()
 
         # Create DB proxies for tools
         # Pass db_table_names so the proxy can resolve table names for unregistered models
-        self._async_proxy = DBServiceProxy(db_client, trial_id, db_table_names=self.db_table_names)
+        self._async_proxy = DBServiceProxy(
+            db_client, trial_id, db_table_names=self.db_table_names, id_fields=self.id_fields
+        )
         self._sync_proxy = SyncDBServiceProxy(self._async_proxy)
 
     def reconstruct_tools(

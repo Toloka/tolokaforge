@@ -313,6 +313,11 @@ class StateChecksConfig(BaseModel):
     # switch) because a numeric-looking string can carry meaning in its exact
     # representation (versions/codes) — see core/hash.py compute_stable_hash.
     numeric_string_fields: list[str] = Field(default_factory=list)
+    # Opt-in, PER-TABLE: primary-key field for tables not keyed by the literal "id"
+    # (e.g. {"widgets": "widget_id"}). Absent table => "id". Consumed by
+    # the DB proxy (via ToolFactory) so key resolution is data-driven instead of
+    # derived from model source. See runner/db_proxy.py _resolve_id_field.
+    id_fields: dict[str, str] = Field(default_factory=dict)
 
     # JSONPath assertions
     jsonpath_checks: list[dict[str, Any]] = Field(default_factory=list)
@@ -322,6 +327,19 @@ class StateChecksConfig(BaseModel):
 
     # Substrate SQL assertions against a task-declared postgres DSN
     db_probes: list[DbProbe] = Field(default_factory=list)
+
+    @field_validator("id_fields")
+    @classmethod
+    def _validate_id_fields(cls, value: dict[str, str]) -> dict[str, str]:
+        for table, field in value.items():
+            if not (isinstance(table, str) and table.strip()):
+                raise ValueError(f"state_checks.id_fields has a blank table name: {table!r}")
+            if not (isinstance(field, str) and field.strip()):
+                raise ValueError(
+                    f"state_checks.id_fields[{table!r}] must be a non-empty key field, "
+                    f"got {field!r}"
+                )
+        return value
 
     model_config = {"extra": "forbid"}
 

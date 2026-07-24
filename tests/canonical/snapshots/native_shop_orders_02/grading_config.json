@@ -43,6 +43,7 @@
       ],
       "weight": 0.6
     },
+    "id_fields": {},
     "jsonpaths": [
       {
         "description": "First order is assigned ID O-001",
