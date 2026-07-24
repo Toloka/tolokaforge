@@ -23,7 +23,6 @@ from tolokaforge.core.conductor import (
     Conductor,
     ConductorContext,
     ConductorFactory,
-    InProcessConductor,
 )
 from tolokaforge.core.engine_run_state import (
     read_persisted_run_id,
@@ -58,6 +57,13 @@ from tolokaforge.core.models import (
 from tolokaforge.core.output.aggregates import FileAggregateWriter, RunAggregateWriter
 from tolokaforge.core.output.artifacts import FileArtifactWriter, TrialArtifactWriter
 from tolokaforge.core.output.service_log_rollup import collect_service_log_captures
+from tolokaforge.core.plugin_registry import (
+    RuntimeBackendBuildContext,
+    TrialGraderContext,
+    load_conductor,
+    load_runtime_backend,
+    load_trial_grader,
+)
 from tolokaforge.core.rate_limiter import GlobalRateLimiter
 from tolokaforge.core.resume import RunStateManager
 from tolokaforge.core.run_display_events import (
@@ -119,6 +125,17 @@ def _tasks_need_playwright(tasks: list[Any]) -> bool:
         if _PLAYWRIGHT_TOOL_NAMES.intersection(enabled):
             return True
     return False
+
+
+def _run_needs_docker_cli(adapter_type: str | None) -> bool:
+    """Return True iff the run's adapter shells out to docker inside the runner.
+
+    Terminal-bench tasks exec the docker CLI + compose plugin in the runner
+    (against the host daemon via the mounted socket), so their runner image must
+    carry the CLI. Detected from the configured adapter type so the slim default
+    image ships without it for every other run. Pure function for unit testing.
+    """
+    return adapter_type == AdapterType.TERMINAL_BENCH
 
 
 def _tasks_need_full_stack(tasks: list[Any]) -> bool:
@@ -572,9 +589,9 @@ class Orchestrator:
                 "Conductor cannot be built before the adapter is loaded. "
                 "Ensure load_tasks() has run successfully."
             )
-        from tolokaforge.core.trial_grader import RunnerRPCTrialGrader
-
-        trial_grader = RunnerRPCTrialGrader(runtime_backend=runtime_backend, logger=self.logger)
+        trial_grader = load_trial_grader("runner_rpc")(
+            TrialGraderContext(runtime_backend=runtime_backend, logger=self.logger)
+        )
 
         ctx = ConductorContext(
             adapter=self.adapter,
@@ -590,14 +607,8 @@ class Orchestrator:
             request_limiter=request_limiter,
             events=self._events,
         )
-        if self._conductor_factory is not None:
-            return self._conductor_factory(ctx)
-        # ``ConductorContext`` fields are a 1:1 match for
-        # ``InProcessConductor.__init__`` kwargs. Shallow-unpack via
-        # ``vars`` (``dataclasses.asdict`` would deep-copy) so a new
-        # field on the context surfaces as a loud unexpected-kwarg
-        # error here instead of a silent omission.
-        return InProcessConductor(**vars(ctx))
+        factory = self._conductor_factory or load_conductor("in_process")
+        return factory(ctx)
 
     def _build_trial_spec(
         self,
@@ -832,38 +843,23 @@ class Orchestrator:
             runtime_choice = self._select_backend_from_tasks()
             source = "tasks"
 
-        seeds = self._project_seed_registry()
-        if runtime_choice == "per_trial":
-            from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
-
-            self.logger.info(
-                "runtime.backend.selected",
-                backend="PerTrialRuntimeBackend",
-                source=source,
-            )
-            return PerTrialRuntimeBackend(seeds=seeds, log_capture=log_capture)
-        from tolokaforge.core.shared_stack_runtime import SharedStackRuntimeBackend
-
-        self.logger.info(
-            "runtime.backend.selected",
-            backend="SharedStackRuntimeBackend",
-            source=source,
-            env_manifest_present=env_manifest is not None,
-        )
-        if env_manifest is not None:
-            return SharedStackRuntimeBackend(
+        factory = load_runtime_backend(runtime_choice)
+        backend = factory(
+            RuntimeBackendBuildContext(
+                runner_address=runner_address,
                 env_manifest=env_manifest,
                 run_id=run_id,
-                seeds=seeds,
+                seeds=self._project_seed_registry(),
                 log_capture=log_capture,
                 events=self._events,
             )
-        return SharedStackRuntimeBackend(
-            runner_address=runner_address,
-            endpoints=_build_env_endpoints(runner_address),
-            seeds=seeds,
-            events=self._events,
         )
+        self.logger.info(
+            "runtime.backend.selected",
+            backend=type(backend).__name__,
+            source=source,
+        )
+        return backend
 
     def _project_seed_registry(self) -> dict[str, Any]:
         """Return the project's ``assets.seeds`` map for backend
@@ -1406,6 +1402,16 @@ class Orchestrator:
                         "Playwright-dependent tool detected in tasks — enabling Playwright"
                     )
                     core_stack_kwargs["enable_playwright"] = True
+                adapter_type = (
+                    self.config.evaluation.harness_adapter.type
+                    if self.config.evaluation.harness_adapter
+                    else None
+                )
+                if _run_needs_docker_cli(adapter_type):
+                    self.logger.info(
+                        "Terminal-bench adapter detected — enabling docker CLI in runner image"
+                    )
+                    core_stack_kwargs["enable_docker_cli"] = True
                 # Pick full_stack (db-service + runner + rag-service +
                 # mock-web) when any task talks to mock-web or rag (see
                 # ``_FULL_STACK_TOOL_NAMES`` for the routing matrix) OR when
@@ -1521,6 +1527,8 @@ class Orchestrator:
         runtime_backend.connect()
         self.logger.info("Runtime backend connected")
         self._verify_isolation_compatibility(runtime_backend)
+
+        from tolokaforge.core.shared_stack_runtime import _build_env_endpoints
 
         env_endpoints = _build_env_endpoints(runner_address)
         if self.config.orchestrator.runtime == "per_trial" or run_env_manifest is not None:
@@ -1950,6 +1958,8 @@ class Orchestrator:
             runtime_backend = self._construct_runtime_backend(runner_address)
         runtime_backend.connect()
         self._verify_isolation_compatibility(runtime_backend)
+
+        from tolokaforge.core.shared_stack_runtime import _build_env_endpoints
 
         env_endpoints = _build_env_endpoints(runner_address)
         self.logger.info(

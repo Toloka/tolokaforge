@@ -210,6 +210,22 @@ class NativeAdapter(BaseAdapter):
         self._task_roots[task_id] = task_dir
         return task
 
+    def register_preloaded_task(self, task: TaskConfig, task_dir: Path) -> None:
+        """Seed the discovery caches with an already-validated task.
+
+        Lets an in-process caller that already holds a :class:`TaskConfig` and
+        its pack directory (e.g. :func:`tolokaforge.runner.run_trial`) resolve
+        ``task.task_id`` through the standard asset-resolution methods
+        (:meth:`to_task_description`, :meth:`get_grading_config`,
+        :meth:`create_environment`, :meth:`get_system_prompt`) without a
+        filesystem glob. Seeding ``_task_files`` also short-circuits
+        :meth:`_discover_tasks`.
+        """
+        task_dir = Path(task_dir)
+        self._task_files[task.task_id] = task_dir / "task.yaml"
+        self._task_roots[task.task_id] = task_dir
+        self._tasks[task.task_id] = task
+
     def get_task_dir(self, task_id: str) -> Path:
         """Get effective task directory.
 
@@ -646,7 +662,6 @@ class NativeAdapter(BaseAdapter):
                     env_assertions=env_assertions,
                     db_probes=db_probes,
                     numeric_string_fields=list(state_checks_data.get("numeric_string_fields", [])),
-                    id_fields=dict(state_checks_data.get("id_fields", {})),
                 )
 
             # Build transcript rules

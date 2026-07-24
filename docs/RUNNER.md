@@ -1,6 +1,13 @@
 # Runner Guide
 
-This guide covers Tolokaforge's queue-backed runner for local and distributed execution.
+This guide covers Tolokaforge's queue-backed runner for local and distributed
+execution — the `prepare` / `worker` / `status` batch flow.
+
+> **Looking to consume the runner as an independent component** — from your own
+> agent loop, from a non-Python control plane, via
+> `tolokaforge.runner.run_trial(...)`, or via the `tolokaforge run-trial`
+> subprocess CLI — see [STANDALONE_RUNNER.md](STANDALONE_RUNNER.md). This guide
+> is the different tool for the different job of running a whole batch.
 
 ## Execution Modes
 
@@ -63,6 +70,32 @@ alongside those task-declared services for the duration of each trial,
 provisioning them per the manifest's isolation rules. See
 [RUNTIME_BACKENDS.md](RUNTIME_BACKENDS.md) for
 the backend lifecycle.
+
+## Runner Image Contents
+
+`runner.Dockerfile` is a multi-stage build on a `python:3.12-slim` base
+(≈390 MB uncompressed). A `builder` stage installs the `tolokaforge` wheel and
+its `runner` extra into an isolated `/opt/venv` with the build-only apt
+toolchain (`curl`, `git`); the `runtime` stage copies only that venv, so the
+build toolchain never ships.
+
+- **Dependency surface** — the image installs `tolokaforge[runner]`. The
+  `runner` extra (declared in `pyproject.toml`) is the single source of truth
+  for the runner's domain-tool runtime drivers (`asyncpg`, `psycopg2-binary`,
+  `alembic`, `python-jose`, `fastapi`, `uvicorn`, `sqlalchemy`, `odata-query`)
+  that task tool code extracted from `tool_artifacts` needs at grade time. The
+  harness's own imports come with the base wheel — including `litellm`, run
+  in-container for LLM-as-judge grading.
+- **Not in the default image** — the pip/setuptools/wheel toolchain and `*.pyc`
+  bytecode are stripped, and the **docker CLI + compose plugin are absent**.
+- **Opt-in build args** — `INSTALL_DOCKER_CLI=true` adds the docker CLI +
+  compose plugin (for terminal-bench tasks, which shell out to the host Docker
+  daemon via the mounted socket); `INSTALL_PLAYWRIGHT=true` adds Playwright +
+  Chromium (for browser/mobile tasks). Both are set automatically by the
+  orchestrator when it detects a run that needs them — a terminal-bench adapter
+  for the docker CLI, a browser/mobile tool for Playwright — so
+  `tolokaforge-runner:local` is built with exactly what a run requires and stays
+  slim otherwise.
 
 ## Tool Lifecycle
 

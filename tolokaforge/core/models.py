@@ -7,7 +7,14 @@ from enum import Enum
 from pathlib import Path
 from typing import Annotated, Any, Literal, Self, get_args
 
-from pydantic import BaseModel, Field, field_serializer, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    PrivateAttr,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from tolokaforge.core.deprecations import (
     canonicalize_actor_config,
@@ -551,6 +558,15 @@ class TypeSenseConfig(BaseModel):
     cleanup_on_exit: bool = True  # Remove container on exit (local mode)
 
 
+LEGACY_DOCKER_RUNTIME_ALIAS = "docker"
+"""Legacy ``orchestrator.runtime`` value accepted as an alias for the
+``shared`` runtime backend. Coerced before any registry lookup — the registry
+has no ``docker`` name."""
+
+DOCKER_RUNTIME_ALIAS_TARGET = "shared"
+"""Registered runtime-backend name :data:`LEGACY_DOCKER_RUNTIME_ALIAS` maps to."""
+
+
 class OrchestratorConfig(BaseModel):
     """Orchestrator configuration"""
 
@@ -607,7 +623,7 @@ class OrchestratorConfig(BaseModel):
     for backward compatibility; a ``DeprecationWarning`` fires when
     the field is explicitly set."""
 
-    runtime: Literal["shared", "per_trial"] | None = None
+    runtime: str | None = None
     """Deprecated operator override for backend selection.
 
     Backend selection is task-driven — the orchestrator picks
@@ -615,6 +631,11 @@ class OrchestratorConfig(BaseModel):
     per-trial materialisation, otherwise :class:`SharedStackRuntimeBackend`.
     Setting this field bypasses that signal and emits a
     ``DeprecationWarning``. Retired in a future release.
+
+    Any name registered in the ``tolokaforge.runtime_backends`` entry-point
+    group is accepted (built-in ``shared`` / ``per_trial`` / ``in_memory``, or
+    a plug-in's name); the name is resolved against the registry at run start,
+    which raises an actionable error listing the known names on a typo.
 
     Legacy value ``docker`` is accepted as an alias for ``shared`` with
     the same deprecation warning; drop both from configs going forward.
@@ -627,14 +648,14 @@ class OrchestratorConfig(BaseModel):
         deprecation warning for any explicit setting."""
         if value is None:
             return value
-        if value == "docker":
+        if value == LEGACY_DOCKER_RUNTIME_ALIAS:
             warnings.warn(
                 "OrchestratorConfig.runtime = 'docker' is a deprecated alias "
                 "for 'shared'; update your run config.",
                 DeprecationWarning,
                 stacklevel=2,
             )
-            value = "shared"
+            value = DOCKER_RUNTIME_ALIAS_TARGET
         warnings.warn(
             "OrchestratorConfig.runtime is deprecated; backend selection is "
             "now task-driven (any task requiring per-trial isolation forces "
@@ -1341,6 +1362,19 @@ class TaskConfig(BaseModel):
     project sets no default either). ``stack.compose_file`` is
     task-relative and anchored by the loader before construction."""
 
+    _source_dir: Path | None = PrivateAttr(default=None)
+    """On-disk pack directory this config was loaded from, or ``None`` for a
+    hand-built in-memory config. An in-process locator, not a schema field:
+    absent from ``model_dump()`` / ``model_json_schema()`` / the YAML
+    round-trip. Stamped by :func:`tolokaforge.adapters._task_loader.load_task_yaml`
+    and read via :attr:`source_dir` so a pre-loaded task resolves its assets
+    without re-globbing the filesystem."""
+
+    @property
+    def source_dir(self) -> Path | None:
+        """Directory this task was loaded from (see :attr:`_source_dir`)."""
+        return self._source_dir
+
     @model_validator(mode="before")
     @classmethod
     def _accept_legacy_user_simulator_kwarg(cls, data: Any) -> Any:
@@ -1419,25 +1453,6 @@ class StateChecksConfig(BaseModel):
     # core GradingEngine path (to_hashable) and the runner path
     # (compute_stable_hash). See core/hash.py compute_stable_hash.
     numeric_string_fields: list[str] = Field(default_factory=list)
-    # Opt-in, per-table: primary-key field for a table whose key is not the literal
-    # "id" (e.g. {"widgets": "widget_id"}). A table absent from the map
-    # resolves to "id", so id-keyed domains need nothing here. Threaded to the runner
-    # DB proxy so upsert/delete/lookup key resolution is config-driven rather than
-    # introspecting model source (which breaks when the domain source is not on disk).
-    id_fields: dict[str, str] = Field(default_factory=dict)
-
-    @field_validator("id_fields")
-    @classmethod
-    def _validate_id_fields(cls, value: dict[str, str]) -> dict[str, str]:
-        for table, field in value.items():
-            if not (isinstance(table, str) and table.strip()):
-                raise ValueError(f"state_checks.id_fields has a blank table name: {table!r}")
-            if not (isinstance(field, str) and field.strip()):
-                raise ValueError(
-                    f"state_checks.id_fields[{table!r}] must be a non-empty key field, "
-                    f"got {field!r}"
-                )
-        return value
 
 
 class CommunicateInfo(BaseModel):

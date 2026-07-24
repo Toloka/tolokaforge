@@ -88,6 +88,18 @@ def test_full_stack_default_omits_playwright():
     assert "INSTALL_PLAYWRIGHT" not in runner.build_args
 
 
+def test_full_stack_forwards_enable_docker_cli():
+    stack = full_stack(enable_docker_cli=True)
+    runner = _runner_def(stack)
+    assert runner.build_args.get("INSTALL_DOCKER_CLI") == "true"
+
+
+def test_full_stack_default_omits_docker_cli():
+    stack = full_stack()
+    runner = _runner_def(stack)
+    assert "INSTALL_DOCKER_CLI" not in runner.build_args
+
+
 def test_full_stack_mock_web_pins_build_context():
     """``mock-web`` declares ``context_files`` so its image-content-hash
     only depends on the service's own source. Without this the orchestrator

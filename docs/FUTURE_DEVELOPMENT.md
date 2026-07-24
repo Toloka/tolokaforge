@@ -10,7 +10,6 @@
 
 - [Completed Work](#completed-work)
 - [Open Issues](#open-issues)
-- [Stage 9 — Dockerfile Review and Runner Image Cleanup](#stage-9--dockerfile-review-and-runner-image-cleanup)
 - [Stage 11 — End-to-End Adapter and Provider Validation](#stage-11--end-to-end-adapter-and-provider-validation)
 - [Stage 12 — Feature Verification Matrix](#stage-12--feature-verification-matrix)
 - [Stage 14 — SQLite Run Queue Corruption Resilience](#stage-14--sqlite-run-queue-corruption-resilience)
@@ -29,34 +28,11 @@
 | 10 | Test consolidation: 5→3 categories (unit/canonical/integration). `functional/` and `e2e/` deleted. 688→449 tests |
 | 13 | `.gitattributes` cleaned, 39 orphaned files removed, `.gitignore` updated, 3 unused test utils deleted |
 | PR #33 | FrozenMcpCoreAdapter: self-contained converted tasks with `_domain/` bundle, `tool_artifacts` delivery, stable hash grading. Unit + integration tests |
+| 9 / PR #539 | Multi-stage runner Dockerfile slims the image to ~390 MB; build context is the `tolokaforge` wheel only, domain code arrives at runtime via `TaskDescription.tool_artifacts`. Resolves [#36](https://github.com/Toloka/tolokaforge/issues/36) |
 
 ---
 
 ## Open Issues
-
-### Issue 1 — Runner Docker image includes unnecessary domain files ([#36](https://github.com/Toloka/tolokaforge/issues/36))
-
-The Runner Docker image bakes in domain-specific directories that should not be part of the image. This causes:
-- **Unnecessary rebuilds:** touching `contrib/` or `tasks/` triggers a content-hash change and full rebuild
-- **Slow context assembly:** `shutil.copytree` copies ~340 files to a temp directory
-- **Bloated image:** redundant copies of domain code already delivered via `tool_artifacts`
-- **Wrong abstraction:** new domains require modifying Docker infrastructure
-
-The problem exists in three synchronized locations:
-
-| Location | What it contains |
-|----------|-----------------|
-| `docker/runner.Dockerfile` lines 34–52 | COPY commands + PYTHONPATH for 6 domain dirs |
-| `tolokaforge/docker/stacks/core.py` lines 75–85 | `context_files` list with same 6 dirs |
-| `tolokaforge/docker/builder.py` lines 53–62 | `IMAGE_DEFINITIONS` with same 6 dirs |
-
-Domain directories currently baked in:
-- `contrib/tau-bench/`
-- `contrib/project-m-copilot-mock-tools/mcp_core/`
-- `tasks/tlk_mcp_core/mcp-tools-library/`
-- `tasks/tlk_mcp_core/external_retail_server_v3/`
-- `tasks/telecom/tau_tools/`
-- `tasks/telecom/data/`
 
 ### Issue 3 — No end-to-end validation for native and tau adapters
 
@@ -114,67 +90,6 @@ sqlite3.DatabaseError: file is not a database
 **Impact:** Process exit code 1, all in-flight trials lost, shard marked as failed in CI.
 
 **See:** [Stage 14](#stage-14--sqlite-run-queue-corruption-resilience) for the fix plan.
-
----
-
-## Stage 9 — Dockerfile Review and Runner Image Cleanup
-
-> **Goal:** Make the Runner Docker image domain-agnostic. Remove domain-specific files from the build context. Audit and consolidate Dockerfiles.  
-> **Tracks:** [#36](https://github.com/Toloka/tolokaforge/issues/36)
-
-### 9.1 Adapter tool delivery analysis
-
-The key question for removing baked-in domain files is: how does each adapter deliver tools to the Docker Runner?
-
-| Adapter | Delivery mechanism | Uses `tool_artifacts`? | Needs baked-in files? |
-|---------|--------------------|:----------------------:|:---------------------:|
-| `frozen_mcp_core` | Bundles `_domain/` as base64 in `TaskDescription.tool_artifacts` | ✅ | ❌ |
-| `tau` (live) | `ToolSource(module_path="tau_tools.{name}", style=TAU_SYNC)` | ❌ | ✅ |
-| `tlk_mcp_core` (live) | `ToolSource(module_path="tools.{name}", style=MCP_ASYNC)` | ❌ | ✅ |
-| `native` | MCP server subprocess / file-based | N/A | Depends on tool type |
-
-**Only `frozen_mcp_core`** populates `TaskDescription.tool_artifacts`. Live adapters rely on baked-in filesystem paths inside the Runner container. The Runner's `_extract_tool_artifacts()` (`tolokaforge/runner/service.py:279`) handles extraction + `sys.path` injection, but live adapters' `to_task_description()` never populate `tool_artifacts`.
-
-### 9.2 Solution paths
-
-**Path A — Freeze everything (recommended):**
-- Convert all tasks to frozen format, use `frozen_mcp_core` exclusively for Docker runs
-- Live adapters use in-process runtime only (already works — commit `47c3ede`)
-- Runner image only contains `tolokaforge/` + `pyproject.toml` + `README.md`
-- Zero domain files in Docker context → fast rebuilds, small image, domain-agnostic
-
-**Path B — Add `tool_artifacts` to live adapters:**
-- Make `TauAdapter.to_task_description()` and `TlkMcpCoreAdapter.to_task_description()` bundle tool modules as `tool_artifacts`
-- Mirror `FrozenMcpCoreAdapter._bundle_domain_artifacts()` pattern
-- More work, maintains two code paths for same functionality
-
-### 9.3 Implementation plan (Path A)
-
-1. Strip domain directories from `runner.Dockerfile` COPY commands and PYTHONPATH
-2. Strip domain directories from `core.py` `context_files`
-3. Strip domain directories from `builder.py` `IMAGE_DEFINITIONS`
-4. Keep only: `pyproject.toml`, `README.md`, `tolokaforge/`
-5. Remove domain-specific `pip install` commands from runner.Dockerfile (lines 56–67)
-6. Verify `frozen_mcp_core` tasks still work end-to-end with minimal image
-7. Document that live adapters require in-process runtime for Docker runs
-
-### 9.4 Audit Dockerfiles
-
-| Dockerfile | Purpose | Status to verify |
-|-----------|---------|-----------------|
-| `db_service.Dockerfile` | JSON DB state service | Needed |
-| `runner.Dockerfile` | gRPC runner service | Needed — simplify per 9.3 |
-| `rag.Dockerfile` | RAG search service | Needed |
-| `mock_web.Dockerfile` | Mock web service | Needed |
-
-### 9.5 Verification gate
-
-- [ ] Runner image builds with only `tolokaforge/` + `pyproject.toml` + `README.md`
-- [ ] `frozen_mcp_core` tasks execute correctly with minimal runner image
-- [ ] Content hash depends only on `tolokaforge/` source
-- [x] No orphaned Dockerfiles
-- [x] `builder.py` IMAGE_DEFINITIONS matches actual files
-- [x] `tolokaforge docker build --core` succeeds
 
 ---
 
@@ -554,34 +469,23 @@ For true corruption, Fix 1 (orchestrator safety net) is the backstop.
 
 ```mermaid
 graph TD
-    S9[Stage 9: Dockerfile + Runner Cleanup]
     S11[Stage 11: E2E Validation]
     S12[Stage 12: Feature Verification]
     S14[Stage 14: SQLite Queue Resilience]
 
-    S9 --> S11
     S11 --> S12
     S14
 
-    style S9 fill:#ffa,stroke:#333
     style S11 fill:#ffa,stroke:#333
     style S12 fill:#bbf,stroke:#333
     style S14 fill:#f99,stroke:#333
 ```
 
-**Execution order:** Stage 14 is independent and can be implemented immediately. Stage 9 → 11 → 12 remain sequential.
+**Execution order:** Stage 14 is independent and can be implemented immediately. Stage 11 → 12 remain sequential.
 
 ---
 
 ## Migration Checklist
-
-### Stage 9 — Dockerfile Review + Runner Cleanup
-- [ ] Analyse adapter tool delivery mechanisms
-- [ ] Strip domain directories from runner.Dockerfile, core.py, builder.py
-- [ ] Audit all 8 Dockerfiles for necessity
-- [ ] Remove duplicates and unused Dockerfiles
-- [ ] Verify minimal runner image works with frozen_mcp_core
-- [ ] Update `ImageBuilder` definitions
 
 ### Stage 11 — E2E Validation
 - [x] FrozenMcpCoreAdapter converts and runs tasks (basic pipeline)

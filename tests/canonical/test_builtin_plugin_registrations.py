@@ -1,0 +1,108 @@
+"""Built-in entry-point registrations for the three orchestrator seams.
+
+Snapshots the registration table tolokaforge ships in its own ``pyproject.toml``:
+the six built-in names resolve through the fail-loud loader to factories that
+build the right impl, the ``available_*`` listings match the ADR-locked set,
+and the raw ``importlib.metadata`` probe from the acceptance criterion sees the
+runtime-backend names. Canonical tier because it reads *installed* package
+metadata (``uv sync`` / the CI install step registers the entry points).
+"""
+
+from __future__ import annotations
+
+import importlib.metadata
+from pathlib import Path
+from unittest.mock import MagicMock
+
+import pytest
+
+from tolokaforge.core.conductor import (
+    ConductorContext,
+    InMemoryConductor,
+    InProcessConductor,
+)
+from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
+from tolokaforge.core.plugin_registry import (
+    RUNTIME_BACKENDS_GROUP,
+    RuntimeBackendBuildContext,
+    TrialGraderContext,
+    available_conductors,
+    available_runtime_backends,
+    available_trial_graders,
+    load_conductor,
+    load_runtime_backend,
+    load_trial_grader,
+)
+from tolokaforge.core.runtime import InMemoryRuntimeBackend
+from tolokaforge.core.shared_stack_runtime import SharedStackRuntimeBackend
+from tolokaforge.core.trial_grader import RunnerRPCTrialGrader
+
+pytestmark = pytest.mark.canonical
+
+
+def _runtime_backend_context() -> RuntimeBackendBuildContext:
+    return RuntimeBackendBuildContext(
+        runner_address="runner:50051",
+        env_manifest=None,
+        run_id="run",
+        seeds={},
+        log_capture=None,
+    )
+
+
+def _conductor_context() -> ConductorContext:
+    return ConductorContext(
+        adapter=MagicMock(),
+        artifact_writer=MagicMock(),
+        config=MagicMock(),
+        logger=MagicMock(),
+        verbose=False,
+        strict=False,
+        agent_client=MagicMock(),
+        runtime_backend=MagicMock(),
+        trial_grader=MagicMock(),
+        output_dir=Path("/tmp"),
+        request_limiter=None,
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "expected_cls"),
+    [
+        ("shared", SharedStackRuntimeBackend),
+        ("per_trial", PerTrialRuntimeBackend),
+        ("in_memory", InMemoryRuntimeBackend),
+    ],
+)
+def test_runtime_backend_names_resolve_to_their_class(name: str, expected_cls: type) -> None:
+    backend = load_runtime_backend(name)(_runtime_backend_context())
+    assert isinstance(backend, expected_cls)
+
+
+def test_trial_grader_name_resolves_to_its_class() -> None:
+    ctx = TrialGraderContext(runtime_backend=MagicMock(), logger=MagicMock())
+    grader = load_trial_grader("runner_rpc")(ctx)
+    assert isinstance(grader, RunnerRPCTrialGrader)
+
+
+@pytest.mark.parametrize(
+    ("name", "expected_cls"),
+    [
+        ("in_process", InProcessConductor),
+        ("in_memory", InMemoryConductor),
+    ],
+)
+def test_conductor_names_resolve_to_their_class(name: str, expected_cls: type) -> None:
+    conductor = load_conductor(name)(_conductor_context())
+    assert isinstance(conductor, expected_cls)
+
+
+def test_available_listings_match_the_builtin_set() -> None:
+    assert available_runtime_backends() == ["in_memory", "per_trial", "shared"]
+    assert available_trial_graders() == ["runner_rpc"]
+    assert available_conductors() == ["in_memory", "in_process"]
+
+
+def test_raw_entry_point_probe_lists_runtime_backends() -> None:
+    names = sorted(ep.name for ep in importlib.metadata.entry_points(group=RUNTIME_BACKENDS_GROUP))
+    assert names == ["in_memory", "per_trial", "shared"]

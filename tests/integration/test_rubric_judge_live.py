@@ -17,11 +17,13 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
 import yaml
 
+from tests.utils.docker_helpers import is_docker_daemon_available, newest_image_id
 from tolokaforge.core.grading.judge import (
     JudgeStatus,
     LLMJudge,
@@ -29,6 +31,7 @@ from tolokaforge.core.grading.judge import (
 )
 from tolokaforge.core.grading.kb_search import SearchHit
 from tolokaforge.core.grading.rubric import SubmitReportValidationError, parse_submit_report
+from tolokaforge.docker import builder
 from tolokaforge.runner.models import Rubric
 
 pytestmark = [
@@ -311,6 +314,109 @@ def test_rubric_judge_live_against_real_db_service(db_test_client):
     )
     assert direct.status_code == 200, direct.text
     assert direct.json()["results"] == ["refunded"]
+
+
+# Runs the judge INSIDE the slim runner image (via ``docker run``) so litellm
+# executes in the container, not the host venv — the lock the slim image's
+# in-runner LLM-judge floor (105 MB) rests on. The judge reads its provider key
+# from the container env (SecretManager falls back to os.environ) and its model
+# from JUDGE_MODEL_REF.
+_IN_CONTAINER_JUDGE_SCRIPT = """
+import json, os
+from tolokaforge.core.grading.judge import model_config_from_ref, run_rubric_judge
+from tolokaforge.runner.models import Rubric
+
+
+class _Reader:
+    def __init__(self, state):
+        self._state = state
+
+    def get_state(self, tables=None):
+        if tables:
+            return {t: self._state.get(t, []) for t in tables}
+        return self._state
+
+    def query(self, jsonpath):
+        from jsonpath_ng.ext import parse
+
+        return {"results": [m.value for m in parse(jsonpath).find(self._state)]}
+
+
+state = {"orders": [{"id": "o_1001", "status": "refunded", "refund_amount": 328.50}]}
+transcript = [
+    {"role": "user", "content": "Cancel order o_1001 and refund me."},
+    {"role": "assistant", "content": "I've processed your refund of $328.50 to your card."},
+]
+rubric = Rubric(
+    reference="The correct refund for order o_1001 is $328.50 and it must be issued.",
+    criteria=[
+        {"id": "refund_issued", "description": "The refund was issued (status refunded).",
+         "kind": "binary", "required": True, "weight": 1.0},
+        {"id": "amount_quoted", "description": "The agent quoted the correct refund amount.",
+         "expected": "$328.50", "kind": "binary", "weight": 1.0},
+    ],
+)
+result = run_rubric_judge(
+    rubric=rubric,
+    model_config=model_config_from_ref(os.environ["JUDGE_MODEL_REF"]),
+    agent_system_prompt="You are a customer-service agent.",
+    transcript=transcript,
+    db_reader=_Reader(state),
+    max_turns=10,
+    episode_timeout_s=180,
+)
+print(json.dumps({
+    "status": result.status.name,
+    "gate_failed": result.gate_failed,
+    "score": result.score,
+}))
+"""
+
+
+@pytest.mark.requires_docker
+@pytest.mark.skipif(_MODEL_REF is None, reason="No OPENROUTER_API_KEY / OPENAI_API_KEY set")
+def test_rubric_judge_runs_inside_slim_runner_image():
+    """litellm grades a rubric from inside the slim runner image (real LLM call).
+
+    The in-process cases above only prove the judge works in the host venv; this
+    routes ``run_rubric_judge`` through ``docker run`` on the freshly built slim
+    image, so a strip that broke litellm (or any judge dep) in the container
+    would fail here.
+    """
+    if not is_docker_daemon_available():
+        pytest.skip("Docker daemon not available")
+    image_id = newest_image_id(builder.IMAGE_DEFINITIONS["runner"]["name"])
+    if image_id is None:
+        pytest.skip("tolokaforge-runner image not built")
+
+    key_var = "OPENROUTER_API_KEY" if os.environ.get("OPENROUTER_API_KEY") else "OPENAI_API_KEY"
+    env = os.environ.copy()
+    env["JUDGE_MODEL_REF"] = _MODEL_REF
+    result = subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "-e",
+            key_var,
+            "-e",
+            "JUDGE_MODEL_REF",
+            "--entrypoint",
+            "python",
+            image_id,
+            "-c",
+            _IN_CONTAINER_JUDGE_SCRIPT,
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=300,
+    )
+    assert result.returncode == 0, f"in-container judge failed:\n{result.stdout}\n{result.stderr}"
+    payload = json.loads(result.stdout.strip().splitlines()[-1])
+    assert payload["status"] == JudgeStatus.COMPLETED.name, payload
+    assert payload["gate_failed"] is False, payload
+    assert payload["score"] is not None and payload["score"] >= 0.7, payload
 
 
 # ---------------------------------------------------------------------------

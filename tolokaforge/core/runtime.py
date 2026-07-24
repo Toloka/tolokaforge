@@ -28,6 +28,7 @@ from tolokaforge.core.run_display_events import ContainerSnapshot
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, EnvEndpoints, TrialSpec
 
 if TYPE_CHECKING:  # pragma: no cover — type-only imports
+    from tolokaforge.core.plugin_registry import RuntimeBackendBuildContext
     from tolokaforge.tools.registry import ToolResult
 
 __all__ = [
@@ -594,3 +595,14 @@ class InMemoryRuntimeBackend:
             "Tests that exercise the runner RPC surface must use "
             "SharedStackRuntimeBackend or mock the method on the backend instance."
         )
+
+
+def in_memory_runtime_backend_factory(
+    ctx: RuntimeBackendBuildContext,
+) -> InMemoryRuntimeBackend:
+    """Build an :class:`InMemoryRuntimeBackend` from a build context.
+
+    The recording fixture has no substrate to seed or capture, so it reads
+    none of the context fields and takes the default ``isolation_mode``.
+    """
+    return InMemoryRuntimeBackend()

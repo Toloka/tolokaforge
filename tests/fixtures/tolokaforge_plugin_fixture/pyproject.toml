@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tolokaforge_plugin_fixture"
+version = "0.1.0"
+description = "Out-of-tree plug-in fixture registering a runtime backend, grader, and conductor for tolokaforge's plugin integration tests."
+requires-python = ">=3.10"
+
+[project.entry-points."tolokaforge.runtime_backends"]
+fixture_backend = "tolokaforge_plugin_fixture:fixture_backend_factory"
+
+[project.entry-points."tolokaforge.trial_graders"]
+fixture_grader = "tolokaforge_plugin_fixture:fixture_grader_factory"
+
+[project.entry-points."tolokaforge.conductors"]
+fixture_conductor = "tolokaforge_plugin_fixture:fixture_conductor_factory"
+
+[tool.hatch.build.targets.wheel]
+packages = ["tolokaforge_plugin_fixture"]

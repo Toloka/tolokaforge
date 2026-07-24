@@ -1,0 +1,417 @@
+# Standalone Runner Guide
+
+The tolokaforge runner — the piece that owns per-trial container lifecycle,
+executes agent tool calls, grades outcomes, and returns typed results — can be
+used as a component on its own, without the batch orchestrator, without a
+YAML config file, and (via the subprocess CLI) without Python. This guide is
+for consumers who want to embed the runner in their own code rather than run
+a whole benchmark through `tolokaforge run`.
+
+If you want the batch flow instead (prepare / worker / status against a queue,
+distributed workers across machines), see [RUNNER.md](RUNNER.md). The two guides
+cover different tools that live in the same repo; you rarely need both at once.
+
+## When this guide is for you
+
+- You have your own agent loop, scheduler, or research pipeline, and you want
+  tolokaforge to execute + grade one trial at a time.
+- You want to drive the runner from a language that isn't Python.
+- You want to compare models or task variants in a small sweep without
+  standing up the full batch machinery.
+- You want to plug in your own runtime backend, grader, or conductor without
+  editing tolokaforge.
+
+## Mental model — three layers, three surfaces
+
+The runtime is three Protocol seams stacked on top of one another. Each
+Protocol has one or more built-in implementations; a downstream `pip install`
+can add more via entry-point registration.
+
+```
+                                    +--------------------------------------+
+your code / your language  <------> |  three consumer surfaces             |
+                                    |                                      |
+                                    |  * tolokaforge.runner.run_trial(...) |
+                                    |    (Python library entry)            |
+                                    |                                      |
+                                    |  * tolokaforge run-trial              |
+                                    |    (subprocess CLI, JSON-Lines wire) |
+                                    |                                      |
+                                    |  * importlib.metadata entry points   |
+                                    |    (register your own Protocol impl) |
+                                    +---------------+----------------------+
+                                                    |
+                                    +---------------v----------------------+
+                                    |  three Protocol seams                |
+                                    |                                      |
+                                    |  Conductor    — runs one trial:      |
+                                    |                  agent loop, grading |
+                                    |  TrialGrader  — turns a trajectory   |
+                                    |                  into a Grade        |
+                                    |  RuntimeBackend — provisions the     |
+                                    |                    substrate         |
+                                    +---------------+----------------------+
+                                                    |
+                                    +---------------v----------------------+
+                                    |  container / process substrate       |
+                                    |  (Docker today; K8s/Modal/E2B via    |
+                                    |   registered plug-ins in future)     |
+                                    +--------------------------------------+
+```
+
+The three consumer surfaces all compose the same Protocol seams — they differ
+in how *you* reach them, not in what the runner does underneath.
+
+## Which surface should you use
+
+| Your situation | Reach for |
+|---|---|
+| Python codebase, want in-process control, care about types | `tolokaforge.runner.run_trial(...)` |
+| Non-Python control plane (Rust / Go / TypeScript / shell) | `tolokaforge run-trial` subprocess |
+| Want to add a new runtime backend, grader, or conductor | Entry-point registries |
+| Want isolation between trials (crash containment, per-trial resource caps) | `tolokaforge run-trial` subprocess, one process per trial |
+| Want the lowest per-trial overhead | `tolokaforge.runner.run_trial(...)`, in-process |
+| Want to run 10,000 trials with distributed workers | Not this guide — use [RUNNER.md](RUNNER.md) (batch mode) |
+
+## Quickstart
+
+Two things you need on the host either way:
+
+1. **An LLM provider key** in a `.env` file at the repo root (e.g.
+   `OPENROUTER_API_KEY=sk-…`). The same bootstrap `tolokaforge run` uses.
+2. **A live runner container.** `make docker-up` builds and starts the
+   `tolokaforge-runner:local` container plus the small support stack. This is
+   the substrate the trial runs inside; both surfaces below dispatch through
+   it. The container will be published to a public registry in M14 — until
+   then, a local `make docker-up` is the honest current path.
+
+Then pick a surface.
+
+### From Python — `tolokaforge.runner.run_trial(...)`
+
+The library entry is a single keyword-only function. It takes a `TaskConfig`, a
+models dict, and returns a typed `TrialResult`. No config file, no
+`Orchestrator`, no filesystem side effects unless you pass an `output_dir`.
+
+```python
+from tolokaforge.adapters._task_loader import load_task_yaml
+from tolokaforge.runner import run_trial
+from tolokaforge.secrets import init_default
+
+init_default()  # reads .env into the singleton SecretManager
+
+task, _ = load_task_yaml("examples/native/tool_use/dataset/tasks/tool_use/tool_use_public_example_01/task.yaml")
+
+result = run_trial(
+    task=task,
+    models={"agent": {"provider": "openrouter", "name": "anthropic/claude-sonnet-4.6", "temperature": 0.0}},
+)
+
+print(result.trajectory.grade)
+```
+
+`runtime="auto"` is the default and delegates to the same task-driven substrate
+selection the CLI uses — you don't have to know whether the task needs a
+shared or per-trial backend. Errors surface as three named types (all
+importable from `tolokaforge`): `UnknownImplementationError` (registry lookup
+missed), `pydantic.ValidationError` (bad models config), `ProvisionError`
+(substrate failed to come up). Nothing is swallowed; `runtime_backend.close()`
+is guaranteed in a `finally`, so a driver that runs `run_trial` in a loop does
+not leak gRPC channels or Docker stacks.
+
+Runnable version: [`examples/library/run_trial.py`](../examples/library/run_trial.py).
+
+### From any language — `tolokaforge run-trial`
+
+`tolokaforge run-trial` reads one JSON-Lines message from stdin, runs one trial,
+and writes one JSON-Lines message to stdout. Every message carries a wire
+version (`"v":1`) that changes independently of the tolokaforge package
+version — a downstream harness pins against the wire, not the release.
+
+```bash
+$ echo '{"v":1,"type":"start","task":{...},"models":{"agent":{"provider":"openrouter","name":"anthropic/claude-sonnet-4.6"}}}' \
+    | tolokaforge run-trial
+{"v":1,"type":"result","result":{"trajectory":{"grade":{...},...}}}
+```
+
+- **stdin** — exactly one `start` message per invocation.
+- **stdout** — the wire only: exactly one `result` or `error` message, then
+  the process exits. Logs, tracebacks, and everything else go to stderr, so
+  the wire stays parseable.
+- **Exit codes** — `0` on `result`, non-zero on `error`. The `error` message
+  itself carries a typed `error_type` (`unknown_implementation`, `validation`,
+  `provision`, `protocol`, `internal`) so a caller can branch without parsing
+  prose.
+- **Signals** — `SIGTERM` and premature stdin EOF terminate the trial cleanly.
+
+Because the trial task is serialised across the wire, it carries no source
+directory of its own. If your task references files (grading rubrics, fixtures,
+tool code), spawn the subprocess with its working directory at the task-pack
+root, and file paths in the task will resolve.
+
+Runnable versions:
+- [`examples/run-trial/drive_run_trial.py`](../examples/run-trial/drive_run_trial.py) —
+  minimal "hello world": one trial, print the grade.
+- [`examples/run-trial/drive_run_trial_sweep.py`](../examples/run-trial/drive_run_trial_sweep.py)
+  — end-user shape: runs both bundled `tool_use` tasks against two models,
+  aggregates per-task per-model scores + cost + latency, prints a readable
+  comparison table. Handles `error` messages typed rather than as tracebacks.
+
+Full wire format spec: [`docs/API.md`](API.md#tolokaforge-run-trial).
+
+### As an extension point — entry-point registries
+
+Each of the three Protocol seams has a named `importlib.metadata` entry-point
+group:
+
+- `tolokaforge.runtime_backends`
+- `tolokaforge.trial_graders`
+- `tolokaforge.conductors`
+
+Anything registered in one of those groups — by tolokaforge itself for the
+built-ins, or by any `pip install`ed downstream package — resolves by name.
+To ship your own runtime backend named `my_substrate`:
+
+```toml
+# your_package/pyproject.toml
+[project.entry-points."tolokaforge.runtime_backends"]
+my_substrate = "your_package.runtime:factory"
+```
+
+Where `factory` is a callable matching the `RuntimeBackendFactory` type alias
+(`Callable[[RuntimeBackendContext], RuntimeBackend]`). Same shape for graders
+and conductors.
+
+Then, in code that composes your plug-in:
+
+```python
+result = run_trial(
+    task=task,
+    models={"agent": {...}},
+    runtime="my_substrate",  # resolves by name; unknown names fail loud
+)
+```
+
+The registry loader is fail-loud by design:
+
+- Duplicate names raise `DuplicateRegistrationError` at load, naming both
+  providing distributions — no silent last-wins.
+- Unknown names raise `UnknownImplementationError` with the list of known
+  names — no silent fallback.
+- A broken plug-in's `ImportError` propagates rather than being swallowed —
+  no silent skip.
+
+A broken third-party plug-in never breaks resolution of a healthy sibling,
+because discovery enumerates names and distributions without eagerly
+importing.
+
+## Use cases
+
+Concrete shapes of code that this decouples.
+
+### Agent lab — score my agent, don't reinvent grading
+
+You have your own agent loop, your own tool-invocation runtime, your own
+scheduler. You need trial execution + grading, not a whole harness. Drop the
+runner in as a scoring service:
+
+```python
+for problem in my_problem_set:
+    task = build_task_from_problem(problem)     # your code
+    result = run_trial(
+        task=task,
+        models={"agent": my_model_config()},    # your model
+    )
+    my_result_store.record(problem, result)     # your storage
+```
+
+You get typed `TrialResult` back with a full `Trajectory` (every message,
+every tool call), `Grade`, and cost/token/latency metrics. What you do with
+them is up to you — a research dashboard, a reward signal, a leaderboard.
+
+### Research sweep — model or task-variant comparison
+
+Compare two models across a small task set without standing up a batch run:
+
+```python
+for task in tasks:
+    for model_name in ["anthropic/claude-sonnet-4.6", "openai/gpt-4o"]:
+        result = run_trial(
+            task=task,
+            models={"agent": {"provider": "openrouter", "name": model_name}},
+        )
+        table.append((task.task_id, model_name, result.trajectory.grade.score))
+```
+
+For a runnable end-to-end version of this pattern — with error handling, a
+comparison table printed to stdout, and use of `tolokaforge run-trial` (so each
+trial runs in an isolated subprocess), see
+[`examples/run-trial/drive_run_trial_sweep.py`](../examples/run-trial/drive_run_trial_sweep.py).
+
+### Non-Python control plane
+
+You already have orchestration in Go / Rust / TypeScript / shell. Pipe JSON
+into `tolokaforge run-trial` and read one JSON message back. No FFI, no
+embedded interpreter, no cross-language type gymnastics.
+
+```bash
+# shell — one trial through the subprocess CLI
+cat trial_start.json | tolokaforge run-trial > trial_result.json
+```
+
+```typescript
+// TypeScript — same shape, different plumbing
+const child = spawn("tolokaforge", ["run-trial"]);
+child.stdin.write(JSON.stringify(startMessage) + "\n");
+child.stdin.end();
+const [resultLine] = await readOneJsonLine(child.stdout);
+```
+
+The wire format is versioned separately from the tolokaforge release — pin
+against `"v":1` and your driver keeps working across package upgrades.
+
+### Custom plug-in — swap a Protocol seam
+
+You want a rubric-based grader that calls a different judge model than the
+built-in one, without editing tolokaforge:
+
+```python
+# your_package/graders.py
+from tolokaforge.core.grading import Grade, TrialGrader
+
+class MyRubricGrader:
+    def grade(self, trajectory, ctx) -> Grade:
+        # your grading logic here, returning a Grade
+        ...
+
+def factory(ctx):
+    return MyRubricGrader()
+```
+
+```toml
+# your_package/pyproject.toml
+[project.entry-points."tolokaforge.trial_graders"]
+my_rubric = "your_package.graders:factory"
+```
+
+Install alongside tolokaforge (`pip install your_package tolokaforge`), then:
+
+```python
+result = run_trial(
+    task=task,
+    models={"agent": {...}},
+    trial_grader="my_rubric",   # your grader, resolved by name
+)
+```
+
+Same shape for custom runtime backends (`runtime="my_substrate"`) and custom
+conductors (`conductor="my_agent_loop"`).
+
+## Wire format quick-reference
+
+`tolokaforge run-trial` speaks a small JSON-Lines protocol. Every message
+carries `"v":1`.
+
+**Client → runner (stdin):**
+
+```json
+{"v":1,"type":"start","task":{...},"models":{"agent":{...}},"runtime":"auto","conductor":"in_process"}
+```
+
+`task` is a serialised `TaskConfig` (the shape `load_task_yaml` returns).
+`models` is a dict; the `"agent"` key is the AI model that plays the trial's
+agent role. `runtime` / `conductor` / `trial_grader` are optional; `"auto"` /
+`"in_process"` / `"runner_rpc"` are the defaults.
+
+**Runner → client (stdout, exactly one message):**
+
+```json
+{"v":1,"type":"result","result":{"trajectory":{...},"metrics":{...},"grade":{...}}}
+```
+
+or
+
+```json
+{"v":1,"type":"error","error_type":"unknown_implementation","message":"..."}
+```
+
+`error_type` is one of: `unknown_implementation`, `validation`, `provision`,
+`protocol`, `internal`. The five map 1:1 to the named error types from
+`run_trial`, plus `protocol` (bad wire shape) and `internal` (runner bug —
+should be reported).
+
+Unknown top-level keys on `start` raise `protocol` errors rather than being
+silently ignored. A typo like `"runtme": "auto"` fails loud with the offending
+key name rather than falling back to the default.
+
+Full spec, including the (experimental) `event` progress subtypes and the
+`cancel` control message: [`docs/API.md`](API.md#tolokaforge-run-trial).
+
+## Compatibility guarantees
+
+Three surfaces are versioned commitments — the milestone-13 ADR
+([`docs/adr/0022-runtime-independence.md`](adr/0022-runtime-independence.md))
+locks them:
+
+1. **Entry-point group names + built-in registration names.** New built-ins
+   can be added; existing names won't be renamed or removed without a
+   deprecation cycle.
+2. **`run_trial(...)`'s signature, return type, and named error types.** New
+   optional keyword arguments can be added; positional shape and return
+   surface stay stable.
+3. **`tolokaforge run-trial` wire format at `"v":1`.** New optional fields on
+   existing message types are allowed (additive); breaking changes require a
+   `v` bump. New message subtypes (like `event`) are experimental until
+   promoted.
+
+Everything else — internal module layout, container image tag naming,
+Dockerfile structure, `.env` bootstrap details — may change without notice.
+
+## What's not shipped yet
+
+Milestone 13 shipped the three consumer surfaces above and slimmed the runner
+Docker image (390 MB, down from 659 MB). A follow-up milestone (14, in
+planning) closes the last "you still need the tolokaforge repo checked out"
+gaps:
+
+- **Public Docker image on a registry** — today the runner image builds
+  locally as `tolokaforge-runner:local`. M14 publishes to
+  `ghcr.io/toloka/tolokaforge-runner:X.Y.Z` so downstream can `docker pull`.
+- **Public `tolokaforge.load_task(path)` helper** — today, obtaining a
+  `TaskConfig` from a YAML file requires importing from a private path
+  (`tolokaforge.adapters._task_loader.load_task_yaml`). Tracked as issue #547.
+- **Standalone compose recipe** — today's `make docker-up` builds from the
+  repo; M14 ships a `deploy/standalone/docker-compose.yaml` that composes the
+  published runner + db-service images so a cold host with only Docker
+  installed can bring the whole stack up.
+
+None of the shipped surfaces above will change — the M14 additions layer on
+top.
+
+## Under review
+
+The current runner receives its LLM / OAuth credentials via a single env var
+(`TOLOKAFORGE_SECRETS_JSON`) set by the substrate stack builder at container
+spawn time. That works for today's single-operator, single-tenant use, but the
+architectural question of whether per-trial credential delivery should flow
+through the Conductor's control surface (instead of being baked into the
+container env) is under review — see issue #573. The outcome may reshape how
+custom `Conductor` and `RuntimeBackend` plug-ins interact with secrets;
+today's env-var path is stable for the shipped surfaces, but check that issue
+before building a plug-in that leans heavily on the current model.
+
+## See also
+
+- [`docs/API.md`](API.md) — full API reference for `run_trial` and the
+  `run-trial` wire format.
+- [`docs/RUNTIME_BACKENDS.md`](RUNTIME_BACKENDS.md) — the `RuntimeBackend`
+  Protocol contract, existing implementations, and plug-in registration
+  mechanics.
+- [`docs/RUNNER.md`](RUNNER.md) — the batch orchestration flow (prepare /
+  worker / status, distributed workers). Different tool for a different job.
+- [`docs/adr/0022-runtime-independence.md`](adr/0022-runtime-independence.md)
+  — the design decision this guide describes, with rationale and the
+  compatibility-surfaces table.
+- [`examples/library/`](../examples/library/) — Python library-entry example.
+- [`examples/run-trial/`](../examples/run-trial/) — subprocess CLI examples,
+  minimal + comparison-sweep.

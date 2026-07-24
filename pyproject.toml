@@ -59,9 +59,7 @@ dependencies = [
     "deepdiff>=6.0.0",
     "toml>=0.10.0",
     "addict>=2.4.0",
-    "odata-query>=0.10.0",
     "starlette>=0.52.1",
-    "sqlalchemy>=2.0.48",
     "typesense>=2.0.0",
     "structlog>=24.0.0",
     # Docker runtime — the only supported runtime for `tolokaforge run`.
@@ -69,7 +67,6 @@ dependencies = [
     # invocation requires these (there is no in-process runtime).
     "docker>=7.0.0",
     "grpcio>=1.60.0",
-    "grpcio-tools>=1.60.0",
     "grpcio-health-checking>=1.60.0",
     # Per-trial runtime backend uses testcontainers to materialise one
     # docker-compose project per trial. Imported at module level by
@@ -100,6 +97,19 @@ server = [
     "fastapi>=0.108.0",
     "uvicorn>=0.25.0",
 ]
+# SSOT for the runner image's dependency surface. The runner's own harness
+# imports come from [project.dependencies]; these are the domain-tool runtime
+# deps that tool code extracted from tool_artifacts needs at grade time.
+runner = [
+    "asyncpg>=0.29.0",
+    "psycopg2-binary>=2.9.0",
+    "alembic>=1.13.0",
+    "python-jose>=3.3.0",
+    "fastapi>=0.108.0",
+    "uvicorn>=0.25.0",
+    "sqlalchemy>=2.0.48",
+    "odata-query>=0.10.0",
+]
 rag = [
     "rank-bm25>=0.2.2",
 ]
@@ -115,7 +125,7 @@ adapters = [
     "tolokaforge[terminal_bench]",
 ]
 all = [
-    "tolokaforge[dx,browser,server,rag,office,adapters]",
+    "tolokaforge[dx,browser,server,rag,office,adapters,runner]",
 ]
 
 [project.urls]
@@ -126,6 +136,18 @@ Issues = "https://github.com/Toloka/tolokaforge/issues"
 
 [project.scripts]
 tolokaforge = "tolokaforge._entry:main"
+
+[project.entry-points."tolokaforge.runtime_backends"]
+shared = "tolokaforge.core.shared_stack_runtime:shared_runtime_backend_factory"
+per_trial = "tolokaforge.core.per_trial_runtime:per_trial_runtime_backend_factory"
+in_memory = "tolokaforge.core.runtime:in_memory_runtime_backend_factory"
+
+[project.entry-points."tolokaforge.trial_graders"]
+runner_rpc = "tolokaforge.core.trial_grader:runner_rpc_trial_grader_factory"
+
+[project.entry-points."tolokaforge.conductors"]
+in_process = "tolokaforge.core.conductor:in_process_conductor_factory"
+in_memory = "tolokaforge.core.conductor:in_memory_conductor_factory"
 
 [tool.hatch.build]
 exclude = [

@@ -609,17 +609,6 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # Pass actual table names and data from initial_state so model registration uses correct names
         db_table_names = list(initial_state.tables.keys()) if initial_state.tables else []
         initial_state_data = initial_state.tables if initial_state.tables else {}
-        # Per-table primary-key overrides from grading config (default "id"). Passed to
-        # the DB proxy so upsert/delete/lookup key resolution is data-driven rather than
-        # introspecting model source (which fails when the domain source is not on disk).
-        state_checks = task_description.grading.state_checks if task_description.grading else None
-        id_fields = dict(state_checks.id_fields) if state_checks else {}
-        unknown_tables = set(id_fields) - set(db_table_names)
-        if unknown_tables:
-            logger.warning(
-                f"RegisterTrial: {trial_id} - state_checks.id_fields names unknown "
-                f"table(s) (typo?): {sorted(unknown_tables)}"
-            )
         try:
             tool_factory = ToolFactory(
                 self.db_client,
@@ -627,7 +616,6 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 rag_client_for_trial,
                 db_table_names,
                 initial_state_data,
-                id_fields=id_fields,
             )
 
             # Set domain on DB proxy so search_policy tools can resolve

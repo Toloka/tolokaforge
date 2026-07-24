@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import time
 from dataclasses import dataclass
@@ -61,9 +62,51 @@ from tolokaforge.runner import (
 from tolokaforge.tools.registry import ToolResult
 
 if TYPE_CHECKING:  # pragma: no cover — type-only imports for provisioning surface
+    from tolokaforge.core.plugin_registry import RuntimeBackendBuildContext
     from tolokaforge.core.trial import TrialSpec
 
 logger = logging.getLogger(__name__)
+
+
+_DEFAULT_DB_SERVICE_URL = "http://tolokaforge-db-service:8000"
+"""Runner-perspective DB service URL the docker stack injects into the runner
+container at start (`tolokaforge/docker/stacks/core.py`). The orchestrator
+mirrors the value on ``TrialSpec.env_endpoints`` so a future out-of-process
+runner reads its service URLs from the spec instead of its own env."""
+
+
+def _normalise_runner_url(runner_address: str) -> str:
+    """Prepend ``http://`` to a bare ``host:port`` runner address, leaving
+    fully-qualified URLs untouched."""
+    if runner_address.startswith(("http://", "https://")):
+        return runner_address
+    return f"http://{runner_address}"
+
+
+def _build_env_endpoints(runner_address: str) -> EnvEndpoints:
+    """Resolve the per-trial service URLs for inclusion in :class:`TrialSpec`.
+
+    Field semantics:
+
+    * ``runner_url`` — derived from the orchestrator's known runner
+      address (the value passed to :class:`SharedStackRuntimeBackend`). Always set.
+    * ``db_url`` — populated in built-in-stack mode from
+      ``DB_SERVICE_URL`` in the environment (or the default the docker
+      stack injects, ``_DEFAULT_DB_SERVICE_URL``). Env_manifest mode
+      resolves it best-effort from the task-declared compose stack; a
+      missing ``db-service`` leaves it ``None`` — see
+      :class:`EnvEndpoints`.
+    * ``rag_url`` — optional. Reads ``RAG_SERVICE_URL`` from the
+      environment if set, otherwise stays ``None``. ``rag-service``
+      ships in ``full_stack`` only, so a ``core_stack`` run with no
+      override resolves to ``None`` — carrying a hardcoded RAG URL
+      would point at a service that isn't running.
+    """
+    return EnvEndpoints(
+        db_url=os.environ.get("DB_SERVICE_URL", _DEFAULT_DB_SERVICE_URL),
+        rag_url=os.environ.get("RAG_SERVICE_URL"),
+        runner_url=_normalise_runner_url(runner_address),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1242,3 +1285,27 @@ class SharedStackRuntimeBackend:
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit"""
         self.close()
+
+
+def shared_runtime_backend_factory(
+    ctx: RuntimeBackendBuildContext,
+) -> SharedStackRuntimeBackend:
+    """Build a :class:`SharedStackRuntimeBackend` from a build context.
+
+    Task-declared-stack mode (``ctx.env_manifest`` set) materialises the
+    task-authored compose stack once per run; built-in-stack mode wires the
+    gRPC client to ``ctx.runner_address`` and resolves service URLs from the
+    environment via :func:`_build_env_endpoints`.
+    """
+    if ctx.env_manifest is not None:
+        return SharedStackRuntimeBackend(
+            env_manifest=ctx.env_manifest,
+            run_id=ctx.run_id,
+            seeds=ctx.seeds,
+            log_capture=ctx.log_capture,
+        )
+    return SharedStackRuntimeBackend(
+        runner_address=ctx.runner_address,
+        endpoints=_build_env_endpoints(ctx.runner_address),
+        seeds=ctx.seeds,
+    )

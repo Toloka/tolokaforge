@@ -20,7 +20,12 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-from tolokaforge.core.models import RunConfig
+from tolokaforge.core.models import (
+    DOCKER_RUNTIME_ALIAS_TARGET,
+    LEGACY_DOCKER_RUNTIME_ALIAS,
+    RunConfig,
+)
+from tolokaforge.core.plugin_registry import available_runtime_backends
 
 logger = logging.getLogger(__name__)
 
@@ -324,6 +329,26 @@ def _validate_orchestrator(raw: dict[str, Any]) -> list[ValidationIssue]:
                 message=f"max_turns={max_turns} is very high; episodes may be expensive",
             )
         )
+
+    runtime = orch.get("runtime")
+    if runtime is not None:
+        # ``docker`` is a legacy alias for ``shared`` resolved before any
+        # registry lookup (the registry has no ``docker`` name); coerce it
+        # here so a still-supported ``runtime: docker`` config validates.
+        if runtime == LEGACY_DOCKER_RUNTIME_ALIAS:
+            runtime = DOCKER_RUNTIME_ALIAS_TARGET
+        known = available_runtime_backends()
+        if runtime not in known:
+            issues.append(
+                ValidationIssue(
+                    severity=Severity.ERROR,
+                    path="orchestrator.runtime",
+                    message=(
+                        f"Unknown runtime backend {orch['runtime']!r}. "
+                        f"Registered backends: {', '.join(known)}."
+                    ),
+                )
+            )
 
     return issues
 

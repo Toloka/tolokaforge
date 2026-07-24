@@ -46,6 +46,10 @@ or in `.env` — `tolokaforge run` reads it from the environment.
 
 See [Python Package Guide](docs/PYTHON_PACKAGE.md) for all extras and programmatic API usage.
 
+To run a single trial in-process from Python, `tolokaforge.runner.run_trial(...)` returns a typed `TrialResult` — see [`docs/API.md`](docs/API.md#run_trial) and the runnable [`examples/library/run_trial.py`](examples/library/run_trial.py).
+
+To drive a trial from any language over a pipe, `tolokaforge run-trial` runs one trial as a subprocess speaking a JSON-Lines wire — see [`docs/API.md`](docs/API.md#tolokaforge-run-trial) and the runnable [`examples/run-trial/drive_run_trial.py`](examples/run-trial/drive_run_trial.py).
+
 ## Quick Start
 
 ```bash

@@ -51,3 +51,4 @@ Day-to-day implementation choices that don't affect the system shape do *not* ne
 | [0019](0019-front-end-plugin-namespace.md) | Front-end pluggability via `tolokaforge.dx` | Accepted |
 | [0020](0020-judge-protocol.md) | `Judge` Protocol — the grading-plane judge seam | Accepted |
 | [0021](0021-component-monitoring-seam.md) | Component-oriented monitoring — `ComponentSnapshot` / `component_*` events, panel widget with auto-expand-on-fail | Accepted |
+| [0022](0022-runtime-independence.md) | Runtime independence — Protocol registries, `run_trial`, `run-trial` subprocess contract | Accepted |

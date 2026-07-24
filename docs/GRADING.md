@@ -94,37 +94,12 @@ would treat `"0042"`-style values as numbers. This key is honored identically on
 both grading substrates (the core `GradingEngine`/`to_hashable` path and the
 runner gRPC/`compute_stable_hash` path).
 
-### Declaring a table's primary key for non-`id` tables
-
-The grader finds and writes records by primary key and assumes the key column is
-literally `id`. Tables keyed by something else (e.g. a `<name>_id` column) must
-declare it, or upserts/deletes cannot resolve the key. Declare it per table under
-`state_checks.id_fields`; a table absent from the map defaults to `"id"`, so
-`id`-keyed domains need nothing:
-
-```yaml
-state_checks:
-  hash:
-    enabled: true
-    weight: 1.0
-  id_fields:                          # per-table primary-key override; absent => "id"
-    widgets: widget_id
-    line_items: line_id
-```
-
-Map keys are the table names as they appear in `initial_state`. This is config
-data that travels with the task, so key resolution never depends on reading model
-source at runtime (the previous `inspect.getsource`-based guess broke whenever the
-domain source was not on disk). A table keyed by neither `"id"` nor a declared
-field fails loud at write time with the exact `id_fields` entry to add.
-
 ### Best Practices
 
 - Filter non-deterministic fields (timestamps, UUIDs) before hashing
 - Prefer golden-action replay over storing a hash literal; if you must store one,
   recompute it whenever the hashing algorithm changes (see the callout above)
 - Fold numeric strings per-field (`numeric_string_fields`), never as a global switch
-- Declare non-`id` primary keys per table (`id_fields`); leave `id`-keyed tables unset
 - Combine with JSONPath assertions using `weight: 0.8` for flexibility
 
 ---
