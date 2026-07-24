@@ -15,7 +15,8 @@
     "env_assertions": [],
     "hash": null,
     "jsonpaths": [],
-    "numeric_string_fields": []
+    "numeric_string_fields": [],
+    "relaxed_validation": false
   },
   "transcript_rules": {
     "communicate_info": [],

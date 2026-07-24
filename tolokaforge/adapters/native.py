@@ -18,6 +18,7 @@ from tolokaforge.core.project_loader import (
     resolve_effective_judge_customization,
 )
 from tolokaforge.core.project_loader import resolve as resolve_environment
+from tolokaforge.runner.id_resolution import check_id_fields_reference_known_tables
 
 if TYPE_CHECKING:
     from tolokaforge.runner.models import TaskDescription
@@ -654,6 +655,17 @@ class NativeAdapter(BaseAdapter):
 
                 db_probes = [DbProbe(**probe) for probe in state_checks_data.get("db_probes", [])]
 
+                id_fields_declared = dict(state_checks_data.get("id_fields", {}))
+                relaxed_validation = bool(state_checks_data.get("relaxed_validation", False))
+                err = check_id_fields_reference_known_tables(
+                    id_fields_declared,
+                    list(initial_tables),
+                    context=task_id,
+                    relaxed=relaxed_validation,
+                )
+                if err:
+                    raise ValueError(err)
+
                 state_checks = StateChecksConfig(
                     hash_enabled=bool(hash_config and hash_config.get("enabled", False)),
                     expected_hash=hash_config.get("expected_state_hash") if hash_config else None,
@@ -662,6 +674,8 @@ class NativeAdapter(BaseAdapter):
                     env_assertions=env_assertions,
                     db_probes=db_probes,
                     numeric_string_fields=list(state_checks_data.get("numeric_string_fields", [])),
+                    id_fields=id_fields_declared,
+                    relaxed_validation=relaxed_validation,
                 )
 
             # Build transcript rules

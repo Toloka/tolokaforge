@@ -1,0 +1,17 @@
+combine:
+  method: weighted
+  weights:
+    state_checks: 1.0
+    transcript_rules: 0.0
+  pass_threshold: 0.7
+
+state_checks:
+  jsonpaths: []
+  id_fields:
+    widgets: widget_id
+
+transcript_rules:
+  max_turns: 5
+  disallow_regex: []
+
+llm_judge: null

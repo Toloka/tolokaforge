@@ -94,12 +94,70 @@ would treat `"0042"`-style values as numbers. This key is honored identically on
 both grading substrates (the core `GradingEngine`/`to_hashable` path and the
 runner gRPC/`compute_stable_hash` path).
 
+### Declaring a table's primary key for non-`id` tables
+
+The grader finds and writes records by primary key and assumes the key column is
+literally `id`. Tables keyed by something else (e.g. a `<name>_id` column) must
+declare it, or upserts/deletes cannot resolve the key. Declare it per table under
+`state_checks.id_fields`; a table absent from the map defaults to `"id"`, so
+`id`-keyed domains need nothing:
+
+```yaml
+state_checks:
+  hash:
+    enabled: true
+    weight: 1.0
+  id_fields:                          # per-table primary-key override; absent => "id"
+    widgets: widget_id
+    line_items: line_id
+```
+
+Map keys are the table names as they appear in `initial_state`. This is config
+data that travels with the task, so key resolution never depends on reading model
+source at runtime (the previous `inspect.getsource`-based guess broke whenever the
+domain source was not on disk). A table keyed by neither `"id"` nor a declared
+field fails loud at write time with the exact `id_fields` entry to add. The
+MCP-subprocess and Tau diff-sync paths (`_sync_mcp_state_to_db`,
+`TauSyncToolWrapper._sync_state_changes`) consult the same map, so records with
+their key omitted also fail loud instead of collapsing to a single `None` bucket
+and silently corrupting the state diff.
+
+The adapter cross-checks the `id_fields` keys against `initial_state.tables` at
+task-description build time — a typo names an "unknown table" and the pack fails
+loud with the exact remediation (fix the typo, add the table, or opt in below).
+Legacy tasks that pre-date the check can downgrade the raise to a warning:
+
+```yaml
+state_checks:
+  id_fields:
+    legacy_widgets: widget_id
+  relaxed_validation: true            # temporary — legacy escape hatch only
+```
+
+`relaxed_validation` defaults to `false`; new tasks should fix typos rather than
+enable it. The runner also runs the same check as belt-and-suspenders for engines
+that bypass `NativeAdapter.to_task_description`.
+
+**Tables materialized only by `initialization_actions`**: the cross-check reads
+`initial_state.tables` (typically populated from `initial_state.json_db`). A
+table that first appears only via an `initialization_action` won't be visible to
+the check — an `id_fields` entry for such a table needs `relaxed_validation:
+true` today. Add the table to `initial_state.json_db` (even with an empty list)
+if you want the strict check to accept it.
+
+**Runner-engine version lock**: `id_fields` and `relaxed_validation` are declared
+on the runner-side `StateChecksConfig` (`extra="forbid"`), so a new engine emitting
+these keys requires a runner image built from the same release. Old engine + new
+runner is safe (core-side `extra="ignore"`).
+
 ### Best Practices
 
 - Filter non-deterministic fields (timestamps, UUIDs) before hashing
 - Prefer golden-action replay over storing a hash literal; if you must store one,
   recompute it whenever the hashing algorithm changes (see the callout above)
 - Fold numeric strings per-field (`numeric_string_fields`), never as a global switch
+- Declare non-`id` primary keys per table (`id_fields`); leave `id`-keyed tables unset
+- Use `relaxed_validation` only as a short-lived escape hatch for legacy tasks
 - Combine with JSONPath assertions using `weight: 0.8` for flexibility
 
 ---

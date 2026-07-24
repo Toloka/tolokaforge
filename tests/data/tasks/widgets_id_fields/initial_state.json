@@ -1,0 +1,6 @@
+{
+  "widgets": [
+    {"widget_id": "W1", "status": "pending"},
+    {"widget_id": "W2", "status": "active"}
+  ]
+}

@@ -57,6 +57,10 @@ from tolokaforge.runner.grading import (
     evaluate_jsonpath_checks,
     evaluate_transcript_rules,
 )
+from tolokaforge.runner.id_resolution import (
+    check_id_fields_reference_known_tables,
+    compute_diff_ops,
+)
 from tolokaforge.runner.models import (
     GoldenAction,
     GradeComponents,
@@ -609,6 +613,20 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # Pass actual table names and data from initial_state so model registration uses correct names
         db_table_names = list(initial_state.tables.keys()) if initial_state.tables else []
         initial_state_data = initial_state.tables if initial_state.tables else {}
+        # Per-table primary-key overrides from grading config (default "id"). Passed to
+        # the DB proxy so upsert/delete/lookup key resolution is data-driven rather than
+        # introspecting model source (which fails when the domain source is not on disk).
+        state_checks = task_description.grading.state_checks if task_description.grading else None
+        id_fields = dict(state_checks.id_fields) if state_checks else {}
+        relaxed = bool(state_checks.relaxed_validation) if state_checks else False
+        # Belt-and-suspenders: NativeAdapter runs this check at task-description build
+        # time, but engines using other adapters (mcp_core, custom) bypass it.
+        err = check_id_fields_reference_known_tables(
+            id_fields, db_table_names, context=f"RegisterTrial: {trial_id}", relaxed=relaxed
+        )
+        if err:
+            logger.error(err)
+            return pb2.RegisterTrialResponse(success=False, error=err)
         try:
             tool_factory = ToolFactory(
                 self.db_client,
@@ -616,6 +634,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 rag_client_for_trial,
                 db_table_names,
                 initial_state_data,
+                id_fields=id_fields,
             )
 
             # Set domain on DB proxy so search_policy tools can resolve
@@ -1726,8 +1745,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         """Sync an MCP server's in-memory state to the db-service via diff mutations.
 
         Computes inserts / updates / deletes for every table and applies them
-        through ``db_client.mutate``.  Records are keyed on the ``id`` field
-        (falling back to ``_id``).
+        through ``db_client.mutate``. Keys are resolved per table from
+        ``state_checks.id_fields`` (default ``"id"``); a record missing its
+        resolved key raises fail-loud rather than collapsing every keyless
+        record to a single ``None`` bucket.
 
         Args:
             trial_id:  Trial identifier used by db-service.
@@ -1735,36 +1756,28 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         """
         current_response = await self.db_client.get_state(trial_id)
         current_state: dict[str, list[dict]] = current_response.data
+        id_fields = self._id_fields_for_trial(trial_id)
 
         for table_name, new_records in mcp_state.items():
             current_records = current_state.get(table_name, [])
             if current_records == new_records:
                 continue
-
-            before_by_id = {self._mcp_record_id(r): r for r in current_records}
-            after_by_id = {self._mcp_record_id(r): r for r in new_records}
-
-            operations: list[dict] = []
-            for rid, rec in after_by_id.items():
-                if rid not in before_by_id:
-                    operations.append({"op": "insert", "record": rec})
-            for rid, rec in after_by_id.items():
-                if rid in before_by_id and before_by_id[rid] != rec:
-                    operations.append({"op": "upsert", "record": rec, "key": "id"})
-            for rid in before_by_id:
-                if rid not in after_by_id:
-                    operations.append({"op": "delete", "filter": {"id": rid}})
-
+            operations = compute_diff_ops(current_records, new_records, table_name, id_fields)
             if operations:
                 await self.db_client.mutate(trial_id, table_name, operations)
                 logger.debug(
                     f"_sync_mcp_state_to_db: {trial_id}/{table_name} — {len(operations)} op(s)"
                 )
 
-    @staticmethod
-    def _mcp_record_id(record: dict) -> Any:
-        """Return the primary-key value of a record (``id`` or ``_id``)."""
-        return record.get("id") or record.get("_id")
+    def _id_fields_for_trial(self, trial_id: str) -> dict[str, str]:
+        """Return the id_fields map declared by the trial's grading config, or ``{}``."""
+        trial = self.trials.get(trial_id)
+        if trial is None or trial.task_description is None:
+            return {}
+        grading = trial.task_description.grading
+        if grading is None or grading.state_checks is None:
+            return {}
+        return dict(grading.state_checks.id_fields)
 
     # =========================================================================
     # GetState - Debug endpoint to inspect current state

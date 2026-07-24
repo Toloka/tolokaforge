@@ -66,6 +66,31 @@ class TestNativeAdapterCanon:
         snap.assert_match(actual, "grading_config.json")
 
 
+class TestWidgetsIdFieldsCanon:
+    """Canonical coverage for a non-``id``-keyed table with declared ``id_fields``.
+
+    Every other snapshot in this suite serializes ``id_fields: {}`` because the
+    existing fixtures happen to be id-keyed. This fixture locks in the
+    round-trip for the shape production packs actually use (tau_manufacturing
+    lot_id, travel_marketplace reservation_id, etc.) — so a regression that
+    drops or renames ``id_fields`` / ``relaxed_validation`` on the runner-side
+    ``StateChecksConfig`` fails the snapshot immediately.
+    """
+
+    def test_grading_config(self, native_adapter, canon_snapshot):
+        grading = native_adapter.get_grading_config("widgets_id_fields")
+        snap = canon_snapshot("native_widgets_id_fields")
+        snap.assert_match(grading.model_dump(mode="json"), "grading_config.json")
+
+    def test_task_description_carries_id_fields(self, native_adapter):
+        # Full to_task_description round-trip: initial_state.tables and the
+        # declared id_fields survive to the runner-facing TaskDescription.
+        td = native_adapter.to_task_description("widgets_id_fields")
+        assert td.grading.state_checks.id_fields == {"widgets": "widget_id"}
+        assert td.grading.state_checks.relaxed_validation is False
+        assert td.initial_state and "widgets" in td.initial_state.tables
+
+
 class TestNativeAdapterDomainCanon:
     """Canonical tests for the shared-domain layout.
 

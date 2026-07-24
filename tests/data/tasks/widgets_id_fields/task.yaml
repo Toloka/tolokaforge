@@ -1,0 +1,28 @@
+task_id: widgets_id_fields
+name: "Widgets (non-id-keyed) canonical fixture"
+category: test
+description: |
+  Canonical fixture locking in state_checks.id_fields serialization for a
+  domain whose primary table is keyed by widget_id (not the literal "id").
+  Mirrors the shape used by production packs (tau_manufacturing lot_id,
+  travel_marketplace reservation_id, etc.).
+
+initial_state:
+  json_db: initial_state.json
+
+tools:
+  agent:
+    enabled:
+      - write_file
+  user:
+    enabled: []
+
+user_simulator:
+  mode: scripted
+  scripted_flow: []
+
+policies:
+  disallowed_actions: []
+  guidance: []
+
+grading: grading.yaml

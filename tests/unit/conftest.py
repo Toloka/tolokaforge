@@ -8,11 +8,32 @@ gets a fake wheel artifact instead of triggering a real wheel build.
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
 import pytest
 
 from tolokaforge.docker.wheel_resolver import WheelArtifact
+
+
+class FakeMutatingDBClient:
+    """Recorder for ``mutate`` calls; answers ``get_state`` from a seeded store.
+
+    Shared between the Tau and MCP diff-sync tests — both drive a diff path
+    that only touches these two methods on the DB client.
+    """
+
+    def __init__(self, state: dict[str, list[dict]] | None = None) -> None:
+        self._state = {t: [dict(r) for r in v] for t, v in (state or {}).items()}
+        self.mutations: list[tuple[str, list[dict]]] = []
+
+    async def get_state(self, trial_id: str) -> Any:
+        return SimpleNamespace(data=self._state)
+
+    async def mutate(self, trial_id: str, table_name: str, operations: list[dict]) -> Any:
+        self.mutations.append((table_name, operations))
+        return SimpleNamespace(success=True)
 
 
 @pytest.fixture(autouse=True)
