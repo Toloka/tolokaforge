@@ -49,6 +49,14 @@ jobs:
           - rag-service
           - mock-web
     steps:
+      # Pull the base image BEFORE logging in to Docker Hub. Once we log in
+      # with a repo-scoped OIDC token, `docker pull` uses that token for
+      # every Docker Hub call — including `library/alpine`, which the token
+      # is NOT scoped for (it's scoped to `tolokasoft1/tolokaforge-*` only).
+      # Anonymous pull works fine BEFORE login and avoids the scope conflict.
+      - name: Pull tiny base image (anonymous, pre-login)
+        run: docker pull alpine:3.19
+
       - name: Mint Docker Hub OIDC token
         id: docker_oidc
         uses: docker/oidc-action@v1
@@ -60,9 +68,6 @@ jobs:
         with:
           username: tolokasoft1
           password: ${{ steps.docker_oidc.outputs.token }}
-
-      - name: Pull tiny base image
-        run: docker pull alpine:3.19
 
       - name: Retag and push to Docker Hub
         env:
