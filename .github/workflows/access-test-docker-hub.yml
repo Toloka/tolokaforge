@@ -1,0 +1,96 @@
+# Access test — Docker Hub OIDC + environment gating verification.
+#
+# THROWAWAY workflow. Verifies that the Docker Hub OIDC connection
+# provisioned by Leonid (2026-07-23) — plus the `release` and `pre-stable`
+# GitHub environments — authenticate end-to-end and can push to the four
+# `tolokasoft1/tolokaforge-*` repos, BEFORE we invest in the real M14-B
+# publish workflow.
+#
+# Delete this workflow once M14-B lands. Its own `workflow_dispatch`
+# dry-run supersedes this test.
+#
+# Prerequisite (one-time, temporary):
+#   - Both `release` and `pre-stable` GitHub environments must transiently
+#     allow `main` as a deployment branch — otherwise `workflow_dispatch`
+#     from `main` fails the env's deployment-ref check before OIDC runs.
+#     Remove `main` from the allowed-branches lists after the test passes.
+#
+# Usage:
+#   1. From the Actions tab, pick "Access test — Docker Hub OIDC".
+#   2. Click "Run workflow", choose `env_name` + `target_repo`, run.
+#   3. Watch each step succeed. On failure, the failing step name pinpoints
+#      which link in the OIDC chain broke:
+#        - "Mint Docker Hub OIDC token" — connection ID or claim mismatch
+#        - "Docker Hub login" — token valid but Docker Hub rejects it
+#        - "Retag and push to Docker Hub" — auth OK but push scope wrong
+#        - "Verify pushed image is pullable" — push OK but pull failed
+#   4. Cleanup: delete the pushed `:access-test-*` tags from the Docker Hub
+#      UI (or leave them — they don't collide with semver-based tags).
+
+name: Access test — Docker Hub OIDC
+
+on:
+  workflow_dispatch:
+    inputs:
+      env_name:
+        description: GitHub environment to test
+        required: true
+        type: choice
+        options:
+          - release
+          - pre-stable
+      target_repo:
+        description: Which of the 4 image repos to push to
+        required: true
+        type: choice
+        options:
+          - runner
+          - db-service
+          - rag-service
+          - mock-web
+
+jobs:
+  test-access:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.env_name }}
+    permissions:
+      id-token: write   # required for OIDC token minting
+      contents: read
+    steps:
+      - name: Mint Docker Hub OIDC token
+        id: docker_oidc
+        uses: docker/oidc-action@v1
+        with:
+          connection_id: "06a2983d-e4d1-473e-8dab-f1d6ead9bc8f"
+
+      - name: Docker Hub login
+        uses: docker/login-action@v3
+        with:
+          username: tolokasoft1
+          password: ${{ steps.docker_oidc.outputs.token }}
+
+      - name: Pull tiny base image
+        run: docker pull alpine:3.19
+
+      - name: Retag and push to Docker Hub
+        env:
+          IMAGE: tolokasoft1/tolokaforge-${{ inputs.target_repo }}:access-test-${{ inputs.env_name }}
+        run: |
+          docker tag alpine:3.19 "$IMAGE"
+          docker push "$IMAGE"
+
+      - name: Verify pushed image is pullable
+        env:
+          IMAGE: tolokasoft1/tolokaforge-${{ inputs.target_repo }}:access-test-${{ inputs.env_name }}
+        run: |
+          docker rmi "$IMAGE"
+          docker pull "$IMAGE"
+
+      - name: Report
+        run: |
+          echo "OIDC -> push -> pull chain works for:"
+          echo "  env:  ${{ inputs.env_name }}"
+          echo "  repo: tolokasoft1/tolokaforge-${{ inputs.target_repo }}"
+          echo "  tag:  access-test-${{ inputs.env_name }}"
+          echo
+          echo "Cleanup: delete this tag from Docker Hub UI when done."
