@@ -46,6 +46,15 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T", bound=BaseModel)
 
 
+class IdFieldResolutionError(ValueError):
+    """Raised when a table's primary-key field cannot be determined.
+
+    The proxy resolves the key field from config (state_checks.id_fields) with a
+    literal "id" default. If a table is keyed by neither "id" nor a configured
+    field, upsert/delete cannot proceed, so we fail loud with the exact fix.
+    """
+
+
 class DBServiceProxy:
     """
     Proxy that looks like InMemoryDatabase but talks to DB Service.
@@ -69,6 +78,7 @@ class DBServiceProxy:
         trial_id: str,
         model_registry: dict[str, type[BaseModel]] | None = None,
         db_table_names: list[str] | None = None,
+        id_fields: dict[str, str] | None = None,
     ):
         """
         Initialize the DB Service proxy.
@@ -80,10 +90,17 @@ class DBServiceProxy:
                            If not provided, records are returned as dicts
             db_table_names: Optional list of actual table names from initial_state.
                            Used for fallback table name resolution when model is not registered.
+            id_fields: Optional per-table primary-key overrides (table_name -> key
+                           field), from grading config state_checks.id_fields. A table
+                           absent from the map resolves to the literal "id".
         """
         self.db_client = db_client
         self.trial_id = trial_id
         self.db_table_names = db_table_names or []
+        # Per-table primary-key field (table_name -> key field). Data-driven so
+        # upsert/delete/lookup key resolution never depends on reading model source
+        # at runtime; a table absent here resolves to "id".
+        self._id_fields: dict[str, str] = dict(id_fields or {})
         # Domain name for TypeSense search (used by search_policy tools
         # that call getattr(db, "domain") to look up the registry).
         self.domain: str | None = None
@@ -267,24 +284,27 @@ class DBServiceProxy:
         if hasattr(obj, "id"):
             return obj.id
 
-    def _get_id_field_name(self, obj: BaseModel) -> str:
-        """Get the ID field name of a Pydantic model instance."""
-        if hasattr(obj, "get_id"):
-            import inspect
+    def _resolve_id_field(self, model_cls: type[BaseModel]) -> str:
+        """Primary-key field name for a table's write/delete operations.
 
-            try:
-                source = inspect.getsource(obj.get_id)
-                for line in source.split("\n"):
-                    line = line.strip()
-                    if line.startswith("return self."):
-                        return line.replace("return self.", "").strip()
-            except (TypeError, OSError):
-                pass
-        if hasattr(obj, "id"):
+        Config-first (state_checks.id_fields), literal-"id" default, fail loud.
+        Never reads model source: the old inspect.getsource path raised OSError
+        whenever the domain's source file was not on disk at runtime (e.g. code
+        loaded from a cleaned-up temp dir), silently breaking upserts/deletes.
+        Resolving from config data is stable across every runtime.
+        """
+        table_name = self._get_table_name(model_cls)
+        configured = self._id_fields.get(table_name)
+        if configured:
+            return configured
+        if "id" in getattr(model_cls, "model_fields", {}):
             return "id"
-        raise ValueError(f"Cannot determine ID field name for {type(obj).__name__}")
-
-        raise ValueError(f"Cannot determine ID for object of type {type(obj).__name__}")
+        raise IdFieldResolutionError(
+            f"Cannot determine ID field for table '{table_name}' "
+            f"(model {model_cls.__name__}): no 'id' field and no "
+            f"state_checks.id_fields entry. Add to the task's grading.yaml:\n"
+            f"  state_checks:\n    id_fields:\n      {table_name}: <key_field>"
+        )
 
     # =========================================================================
     # InMemoryDatabase-compatible interface (async versions)
@@ -326,10 +346,10 @@ class DBServiceProxy:
         """
         Get a single item by its ID from the database.
 
-        Uses JSONPath query to find the record. Tries multiple ID field names
-        since different models use different fields as their primary key:
-        - Most models use 'id'
-        - Some models (like Employee) use 'email' as the primary key
+        Resolves the table's key field from config (state_checks.id_fields,
+        default "id"), does one JSONPath lookup, and falls back to a value-based
+        full scan (comparing get_id()) if the lookup misses — so reads succeed for
+        any key shape even without config.
 
         Args:
             model_cls: Pydantic model class
@@ -339,31 +359,24 @@ class DBServiceProxy:
             Model instance or None if not found
         """
         table_name = self._get_table_name(model_cls)
+        # `or "id"` (not .get(..., "id")) so a blank override folds to the default,
+        # matching _resolve_id_field's truthiness — the two resolvers cannot diverge.
+        id_field = self._id_fields.get(table_name) or "id"
 
-        # Try common ID field names in order of likelihood
-        # Most models use 'id', but some use 'email' (e.g., Employee model)
-        id_fields = ["id", "email"]
+        jsonpath = f"$.{table_name}[?(@.{id_field}=='{value}')]"
+        try:
+            response = await self.db_client.query(self.trial_id, jsonpath)
+            # QueryResponse is a Pydantic model with .results attribute
+            if response.results:
+                return self._to_model(model_cls, response.results[0])
+        except Exception as e:
+            logger.debug(f"JSONPath lookup on '{id_field}' failed: {e}")
 
-        for id_field in id_fields:
-            # Use JSONPath query to find by ID field
-            jsonpath = f"$.{table_name}[?(@.{id_field}=='{value}')]"
-
-            try:
-                response = await self.db_client.query(self.trial_id, jsonpath)
-                # QueryResponse is a Pydantic model with .results attribute
-                results = response.results
-
-                if results:
-                    return self._to_model(model_cls, results[0])
-            except Exception as e:
-                logger.debug(f"JSONPath query for {id_field} failed: {e}")
-                continue
-
-        # Fallback: get all and filter using model's get_id() method
-        # This handles any custom ID field that we didn't try above
-        logger.debug(f"JSONPath queries failed, falling back to full scan for {model_cls.__name__}")
-        all_items = await self.get_all(model_cls)
-        for item in all_items:
+        # Fallback: full scan comparing the model's get_id() value. Handles keys
+        # not declared in id_fields (e.g. email) via a runtime VALUE call, never
+        # model source.
+        logger.debug(f"JSONPath lookup missed, full scan for {model_cls.__name__}")
+        for item in await self.get_all(model_cls):
             if self._get_id(item) == value:
                 return item
         return None
@@ -459,7 +472,9 @@ class DBServiceProxy:
         await self.db_client.mutate(
             trial_id=self.trial_id,
             table_name=table_name,
-            operations=[{"op": "upsert", "record": record, "key": self._get_id_field_name(obj)}],
+            operations=[
+                {"op": "upsert", "record": record, "key": self._resolve_id_field(model_cls)}
+            ],
         )
 
         return obj
@@ -488,7 +503,7 @@ class DBServiceProxy:
         await self.db_client.mutate(
             trial_id=self.trial_id,
             table_name=table_name,
-            operations=[{"op": "delete", "filter": {"id": obj_id}}],
+            operations=[{"op": "delete", "filter": {self._resolve_id_field(model_cls): obj_id}}],
         )
 
     async def delete_by_id(self, model_cls: type[T], obj_id: Any) -> None:
@@ -512,7 +527,7 @@ class DBServiceProxy:
         await self.db_client.mutate(
             trial_id=self.trial_id,
             table_name=table_name,
-            operations=[{"op": "delete", "filter": {"id": obj_id}}],
+            operations=[{"op": "delete", "filter": {self._resolve_id_field(model_cls): obj_id}}],
         )
 
     async def bulk_delete(self, objects: list[BaseModel]) -> None:
@@ -533,7 +548,9 @@ class DBServiceProxy:
             if obj.__class__ != model_cls:
                 raise ValueError("All objects must be of the same model class")
             obj_id = self._get_id(obj)
-            operations.append({"op": "delete", "filter": {"id": obj_id}})
+            operations.append(
+                {"op": "delete", "filter": {self._resolve_id_field(model_cls): obj_id}}
+            )
 
         await self.db_client.mutate(
             trial_id=self.trial_id, table_name=table_name, operations=operations
@@ -574,6 +591,7 @@ class DBServiceProxy:
             db_client=self.db_client,
             trial_id=self.trial_id,
             db_table_names=list(self.db_table_names),
+            id_fields=dict(self._id_fields),
         )
         new_proxy._model_name_to_table = deepcopy(self._model_name_to_table)
         new_proxy._table_to_model = deepcopy(self._table_to_model)
