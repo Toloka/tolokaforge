@@ -75,11 +75,11 @@ def is_docker_daemon_available() -> bool:
         return False
 
 
-def current_runner_image_id() -> str | None:
-    """Docker id of the runner image the *current tree* produces, or ``None``.
+def current_image_id(service_name: str) -> str | None:
+    """Docker id of *service_name*'s image the *current tree* produces, or ``None``.
 
-    Resolves the exact content-hash ref ``builder.expected_image_ref("runner")``
-    — the tag a real ``build_image("runner")`` assigns — and inspects that one
+    Resolves the exact content-hash ref ``builder.expected_image_ref(service_name)``
+    — the tag a real ``build_image(service_name)`` assigns — and inspects that one
     ref. It is a single exact-ref lookup: no ``docker images`` enumeration, no
     ``.Created`` ranking, no candidate filtering. A foreign image built from a
     different Dockerfile hashes to a different tag, so it cannot match the ref;
@@ -93,7 +93,7 @@ def current_runner_image_id() -> str | None:
 
     from tolokaforge.docker import builder
 
-    ref = builder.expected_image_ref("runner")
+    ref = builder.expected_image_ref(service_name)
     result = subprocess.run(
         ["docker", "image", "inspect", ref, "--format", "{{.Id}}"],
         capture_output=True,
@@ -102,3 +102,8 @@ def current_runner_image_id() -> str | None:
     if result.returncode != 0:
         return None
     return result.stdout.strip() or None
+
+
+def current_runner_image_id() -> str | None:
+    """Docker id of the runner image the *current tree* produces, or ``None``."""
+    return current_image_id("runner")
