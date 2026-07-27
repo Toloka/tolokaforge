@@ -42,6 +42,7 @@ from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, TrialSpec
 from tolokaforge.core.trial_grader import split_leading_system_message
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner import runner_pb2_grpc
+from tolokaforge.runner.capabilities import BUILTIN_ADAPTERS
 from tolokaforge.runner.db_client import (
     DBServiceClient,
     DBServiceError,
@@ -257,11 +258,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         self.db_client = db_client
         self.rag_client = rag_client
         self.trials: dict[str, TrialContextRuntime] = {}
-        # Report the adapters actually registered (built-in + entry-point plugins),
-        # not a hardcoded list, so capabilities reflect what's installed.
-        from tolokaforge.adapters import available_adapters
-
-        self._available_adapters = available_adapters()
+        self._available_adapters = list(BUILTIN_ADAPTERS)
         self._artifact_dirs: dict[str, Path] = {}  # trial_id -> temp dir for cleanup
 
         # Create a dedicated event loop thread for async operations.
