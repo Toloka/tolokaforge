@@ -36,10 +36,15 @@ def _make_tool_executor() -> MagicMock:
 
 
 def _make_user_simulator() -> MagicMock:
-    """Create a mock UserSimulator."""
+    """Create a mock UserSimulator.
+
+    Default reply is a bare ``###STOP###`` so tests that don't care about the
+    stop-token split path get the immediate-terminate branch. Tests exercising
+    the split-on-final-reply path override the reply explicitly.
+    """
     sim = MagicMock()
     sim.reply.return_value = GenerationResult(
-        text="Thanks, that answers my question. ###STOP###",
+        text="###STOP###",
         tool_calls=[],
     )
     return sim
@@ -325,7 +330,7 @@ class TestTrialRunnerRun:
         assert traj.metrics.usage.completion_tokens == 50
 
     def test_user_stop_signal(self) -> None:
-        """Agent responds normally, then user sends ###STOP###."""
+        """Agent responds normally, then user sends a bare ###STOP###."""
         agent = _make_agent_client(
             [
                 GenerationResult(
@@ -337,13 +342,63 @@ class TestTrialRunnerRun:
         )
         user_sim = _make_user_simulator()
         user_sim.reply.return_value = GenerationResult(
-            text="Thanks! ###STOP###",
+            text="###STOP###",
             tool_calls=[],
         )
         runner = _make_runner(agent_client=agent, user_simulator=user_sim)
         traj = runner.run("System prompt", "Hello")
 
         assert traj.termination_reason == TerminationReason.USER_STOP
+
+    def test_user_stop_with_final_reply_is_delivered_first(self) -> None:
+        """Simulator glues a substantive reply to ``###STOP###`` in one message.
+
+        The pre-token text is delivered to the agent as a USER message, the
+        agent gets one more turn to react, and the dialogue ends with
+        ``USER_STOP``. Pre-fix, the entire text (including the mandated reply)
+        was discarded on the ``###STOP###`` substring match.
+        """
+        agent = _make_agent_client(
+            [
+                GenerationResult(
+                    text="I understand. I'll close this case now.",
+                    tool_calls=[],
+                    usage=Usage(prompt_tokens=100, completion_tokens=50),
+                    cost_usd=0.01,
+                ),
+                GenerationResult(
+                    text="Case closed. Reference CASE-12345.",
+                    tool_calls=[],
+                    usage=Usage(prompt_tokens=120, completion_tokens=40),
+                    cost_usd=0.01,
+                ),
+            ]
+        )
+        user_sim = _make_user_simulator()
+        user_sim.reply.side_effect = [
+            GenerationResult(
+                text=(
+                    "That's okay, I'll handle the payment through the online portal "
+                    "instead — please go ahead and close this request. ###STOP###"
+                ),
+                tool_calls=[],
+            ),
+        ]
+        runner = _make_runner(agent_client=agent, user_simulator=user_sim)
+        traj = runner.run("System", "I'd like to make a payment")
+
+        assert traj.termination_reason == TerminationReason.USER_STOP
+        assert traj.metrics.api_calls == 2
+
+        user_messages = [m for m in traj.messages if m.role == MessageRole.USER]
+        # The final reply must be delivered to the agent verbatim (sans token).
+        delivered = [m.content for m in user_messages]
+        assert any("handle the payment through the online portal" in text for text in delivered)
+        # The stop token itself must NOT survive on any user message.
+        assert not any("###STOP###" in text for text in delivered)
+        # Exactly one simulator call — pending flag terminates the next user turn
+        # without another simulator invocation.
+        assert user_sim.reply.call_count == 1
 
     def test_initial_user_message_used_directly(self) -> None:
         """When initial_user_message is provided, it's used directly."""

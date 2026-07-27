@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Fix
+
+- **runner**: preserve simulator text glued to `###STOP###` — pre-token content is delivered as a USER message and the dialogue terminates with `USER_STOP` on the following user turn instead of silently discarding the entire reply. Simulator prompt gains an explicit precedence rule for backstory-mandated replies and an anti-restart rule (#611)
+
 ## v0.11.1 (2026-07-27)
 
 ### Feat
