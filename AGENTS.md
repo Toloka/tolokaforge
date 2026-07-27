@@ -168,6 +168,7 @@ make docker-status       # Show Docker service status
 | `ci.yml` | Push to `main`, PRs, manual | Lint, test matrix, build, integration, validate |
 | `claude-review.yml` | PR opened/synced, `@claude` comment, inline review comment | AI code review via the Claude Code Action — flags violations of the rules in this file |
 | `integrate-model.yml` | `integrate: <slug>` PR label / `workflow_dispatch` | Model auto-integration engine: observe → resolve → finalize (see `docs/AUTO_INTEGRATION.md`) |
+| `publish-images.yml` | `image-v*` tag / `workflow_dispatch` (build-only dry-run) | Build + publish the four `tolokasoft1/tolokaforge-*` Docker Hub images via OIDC; rc tags → `pre-stable` (immutable `:X.Y.Z-rc.N`), stable tags → `release` (immutable `:X.Y.Z` then moving `:X.Y` + `:latest`), gated on an in-workflow rc-smoke |
 | `release-gate.yml` | Tag/release events | Final pre-release gate |
 | `slack-integrate.yml` | Scheduled / manual | Polls Slack for `@bot integrate <model>` requests, opens the draft PR, dispatches `integrate-model.yml` |
 
