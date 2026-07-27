@@ -95,6 +95,22 @@ class GradingEngine:
             )
 
             if use_tau2_evaluator:
+                # The tau2 environment evaluator compares against a single
+                # expected hash and does not know about alternative goldens;
+                # silently ignoring them would violate the surface-failures
+                # rule, so refuse the config explicitly and point the author
+                # at the supported combination.
+                tau2_hash_config = self.config.state_checks.hash or {}
+                if tau2_hash_config.get("alternative_golden_actions"):
+                    raise ValueError(
+                        "state_checks.hash.alternative_golden_actions is not "
+                        "supported alongside state_checks.env_assertions or "
+                        "state_checks.db_hash_check on the same task. Either "
+                        "remove the env/db_hash_check block to route the task "
+                        "through the multi-golden-aware grader, or drop the "
+                        "alternative golden variants."
+                    )
+
                 # Use new tau2-faithful environment evaluator
                 result = self.env_evaluator.evaluate_state_checks(
                     final_state=final_env_state,
@@ -110,6 +126,7 @@ class GradingEngine:
                 expected_hash = None
                 hash_weight = 0.5
                 golden_actions = None
+                alternative_golden_actions: list[list[dict[str, Any]]] = []
 
                 if hash_config and hash_config.get("enabled", False):
                     # Check for pre-computed hash from adapter first (preferred for Tau)
@@ -118,6 +135,13 @@ class GradingEngine:
                     # Check for tau-bench style golden actions (fallback if no pre-computed hash)
                     if not expected_hash and "golden_actions" in hash_config:
                         golden_actions = hash_config["golden_actions"]
+
+                    # Optional alternative golden paths for tasks where domain
+                    # policy permits more than one legal final state.
+                    raw_alternatives = hash_config.get("alternative_golden_actions") or []
+                    alternative_golden_actions = [
+                        list(variant) for variant in raw_alternatives if variant
+                    ]
 
                     hash_weight = hash_config.get(
                         "weight", 1.0
@@ -162,6 +186,7 @@ class GradingEngine:
                                 task_domain=self.task_domain,
                                 hash_weight=hash_weight,
                                 numeric_string_fields=self.config.state_checks.numeric_string_fields,
+                                alternative_golden_actions=alternative_golden_actions,
                             )
                         )
                 else:

@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Feat
+
+- **grading**: `state_checks.hash.alternative_golden_actions` — tasks whose domain policy admits more than one legal final state may ship additional golden paths; state-hash grading passes if the trial's final state matches ANY variant. Runner-side wire model gains `StateChecksConfig.alternative_golden_actions` + `HashGradingResult.matched_variant` / `variants_tried`. Native-adapter bundles write each variant to a sibling `fixtures/golden_actions_variant_{n}.json`. Tasks without alternatives are unchanged. See `docs/GRADING.md` § "Multiple legal final states". (#612)
+
 ## v0.11.1 (2026-07-27)
 
 ### Feat

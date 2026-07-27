@@ -44,8 +44,17 @@ def write_bundle(
         └── fixtures/
             ├── tools.json
             ├── golden_actions.json
+            ├── golden_actions_variant_1.json   # only if alternatives present
+            ├── golden_actions_variant_2.json
             ├── unstable_fields.json
             └── metadata.json
+
+    Tasks whose domain policy admits more than one legal final state may
+    ship a ``golden_actions_alternatives`` fixture key — a list-of-lists,
+    each inner list a full action sequence equivalent to
+    ``golden_actions``. Each variant is written as its own
+    ``golden_actions_variant_{n}.json`` starting at ``n=1`` in authoring
+    order. Bundles without alternatives omit the variant files.
 
     Args:
         bundle: The conversion result to serialise.
@@ -82,15 +91,24 @@ def write_bundle(
     # Separate well-known fixture keys from the rest
     tools = bundle.fixtures.get("tools", [])
     golden_actions = bundle.fixtures.get("golden_actions", [])
+    golden_actions_alternatives = bundle.fixtures.get("golden_actions_alternatives", []) or []
     unstable_fields = bundle.fixtures.get("unstable_fields", [])
 
     _write_json(fixtures_dir / "tools.json", tools)
     _write_json(fixtures_dir / "golden_actions.json", golden_actions)
+    for idx, variant in enumerate(golden_actions_alternatives, start=1):
+        _write_json(fixtures_dir / f"golden_actions_variant_{idx}.json", variant)
     _write_json(fixtures_dir / "unstable_fields.json", unstable_fields)
     _write_json(fixtures_dir / "metadata.json", bundle.metadata)
 
     # Write any additional fixture keys (not tools/golden_actions/unstable_fields)
-    extra_keys = set(bundle.fixtures.keys()) - {"tools", "golden_actions", "unstable_fields"}
+    reserved_keys = {
+        "tools",
+        "golden_actions",
+        "golden_actions_alternatives",
+        "unstable_fields",
+    }
+    extra_keys = set(bundle.fixtures.keys()) - reserved_keys
     for key in sorted(extra_keys):
         _write_json(fixtures_dir / f"{key}.json", bundle.fixtures[key])
 

@@ -1,5 +1,7 @@
 """Tests for state-based grading checks"""
 
+from pathlib import Path
+
 import pytest
 
 from tolokaforge.core.grading.state_checks import (
@@ -283,6 +285,226 @@ class TestHashGrading:
         hash1 = consistent_hash(to_hashable(state1))
         hash2 = consistent_hash(to_hashable(state2))
         assert hash1 != hash2
+
+
+@pytest.mark.unit
+class TestStateDistance:
+    """Row-level symmetric-difference metric used to pick the closest variant."""
+
+    def test_identical_states_have_zero_distance(self):
+        state = {"orders": [{"id": 1, "amount": 100}]}
+        assert StateChecker._state_distance(state, state) == 0
+
+    def test_missing_row_counts_once(self):
+        a = {"orders": [{"id": 1}, {"id": 2}]}
+        b = {"orders": [{"id": 1}]}
+        # 1 row in the symmetric difference: {id:2} in a only.
+        assert StateChecker._state_distance(a, b) == 1
+
+    def test_extra_row_counts_once(self):
+        a = {"orders": [{"id": 1}]}
+        b = {"orders": [{"id": 1}, {"id": 2}]}
+        assert StateChecker._state_distance(a, b) == 1
+
+    def test_differing_field_counts_as_two_rows(self):
+        # {id:1, amount:100} vs {id:1, amount:200} produces two distinct
+        # canonical strings — each side contributes one row to the sym-diff.
+        a = {"orders": [{"id": 1, "amount": 100}]}
+        b = {"orders": [{"id": 1, "amount": 200}]}
+        assert StateChecker._state_distance(a, b) == 2
+
+    def test_empty_states_have_zero_distance(self):
+        assert StateChecker._state_distance({}, {}) == 0
+
+    def test_disjoint_tables_summed(self):
+        a = {"orders": [{"id": 1}], "carts": []}
+        b = {"orders": [], "carts": [{"id": 9}]}
+        # orders: {id:1} in a only; carts: {id:9} in b only → total 2.
+        assert StateChecker._state_distance(a, b) == 2
+
+
+@pytest.mark.unit
+class TestGradeTauStyleVariants:
+    """Multi-golden-variant support on ``grade_tau_style``.
+
+    ``_execute_golden_actions`` is patched to return canned per-variant
+    states so tests exercise the variant loop without loading a real MCP
+    module. See :meth:`tolokaforge.core.grading.state_checks.StateChecker`.
+    """
+
+    @pytest.fixture
+    def checker(self):
+        return StateChecker()
+
+    @pytest.fixture
+    def trial_state_wraps(self):
+        """Wrap a raw db state into the {agent, user, db} envelope that
+        ``grade_tau_style`` expects on the ``state`` argument."""
+
+        def wrap(db_state: dict) -> dict:
+            return {"agent": {}, "user": {}, "db": db_state}
+
+        return wrap
+
+    def test_no_alternatives_matches_primary(self, checker, trial_state_wraps, monkeypatch):
+        """Empty alternatives list => single-variant behaviour on match."""
+        expected = {"orders": [{"id": 1, "status": "closed"}]}
+        monkeypatch.setattr(
+            checker,
+            "_execute_golden_actions",
+            lambda actions, td, isp, msp, dom: expected,
+        )
+        score, reasons, diff = checker.grade_tau_style(
+            state=trial_state_wraps(expected),
+            jsonpath_assertions=[],
+            golden_actions=[{"name": "close", "kwargs": {}}],
+            task_dir=Path("."),
+            initial_state_path="init.json",
+            mcp_server_path="mcp.py",
+            task_domain="synthetic",
+            hash_weight=1.0,
+            alternative_golden_actions=None,
+        )
+        assert score == 1.0
+        assert diff is None
+        assert "State hash matches" in reasons
+        # Regression guard: single-variant reason must NOT reference "variant N"
+        assert "variant" not in reasons.lower() or "variants" in reasons.lower()
+
+    def test_matches_alternative_variant(self, checker, trial_state_wraps, monkeypatch):
+        """Trial state that matches variant 1 (not variant 0) still scores 1.0
+        and the reason string names the matched variant.
+        """
+        variant_states = [
+            {"orders": [{"id": 1, "shape": "combined"}]},  # variant 0
+            {"orders": [{"id": 1, "shape": "split_a"}, {"id": 2, "shape": "split_b"}]},  # variant 1
+        ]
+        call_idx = {"n": 0}
+
+        def fake_execute(actions, td, isp, msp, dom):
+            state = variant_states[call_idx["n"]]
+            call_idx["n"] += 1
+            return state
+
+        monkeypatch.setattr(checker, "_execute_golden_actions", fake_execute)
+
+        score, reasons, diff = checker.grade_tau_style(
+            state=trial_state_wraps(variant_states[1]),  # trial chose the split shape
+            jsonpath_assertions=[],
+            golden_actions=[{"name": "combine", "kwargs": {}}],
+            alternative_golden_actions=[[{"name": "split", "kwargs": {}}]],
+            task_dir=Path("."),
+            initial_state_path="init.json",
+            mcp_server_path="mcp.py",
+            task_domain="synthetic",
+            hash_weight=1.0,
+        )
+        assert score == 1.0
+        assert diff is None
+        assert "matches golden variant 1" in reasons
+        assert "of 2" in reasons
+
+    def test_all_variants_miss_returns_closest_diff(self, checker, trial_state_wraps, monkeypatch):
+        """When no variant matches, the reported diff must be against the
+        variant with the smallest row-level distance from the trial state.
+        """
+        variant_states = [
+            # Distance from trial 3: (rows removed: 3 nonmatching; rows added: 1)
+            {"orders": [{"id": 1}, {"id": 2}, {"id": 3}]},
+            # Distance from trial: 1 extra row in the trial only.
+            {"orders": [{"id": 99}]},
+        ]
+        trial_db = {"orders": [{"id": 99}, {"id": 100}]}
+        call_idx = {"n": 0}
+
+        def fake_execute(actions, td, isp, msp, dom):
+            state = variant_states[call_idx["n"]]
+            call_idx["n"] += 1
+            return state
+
+        monkeypatch.setattr(checker, "_execute_golden_actions", fake_execute)
+
+        score, reasons, diff = checker.grade_tau_style(
+            state=trial_state_wraps(trial_db),
+            jsonpath_assertions=[],
+            golden_actions=[{"name": "a", "kwargs": {}}],
+            alternative_golden_actions=[[{"name": "b", "kwargs": {}}]],
+            task_dir=Path("."),
+            initial_state_path="init.json",
+            mcp_server_path="mcp.py",
+            task_domain="synthetic",
+            hash_weight=1.0,
+        )
+        assert score == 0.0
+        assert diff is not None
+        assert "closest: variant 1" in reasons
+
+    def test_broken_primary_matching_alternate_surfaces_replay_error(
+        self, checker, trial_state_wraps, monkeypatch
+    ):
+        """A primary golden that fails to replay must appear in the reasons
+        string even when an alternate matches the trial state.
+        """
+        variant_states = [
+            None,  # variant 0 raises
+            {"orders": [{"id": 1, "shape": "split"}]},  # variant 1 matches
+        ]
+        call_idx = {"n": 0}
+
+        def fake_execute(actions, td, isp, msp, dom):
+            idx = call_idx["n"]
+            call_idx["n"] += 1
+            if variant_states[idx] is None:
+                raise RuntimeError(f"primary golden broken (variant {idx})")
+            return variant_states[idx]
+
+        monkeypatch.setattr(checker, "_execute_golden_actions", fake_execute)
+
+        score, reasons, diff = checker.grade_tau_style(
+            state=trial_state_wraps(variant_states[1]),
+            jsonpath_assertions=[],
+            golden_actions=[{"name": "primary", "kwargs": {}}],
+            alternative_golden_actions=[[{"name": "alt", "kwargs": {}}]],
+            task_dir=Path("."),
+            initial_state_path="init.json",
+            mcp_server_path="mcp.py",
+            task_domain="synthetic",
+            hash_weight=1.0,
+        )
+        assert score == 1.0
+        assert "matches golden variant 1" in reasons
+        # The broken primary MUST be surfaced despite the successful alt match.
+        assert "Golden replay errors" in reasons
+        assert "variant 0" in reasons
+        assert "primary golden broken" in reasons
+
+    def test_all_variants_fail_to_replay_returns_zero(
+        self, checker, trial_state_wraps, monkeypatch
+    ):
+        """If every variant raises during replay, grade is 0 and the reasons
+        must include every per-variant error.
+        """
+
+        def fake_execute(actions, td, isp, msp, dom):
+            raise RuntimeError("broken tool")
+
+        monkeypatch.setattr(checker, "_execute_golden_actions", fake_execute)
+
+        score, reasons, diff = checker.grade_tau_style(
+            state=trial_state_wraps({"orders": []}),
+            jsonpath_assertions=[],
+            golden_actions=[{"name": "a", "kwargs": {}}],
+            alternative_golden_actions=[[{"name": "b", "kwargs": {}}]],
+            task_dir=Path("."),
+            initial_state_path="init.json",
+            mcp_server_path="mcp.py",
+            task_domain="synthetic",
+            hash_weight=1.0,
+        )
+        assert score == 0.0
+        assert diff is None
+        assert "All golden variants failed to replay" in reasons
+        assert reasons.count("broken tool") == 2  # both variants surfaced
 
 
 @pytest.mark.unit

@@ -481,78 +481,136 @@ class StateChecker:
         hash_weight: float = 1.0,
         *,
         numeric_string_fields: list[str] | None = None,
+        alternative_golden_actions: list[list[dict[str, Any]]] | None = None,
     ) -> tuple[float, str, dict[str, Any] | None]:
-        """
-        Grade state using tau-bench style with diff calculation.
+        """Grade final state against one or more golden paths with diff on miss.
 
-        Executes golden actions to get expected state, compares with actual state,
-        and returns detailed diff if they don't match.
+        The primary ``golden_actions`` is variant 0. When
+        ``alternative_golden_actions`` supplies additional variants (each a
+        full action sequence equivalent to ``golden_actions``), replay each
+        on a fresh initial state and pass if the trial's hash matches ANY
+        variant. On mismatch, the diff is computed against the variant with
+        the smallest row-level distance from the trial state so triage stays
+        readable.
 
-        Args:
-            state: Final environment state
-            jsonpath_assertions: JSONPath assertions
-            golden_actions: List of golden actions to execute
-            task_dir: Task directory
-            initial_state_path: Path to initial state JSON (relative to task_dir)
-            mcp_server_path: Path to MCP server module (relative to task_dir)
-            task_domain: Domain name (e.g., "airline")
-            hash_weight: Weight for hash check vs JSONPath
-
-        Returns:
-            (score 0-1, reasons, diff_result dict or None)
+        A variant whose replay raises contributes its error to the returned
+        ``reasons`` string on every outcome — a broken shipped golden must
+        never be masked by a matching alternate. Grading returns 0.0 only
+        when every variant fails to replay.
         """
         jsonpath_score, jsonpath_reasons = self.check_jsonpaths(state, jsonpath_assertions)
 
-        # Execute golden actions to get expected state
-        try:
-            expected_state = self._execute_golden_actions(
-                golden_actions, task_dir, initial_state_path, mcp_server_path, task_domain
-            )
-        except Exception as e:
-            error_msg = f"Error executing golden actions: {str(e)}"
-            self.logger.error("Failed to execute golden actions", error=str(e))
-            return 0.0, error_msg, None
+        variants: list[list[dict[str, Any]]] = [golden_actions] + list(
+            alternative_golden_actions or []
+        )
 
-        # Extract database state from final state structure
-        # Final state has structure: {"agent": {...}, "user": {...}, "db": {...}, ...}
-        # For airline/retail tasks, we want to hash the "db" key (legacy format) or "agent" key
-        # The initial state JSON file contains the raw database state
+        variant_states: list[dict[str, Any] | None] = []
+        replay_errors: list[str] = []
+        for idx, variant in enumerate(variants):
+            try:
+                variant_state = self._execute_golden_actions(
+                    variant, task_dir, initial_state_path, mcp_server_path, task_domain
+                )
+                variant_states.append(variant_state)
+            except Exception as e:
+                variant_states.append(None)
+                err = (
+                    f"variant {idx} replay failed: {type(e).__name__}: {e}"
+                    if len(variants) > 1
+                    else f"Error executing golden actions: {type(e).__name__}: {e}"
+                )
+                replay_errors.append(err)
+                self.logger.error("Failed to execute golden actions", variant=idx, error=str(e))
+
+        if all(s is None for s in variant_states):
+            reasons_parts = jsonpath_reasons + ["All golden variants failed to replay"]
+            reasons_parts.extend(replay_errors)
+            return 0.0, "; ".join(reasons_parts), None
+
+        # Final state has structure: {"agent": ..., "user": ..., "db": ...}.
+        # Legacy tau-bench domains hash the "db" (or "agent") sub-dict.
         db_state = state.get("db", state.get("agent", state))
 
-        # Compute hashes
         string_fields = frozenset(numeric_string_fields) if numeric_string_fields else None
-        expected_hash = consistent_hash(to_hashable(expected_state, string_fields))
         actual_hash = consistent_hash(to_hashable(db_state, string_fields))
 
-        # Calculate diff if states don't match
-        diff_result = None
-        if expected_hash != actual_hash:
+        matched_variant: int | None = None
+        for idx, variant_state in enumerate(variant_states):
+            if variant_state is None:
+                continue
+            variant_hash = consistent_hash(to_hashable(variant_state, string_fields))
+            if variant_hash == actual_hash:
+                matched_variant = idx
+                break
+
+        diff_result: dict[str, Any] | None = None
+        hash_reason_parts: list[str] = []
+
+        if matched_variant is not None:
+            hash_score = 1.0
+            if len(variants) == 1:
+                hash_reason_parts.append("State hash matches")
+            else:
+                hash_reason_parts.append(
+                    f"State hash matches golden variant {matched_variant} (of {len(variants)})"
+                )
             self.logger.info(
-                "State hash mismatch, calculating diff",
-                expected_hash=expected_hash[:16],
-                actual_hash=actual_hash[:16],
-            )
-            diff_result = calculate_state_diff(expected_state, db_state)
-            diff_summary = format_diff_summary(diff_result, max_lines=50)
-
-            hash_score = 0.0
-            hash_reason = f"State hash mismatch. Diff:\n{diff_summary}"
-
-            self.logger.error(
-                "State mismatch in golden set grading",
-                expected_hash=expected_hash[:16],
-                actual_hash=actual_hash[:16],
-                diff_lines=diff_result["diff_lines"],
+                "State hash matches",
+                matched_variant=matched_variant,
+                variants_tried=len(variants),
             )
         else:
-            hash_score = 1.0
-            hash_reason = "State hash matches"
-            self.logger.info(
-                "State hash matches", expected_hash=expected_hash[:16], actual_hash=actual_hash[:16]
+            hash_score = 0.0
+            closest_idx: int | None = None
+            closest_distance: int | None = None
+            for idx, variant_state in enumerate(variant_states):
+                if variant_state is None:
+                    continue
+                distance = self._state_distance(variant_state, db_state)
+                if closest_distance is None or distance < closest_distance:
+                    closest_distance = distance
+                    closest_idx = idx
+            if closest_idx is not None:
+                diff_result = calculate_state_diff(variant_states[closest_idx], db_state)
+            diff_summary = format_diff_summary(diff_result, max_lines=50) if diff_result else ""
+            if len(variants) == 1:
+                hash_reason_parts.append(f"State hash mismatch. Diff:\n{diff_summary}")
+            else:
+                hash_reason_parts.append(
+                    f"State hash mismatch against all {len(variants)} golden variants "
+                    f"(closest: variant {closest_idx}). Diff:\n{diff_summary}"
+                )
+            self.logger.error(
+                "State mismatch in golden set grading",
+                variants_tried=len(variants),
+                closest_variant=closest_idx,
             )
 
-        # Weighted combination
+        if replay_errors:
+            hash_reason_parts.insert(0, "Golden replay errors: " + "; ".join(replay_errors))
+
         final_score = (jsonpath_score * (1 - hash_weight)) + (hash_score * hash_weight)
-        reasons = jsonpath_reasons + [hash_reason]
+        reasons = jsonpath_reasons + hash_reason_parts
 
         return final_score, "; ".join(reasons), diff_result
+
+    @staticmethod
+    def _state_distance(state_a: dict[str, Any], state_b: dict[str, Any]) -> int:
+        """Row-level symmetric-difference count between two states.
+
+        Each state is a ``{table: [row_dict]}`` map. The distance is the
+        number of rows that differ between the two states, summed across
+        all tables — a variant with one differing field on a single record
+        scores 1, a variant missing three whole records scores 3. Used to
+        pick the "closest" golden variant on a hash mismatch. Non-dict
+        rows are treated as opaque values via their JSON serialization.
+        """
+        all_tables = set(state_a.keys()) | set(state_b.keys())
+        total = 0
+        for table in all_tables:
+            rows_a = state_a.get(table) or []
+            rows_b = state_b.get(table) or []
+            canon_a = {json.dumps(row, sort_keys=True, default=str) for row in rows_a}
+            canon_b = {json.dumps(row, sort_keys=True, default=str) for row in rows_b}
+            total += len(canon_a.symmetric_difference(canon_b))
+        return total

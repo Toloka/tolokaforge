@@ -1045,21 +1045,31 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # Get state_checks config (may contain golden_actions)
         state_checks_config = grading_config.state_checks
         golden_actions: list[GoldenAction] = []
+        alternative_golden_actions: list[list[GoldenAction]] = []
         if state_checks_config:
             golden_actions = state_checks_config.golden_actions
+            alternative_golden_actions = state_checks_config.alternative_golden_actions
 
         # A) HASH-BASED GRADING
         # Run hash grading when hash_enabled is set (even with empty golden_actions,
         # which represents refusal tasks where the expected state == initial state).
         if state_checks_config and state_checks_config.hash_enabled:
+            alt_count = len(alternative_golden_actions)
+            variants_suffix = (
+                f" + {alt_count} alternative variant{'s' if alt_count != 1 else ''}"
+                if alt_count
+                else ""
+            )
             logger.info(
-                f"GradeTrial: {trial_id} - Executing hash-based grading with {len(golden_actions)} golden actions"
+                f"GradeTrial: {trial_id} - Executing hash-based grading with "
+                f"{len(golden_actions)} golden actions{variants_suffix}"
             )
             try:
                 hash_result = await self._execute_hash_grading(
                     trial_id,
                     trial_context,
                     golden_actions,
+                    alternative_golden_actions=alternative_golden_actions,
                     numeric_string_fields=state_checks_config.numeric_string_fields,
                 )
                 components.hash_match = hash_result.hash_match
@@ -1226,6 +1236,18 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         )
         if judge_status == pb2.JUDGE_STATUS_ERRORED:
             reasons += f" | JUDGE ERRORED: {judge_reasons}"
+
+        # Surface multi-variant golden coverage in the reasons string so
+        # operators can audit which variant a passing trial matched (and know
+        # a red trial was compared against every declared variant).
+        if hash_result and hash_result.variants_tried > 1:
+            if hash_result.hash_match and hash_result.matched_variant is not None:
+                reasons += (
+                    f" | matched golden variant {hash_result.matched_variant} "
+                    f"of {hash_result.variants_tried}"
+                )
+            elif not hash_result.hash_match:
+                reasons += f" | no match across {hash_result.variants_tried} golden variants"
 
         # Append golden action errors if any (critical for debugging golden replay failures)
         if hash_result and hash_result.golden_action_errors:
@@ -1544,38 +1566,35 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         trial_context: TrialContextRuntime,
         golden_actions: list[GoldenAction],
         *,
+        alternative_golden_actions: list[list[GoldenAction]] | None = None,
         numeric_string_fields: list[str] | None = None,
     ) -> HashGradingResult:
-        """
-        Execute hash-based grading algorithm.
+        """Execute hash-based grading with optional alternative golden paths.
+
+        A task may declare N legal final states via
+        ``StateChecksConfig.alternative_golden_actions`` (variant 1..N; the
+        primary ``golden_actions`` is variant 0). Grading replays each
+        variant on a fresh initial state, hashes, and passes if the trial's
+        final hash matches ANY variant. Golden-replay errors from every
+        attempted variant are aggregated on the returned
+        :class:`HashGradingResult` regardless of match outcome so a broken
+        primary golden cannot be masked by a matching alternate.
 
         Steps:
-        1. Get current trial stable hash
-        2. Snapshot current state
-        3. Reset to initial state
-        4. Execute golden path actions
-        5. Snapshot golden state (for diff if mismatch)
-        6. Get golden stable hash
-        7. Restore trial state
-        8. Compare hashes
-        9. If mismatch, compute state diff
-
-        Args:
-            trial_id: Trial identifier
-            trial_context: Trial context with tools
-            golden_actions: List of golden path actions to execute
-
-        Returns:
-            HashGradingResult with hash_match, hash_score, and optional state_diff
+        1. Snapshot the trial's post-run state as ``pre_golden`` and read
+           its hash.
+        2. For each variant in order (primary first, then alternatives):
+           reset to initial, replay the variant, snapshot as
+           ``golden_result[_variant_{idx}]``, hash. Break on first match.
+        3. Restore the trial's state.
+        4. On mismatch, compute the state diff against the variant with the
+           smallest structural distance ("closest golden") so triage stays
+           readable regardless of variant count.
         """
-        # Detect MCP server wrappers — their state lives in a subprocess, not
-        # in the db-service, so we must sync before hashing and reset the MCP
-        # subprocess state when the db-service is reset.
         mcp_wrapper = self._find_mcp_server_wrapper(trial_context)
 
-        # 1. Get current trial stable hash
-        # For MCP_SERVER tasks the db-service was never updated during the trial
-        # (the MCP subprocess holds state in memory), so sync first.
+        # For MCP_SERVER tasks the db-service was never updated during the
+        # trial (the MCP subprocess holds state in memory), so sync first.
         if mcp_wrapper is not None:
             logger.info(f"GradeTrial: {trial_id} - Syncing MCP server state to db-service (trial)")
             try:
@@ -1591,63 +1610,156 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         )
         logger.debug(f"GradeTrial: Trial hash = {trial_hash[:16]}...")
 
-        # 2. Snapshot current state
         await self.db_client.create_snapshot(trial_id, "pre_golden")
         logger.debug("GradeTrial: Created snapshot 'pre_golden'")
 
-        # 3. Reset to initial state
-        await self.db_client.reset_trial(trial_id)
-        logger.debug("GradeTrial: Reset to initial state")
+        variants: list[list[GoldenAction]] = [golden_actions] + [
+            list(v) for v in (alternative_golden_actions or [])
+        ]
+        variants_tried = len(variants)
 
-        # For MCP_SERVER tasks also reset the subprocess state so golden actions
-        # execute from a clean initial state (not from the agent's final state).
+        matched_variant: int | None = None
+        per_variant_errors: list[list[str]] = []
+        per_variant_snapshots: list[str] = []
+        per_variant_hashes: list[str] = []
+
+        initial_tables_for_mcp: dict[str, Any] = {}
         if mcp_wrapper is not None:
-            initial_tables = (
+            initial_tables_for_mcp = (
                 trial_context.task_description.initial_state.tables
                 if trial_context.task_description and trial_context.task_description.initial_state
                 else {}
             )
-            logger.info(f"GradeTrial: {trial_id} - Resetting MCP server state to initial")
-            try:
-                loop = asyncio.get_event_loop()
-                await loop.run_in_executor(None, lambda: mcp_wrapper.reset_state(initial_tables))
-            except Exception as e:
-                logger.error(f"GradeTrial: Failed to reset MCP state: {e}")
-                raise
 
-        # 4. Execute golden path actions
-        #
-        # Golden actions are replayed with their original arguments — no ID
-        # substitution.  This matches mcp_core's apply_golden_set_to_database()
-        # which also replays without substitution.  The InMemoryDatabase (and
-        # the JSON DB Service that mirrors it) uses deterministic ID generation
-        # (len(existing) + 1), so hardcoded IDs in golden actions always match
-        # the IDs produced on replay from the same initial state.
-        golden_action_errors: list[str] = []
+        for idx, variant in enumerate(variants):
+            await self.db_client.reset_trial(trial_id)
+            logger.debug(f"GradeTrial: Reset to initial state (variant {idx})")
 
-        for i, action in enumerate(golden_actions):
+            if mcp_wrapper is not None:
+                logger.info(
+                    f"GradeTrial: {trial_id} - Resetting MCP server state to initial (variant {idx})"
+                )
+                try:
+                    loop = asyncio.get_event_loop()
+                    await loop.run_in_executor(
+                        None, lambda tables=initial_tables_for_mcp: mcp_wrapper.reset_state(tables)
+                    )
+                except Exception as e:
+                    logger.error(f"GradeTrial: Failed to reset MCP state (variant {idx}): {e}")
+                    raise
+
+            variant_errors = await self._replay_golden_variant(
+                variant_index=idx,
+                variant=variant,
+                trial_context=trial_context,
+            )
+            per_variant_errors.append(variant_errors)
+
+            if mcp_wrapper is not None:
+                logger.info(
+                    f"GradeTrial: {trial_id} - Syncing MCP server state to db-service (variant {idx})"
+                )
+                try:
+                    loop = asyncio.get_event_loop()
+                    variant_mcp_state = await loop.run_in_executor(None, mcp_wrapper.get_state)
+                    await self._sync_mcp_state_to_db(trial_id, variant_mcp_state)
+                except Exception as e:
+                    logger.error(
+                        f"GradeTrial: Failed to sync MCP state after golden actions (variant {idx}): {e}"
+                    )
+                    raise
+
+            snapshot_name = "golden_result" if idx == 0 else f"golden_result_variant_{idx}"
+            await self.db_client.create_snapshot(trial_id, snapshot_name)
+            per_variant_snapshots.append(snapshot_name)
+            logger.debug(f"GradeTrial: Created snapshot {snapshot_name!r}")
+
+            variant_hash = await self.db_client.get_stable_hash(
+                trial_id, numeric_string_fields=numeric_string_fields
+            )
+            per_variant_hashes.append(variant_hash)
+            logger.debug(
+                f"GradeTrial: Variant {idx} hash = {variant_hash[:16]}... "
+                f"(trial hash prefix = {trial_hash[:16]}...)"
+            )
+
+            if variant_hash == trial_hash:
+                matched_variant = idx
+                logger.info(
+                    f"GradeTrial: Hash match on variant {idx} "
+                    f"(of {variants_tried} variant{'s' if variants_tried != 1 else ''})"
+                )
+                break
+
+        hash_match = matched_variant is not None
+        hash_score = 1.0 if hash_match else 0.0
+
+        state_diff: StateDiff | None = None
+        if not hash_match:
+            state_diff = await self._compute_closest_variant_diff(trial_id, per_variant_snapshots)
+        else:
+            # The loop broke on the matched variant's snapshot; restore the
+            # trial's post-run state so downstream jsonpath / db-probe checks
+            # see it. ``_compute_closest_variant_diff`` handles the no-match
+            # restore itself as part of its variant walk.
+            await self.db_client.restore_snapshot(trial_id, "pre_golden")
+            logger.debug("GradeTrial: Restored snapshot 'pre_golden'")
+
+        # Aggregate golden-action errors from EVERY variant that ran, even on
+        # match. A broken primary golden must surface in the grade reasons
+        # regardless of whether a later variant produced a matching hash.
+        if variants_tried == 1:
+            golden_action_errors = per_variant_errors[0]
+        else:
+            golden_action_errors = [
+                f"variant {idx}: {msg}"
+                for idx, errs in enumerate(per_variant_errors)
+                for msg in errs
+            ]
+
+        return HashGradingResult(
+            hash_match=hash_match,
+            hash_score=hash_score,
+            state_diff=state_diff,
+            golden_action_errors=golden_action_errors,
+            matched_variant=matched_variant,
+            variants_tried=variants_tried,
+        )
+
+    async def _replay_golden_variant(
+        self,
+        *,
+        variant_index: int,
+        variant: list[GoldenAction],
+        trial_context: TrialContextRuntime,
+    ) -> list[str]:
+        """Replay one golden-action variant against the current trial state.
+
+        Returns the (possibly-empty) list of per-action errors. Failures are
+        recorded but do not abort the replay — partial state is still useful
+        for the closest-diff selection on no-match.
+        """
+        errors: list[str] = []
+        for i, action in enumerate(variant):
             tool_name = action.tool_name
-            arguments = dict(action.arguments)  # copy
+            arguments = dict(action.arguments)
 
             tool = trial_context.agent_tools.get(tool_name)
             if tool is None:
-                # Try with domain prefix (golden actions use unprefixed names)
                 for registered_name in trial_context.agent_tools:
                     if registered_name.endswith(f"_{tool_name}"):
                         tool = trial_context.agent_tools[registered_name]
                         logger.debug(
-                            f"GradeTrial: Matched golden tool '{tool_name}' -> '{registered_name}'"
+                            f"GradeTrial: Matched golden tool '{tool_name}' -> '{registered_name}' (variant {variant_index})"
                         )
                         break
             if tool is None:
-                # Golden action references tool that doesn't exist
-                err_msg = f"Golden action {i} ({tool_name}): tool not found"
-                logger.error(f"GradeTrial: {err_msg}")
-                golden_action_errors.append(err_msg)
-                continue  # Continue - partial golden state still useful
+                err = f"Golden action {i} ({tool_name}): tool not found"
+                logger.error(f"GradeTrial: variant {variant_index}: {err}")
+                errors.append(err)
+                continue
 
             try:
-                # Execute tool
                 if hasattr(tool, "execute"):
                     await tool.execute(arguments)
                 elif callable(tool):
@@ -1656,72 +1768,57 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     else:
                         loop = asyncio.get_event_loop()
                         await loop.run_in_executor(None, lambda t=tool, a=arguments: t(a))
-                logger.debug(f"GradeTrial: Golden action {i} executed: {tool_name}")
-
+                logger.debug(
+                    f"GradeTrial: Variant {variant_index} action {i} executed: {tool_name}"
+                )
             except Exception as e:
-                # Golden action failure — log with full traceback for debugging
-                err_msg = f"Golden action {i} ({tool_name}) failed: {type(e).__name__}: {e}"
-                logger.error(f"GradeTrial: {err_msg}")
+                err = f"Golden action {i} ({tool_name}) failed: {type(e).__name__}: {e}"
+                logger.error(f"GradeTrial: variant {variant_index}: {err}")
                 logger.error(traceback.format_exc())
-                golden_action_errors.append(err_msg)
+                errors.append(err)
 
-        # For MCP_SERVER tasks: sync subprocess state to db-service so the
-        # hash reflects what the golden actions actually produced.
-        if mcp_wrapper is not None:
-            logger.info(f"GradeTrial: {trial_id} - Syncing MCP server state to db-service (golden)")
-            try:
-                loop = asyncio.get_event_loop()
-                golden_mcp_state = await loop.run_in_executor(None, mcp_wrapper.get_state)
-                await self._sync_mcp_state_to_db(trial_id, golden_mcp_state)
-            except Exception as e:
-                logger.error(f"GradeTrial: Failed to sync MCP state after golden actions: {e}")
-                raise
+        return errors
 
-        # 5. Snapshot golden state (for diff if mismatch)
-        await self.db_client.create_snapshot(trial_id, "golden_result")
-        logger.debug("GradeTrial: Created snapshot 'golden_result'")
+    async def _compute_closest_variant_diff(
+        self,
+        trial_id: str,
+        variant_snapshots: list[str],
+    ) -> StateDiff | None:
+        """Return the diff against the variant with the smallest structural
+        distance from the trial state.
 
-        # 6. Get golden stable hash
-        # get_stable_hash returns the hash string directly
-        golden_hash = await self.db_client.get_stable_hash(
-            trial_id, numeric_string_fields=numeric_string_fields
-        )
-        logger.debug(f"GradeTrial: Golden hash = {golden_hash[:16]}...")
+        For single-variant tasks the "closest" is trivially the primary
+        golden. For multi-variant tasks the smallest-distance choice keeps
+        triage output focused on the variant the trial came closest to
+        satisfying.
+        """
+        if not variant_snapshots:
+            return None
 
-        # 7. Restore trial state
+        trial_state_response = await self.db_client.get_stable_state(trial_id)
+        trial_state = trial_state_response.data
+
+        best_diff: StateDiff | None = None
+        best_size: int | None = None
+        for idx, snap_name in enumerate(variant_snapshots):
+            await self.db_client.restore_snapshot(trial_id, snap_name)
+            variant_state_resp = await self.db_client.get_stable_state(trial_id)
+            variant_state = variant_state_resp.data
+            candidate_diff = compute_state_diff(trial_state, variant_state)
+            candidate_size = sum(
+                len(t.missing) + len(t.extra) + len(t.different)
+                for t in candidate_diff.tables.values()
+            )
+            if best_size is None or candidate_size < best_size:
+                best_diff = candidate_diff
+                best_size = candidate_size
+            logger.debug(
+                f"GradeTrial: Closest-diff candidate variant {idx}: "
+                f"{candidate_size} record differences"
+            )
+
         await self.db_client.restore_snapshot(trial_id, "pre_golden")
-        logger.debug("GradeTrial: Restored snapshot 'pre_golden'")
-
-        # 8. Compare hashes
-        hash_match = trial_hash == golden_hash
-        hash_score = 1.0 if hash_match else 0.0
-
-        # 9. If mismatch, compute state diff
-        state_diff: StateDiff | None = None
-        if not hash_match:
-            logger.info("GradeTrial: Hash mismatch, computing state diff")
-
-            # Get trial state
-            trial_state_response = await self.db_client.get_stable_state(trial_id)
-            trial_state = trial_state_response.data
-
-            # Restore golden state and get it
-            await self.db_client.restore_snapshot(trial_id, "golden_result")
-            golden_state_response = await self.db_client.get_stable_state(trial_id)
-            golden_state = golden_state_response.data
-
-            # Restore trial state again
-            await self.db_client.restore_snapshot(trial_id, "pre_golden")
-
-            # Compute diff using grading module (returns StateDiff model directly)
-            state_diff = compute_state_diff(trial_state, golden_state)
-
-        return HashGradingResult(
-            hash_match=hash_match,
-            hash_score=hash_score,
-            state_diff=state_diff,
-            golden_action_errors=golden_action_errors,
-        )
+        return best_diff
 
     # =========================================================================
     # MCP-server grading helpers

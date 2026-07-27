@@ -630,6 +630,7 @@ class NativeAdapter(BaseAdapter):
             if state_checks_data:
                 # Extract golden actions
                 golden_actions: list[GoldenAction] = []
+                alternative_golden_actions: list[list[GoldenAction]] = []
                 hash_config = state_checks_data.get("hash", {})
                 if hash_config and hash_config.get("enabled", False):
                     for action in hash_config.get("golden_actions", []):
@@ -639,6 +640,21 @@ class NativeAdapter(BaseAdapter):
                                 arguments=action.get("kwargs", {}),
                             )
                         )
+                    # Optional alternative golden paths for tasks whose domain
+                    # policy admits more than one legal final state. Each
+                    # entry is a full sequence equivalent to
+                    # ``golden_actions``; grading passes if the trial's final
+                    # hash matches ANY variant.
+                    for variant in hash_config.get("alternative_golden_actions") or []:
+                        variant_actions: list[GoldenAction] = []
+                        for action in variant:
+                            variant_actions.append(
+                                GoldenAction(
+                                    tool_name=action.get("name", ""),
+                                    arguments=action.get("kwargs", {}),
+                                )
+                            )
+                        alternative_golden_actions.append(variant_actions)
 
                 # Extract env assertions
                 env_assertions: list[EnvAssertion] = []
@@ -670,6 +686,7 @@ class NativeAdapter(BaseAdapter):
                     hash_enabled=bool(hash_config and hash_config.get("enabled", False)),
                     expected_hash=hash_config.get("expected_state_hash") if hash_config else None,
                     golden_actions=golden_actions,
+                    alternative_golden_actions=alternative_golden_actions,
                     jsonpath_checks=state_checks_data.get("jsonpaths", []),
                     env_assertions=env_assertions,
                     db_probes=db_probes,

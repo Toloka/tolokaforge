@@ -308,6 +308,14 @@ class StateChecksConfig(BaseModel):
     hash_enabled: bool = False
     expected_hash: str | None = None  # Pre-computed (if available)
     golden_actions: list[GoldenAction] = Field(default_factory=list)
+    # Alternative golden paths for tasks where domain policy permits more than
+    # one legal final state (e.g. "either one combined case or a split into
+    # two"). Each entry is a full sequence of golden actions equivalent to
+    # ``golden_actions`` — grading replays each variant on a fresh initial
+    # state, hashes, and passes if the trial's final hash matches ANY variant.
+    # Ordering is authoring order; ``golden_actions`` is variant 0 and
+    # alternatives are variant 1..N in the order listed here.
+    alternative_golden_actions: list[list[GoldenAction]] = Field(default_factory=list)
     # Opt-in, PER-FIELD: record field names whose numeric-looking STRING values
     # fold ("130.00" == "130.0") when hashing state. Per-field (not a global
     # switch) because a numeric-looking string can carry meaning in its exact
@@ -1821,5 +1829,14 @@ class HashGradingResult(BaseModel):
     hash_score: float
     state_diff: StateDiff | None = None
     golden_action_errors: list[str] = Field(default_factory=list)
+    # 0 for the primary golden path, 1..N for the Nth alternative in the order
+    # they appear in ``StateChecksConfig.alternative_golden_actions``. ``None``
+    # on hash mismatch. Single-variant tasks always resolve to 0 on match.
+    matched_variant: int | None = None
+    # Total number of variants attempted this grade (primary + alternatives).
+    # 1 for single-variant tasks; >1 when the task ships alternative goldens.
+    # Present regardless of match outcome so operators can audit variant
+    # coverage.
+    variants_tried: int = 1
 
     model_config = {"extra": "forbid"}

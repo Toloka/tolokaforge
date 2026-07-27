@@ -160,6 +160,54 @@ runner is safe (core-side `extra="ignore"`).
 - Use `relaxed_validation` only as a short-lived escape hatch for legacy tasks
 - Combine with JSONPath assertions using `weight: 0.8` for flexibility
 
+### Multiple legal final states (alternative golden paths)
+
+Some domains admit more than one policy-correct final shape — e.g. a policy that
+allows the agent to either create one combined case or split it into two.
+`state_checks.hash.alternative_golden_actions` lets a task ship additional golden
+paths so any of them can satisfy the state check.
+
+```yaml
+state_checks:
+  hash:
+    enabled: true
+    weight: 1.0
+    golden_actions:                       # variant 0 (primary)
+      - { name: create_case, kwargs: {...} }
+    alternative_golden_actions:           # optional; each entry is variant 1..N
+      - - { name: create_case_a, kwargs: {...} }
+        - { name: create_case_b, kwargs: {...} }
+```
+
+Grading replays each variant on a fresh initial state, hashes the resulting
+state, and passes if the trial's final hash matches ANY variant. On mismatch,
+the reported diff is against the variant with the smallest row-level distance
+from the trial state — triage stays focused on the variant the trial came
+closest to satisfying regardless of variant count.
+
+- **Ordering is authoring order.** `golden_actions` is variant 0; alternatives
+  are variant 1..N in the order listed. The grading reasons string carries the
+  matched variant index for analytics (`matched golden variant 1 of 3`).
+- **Broken variants fail loud.** A variant whose replay raises contributes its
+  error to the grade reasons on every outcome — a broken shipped golden is
+  never masked by a matching alternate. Grading returns 0.0 only if every
+  variant fails to replay.
+- **Absent alternatives = single-variant behaviour.** Tasks that ship no
+  `alternative_golden_actions` execute the pre-existing single-variant hash
+  code path unchanged.
+- **Bundle layout.** Adapters emitting native-format bundles write each
+  variant to `fixtures/golden_actions_variant_{n}.json` starting at `n=1`,
+  alongside the primary `fixtures/golden_actions.json`.
+- **Not supported with `env_assertions` / `db_hash_check`.** The tau2
+  environment evaluator compares against a single hash; mixing it with
+  `alternative_golden_actions` raises a fail-loud config error at grading
+  time. Drop one or the other.
+
+Design bias: use this sparingly. Every extra variant that survives review is a
+statement that the domain policy is genuinely permissive; if a task can be
+tightened by amending policy text to mandate one shape, prefer that over
+shipping alternates.
+
 ---
 
 ## LLM Judge (Rubric Grading)
