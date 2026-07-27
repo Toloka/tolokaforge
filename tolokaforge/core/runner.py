@@ -89,6 +89,12 @@ class TrialRunner:
         # :meth:`UserSimulator.reply` for tests that drive the runner's helper
         # methods directly.
         self._user_observation: LLMCallObservation | None = None
+        # Set when the simulator emits a substantive final reply glued to the
+        # ``###STOP###`` token in the same message. On the next user turn the
+        # runner terminates before calling the simulator so the agent gets
+        # exactly one more turn to act on the delivered reply, then the loop
+        # ends with ``USER_STOP``.
+        self._user_stop_pending: bool = False
 
     @property
     def effective_system_prompt(self) -> str | None:
@@ -411,17 +417,45 @@ class TrialRunner:
         Embeds user tool-call results in the user message text (Anthropic does
         not support ``tool_use`` from the USER role) while preserving the
         original ``tool_calls`` so ``ActionEvaluator`` can track required actions.
-        """
-        user_result = self.user_simulator.reply(messages, observation=self._user_observation)
 
-        if "###STOP###" in user_result.text:
-            self.logger.info("User signaled completion (###STOP###)")
+        Stop-token handling has two shapes:
+
+        * Bare ``###STOP###`` (or the token with only whitespace before it) —
+          terminate immediately with ``USER_STOP``.
+        * Substantive text glued to ``###STOP###`` in one message — deliver the
+          pre-token text as a normal USER message, set a pending flag, and
+          terminate on the following user turn. Guarantees the agent sees the
+          final reply (e.g. a backstory-mandated verbal decline) before the
+          dialogue ends.
+        """
+        if self._user_stop_pending:
+            self.logger.info("User signaled completion (###STOP### after final reply)")
+            self._user_stop_pending = False
             return UserTurnResult(
                 termination=TerminationDecision(
                     reason=TerminationReason.USER_STOP,
-                    system_message="User signaled stop (###STOP###). Dialogue ended.",
+                    system_message="User signaled stop (###STOP### after final reply). Dialogue ended.",
                 )
             )
+
+        user_result = self.user_simulator.reply(messages, observation=self._user_observation)
+
+        if "###STOP###" in user_result.text:
+            pre_stop_text, _, _ = user_result.text.partition("###STOP###")
+            pre_stop_text = pre_stop_text.rstrip()
+            if not pre_stop_text:
+                self.logger.info("User signaled completion (###STOP###)")
+                return UserTurnResult(
+                    termination=TerminationDecision(
+                        reason=TerminationReason.USER_STOP,
+                        system_message="User signaled stop (###STOP###). Dialogue ended.",
+                    )
+                )
+            self.logger.info(
+                "User sent final reply with ###STOP### — delivering reply, stop pending"
+            )
+            self._user_stop_pending = True
+            user_result.text = pre_stop_text
 
         user_message_text = user_result.text
         if user_result.tool_calls and self.user_tool_executor:

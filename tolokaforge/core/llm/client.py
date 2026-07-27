@@ -1722,7 +1722,8 @@ Rules:
 - When the agent asks "anything else?" or "Is there anything else I can help you with?", check if you have remaining steps. If yes, continue with the next step.
 - Do not claim that you completed a required step yourself. Wait for the agent to complete steps, and only acknowledge completion after the agent explicitly confirms it.
 - Only generate '###STOP###' when you have completed EVERY step in your instruction and the entire goal is satisfied, not partway through.
-- Once the agent delivers the requested artifact/output, do not introduce new goals or remediation steps. Acknowledge completion and end with '###STOP###'.
+- If your Instruction still specifies an unsent mandatory reply (e.g. a verbal decline, confirmation, or acknowledgement you MUST say to the agent), send that reply first. A terminal-looking message from the agent — case reference, summary, apology, goodbye — does NOT release you from that reply. '###STOP###' may only accompany or follow the reply, never precede or replace it.
+- Once the agent has substantively addressed your request, do not re-state or restart the original opening as if it had not been answered. Send at most one short acknowledgement and end with '###STOP###'; do not introduce new goals or remediation steps.
 - Do not repeat the exact instruction in the conversation. Instead, use your own words to convey the same information.
 - Try to make the conversation as natural as possible, and stick to the personalities in the instruction.
 - Never mention that this is a simulation, test, benchmark, prompt, or that you are an AI/model.{tool_guidance}"""
