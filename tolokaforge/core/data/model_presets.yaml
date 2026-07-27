@@ -66,6 +66,36 @@ presets:
       drop_sampling_when_thinking: true
       reasoning_budget_default: 8000
 
+  # Claude Opus 5 — landed via auto-resolve (Slack-requested integration,
+  # PR #614). Declared BEFORE the generic ``anthropic`` preset so
+  # first-match-wins routing picks it up. It is the generic ``anthropic``
+  # preset (content/reasoning/cache = anthropic, supports_seed:false — the
+  # signed thinking-block probes passed 15/15 natively, so the reasoning codec
+  # must be preserved) PLUS one Opus-5-observed fix the shared preset does not
+  # carry (scoped to THIS model's match globs so no sibling Anthropic route is
+  # affected):
+  #
+  #   * ``response_policy: json_coerce`` (shipped ``JsonCoerceResponse``) — the
+  #     observe (default) preset surfaced ONE preset-fixable failure:
+  #     ``discriminated_union_two_turns[explicit_discriminator]`` 0/15, where
+  #     the model emitted the ``item`` discriminated-union member as a
+  #     JSON-encoded STRING (``'{"kind": "ticket", ...}'``) instead of a nested
+  #     dict. The ``bare_union`` variant round-tripped natively (15/15), so this
+  #     is a serialisation quirk, not a capability gap. ``JsonCoerceResponse``
+  #     json.loads-decodes a top-level string arg whose first char is ``{``/``[``
+  #     back to the native container (scalar strings like ``table`` untouched).
+  #     Reprobe went 5/5 on the fix-target.
+  anthropic_claude_opus_5:
+    match:
+      - "anthropic/claude-opus-5*"
+      - "*claude-opus-5*"
+    content_policy: anthropic
+    reasoning_codec: anthropic
+    cache_policy: anthropic_ephemeral
+    response_policy: json_coerce
+    params:
+      supports_seed: false
+
   anthropic:
     match:
       - "anthropic/*"
