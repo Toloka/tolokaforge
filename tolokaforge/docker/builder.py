@@ -23,7 +23,8 @@ from __future__ import annotations
 import logging
 import shutil
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -293,57 +294,75 @@ def build_image(
         >>> image.exists()
         True
     """
-    definition = get_image_definition(service_name)
-    context_files = definition.get("context_files", [])
-    build_args = definition.get("build_args")
-
-    if context_files:
-        build_context = assemble_build_context(
-            repo_root=repo_root(),
-            dockerfile=definition["dockerfile"],
-            context_files=context_files,
-        )
-        dockerfile_path = build_context / definition["dockerfile"]
-        try:
-            if force:
-                logger.info("Force building image for '%s' with isolated context", service_name)
-                return Image.build(
-                    dockerfile=str(dockerfile_path),
-                    context=str(build_context),
-                    name=definition["name"],
-                    build_args=build_args,
-                )
-
-            if registry is None:
-                registry = ImageRegistry()
-
-            return registry.get_or_build(
-                name=definition["name"],
-                dockerfile=str(dockerfile_path),
-                context=str(build_context),
+    with _prepared_build_context(service_name) as (dockerfile, context, name, build_args):
+        if force:
+            logger.info("Force building image for '%s'", service_name)
+            return Image.build(
+                dockerfile=dockerfile,
+                context=context,
+                name=name,
                 build_args=build_args,
             )
-        finally:
-            shutil.rmtree(build_context, ignore_errors=True)
 
-    if force:
-        logger.info("Force building image for '%s'", service_name)
-        return Image.build(
-            dockerfile=definition["dockerfile"],
-            context=definition["context"],
-            name=definition["name"],
+        if registry is None:
+            registry = ImageRegistry()
+
+        return registry.get_or_build(
+            name=name,
+            dockerfile=dockerfile,
+            context=context,
             build_args=build_args,
         )
 
-    if registry is None:
-        registry = ImageRegistry()
 
-    return registry.get_or_build(
-        name=definition["name"],
+@contextmanager
+def _prepared_build_context(
+    service_name: str,
+) -> Iterator[tuple[str, str, str, dict[str, str]]]:
+    """Yield ``(dockerfile, context, name, build_args)`` for a service build.
+
+    For services that declare ``context_files`` (runner, rag-service) this
+    assembles an isolated temp build context and removes it on exit; otherwise
+    it yields the static repo-relative paths. Both ``build_image`` and
+    ``expected_image_ref`` consume this so a real build and its predicted ref
+    hash exactly the same inputs.
+    """
+    definition = get_image_definition(service_name)
+    context_files = definition.get("context_files", [])
+    build_args = definition.get("build_args") or {}
+    name = definition["name"]
+
+    if not context_files:
+        yield definition["dockerfile"], definition["context"], name, build_args
+        return
+
+    build_context = assemble_build_context(
+        repo_root=repo_root(),
         dockerfile=definition["dockerfile"],
-        context=definition["context"],
-        build_args=build_args,
+        context_files=context_files,
     )
+    try:
+        dockerfile_path = build_context / definition["dockerfile"]
+        yield str(dockerfile_path), str(build_context), name, build_args
+    finally:
+        shutil.rmtree(build_context, ignore_errors=True)
+
+
+def expected_image_ref(service_name: str) -> str:
+    """The exact ``name:tag`` that ``build_image(service_name)`` would assign.
+
+    Computed via the same context-assembly + content-hash path a real build
+    uses (``Image.expected_ref`` shares ``Image._content_hash_and_tag`` with
+    ``Image.build``), so the returned ref matches a real build by construction.
+    Does not build.
+    """
+    with _prepared_build_context(service_name) as (dockerfile, context, name, build_args):
+        return Image.expected_ref(
+            dockerfile=dockerfile,
+            context=context,
+            name=name,
+            build_args=build_args,
+        )
 
 
 def assemble_build_context(

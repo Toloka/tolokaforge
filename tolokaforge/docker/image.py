@@ -258,8 +258,7 @@ class Image(BaseModel):
             name = f"tolokaforge-{name}"
 
         # Compute content hash
-        content_hash = cls._compute_content_hash(dockerfile_path, context_path, build_args)
-        tag = content_hash[:8]  # Use first 8 chars of hash as tag
+        content_hash, tag = cls._content_hash_and_tag(dockerfile_path, context_path, build_args)
 
         logger.info(
             "Building image '%s:%s' from %s (context: %s)",
@@ -374,6 +373,36 @@ class Image(BaseModel):
         except APIError:
             # Treat API errors as "not found" - caller will attempt to build
             return None  # noqa: BLE001 - Lookup function, None is valid "not found"
+
+    @classmethod
+    def _content_hash_and_tag(
+        cls,
+        dockerfile_path: Path,
+        context_path: Path,
+        build_args: dict[str, str],
+    ) -> tuple[str, str]:
+        """SSOT for the content-hash → tag derivation.
+
+        Both ``build`` and ``builder.expected_image_ref`` route the tag through
+        this one method, so a resolver that predicts a build's tag cannot drift
+        from what the build actually assigns.
+        """
+        content_hash = cls._compute_content_hash(dockerfile_path, context_path, build_args)
+        return content_hash, content_hash[:8]
+
+    @classmethod
+    def expected_ref(
+        cls,
+        dockerfile: str,
+        context: str,
+        name: str,
+        build_args: dict[str, str] | None = None,
+    ) -> str:
+        """The exact ``name:tag`` a build of these inputs would assign, without building."""
+        _content_hash, tag = cls._content_hash_and_tag(
+            Path(dockerfile), Path(context), build_args or {}
+        )
+        return f"{name}:{tag}"
 
     @classmethod
     def _compute_content_hash(
