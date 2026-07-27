@@ -17,8 +17,10 @@ present locally instead of pulling from the registry.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import time
+from dataclasses import dataclass
 
 import pytest
 
@@ -29,6 +31,15 @@ IMAGE_COMPONENTS: tuple[str, ...] = ("runner", "db-service", "rag-service", "moc
 HEALTHY_TIMEOUT_S = 120.0
 _POLL_INTERVAL_S = 2.0
 _TRUTHY = frozenset({"1", "true", "yes"})
+
+# The runner image's own HEALTHCHECK treats the gRPC server as serving once a
+# client channel becomes ready; reused verbatim so the debugging-runbook health
+# step probes exactly what the image self-reports.
+_GRPC_READY_PROBE = (
+    "import grpc; ch = grpc.insecure_channel('localhost:50051'); "
+    "grpc.channel_ready_future(ch).result(timeout=2)"
+)
+_VERSION_RE = re.compile(r"\b\d+\.\d+")
 
 
 def smoke_image_tag() -> str | None:
@@ -88,6 +99,62 @@ def docker_exec(
         capture_output=True,
         text=True,
         input=stdin,
+    )
+
+
+def run_standalone(ref: str) -> str:
+    """Start ``ref`` detached with ``--rm`` and return the container id."""
+    started = subprocess.run(
+        ["docker", "run", "-d", "--rm", ref], capture_output=True, text=True, check=True
+    )
+    return started.stdout.strip()
+
+
+@dataclass(frozen=True)
+class RunbookOutcome:
+    """Source-independent result of the operator debugging runbook.
+
+    Each step is reduced to a comparable observation: the volatile version string
+    becomes a well-formedness flag so a locally-built image and a published
+    release — whose version numbers legitimately differ — still compare equal
+    when the runbook behaves identically against both.
+    """
+
+    version_ok: bool
+    grpc_serving: bool
+    log_tail_nonempty: bool
+
+
+def _await_grpc_serving(container_id: str, timeout_s: float = HEALTHY_TIMEOUT_S) -> bool:
+    """Whether the runner's gRPC channel becomes ready within ``timeout_s``."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        probe = docker_exec(container_id, ["python", "-c", _GRPC_READY_PROBE])
+        if probe.returncode == 0:
+            return True
+        time.sleep(_POLL_INTERVAL_S)
+    return False
+
+
+def run_debugging_runbook(container_id: str) -> RunbookOutcome:
+    """Run the fixed operator debugging runbook against a running runner container.
+
+    The three probes an operator runs regardless of image source: print the CLI
+    version, confirm the gRPC server is serving (the channel-ready check the
+    image's own HEALTHCHECK performs), and tail the container log. Two sources
+    that behave identically produce an equal :class:`RunbookOutcome`.
+    """
+    version = docker_exec(container_id, ["tolokaforge", "--version"])
+    version_ok = version.returncode == 0 and bool(_VERSION_RE.search(version.stdout))
+    grpc_serving = _await_grpc_serving(container_id)
+    logs = subprocess.run(
+        ["docker", "logs", "--tail", "20", container_id], capture_output=True, text=True
+    )
+    log_tail_nonempty = bool((logs.stdout + logs.stderr).strip())
+    return RunbookOutcome(
+        version_ok=version_ok,
+        grpc_serving=grpc_serving,
+        log_tail_nonempty=log_tail_nonempty,
     )
 
 

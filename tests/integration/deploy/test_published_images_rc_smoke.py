@@ -39,6 +39,7 @@ from tests.integration.deploy.conftest import (
     docker_exec,
     obtain_image,
     published_image_ref,
+    run_standalone,
     smoke_image_tag,
     wait_for_health,
 )
@@ -65,14 +66,6 @@ def _tag() -> str:
     return tag
 
 
-def _run_standalone(ref: str) -> str:
-    """Start ``ref`` detached with ``--rm`` and return the container id."""
-    started = subprocess.run(
-        ["docker", "run", "-d", "--rm", ref], capture_output=True, text=True, check=True
-    )
-    return started.stdout.strip()
-
-
 @pytest.fixture(params=IMAGE_COMPONENTS)
 def healthy_image(request: pytest.FixtureRequest, docker_daemon: None) -> Iterator[tuple[str, str]]:
     """Yield ``(component, container_id)`` for a pulled, running, healthy image.
@@ -84,7 +77,7 @@ def healthy_image(request: pytest.FixtureRequest, docker_daemon: None) -> Iterat
     ref = published_image_ref(component, _tag())
     obtained = obtain_image(ref)
     assert obtained.returncode == 0, f"could not obtain {ref}: {obtained.stderr.strip()}"
-    container_id = _run_standalone(ref)
+    container_id = run_standalone(ref)
     try:
         yield component, container_id
     finally:
@@ -98,7 +91,7 @@ def runner_container(docker_daemon: None) -> Iterator[str]:
     obtained = obtain_image(ref)
     if obtained.returncode != 0:
         pytest.fail(f"could not obtain {ref}: {obtained.stderr.strip()}")
-    container_id = _run_standalone(ref)
+    container_id = run_standalone(ref)
     try:
         status = wait_for_health(container_id)
         if status != "healthy":
