@@ -1303,9 +1303,11 @@ def shared_runtime_backend_factory(
             run_id=ctx.run_id,
             seeds=ctx.seeds,
             log_capture=ctx.log_capture,
+            events=ctx.events,
         )
     return SharedStackRuntimeBackend(
         runner_address=ctx.runner_address,
         endpoints=_build_env_endpoints(ctx.runner_address),
         seeds=ctx.seeds,
+        events=ctx.events,
     )

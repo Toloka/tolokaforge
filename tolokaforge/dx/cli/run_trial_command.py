@@ -218,7 +218,7 @@ def _reroute_stdout_to_stderr() -> TextIO:
     return os.fdopen(wire_fd, "w", encoding="utf-8")
 
 
-@click.command(name="run-trial")
+@click.command(name="run-trial", hidden=True)
 def run_trial() -> None:
     """Run one trial as a subprocess over a JSON-Lines pipe.
 

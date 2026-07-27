@@ -551,7 +551,7 @@ The three orchestrator seams — `RuntimeBackend`, `TrialGrader`, and `Conductor
 
 | Group | Factory type | Context |
 | --- | --- | --- |
-| `tolokaforge.runtime_backends` | `Callable[[RuntimeBackendBuildContext], RuntimeBackend]` | `runner_address`, `env_manifest`, `run_id`, `seeds`, `log_capture` |
+| `tolokaforge.runtime_backends` | `Callable[[RuntimeBackendBuildContext], RuntimeBackend]` | `runner_address`, `env_manifest`, `run_id`, `seeds`, `log_capture`, `events` |
 | `tolokaforge.trial_graders` | `Callable[[TrialGraderContext], TrialGrader]` | `runtime_backend`, `logger` |
 | `tolokaforge.conductors` | `Callable[[ConductorContext], Conductor]` | per-run deps (adapter, writer, config, agent client, runtime backend, grader, …) |
 
