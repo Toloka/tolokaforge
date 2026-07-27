@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.models import (
     EvaluationConfig,
     Grade,
@@ -1666,3 +1667,143 @@ class TestConductorInjection:
         assert ctx.config is orch.config
         assert ctx.output_dir == tmp_path
         assert ctx.trial_grader is not None
+
+
+# ===================================================================
+# Adapter-declared trial-grader name — orchestrator._build_conductor
+# ===================================================================
+
+
+class _RecordingGrader:
+    """Minimal real ``TrialGrader`` the fixture factory produces.
+
+    ``_build_conductor`` only stores it on the context; ``grade`` is never
+    reached in these tests, so it hard-fails if the build path ever calls it.
+    """
+
+    def grade(self, spec: Any, trajectory: Any, agent_system_prompt: str) -> Any:
+        raise AssertionError("recording grader.grade must not run during _build_conductor")
+
+
+class _FakeDist:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
+class _FakeEntryPoint:
+    """Duck-typed ``EntryPoint`` whose ``load()`` returns the fixture factory."""
+
+    def __init__(self, name: str, factory: Any) -> None:
+        self.name = name
+        self.dist = _FakeDist("fixture-pkg")
+        self._factory = factory
+
+    def load(self) -> Any:
+        return self._factory
+
+
+class _CustomGraderAdapter(NativeAdapter):
+    trial_grader_name = "recording_grader"
+
+
+class _DefaultGraderAdapter(NativeAdapter):
+    pass
+
+
+class _UnregisteredGraderAdapter(NativeAdapter):
+    trial_grader_name = "does_not_exist_grader"
+
+
+@pytest.mark.unit
+class TestAdapterDeclaredTrialGraderName:
+    """``_build_conductor`` resolves the grader by ``adapter.trial_grader_name``.
+
+    Exercises the real ``Orchestrator._build_conductor`` with real
+    ``NativeAdapter`` subclasses and real ``plugin_registry`` resolution — no
+    monkeypatch stands in for the load path under test. A capturing
+    ``conductor_factory`` reads ``ctx.trial_grader`` off the real
+    ``ConductorContext`` the orchestrator built.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolate_registry(self) -> Any:
+        from tolokaforge.core import plugin_registry
+
+        plugin_registry._clear_discovery_cache()
+        yield
+        plugin_registry._clear_discovery_cache()
+
+    def _install_grader_entry_points(
+        self, monkeypatch: pytest.MonkeyPatch, entry_points: list[_FakeEntryPoint]
+    ) -> None:
+        import importlib.metadata
+
+        from tolokaforge.core.plugin_registry import TRIAL_GRADERS_GROUP
+
+        def fake_entry_points(*, group: str) -> list[_FakeEntryPoint]:
+            return list(entry_points) if group == TRIAL_GRADERS_GROUP else []
+
+        monkeypatch.setattr(importlib.metadata, "entry_points", fake_entry_points)
+
+    def _build_and_capture(self, adapter: NativeAdapter, tmp_path: Path) -> Any:
+        from tolokaforge.core.conductor import ConductorContext, InMemoryConductor
+        from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
+
+        captured: dict[str, ConductorContext] = {}
+
+        def factory(ctx: ConductorContext) -> InMemoryConductor:
+            captured["ctx"] = ctx
+            return InMemoryConductor()
+
+        orch = Orchestrator(_make_run_config(), deps=OrchestratorDeps(conductor_factory=factory))
+        orch.adapter = adapter
+        orch._build_conductor(
+            agent_client=MagicMock(),
+            runtime_backend=MagicMock(),
+            output_dir=tmp_path,
+            request_limiter=None,
+        )
+        return captured["ctx"]
+
+    def test_custom_name_selects_registered_grader(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A declared name resolves the matching registered factory's product."""
+        produced = _RecordingGrader()
+        self._install_grader_entry_points(
+            monkeypatch, [_FakeEntryPoint("recording_grader", lambda _ctx: produced)]
+        )
+
+        ctx = self._build_and_capture(
+            _CustomGraderAdapter({"tasks_glob": "tasks/**/task.yaml"}), tmp_path
+        )
+
+        assert ctx.trial_grader is produced
+
+    def test_default_name_resolves_runner_rpc_grader(self, tmp_path: Path) -> None:
+        """No override → the real installed ``runner_rpc`` entry point resolves.
+
+        Runs against real, un-monkeypatched discovery (the autouse fixture
+        cleared the cache) so the default preserves today's behaviour exactly.
+        """
+        from tolokaforge.core.trial_grader import RunnerRPCTrialGrader
+
+        ctx = self._build_and_capture(
+            _DefaultGraderAdapter({"tasks_glob": "tasks/**/task.yaml"}), tmp_path
+        )
+
+        assert isinstance(ctx.trial_grader, RunnerRPCTrialGrader)
+
+    def test_unregistered_name_fails_loud(self, tmp_path: Path) -> None:
+        """A declared-but-unregistered name propagates ``UnknownImplementationError``
+        naming the miss and listing the known registered names."""
+        from tolokaforge.core.plugin_registry import UnknownImplementationError
+
+        with pytest.raises(UnknownImplementationError) as excinfo:
+            self._build_and_capture(
+                _UnregisteredGraderAdapter({"tasks_glob": "tasks/**/task.yaml"}), tmp_path
+            )
+
+        message = str(excinfo.value)
+        assert "does_not_exist_grader" in message
+        assert "runner_rpc" in message

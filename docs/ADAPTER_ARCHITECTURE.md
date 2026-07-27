@@ -145,6 +145,13 @@ All adapters implement these core methods:
 | `reset_environment(env)` | Reset environment to initial state |
 | `compute_golden_hash(task_id, env)` | Compute expected state hash |
 
+Adapters also carry overridable declarations with behaviour-preserving
+defaults:
+
+| Declaration | Default | Description |
+|--------|--------|-------------|
+| `trial_grader_name` (class attr) | `"runner_rpc"` | Name of the `TrialGrader` the orchestrator loads for this adapter's runs (from the `tolokaforge.trial_graders` entry-point group). Override to ship a custom grader. |
+
 ## Adapter-Specific Details
 
 ### NativeAdapter (built-in)

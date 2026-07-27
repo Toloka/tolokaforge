@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### Feat
+
+- **adapters**: adapter-declared trial-grader name — the orchestrator now loads `adapter.trial_grader_name` (default `"runner_rpc"`, additive, every existing adapter unchanged); adapters shipping a custom `TrialGrader` under the `tolokaforge.trial_graders` entry-point group override it (#620)
+
 ### Fix
 
 - **runner**: preserve simulator text glued to `###STOP###` — pre-token content is delivered as a USER message and the dialogue terminates with `USER_STOP` on the following user turn instead of silently discarding the entire reply. Simulator prompt gains an explicit precedence rule for backstory-mandated replies and an anti-restart rule (#611)

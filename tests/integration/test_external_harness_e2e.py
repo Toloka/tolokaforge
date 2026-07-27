@@ -56,13 +56,13 @@ _TASK_ID = "capstone"
 
 # Runs run_trial over the three fixture seams, builds an Orchestrator baseline
 # wired to the same seams, and writes both serialisations to ``out_file``.
-# The baseline injects the fixture grader through the conductor_factory closure:
-# OrchestratorDeps has no grader seam and _build_conductor hardcodes
-# load_trial_grader("runner_rpc") into ctx.trial_grader (which would fire a real
-# gRPC), so the closure ignores ctx.trial_grader and passes FixtureGrader
-# explicitly — both paths then run FixtureConductor + FixtureGrader, Docker-free.
-# The payload is written to a file because run_trial's StructuredLogger writes to
-# stdout, which must not be parsed as the payload.
+# _build_conductor resolves self.adapter.trial_grader_name (the stub pins it to
+# "runner_rpc") and builds the default grader into ctx.trial_grader — which would
+# fire a real gRPC. The baseline injects the fixture grader through the
+# conductor_factory closure, which supplies FixtureGrader to FixtureConductor
+# directly and ignores ctx.trial_grader, so both paths run FixtureConductor +
+# FixtureGrader, Docker-free. The payload is written to a file because run_trial's
+# StructuredLogger writes to stdout, which must not be parsed as the payload.
 _RUN_TRIAL_PROBE = """
 import json
 import sys
@@ -109,6 +109,7 @@ orch.tasks = [task]
 adapter_stub = MagicMock()
 adapter_stub.to_task_description.side_effect = lambda _tid: task_desc
 adapter_stub.docker_stack_requirements.return_value = None
+adapter_stub.trial_grader_name = "runner_rpc"
 orch.adapter = adapter_stub
 orch.run()
 (orch_trajectory,) = orch.results

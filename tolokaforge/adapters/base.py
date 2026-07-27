@@ -413,6 +413,11 @@ class BaseAdapter(ABC):
         """
         pass
 
+    # Adapters shipping a custom TrialGrader (registered under the
+    # tolokaforge.trial_graders entry-point group) override this; the default
+    # keeps runner-owned RPC grading.
+    trial_grader_name: str = "runner_rpc"
+
     def docker_stack_requirements(self) -> DockerStackRequirements:
         """Declare extra Docker stack needs for this adapter.
 
