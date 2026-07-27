@@ -222,6 +222,34 @@ def load_task_yaml(
     return task, task_root
 
 
+def load_task(
+    path: str | Path,
+    *,
+    project_task_defaults: dict[str, Any] | None = None,
+) -> TaskConfig:
+    """Load a ``task.yaml`` into a validated :class:`TaskConfig`.
+
+    Thin wrapper over :func:`load_task_yaml` that returns the config alone. The
+    effective task dir is not dropped — it rides on :attr:`TaskConfig.source_dir`
+    (the domain root for shared-domain tasks, the task.yaml parent otherwise), so
+    the loaded task resolves its own file assets without a second return value.
+
+    Args:
+        path: Path to ``task.yaml``.
+        project_task_defaults: Optional ``project.task_defaults`` dict layered in
+            below the task's own fields (see :func:`load_task_yaml`).
+
+    Raises:
+        FileNotFoundError: If ``path`` does not exist.
+        RuntimeError: If a ``domain:`` ref cannot be resolved or the YAML is not
+            a top-level mapping.
+        pydantic.ValidationError: If the merged dict fails :class:`TaskConfig`
+            validation.
+    """
+    task, _ = load_task_yaml(Path(path), project_task_defaults=project_task_defaults)
+    return task
+
+
 def _resolve_environment_manifest_paths(task_data: dict, task_root: Path, task_path: Path) -> None:
     """Rewrite ``environment_manifest.stack.compose_file`` (canonical)
     or the legacy flat ``environment_manifest.compose_file`` to an

@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from tolokaforge.adapters._task_loader import load_task_yaml
+from tolokaforge.runner import load_task
 from tolokaforge.secrets import init_default
 
 _LLM_KEYS = [
@@ -76,7 +76,7 @@ def _models_from_env() -> list[str]:
 
 
 def _run_single_trial(task_yaml: Path, model: str) -> TrialOutcome:
-    task, task_dir = load_task_yaml(task_yaml)
+    task = load_task(task_yaml)
 
     start = {
         "v": 1,
@@ -97,7 +97,7 @@ def _run_single_trial(task_yaml: Path, model: str) -> TrialOutcome:
     proc = subprocess.run(
         [sys.executable, "-m", "tolokaforge.dx.cli.main", "run-trial"],
         input=json.dumps(start) + "\n",
-        cwd=str(task_dir),
+        cwd=str(task.source_dir),
         env=os.environ.copy(),
         capture_output=True,
         text=True,

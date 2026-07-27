@@ -11,11 +11,7 @@ Needs an LLM key in ``.env`` (like every real run) and a live runner
 
 from pathlib import Path
 
-# The public task-file loader is deferred to #547; until it lands, obtaining a
-# TaskConfig from disk goes through the adapter's loader — the honest current
-# path a downstream harness would use.
-from tolokaforge.adapters._task_loader import load_task_yaml
-from tolokaforge.runner import run_trial
+from tolokaforge.runner import load_task, run_trial
 from tolokaforge.secrets import init_default
 
 _TASK_YAML = (
@@ -29,7 +25,7 @@ def main() -> None:
     # the same bootstrap the CLI runs at startup.
     init_default()
 
-    task, _task_dir = load_task_yaml(_TASK_YAML)
+    task = load_task(_TASK_YAML)
 
     result = run_trial(
         task=task,

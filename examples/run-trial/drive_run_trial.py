@@ -17,10 +17,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-# The public task-file loader is deferred to #547; until it lands, obtaining a
-# TaskConfig from disk goes through the adapter's loader — the honest current
-# path a downstream harness would use.
-from tolokaforge.adapters._task_loader import load_task_yaml
+from tolokaforge.runner import load_task
 from tolokaforge.secrets import init_default
 
 # LLM provider keys the spawned trial may need. The subprocess reads .env
@@ -46,7 +43,7 @@ def main() -> None:
     # the spawned subprocess (whose cwd is the task-pack root) inherits them.
     init_default().export_to_environ(_LLM_KEYS)
 
-    task, task_dir = load_task_yaml(_TASK_YAML)
+    task = load_task(_TASK_YAML)
 
     start = {
         "v": 1,
@@ -68,7 +65,7 @@ def main() -> None:
     proc = subprocess.run(
         [sys.executable, "-m", "tolokaforge.dx.cli.main", "run-trial"],
         input=json.dumps(start) + "\n",
-        cwd=str(task_dir),
+        cwd=str(task.source_dir),
         env=os.environ.copy(),
         capture_output=True,
         text=True,

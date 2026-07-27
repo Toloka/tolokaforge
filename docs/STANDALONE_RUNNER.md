@@ -94,13 +94,12 @@ models dict, and returns a typed `TrialResult`. No config file, no
 `Orchestrator`, no filesystem side effects unless you pass an `output_dir`.
 
 ```python
-from tolokaforge.adapters._task_loader import load_task_yaml
-from tolokaforge.runner import run_trial
+from tolokaforge.runner import load_task, run_trial
 from tolokaforge.secrets import init_default
 
 init_default()  # reads .env into the singleton SecretManager
 
-task, _ = load_task_yaml("examples/native/tool_use/dataset/tasks/tool_use/tool_use_public_example_01/task.yaml")
+task = load_task("examples/native/tool_use/dataset/tasks/tool_use/tool_use_public_example_01/task.yaml")
 
 result = run_trial(
     task=task,
@@ -318,7 +317,8 @@ carries `"v":1`.
 {"v":1,"type":"start","task":{...},"models":{"agent":{...}},"runtime":"auto","conductor":"in_process"}
 ```
 
-`task` is a serialised `TaskConfig` (the shape `load_task_yaml` returns).
+`task` is a serialised `TaskConfig` (the shape `load_task` returns, via
+`task.model_dump(mode="json")`).
 `models` is a dict; the `"agent"` key is the AI model that plays the trial's
 agent role. `runtime` / `conductor` / `trial_grader` are optional; `"auto"` /
 `"in_process"` / `"runner_rpc"` are the defaults.
@@ -377,9 +377,6 @@ gaps:
 - **Public Docker image on a registry** — today the runner image builds
   locally as `tolokaforge-runner:local`. M14 publishes to
   `ghcr.io/toloka/tolokaforge-runner:X.Y.Z` so downstream can `docker pull`.
-- **Public `tolokaforge.load_task(path)` helper** — today, obtaining a
-  `TaskConfig` from a YAML file requires importing from a private path
-  (`tolokaforge.adapters._task_loader.load_task_yaml`). Tracked as issue #547.
 - **Standalone compose recipe** — today's `make docker-up` builds from the
   repo; M14 ships a `deploy/standalone/docker-compose.yaml` that composes the
   published runner + db-service images so a cold host with only Docker
