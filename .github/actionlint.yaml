@@ -1,0 +1,12 @@
+# actionlint runs with --all-files in CI, so it lints every workflow. This scopes
+# out pre-existing info-level shellcheck notes (SC2086/SC2016/SC2015) in the
+# integrate-model.yml automation workflow ONLY — cleaning that workflow's shell
+# risks changing live model-auto-integration behaviour, tracked as #633. Every
+# other workflow keeps full actionlint + shellcheck. Remove this block once #633
+# lands.
+paths:
+  .github/workflows/integrate-model.yml:
+    ignore:
+      - 'shellcheck reported issue in this script: SC2086:'
+      - 'shellcheck reported issue in this script: SC2016:'
+      - 'shellcheck reported issue in this script: SC2015:'
