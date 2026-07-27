@@ -162,8 +162,9 @@ def test_adapter_declared_grader_name_reaches_grade(
     orch.adapter = adapter
     orch.run()
 
-    # The orchestrator resolved the grader by the adapter-declared name (:592) and
-    # placed it into ctx.trial_grader (:605) before the conductor factory ran.
+    # The orchestrator resolved the grader by the adapter-declared name and
+    # placed it into ctx.trial_grader before the conductor factory ran, so the
+    # captured grader is the one the name selected.
     assert isinstance(captured["grader"], _RecordingGrader)
 
     (trajectory,) = orch.results
