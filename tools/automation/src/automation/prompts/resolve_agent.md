@@ -64,6 +64,30 @@ and pushes the whole integration to needs-human.
    `_POLICY_REGISTRIES` slot AND export it in `tolokaforge/core/llm/__init__.py`, then reference
    it from the overlay. Keep it minimal and reusable (a composite of shipped classes is a preset
    entry, not a mega-class). Re-run the validate command above so the overlay accepts the name.
+
+   CODE-SHAPE DISCIPLINE (applies to ANY new or changed class):
+   - EXTEND, do not re-implement. If the quirk is a VARIANT of behavior a shipped class already
+     handles (a scalar/nested/deeper case of an existing recovery), your class MUST subclass or
+     compose that class and add ONLY the delta, delegating everything else to the parent
+     (`MinimaxM3TagRecoveryResponse` = JsonRecursiveCoerce THEN ItemRecursiveUnwrap is the
+     composition pattern). (Real miss: gemini-3.6-flash re-implemented the `ArrayDictMapResponse`
+     pivot as a standalone class and silently LOST the parent's documented empty-array and
+     single-item recoveries - both live-observed regressions on this exact model lineage.)
+   - SUPERSET rule: when your preset entry REPLACES the policy this model's family preset used
+     before, the new policy must preserve EVERY documented behavior of the one it replaces.
+     Inherit and delegate; never copy fragments of the parent's logic.
+   - SCHEMA-GATE the trigger wherever the schema is visible: key the recovery on declared types
+     (`param_types` / the sanitizer's dict-map registry), not on the data's shape alone. A
+     trigger that fires on shape (e.g. "any list whose dict items contain a `key` field", at
+     any depth) is data-bound BY CONSTRUCTION - see `data_scope_review` below.
+   - Bound recursion to the depth your evidence shows (a nested-in-object quirk = one level).
+     An unbounded tree-walk forces `data_scope_review: true`. The docstring MUST state the exact
+     firing condition and depth; it is reviewed against the code, so an understated scope is a
+     defect, not politeness.
+   - Before creating a class or registry key, grep `response_policy.py` + `schema_sanitizer.py`
+     (this branch AND main) for an existing class/key covering the same quirk - a sibling
+     integration may have just landed one. NEVER rebind an existing registry key to different
+     semantics; if your mechanism differs, use a new, model-line-specific name.
 4. Write `{{OBS_DIR}}/resolve/decision.json`:
    ```
    {"fix_targets": ["<exact junit probe names from findings.json that the overlay should turn green>"],
@@ -87,6 +111,15 @@ and pushes the whole integration to needs-human.
    merge (even on full convergence) - a locally-green fix can be too narrow (or over-broad) on data
    the pipeline never saw. A fix that touches ONLY SCHEMA-DECLARED array fields (visible type) is
    `data_scope_review: false`.
+
+   Judge this flag against the CODE YOU WROTE, not the probe that motivated it. If the
+   implemented trigger can fire on ANY argument whose SHAPE matches - regardless of that
+   parameter's declared type, or at depths the schema does not describe - the fix is data-bound:
+   set `true` even when the probed field itself was schema-declared. Rule of thumb: unless the
+   schema gating PROVES that no valid argument of any OTHER tool can be altered, set `true`.
+   (Real miss: gemini-3.6-flash's shape-keyed recursive pivot was declared `false` by arguing
+   from the probe's schema-declared field, and shipped as integrate-done while demonstrably
+   rewriting genuine `[{key, ...}]` arrays under free-form objects.)
 
    Set `needs_human: true` (with a one-line `needs_human_reason`) when you CANNOT produce a correct
    policy because the necessary evidence is NOT in the observe data - a DATA-BOUND quirk whose
