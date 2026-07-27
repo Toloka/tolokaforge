@@ -1,0 +1,63 @@
+{
+  "actors": {
+    "user": {
+      "backstory": "You are an operations manager validating that the assistant can use tools to update ticket state safely and summarize next actions. Acknowledge completion and end with ###STOP### once the assistant has delivered the requested artifact(s).",
+      "mode": null,
+      "persona": null,
+      "scripted_flow": null
+    }
+  },
+  "adapter_settings": null,
+  "adapter_type": "native",
+  "category": "tool_use",
+  "description": "Use database tools to triage a high-priority support ticket, update status, and produce an operator-facing action plan.",
+  "environment_manifest": null,
+  "grading": "grading.yaml",
+  "initial_state": {
+    "device_overrides": null,
+    "filesystem": {
+      "copy": [
+        {
+          "from": "fixtures/customer_ticket.json",
+          "to": "/env/fs/agent-visible/customer_ticket.json"
+        }
+      ]
+    },
+    "initialization_actions": null,
+    "json_db": "initial_state.json",
+    "mock_web": null,
+    "rag": null,
+    "system_prompt": null
+  },
+  "initial_user_message": "Use the ticket data to move ticket `T-100` to `in_progress`, assign it to `oncall-platform`, and write a resolution plan to `submissions/tool_use_ticket_plan.md`.",
+  "max_turns": null,
+  "metadata": {
+    "complexity": null,
+    "expected_failure_modes": [],
+    "tags": []
+  },
+  "name": "Ticket Resolution Plan",
+  "policies": {
+    "guidance": [
+      "Query current state before updating records.",
+      "Include a rollback precaution in the final plan."
+    ]
+  },
+  "stuck_heuristics": null,
+  "system_prompt": null,
+  "task_id": "tool_use_public_example_01",
+  "timeouts": null,
+  "tools": {
+    "agent": {
+      "enabled": [
+        "db_query",
+        "db_update",
+        "read_file",
+        "write_file"
+      ]
+    },
+    "user": {
+      "enabled": []
+    }
+  }
+}
