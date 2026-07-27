@@ -28,12 +28,15 @@ is reported with the first-party import chain that pulled it.
 
 3. **Static-AST forbidden-import-statement guard.** A source-level walk of every
    ``*.py`` under ``tolokaforge/runner/`` flags any ``import`` / ``from … import``
-   statement whose target is under a forbidden prefix, *at any nesting depth* —
-   including deferred function-body imports that never execute at module load
-   and so slip past locks 1 and 2. Both absolute (``from tolokaforge.adapters
-   import …``) and relative (``from ..adapters import …``) forms are resolved.
-   It matches statements only; ``importlib.import_module("<target>")`` string
-   indirection is out of this guard's scope.
+   statement that names a module under a forbidden prefix, *at any nesting depth*
+   — including deferred function-body imports that never execute at module load
+   and so slip past locks 1 and 2. A module is named either by the ``from``
+   target (``from tolokaforge.adapters import …``, absolute or relative
+   ``from ..adapters import …``) or by an imported name resolved against a
+   non-forbidden parent (``from tolokaforge import adapters`` reaches the
+   forbidden ``tolokaforge.adapters`` leaf). It matches statements only;
+   ``importlib.import_module("<target>")`` string indirection is out of this
+   guard's scope.
 
 All three consume one ``FORBIDDEN_PREFIXES`` definition: locks 1/2 receive it as
 a literal in the subprocess source, lock 3 imports it directly.
@@ -248,12 +251,16 @@ def _forbidden_imports_in_source(
     """Return ``(lineno, target)`` for each forbidden import statement in *source*.
 
     Every ``ast.Import`` / ``ast.ImportFrom`` at any nesting depth is collected;
-    a target under a ``FORBIDDEN_PREFIXES`` entry is a violation. *module_qualname*
-    is the file's dotted module name (e.g. ``tolokaforge.runner.service``);
-    *is_package* is True for an ``__init__`` module. Relative imports resolve
-    against the module's package: a non-package module's own name is dropped
-    first, so ``from ..adapters`` in ``tolokaforge.runner.foo`` targets
-    ``tolokaforge.adapters`` — not ``tolokaforge.runner.adapters``.
+    a target under a ``FORBIDDEN_PREFIXES`` entry is a violation. For a
+    ``from … import`` whose module target is not itself forbidden, each imported
+    name is also checked as a submodule of that target, so
+    ``from tolokaforge import adapters`` is flagged as ``tolokaforge.adapters``.
+    *module_qualname* is the file's dotted module name (e.g.
+    ``tolokaforge.runner.service``); *is_package* is True for an ``__init__``
+    module. Relative imports resolve against the module's package: a non-package
+    module's own name is dropped first, so ``from ..adapters`` in
+    ``tolokaforge.runner.foo`` targets ``tolokaforge.adapters`` — not
+    ``tolokaforge.runner.adapters``.
     """
     package = module_qualname if is_package else module_qualname.rpartition(".")[0]
     violations: list[tuple[int, str]] = []
@@ -264,8 +271,15 @@ def _forbidden_imports_in_source(
                     violations.append((node.lineno, alias.name))
         elif isinstance(node, ast.ImportFrom):
             target = _resolve_import_from(node, package)
-            if target and _matches_forbidden(target):
+            if not target:
+                continue
+            if _matches_forbidden(target):
                 violations.append((node.lineno, target))
+            else:
+                for alias in node.names:
+                    full = f"{target}.{alias.name}"
+                    if _matches_forbidden(full):
+                        violations.append((node.lineno, full))
     return violations
 
 
@@ -302,3 +316,13 @@ def test_forbidden_import_detector_flags_deferred_imports() -> None:
     assert _forbidden_imports_in_source(
         relative_deferred, "tolokaforge.runner.submodule", is_package=False
     ) == [(2, "tolokaforge.adapters")]
+
+    parent_import_leaf = "def _init():\n    from tolokaforge import adapters\n"
+    assert _forbidden_imports_in_source(
+        parent_import_leaf, "tolokaforge.runner.service", is_package=False
+    ) == [(2, "tolokaforge.adapters")]
+
+    parent_import_forbidden_leaf = "def _init():\n    from tolokaforge.core import orchestrator\n"
+    assert _forbidden_imports_in_source(
+        parent_import_forbidden_leaf, "tolokaforge.runner.service", is_package=False
+    ) == [(2, "tolokaforge.core.orchestrator")]
