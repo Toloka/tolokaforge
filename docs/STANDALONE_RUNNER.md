@@ -73,6 +73,91 @@ in how *you* reach them, not in what the runner does underneath.
 | Want the lowest per-trial overhead | `tolokaforge.runner.run_trial(...)`, in-process |
 | Want to run 10,000 trials with distributed workers | Not this guide — use [RUNNER.md](RUNNER.md) (batch mode) |
 
+## Published images
+
+The four first-party images are published to Docker Hub, so a host with only
+Docker installed can `docker pull` them instead of building from a repo
+checkout:
+
+| Image | Docker Hub repository | Role |
+|---|---|---|
+| runner | `docker.io/tolokasoft1/tolokaforge-runner` | the runner gRPC service (this guide's subject) |
+| db-service | `docker.io/tolokasoft1/tolokaforge-db-service` | JSON state store the runner and tasks read/write |
+| rag-service | `docker.io/tolokasoft1/tolokaforge-rag-service` | retrieval service backing the `search_kb` judge tool |
+| mock-web | `docker.io/tolokasoft1/tolokaforge-mock-web` | deterministic web fixtures for browser tasks |
+
+All four share one coordinated semver tag axis:
+
+| Tag | Kind | Points at |
+|---|---|---|
+| `:X.Y.Z` | immutable | an exact release (e.g. `:1.4.0`) |
+| `:X.Y.Z-rc.N` | immutable | a release candidate (e.g. `:1.4.0-rc.1`) |
+| `:X.Y` | moving | the latest patch of a minor line (e.g. `:1.4`) |
+| `:latest` | moving | the newest stable release |
+
+Pin an immutable `:X.Y.Z` tag for reproducible runs; `:X.Y` and `:latest` track
+forward. Release candidates publish under `:X.Y.Z-rc.N` and never move `:latest`.
+
+```bash
+docker pull docker.io/tolokasoft1/tolokaforge-runner:latest
+docker pull docker.io/tolokasoft1/tolokaforge-db-service:latest
+```
+
+What the published image guarantees about its *internals* is deliberately
+narrow: the stable contract is the image name + tag axis above plus the command
+surface below, not how the image is composed inside
+([ADR-0023](adr/0023-runner-image-internals.md)). A turnkey compose recipe that
+wires the published images into a single stack is forthcoming; until it lands,
+`make docker-up` from a checkout is the composed-stack path, or compose the
+pulled images yourself against the
+[command surface](#command-surface-of-the-published-runner-image) below.
+
+## Command surface of the published runner image
+
+Running `tolokasoft1/tolokaforge-runner` is a committed contract, recorded in
+[ADR-0024](adr/0024-container-command-surface.md). The elements below are stable
+across releases — a change to any of them is a breaking, versioned change; the
+image's internal layout is not
+([ADR-0023](adr/0023-runner-image-internals.md)).
+
+**Default entrypoint — the gRPC runner service on `:50051`.** The image has no
+`ENTRYPOINT`; its default command is `python -m tolokaforge.runner`, which
+starts the Runner gRPC service bound to `[::]:50051` (the image `EXPOSE`s
+`50051`). Running the image with no arguments runs the service.
+
+**Healthcheck.** The image self-reports health via a Docker `HEALTHCHECK` that
+probes gRPC channel readiness on `localhost:50051` (not an HTTP endpoint).
+`docker inspect --format '{{.State.Health.Status}}'` reaching `healthy` is the
+committed "service is up" signal.
+
+**Environment contract.** The container is wired through these variables:
+
+| Variable | Required | Default | Meaning |
+|---|---|---|---|
+| `TOLOKAFORGE_SECRETS_JSON` | no | unset | JSON credential map. When set, it bootstraps the `SecretManager` singleton at container start; when unset, the manager lazy-inits from the `EnvProvider` / `.env` on first secret read. |
+| `DB_SERVICE_URL` | no | `http://localhost:8000` | URL of the db-service. A wrong or unreachable URL fails loud on first call. |
+| `RAG_SERVICE_URL` | no | *(none — honest absence)* | URL of the rag-service. Present iff a rag-service is running; unset means the runner builds no RAG client and offers no `search_kb` tool. |
+
+`RUNNER_PORT`, `LOG_LEVEL`, and `MAX_WORKERS` are operational tuning knobs with
+defaults (`50051` / `INFO` / `10`); they are not part of the committed wiring
+contract.
+
+**Documented `docker exec` subcommands.** Two CLI subcommands are committed for
+programmatic `docker exec` against a running container:
+
+- `tolokaforge run-trial` — runs one trial over the JSON-Lines wire (see
+  [Wire format quick-reference](#wire-format-quick-reference)): one `start`
+  envelope on stdin, one terminal `{"v":1,"type":"result"|"error",…}` envelope
+  on stdout. It is hidden from interactive `tolokaforge --help` **by design** —
+  a machine-facing wire protocol, documented here for programmatic use, not
+  surfaced in the human command list.
+- `tolokaforge --version` — prints the installed `tolokaforge` package version;
+  a stable version probe for a running container.
+
+A `tolokaforge config-dump` command does **not** exist and is not part of the
+committed surface; it is reserved and tracked as
+[#626](https://github.com/Toloka/tolokaforge/issues/626).
+
 ## Quickstart
 
 Two things you need on the host either way:
@@ -80,10 +165,10 @@ Two things you need on the host either way:
 1. **An LLM provider key** in a `.env` file at the repo root (e.g.
    `OPENROUTER_API_KEY=sk-…`). The same bootstrap `tolokaforge run` uses.
 2. **A live runner container.** `make docker-up` builds and starts the
-   `tolokaforge-runner:local` container plus the small support stack. This is
-   the substrate the trial runs inside; both surfaces below dispatch through
-   it. The container will be published to a public registry in M14 — until
-   then, a local `make docker-up` is the honest current path.
+   `tolokaforge-runner:local` container plus the small support stack from a
+   repo checkout. This is the substrate the trial runs inside; both surfaces
+   below dispatch through it. To skip the build, `docker pull` a pinned tag
+   from Docker Hub instead — see [Published images](#published-images).
 
 Then pick a surface.
 
@@ -366,24 +451,6 @@ locks them:
 
 Everything else — internal module layout, container image tag naming,
 Dockerfile structure, `.env` bootstrap details — may change without notice.
-
-## What's not shipped yet
-
-Milestone 13 shipped the three consumer surfaces above and slimmed the runner
-Docker image (390 MB, down from 659 MB). A follow-up milestone (14, in
-planning) closes the last "you still need the tolokaforge repo checked out"
-gaps:
-
-- **Public Docker image on a registry** — today the runner image builds
-  locally as `tolokaforge-runner:local`. M14 publishes to
-  `ghcr.io/toloka/tolokaforge-runner:X.Y.Z` so downstream can `docker pull`.
-- **Standalone compose recipe** — today's `make docker-up` builds from the
-  repo; M14 ships a `deploy/standalone/docker-compose.yaml` that composes the
-  published runner + db-service images so a cold host with only Docker
-  installed can bring the whole stack up.
-
-None of the shipped surfaces above will change — the M14 additions layer on
-top.
 
 ## Under review
 
