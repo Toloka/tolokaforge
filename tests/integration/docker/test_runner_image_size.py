@@ -8,7 +8,7 @@ image another worktree/branch built into the shared ``tolokaforge-runner`` name
 can never be the one measured. It inspects that exact ref's size straight from
 the Docker daemon and asserts it stays under a single named ceiling.
 
-The current multi-stage runner Dockerfile measures ~391 MB, a 40.8% reduction
+The current multi-stage runner Dockerfile measures ~390.2 MB, a 40.8% reduction
 from the pre-slim 659 MB baseline recorded in ADR-0022 §4b (build-only apt +
 docker CLI kept out of the runtime stage, wheel installed with ``--no-compile``,
 the pip/setuptools toolchain stripped). This module is the behaviour lock that
@@ -70,17 +70,23 @@ def test_runner_image_within_size_ceiling() -> None:
 def test_current_runner_image_id_matches_real_build() -> None:
     """The content-hash resolver agrees with what a real build tags.
 
-    A cache hit after the lane's ``make docker-build`` (``build_image`` returns
-    the existing image id), so this is cheap. It FAILS — not skips — if the
-    resolver's predicted ref and a real build ever diverge, so a hashing-path
-    bug can never masquerade as the legitimate ``None``-then-skip case.
+    Builds first (a cache hit after the lane's ``make docker-build``, so cheap),
+    which proves both that the daemon is up and that a current-tree runner image
+    exists. Once that build succeeds a ``None`` from the resolver is no longer
+    "not built" — it is SSOT drift between ``expected_image_ref`` and what the
+    build tags — so it FAILS, never skips. Divergence surfacing as a missing ref
+    (resolver returns ``None``) is caught by the non-None assertion; divergence
+    surfacing as a different id is caught by the equality assertion.
     """
     if not is_docker_daemon_available():
         pytest.skip("Docker daemon not available")
-    resolved = current_runner_image_id()
-    if resolved is None:
-        pytest.skip("tolokaforge-runner image not built")
     built = builder.build_image("runner")
+    resolved = current_runner_image_id()
+    missing = (
+        "real build exists but resolver found nothing at the expected ref — "
+        "SSOT drift between expected_image_ref and build_image, not 'not built'"
+    )
+    assert resolved is not None, missing
     drift = (
         f"resolver id {resolved!r} != real build id {built.image_id!r} — content-hash SSOT drift"
     )

@@ -151,9 +151,13 @@ def test_expected_image_ref_matches_real_content_hash() -> None:
     """``expected_image_ref('runner')`` equals ``name:hash8`` from the real
     context-assembly + content-hash path — driven here, not stubbed.
 
-    Locks the SSOT: a drift in ``wheel_resolver``, ``assemble_build_context``,
-    or ``_compute_content_hash``'s input set breaks this equality. It fails; it
-    does not skip — no Docker daemon involved.
+    Locks the plumbing: ``expected_image_ref`` assembles the real runner build
+    context (``wheel_resolver`` + ``assemble_build_context``), routes it through
+    the real ``_compute_content_hash``, slices ``[:8]``, and prefixes the image
+    name (``name:hash[:8]``) — not a stub or a shortcut. Both sides call the same
+    hash, so this does not catch a symmetric change to the hash's input set; it
+    catches ``expected_image_ref`` diverging from that path or the tag format. It
+    fails; it does not skip — no Docker daemon involved.
     """
     from tolokaforge.docker.builder import (
         assemble_build_context,
