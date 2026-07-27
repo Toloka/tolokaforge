@@ -1,29 +1,19 @@
 """Size budget for the built ``tolokaforge-runner`` image (ADR-0022 §4b).
 
-Enforces the uncompressed-size ceiling the slim-runner work commits to. Reads
-the size of the locally built runner image straight from the Docker daemon and
-asserts it stays under a single named ceiling.
+Enforces the uncompressed-size ceiling the slim-runner work commits to. The
+lock measures the image the *current tree's* runner definition produces,
+resolved by the builder's content-hash SSOT (``current_runner_image_id`` →
+``builder.expected_image_ref("runner")``), not by build timestamp — so a fat
+image another worktree/branch built into the shared ``tolokaforge-runner`` name
+can never be the one measured. It inspects that exact ref's size straight from
+the Docker daemon and asserts it stays under a single named ceiling.
 
-Recorded baseline (provenance, mirroring ADR-0022 §4b):
-
-- **659 MB** — measured 2026-07-20 via ``docker images`` on a freshly built
-  ``tolokaforge-runner`` (image ID ``325b9be60fa8``), matching the ADR baseline.
-- Layer breakdown (``docker history``):
-  - base ``python:3.12-slim`` ≈ 144 MB (fixed floor)
-  - apt ``curl``/``git``/``ca-certificates`` ~104 MB (build-only — the runner
-    never clones)
-  - ``docker-ce-cli`` + compose-plugin 74.7 MB (only terminal-bench shells out
-    to docker)
-  - ``pip install wheel[docker]`` 298 MB (the dead ``[docker]`` extra pulls the
-    full base wheel)
-  - 11 hand-listed extra deps 37 MB
-  - site-packages 371 MB total (includes ``litellm``/proxy, ``pip``,
-    ``setuptools``, ``grpc_tools`` build-time compiler, and ``*.pyc`` bytecode)
-
-The multi-stage runner Dockerfile achieves the reduction (build-only apt +
+The current multi-stage runner Dockerfile measures ~391 MB, a 40.8% reduction
+from the pre-slim 659 MB baseline recorded in ADR-0022 §4b (build-only apt +
 docker CLI kept out of the runtime stage, wheel installed with ``--no-compile``,
-the pip/setuptools toolchain stripped); this module is the behaviour lock that
-proves it stays real.
+the pip/setuptools toolchain stripped). This module is the behaviour lock that
+proves the reduction stays real; the SSOT-consistency lock below proves the
+resolver keeps agreeing with what a real build tags.
 """
 
 from __future__ import annotations
@@ -32,7 +22,7 @@ import subprocess
 
 import pytest
 
-from tests.utils.docker_helpers import is_docker_daemon_available, newest_image_id
+from tests.utils.docker_helpers import current_runner_image_id, is_docker_daemon_available
 from tolokaforge.docker import builder
 
 pytestmark = [pytest.mark.integration, pytest.mark.requires_docker]
@@ -44,13 +34,6 @@ The slim image measures 390.2 MB (40.8% under the 659 MB baseline); the ceiling
 is that measurement plus ~15 MB slack, which absorbs future minor dependency
 bumps without a spurious CI break while still catching a real size regression.
 """
-
-
-def _resolve_runner_image_id() -> str | None:
-    # Read the image name from the builder's static definition table rather
-    # than get_image_definition — the latter triggers wheel resolution as a
-    # side effect, which a size lock has no need for.
-    return newest_image_id(builder.IMAGE_DEFINITIONS["runner"]["name"])
 
 
 def _image_size_mb(image_id: str) -> float:
@@ -67,9 +50,29 @@ def _image_size_mb(image_id: str) -> float:
 def test_runner_image_within_size_ceiling() -> None:
     if not is_docker_daemon_available():
         pytest.skip("Docker daemon not available")
-    image_id = _resolve_runner_image_id()
+    image_id = current_runner_image_id()
     if image_id is None:
         pytest.skip("tolokaforge-runner image not built; size lock needs a built engine image")
     size_mb = _image_size_mb(image_id)
     message = f"runner image {size_mb:.1f} MB exceeds ceiling {RUNNER_IMAGE_SIZE_CEILING_MB} MB"
     assert size_mb <= RUNNER_IMAGE_SIZE_CEILING_MB, message
+
+
+def test_current_runner_image_id_matches_real_build() -> None:
+    """The content-hash resolver agrees with what a real build tags.
+
+    A cache hit after the lane's ``make docker-build`` (``build_image`` returns
+    the existing image id), so this is cheap. It FAILS — not skips — if the
+    resolver's predicted ref and a real build ever diverge, so a hashing-path
+    bug can never masquerade as the legitimate ``None``-then-skip case.
+    """
+    if not is_docker_daemon_available():
+        pytest.skip("Docker daemon not available")
+    resolved = current_runner_image_id()
+    if resolved is None:
+        pytest.skip("tolokaforge-runner image not built")
+    built = builder.build_image("runner")
+    drift = (
+        f"resolver id {resolved!r} != real build id {built.image_id!r} — content-hash SSOT drift"
+    )
+    assert resolved == built.image_id, drift
