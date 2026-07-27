@@ -106,11 +106,15 @@ docker pull docker.io/tolokasoft1/tolokaforge-db-service:latest
 What the published image guarantees about its *internals* is deliberately
 narrow: the stable contract is the image name + tag axis above plus the command
 surface below, not how the image is composed inside
-([ADR-0023](adr/0023-runner-image-internals.md)). A turnkey compose recipe that
-wires the published images into a single stack is forthcoming; until it lands,
-`make docker-up` from a checkout is the composed-stack path, or compose the
-pulled images yourself against the
-[command surface](#command-surface-of-the-published-runner-image) below.
+([ADR-0023](adr/0023-runner-image-internals.md)).
+[`deploy/standalone/docker-compose.yaml`](../deploy/standalone/docker-compose.yaml)
+wires all four `tolokasoft1/tolokaforge-*` images into a single stack: `docker
+compose up` from that directory stands them up on one network, reading LLM
+provider keys from a sibling `.env` (copy
+[`deploy/standalone/.env.example`](../deploy/standalone/.env.example)) and
+selecting the image tag via `TOLOKAFORGE_IMAGE_TAG` (`latest` once the first
+image publish lands, `local` for locally-built images). `make docker-up` from a
+checkout remains the build-from-source composed-stack path.
 
 ## Command surface of the published runner image
 
@@ -168,7 +172,9 @@ Two things you need on the host either way:
    `tolokaforge-runner:local` container plus the small support stack from a
    repo checkout. This is the substrate the trial runs inside; both surfaces
    below dispatch through it. To skip the build, `docker pull` a pinned tag
-   from Docker Hub instead — see [Published images](#published-images).
+   from Docker Hub instead — see [Published images](#published-images) — or
+   stand the four published images up together with no checkout via
+   [`deploy/standalone/docker-compose.yaml`](../deploy/standalone/docker-compose.yaml).
 
 Then pick a surface.
 
