@@ -164,6 +164,7 @@ class _GroupedCommandsGroup(click.Group):
     COMMAND_GROUPS: dict[str, str] = {
         "repl": "Interactive",
         "run": "Runs",
+        "run-trial": "Runs",
         "prepare": "Runs",
         "worker": "Runs",
         "status": "Runs",

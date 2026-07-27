@@ -851,7 +851,6 @@ class Orchestrator:
                 run_id=run_id,
                 seeds=self._project_seed_registry(),
                 log_capture=log_capture,
-                events=self._events,
             )
         )
         self.logger.info(
