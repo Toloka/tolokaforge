@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from tests.utils.docker_helpers import is_docker_daemon_available, newest_image_id
+from tests.utils.docker_helpers import current_runner_image_id, is_docker_daemon_available
 from tolokaforge.core.grading.judge import (
     JudgeStatus,
     LLMJudge,
@@ -31,7 +31,6 @@ from tolokaforge.core.grading.judge import (
 )
 from tolokaforge.core.grading.kb_search import SearchHit
 from tolokaforge.core.grading.rubric import SubmitReportValidationError, parse_submit_report
-from tolokaforge.docker import builder
 from tolokaforge.runner.models import Rubric
 
 pytestmark = [
@@ -385,7 +384,7 @@ def test_rubric_judge_runs_inside_slim_runner_image():
     """
     if not is_docker_daemon_available():
         pytest.skip("Docker daemon not available")
-    image_id = newest_image_id(builder.IMAGE_DEFINITIONS["runner"]["name"])
+    image_id = current_runner_image_id()
     if image_id is None:
         pytest.skip("tolokaforge-runner image not built")
 
