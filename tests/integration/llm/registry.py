@@ -509,6 +509,63 @@ _ALL: list[MC] = [
             }
         ),
     ),
+    # Claude Opus 5 — Anthropic adaptive thinker, landed via auto-resolve
+    # (Slack-requested integration, PR #614). Routes through the model-specific
+    # ``anthropic_claude_opus_5`` preset (see model_presets.yaml): the generic
+    # ``anthropic`` axes (content/reasoning/cache = anthropic, supports_seed
+    # false) PLUS ``response_policy: json_coerce``.
+    #
+    # The observe (default) baseline surfaced ONE preset-fixable failure —
+    # ``discriminated_union_two_turns[explicit_discriminator]`` 0/15, where the
+    # model stringified the ``item`` union member ('{"kind": "ticket", ...}')
+    # instead of emitting a nested dict (bare_union round-tripped natively
+    # 15/15). ``JsonCoerceResponse`` decodes the top-level JSON-string arg back
+    # to the native container; the reprobe went 5/5 on the fix-target, so
+    # DISCRIMINATED_UNION_TOOL_CALL is ``required`` here (UNLIKE the opus-4.8 /
+    # fable-5 siblings, which had no json_coerce recovery on their generic
+    # ``anthropic`` route and declared it known_unsupported). Every other
+    # capability passed the observe baseline 15/15 under the anthropic axes —
+    # including the signed thinking-block pair (THINKING_EMITS_BLOCKS +
+    # THINKING_REPLAY_ROUNDTRIP) and the explicit ephemeral cache
+    # (PROMPT_CACHING) — and none went known_unsupported (decision.json
+    # ceilings were empty). Note this diverges from opus-4.6/4.7/4.8, which
+    # keep UNSIGNED_THINKING_REPLAY / IMPLICIT_PROMPT_CACHING as ceilings:
+    # the auto-resolve observe run recorded no such ceiling for opus-5, so the
+    # proven posture is all-required.
+    MC(
+        model_id="openrouter__anthropic_claude-opus-5",
+        provider="openrouter",
+        name="anthropic/claude-opus-5",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.ALLOF_MERGE_TOOL_CALL,
+                C.BASIC_COMPLETION,
+                C.COST_USD_POPULATED,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.DICT_MAP_TOOL_CALL,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.ENUM_SLASH_TOLERANCE,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.IMPLICIT_PROMPT_CACHING,
+                C.LEXICAL_TOOL_INVENTION,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.MULTI_TURN_TOOL_USE,
+                C.PROGRESS_AFTER_SUCCESS,
+                C.PROMPT_CACHING,
+                C.RE2_PATTERN_TOLERANCE,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.SIMPLE_TOOL_CALL,
+                C.THINKING_EMITS_BLOCKS,
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.TOOL_NAME_DISCIPLINE,
+                C.UNSIGNED_THINKING_REPLAY,
+                C.USAGE_METRICS_POPULATED,
+            }
+        ),
+        known_unsupported=frozenset(),
+    ),
     # -----------------------------------------------------------------
     # Qwen — preset routes it through the same strict trio as GPT-5.
     # Reasoning surface is OpenAI-style summary only, no signed blocks,
