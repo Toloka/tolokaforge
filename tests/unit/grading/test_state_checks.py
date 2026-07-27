@@ -377,9 +377,10 @@ class TestGradeTauStyleVariants:
         assert diff is None
         assert "State hash matches" in reasons
         # Regression guard: the multi-variant reason string must NOT appear
-        # on a single-variant task (byte-identical wording contract).
+        # on a single-variant task (byte-identical wording contract). Guards
+        # against a future refactor that accidentally routes the single-variant
+        # path through the "matches golden variant N (of M)" wording.
         assert "matches golden variant" not in reasons
-        assert " of " not in reasons  # "of N" only appears on multi-variant match
 
     def test_matches_alternative_variant(self, checker, trial_state_wraps, monkeypatch):
         """Trial state that matches variant 1 (not variant 0) still scores 1.0

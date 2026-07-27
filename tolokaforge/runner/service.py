@@ -1622,7 +1622,6 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         matched_variant: int | None = None
         per_variant_errors: list[list[str]] = []
         per_variant_snapshots: list[str] = []
-        per_variant_hashes: list[str] = []
 
         initial_tables_for_mcp: dict[str, Any] = {}
         if mcp_wrapper is not None:
@@ -1678,7 +1677,6 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             variant_hash = await self.db_client.get_stable_hash(
                 trial_id, numeric_string_fields=numeric_string_fields
             )
-            per_variant_hashes.append(variant_hash)
             logger.debug(
                 f"GradeTrial: Variant {idx} hash = {variant_hash[:16]}... "
                 f"(trial hash prefix = {trial_hash[:16]}...)"
