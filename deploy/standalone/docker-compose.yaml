@@ -1,0 +1,85 @@
+# Standalone four-service tolokaforge runner stack.
+#
+# A cold user with only Docker installed runs `docker compose up` here to stand
+# up the four published first-party images — runner, db-service, rag-service,
+# mock-web — on one network, with no repo clone and no in-tree image build.
+# Copy `.env.example` to `.env` first (LLM keys); the keyless bring-up works
+# with no `.env`, but real (paid) trials need a provider key.
+#
+# Image tag is selected by TOLOKAFORGE_IMAGE_TAG (defaults to `latest`):
+#   - `latest` / `0.11.0` / `0.11.0-rc.N` — a published release from Docker Hub.
+#     `latest` needs the first image publish (git tag `image-v0.11.0`); until
+#     that lands, a bare `latest` pull 404s — use `local` below for pre-publish
+#     and developer flows.
+#   - `local` — a developer's locally-built images, tagged
+#     `tolokasoft1/tolokaforge-<component>:local` (TOLOKAFORGE_IMAGE_TAG=local).
+#   - digest-pinning (`@sha256:…` from the release-notes digest table) is the
+#     documented post-publish hardening path.
+#
+# Each image self-reports Docker health via its own HEALTHCHECK (the runner
+# probe is a gRPC channel-ready check per ADR-0024); this file never re-declares
+# a healthcheck and orders startup with `depends_on: condition: service_healthy`.
+# `docker compose up --wait` blocks on all four healthchecks — allow >=180s for
+# a cold cache, since rag-service downloads the `all-MiniLM-L6-v2` model on
+# first start.
+
+services:
+  db-service:
+    image: tolokasoft1/tolokaforge-db-service:${TOLOKAFORGE_IMAGE_TAG:-latest}
+    networks:
+      # `json-db` alias so a task navigating to http://json-db:8000 resolves
+      # exactly as it does on the in-tree stack.
+      runner-net:
+        aliases:
+          - json-db
+
+  rag-service:
+    image: tolokasoft1/tolokaforge-rag-service:${TOLOKAFORGE_IMAGE_TAG:-latest}
+    environment:
+      CORPUS_PATH: /env/rag/corpus
+    volumes:
+      - rag_data:/env/rag
+    networks:
+      - runner-net
+
+  mock-web:
+    image: tolokasoft1/tolokaforge-mock-web:${TOLOKAFORGE_IMAGE_TAG:-latest}
+    environment:
+      # mock-web's image, alone of the four, bakes no PYTHONUNBUFFERED; set it
+      # here so its logs stream unbuffered like the other three services'.
+      PYTHONUNBUFFERED: "1"
+      JSON_DB_URL: http://db-service:8000
+    depends_on:
+      db-service:
+        condition: service_healthy
+    networks:
+      - runner-net
+
+  runner:
+    image: tolokasoft1/tolokaforge-runner:${TOLOKAFORGE_IMAGE_TAG:-latest}
+    ports:
+      - "50051:50051"
+    environment:
+      DB_SERVICE_URL: http://db-service:8000
+      RAG_SERVICE_URL: http://rag-service:8001
+      # LLM provider credentials — optional for a keyless bring-up, required for
+      # real (paid) trials. Set them in a sibling `.env` (see `.env.example`),
+      # which docker compose auto-loads for interpolation. Supply either a
+      # per-provider key or the multi-provider `TOLOKAFORGE_SECRETS_JSON` blob.
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      TOLOKAFORGE_SECRETS_JSON: ${TOLOKAFORGE_SECRETS_JSON:-}
+    depends_on:
+      db-service:
+        condition: service_healthy
+    networks:
+      - runner-net
+
+networks:
+  runner-net:
+    driver: bridge
+
+volumes:
+  rag_data:
