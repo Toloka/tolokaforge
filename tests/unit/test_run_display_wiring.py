@@ -804,6 +804,7 @@ def test_run_emits_lifecycle_with_distinct_trial_started_total_indices(tmp_path:
     adapter = MagicMock()
     adapter.to_task_description.side_effect = _make_task_description_for_run
     adapter.docker_stack_requirements.return_value = None
+    adapter.trial_grader_name = "runner_rpc"
     orch.adapter = adapter
 
     orch.run()
@@ -873,6 +874,7 @@ def test_run_with_default_null_events_completes_without_raising(tmp_path: Path) 
     adapter = MagicMock()
     adapter.to_task_description.side_effect = _make_task_description_for_run
     adapter.docker_stack_requirements.return_value = None
+    adapter.trial_grader_name = "runner_rpc"
     orch.adapter = adapter
 
     orch.run()
@@ -1141,6 +1143,7 @@ def _run_orch_with_two_role_models(tmp_path: Path, events: _RecordingEvents) -> 
     adapter = MagicMock()
     adapter.to_task_description.side_effect = _make_task_description_for_run
     adapter.docker_stack_requirements.return_value = None
+    adapter.trial_grader_name = "runner_rpc"
     orch.adapter = adapter
 
     orch.run()

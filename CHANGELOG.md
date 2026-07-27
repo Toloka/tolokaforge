@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## v0.11.2 (2026-07-27)
 
+### Feat
+
+- **adapters**: adapter-declared trial-grader name — the orchestrator now loads `adapter.trial_grader_name` (default `"runner_rpc"`, additive, every existing adapter unchanged); adapters shipping a custom `TrialGrader` under the `tolokaforge.trial_graders` entry-point group override it (#620)
+
 ### Fix
 
 - **runner**: preserve simulator text glued to ###STOP### (closes #611) (#619)

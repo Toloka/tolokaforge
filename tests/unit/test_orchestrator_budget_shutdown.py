@@ -153,6 +153,7 @@ def _build_orchestrator(
     adapter = MagicMock()
     adapter.to_task_description.side_effect = lambda tid: _task_description(tid)
     adapter.docker_stack_requirements.return_value = MagicMock(needs_rag_service=False)
+    adapter.trial_grader_name = "runner_rpc"
     orch.adapter = adapter
     return orch, tmp_path / "results" / "run"
 

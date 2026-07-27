@@ -589,7 +589,7 @@ class Orchestrator:
                 "Conductor cannot be built before the adapter is loaded. "
                 "Ensure load_tasks() has run successfully."
             )
-        trial_grader = load_trial_grader("runner_rpc")(
+        trial_grader = load_trial_grader(self.adapter.trial_grader_name)(
             TrialGraderContext(runtime_backend=runtime_backend, logger=self.logger)
         )
 
