@@ -31,10 +31,11 @@ from __future__ import annotations
 
 import importlib.metadata
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
 from tolokaforge.core.conductor import ConductorFactory
+from tolokaforge.core.run_display_events import RunDisplayEvents, _NullRunDisplayEvents
 from tolokaforge.core.runtime import RuntimeBackend
 from tolokaforge.core.trial_grader import TrialGrader
 
@@ -133,6 +134,7 @@ class RuntimeBackendBuildContext:
     run_id: str
     seeds: dict[str, SeedRef]
     log_capture: LogCaptureConfig | None
+    events: RunDisplayEvents = field(default_factory=_NullRunDisplayEvents)
 
 
 @dataclass(frozen=True)

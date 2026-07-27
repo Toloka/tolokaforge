@@ -164,6 +164,9 @@ class _GroupedCommandsGroup(click.Group):
     COMMAND_GROUPS: dict[str, str] = {
         "repl": "Interactive",
         "run": "Runs",
+        # Hidden, so this heading never renders; the entry exists because the
+        # registered-vs-mapped contract inspects ``cli.commands``, which
+        # includes hidden commands.
         "run-trial": "Runs",
         "prepare": "Runs",
         "worker": "Runs",

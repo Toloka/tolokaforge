@@ -31,7 +31,10 @@ from tolokaforge.core.per_trial_runtime import (
     PerTrialRuntimeBackend,
     per_trial_runtime_backend_factory,
 )
-from tolokaforge.core.plugin_registry import UnknownImplementationError
+from tolokaforge.core.plugin_registry import (
+    RuntimeBackendBuildContext,
+    UnknownImplementationError,
+)
 from tolokaforge.core.shared_stack_runtime import (
     SharedStackRuntimeBackend,
     shared_runtime_backend_factory,
@@ -266,3 +269,49 @@ class TestUnknownRuntimeName:
         assert "bogus" in message
         for name in known:
             assert name in message
+
+
+class TestRunDisplayEventsPropagation:
+    """The orchestrator's display-events sink must reach the runner client.
+
+    ``SharedStackRuntimeBackend`` forwards its ``events`` sink to
+    :class:`GrpcRunnerClient`, which is what publishes the runner's
+    ``component_registered`` / ``component_status_changed`` /
+    ``component_log_appended`` rows (ADR-0021). Nothing else asserts that
+    chain end to end, so a break degrades silently to a null sink: no
+    exception, no failing test, just an Engine Components panel that never
+    shows the runner. PR #557 broke exactly this by dropping the ``events``
+    field from ``RuntimeBackendBuildContext`` while the orchestrator kept
+    passing the kwarg.
+    """
+
+    def test_orchestrator_events_reach_the_runner_client(self) -> None:
+        tasks = [_task_stub("t1")]
+        task_descs = {
+            "t1": make_task_description(task_id="t1", environment_manifest=_manifest_all_shared())
+        }
+        orch = _make_orchestrator(tasks, task_descs)
+        sentinel = MagicMock()
+        orch._events = sentinel
+
+        backend = orch._construct_runtime_backend(
+            runner_address="sentinel:50051",
+            env_manifest=None,
+            run_id="test-run",
+        )
+
+        assert isinstance(backend, SharedStackRuntimeBackend)
+        assert backend._events is sentinel
+        assert backend.runner_client._events is sentinel
+
+    def test_build_context_defaults_events_to_a_null_sink(self) -> None:
+        """A factory that omits ``events`` still gets a usable no-op sink."""
+        ctx = RuntimeBackendBuildContext(
+            runner_address="sentinel:50051",
+            env_manifest=None,
+            run_id="test-run",
+            seeds={},
+            log_capture=None,
+        )
+
+        ctx.events.component_status_changed(component_id="probe", status="healthy")
