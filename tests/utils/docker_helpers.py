@@ -11,6 +11,9 @@ This module provides two distinct Docker availability checks:
   manage containers directly via the Docker SDK.
 """
 
+import subprocess
+import time
+
 import pytest
 
 # ---------------------------------------------------------------------------
@@ -19,6 +22,9 @@ import pytest
 
 DOCKER_RUNNER_ADDRESS = "localhost:50051"
 DOCKER_DB_SERVICE_URL = "http://localhost:8000"
+
+HEALTHY_TIMEOUT_S = 120.0
+_HEALTH_POLL_INTERVAL_S = 2.0
 
 
 # ---------------------------------------------------------------------------
@@ -89,8 +95,6 @@ def current_runner_image_id() -> str | None:
     case). The full ``sha256:...`` digest is returned so it compares equal to
     the Docker SDK's ``Image.image_id``.
     """
-    import subprocess
-
     from tolokaforge.docker import builder
 
     ref = builder.expected_image_ref("runner")
@@ -102,3 +106,25 @@ def current_runner_image_id() -> str | None:
     if result.returncode != 0:
         return None
     return result.stdout.strip() or None
+
+
+def wait_for_health(container_id: str, timeout_s: float = HEALTHY_TIMEOUT_S) -> str:
+    """Poll ``container_id`` Docker health until ``healthy``/``unhealthy`` or timeout.
+
+    Returns the last observed status. ``unhealthy`` is returned as soon as it is
+    seen so a failing probe fails fast; an empty string means the container is
+    gone or reports no health (inspect failed).
+    """
+    deadline = time.monotonic() + timeout_s
+    status = ""
+    while time.monotonic() < deadline:
+        result = subprocess.run(
+            ["docker", "inspect", "--format", "{{.State.Health.Status}}", container_id],
+            capture_output=True,
+            text=True,
+        )
+        status = result.stdout.strip()
+        if status in {"healthy", "unhealthy"}:
+            return status
+        time.sleep(_HEALTH_POLL_INTERVAL_S)
+    return status

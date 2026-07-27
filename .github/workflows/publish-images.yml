@@ -1,0 +1,279 @@
+name: Publish images to Docker Hub
+
+on:
+  push:
+    tags:
+      - "image-v*"
+  workflow_dispatch:
+
+concurrency:
+  group: publish-images-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-wheel:
+    name: Build wheel
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      # Fail loud before anything builds if the tag disagrees with the code it
+      # claims to package. rc tags (image-v0.12.0-rc.1) carry an image-only
+      # suffix that pyproject never encodes, so the base version is compared.
+      - name: Assert tag version matches pyproject version
+        if: github.event_name != 'workflow_dispatch'
+        run: |
+          version="${GITHUB_REF_NAME#image-v}"
+          base_version="${version%%-rc.*}"
+          pyproject_version="$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")"
+          if [ "$base_version" != "$pyproject_version" ]; then
+            echo "::error::image tag image-v${version} (base ${base_version}) does not match pyproject version ${pyproject_version}"
+            exit 1
+          fi
+          echo "tag ${version} agrees with pyproject ${pyproject_version}"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Install Python
+        run: uv python install "$(cat .python-version)"
+
+      - name: Build wheel
+        run: uv build
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: tolokaforge-dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish ${{ matrix.image }}
+    needs: build-wheel
+    runs-on: ubuntu-latest
+    # rc tags publish under pre-stable, stable tags under release. A tag that
+    # resolves to the wrong tier fails OIDC claim resolution and blocks the push,
+    # which is safer than an rc leaking onto the moving tags. A workflow_dispatch
+    # build binds no environment: both tiers carry tag-typed deployment policies,
+    # so a branch ref would be rejected at the env gate before the build runs.
+    environment: ${{ github.event_name == 'workflow_dispatch' && '' || (contains(github.ref_name, '-rc.') && 'pre-stable' || 'release') }}
+    permissions:
+      id-token: write
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: runner
+            dockerfile: tolokaforge/docker/dockerfiles/runner.Dockerfile
+            needs_wheel: true
+          - image: rag-service
+            dockerfile: tolokaforge/docker/dockerfiles/rag.Dockerfile
+            needs_wheel: true
+          - image: db-service
+            dockerfile: tolokaforge/docker/dockerfiles/db_service.Dockerfile
+            needs_wheel: false
+          - image: mock-web
+            dockerfile: tolokaforge/docker/dockerfiles/mock_web.Dockerfile
+            needs_wheel: false
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Resolve version and Python pin
+        id: meta
+        run: |
+          echo "version=${GITHUB_REF_NAME#image-v}" >> "$GITHUB_OUTPUT"
+          echo "python_version=$(cat .python-version)" >> "$GITHUB_OUTPUT"
+
+      - name: Download wheel
+        uses: actions/download-artifact@v4
+        with:
+          name: tolokaforge-dist
+          path: dist/
+
+      - name: Stage wheel into build context
+        if: matrix.needs_wheel
+        run: |
+          shopt -s nullglob
+          wheels=(dist/tolokaforge-*.whl)
+          wheel="${wheels[0]}"
+          if [ -z "$wheel" ]; then
+            echo "::error::no tolokaforge wheel found in dist/"
+            exit 1
+          fi
+          cp "$wheel" "./$(basename "$wheel")"
+          echo "WHEEL_FILENAME=$(basename "$wheel")" >> "$GITHUB_ENV"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # A repo-scoped Docker Hub OIDC token cannot pull library/python, so the
+      # python base layers must be fetched before `docker login`. This build runs
+      # unauthenticated: it pulls the base anonymously and warms the buildx cache.
+      # The later authenticated push reuses these cached layers (pull: false) and
+      # contacts Docker Hub only to push the tolokasoft1 repo. On a
+      # workflow_dispatch dry-run this is the whole validation (no login, no push).
+      - name: Build image (anonymous base pull, pre-login)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          pull: false
+          push: false
+          build-args: |
+            PYTHON_VERSION=${{ steps.meta.outputs.python_version }}
+            ${{ matrix.needs_wheel && format('WHEEL_FILENAME={0}', env.WHEEL_FILENAME) || '' }}
+
+      - name: Mint Docker Hub OIDC token
+        id: docker_oidc
+        if: github.event_name != 'workflow_dispatch'
+        uses: docker/oidc-action@v1
+        with:
+          connection_id: "06a2983d-e4d1-473e-8dab-f1d6ead9bc8f"
+
+      - name: Docker Hub login
+        if: github.event_name != 'workflow_dispatch'
+        uses: docker/login-action@v3
+        with:
+          username: tolokasoft1
+          password: ${{ steps.docker_oidc.outputs.token }}
+
+      # Pushes only the immutable :{version} tag. The moving tags (:latest, :X.Y)
+      # are owned by move-tags, which runs only after every image and the smoke
+      # gate are green.
+      - name: Push immutable tag
+        id: push
+        if: github.event_name != 'workflow_dispatch'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          provenance: true
+          pull: false
+          push: true
+          tags: tolokasoft1/tolokaforge-${{ matrix.image }}:${{ steps.meta.outputs.version }}
+          build-args: |
+            PYTHON_VERSION=${{ steps.meta.outputs.python_version }}
+            ${{ matrix.needs_wheel && format('WHEEL_FILENAME={0}', env.WHEEL_FILENAME) || '' }}
+
+  smoke:
+    name: rc-smoke against published images
+    needs: publish
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install Python
+        run: uv python install "$(cat .python-version)"
+
+      - name: Install dependencies
+        run: uv sync --dev --locked
+
+      # The keyless image-level rc-smoke module referenced here ships alongside
+      # this workflow (tests/integration/deploy/test_published_images_rc_smoke.py)
+      # and runs only post-merge on a tag. It pulls the four freshly-pushed
+      # :{version} images anonymously (they are public) and asserts entrypoint +
+      # healthcheck + documented exec surface. Keyless: the runner run-trial check
+      # accepts a well-formed `error` wire line as a pass, so this gate costs zero
+      # tokens and needs no provider key. A red smoke blocks move-tags, so :latest
+      # is never moved onto a broken image.
+      - name: Run keyless rc-smoke
+        run: |
+          version="${GITHUB_REF_NAME#image-v}"
+          TOLOKAFORGE_SMOKE_IMAGE_TAG="$version" \
+            uv run pytest tests/integration/deploy/test_published_images_rc_smoke.py \
+            -v --tb=short -m "integration and requires_docker"
+
+  move-tags:
+    name: Move :latest and :X.Y
+    needs: smoke
+    # Stable tags only — rc tags carry no moving tags.
+    if: github.event_name == 'push' && !contains(github.ref_name, '-rc.')
+    runs-on: ubuntu-latest
+    # move-tags mints its own OIDC token, so it must declare environment: release
+    # and id-token: write itself — without the environment the OIDC claim will not
+    # resolve to a push-capable token and the first stable tag would fail here.
+    environment: release
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Resolve moving tags
+        id: meta
+        run: |
+          version="${GITHUB_REF_NAME#image-v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "major_minor=${version%.*}" >> "$GITHUB_OUTPUT"
+
+      - name: Mint Docker Hub OIDC token
+        id: docker_oidc
+        uses: docker/oidc-action@v1
+        with:
+          connection_id: "06a2983d-e4d1-473e-8dab-f1d6ead9bc8f"
+
+      - name: Docker Hub login
+        uses: docker/login-action@v3
+        with:
+          username: tolokasoft1
+          password: ${{ steps.docker_oidc.outputs.token }}
+
+      # Re-running this job IS the recovery path for a mid-job failure: every
+      # `imagetools create` re-points a moving tag at the already-published,
+      # immutable :{version} digest, so each op is idempotent regardless of how
+      # far a prior run progressed — there is no intra-job ordering dependency.
+      - name: Move :latest and :major.minor onto the immutable digests
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          MAJOR_MINOR: ${{ steps.meta.outputs.major_minor }}
+        run: |
+          for image in runner db-service rag-service mock-web; do
+            repo="tolokasoft1/tolokaforge-${image}"
+            docker buildx imagetools create -t "${repo}:latest" "${repo}:${VERSION}"
+            docker buildx imagetools create -t "${repo}:${MAJOR_MINOR}" "${repo}:${VERSION}"
+          done
+
+  release-notes:
+    name: Release notes
+    needs: move-tags
+    if: github.event_name == 'push' && !contains(github.ref_name, '-rc.')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Collect image digests
+        run: |
+          version="${GITHUB_REF_NAME#image-v}"
+          {
+            echo "## Published images"
+            echo ""
+            echo "| Image | Tag | Digest |"
+            echo "|---|---|---|"
+            for image in runner db-service rag-service mock-web; do
+              repo="tolokasoft1/tolokaforge-${image}"
+              digest="$(docker buildx imagetools inspect "${repo}:${version}" --format '{{.Manifest.Digest}}')"
+              echo "| \`${repo}\` | ${version} | \`${digest}\` |"
+            done
+          } | tee release-notes.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: release-notes.md
+          append_body: true
+          generate_release_notes: true

@@ -50,6 +50,8 @@ To run a single trial in-process from Python, `tolokaforge.runner.run_trial(...)
 
 To drive a trial from any language over a pipe, `tolokaforge run-trial` runs one trial as a subprocess speaking a JSON-Lines wire — see [`docs/API.md`](docs/API.md#tolokaforge-run-trial) and the runnable [`examples/run-trial/drive_run_trial.py`](examples/run-trial/drive_run_trial.py).
 
+Prebuilt images are published to Docker Hub as `docker.io/tolokasoft1/tolokaforge-{runner,db-service,rag-service,mock-web}` under a coordinated semver tag axis (`:X.Y.Z`, `:X.Y`, `:latest`, `:X.Y.Z-rc.N`), so a host with only Docker installed can `docker pull` them instead of building from a checkout — see the [Standalone Runner Guide](docs/STANDALONE_RUNNER.md#published-images).
+
 ## Quick Start
 
 ```bash
@@ -207,6 +209,7 @@ examples/             # Reference task layouts with runnable run_config.yaml
 | Tool reference | [docs/TOOLS.md](docs/TOOLS.md) |
 | Browser/mobile tools | [docs/BROWSER_TOOLS.md](docs/BROWSER_TOOLS.md) |
 | Runner & distributed execution | [docs/RUNNER.md](docs/RUNNER.md) |
+| Standalone runner (embed / `docker pull`) | [docs/STANDALONE_RUNNER.md](docs/STANDALONE_RUNNER.md) |
 | Runtime backends (shared vs per-trial) | [docs/RUNTIME_BACKENDS.md](docs/RUNTIME_BACKENDS.md) |
 | Projects — top-level abstraction | [docs/PROJECTS.md](docs/PROJECTS.md) |
 | Reset recipes (seed-backed per-trial reset) | [docs/RESET_RECIPES.md](docs/RESET_RECIPES.md) |
