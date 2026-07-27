@@ -1,6 +1,6 @@
 """Local-vs-published debugging-runbook parity for the runner image.
 
-Umbrella #610 constraint 1: one debugging runbook, two sources. The same fixed
+One debugging runbook, two sources. The same fixed
 operator runbook (``tolokaforge --version``, a gRPC channel-ready health probe,
 and a log-tail — see ``run_debugging_runbook``) must produce the same observable
 outcome whether the runner image was built locally via ``make docker-build`` or
@@ -36,7 +36,7 @@ from tests.integration.deploy.conftest import (
     run_debugging_runbook,
     run_standalone,
 )
-from tests.utils.docker_helpers import current_image_id
+from tests.utils.docker_helpers import current_runner_image_id
 from tolokaforge.docker.builder import expected_image_ref
 
 pytestmark = [
@@ -56,7 +56,7 @@ _UNAVAILABLE_REASON = {
 def _resolve_ref(source: str) -> str | None:
     """The runner image reference for ``source``, or ``None`` when unavailable."""
     if source == "local":
-        return expected_image_ref("runner") if current_image_id("runner") else None
+        return expected_image_ref("runner") if current_runner_image_id() else None
     ref = published_image_ref("runner", "latest")
     pulled = subprocess.run(["docker", "pull", ref], capture_output=True, text=True)
     return ref if pulled.returncode == 0 else None

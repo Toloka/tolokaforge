@@ -19,11 +19,6 @@ stdin, and speaks the ``"v":1`` wire. What fails is a click "No such command"
 why the gate needs no provider key and costs zero tokens; a red assertion here
 fails the workflow's ``smoke`` job and blocks the ``:latest`` / ``:X.Y``
 promotion.
-
-M14-F extends this module once ``deploy/standalone/`` exists: it adds the
-compose-stack bring-up and the paid bundled-trial end-to-end assertion
-(function-level ``requires_api``), which the keyless image-level checks here
-deliberately omit.
 """
 
 from __future__ import annotations
@@ -41,8 +36,8 @@ from tests.integration.deploy.conftest import (
     published_image_ref,
     run_standalone,
     smoke_image_tag,
-    wait_for_health,
 )
+from tests.utils.docker_helpers import wait_for_health
 
 pytestmark = [
     pytest.mark.integration,

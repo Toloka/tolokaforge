@@ -58,8 +58,10 @@ jobs:
     runs-on: ubuntu-latest
     # rc tags publish under pre-stable, stable tags under release. A tag that
     # resolves to the wrong tier fails OIDC claim resolution and blocks the push,
-    # which is safer than an rc leaking onto the moving tags.
-    environment: ${{ contains(github.ref_name, '-rc.') && 'pre-stable' || 'release' }}
+    # which is safer than an rc leaking onto the moving tags. A workflow_dispatch
+    # build binds no environment: both tiers carry tag-typed deployment policies,
+    # so a branch ref would be rejected at the env gate before the build runs.
+    environment: ${{ github.event_name == 'workflow_dispatch' && '' || (contains(github.ref_name, '-rc.') && 'pre-stable' || 'release') }}
     permissions:
       id-token: write
       contents: read

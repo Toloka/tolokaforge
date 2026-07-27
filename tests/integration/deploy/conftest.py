@@ -1,7 +1,7 @@
 """Shared primitives for the deploy integration suite.
 
-Both the keyless image-level rc-smoke (M14-B) and the local-vs-published parity
-runbook (M14-F extends the suite) drive first-party images through the same
+Both the keyless image-level rc-smoke and the local-vs-published parity
+runbook drive first-party images through the same
 ``docker`` CLI operations: resolve an image reference, make it available, run it
 standalone, wait for Docker health, and exec documented subcommands. Those
 primitives live here so every deploy module shares one implementation.
@@ -65,28 +65,6 @@ def obtain_image(ref: str) -> subprocess.CompletedProcess[str]:
     """
     op = ["image", "inspect", ref] if _use_local_images() else ["pull", ref]
     return subprocess.run(["docker", *op], capture_output=True, text=True)
-
-
-def wait_for_health(container_id: str, timeout_s: float = HEALTHY_TIMEOUT_S) -> str:
-    """Poll ``container_id`` Docker health until ``healthy``/``unhealthy`` or timeout.
-
-    Returns the last observed status. ``unhealthy`` is returned as soon as it is
-    seen so a failing probe fails fast; an empty string means the container is
-    gone or reports no health.
-    """
-    deadline = time.monotonic() + timeout_s
-    status = ""
-    while time.monotonic() < deadline:
-        result = subprocess.run(
-            ["docker", "inspect", "--format", "{{.State.Health.Status}}", container_id],
-            capture_output=True,
-            text=True,
-        )
-        status = result.stdout.strip()
-        if status in {"healthy", "unhealthy"}:
-            return status
-        time.sleep(_POLL_INTERVAL_S)
-    return status
 
 
 def docker_exec(
