@@ -36,6 +36,7 @@ from pydantic import ValidationError
 from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, LLMJudge
 from tolokaforge.core.grading.judge_tools import DelegatingReadTool
 from tolokaforge.core.grading.kb_search import KnowledgeSearch, RagServiceKnowledgeSearch
+from tolokaforge.core.grading.state_checks import StateChecker
 from tolokaforge.core.grading.state_diff import render_state_diff
 from tolokaforge.core.models import CriterionResult, LLMJudgeConfig, ModelConfig
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, TrialSpec
@@ -1804,17 +1805,18 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             await self.db_client.restore_snapshot(trial_id, snap_name)
             variant_state_resp = await self.db_client.get_stable_state(trial_id)
             variant_state = variant_state_resp.data
+            # Rank by the same multiset row-distance the core-side grader
+            # (``StateChecker._state_distance``) uses, so the "closest" choice
+            # is consistent across grading paths. Diff computation itself
+            # stays via ``compute_state_diff`` to preserve the structured
+            # ``StateDiff`` shape downstream reasons builders consume.
+            candidate_size = StateChecker._state_distance(trial_state, variant_state)
             candidate_diff = compute_state_diff(trial_state, variant_state)
-            candidate_size = sum(
-                len(t.missing) + len(t.extra) + len(t.different)
-                for t in candidate_diff.tables.values()
-            )
             if best_size is None or candidate_size < best_size:
                 best_diff = candidate_diff
                 best_size = candidate_size
             logger.debug(
-                f"GradeTrial: Closest-diff candidate variant {idx}: "
-                f"{candidate_size} record differences"
+                f"GradeTrial: Closest-diff candidate variant {idx}: {candidate_size} rows differ"
             )
 
         await self.db_client.restore_snapshot(trial_id, "pre_golden")

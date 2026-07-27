@@ -322,6 +322,14 @@ class TestStateDistance:
         # orders: {id:1} in a only; carts: {id:9} in b only → total 2.
         assert StateChecker._state_distance(a, b) == 2
 
+    def test_row_duplication_counted_by_multiplicity(self):
+        # Multiset semantics: the row appears twice in a and once in b, so
+        # the distance is 1 (the extra copy). Prior set-based implementation
+        # would deduplicate and score 0 despite the states genuinely differing.
+        a = {"orders": [{"id": 1}, {"id": 1}]}
+        b = {"orders": [{"id": 1}]}
+        assert StateChecker._state_distance(a, b) == 1
+
 
 @pytest.mark.unit
 class TestGradeTauStyleVariants:
@@ -368,8 +376,10 @@ class TestGradeTauStyleVariants:
         assert score == 1.0
         assert diff is None
         assert "State hash matches" in reasons
-        # Regression guard: single-variant reason must NOT reference "variant N"
-        assert "variant" not in reasons.lower() or "variants" in reasons.lower()
+        # Regression guard: the multi-variant reason string must NOT appear
+        # on a single-variant task (byte-identical wording contract).
+        assert "matches golden variant" not in reasons
+        assert " of " not in reasons  # "of N" only appears on multi-variant match
 
     def test_matches_alternative_variant(self, checker, trial_state_wraps, monkeypatch):
         """Trial state that matches variant 1 (not variant 0) still scores 1.0
@@ -477,6 +487,39 @@ class TestGradeTauStyleVariants:
         assert "Golden replay errors" in reasons
         assert "variant 0" in reasons
         assert "primary golden broken" in reasons
+
+    def test_redundant_variants_first_match_wins(self, checker, trial_state_wraps, monkeypatch):
+        """When two variants resolve to identical hashes (author declared
+        equivalent alternatives), the first one to match wins and later
+        variants are never replayed. Regression guard against variant
+        index drift on hash collisions from authoring mistakes.
+        """
+        identical_state = {"orders": [{"id": 1, "status": "closed"}]}
+        call_count = {"n": 0}
+
+        def fake_execute(actions, td, isp, msp, dom):
+            call_count["n"] += 1
+            return identical_state
+
+        monkeypatch.setattr(checker, "_execute_golden_actions", fake_execute)
+
+        score, reasons, _ = checker.grade_tau_style(
+            state=trial_state_wraps(identical_state),
+            jsonpath_assertions=[],
+            golden_actions=[{"name": "close_a", "kwargs": {}}],
+            alternative_golden_actions=[[{"name": "close_b", "kwargs": {}}]],
+            task_dir=Path("."),
+            initial_state_path="init.json",
+            mcp_server_path="mcp.py",
+            task_domain="synthetic",
+            hash_weight=1.0,
+        )
+        assert score == 1.0
+        assert "matches golden variant 0" in reasons  # primary wins
+        # Both variants still replay upfront (that's how the current
+        # implementation collects variant_states), but the reason string
+        # names variant 0 — not variant 1.
+        assert "matches golden variant 1" not in reasons
 
     def test_all_variants_fail_to_replay_returns_zero(
         self, checker, trial_state_wraps, monkeypatch

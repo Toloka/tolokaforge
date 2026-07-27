@@ -4,6 +4,7 @@ import fnmatch
 import hashlib
 import importlib.util
 import json
+from collections import Counter
 from pathlib import Path
 from typing import Any, Union
 
@@ -596,21 +597,26 @@ class StateChecker:
 
     @staticmethod
     def _state_distance(state_a: dict[str, Any], state_b: dict[str, Any]) -> int:
-        """Row-level symmetric-difference count between two states.
+        """Multiset symmetric-difference count between two states.
 
-        Each state is a ``{table: [row_dict]}`` map. The distance is the
-        number of rows that differ between the two states, summed across
-        all tables — a variant with one differing field on a single record
-        scores 1, a variant missing three whole records scores 3. Used to
-        pick the "closest" golden variant on a hash mismatch. Non-dict
-        rows are treated as opaque values via their JSON serialization.
+        Each state is a ``{table: [row]}`` map. The distance is the number
+        of rows that differ between the two states, summed across all
+        tables — a variant missing three whole records scores 3, one whose
+        rows differ in a single field on one record scores 2 (each side
+        contributes one distinct row to the sym-diff). Multiset semantics
+        via :class:`collections.Counter`: a row appearing N times on one
+        side and M times on the other contributes ``|N - M|`` to the
+        distance, so row duplication is counted rather than deduplicated
+        away. Non-dict row values are treated as opaque via their JSON
+        canonical form.
         """
         all_tables = set(state_a.keys()) | set(state_b.keys())
         total = 0
         for table in all_tables:
             rows_a = state_a.get(table) or []
             rows_b = state_b.get(table) or []
-            canon_a = {json.dumps(row, sort_keys=True, default=str) for row in rows_a}
-            canon_b = {json.dumps(row, sort_keys=True, default=str) for row in rows_b}
-            total += len(canon_a.symmetric_difference(canon_b))
+            counter_a = Counter(json.dumps(row, sort_keys=True, default=str) for row in rows_a)
+            counter_b = Counter(json.dumps(row, sort_keys=True, default=str) for row in rows_b)
+            diff = (counter_a - counter_b) + (counter_b - counter_a)
+            total += sum(diff.values())
         return total

@@ -206,7 +206,11 @@ closest to satisfying regardless of variant count.
 Design bias: use this sparingly. Every extra variant that survives review is a
 statement that the domain policy is genuinely permissive; if a task can be
 tightened by amending policy text to mandate one shape, prefer that over
-shipping alternates.
+shipping alternates. Grading cost scales linearly with variant count — each
+variant runs a full reset + replay + snapshot + hash cycle — so a task with N
+alternates roughly triples-and-adds a grade's runtime vs. a single-golden
+task on the pessimistic (no-match) path. Match short-circuits at the first
+matching variant.
 
 ---
 
