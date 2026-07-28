@@ -198,16 +198,19 @@ example driver lives in the tree, so this path assumes a repo checkout; only the
    ```
 
    Or build them from the checkout and run the stack against those instead.
-   `make docker-build` builds each image as `tolokaforge-<component>:local`;
-   retag them under the recipe's `tolokasoft1/` names so `TOLOKAFORGE_IMAGE_TAG=local`
-   resolves:
+   `make docker-build` builds the four images content-hash-tagged
+   (`tolokaforge-<component>:<hash>`), so retag the latest of each under the
+   recipe's `tolokasoft1/…:local` names — the compose recipe references
+   `tolokasoft1/tolokaforge-*:${TOLOKAFORGE_IMAGE_TAG}` — so
+   `TOLOKAFORGE_IMAGE_TAG=local` resolves:
 
    ```bash
    # Locally-built images:
    export TOLOKAFORGE_IMAGE_TAG=local
    make docker-build
    for c in runner db-service rag-service mock-web; do
-     docker tag "tolokaforge-$c:local" "tolokasoft1/tolokaforge-$c:local"
+     ref=$(docker images --filter "reference=tolokaforge-$c" --format '{{.Repository}}:{{.Tag}}' | head -1)
+     docker tag "$ref" "tolokasoft1/tolokaforge-$c:local"
    done
    ```
 
