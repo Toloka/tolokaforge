@@ -186,6 +186,14 @@ drive one real trial to a graded `TrialResult`, and tear the stack down. The
 example driver lives in the tree, so this path assumes a repo checkout; only the
 *images* are pulled (or built), not the harness.
 
+> **Architecture.** The published images are `linux/amd64` only (arm64 is a
+> follow-up). The compose recipe pins `platform: linux/amd64` on every service,
+> so `docker compose up` works on Apple-Silicon (arm64) Macs too — Docker Desktop
+> pulls the amd64 image and runs it under emulation (rag-service is heavy and is
+> noticeably slower emulated). For any manual `docker pull` / `docker run`
+> outside compose, pass `--platform linux/amd64` or export
+> `DOCKER_DEFAULT_PLATFORM=linux/amd64`.
+
 1. **Get the four images.** Pull the published tag, or build them locally.
 
    ```bash

@@ -16,6 +16,11 @@
 #   - digest-pinning (`@sha256:…` from the release-notes digest table) is the
 #     documented post-publish hardening path.
 #
+# The published images are linux/amd64 only, and Docker Desktop does not fall
+# back to emulation on pull, so each service pins `platform: linux/amd64`. On
+# native amd64 this is a no-op; on an Apple-Silicon (arm64) Mac it makes the
+# amd64 image pull and run under emulation, so `docker compose up` works there.
+#
 # Each image self-reports Docker health via its own HEALTHCHECK (the runner
 # probe is a gRPC channel-ready check per ADR-0024); this file never re-declares
 # a healthcheck and orders startup with `depends_on: condition: service_healthy`.
@@ -26,6 +31,7 @@
 services:
   db-service:
     image: tolokasoft1/tolokaforge-db-service:${TOLOKAFORGE_IMAGE_TAG:-latest}
+    platform: linux/amd64
     networks:
       # `json-db` alias so a task navigating to http://json-db:8000 resolves
       # exactly as it does on the in-tree stack.
@@ -35,6 +41,7 @@ services:
 
   rag-service:
     image: tolokasoft1/tolokaforge-rag-service:${TOLOKAFORGE_IMAGE_TAG:-latest}
+    platform: linux/amd64
     environment:
       CORPUS_PATH: /env/rag/corpus
     volumes:
@@ -44,6 +51,7 @@ services:
 
   mock-web:
     image: tolokasoft1/tolokaforge-mock-web:${TOLOKAFORGE_IMAGE_TAG:-latest}
+    platform: linux/amd64
     environment:
       # mock-web's image, alone of the four, bakes no PYTHONUNBUFFERED; set it
       # here so its logs stream unbuffered like the other three services'.
@@ -57,6 +65,7 @@ services:
 
   runner:
     image: tolokasoft1/tolokaforge-runner:${TOLOKAFORGE_IMAGE_TAG:-latest}
+    platform: linux/amd64
     ports:
       - "50051:50051"
     environment:
