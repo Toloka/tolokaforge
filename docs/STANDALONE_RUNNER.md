@@ -306,6 +306,12 @@ directory of its own. If your task references files (grading rubrics, fixtures,
 tool code), spawn the subprocess with its working directory at the task-pack
 root, and file paths in the task will resolve.
 
+The exec wire is the any-language surface. The runner's gRPC server exposes only
+per-trial primitives (`RegisterTrial` / `ExecuteTool` / `GradeTrial` / …) plus
+`HealthCheck`, with reflection off — there is no whole-trial RPC, so `grpcurl`
+cannot drive a trial. Any language that can spawn `docker compose exec` and read
+a JSON line drives `tolokaforge run-trial` exactly as these examples do.
+
 Runnable versions:
 - [`examples/run-trial/drive_run_trial.py`](../examples/run-trial/drive_run_trial.py) —
   minimal "hello world": one trial, print the grade.
@@ -313,6 +319,11 @@ Runnable versions:
   — end-user shape: runs both bundled `tool_use` tasks against two models,
   aggregates per-task per-model scores + cost + latency, prints a readable
   comparison table. Handles `error` messages typed rather than as tracebacks.
+- [`deploy/standalone/examples/drive_one_trial.sh`](../deploy/standalone/examples/drive_one_trial.sh)
+  — the standalone-stack any-language driver: POSIX `sh` + `jq`, host needs only
+  Docker and `jq` (no host tolokaforge). It serialises the task *inside* the
+  runner via the public `load_task`, builds the `start` envelope with `jq`, and
+  drives this same exec wire against the composed stack.
 
 Full wire format spec: [`docs/API.md`](API.md#tolokaforge-run-trial).
 

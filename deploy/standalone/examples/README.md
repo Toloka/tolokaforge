@@ -36,6 +36,28 @@ TOLOKAFORGE_EXAMPLE_PROVIDER=anthropic TOLOKAFORGE_EXAMPLE_MODEL=claude-sonnet-4
     python drive_one_trial.py
 ```
 
+## `drive_one_trial.sh` — any language (POSIX shell)
+
+The same trial, driven with no host tolokaforge install. It serialises the task
+*inside* the runner via the public `load_task`, builds the `start` envelope with
+`jq`, and drives `tolokaforge run-trial` over the same exec wire.
+
+Host prerequisites:
+
+- Docker with the compose plugin, and `jq` — nothing else.
+- A running standalone stack and a provider key in [`../.env`](../.env.example),
+  same as the Python driver.
+
+Run it from this directory once the stack is up:
+
+```bash
+sh drive_one_trial.sh
+```
+
+It honours the same `TOLOKAFORGE_EXAMPLE_PROVIDER` / `TOLOKAFORGE_EXAMPLE_MODEL`
+overrides. There is no `grpcurl` path: the runner gRPC exposes no whole-trial
+RPC, so the `run-trial` exec wire is the any-language surface.
+
 ## Image tag: local vs. published
 
 The drivers operate on the already-running stack, so they inherit whichever
