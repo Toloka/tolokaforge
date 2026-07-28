@@ -29,30 +29,26 @@ timeout is 180s).
 from __future__ import annotations
 
 import json
-import os
-import subprocess
 from collections.abc import Iterator
-from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import pytest
 
 from tests.integration.deploy.conftest import (
     IMAGE_COMPONENTS,
-    published_image_ref,
+    REPO_ROOT,
+    StackHandle,
+    build_and_tag_local,
+    compose,
+    pull_published,
 )
 from tests.utils.docker_helpers import wait_for_health
-from tolokaforge.docker.builder import build_image
 
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.requires_docker,
     pytest.mark.slow,
 ]
-
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-_COMPOSE_FILE = _REPO_ROOT / "deploy" / "standalone" / "docker-compose.yaml"
 
 # rag-service's cold-start HuggingFace model download can take well over two
 # minutes; floor the compose wait above the repo's existing 180s rag health
@@ -64,65 +60,13 @@ _RUNNER_ADDR = "localhost:50051"
 # A bundled example that exercises db-service (db_query/db_update) plus the
 # filesystem tools — a real trial genuinely routed through the composed stack.
 _PAID_TASK = (
-    _REPO_ROOT
+    REPO_ROOT
     / "examples/native/tool_use/dataset/tasks/tool_use/tool_use_public_example_01/task.yaml"
 )
 
 
-@dataclass(frozen=True)
-class _StackHandle:
-    """A brought-up standalone stack: its compose project and image-tag mode."""
-
-    mode: str
-    project: str
-    tag: str
-
-
-def _compose(
-    project: str,
-    args: list[str],
-    tag: str,
-    *,
-    input_text: str | None = None,
-    check: bool = False,
-) -> subprocess.CompletedProcess[str]:
-    """Run ``docker compose`` against the standalone recipe for one project.
-
-    ``TOLOKAFORGE_IMAGE_TAG`` rides the subprocess env (Compose interpolation
-    reads it with precedence over any sibling ``.env``), so the keyless lane needs
-    no ``.env`` file — provider keys, when present, are inherited from
-    ``os.environ`` the same way.
-    """
-    env = {**os.environ, "TOLOKAFORGE_IMAGE_TAG": tag}
-    return subprocess.run(
-        ["docker", "compose", "-p", project, "-f", str(_COMPOSE_FILE), *args],
-        capture_output=True,
-        text=True,
-        env=env,
-        input=input_text,
-        check=check,
-    )
-
-
-def _build_and_tag_local() -> None:
-    """Build the four images from the tree and tag each ``tolokasoft1/…:local``."""
-    for component in IMAGE_COMPONENTS:
-        image = build_image(component)
-        ref = published_image_ref(component, "local")
-        subprocess.run(["docker", "tag", image.full_tag, ref], check=True, capture_output=True)
-
-
-def _pull_published(tag: str) -> bool:
-    """Whether all four ``tolokasoft1/…:<tag>`` images pull successfully."""
-    for component in IMAGE_COMPONENTS:
-        ref = published_image_ref(component, tag)
-        if subprocess.run(["docker", "pull", ref], capture_output=True, text=True).returncode != 0:
-            return False
-    return True
-
-
 @pytest.fixture(scope="module", params=["local", "published"])
-def composed_stack(request: pytest.FixtureRequest, docker_daemon: None) -> Iterator[_StackHandle]:
+def composed_stack(request: pytest.FixtureRequest, docker_daemon: None) -> Iterator[StackHandle]:
     """Bring the standalone recipe up in the requested image-source mode.
 
     Local mode always runs (builds + tags ``:local``); published mode skips until
@@ -132,12 +76,12 @@ def composed_stack(request: pytest.FixtureRequest, docker_daemon: None) -> Itera
     mode: str = request.param
     tag = "local" if mode == "local" else "latest"
     if mode == "local":
-        _build_and_tag_local()
-    elif not _pull_published(tag):
+        build_and_tag_local()
+    elif not pull_published(tag):
         pytest.skip("tolokasoft1/tolokaforge-*:latest not available until the first publish")
 
     project = f"tf-standalone-{mode}"
-    up = _compose(
+    up = compose(
         project,
         ["up", "-d", "--wait", "--wait-timeout", str(_COMPOSE_WAIT_TIMEOUT_S)],
         tag,
@@ -147,19 +91,19 @@ def composed_stack(request: pytest.FixtureRequest, docker_daemon: None) -> Itera
             f"`compose up --wait` failed for {mode} mode "
             f"(rc={up.returncode}):\n{up.stdout}\n{up.stderr}"
         )
-        yield _StackHandle(mode=mode, project=project, tag=tag)
+        yield StackHandle(mode=mode, project=project, tag=tag)
     finally:
-        _compose(project, ["down", "-v"], tag)
+        compose(project, ["down", "-v"], tag)
 
 
-def _service_container_id(handle: _StackHandle, component: str) -> str:
-    proc = _compose(handle.project, ["ps", "-q", component], handle.tag)
+def _service_container_id(handle: StackHandle, component: str) -> str:
+    proc = compose(handle.project, ["ps", "-q", component], handle.tag)
     container_id = proc.stdout.strip()
     assert container_id, f"{component} has no running container in project {handle.project}"
     return container_id
 
 
-def test_stack_all_services_healthy(composed_stack: _StackHandle) -> None:
+def test_stack_all_services_healthy(composed_stack: StackHandle) -> None:
     """Every service in the composed stack reaches Docker ``healthy``."""
     for component in IMAGE_COMPONENTS:
         container_id = _service_container_id(composed_stack, component)
@@ -167,7 +111,7 @@ def test_stack_all_services_healthy(composed_stack: _StackHandle) -> None:
         assert status == "healthy", f"{component} never became healthy (last status: {status!r})"
 
 
-def test_stack_runner_health_check_serving(composed_stack: _StackHandle) -> None:
+def test_stack_runner_health_check_serving(composed_stack: StackHandle) -> None:
     """The runner answers a real ``HealthCheck`` RPC, serving and db-connected."""
     from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient
 
@@ -202,7 +146,7 @@ def _models(provider: str, model: str) -> dict[str, dict[str, Any]]:
 
 @pytest.mark.requires_api
 @pytest.mark.llm
-def test_bundled_trial_through_composed_stack(composed_stack: _StackHandle) -> None:
+def test_bundled_trial_through_composed_stack(composed_stack: StackHandle) -> None:
     """One real bundled trial drives to a graded ``TrialResult`` through the stack.
 
     The trial runs over the ADR-0024 ``run-trial`` exec wire inside the composed
@@ -231,12 +175,12 @@ def test_bundled_trial_through_composed_stack(composed_stack: _StackHandle) -> N
     }
 
     container_task_dir = f"/tmp/{task_dir.name}"
-    copied = _compose(
+    copied = compose(
         composed_stack.project, ["cp", str(task_dir), "runner:/tmp/"], composed_stack.tag
     )
     assert copied.returncode == 0, f"copying the task pack into the runner failed: {copied.stderr}"
 
-    proc = _compose(
+    proc = compose(
         composed_stack.project,
         [
             "exec",
