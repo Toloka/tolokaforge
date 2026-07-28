@@ -140,24 +140,29 @@ non-UTF-8 file (which cannot be safely round-tripped); `view` reads with
 replacement characters for display only.
 
 **Path validation.** Paths resolve to their realpath and must stay contained in
-the working root (`/work`); a symlink escape or a `..` component that leaves the
-root fails loud.
+the working root; a symlink escape or a `..` component that leaves the root
+fails loud. The root defaults to `/work` and is set per task via
+`tool_config.working_root` (see [Enabling Tools](#enabling-tools)); all four
+commands and the containment check bind to that effective root. A configured
+root that does not exist or is not a directory fails loud on first use, naming
+the root — the tool never silently creates it.
 
 **Provider variants**
 
-- **Local** (no `service` key): in-process file operations rooted at the runner
-  container's `/work`. Writes go to a temp file and are renamed into place
-  (single-process temp+rename).
+- **Local** (no `service` key): in-process file operations rooted at the
+  effective working root (`working_root`, default `/work`) on the runner
+  container. Writes go to a temp file and are renamed into place (single-process
+  temp+rename).
 - **Compose** (`service` + `compose_project_prefix`): every command runs through
-  `docker exec` into an already-running service container. File content is piped
-  on stdin (never interpolated into the shell command string) and paths are
-  passed as positional arguments, so agent-controlled bytes cannot inject shell
-  commands. Path containment is validated **inside the container** via
-  `realpath`; if `realpath` is absent from the target image the engine fails
-  loud rather than silently skipping validation. Write atomicity is weaker than
-  the local variant: a completed temp-file+`mv` is atomic, but an exec
-  interrupted mid-write can leave the temp file behind. The editor has no
-  configurable per-command timeout.
+  `docker exec` into an already-running service container, rooted at the same
+  effective working root. File content is piped on stdin (never interpolated
+  into the shell command string) and paths are passed as positional arguments,
+  so agent-controlled bytes cannot inject shell commands. Path containment is
+  validated **inside the container** via `realpath`; if `realpath` is absent
+  from the target image the engine fails loud rather than silently skipping
+  validation. Write atomicity is weaker than the local variant: a completed
+  temp-file+`mv` is atomic, but an exec interrupted mid-write can leave the temp
+  file behind. The editor has no configurable per-command timeout.
 
 ## Enabling Tools
 
@@ -181,8 +186,10 @@ tools:
 
 To select the compose variant, add a per-tool kwargs block under
 `tools.agent.<name>` naming the target `service` and the `compose_project_prefix`
-used to bring the stack up. `bash_session` additionally accepts `timeout_s`; the
-editor has no configurable per-command timeout:
+used to bring the stack up. `bash_session` additionally accepts `timeout_s`;
+`str_replace_editor` additionally accepts `working_root` (the absolute path all
+four commands resolve against, default `/work`; a missing or non-directory root
+fails loud on first use). The editor has no configurable per-command timeout:
 
 ```yaml
 tools:
@@ -195,7 +202,12 @@ tools:
     str_replace_editor:
       service: main
       compose_project_prefix: env_
+      working_root: /srv/agent  # optional; defaults to /work
 ```
+
+`working_root` applies to the local variant too: set it under the
+`str_replace_editor` block (no `service` key) to root the in-process editor at a
+non-default path.
 
 > **Compose-variant network isolation.** Under `network_policy: no_internet` /
 > `limited_internet`, the engine attaches every compose service to a single
