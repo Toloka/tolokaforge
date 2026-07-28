@@ -1255,17 +1255,20 @@ class StrReplaceEditorToolWrapper(ToolWrapper):
     """Runner-side executor for the ``str_replace_editor`` tool.
 
     Stateless (no per-trial session), so ``has_lifecycle`` stays False. The
-    working root is the runner container's ``/work`` (same directory the file
-    tools and the shell's workdir target). A ``service`` key in ``tool_config``
-    selects the compose backend; its absence selects the local filesystem
-    engine. The wire schema is identical either way.
+    working root defaults to ``/work`` (same directory the file tools and the
+    shell's workdir target) and is overridable per task via
+    ``tool_config.working_root``. A ``service`` key in ``tool_config`` selects
+    the compose backend; its absence selects the local filesystem engine. The
+    wire schema is identical either way.
     """
 
     has_lifecycle = False
 
-    # Hardcoded to match service.py's AGENT_WORK_DIR — this wrapper is
-    # has_lifecycle=False, so it never sees ToolLifecycleContext.work_dir.
-    AGENT_WORK_DIR = "/work"
+    # Default working root when tool_config omits ``working_root``. Must equal
+    # service.py's AGENT_WORK_DIR: this wrapper is has_lifecycle=False, so it
+    # never sees ToolLifecycleContext.work_dir and cannot learn the root at
+    # start() the way the lifecycle-managed shell does.
+    _DEFAULT_WORKING_ROOT = "/work"
 
     def __init__(self, tool_schema: ToolSchemaModel, trial_id: str):
         super().__init__(tool_schema)
@@ -1279,17 +1282,18 @@ class StrReplaceEditorToolWrapper(ToolWrapper):
                 "resolve the running container name (the per-trial compose project "
                 "prefix used to bring the stack up)",
             )
+        self._working_root: str = tool_config.get("working_root", self._DEFAULT_WORKING_ROOT)
         self._trial_id = trial_id
         self._backend = self._new_backend()
 
     def _new_backend(self) -> EditorBackend:
         if self._service is None:
-            return LocalFilesystemEditor(self.AGENT_WORK_DIR)
+            return LocalFilesystemEditor(self._working_root)
         assert self._project_prefix is not None  # validated in __init__
         container = self._resolve_container_name(
             self._trial_id, self._service, self._project_prefix
         )
-        return DockerComposeEditor(container, base_path=self.AGENT_WORK_DIR)
+        return DockerComposeEditor(container, base_path=self._working_root)
 
     @staticmethod
     def _resolve_container_name(trial_id: str, service: str, project_prefix: str) -> str:

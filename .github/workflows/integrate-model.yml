@@ -481,7 +481,8 @@ jobs:
               -e "s|{{MODEL}}|${TF_NAME}|g" -e "s|{{ENGINE_VERSION}}|${GITHUB_SHA}|g" \
               -e "s|{{BASE_DIR}}|observation|g" -e "s|{{DOMAINS_WITH_COUNTS}}|see findings.json|g" \
               -e "s|{{TOTAL_TRIALS}}|see findings.json|g" -e "s|{{ANCHORS}}|none|g" \
-              -e "s|{{INFRA_THRESHOLD}}|0.05|g" -e "s|{{GO_BOUNDARY}}|observe mode|g" "$1"
+              -e "s|{{INFRA_THRESHOLD}}|0.05|g" -e "s|{{GO_BOUNDARY}}|observe mode|g" \
+              -e "s|{{KNOWN_ISSUES}}|n/a (observe mode: no frozen task pack, no registry)|g" "$1"
           }
           CONVERGED=no
           # Per-iteration outcome log; the needs-human step turns it into a "why it did not

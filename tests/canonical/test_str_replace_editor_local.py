@@ -177,6 +177,76 @@ def test_traversal_and_absolute_escape_fail_loud(tmp_path, escape):
         _editor(base).view(target)
 
 
+# -- configurable working root ------------------------------------------------
+
+
+def test_custom_root_resolves_all_four_commands_under_it(tmp_path):
+    root = tmp_path / "srv" / "agent"
+    root.mkdir(parents=True)
+    ed = _editor(root)
+
+    ed.create("notes.txt", "one\ntwo\n")
+    created = root / "notes.txt"
+    assert created.read_text(encoding="utf-8") == "one\ntwo\n"
+    assert ed.view("notes.txt") == "     1\tone\n     2\ttwo\n"
+
+    ed.str_replace("notes.txt", "one", "ONE")
+    ed.insert("notes.txt", 2, "three")
+    assert created.read_text(encoding="utf-8") == "ONE\ntwo\nthree\n"
+
+
+def test_custom_root_binds_symlink_and_traversal_containment(tmp_path):
+    root = tmp_path / "srv" / "agent"
+    root.mkdir(parents=True)
+    (tmp_path / "secret.txt").write_text("secret\n", encoding="utf-8")
+    (root / "link.txt").symlink_to(tmp_path / "secret.txt")
+
+    with pytest.raises(EditorError) as symlink_exc:
+        _editor(root).view("link.txt")
+    assert str(root.resolve()) in str(symlink_exc.value)
+
+    for escape in ("../secret.txt", "/etc/hostname"):
+        with pytest.raises(EditorError):
+            _editor(root).view(escape)
+
+
+def test_nonexistent_root_fails_loud_on_view_naming_root(tmp_path):
+    missing = tmp_path / "does_not_exist"
+    with pytest.raises(EditorError) as exc:
+        _editor(missing).view("anything.txt")
+    msg = str(exc.value)
+    assert str(missing.resolve()) in msg
+    assert "file not found" not in msg
+
+
+def test_nonexistent_root_fails_loud_on_create_and_leaves_tree_uncreated(tmp_path):
+    missing = tmp_path / "does_not_exist"
+    with pytest.raises(EditorError) as exc:
+        _editor(missing).create("new.txt", "hi\n")
+    assert str(missing.resolve()) in str(exc.value)
+    assert not missing.exists()  # regression lock: no silent mkdir -p of the root tree
+
+
+def test_custom_root_escape_rejected_per_command(tmp_path):
+    """AC: escape rejection is verified per command. ``_resolve`` is the shared
+    chokepoint; this test locks that every command routes through it so a future
+    refactor moving containment into command-specific paths would break here."""
+    root = tmp_path / "srv" / "agent"
+    root.mkdir(parents=True)
+    (tmp_path / "secret.txt").write_text("secret\n", encoding="utf-8")
+    ed = _editor(root)
+    escape = "../secret.txt"
+
+    with pytest.raises(EditorError):
+        ed.view(escape)
+    with pytest.raises(EditorError):
+        ed.create(escape, "x\n")
+    with pytest.raises(EditorError):
+        ed.str_replace(escape, "a", "b")
+    with pytest.raises(EditorError):
+        ed.insert(escape, 1, "x")
+
+
 # -- schema advertisement -----------------------------------------------------
 
 _EXPECTED_PROPS = {

@@ -8,6 +8,8 @@ daemon in ``tests/integration/test_str_replace_editor_compose.py``.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from tolokaforge.runner.models import ToolSchema
@@ -64,3 +66,28 @@ def test_compose_backend_wires_resolved_name_into_engine():
 def test_service_without_prefix_fails_loud():
     with pytest.raises(ToolConfigurationError):
         _wrapper({"service": "app"})
+
+
+def test_working_root_wires_into_local_backend(tmp_path):
+    root = str(tmp_path / "srv" / "agent")
+    wrapper = _wrapper({"working_root": root})
+    assert isinstance(wrapper._backend, LocalFilesystemEditor)
+    assert wrapper._backend._base == Path(root).resolve()
+
+
+def test_working_root_wires_into_compose_backend():
+    wrapper = _wrapper(
+        {"service": "app", "compose_project_prefix": "foo_", "working_root": "/srv/agent"}
+    )
+    assert isinstance(wrapper._backend, DockerComposeEditor)
+    assert wrapper._backend.base_path == "/srv/agent"
+
+
+def test_working_root_defaults_to_work_for_both_backends():
+    local = _wrapper(None)
+    assert isinstance(local._backend, LocalFilesystemEditor)
+    assert local._backend._base == Path("/work").resolve()
+
+    compose = _wrapper({"service": "app", "compose_project_prefix": "foo_"})
+    assert isinstance(compose._backend, DockerComposeEditor)
+    assert compose._backend.base_path == "/work"

@@ -35,9 +35,22 @@ oracle pp and formatting pp reported here are the SAME pp that `task-design-orac
 `preset-codec-leak` describe in detail; emit them as separate labeled lines so the
 synthesizer maps them 1:1 and never sums across dimensions.
 
+This bucket is HARNESS / TASK-DESIGN / ORACLE, so it mixes three kinds of cause with the same pp
+weight but very different consequences: already-ACCEPTED circumstances, NEW pack defects, and
+live HARNESS/engine/adapter bugs. Split the line three ways on exactly the labels the shared
+block's "Accepted circumstances" defines, and use its test (the entry decides, not mere presence
+in the registry) so this dimension and `task-design-oracle` emit the SAME label set and the
+synthesizer can map them 1:1. All three count toward the recoverable pp and the true-capability
+number; only NEW and HARNESS are work items. Never re-label an accepted circumstance as
+GENUINE-MODEL to keep the story tidy (the pp is non-model either way), and never park a live
+harness bug under ACCEPTED or NEW: NEW ends in "propose a registry entry", which would
+institutionalise a bug that is simply fixable.
+
 RETURN (compact markdown):
 - bucket split (bucket x count x % of failures x approx pp of micro), one line per bucket
-  labeled infra / oracle / formatting / genuine so pp are attributable
+  labeled infra / oracle / formatting / genuine so pp are attributable, with the oracle line
+  further split ACCEPTED / NEW / HARNESS; the owned oracle total is all three summed, and each
+  sub-label must be stated even when it is 0.0pp
 - dominant genuine-model sub-patterns with rough frequency
 - FORMATTING (preset-fixable) count stated explicitly (expect ~0 for a clean-native model;
   remember a ~0 may be a preset masking a dormant quirk - see the shared traps note)
