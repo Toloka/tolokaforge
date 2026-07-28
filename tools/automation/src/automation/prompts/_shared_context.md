@@ -178,7 +178,10 @@ A FIXED marker is VERSION-RELATIVE, so evaluate it against the engine this run a
 - fixed only in a later version with NO such decision -> live harness bug, report it loud.
 Match every marker CASE-INSENSITIVELY: "DECISION" and "Decision", "FIXED" and "fixed in vX", are
 the same marker. A decision reads as a line naming the eval owner with a keep / do-not-change
-imperative, in any casing; do not decide an entry's status from its title alone.
+imperative, in any casing; do not decide an entry's status from its title alone. If containment is
+genuinely undeterminable from the version string (a fix that spans repos, e.g. an engine change
+plus an adapter bump), decide by SYMPTOM instead: the symptom present under a claimed fix is a
+loud regression, absent is nothing to report.
 
 Three things this does NOT license:
 - It does not license silence about magnitude. If an accepted circumstance is large enough to
