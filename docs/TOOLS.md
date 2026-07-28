@@ -184,12 +184,15 @@ tools:
     enabled: ["bash_session", "str_replace_editor"]
 ```
 
+To override the default working root (`/work`), add `working_root` under
+`tools.agent.str_replace_editor`. This applies to both the local and the compose
+variant; a missing or non-directory root fails loud on first use.
+
 To select the compose variant, add a per-tool kwargs block under
 `tools.agent.<name>` naming the target `service` and the `compose_project_prefix`
 used to bring the stack up. `bash_session` additionally accepts `timeout_s`;
-`str_replace_editor` additionally accepts `working_root` (the absolute path all
-four commands resolve against, default `/work`; a missing or non-directory root
-fails loud on first use). The editor has no configurable per-command timeout:
+`str_replace_editor` additionally accepts `working_root` (see above). The editor
+has no configurable per-command timeout:
 
 ```yaml
 tools:
@@ -204,10 +207,6 @@ tools:
       compose_project_prefix: env_
       working_root: /srv/agent  # optional; defaults to /work
 ```
-
-`working_root` applies to the local variant too: set it under the
-`str_replace_editor` block (no `service` key) to root the in-process editor at a
-non-default path.
 
 > **Compose-variant network isolation.** Under `network_policy: no_internet` /
 > `limited_internet`, the engine attaches every compose service to a single

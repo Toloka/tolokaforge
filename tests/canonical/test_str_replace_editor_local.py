@@ -227,6 +227,26 @@ def test_nonexistent_root_fails_loud_on_create_and_leaves_tree_uncreated(tmp_pat
     assert not missing.exists()  # regression lock: no silent mkdir -p of the root tree
 
 
+def test_custom_root_escape_rejected_per_command(tmp_path):
+    """AC: escape rejection is verified per command. ``_resolve`` is the shared
+    chokepoint; this test locks that every command routes through it so a future
+    refactor moving containment into command-specific paths would break here."""
+    root = tmp_path / "srv" / "agent"
+    root.mkdir(parents=True)
+    (tmp_path / "secret.txt").write_text("secret\n", encoding="utf-8")
+    ed = _editor(root)
+    escape = "../secret.txt"
+
+    with pytest.raises(EditorError):
+        ed.view(escape)
+    with pytest.raises(EditorError):
+        ed.create(escape, "x\n")
+    with pytest.raises(EditorError):
+        ed.str_replace(escape, "a", "b")
+    with pytest.raises(EditorError):
+        ed.insert(escape, 1, "x")
+
+
 # -- schema advertisement -----------------------------------------------------
 
 _EXPECTED_PROPS = {
