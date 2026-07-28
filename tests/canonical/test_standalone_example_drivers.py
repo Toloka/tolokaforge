@@ -12,13 +12,24 @@ still compiles here and surfaces only in the paid integration lane
 
 from __future__ import annotations
 
+import json
+import os
 import py_compile
+import re
+import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
 pytestmark = pytest.mark.canonical
+
+
+_STUB_TASK_JSON = '{"id": "stub", "nested": {"messages": [1, 2]}}'
+_STUB_PROVIDER = "openrouter"
+_STUB_MODEL = "stub/model"
+
+_ENVELOPE_CMD_RE = re.compile(r"START=\$\((?P<cmd>jq\b.*?)\)\n", re.DOTALL)
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -69,3 +80,58 @@ def test_shell_driver_uses_no_grpcurl() -> None:
         "the shell driver must drive the run-trial exec wire, not grpcurl — the "
         "runner gRPC has no whole-trial RPC"
     )
+
+
+def _extract_start_envelope_jq(source: str) -> str:
+    """Return the ``jq`` invocation the shell driver uses to build the start envelope."""
+    match = _ENVELOPE_CMD_RE.search(source)
+    assert match is not None, (
+        "could not locate the START=$(jq ...) envelope construction in the shell driver — "
+        "the envelope-shape guard cannot find what it protects"
+    )
+    return match.group("cmd")
+
+
+def test_shell_driver_start_envelope_uses_compact_jq() -> None:
+    """The start-envelope ``jq`` emits compact output — keyless, no jq binary needed.
+
+    The ``run-trial`` wire is JSON-Lines: one envelope per line. A pretty-printing
+    ``jq -n`` splits the start envelope across many lines, and the runner reads only
+    the first (``{``) and dies. This source guard requires the compact ``-c`` flag and
+    runs on every PR even where jq is absent, so the single-line contract cannot rot
+    silently the way ``sh -n`` alone let it.
+    """
+    cmd = _extract_start_envelope_jq(_SHELL_DRIVER.read_text())
+    flags = cmd.split("'", 1)[0]
+    assert "-c" in flags, (
+        f"the start envelope must be built with a compact jq (jq -c), got: {flags.strip()!r} — "
+        "a pretty-printed envelope violates the JSON-Lines wire"
+    )
+
+
+@pytest.mark.skipif(shutil.which("jq") is None, reason="jq not on PATH")
+def test_shell_driver_start_envelope_is_single_line() -> None:
+    """Executing the driver's own ``jq`` invocation yields exactly one wire line.
+
+    Behaviour lock: run the envelope-construction command lifted verbatim from the
+    shell driver against a stub task and assert the output is a single line of valid
+    JSON. This catches any multi-line regression regardless of how it is spelled.
+    """
+    cmd = _extract_start_envelope_jq(_SHELL_DRIVER.read_text())
+    completed = subprocess.run(
+        ["sh", "-c", cmd],
+        env={
+            "PATH": os.environ["PATH"],
+            "TASK_JSON": _STUB_TASK_JSON,
+            "PROVIDER": _STUB_PROVIDER,
+            "MODEL": _STUB_MODEL,
+        },
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    envelope = completed.stdout.strip()
+    assert (
+        "\n" not in envelope
+    ), f"start envelope must be a single JSON-Lines wire line, got:\n{envelope}"
+    assert json.loads(envelope)["type"] == "start"

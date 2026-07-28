@@ -58,7 +58,7 @@ TASK_JSON=$(dc exec -T -w "/tmp/$PACK_NAME" runner python -c \
 # `runtime:"shared"` is load-bearing — `"auto"` would pick the per-trial Docker
 # backend, which cannot run inside the composed runner container. `grader` is
 # omitted to default to `runner_rpc`.
-START=$(jq -n --argjson task "$TASK_JSON" --arg provider "$PROVIDER" --arg model "$MODEL" \
+START=$(jq -cn --argjson task "$TASK_JSON" --arg provider "$PROVIDER" --arg model "$MODEL" \
   '{v: 1, type: "start", task: $task, models: {agent: {provider: $provider, name: $model, temperature: 0, max_tokens: 4096}}, runtime: "shared", conductor: "in_process"}')
 
 set +e
