@@ -21,12 +21,16 @@ import re
 import subprocess
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 
 from tests.utils.docker_helpers import is_docker_daemon_available
 
 IMAGE_COMPONENTS: tuple[str, ...] = ("runner", "db-service", "rag-service", "mock-web")
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+COMPOSE_FILE = REPO_ROOT / "deploy" / "standalone" / "docker-compose.yaml"
 
 HEALTHY_TIMEOUT_S = 120.0
 _POLL_INTERVAL_S = 2.0
@@ -54,6 +58,60 @@ def published_image_ref(component: str, tag: str) -> str:
 
 def _use_local_images() -> bool:
     return os.environ.get("TOLOKAFORGE_SMOKE_IMAGE_LOCAL", "").strip().lower() in _TRUTHY
+
+
+@dataclass(frozen=True)
+class StackHandle:
+    """A brought-up standalone stack: its compose project and image-tag mode."""
+
+    mode: str
+    project: str
+    tag: str
+
+
+def compose(
+    project: str,
+    args: list[str],
+    tag: str,
+    *,
+    input_text: str | None = None,
+    check: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    """Run ``docker compose`` against the standalone recipe for one project.
+
+    ``TOLOKAFORGE_IMAGE_TAG`` rides the subprocess env (Compose interpolation
+    reads it with precedence over any sibling ``.env``), so the keyless lane needs
+    no ``.env`` file — provider keys, when present, are inherited from
+    ``os.environ`` the same way.
+    """
+    env = {**os.environ, "TOLOKAFORGE_IMAGE_TAG": tag}
+    return subprocess.run(
+        ["docker", "compose", "-p", project, "-f", str(COMPOSE_FILE), *args],
+        capture_output=True,
+        text=True,
+        env=env,
+        input=input_text,
+        check=check,
+    )
+
+
+def build_and_tag_local() -> None:
+    """Build the four images from the tree and tag each ``tolokasoft1/…:local``."""
+    from tolokaforge.docker.builder import build_image
+
+    for component in IMAGE_COMPONENTS:
+        image = build_image(component)
+        ref = published_image_ref(component, "local")
+        subprocess.run(["docker", "tag", image.full_tag, ref], check=True, capture_output=True)
+
+
+def pull_published(tag: str) -> bool:
+    """Whether all four ``tolokasoft1/…:<tag>`` images pull successfully."""
+    for component in IMAGE_COMPONENTS:
+        ref = published_image_ref(component, tag)
+        if subprocess.run(["docker", "pull", ref], capture_output=True, text=True).returncode != 0:
+            return False
+    return True
 
 
 def obtain_image(ref: str) -> subprocess.CompletedProcess[str]:

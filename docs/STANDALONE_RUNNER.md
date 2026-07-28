@@ -178,6 +178,73 @@ Two things you need on the host either way:
 
 Then pick a surface.
 
+### Standalone quickstart — pull, compose up, drive, tear down
+
+The cold-start path for a host that has only Docker: stand the four published
+images up with [`deploy/standalone/docker-compose.yaml`](../deploy/standalone/docker-compose.yaml),
+drive one real trial to a graded `TrialResult`, and tear the stack down. The
+example driver lives in the tree, so this path assumes a repo checkout; only the
+*images* are pulled (or built), not the harness.
+
+1. **Get the four images.** Pull the published tag, or build them locally.
+
+   ```bash
+   # Published images (Docker Hub):
+   export TOLOKAFORGE_IMAGE_TAG=latest
+   docker pull tolokasoft1/tolokaforge-runner:latest
+   docker pull tolokasoft1/tolokaforge-db-service:latest
+   docker pull tolokasoft1/tolokaforge-rag-service:latest
+   docker pull tolokasoft1/tolokaforge-mock-web:latest
+   ```
+
+   Or build them from the checkout and run the stack against those instead.
+   `make docker-build` builds each image as `tolokaforge-<component>:local`;
+   retag them under the recipe's `tolokasoft1/` names so `TOLOKAFORGE_IMAGE_TAG=local`
+   resolves:
+
+   ```bash
+   # Locally-built images:
+   export TOLOKAFORGE_IMAGE_TAG=local
+   make docker-build
+   for c in runner db-service rag-service mock-web; do
+     docker tag "tolokaforge-$c:local" "tolokasoft1/tolokaforge-$c:local"
+   done
+   ```
+
+2. **Set a provider key.** Copy the example env file and add a key for the
+   provider the trial's models use.
+
+   ```bash
+   cd deploy/standalone
+   cp .env.example .env
+   # edit .env: set e.g. OPENROUTER_API_KEY=sk-...
+   ```
+
+3. **Bring the stack up.** `docker compose` reads `TOLOKAFORGE_IMAGE_TAG` (and
+   the sibling `.env`) from this directory.
+
+   ```bash
+   docker compose up -d --wait
+   ```
+
+4. **Drive one trial.** The [example driver](../deploy/standalone/examples/drive_one_trial.py)
+   serialises a bundled task pack with the public `tolokaforge.runner.load_task`,
+   copies its file assets into the runner, and drives `tolokaforge run-trial` over
+   the exec wire. It prints the grade.
+
+   ```bash
+   python examples/drive_one_trial.py
+   ```
+
+   See [`examples/README.md`](../deploy/standalone/examples/README.md) for the
+   driver's host prerequisites and model overrides.
+
+5. **Tear the stack down.**
+
+   ```bash
+   docker compose down -v
+   ```
+
 ### From Python — `tolokaforge.runner.run_trial(...)`
 
 The library entry is a single keyword-only function. It takes a `TaskConfig`, a
@@ -390,7 +457,7 @@ Install alongside tolokaforge (`pip install your_package tolokaforge`), then:
 result = run_trial(
     task=task,
     models={"agent": {...}},
-    trial_grader="my_rubric",   # your grader, resolved by name
+    grader="my_rubric",   # your grader, resolved by name
 )
 ```
 
@@ -411,7 +478,7 @@ carries `"v":1`.
 `task` is a serialised `TaskConfig` (the shape `load_task` returns, via
 `task.model_dump(mode="json")`).
 `models` is a dict; the `"agent"` key is the AI model that plays the trial's
-agent role. `runtime` / `conductor` / `trial_grader` are optional; `"auto"` /
+agent role. `runtime` / `conductor` / `grader` are optional; `"auto"` /
 `"in_process"` / `"runner_rpc"` are the defaults.
 
 **Runner → client (stdout, exactly one message):**
