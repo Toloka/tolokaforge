@@ -47,7 +47,10 @@ registry (the registry also lists live, open bugs). The frozen pack is not yours
   conclusion where the harness delivers X and then discards it. Check which side owns the cause,
   and whether the owner has decided to live with it, before you classify. Where a task-pack entry
   attributes its own mechanism to a harness entry, the routing follows that harness entry's
-  decision status, so read both before you pick a label.
+  decision status, so read both before you pick a label. Follow it only for the pp attributable to
+  THAT mechanism: a finding with two causes (say a pack entry that is also hit by an open harness
+  bug) splits its pp and each part takes its own label, so neither the loud part goes quiet nor the
+  accepted part goes loud.
 
 RETURN (compact markdown):
 - table of oracle/task-design issues (issue x domain x est. trials x est. pp domain+micro x

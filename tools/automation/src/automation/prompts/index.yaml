@@ -94,8 +94,9 @@ prompts:
 
   - name: task-design-oracle
     file: task_design_oracle.md
-    purpose: "Find FALSE failures (correct action graded fail) + unwinnable/ambiguous tasks,
-      and separate the ones already ACCEPTED for the frozen pack from genuinely new ones."
+    purpose: "Find FALSE failures (correct action graded fail) + unwinnable/ambiguous tasks, and
+      route each into ACCEPTED (already decided for the frozen board) / NEW pack defect / live
+      harness bug, so only the last two reach the reader as work."
     reads: [grade.yaml (reasons/state_diff), task.yaml, prompts.yaml, trajectory.yaml, KNOWN_ISSUES.md]
     gates: "publishability - footnote vs human triage vs regrade"
     verdict: "footnote-only (incl. all-accepted) OR material NEW defect needing human triage

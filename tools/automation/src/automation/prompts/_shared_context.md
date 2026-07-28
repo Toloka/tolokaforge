@@ -111,10 +111,14 @@ NOT the engine's `failure_attribution.py` `failure_class` labels (which are a di
    artifacts) from the raw failures. If it is material, the raw number is NOT a faithful
    capability reading -> fix / footnote / regrade / re-run. The true-capability micro pass@1
    = raw + net recoverable pp; compare it (and pass^5) to the GO boundary {{GO_BOUNDARY}}.
-   Split the recoverable pp three ways, ACCEPTED / NEW-pack / HARNESS (see "Accepted
-   circumstances"): all three count toward true capability, but only the last two are work items.
-   The aggregate verdict must not list an accepted circumstance as something to fix before
-   publishing, and must not bury a live harness bug inside the accepted share.
+   Split the ORACLE share of the recoverable pp three ways, ACCEPTED / NEW-pack / HARNESS (see
+   "Accepted circumstances"; FORMATTING and INFRA pp keep their own lines and belong to none of the
+   three): all three count toward true capability, but only the last two are work items. The
+   aggregate verdict must not list an accepted circumstance as something to fix before publishing,
+   and must not bury a live harness bug inside the accepted share. If two dimensions disagree on
+   the sub-label for the SAME pp, four-bucket still owns the magnitude, but the LOUDER routing
+   governs the reporting (HARNESS > NEW > ACCEPTED) until the human resolves it: never resolve a
+   label conflict toward silence.
 4. OBSERVE mode (fixability): the verdict is the policy to SET or CREATE for the FORMATTING
    failures (proved by `reprobe.py`) plus the residual GENUINE ceiling; a candidate is
    integrable when the fixable share is closed and the ceiling is acceptable.
@@ -126,9 +130,10 @@ if unset, report the numbers and defer the call to the human owner.
 ## Accepted circumstances: what the frozen board has already decided
 MODE: EVAL only. The registry for this run is `{{KNOWN_ISSUES}}`. If that reads "n/a" (OBSERVE
 mode runs synthetic probes, not the frozen pack), skip this section: every finding is live.
-If it is unfilled or unreadable, treat EVERY non-model finding as NEW and say the registry was
-not provided. Never go looking for a registry yourself: it is branch-local, and a sibling
-branch's version has a different accepted set, so the wrong file mislabels findings both ways.
+If it is unfilled or unreadable, say so and degrade safely: the ACCEPTED class is simply
+unavailable, so report a pack-side finding as NEW. Harness/engine findings do not depend on the
+registry and stay loud, never NEW. Never go looking for a registry yourself: it is branch-local,
+and a sibling branch's version has a different accepted set, so the wrong file mislabels both ways.
 
 The leaderboard task pack is FROZEN, and for the same comparability reason the engine version is
 pinned per board. Dozens of models are already published against both, so editing a task, a
@@ -161,10 +166,19 @@ lists live bugs that are still open work. Route every non-model finding into one
   affect every domain at once, and a fix here is cheap. Never soften one of these into a
   circumstance just because its symptom looks like a task defect.
 
-Two entry kinds are not findings at all. A METHODOLOGY note (how to compare, how to count cost,
-a task-set change) is a rule to FOLLOW while analysing, so obey it and do not report it. An entry
-marked FIXED is history: cite it only if the symptom actually recurs on a version that claims the
-fix, and if it does, that is a loud finding, not a circumstance.
+A METHODOLOGY note (how to compare, how to count cost, a task-set change) is not a finding at all:
+it is a rule to FOLLOW while analysing, so obey it and do not report it.
+
+A FIXED marker is VERSION-RELATIVE, so evaluate it against the engine this run actually used,
+{{ENGINE_VERSION}}, and never against the marker alone:
+- fix IS in this run's version -> history. Cite it only if the symptom recurs anyway, and that
+  recurrence is a loud regression finding, not a circumstance.
+- fixed only in a LATER version AND the entry carries a keep-as-is decision for the pinned one
+  -> ACCEPTED. This combination is common and is precisely what test (ii) exists for.
+- fixed only in a later version with NO such decision -> live harness bug, report it loud.
+Match every marker CASE-INSENSITIVELY: "DECISION" and "Decision", "FIXED" and "fixed in vX", are
+the same marker. A decision reads as a line naming the eval owner with a keep / do-not-change
+imperative, in any casing; do not decide an entry's status from its title alone.
 
 Three things this does NOT license:
 - It does not license silence about magnitude. If an accepted circumstance is large enough to
