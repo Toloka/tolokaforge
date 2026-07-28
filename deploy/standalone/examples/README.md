@@ -5,6 +5,8 @@ Runnable drivers that take one real trial from a bundled task pack to a graded
 [`../docker-compose.yaml`](../docker-compose.yaml). They package the exact
 `docker compose exec … tolokaforge run-trial` exec-wire the stack exposes; the
 mental model lives in [`docs/STANDALONE_RUNNER.md`](../../../docs/STANDALONE_RUNNER.md).
+On Apple-Silicon (arm64) hosts the stack runs the `linux/amd64` images under
+emulation — see the architecture note in that guide's standalone quickstart.
 
 ## `drive_one_trial.py` — host-side Python
 

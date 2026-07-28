@@ -4,7 +4,8 @@
 compatibility surface): a cold user runs the four ``tolokasoft1/tolokaforge-*``
 images with ``docker compose up`` and expects the same wiring the in-tree stack
 uses. This guard parses the file and asserts that wiring — image references, the
-tag variable, service DNS names, the runner's env, the ``json-db`` alias, the
+tag variable, the overridable ``platform`` pins (defaulting to ``linux/amd64``),
+service DNS names, the runner's env, the ``json-db`` alias, the
 ``service_healthy`` startup ordering — so any unintended field change trips CI.
 It also asserts the absence cases that carry contract meaning: no ``MOCK_WEB_URL``
 (the runner reads no such var), no host port beyond the runner's ``50051``, and
@@ -57,6 +58,19 @@ def test_service_names_and_image_refs() -> None:
         assert services[component]["image"] == expected, (
             f"{component} must reference the published image via the "
             f"TOLOKAFORGE_IMAGE_TAG variable ({expected})"
+        )
+
+
+def test_all_services_pin_platform_overridable_default_amd64() -> None:
+    services = _load_compose()["services"]
+    for component in _EXPECTED_SERVICES:
+        assert services[component].get("platform") == "${TOLOKAFORGE_PLATFORM:-linux/amd64}", (
+            f"{component} must pin platform: ${{TOLOKAFORGE_PLATFORM:-linux/amd64}} — "
+            "the published images are amd64 only and Docker Desktop does not fall "
+            "back to emulation on pull, so the pin defaults to linux/amd64 to keep "
+            "`docker compose up` working on Apple-Silicon (arm64) hosts; it is "
+            "overridable so a developer running locally-built native arm64 :local "
+            "images sets TOLOKAFORGE_PLATFORM=linux/arm64 to skip emulation"
         )
 
 
