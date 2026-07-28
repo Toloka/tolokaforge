@@ -187,12 +187,15 @@ example driver lives in the tree, so this path assumes a repo checkout; only the
 *images* are pulled (or built), not the harness.
 
 > **Architecture.** The published images are `linux/amd64` only (arm64 is a
-> follow-up). The compose recipe pins `platform: linux/amd64` on every service,
-> so `docker compose up` works on Apple-Silicon (arm64) Macs too — Docker Desktop
-> pulls the amd64 image and runs it under emulation (rag-service is heavy and is
-> noticeably slower emulated). For any manual `docker pull` / `docker run`
-> outside compose, pass `--platform linux/amd64` or export
-> `DOCKER_DEFAULT_PLATFORM=linux/amd64`.
+> follow-up). The compose recipe defaults `platform` to `linux/amd64` on every
+> service, so `docker compose up` works on Apple-Silicon (arm64) Macs too —
+> Docker Desktop pulls the amd64 image and runs it under emulation (rag-service
+> is heavy and is noticeably slower emulated). The pin is overridable: to run
+> locally-built native arm64 `:local` images (from `make docker-build` on Apple
+> Silicon) without emulation, set `TOLOKAFORGE_PLATFORM=linux/arm64` (e.g.
+> `TOLOKAFORGE_PLATFORM=linux/arm64 docker compose up`). For any manual
+> `docker pull` / `docker run` outside compose, pass `--platform linux/amd64` or
+> export `DOCKER_DEFAULT_PLATFORM=linux/amd64`.
 
 1. **Get the four images.** Pull the published tag, or build them locally.
 
