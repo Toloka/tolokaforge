@@ -111,9 +111,10 @@ NOT the engine's `failure_attribution.py` `failure_class` labels (which are a di
    artifacts) from the raw failures. If it is material, the raw number is NOT a faithful
    capability reading -> fix / footnote / regrade / re-run. The true-capability micro pass@1
    = raw + net recoverable pp; compare it (and pass^5) to the GO boundary {{GO_BOUNDARY}}.
-   Split the recoverable pp into ACCEPTED (registry, frozen pack) and NEW/FIXABLE: both count
-   toward true capability, but only the second is a work item. The aggregate verdict must not
-   list an accepted circumstance as something to fix before publishing.
+   Split the recoverable pp three ways, ACCEPTED / NEW-pack / HARNESS (see "Accepted
+   circumstances"): all three count toward true capability, but only the last two are work items.
+   The aggregate verdict must not list an accepted circumstance as something to fix before
+   publishing, and must not bury a live harness bug inside the accepted share.
 4. OBSERVE mode (fixability): the verdict is the policy to SET or CREATE for the FORMATTING
    failures (proved by `reprobe.py`) plus the residual GENUINE ceiling; a candidate is
    integrable when the fixable share is closed and the ceiling is acceptable.
@@ -122,38 +123,62 @@ NOT the engine's `failure_attribution.py` `failure_class` labels (which are a di
 {{GO_BOUNDARY}} and {{INFRA_THRESHOLD}} are HUMAN-OWNED policy inputs (do not invent them);
 if unset, report the numbers and defer the call to the human owner.
 
-## Accepted circumstances: the frozen task pack is not yours to fix
+## Accepted circumstances: what the frozen board has already decided
 MODE: EVAL only. The registry for this run is `{{KNOWN_ISSUES}}`. If that reads "n/a" (OBSERVE
 mode runs synthetic probes, not the frozen pack), skip this section: every finding is live.
+If it is unfilled or unreadable, treat EVERY non-model finding as NEW and say the registry was
+not provided. Never go looking for a registry yourself: it is branch-local, and a sibling
+branch's version has a different accepted set, so the wrong file mislabels findings both ways.
 
-The leaderboard task pack is FROZEN. Dozens of models are already published against it, so
-editing a task, a golden or a simulator prompt would break comparability and force a
-board-wide regrade. Known defects in it are therefore ACCEPTED CIRCUMSTANCES, not work items.
+The leaderboard task pack is FROZEN, and for the same comparability reason the engine version is
+pinned per board. Dozens of models are already published against both, so editing a task, a
+golden or a simulator prompt (or silently adopting an engine fix for one model) would break
+comparability and force a board-wide regrade. What the eval owner has already decided to live
+with is therefore an ACCEPTED CIRCUMSTANCE, not a work item.
 
-`{{KNOWN_ISSUES}}` is the registry of what has already been triaged and accepted. **Read it
-before you report anything**, and route every non-model finding into one of three classes:
+`{{KNOWN_ISSUES}}` is the registry of what has already been triaged. **Read it before you report
+anything.** ACCEPTED is decided by the entry, NOT by mere presence in the file: the registry also
+lists live bugs that are still open work. Route every non-model finding into one of three classes:
 
-- **ACCEPTED (in the registry, task-pack side).** Still MEASURE it and still attribute its pp:
-  it is a real non-model cause, so it belongs in the oracle bucket and in the true-capability
-  number. But report it as a one-line *footnote referencing the registry entry*. Do NOT propose
-  a task/golden/simulator edit, do NOT recommend a regrade, and do NOT present it to the reader
-  as outstanding work. It is the environment every model ran in.
-- **NEW task-pack defect (not in the registry).** Report it in full, with the evidence, and
-  propose the registry entry it should become. Still do not propose editing the pack; the
-  decision to accept, footnote or exclude belongs to the human owner.
-- **HARNESS / ENGINE / ADAPTER side (any side that is NOT the frozen pack).** Unchanged:
-  report loudly and actionably. These ARE fixable without touching the pack, they usually
+- **ACCEPTED.** Either (i) the entry is task-pack side (a task/golden/simulator/data defect: the
+  pack is frozen, so it cannot be fixed for this run), or (ii) the entry carries an explicit
+  eval-owner decision to keep the current behaviour (typically "keep running on <pinned engine>"
+  for board consistency), whatever side it is on. Still MEASURE it and still attribute its pp: it
+  is a real non-model cause, so it belongs in the oracle bucket and in the true-capability number.
+  But report it as a one-line *footnote citing the registry entry ID and its measured pp in THIS
+  run*. Do NOT propose a task/golden/simulator edit, do NOT propose moving off the pinned engine,
+  do NOT recommend a regrade, and do NOT present it as outstanding work. It is the environment
+  every model ran in.
+- **NEW task-pack defect (no entry covers it).** Report it in full, with the evidence, and propose
+  the registry entry it should become. Still do not propose editing the pack; the decision to
+  accept, footnote or exclude belongs to the human owner. Match on the entry's own SCOPE (domain +
+  field/symptom + mechanism), not on a loose family resemblance; where an entry ENUMERATES task
+  IDs, only those IDs are covered, so a new task failing the same way is NEW and merely cites the
+  entry as related.
+- **HARNESS / ENGINE / ADAPTER with no keep-as-is decision.** Unchanged: report loudly and
+  actionably, whether or not the registry already names the bug. An open registry entry is a
+  known bug, not an accepted one. These are fixable without touching the pack, they usually
   affect every domain at once, and a fix here is cheap. Never soften one of these into a
   circumstance just because its symptom looks like a task defect.
 
-Two things this does NOT license:
+Two entry kinds are not findings at all. A METHODOLOGY note (how to compare, how to count cost,
+a task-set change) is a rule to FOLLOW while analysing, so obey it and do not report it. An entry
+marked FIXED is history: cite it only if the symptom actually recurs on a version that claims the
+fix, and if it does, that is a loud finding, not a circumstance.
+
+Three things this does NOT license:
 - It does not license silence about magnitude. If an accepted circumstance is large enough to
   change the reading of a domain, say so plainly with the number. "Accepted" means "not a
   work item", not "not worth mentioning".
 - It does not license assuming uniformity. An accepted circumstance is comparability-safe only
-  while it hits every model equally. If your evidence suggests a defect hits some models much
-  harder than others, that is RANK-DISTORTING and must be surfaced as a finding even though
-  the underlying defect is in the registry.
+  while it hits every model equally. Compare THIS run's exposure against the board-wide rate the
+  entry documents; a large excess is evidence of RANK DISTORTION and must be surfaced as a
+  finding even though the underlying defect is accepted. (A single-model run has no cross-model
+  data of its own, so the entry's own numbers are the comparator.)
+- It does not license silent re-attribution. If routing a finding to ACCEPTED puts pp in a
+  different bucket than earlier analyses of the same defect used, say so: the adjusted /
+  true-capability number stops being comparable with those analyses, which is a synthesis-level
+  caveat, not a detail.
 
 ## Interpretive traps (do not fall in)
 - Bimodal quirk frequency: a preset-COVERED quirk reads ~0%, an UNcovered one is domain-fatal.

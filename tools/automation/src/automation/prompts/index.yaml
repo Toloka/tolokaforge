@@ -7,7 +7,10 @@
 # these prompts interpret them, reprobe verifies the fix.
 #
 # HOW TO USE (reader agent):
-#   1. Fill the placeholders (see `placeholders`) into `_shared_context.md`.
+#   1. Fill the placeholders (see `placeholders`) into `_shared_context.md`. Point KNOWN_ISSUES at
+#      the registry ON the eval branch the run came from; it is branch-local, and a sibling
+#      branch's copy has a different accepted set. Leaving it unfilled is safe-by-design (the
+#      agents then treat every non-model finding as NEW) but costs the accepted/new distinction.
 #   2. For each dimension you need, dispatch ONE background general-purpose sub-agent
 #      with:  _shared_context.md  +  the dimension's `file`. (Each sub-agent sees ONLY
 #      the shared block + its one dimension, never this index or its siblings, so any
@@ -17,10 +20,11 @@
 #   4. Synthesize the per-dimension verdicts into one aggregate GO / No-Go using the
 #      "Aggregate synthesis" precedence in _shared_context.md (infra is a precondition;
 #      recoverable pp is owned once by four-bucket and never summed across dimensions).
-#   5. Point KNOWN_ISSUES at the eval branch the run came from. The frozen task pack is not
-#      editable, so registry-listed defects are ACCEPTED circumstances: still measured and
-#      still counted toward true capability, but footnoted rather than reported as work.
-#      Harness/engine/adapter findings are NOT circumstances and stay actionable.
+#   5. Read the accepted-vs-new split in the results. The frozen pack (and the pinned engine) are
+#      not editable for one model, so a defect the eval owner has decided to live with is an
+#      ACCEPTED circumstance: still measured and still counted toward true capability, but
+#      footnoted rather than reported as work. A registry entry that is merely KNOWN and still
+#      open (typically harness/engine) is NOT accepted and stays actionable.
 
 version: 1
 
@@ -43,11 +47,13 @@ placeholders:
   # Human-owned policy inputs for the aggregate GO/No-Go (do NOT let the agent invent them):
   GO_BOUNDARY: "adjusted-pass@1 (and pass^5) threshold for GO; owner: human / leaderboard policy"
   INFRA_THRESHOLD: "max infra-attributable failure share that still counts as infra-CLEAN"
-  KNOWN_ISSUES: "path to the eval branch's KNOWN_ISSUES.md, the registry of already-triaged,
-    ACCEPTED defects in the frozen task pack. Agents measure and attribute these but must
-    report them as footnoted circumstances, never as work items; see _shared_context.md
-    'Accepted circumstances'. Point it at the KNOWN_ISSUES.md on the SAME eval branch the run
-    came from, since the registry is branch-local and evolves."
+  KNOWN_ISSUES: "path to the eval branch's KNOWN_ISSUES.md, the registry of already-triaged
+    defects. Entries are NOT uniformly accepted: task-pack-side ones are (the pack is frozen),
+    and so are entries carrying an eval-owner keep-as-is decision, but an open harness/engine
+    entry stays actionable. Agents measure and attribute accepted ones but report them as
+    footnoted circumstances rather than work items; see _shared_context.md 'Accepted
+    circumstances' for the routing test. Branch-local, so it must come from the SAME eval
+    branch as the run; if unfilled the agents treat every non-model finding as NEW."
   # Resolve-agent placeholders (the fix-loop agent, resolve_agent.md):
   OBS_DIR: "the observe artifact dir the resolve agent reads (findings.json + probes)"
   PROVIDER: "candidate provider, e.g. openrouter"
@@ -91,8 +97,9 @@ prompts:
     purpose: "Find FALSE failures (correct action graded fail) + unwinnable/ambiguous tasks,
       and separate the ones already ACCEPTED for the frozen pack from genuinely new ones."
     reads: [grade.yaml (reasons/state_diff), task.yaml, prompts.yaml, trajectory.yaml, KNOWN_ISSUES.md]
-    gates: "publishability - footnote vs regrade"
-    verdict: "footnote-only or oracle fix + regrade"
+    gates: "publishability - footnote vs human triage vs regrade"
+    verdict: "footnote-only (incl. all-accepted) OR material NEW defect needing human triage
+      OR fix + regrade; says plainly when the highest-impact fix is harness-side, not pack-side"
 
 # Dimensions intentionally NOT in this core library yet:
 not_included:
