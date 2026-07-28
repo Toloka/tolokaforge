@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Feat
+
+- **tools**: `str_replace_editor` gains `tool_config.working_root` (default `/work`, additive, every current task pack unchanged); a missing or non-directory root fails loud on first use (#637)
+
 ## v0.11.2 (2026-07-27)
 
 ### Feat

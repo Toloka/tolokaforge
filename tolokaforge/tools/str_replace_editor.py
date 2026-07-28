@@ -174,6 +174,8 @@ class LocalFilesystemEditor:
     # -- internals ------------------------------------------------------------
 
     def _resolve(self, path: str) -> Path:
+        if not self._base.is_dir():
+            raise EditorError(f"working root {self._base} does not exist or is not a directory")
         candidate = Path(path)
         if not candidate.is_absolute():
             candidate = self._base / candidate
@@ -229,8 +231,9 @@ class LocalFilesystemEditor:
 # missing-tail walk lets ``create`` resolve a not-yet-existing path the same way
 # the local engine's ``Path.resolve()`` does, while still following symlinks on
 # the existing prefix (so a symlink escape is caught inside the container).
-# ``$p`` is always absolute (the caller roots relative paths under ``/work``), so
-# no ``--`` end-of-options guard is needed — and busybox ``realpath`` rejects it.
+# ``$p`` is always absolute (the caller roots relative paths under the working
+# root), so no ``--`` end-of-options guard is needed — and busybox ``realpath``
+# rejects it.
 _REALPATH_SCRIPT = (
     "command -v realpath >/dev/null 2>&1 || exit 90\n"
     "p=$1\n"
@@ -285,9 +288,7 @@ class DockerComposeEditor:
     (the local engine's single-process temp+rename has no such window).
     """
 
-    def __init__(
-        self, container_name: str, base_path: str = "/work", timeout_s: float | None = None
-    ) -> None:
+    def __init__(self, container_name: str, base_path: str, timeout_s: float | None = None) -> None:
         self._container_name = container_name
         self._base = base_path
         self._timeout_s = timeout_s if timeout_s is not None else _DEFAULT_EXEC_TIMEOUT_S
@@ -296,6 +297,10 @@ class DockerComposeEditor:
     @property
     def container_name(self) -> str:
         return self._container_name
+
+    @property
+    def base_path(self) -> str:
+        return self._base
 
     def view(self, path: str, view_range: list[int] | None = None) -> str:
         resolved = self._resolve(path)
@@ -345,7 +350,10 @@ class DockerComposeEditor:
 
     def _resolve_base(self) -> str:
         if self._base_real is None:
-            self._base_real = self._container_realpath(self._base, self._base)
+            base_real = self._container_realpath(self._base, self._base)
+            if self._path_kind(base_real) != "dir":
+                raise EditorError(f"working root {self._base} does not exist or is not a directory")
+            self._base_real = base_real
         return self._base_real
 
     def _container_realpath(self, abs_path: str, path: str) -> str:
@@ -426,15 +434,18 @@ class StrReplaceEditorTool(Tool):
     not here.
 
     ``__init__`` accepts and ignores the ``tool_config`` keys the wrapper
-    consumes (``service``, ``compose_project_prefix``): the adapter builds the
-    schema provider as ``cls(**tool_config)``, so an unexpected keyword would
-    raise inside schema extraction and drop the tool from the LLM's view.
+    consumes (``service``, ``compose_project_prefix``, ``working_root``): the
+    adapter builds the schema provider as ``cls(**tool_config)``, so an
+    unexpected keyword would raise inside schema extraction and drop the tool
+    from the LLM's view. The schema itself is root-independent, so
+    ``working_root`` is accepted only to keep that surface self-documenting.
     """
 
     def __init__(
         self,
         service: str | None = None,
         compose_project_prefix: str | None = None,
+        working_root: str | None = None,
         **_: object,
     ) -> None:
         super().__init__(
