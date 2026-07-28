@@ -111,6 +111,9 @@ NOT the engine's `failure_attribution.py` `failure_class` labels (which are a di
    artifacts) from the raw failures. If it is material, the raw number is NOT a faithful
    capability reading -> fix / footnote / regrade / re-run. The true-capability micro pass@1
    = raw + net recoverable pp; compare it (and pass^5) to the GO boundary {{GO_BOUNDARY}}.
+   Split the recoverable pp into ACCEPTED (registry, frozen pack) and NEW/FIXABLE: both count
+   toward true capability, but only the second is a work item. The aggregate verdict must not
+   list an accepted circumstance as something to fix before publishing.
 4. OBSERVE mode (fixability): the verdict is the policy to SET or CREATE for the FORMATTING
    failures (proved by `reprobe.py`) plus the residual GENUINE ceiling; a candidate is
    integrable when the fixable share is closed and the ceiling is acceptable.
@@ -118,6 +121,39 @@ NOT the engine's `failure_attribution.py` `failure_class` labels (which are a di
 
 {{GO_BOUNDARY}} and {{INFRA_THRESHOLD}} are HUMAN-OWNED policy inputs (do not invent them);
 if unset, report the numbers and defer the call to the human owner.
+
+## Accepted circumstances: the frozen task pack is not yours to fix
+MODE: EVAL only. The registry for this run is `{{KNOWN_ISSUES}}`. If that reads "n/a" (OBSERVE
+mode runs synthetic probes, not the frozen pack), skip this section: every finding is live.
+
+The leaderboard task pack is FROZEN. Dozens of models are already published against it, so
+editing a task, a golden or a simulator prompt would break comparability and force a
+board-wide regrade. Known defects in it are therefore ACCEPTED CIRCUMSTANCES, not work items.
+
+`{{KNOWN_ISSUES}}` is the registry of what has already been triaged and accepted. **Read it
+before you report anything**, and route every non-model finding into one of three classes:
+
+- **ACCEPTED (in the registry, task-pack side).** Still MEASURE it and still attribute its pp:
+  it is a real non-model cause, so it belongs in the oracle bucket and in the true-capability
+  number. But report it as a one-line *footnote referencing the registry entry*. Do NOT propose
+  a task/golden/simulator edit, do NOT recommend a regrade, and do NOT present it to the reader
+  as outstanding work. It is the environment every model ran in.
+- **NEW task-pack defect (not in the registry).** Report it in full, with the evidence, and
+  propose the registry entry it should become. Still do not propose editing the pack; the
+  decision to accept, footnote or exclude belongs to the human owner.
+- **HARNESS / ENGINE / ADAPTER side (any side that is NOT the frozen pack).** Unchanged:
+  report loudly and actionably. These ARE fixable without touching the pack, they usually
+  affect every domain at once, and a fix here is cheap. Never soften one of these into a
+  circumstance just because its symptom looks like a task defect.
+
+Two things this does NOT license:
+- It does not license silence about magnitude. If an accepted circumstance is large enough to
+  change the reading of a domain, say so plainly with the number. "Accepted" means "not a
+  work item", not "not worth mentioning".
+- It does not license assuming uniformity. An accepted circumstance is comparability-safe only
+  while it hits every model equally. If your evidence suggests a defect hits some models much
+  harder than others, that is RANK-DISTORTING and must be surfaced as a finding even though
+  the underlying defect is in the registry.
 
 ## Interpretive traps (do not fall in)
 - Bimodal quirk frequency: a preset-COVERED quirk reads ~0%, an UNcovered one is domain-fatal.
@@ -134,6 +170,9 @@ if unset, report the numbers and defer the call to the human owner.
 - `task-design-oracle` is EVAL-mode only (synthetic observe probes carry their own assert as
   the oracle, so there is no oracle false-failure to hunt). `consistency-passk` in OBSERVE
   mode degrades to a per-PROBE flaky/solid/hard band over the K repeats, not the board pass^k.
+- "Accepted circumstances" is EVAL-mode only too: OBSERVE runs synthetic probes, not the frozen
+  pack, so there is no registry to consult and every finding is live and actionable, which is
+  the point of that mode.
 
 ## Efficiency rules (MANDATORY - a prior 12-agent parallel run stalled on I/O)
 - Shell-first: Bash with grep/rg/python/jq for ALL bulk work. NEVER loop the Read tool over

@@ -17,6 +17,10 @@
 #   4. Synthesize the per-dimension verdicts into one aggregate GO / No-Go using the
 #      "Aggregate synthesis" precedence in _shared_context.md (infra is a precondition;
 #      recoverable pp is owned once by four-bucket and never summed across dimensions).
+#   5. Point KNOWN_ISSUES at the eval branch the run came from. The frozen task pack is not
+#      editable, so registry-listed defects are ACCEPTED circumstances: still measured and
+#      still counted toward true capability, but footnoted rather than reported as work.
+#      Harness/engine/adapter findings are NOT circumstances and stay actionable.
 
 version: 1
 
@@ -39,6 +43,11 @@ placeholders:
   # Human-owned policy inputs for the aggregate GO/No-Go (do NOT let the agent invent them):
   GO_BOUNDARY: "adjusted-pass@1 (and pass^5) threshold for GO; owner: human / leaderboard policy"
   INFRA_THRESHOLD: "max infra-attributable failure share that still counts as infra-CLEAN"
+  KNOWN_ISSUES: "path to the eval branch's KNOWN_ISSUES.md, the registry of already-triaged,
+    ACCEPTED defects in the frozen task pack. Agents measure and attribute these but must
+    report them as footnoted circumstances, never as work items; see _shared_context.md
+    'Accepted circumstances'. Point it at the KNOWN_ISSUES.md on the SAME eval branch the run
+    came from, since the registry is branch-local and evolves."
   # Resolve-agent placeholders (the fix-loop agent, resolve_agent.md):
   OBS_DIR: "the observe artifact dir the resolve agent reads (findings.json + probes)"
   PROVIDER: "candidate provider, e.g. openrouter"
@@ -79,8 +88,9 @@ prompts:
 
   - name: task-design-oracle
     file: task_design_oracle.md
-    purpose: "Find FALSE failures (correct action graded fail) + unwinnable/ambiguous tasks."
-    reads: [grade.yaml (reasons/state_diff), task.yaml, prompts.yaml, trajectory.yaml]
+    purpose: "Find FALSE failures (correct action graded fail) + unwinnable/ambiguous tasks,
+      and separate the ones already ACCEPTED for the frozen pack from genuinely new ones."
+    reads: [grade.yaml (reasons/state_diff), task.yaml, prompts.yaml, trajectory.yaml, KNOWN_ISSUES.md]
     gates: "publishability - footnote vs regrade"
     verdict: "footnote-only or oracle fix + regrade"
 

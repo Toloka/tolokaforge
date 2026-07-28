@@ -35,9 +35,17 @@ oracle pp and formatting pp reported here are the SAME pp that `task-design-orac
 `preset-codec-leak` describe in detail; emit them as separate labeled lines so the
 synthesizer maps them 1:1 and never sums across dimensions.
 
+The oracle bucket mixes two kinds of cause with the same pp weight but different consequences:
+defects already accepted for the frozen pack, and new/fixable ones. Split the oracle line
+accordingly (see the shared block's "Accepted circumstances"): both count toward the
+recoverable pp and the true-capability number, but only the NEW/fixable part is a work item.
+Never re-label an accepted circumstance as GENUINE-MODEL to keep the story tidy - the pp is
+non-model either way.
+
 RETURN (compact markdown):
 - bucket split (bucket x count x % of failures x approx pp of micro), one line per bucket
-  labeled infra / oracle / formatting / genuine so pp are attributable
+  labeled infra / oracle / formatting / genuine so pp are attributable, with the oracle line
+  further split ACCEPTED (registry) vs NEW
 - dominant genuine-model sub-patterns with rough frequency
 - FORMATTING (preset-fixable) count stated explicitly (expect ~0 for a clean-native model;
   remember a ~0 may be a preset masking a dormant quirk - see the shared traps note)
