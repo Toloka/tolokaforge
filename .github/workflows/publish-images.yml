@@ -59,9 +59,13 @@ jobs:
     # rc tags publish under pre-stable, stable tags under release. A tag that
     # resolves to the wrong tier fails OIDC claim resolution and blocks the push,
     # which is safer than an rc leaking onto the moving tags. A workflow_dispatch
-    # build binds no environment: both tiers carry tag-typed deployment policies,
-    # so a branch ref would be rejected at the env gate before the build runs.
-    environment: ${{ github.event_name == 'workflow_dispatch' && '' || (contains(github.ref_name, '-rc.') && 'pre-stable' || 'release') }}
+    # build binds no environment (empty string) so its dry-run is not gated by a
+    # tag-typed deployment policy. The push/tag branch is the `&&` operand and the
+    # empty string is the final `||` fallback: an empty string is falsy in an
+    # expression, so `workflow_dispatch && '' || …` would wrongly fall through to
+    # the tag branch and route the dry-run to `release` — reordering keeps `''` as
+    # the value actually returned for a workflow_dispatch.
+    environment: ${{ github.event_name != 'workflow_dispatch' && (contains(github.ref_name, '-rc.') && 'pre-stable' || 'release') || '' }}
     permissions:
       id-token: write
       contents: read
