@@ -52,3 +52,5 @@ Day-to-day implementation choices that don't affect the system shape do *not* ne
 | [0020](0020-judge-protocol.md) | `Judge` Protocol — the grading-plane judge seam | Accepted |
 | [0021](0021-component-monitoring-seam.md) | Component-oriented monitoring — `ComponentSnapshot` / `component_*` events, panel widget with auto-expand-on-fail | Accepted |
 | [0022](0022-runtime-independence.md) | Runtime independence — Protocol registries, `run_trial`, `run-trial` subprocess contract | Accepted |
+| [0023](0023-runner-image-internals.md) | Runner image internals — monolithic wheel + `[runner]` extra, internals not a stability commitment | Accepted |
+| [0024](0024-container-command-surface.md) | Container command surface — the committed contract of `tolokaforge-runner` | Accepted |

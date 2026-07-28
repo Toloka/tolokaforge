@@ -61,6 +61,44 @@ Errors:
 - **`ProvisionError`** (`tolokaforge.core.runtime`) — the substrate
   failed to provision. Raised, not swallowed.
 
+## load_task
+
+Load a `task.yaml` from disk into a validated `TaskConfig` — the config
+`run_trial` takes as its `task` argument.
+
+```python
+from tolokaforge.runner import load_task
+
+task = load_task("path/to/task.yaml")
+```
+
+Signature:
+
+```python
+def load_task(
+    path: str | Path,
+    *,
+    project_task_defaults: dict[str, Any] | None = None,
+) -> TaskConfig: ...
+```
+
+- **`path`** — the `task.yaml` to load. Any `domain:` ref is resolved and
+  merged.
+- **`project_task_defaults`** — an optional `project.task_defaults` dict
+  layered in below the task's own fields (task fields win on conflict).
+- **Returns** a `TaskConfig` whose `.source_dir` is stamped with the
+  effective task dir (the domain root for shared-domain tasks, the
+  `task.yaml` parent otherwise), so the loaded task resolves its own file
+  assets with no second return value.
+
+Errors:
+
+- **`FileNotFoundError`** — `path` does not exist.
+- **`RuntimeError`** — a `domain:` ref cannot be resolved, or the YAML is
+  not a top-level mapping.
+- **`pydantic.ValidationError`** — the merged dict fails `TaskConfig`
+  validation.
+
 ## tolokaforge run-trial
 
 `tolokaforge run-trial` runs a single trial as a subprocess a harness in any

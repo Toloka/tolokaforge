@@ -32,8 +32,7 @@ from typing import Any
 
 import pytest
 
-from tests.utils.docker_helpers import is_docker_daemon_available, newest_image_id
-from tolokaforge.docker import builder
+from tests.utils.docker_helpers import current_runner_image_id, is_docker_daemon_available
 
 pytestmark = [pytest.mark.integration, pytest.mark.requires_docker]
 
@@ -50,7 +49,7 @@ _DOMAIN_DEP_IMPORTS = "import asyncpg, sqlalchemy, alembic, jose, fastapi, uvico
 def runner_image_id() -> str:
     if not is_docker_daemon_available():
         pytest.skip("Docker daemon not available")
-    image_id = newest_image_id(builder.IMAGE_DEFINITIONS["runner"]["name"])
+    image_id = current_runner_image_id()
     if image_id is None:
         pytest.skip("tolokaforge-runner image not built")
     return image_id

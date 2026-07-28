@@ -665,12 +665,11 @@ For structuring the *task-side* images a compose file references — the base �
 
 The alias step is best-effort and logged, not raise-and-fail — the shared-stack path still works with the content-hash tag whether or not the alias applies. Only per-trial task compose files referencing `tolokaforge-runner:local` would then fail, at which point the operator sees the aliasing warning from run start and knows what to fix.
 
-Forward-looking: when the runner image ships to a public registry, task composes will switch to the published reference (e.g. `image: ghcr.io/toloka/tolokaforge-runner:X.Y.Z`) — a task-side edit, not an engine change. `:local` stays as the local-dev alias.
+The runner and db-service images are also published to Docker Hub (see [STANDALONE_RUNNER.md § Published images](STANDALONE_RUNNER.md#published-images)); a task compose file may reference a published tag (e.g. `image: docker.io/tolokasoft1/tolokaforge-runner:X.Y.Z`) instead of `:local` — a task-side edit, not an engine change. `:local` stays as the local-dev alias for repo-built runs.
 
 ## Follow-up work
 
 - **Terminal-bench + `per_trial`.** The `terminal_bench` adapter today materialises each task's own compose stack inside the tool-invocation path (see "Adapter compatibility with `per_trial`" above). Lifting that into the orchestrator's substrate seam — either by having the adapter synthesise an `environment_manifest` from the task's `docker-compose.yaml`, or by defining a second manifest kind that reads `adapter_settings.compose_file` — would let terminal-bench tasks use `--runtime per_trial` and pick up `TrialExecutor`'s bracket, per-trial network isolation, and `PROVISION_ERROR` attribution. The manifest-synthesis path aligns better with the "one substrate primitive, adapters produce a manifest" direction — the alternative couples `PerTrialRuntimeBackend` to adapter-specific fields.
-- **No runner image publication.** The `tolokaforge/runner` and `tolokaforge/db-service` images are still local builds — the `:local` alias described above is the sole reference path today. Publishing to a registry (`ghcr.io/toloka/…`) is future work; task compose files switch to the published tag then, `:local` stays as the local-dev alias.
 - **No perf optimisations.** Image pre-pull, postgres template-DB, container pool, orphan sweep, resource caps, benchmark harness — all filed as a follow-up umbrella ticket.
 
 ## Where to read next

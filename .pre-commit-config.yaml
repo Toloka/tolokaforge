@@ -20,3 +20,11 @@ repos:
     hooks:
       - id: black
         args: [--config, pyproject.toml]
+
+  # actionlint - GitHub Actions workflow linter. The only automated pre-merge
+  # gate on workflow YAML/expression correctness (publish-images.yml's real push
+  # path first fires post-merge on a tag).
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.7
+    hooks:
+      - id: actionlint

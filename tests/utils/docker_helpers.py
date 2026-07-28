@@ -11,6 +11,9 @@ This module provides two distinct Docker availability checks:
   manage containers directly via the Docker SDK.
 """
 
+import subprocess
+import time
+
 import pytest
 
 # ---------------------------------------------------------------------------
@@ -19,6 +22,9 @@ import pytest
 
 DOCKER_RUNNER_ADDRESS = "localhost:50051"
 DOCKER_DB_SERVICE_URL = "http://localhost:8000"
+
+HEALTHY_TIMEOUT_S = 120.0
+_HEALTH_POLL_INTERVAL_S = 2.0
 
 
 # ---------------------------------------------------------------------------
@@ -75,34 +81,50 @@ def is_docker_daemon_available() -> bool:
         return False
 
 
-def newest_image_id(image_name: str) -> str | None:
-    """ID of the most recently built image tagged ``image_name``, or ``None``.
+def current_runner_image_id() -> str | None:
+    """Docker id of the runner image the *current tree* produces, or ``None``.
 
-    The newest image by build time is the one the current Dockerfile produces
-    (and what a ``:local``/``:latest`` alias points at after a build), so tests
-    that lock the freshly-built image resolve it this way rather than trusting a
-    possibly-stale tag.
+    Resolves the exact content-hash ref ``builder.expected_image_ref("runner")``
+    — the tag a real ``build_image("runner")`` assigns — and inspects that one
+    ref. It is a single exact-ref lookup: no ``docker images`` enumeration, no
+    ``.Created`` ranking, no candidate filtering. A foreign image built from a
+    different Dockerfile hashes to a different tag, so it cannot match the ref;
+    provenance-correctness is structural, not a heuristic.
+
+    ``None`` means the current-tree image is not built (the legitimate skip
+    case). The full ``sha256:...`` digest is returned so it compares equal to
+    the Docker SDK's ``Image.image_id``.
     """
-    import subprocess
+    from tolokaforge.docker import builder
 
-    listing = subprocess.run(
-        ["docker", "images", image_name, "--format", "{{.ID}}"],
+    ref = builder.expected_image_ref("runner")
+    result = subprocess.run(
+        ["docker", "image", "inspect", ref, "--format", "{{.Id}}"],
         capture_output=True,
         text=True,
-        check=True,
     )
-    image_ids = list(dict.fromkeys(line for line in listing.stdout.split() if line))
-    if not image_ids:
+    if result.returncode != 0:
         return None
-    newest_id: str | None = None
-    newest_created = ""
-    for image_id in image_ids:
-        created = subprocess.run(
-            ["docker", "image", "inspect", image_id, "--format", "{{.Created}}"],
+    return result.stdout.strip() or None
+
+
+def wait_for_health(container_id: str, timeout_s: float = HEALTHY_TIMEOUT_S) -> str:
+    """Poll ``container_id`` Docker health until ``healthy``/``unhealthy`` or timeout.
+
+    Returns the last observed status. ``unhealthy`` is returned as soon as it is
+    seen so a failing probe fails fast; an empty string means the container is
+    gone or reports no health (inspect failed).
+    """
+    deadline = time.monotonic() + timeout_s
+    status = ""
+    while time.monotonic() < deadline:
+        result = subprocess.run(
+            ["docker", "inspect", "--format", "{{.State.Health.Status}}", container_id],
             capture_output=True,
             text=True,
-            check=True,
-        ).stdout.strip()
-        if created > newest_created:
-            newest_created, newest_id = created, image_id
-    return newest_id
+        )
+        status = result.stdout.strip()
+        if status in {"healthy", "unhealthy"}:
+            return status
+        time.sleep(_HEALTH_POLL_INTERVAL_S)
+    return status

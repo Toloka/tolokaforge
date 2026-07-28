@@ -147,6 +147,43 @@ def test_isolated_context_hash_stable_across_unrelated_changes(
 
 
 @pytest.mark.usefixtures("_mock_wheel")
+def test_expected_image_ref_matches_real_content_hash() -> None:
+    """``expected_image_ref('runner')`` equals ``name:hash8`` from the real
+    context-assembly + content-hash path — driven here, not stubbed.
+
+    Locks the plumbing: ``expected_image_ref`` assembles the real runner build
+    context (``wheel_resolver`` + ``assemble_build_context``), routes it through
+    the real ``_compute_content_hash``, slices ``[:8]``, and prefixes the image
+    name (``name:hash[:8]``) — not a stub or a shortcut. Both sides call the same
+    hash, so this does not catch a symmetric change to the hash's input set; it
+    catches ``expected_image_ref`` diverging from that path or the tag format. It
+    fails; it does not skip — no Docker daemon involved.
+    """
+    from tolokaforge.docker.builder import (
+        assemble_build_context,
+        expected_image_ref,
+        get_image_definition,
+        repo_root,
+    )
+
+    definition = get_image_definition("runner")
+    build_context = assemble_build_context(
+        repo_root=repo_root(),
+        dockerfile=definition["dockerfile"],
+        context_files=definition["context_files"],
+    )
+    try:
+        dockerfile_path = build_context / definition["dockerfile"]
+        content_hash = Image._compute_content_hash(
+            dockerfile_path, build_context, definition["build_args"]
+        )
+    finally:
+        shutil.rmtree(build_context, ignore_errors=True)
+
+    assert expected_image_ref("runner") == f"{definition['name']}:{content_hash[:8]}"
+
+
+@pytest.mark.usefixtures("_mock_wheel")
 def test_runner_build_context_contains_wheel() -> None:
     """The runner image context should contain the resolved wheel (not source)."""
     runner_def = get_image_definition("runner")
