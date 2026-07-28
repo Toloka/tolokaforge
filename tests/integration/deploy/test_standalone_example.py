@@ -64,11 +64,16 @@ def _pick_provider() -> tuple[str, str] | None:
     return None
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="function")
 def local_stack(docker_daemon: None) -> Iterator[StackHandle]:
     """Bring the standalone recipe up from locally-built ``:local`` images.
 
     Under the driver's default compose project so the driver drives this stack.
+
+    Function-scoped, not module: the db-service is stateful and the ``run-trial``
+    wire carries no ``trial_index``, so every driver registers the same trial id.
+    A shared stack would make the second param collide on the trial the first
+    already registered, so each param needs a pristine stack.
     """
     build_and_tag_local()
     up = compose(
