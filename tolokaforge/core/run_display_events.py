@@ -20,7 +20,7 @@ flight.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Protocol, TypedDict, runtime_checkable
 
@@ -352,6 +352,26 @@ class RunDisplayEvents(Protocol):
 
 
 @dataclass
+class RateLimitProbeCounters:
+    """429 count, summed wait and time window for one accounting bucket."""
+
+    retries: int = 0
+    wait_s: float = 0.0
+    first_ts: float | None = None
+    """``time.time()`` of the first 429 in this bucket."""
+
+    last_ts: float | None = None
+    """``time.time()`` of the most recent 429 in this bucket."""
+
+    def record(self, *, wait_s: float, ts: float) -> None:
+        self.retries += 1
+        self.wait_s += wait_s
+        if self.first_ts is None:
+            self.first_ts = ts
+        self.last_ts = ts
+
+
+@dataclass
 class RateLimitProbeStats:
     """Per-trial 429 accounting accumulated by the rate-limit probe controller.
 
@@ -360,6 +380,19 @@ class RateLimitProbeStats:
     state has to ride the call rather than live on the client. The trial runner
     owns the instance and copies the totals onto ``Metrics`` at trial end.
 
+    Accounting is keyed by ``(role, model slug)`` because a trial's roles are
+    different models — in an arena config the agent is the model under test and
+    the user simulator is a fixed, unrelated one — so a single flat counter
+    would blend a measured model's 429s with an unmeasured one's. The flat
+    fields are kept as the sum across buckets for consumers that only want the
+    trial total.
+
+    Not synchronised: one trial's probe-capable calls are strictly sequential
+    (``ToolCallingLoop._run_turn`` runs the agent's ``generate``, then the
+    simulator's ``reply``), so there is never more than one in flight per
+    instance. Concurrency *across* trials is safe because each trial owns its
+    own instance.
+
     Stays all-zero unless rate-limit probe mode is enabled.
     """
 
@@ -367,7 +400,7 @@ class RateLimitProbeStats:
     """429 retries the probe absorbed across every LLM call in the trial."""
 
     wait_s: float = 0.0
-    """Summed fixed-interval sleep the probe scheduled for those retries."""
+    """Summed retry sleep the probe scheduled for those retries."""
 
     first_ts: float | None = None
     """``time.time()`` of the first 429 seen in this trial."""
@@ -375,12 +408,29 @@ class RateLimitProbeStats:
     last_ts: float | None = None
     """``time.time()`` of the most recent 429 seen in this trial."""
 
-    def record_retry(self, *, wait_s: float, ts: float) -> None:
+    by_role_model: dict[tuple[LLMCallRole, str], RateLimitProbeCounters] = field(
+        default_factory=dict
+    )
+    """Per-``(role, model slug)`` breakdown of the same retries."""
+
+    def record_retry(self, *, role: LLMCallRole, model: str, wait_s: float, ts: float) -> None:
+        """Record one absorbed 429 for *role* calling *model*.
+
+        ``role`` and ``model`` are required: every recording site already knows
+        both (the ``before_sleep`` hook has the call's observation and the
+        client's model name), and defaulting them would silently create an
+        unattributable bucket.
+        """
         self.retries += 1
         self.wait_s += wait_s
         if self.first_ts is None:
             self.first_ts = ts
         self.last_ts = ts
+        bucket = self.by_role_model.get((role, model))
+        if bucket is None:
+            bucket = RateLimitProbeCounters()
+            self.by_role_model[(role, model)] = bucket
+        bucket.record(wait_s=wait_s, ts=ts)
 
 
 @dataclass(frozen=True)
@@ -441,6 +491,7 @@ __all__ = [
     "ContainerSnapshot",
     "LLMCallObservation",
     "LLMCallRole",
+    "RateLimitProbeCounters",
     "RateLimitProbeStats",
     "RunDisplayEvents",
     "ServiceSnapshot",

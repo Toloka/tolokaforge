@@ -31,10 +31,26 @@
         },
         "rate_limit_wait_s": {
             "type": "number",
-            "description": "Summed fixed-interval sleep scheduled for those retries. Non-zero means latency_total_s includes 429 sleep and is not comparable with a normal run."
+            "description": "Summed retry sleep scheduled for those retries. Non-zero means latency_total_s includes 429 sleep and is not comparable with a normal run."
         },
         "rate_limit_first_ts": {"type": ["string", "null"], "format": "date-time"},
-        "rate_limit_last_ts": {"type": ["string", "null"], "format": "date-time"}
+        "rate_limit_last_ts": {"type": ["string", "null"], "format": "date-time"},
+        "rate_limit_by_role_model": {
+            "type": "array",
+            "description": "Per-(role, model slug) breakdown of the same 429s; the flat rate_limit_* fields are the sum across these rows. Empty on every non-probe run.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "role": {"type": "string"},
+                    "model": {"type": "string"},
+                    "retries": {"type": "integer"},
+                    "wait_s": {"type": "number"},
+                    "first_ts": {"type": ["string", "null"], "format": "date-time"},
+                    "last_ts": {"type": ["string", "null"], "format": "date-time"}
+                },
+                "required": ["role", "model"]
+            }
+        }
     },
     "required": ["latency_total_s", "turns", "tool_calls"]
 }

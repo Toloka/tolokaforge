@@ -1267,6 +1267,14 @@ class LLMClient:
         counters onto the trial's :class:`RateLimitProbeStats`. tenacity only
         runs ``before_sleep`` when ``stop`` returned False, so this fires once
         per *retried* attempt and never after the final one.
+
+        The 429 accounting is keyed by this call's ``role`` and this client's
+        model slug — both already in scope here, which is the whole reason the
+        recording lives in this hook. It is additionally gated on *this*
+        client's probe being active, so a default-path client can never
+        contribute exponential waits to ``rate_limit_wait_s``; today the
+        conductor derives both from one config, and this keeps the invariant
+        local instead of an emergent property of a distant caller.
         """
         log_hook = before_sleep_log(get_logger("llm_retry").logger, logging.WARNING)
 
@@ -1274,11 +1282,20 @@ class LLMClient:
             log_hook(retry_state)
             next_action = retry_state.next_action
             sleep_s = float(next_action.sleep) if next_action else 0.0
-            probe_stats = observation.probe_stats if observation is not None else None
-            if probe_stats is not None and _is_rate_limit_retry_state(retry_state):
-                probe_stats.record_retry(wait_s=sleep_s, ts=time.time())
             if observation is None:
                 return
+            probe_stats = observation.probe_stats
+            if (
+                probe_stats is not None
+                and self._rate_limit_probe is not None
+                and _is_rate_limit_retry_state(retry_state)
+            ):
+                probe_stats.record_retry(
+                    role=observation.role,
+                    model=self.model_name,
+                    wait_s=sleep_s,
+                    ts=time.time(),
+                )
             outcome = retry_state.outcome
             exc = outcome.exception() if outcome is not None else None
             observation.events.llm_retry_scheduled(

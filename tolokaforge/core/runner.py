@@ -18,6 +18,7 @@ from tolokaforge.core.models import (
     Message,
     MessageRole,
     Metrics,
+    RateLimitProbeRoleMetrics,
     TerminationReason,
     Trajectory,
     TrialStatus,
@@ -37,6 +38,13 @@ try:
     from tolokaforge.tools.user_tools import UserToolExecutor
 except ImportError:
     UserToolExecutor = None
+
+
+def _as_utc(ts: float | None) -> datetime | None:
+    """``time.time()`` epoch seconds as an aware UTC datetime, ``None`` passthrough."""
+    if ts is None:
+        return None
+    return datetime.fromtimestamp(ts, tz=timezone.utc)
 
 
 class TrialRunner:
@@ -351,23 +359,37 @@ class TrialRunner:
         No-op outside probe mode, which leaves the counters at their defaults so
         a normal run's ``metrics.yaml`` carries zeros rather than a signal that
         does not exist.
+
+        The per-``(role, model)`` rows are emitted in sorted key order so the
+        serialised metrics are deterministic across trials.
         """
         stats = self._probe_stats
         if stats is None:
             return
         self.metrics.rate_limit_retries = stats.retries
         self.metrics.rate_limit_wait_s = stats.wait_s
-        if stats.first_ts is not None:
-            self.metrics.rate_limit_first_ts = datetime.fromtimestamp(
-                stats.first_ts, tz=timezone.utc
+        self.metrics.rate_limit_first_ts = _as_utc(stats.first_ts)
+        self.metrics.rate_limit_last_ts = _as_utc(stats.last_ts)
+        self.metrics.rate_limit_by_role_model = [
+            RateLimitProbeRoleMetrics(
+                role=role,
+                model=model,
+                retries=counters.retries,
+                wait_s=counters.wait_s,
+                first_ts=_as_utc(counters.first_ts),
+                last_ts=_as_utc(counters.last_ts),
             )
-        if stats.last_ts is not None:
-            self.metrics.rate_limit_last_ts = datetime.fromtimestamp(stats.last_ts, tz=timezone.utc)
+            for (role, model), counters in sorted(stats.by_role_model.items())
+        ]
         if stats.retries:
             self.logger.warning(
                 "Rate-limit probe absorbed 429s",
                 rate_limit_retries=stats.retries,
                 rate_limit_wait_s=round(stats.wait_s, 3),
+                by_role_model={
+                    f"{role}/{model}": counters.retries
+                    for (role, model), counters in sorted(stats.by_role_model.items())
+                },
             )
 
     def _is_done(self, text: str) -> bool:

@@ -137,6 +137,31 @@ class ToolUsage(BaseModel):
     total_duration_s: float = 0.0
 
 
+class RateLimitProbeRoleMetrics(BaseModel):
+    """One ``(role, model)`` row of a trial's rate-limit probe accounting.
+
+    A trial's roles are different *models* in a real arena config — the agent
+    is the model under test and the user simulator is a fixed, unrelated one —
+    so their 429s must never share a counter. ``role`` + ``model`` is the key;
+    the flat ``Metrics.rate_limit_*`` fields are the sum across these rows.
+
+    ``model`` is the raw provider-qualified slug the client called
+    (``openrouter/anthropic/claude-sonnet-4.6``). The engine deliberately does
+    *not* map it to an upstream-provider taxonomy: that grouping lives in the
+    consumer, and attributing a 429 to the OpenRouter upstream that actually
+    served the request needs wire data the engine does not capture.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    role: str
+    model: str
+    retries: int = 0
+    wait_s: float = 0.0
+    first_ts: datetime | None = None
+    last_ts: datetime | None = None
+
+
 _VALID_COST_SOURCES: frozenset[str] = frozenset(get_args(CostSource))
 
 
@@ -187,10 +212,12 @@ class Metrics(BaseModel):
 
     The ``rate_limit_*`` counters are populated only while
     :class:`RateLimitProbeConfig` is enabled; on every other run they stay at
-    their zero / ``None`` defaults. ``latency_total_s`` is trial wall time and
-    therefore *includes* the probe's 429 sleep — a non-zero
+    their zero / ``None`` / empty defaults. ``latency_total_s`` is trial wall
+    time and therefore *includes* the probe's 429 sleep — a non-zero
     ``rate_limit_wait_s`` is the mechanical marker that this trial's latency
-    figures are not comparable with a normal run's.
+    figures are not comparable with a normal run's. The flat counters are the
+    sum across ``rate_limit_by_role_model``, whose rows keep the agent's and
+    the simulator's 429s apart (they are different models).
     """
 
     model_config = {"extra": "forbid"}
@@ -208,6 +235,7 @@ class Metrics(BaseModel):
     rate_limit_wait_s: float = 0.0
     rate_limit_first_ts: datetime | None = None
     rate_limit_last_ts: datetime | None = None
+    rate_limit_by_role_model: list[RateLimitProbeRoleMetrics] = Field(default_factory=list)
 
     @field_validator("usage", mode="before")
     @classmethod
