@@ -17,12 +17,24 @@
                 "cache_creation_input_tokens": {"type": "integer"},
                 "cache_read_input_tokens": {"type": "integer"},
                 "provider_raw": {"type": "object"},
-            },
+                "calls": {"type": "array"}
+            }
         },
-        "cost_usd_est": {"type": "number"},
+        "cost_usd": {"type": ["number", "null"]},
         "tool_calls": {"type": "integer"},
         "tool_success_rate": {"type": "number"},
         "stuck_detected": {"type": "boolean"},
+        "tool_usage": {"type": "array"},
+        "rate_limit_retries": {
+            "type": "integer",
+            "description": "429 retries absorbed by rate-limit probe mode. 0 on every non-probe run."
+        },
+        "rate_limit_wait_s": {
+            "type": "number",
+            "description": "Summed fixed-interval sleep scheduled for those retries. Non-zero means latency_total_s includes 429 sleep and is not comparable with a normal run."
+        },
+        "rate_limit_first_ts": {"type": ["string", "null"], "format": "date-time"},
+        "rate_limit_last_ts": {"type": ["string", "null"], "format": "date-time"}
     },
-    "required": ["latency_total_s", "turns", "tool_calls"],
+    "required": ["latency_total_s", "turns", "tool_calls"]
 }

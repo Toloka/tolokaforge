@@ -184,6 +184,13 @@ class Metrics(BaseModel):
     walk ``usage.calls`` to find which calls were litellm- vs locally-priced
     (each :class:`ProviderRawCall` carries its own ``cost_source``). The
     earlier ``cost_usd_est`` / ``cost_usd_provider`` split is gone.
+
+    The ``rate_limit_*`` counters are populated only while
+    :class:`RateLimitProbeConfig` is enabled; on every other run they stay at
+    their zero / ``None`` defaults. ``latency_total_s`` is trial wall time and
+    therefore *includes* the probe's 429 sleep — a non-zero
+    ``rate_limit_wait_s`` is the mechanical marker that this trial's latency
+    figures are not comparable with a normal run's.
     """
 
     model_config = {"extra": "forbid"}
@@ -197,6 +204,10 @@ class Metrics(BaseModel):
     tool_success_rate: float = 0.0
     stuck_detected: bool = False
     tool_usage: list[ToolUsage] = Field(default_factory=list)
+    rate_limit_retries: int = 0
+    rate_limit_wait_s: float = 0.0
+    rate_limit_first_ts: datetime | None = None
+    rate_limit_last_ts: datetime | None = None
 
     @field_validator("usage", mode="before")
     @classmethod
@@ -525,6 +536,80 @@ class TimeoutConfig(BaseModel):
     episode_s: int = 1800
 
 
+RATE_LIMIT_PROBE_MIN_EPISODE_S = 3600
+"""Smallest run-level episode budget a rate-limit probe run may declare.
+
+A probe absorbs 429s by sleeping, and episode wall-time counts that sleep, so
+a probe on the default 1800 s budget dies on the episode timeout instead of
+measuring the provider. One hour is the floor below which the mode cannot do
+its job."""
+
+
+class RateLimitProbeConfig(BaseModel):
+    """Rate-limit probe mode: 429s retry at a FIXED interval until a generous
+    per-call wall-clock budget is spent, so a probe run's goodput measures the
+    provider's served throughput instead of dying on 429s.
+
+    OFF unless ``enabled`` is True; when off, every retry controller in the
+    engine keeps its default bounded-exponential behaviour.
+
+    The fixed interval is the point: a blocked client polls exactly
+    ``1 / retry_interval_s`` times per second, so blocked client-time is
+    recoverable from the 429 count. Exponential backoff hides a different
+    wait behind every retry and makes that arithmetic non-invertible.
+
+    A probe run's latency metrics are structurally invalid —
+    ``Metrics.latency_total_s`` is trial wall time, which includes 429 sleep —
+    so a probe run must never produce a leaderboard number.
+    """
+
+    model_config = {"extra": "ignore"}
+
+    enabled: bool = False
+    retry_interval_s: float = Field(default=15.0, gt=0.0)
+    per_call_budget_s: float = Field(default=3600.0, gt=0.0)
+
+
+def validate_rate_limit_probe_budget(
+    probe: RateLimitProbeConfig | None,
+    episode_timeout_s: float,
+    *,
+    source: str,
+) -> None:
+    """Raise when a probe's per-call budget cannot fit inside the episode budget.
+
+    A call already blocked in 429 backoff is not interrupted mid-flight — the
+    episode timeout is only evaluated between turns — so the worst-case trial
+    wall time is ``episode_timeout_s + per_call_budget_s``. Keeping
+    ``per_call_budget_s`` strictly below the episode budget bounds that at
+    ``2 x episode_timeout_s``, which is exactly the queue-lease horizon
+    (``max(300, episode_s * 2)``), so a probe trial can never outlive its lease
+    and get re-run by another worker.
+
+    ``episode_timeout_s`` must be the *effective* budget — the value after the
+    task-pack ``min()`` clamp — not the configured run-level value, or a pack
+    declaring ``trial_seconds`` would silently shrink the ceiling this
+    invariant is checked against. ``source`` names the config site for the
+    error message.
+    """
+    if probe is None or not probe.enabled:
+        return
+    if episode_timeout_s <= RATE_LIMIT_PROBE_MIN_EPISODE_S:
+        raise ValueError(
+            f"{source}: rate_limit_probe.enabled requires an episode budget "
+            f"above {RATE_LIMIT_PROBE_MIN_EPISODE_S}s (hours, not minutes); "
+            f"effective episode budget is {episode_timeout_s}s. Raise "
+            "orchestrator.timeouts.episode_s."
+        )
+    if probe.per_call_budget_s >= episode_timeout_s:
+        raise ValueError(
+            f"{source}: rate_limit_probe.per_call_budget_s "
+            f"({probe.per_call_budget_s}s) must be strictly below the "
+            f"effective episode budget ({episode_timeout_s}s), or a single "
+            "blocked call can outlive the trial's queue lease."
+        )
+
+
 class StuckHeuristics(BaseModel):
     """Stuck detection configuration"""
 
@@ -597,6 +682,11 @@ class OrchestratorConfig(BaseModel):
     operator-side clamp. Unset means the task-scoped value governs.
     Field-name migration to ``TimeoutDefaults`` (``trial_seconds`` /
     ``tool_call_seconds``) lands with the cleanup milestone."""
+
+    rate_limit_probe: RateLimitProbeConfig = Field(default_factory=RateLimitProbeConfig)
+    """Rate-limit probe mode. Disabled by default; see
+    :class:`RateLimitProbeConfig`. A probe run measures provider-served
+    throughput and must not produce a leaderboard number."""
 
     max_turns: int = 50
     """Run-level cap on per-trial ``max_turns`` — an always-on operator
@@ -691,6 +781,22 @@ class OrchestratorConfig(BaseModel):
                     stacklevel=2,
                 )
         return values
+
+    @model_validator(mode="after")
+    def _check_rate_limit_probe_budget(self) -> Self:
+        """Reject a probe config whose budgets cannot fit at load time.
+
+        This checks the *configured* run-level episode budget so an
+        unrunnable YAML fails before any provisioning. The conductor
+        re-checks against the per-task *effective* budget, which is the
+        authoritative value once the task-pack clamp is applied.
+        """
+        validate_rate_limit_probe_budget(
+            self.rate_limit_probe,
+            self.timeouts.episode_s,
+            source="orchestrator",
+        )
+        return self
 
     typesense: TypeSenseConfig | None = None  # TypeSense server configuration
 

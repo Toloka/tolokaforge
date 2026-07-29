@@ -351,6 +351,38 @@ class RunDisplayEvents(Protocol):
         """
 
 
+@dataclass
+class RateLimitProbeStats:
+    """Per-trial 429 accounting accumulated by the rate-limit probe controller.
+
+    Mutable and shared by every role's :class:`LLMCallObservation` within one
+    trial: the ``LLMClient`` is shared across concurrent trials, so per-trial
+    state has to ride the call rather than live on the client. The trial runner
+    owns the instance and copies the totals onto ``Metrics`` at trial end.
+
+    Stays all-zero unless rate-limit probe mode is enabled.
+    """
+
+    retries: int = 0
+    """429 retries the probe absorbed across every LLM call in the trial."""
+
+    wait_s: float = 0.0
+    """Summed fixed-interval sleep the probe scheduled for those retries."""
+
+    first_ts: float | None = None
+    """``time.time()`` of the first 429 seen in this trial."""
+
+    last_ts: float | None = None
+    """``time.time()`` of the most recent 429 seen in this trial."""
+
+    def record_retry(self, *, wait_s: float, ts: float) -> None:
+        self.retries += 1
+        self.wait_s += wait_s
+        if self.first_ts is None:
+            self.first_ts = ts
+        self.last_ts = ts
+
+
 @dataclass(frozen=True)
 class LLMCallObservation:
     """Per-call context threaded from a trial into ``LLMClient.generate``.
@@ -362,11 +394,15 @@ class LLMCallObservation:
     :data:`LLMCallRole`; the LLM client, agent loop, and user simulator
     already import from this module, preserving a one-way dependency
     graph.
+
+    ``probe_stats`` is the trial's shared :class:`RateLimitProbeStats`
+    accumulator when rate-limit probe mode is on, ``None`` otherwise.
     """
 
     events: RunDisplayEvents
     trial_id: str
     role: LLMCallRole
+    probe_stats: RateLimitProbeStats | None = None
 
 
 class _NullRunDisplayEvents:
@@ -405,6 +441,7 @@ __all__ = [
     "ContainerSnapshot",
     "LLMCallObservation",
     "LLMCallRole",
+    "RateLimitProbeStats",
     "RunDisplayEvents",
     "ServiceSnapshot",
     "_NULL_EVENTS",

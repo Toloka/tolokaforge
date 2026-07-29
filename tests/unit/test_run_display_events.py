@@ -34,6 +34,7 @@ from tolokaforge.core.run_display_events import (
     _NULL_EVENTS,
     ContainerSnapshot,
     LLMCallObservation,
+    RateLimitProbeStats,
     RunDisplayEvents,
     ServiceSnapshot,
     _NullRunDisplayEvents,
@@ -207,15 +208,32 @@ def test_container_snapshot_shape_is_typed_dict() -> None:
 
 def test_llm_call_observation_is_frozen_dataclass_bundling_seam_and_identity() -> None:
     """The per-call context threaded into ``LLMClient.generate`` is a
-    frozen dataclass so it never mutates in flight while a trial's
-    worker thread hands it to the client — the client only reads
-    ``(events, trial_id, role)`` and forwards to the seam."""
+    frozen dataclass so its bindings never change in flight while a trial's
+    worker thread hands it to the client — the client reads
+    ``(events, trial_id, role)`` and forwards to the seam, and accumulates
+    into the ``probe_stats`` the trial owns."""
     assert dataclasses.is_dataclass(LLMCallObservation)
     assert LLMCallObservation.__dataclass_params__.frozen is True
 
     field_names = {f.name for f in dataclasses.fields(LLMCallObservation)}
-    assert field_names == {"events", "trial_id", "role"}
+    assert field_names == {"events", "trial_id", "role", "probe_stats"}
 
     observation = LLMCallObservation(events=_NULL_EVENTS, trial_id="a:0", role="agent")
+    assert observation.probe_stats is None
     with pytest.raises(dataclasses.FrozenInstanceError):
         observation.trial_id = "b:0"  # type: ignore[misc]
+
+
+def test_rate_limit_probe_stats_accumulates_counts_waits_and_window() -> None:
+    """Probe accounting sums retries + wait and keeps the first / last 429
+    timestamps, so a trial's metrics carry the window the probe was blocked."""
+    stats = RateLimitProbeStats()
+    assert (stats.retries, stats.wait_s, stats.first_ts, stats.last_ts) == (0, 0.0, None, None)
+
+    stats.record_retry(wait_s=15.0, ts=100.0)
+    stats.record_retry(wait_s=15.0, ts=130.0)
+
+    assert stats.retries == 2
+    assert stats.wait_s == 30.0
+    assert stats.first_ts == 100.0
+    assert stats.last_ts == 130.0
