@@ -246,6 +246,44 @@ unbounded walk on a self-referencing chain.
 """
 
 
+_RATE_LIMIT_TEXT_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # The class name litellm / openai put in the message itself, e.g.
+    # "litellm.RateLimitError: RateLimitError: OpenrouterException - ...".
+    re.compile(r"\bRateLimitError\b"),
+    # 429 in a *status* position: "Error code: 429", "status_code=429",
+    # "status 429", "HTTP/1.1 429". The trailing guard keeps it off longer
+    # numbers, and requiring the keyword keeps it off token counts and ids.
+    re.compile(
+        r"(?:error\s+code|status(?:[\s_-]*code)?|http(?:/[\d.]+)?)\s*[:=]?\s*429(?!\d)",
+        re.IGNORECASE,
+    ),
+    # The HTTP reason phrase, with or without the numeric status.
+    re.compile(r"\btoo\s+many\s+requests\b", re.IGNORECASE),
+    # Provider prose, but only in an error construction — "rate limit exceeded",
+    # never a bare mention such as a docs link about rate limits and quotas.
+    re.compile(
+        r"\brate[\s_-]?limit(?:s|ed|ing)?[\s:;,.-]*(?:error|exceeded|reached|hit)\b",
+        re.IGNORECASE,
+    ),
+)
+"""Anchored last-resort text shapes for :func:`_is_rate_limit_exception`.
+
+An unanchored ``"429" in str(exc)`` matches token counts (``you requested
+4429``), request ids (``req_8f429ab2``) and JSON bodies (``{'total_tokens':
+429}``); an unanchored ``"rate limit" in ...`` matches an auth error whose
+message links to rate-limit docs. Under probe mode a false positive hands a
+*deterministic* failure the multi-hour fixed-interval budget and pollutes the
+429 census the mode exists to produce, so each pattern requires a status
+keyword, the HTTP reason phrase, or rate-limit prose in an error construction.
+A bare ``429`` with no such context is deliberately NOT a match — guessing
+would misroute control flow.
+"""
+
+
+def _matches_rate_limit_text(text: str) -> bool:
+    return any(pattern.search(text) for pattern in _RATE_LIMIT_TEXT_PATTERNS)
+
+
 def _is_rate_limit_exception(exc: BaseException) -> bool:
     """True when *exc* is an upstream 429.
 
@@ -254,8 +292,9 @@ def _is_rate_limit_exception(exc: BaseException) -> bool:
     litellm routes, and ``status_code == 429`` catches a bare
     ``APIStatusError``. Both are checked along the ``__cause__`` chain
     because the outer controller never sees the provider's exception
-    directly (see :data:`_EXCEPTION_CAUSE_DEPTH`). String matching is the
-    last resort, for a wrapper that dropped the cause.
+    directly (see :data:`_EXCEPTION_CAUSE_DEPTH`). Text matching is the last
+    resort, for a wrapper that stringified the provider error instead of
+    chaining it, and is anchored — see :data:`_RATE_LIMIT_TEXT_PATTERNS`.
 
     Used only by the rate-limit probe controller. The engine's three
     existing 429 classifiers (:func:`tolokaforge.core.loop.classify_error`,
@@ -274,8 +313,7 @@ def _is_rate_limit_exception(exc: BaseException) -> bool:
         cause = candidate.__cause__
         candidate = cause if cause is not candidate else None
 
-    text = str(exc)
-    return "429" in text or "RateLimitError" in text or "rate limit" in text.lower()
+    return _matches_rate_limit_text(str(exc))
 
 
 def _is_rate_limit_retry_state(retry_state: RetryCallState) -> bool:
