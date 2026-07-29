@@ -411,8 +411,7 @@ networks:
 
 ### Post-Merge (Future Work)
 
-1. **RAG Integration Test** - Add e2e test for search_kb tool
-2. **Structured Logging Migration** - Convert f-string logs to structured format
+1. **Structured Logging Migration** - Convert f-string logs to structured format
 
 ---
 

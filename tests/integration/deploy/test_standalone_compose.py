@@ -15,11 +15,11 @@ Two modes drive the same recipe:
   brings the same recipe up against it; skip-guarded on tag availability (absent
   until the first stable publish), mirroring the parity suite's published source.
 
-Two gated tests each drive one real trial through the composed runner over the
+Three gated tests each drive one real trial through the composed runner over the
 ADR-0024 ``run-trial`` exec wire (``requires_api``): a bundled db-service trial
-(the ``tool_use`` pack) and a mock-web booking trial (``http_request`` → mock-web),
-each proving its peer functionally participates in a graded ``TrialResult`` through
-the stack.
+(the ``tool_use`` pack), a mock-web booking trial (``http_request`` → mock-web),
+and a rag_search trial (``search_kb`` → rag-service), each proving its peer
+functionally participates in a graded ``TrialResult`` through the stack.
 
 ``docker compose up --wait`` blocks on all four healthchecks. rag-service loads
 ``all-MiniLM-L6-v2`` eagerly and downloads it from HuggingFace on a cold cache, so
@@ -74,6 +74,14 @@ _PAID_TASK = (
 # A native http_request-only pack that books a room on mock-web and reports the
 # site-issued confirmation number — the trial that functionally drives mock-web.
 _MOCK_WEB_TASK = REPO_ROOT / "examples/native/mock_web_booking/dataset/tasks/booking_01/task.yaml"
+
+# A native search_kb-only pack that retrieves a planted fact from a per-trial
+# rag-service index and reports it — the trial that functionally drives rag.
+_RAG_TASK = REPO_ROOT / "examples/native/rag_search/dataset/tasks/kb_lookup_01/task.yaml"
+
+# The planted authorization code lives only in the rag_search corpus; it enters
+# the transcript solely via a search_kb retrieval.
+_RAG_PLANTED_FACT = "HX49-QORVEN-7731"
 
 
 @pytest.fixture(scope="module", params=["local", "published"])
@@ -153,6 +161,24 @@ def _agent_posted_to_mock_web(trajectory: Trajectory) -> bool:
             if call.name == "http_request" and call.arguments.get("method") == "POST":
                 if "mock-web" in str(call.arguments.get("url", "")):
                     return True
+    return False
+
+
+def _agent_searched_kb(trajectory: Trajectory) -> bool:
+    """True when an assistant made a ``search_kb`` tool call.
+
+    Walks the assistant tool calls the grader's ``required_actions`` gate scores
+    and matches a knowledge-base search — the retrieval round-trip to the
+    rag-service, not merely the request's mention in the seed message.
+    """
+    from tolokaforge.core.models import MessageRole
+
+    for message in trajectory.messages:
+        if message.role is not MessageRole.ASSISTANT or not message.tool_calls:
+            continue
+        for call in message.tool_calls:
+            if call.name == "search_kb":
+                return True
     return False
 
 
@@ -272,3 +298,31 @@ def test_mock_web_trial_through_composed_stack(composed_stack: StackHandle) -> N
     )
     transcript = json.dumps(result.trajectory.model_dump(mode="json"))
     assert "BKSEA12345" in transcript, "confirmation token absent — graded pass may be spurious"
+
+
+@pytest.mark.requires_api
+@pytest.mark.llm
+def test_rag_trial_through_composed_stack(composed_stack: StackHandle) -> None:
+    """One real rag_search trial drives to a graded pass through the stack.
+
+    The ``rag_search`` pack gives the agent only ``search_kb``; it retrieves the
+    Halden substation's failover authorization code — a fact planted in exactly one
+    corpus doc and on no agent-visible surface — from the per-trial rag-service index
+    and reports it. A graded pass proves the rag-service functionally participated.
+    The assertions then independently re-check the retrieval so a grading regression
+    that passes for the wrong reason is caught: an assistant ``search_kb`` tool call
+    must appear in the tool calls, and the planted code — which enters the transcript
+    only via the retrieval — must be present.
+    """
+    result = _run_trial_through_stack(composed_stack, _RAG_TASK)
+    assert result.trajectory.status.value == "completed", result.trajectory.status
+    grade = result.trajectory.grade
+    assert grade is not None, "trial produced no grade"
+    assert grade.binary_pass is True, f"rag trial did not grade as a pass: {grade.reasons}"
+
+    assert _agent_searched_kb(result.trajectory), (
+        "no assistant search_kb tool call in the trajectory — "
+        "the knowledge-base retrieval did not happen"
+    )
+    transcript = json.dumps(result.trajectory.model_dump(mode="json"))
+    assert _RAG_PLANTED_FACT in transcript, "planted fact absent — graded pass may be spurious"
