@@ -36,3 +36,10 @@ uv run pytest tests/unit/ -v
 5. Use [Conventional Commits](https://www.conventionalcommits.org/) for commit
    and PR titles (`feat(scope): …`, `fix(scope): …`, `chore: …`). The release
    tooling derives the version bump and CHANGELOG from these.
+
+## Cutting a Release
+
+The PyPI package and the Docker images are released on separate tags locked to a
+single version number. The full procedure — the "Release (cz bump)" workflow,
+the `image-vX.Y.Z` rc-then-stable flow, and the version guard between them — is
+documented in [docs/RELEASING.md](docs/RELEASING.md).
