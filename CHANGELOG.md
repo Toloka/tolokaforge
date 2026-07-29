@@ -2,11 +2,21 @@
 
 All notable changes to this project are documented in this file.
 
-## Unreleased
+## v0.12.0 (2026-07-29)
 
 ### Feat
 
-- **tools**: `str_replace_editor` gains `tool_config.working_root` (default `/work`, additive, every current task pack unchanged); a missing or non-directory root fails loud on first use (#637)
+- **adapters**: make rag-service search_kb functional for native tasks (#107) (#666)
+- **runtime**: Runner as a distributable service (M14 consolidation) (#642)
+- **tools**: configurable working_root on str_replace_editor (#643)
+- **adapters**: adapter-declared trial-grader name on orchestrator (#631)
+
+### Fix
+
+- **docker**: widen rag healthcheck start-period to cover model load (#661)
+- **docker**: scope mock-web build context to its service files (#654)
+- **deploy**: pin linux/amd64 in standalone compose for arm64 hosts (#647)
+- **ci**: bind no environment for publish-images dry-run (#646)
 
 ## v0.11.2 (2026-07-27)
 
