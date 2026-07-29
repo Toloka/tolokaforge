@@ -362,9 +362,12 @@ exact whole second.
 DEFAULT_PROBE_MAX_BUCKETS = 4096
 """Default cap on the number of throughput buckets one trial may open.
 
-At the 30 s default that is ~34 h of a two-role trial, far past any real
-episode budget. See :meth:`RateLimitProbeStats.bucket_start` for the drop
-policy that applies once the cap is reached.
+A bucket is one ``(role, model, window)`` row, so the capacity is **per
+series**, not per trial wall-clock: at the 30 s default width 4096 rows is
+~34 h for a single-role trial and ~17 h for the two-role default (agent +
+user simulator), both far past any episode budget the invariant permits. See
+:meth:`RateLimitProbeStats.bucket_start` for the drop policy that applies once
+the cap is reached.
 """
 
 
@@ -374,15 +377,15 @@ class RateLimitProbeCounters:
 
     Both censuses live in one counter because the pair is what makes a
     measurement interpretable. The 429 census alone is schedule-dependent and,
-    for some providers, silent: a model with no provider pin produced zero 429s
-    across four probe runs up to 33k input tokens/s while inflating per-call
-    latency 41 %. Goodput (``successes``) and served concurrency
-    (``success_duration_s``) catch that; ``retries`` does not.
+    for some providers, silent — a provider can throttle by slowing calls down
+    rather than rejecting them. Goodput (``successes``) and served concurrency
+    (``success_duration_s``) catch that; ``retries`` does not. See
+    ``docs/OUTPUT_FORMAT.md`` § Field observations for the measurements.
 
     ``prompt_tokens`` / ``completion_tokens`` are carried because tokens/s — not
     calls/s — is the quantity that sums across run legs: measured token profiles
-    differ ~4x between domains (369,857 vs 89,984 input tokens per trial), so
-    calls/s from two different domains are not the same unit.
+    differ several-fold between domains, so calls/s from two different domains
+    are not the same unit.
 
     Used both for the per-``(role, model)`` cumulative rows and for the
     fixed-width absolute-time buckets, which need exactly the same columns.
@@ -401,6 +404,15 @@ class RateLimitProbeCounters:
     success side deliberately does not move it, so
     ``Metrics.rate_limit_first_ts`` keeps meaning "when did this trial first
     get throttled".
+
+    Surfaced on the per-``(role, model)`` rows only. The window view
+    (:class:`~tolokaforge.core.models.RateLimitProbeBucketMetrics`) omits both
+    timestamps because its own key already bounds them to
+    ``[start, start + bucket_width_s)`` — a sub-window position is not a
+    quantity anything sums. This class serves both views, so the fields are
+    still written when it backs a window; that write is one attribute
+    assignment, and splitting the class to avoid it would duplicate eight
+    columns.
     """
 
     last_ts: float | None = None
@@ -472,11 +484,10 @@ class RateLimitProbeStats:
     **Three views of the same events.** The flat fields are the trial total,
     ``by_role_model`` is the cumulative per-model breakdown, and ``by_bucket``
     is the same breakdown resolved into fixed-width absolute-time windows.
-    Cumulative totals alone are not sufficient: at a CONSTANT 70-way offered
-    concurrency a measured probe's goodput fell from 1.70 to 0.43 successful
-    calls/s over ~12 minutes while the rejection rate climbed 66 % -> 86 %. A
-    single cumulative counter reports one blended average and hides that
-    entirely.
+    Cumulative totals alone are not sufficient: measured goodput decays at a
+    CONSTANT offered concurrency while the rejection rate climbs, and a single
+    cumulative counter reports one blended average that hides both
+    (``docs/OUTPUT_FORMAT.md`` § Field observations).
 
     Not synchronised: one trial's probe-capable calls are strictly sequential
     (``ToolCallingLoop._run_turn`` runs the agent's ``generate``, then the
@@ -528,7 +539,14 @@ class RateLimitProbeStats:
     """The same breakdown per ``(role, model slug, absolute bucket start)``."""
 
     dropped_buckets: int = 0
-    """Distinct windows that could not be opened because of :attr:`max_buckets`.
+    """``(role, model, window)`` rows refused because of :attr:`max_buckets`.
+
+    Counted in the same unit as the cap: :attr:`max_buckets` bounds
+    ``len(by_bucket)``, which is a row count, so ``dropped_buckets`` +
+    ``len(by_bucket)`` are commensurable. One window lost on a two-role trial is
+    therefore **2**, because two series lost a row — which is the number a
+    consumer needs, since merge rule 5 filters the series to the role under test
+    and a bare window count would not say which series truncated.
 
     Never silent: a non-zero value means ``by_bucket`` is a truncated prefix of
     the trial and the flat / ``by_role_model`` totals are the only complete
@@ -560,14 +578,21 @@ class RateLimitProbeStats:
         width keeps every boundary an exact integer epoch, so the serialised
         timestamps match across legs with no float-representation drift.
 
-        **Drop policy.** A recording that lands in an existing window is always
+        **Drop policy.** A recording that lands in an existing bucket is always
         counted. Once ``len(by_bucket)`` reaches :attr:`max_buckets`, opening a
-        *new* window is refused and :attr:`dropped_buckets` counts it; the
-        recording still lands in the flat and ``by_role_model`` totals, so
-        nothing is lost from those. Refusing new windows rather than evicting
-        old ones keeps the retained series a contiguous prefix in absolute
-        time: a series with a hole in it would let a cross-leg window-by-window
-        sum silently undercount, which is worse than a short series.
+        *new* ``(role, model, window)`` bucket is refused and
+        :attr:`dropped_buckets` counts that row; the recording still lands in the
+        flat and ``by_role_model`` totals, so nothing is lost from those.
+        Refusing new buckets rather than evicting old ones keeps the retained
+        series a contiguous prefix in absolute time: a series with a hole in it
+        would let a cross-leg window-by-window sum silently undercount, which is
+        worse than a short series.
+
+        The cap is **global** over ``by_bucket``, not per series, so a high-volume
+        role can consume the whole budget and leave a low-volume role with no
+        rows at all while its ``by_role_model`` row is non-zero.
+        :attr:`dropped_buckets` says how many rows were refused, not which series
+        they belonged to.
         """
         return int(ts // self.bucket_width_s) * self.bucket_width_s
 

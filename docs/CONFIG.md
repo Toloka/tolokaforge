@@ -136,12 +136,12 @@ orchestrator:
 | `per_call_budget_s` | `3600.0` | Wall-clock budget for one **agent** call's 429 retries. Exhausting it reraises the last 429, which surfaces as `termination_reason: rate_limit`. A *floor*, not an exact ceiling: `stop` is evaluated on an attempt's outcome, so a call overshoots by up to one retry interval plus one attempt's own timeout budget. |
 | `simulator_per_call_budget_s` | `600.0` | Same, for the user-simulator client. Deliberately shorter: the simulator shares the agent's quota so it must absorb 429s (otherwise a simulator 429 kills the trial the agent-side probe kept alive), but its throughput is not what the probe measures, so agent-sized wall time here only eats lease headroom. |
 | `bucket_width_s` | `30` | Width of one goodput window, **whole seconds**. Windows are anchored on the Unix epoch, not on run start, so simultaneous run legs emit the same boundaries and can be summed window by window. **Every leg of one measurement must use the same width** or the series do not align. Whole seconds keep every boundary an exact integer epoch, so the timestamps match byte-for-byte across legs. |
-| `max_buckets` | `4096` | Per-trial cap on how many windows may be opened, so memory is bounded (~34 h of a two-role trial at 30 s). Past the cap a recording still lands in the flat and per-`(role, model)` totals but cannot open a new window; `Metrics.probe_dropped_buckets` counts the lost windows, so truncation is never silent. Refusing *new* windows rather than evicting old ones keeps the retained series a contiguous prefix — a series with a hole would let a cross-leg sum silently undercount. |
+| `max_buckets` | `4096` | Per-trial cap on how many `(role, model, window)` **rows** may be opened, so memory is bounded. A two-role trial consumes two rows per window, so at 30 s this is ~34 h for a single `(role, model)` series and ~17 h for the two-role default. Past the cap a recording still lands in the flat and per-`(role, model)` totals but cannot open a new row; `Metrics.probe_dropped_buckets` counts the refused rows (also rows, not windows), so truncation is never silent. Refusing *new* rows rather than evicting old ones keeps the retained series a contiguous prefix — a series with a hole would let a cross-leg sum silently undercount. The cap is global rather than per series, so a high-volume role can consume all of it. |
 
-Cumulative totals alone are not sufficient, which is why the windows exist: at a
-**constant** 70-way offered concurrency a measured probe's goodput fell from 1.70
-to 0.43 successful calls/s over ~12 minutes while the rejection rate climbed
-66 % -> 86 %. A single average reports neither number.
+Cumulative totals alone are not sufficient, which is why the windows exist:
+measured goodput decays at a **constant** offered concurrency while the rejection
+rate climbs, and a single average reports neither end. Figures in
+[OUTPUT_FORMAT.md](OUTPUT_FORMAT.md:1) § Field observations.
 
 Two invariants are enforced by raising — at config load against
 `orchestrator.timeouts.episode_s`, and again per task against the *effective*
@@ -204,10 +204,11 @@ so a mode-consistency gate has to compare against the config it dispatched — t
 gate belongs to whatever dispatches the run, not here.
 
 **Do not trust the 429 census on its own.** It is schedule-dependent (it counts
-how often *your* clients chose to poll) and, for some providers, silent: a model
-with no provider pin produced **zero** 429s across four probe runs up to 33k
-input tokens/s while inflating per-call latency 41 %. Goodput and latency caught
-that; the 429 count did not. That is why the success census is recorded.
+how often *your* clients chose to poll) and, for some providers, silent — a
+provider can throttle by slowing calls down instead of rejecting them, and then
+only goodput and latency show the ceiling. That is why the success census is
+recorded. Measured figures: [OUTPUT_FORMAT.md](OUTPUT_FORMAT.md:1) § Field
+observations.
 
 ### `reasoning:` — declarative thinking configuration
 

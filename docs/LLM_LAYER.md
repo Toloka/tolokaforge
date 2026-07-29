@@ -771,20 +771,43 @@ applies only to the 429 wait; it is symmetric, so the mean interval is exactly
 `retry_interval_s` and the `1 / retry_interval_s` poll-rate arithmetic the mode
 exists for survives in expectation.
 
-429 classification on the probe path is `_is_rate_limit_exception`: it checks
-`isinstance(exc, openai.RateLimitError)` (which litellm's `RateLimitError`
-subclasses) and `status_code == 429` along the `__cause__` chain, because
-`_call_with_key_rotation` re-raises provider errors as
-`RuntimeError(...) from e`. Text matching is the last resort and is **anchored**
-(`_RATE_LIMIT_TEXT_PATTERNS`): a 429 must sit in a status position
-(`Error code: 429`, `status_code=429`, `HTTP/1.1 429`), or the message must carry
-the HTTP reason phrase or rate-limit prose in an error construction. An
-unanchored `"429" in str(exc)` matched token counts (`you requested 4429`),
-request ids (`req_8f429ab2`) and JSON bodies, which under probe mode would hand a
-*deterministic* failure the multi-hour budget and pollute the 429 census. A bare
-`429` with no such context is deliberately not a match. The engine's three
-string-only classifiers (`core/loop.py`, `core/runner.py`, `core/resume.py`) are
-separate and unaffected.
+429 classification on the probe path is `_is_rate_limit_exception`. It answers
+"is this a **transient** 429?" in three tiers, walking the `__cause__` chain
+because `_call_with_key_rotation` re-raises provider errors as
+`RuntimeError(...) from e`:
+
+1. **Type / status** — `isinstance(exc, openai.RateLimitError)` (which litellm's
+   `RateLimitError` subclasses) or `status_code == 429`.
+2. **Terminal-condition veto** — `AllApiKeysExhaustedError`. Key rotation is
+   triggered by OpenRouter's own per-key **429** ("Key limit exceeded") and the
+   final raise chains that typed 429 as its `__cause__`, so tier 1 would classify
+   a spent credential set as transient and hand it the multi-hour budget —
+   permanently, since `_rotate_key` only ever advances its index. The type stops
+   the walk and returns `False`, so the condition takes the ordinary
+   five-attempt exponential branch instead. `_should_retry_exception` is
+   deliberately unchanged, so a probe-off run retries it exactly as before.
+3. **Anchored text** (`_RATE_LIMIT_TEXT_PATTERNS`), last resort: a 429 must sit
+   in a status position (`Error code: 429`, `status_code=429`, `HTTP/1.1 429`),
+   or the message must carry the HTTP reason phrase or rate-limit prose in an
+   error construction. An unanchored `"429" in str(exc)` matched token counts
+   (`you requested 4429`), request ids (`req_8f429ab2`) and JSON bodies. This
+   tier runs **only when no link in the chain carried an HTTP status at all** —
+   i.e. for the shape it exists for, a wrapper that stringified the provider
+   error instead of chaining it. An authoritative non-429 status beats prose,
+   because the outermost message is `RuntimeError(f"LLM API call failed: {e}")`
+   and `e`'s message can embed a response body that echoes request content: a
+   task conversation about rate limiting would otherwise hand a deterministic 400
+   the multi-hour budget. Untyped chains still text-match — under-matching a real
+   429 is the more expensive direction, since the absorption is the whole feature.
+
+The text tier is a catalogue of *engine-wrapper* shapes, not of provider quota
+prose. Vertex `RESOURCE_EXHAUSTED`, OpenAI `insufficient_quota`, `TPM limit
+reached` and Anthropic `overloaded_error` match nothing there on purpose: they
+arrive typed through litellm, so tier 1 catches them.
+
+The engine's three string-only classifiers (`core/loop.py`, `core/runner.py`,
+`core/resume.py`) are separate and unaffected — `AllApiKeysExhaustedError`
+subclasses `RuntimeError` and carries the same message as before.
 
 ### Probe telemetry recording sites
 
@@ -830,3 +853,11 @@ preset. There is no env override — the passed config block is the only
 activation channel, so the paths that must never probe (the rubric judge, a
 `--fallback-models` chain) cannot be armed by an environment variable, and the
 budget assertions cannot be bypassed.
+
+The client is only half the mode. The orchestrator arms this client; the
+**conductor** wires the user-simulator probe, the per-task effective-budget
+re-check and the per-trial telemetry accumulator. Conductors are a plugin group,
+so `Orchestrator._build_conductor` and `run_trial` both refuse to start an armed
+run on a conductor that does not declare `supports_rate_limit_probe` — otherwise
+the run would absorb 429s while writing all-default `rate_limit_*` / `probe_*`
+metrics, and nothing in the artifacts would show it.

@@ -1447,8 +1447,8 @@ class LLMClient:
           time it is the Little's-law in-flight concurrency the provider served
           — the schedule-independent estimator, computed on SUCCESSFUL calls
           only. The 429 census is schedule-dependent and, for some providers,
-          silent: a model with no provider pin produced zero 429s across four
-          runs up to 33k input tokens/s while inflating per-call latency 41 %.
+          silent: a provider can throttle by slowing calls down rather than
+          rejecting them (``docs/OUTPUT_FORMAT.md`` § Field observations).
         * Tokens come off ``result.usage``, which :meth:`_assemble_result`
           already built for exactly this call, so nothing is re-extracted and
           the trial's ``usage.calls`` list is untouched — no double counting.

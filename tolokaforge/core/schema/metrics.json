@@ -77,7 +77,7 @@
         },
         "probe_dropped_buckets": {
             "type": "integer",
-            "description": "Windows lost to rate_limit_probe.max_buckets. Non-zero means probe_buckets is a truncated prefix and only the flat / per-(role, model) totals are complete."
+            "description": "(role, model, window) rows refused by rate_limit_probe.max_buckets — rows, not windows, the same unit as the cap, so one window lost on a two-role trial counts 2. Non-zero means probe_buckets is a truncated prefix and only the flat / per-(role, model) totals are complete."
         },
         "probe_buckets": {
             "type": "array",

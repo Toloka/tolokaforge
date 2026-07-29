@@ -157,9 +157,9 @@ class RateLimitProbeRoleMetrics(BaseModel):
     Both censuses live on the row: the FAILURE side (``retries`` / ``wait_s``)
     and the SUCCESS side (``successful_calls`` / ``success_duration_s`` and the
     token counts). The pair is the point — the 429 census is schedule-dependent
-    and, for some providers, silent. A model with no provider pin produced ZERO
-    429s across four probe runs up to 33k input tokens/s while inflating
-    per-call latency 41 %; only goodput and latency caught that.
+    and, for some providers, silent: a provider can throttle by slowing calls
+    down rather than rejecting them, which only goodput and latency catch. See
+    ``docs/OUTPUT_FORMAT.md`` § Field observations for the measurements.
 
     ``Metrics.usage`` cannot answer the same question: ``usage.calls`` holds
     agent calls only and carries no role field, so per-model goodput and latency
@@ -204,7 +204,9 @@ class RateLimitProbeRoleMetrics(BaseModel):
     """Prompt tokens the provider reported for those successful calls.
 
     Tokens, not calls, are what sums across run legs: measured token profiles
-    differ ~4x between domains (369,857 vs 89,984 input tokens per trial)."""
+    differ several-fold between domains, so a call in one leg is not the same
+    unit of work as a call in another (see ``docs/OUTPUT_FORMAT.md`` § Field
+    observations)."""
 
     completion_tokens: int = 0
     """Completion tokens the provider reported for those successful calls."""
@@ -222,14 +224,19 @@ class RateLimitProbeBucketMetrics(BaseModel):
     so two processes on two machines with synchronised clocks emit the *same*
     value for the same instant and a consumer joins on it directly.
 
-    Cumulative totals cannot replace these rows. At a CONSTANT 70-way offered
-    concurrency a measured probe's goodput fell from 1.70 to 0.43 successful
-    calls/s over ~12 minutes while the rejection rate climbed 66 % -> 86 %. One
-    blended average reports neither number.
+    Cumulative totals cannot replace these rows: measured goodput is
+    non-stationary at CONSTANT offered concurrency, and one blended average
+    reports neither end of the decay (``docs/OUTPUT_FORMAT.md`` § Field
+    observations).
 
     A call is counted in the window it *finished* in — goodput is completions
     per window. ``retries`` / ``wait_s`` are the 429s scheduled inside the same
     window, so the served and rejected sides of one interval sit side by side.
+
+    No ``first_ts`` / ``last_ts``, unlike :class:`RateLimitProbeRoleMetrics`:
+    ``bucket_start_ts`` plus ``Metrics.probe_bucket_width_s`` already bound every
+    event in the row, and a sub-window position is not a quantity a cross-leg sum
+    can use.
     """
 
     model_config = {"extra": "forbid"}
@@ -310,8 +317,8 @@ class Metrics(BaseModel):
     ``rate_limit_by_role_model``, whose rows keep the agent's and the
     simulator's numbers apart (they are different models). ``probe_buckets``
     resolves the same rows into fixed-width absolute-time windows, because a
-    cumulative total hides non-stationarity: measured at CONSTANT offered
-    concurrency, goodput fell 1.70 -> 0.43 successful calls/s over ~12 minutes.
+    cumulative total hides non-stationarity — measured goodput decays at CONSTANT
+    offered concurrency (``docs/OUTPUT_FORMAT.md`` § Field observations).
 
     A single trial's goodput *ratio* is meaningless — goodput is a run-level
     quantity. Every field here is therefore an additive count over an
@@ -355,7 +362,11 @@ class Metrics(BaseModel):
     with; it is the denominator of every per-window rate."""
 
     probe_dropped_buckets: int = 0
-    """Windows lost to ``RateLimitProbeConfig.max_buckets``.
+    """``(role, model, window)`` rows refused by ``RateLimitProbeConfig.max_buckets``.
+
+    Rows, not windows — the same unit as the cap, which bounds the number of
+    ``probe_buckets`` rows. One window lost on a two-role trial counts **2**,
+    because two series each lost a row.
 
     Non-zero means ``probe_buckets`` is a truncated *prefix* of the trial and
     only the flat / per-``(role, model)`` totals are complete. Never silent."""
@@ -787,19 +798,22 @@ class RateLimitProbeConfig(BaseModel):
     Whole seconds keep every boundary an exact integer epoch, so the serialised
     timestamps match across legs with no float drift.
 
-    Cumulative totals are not a substitute: at a *constant* 70-way offered
-    concurrency a measured probe's goodput fell 1.70 -> 0.43 successful calls/s
-    over ~12 minutes while rejections climbed 66 % -> 86 %. A single average
-    hides that."""
+    Cumulative totals are not a substitute: measured goodput decays at a
+    *constant* offered concurrency while the rejection rate climbs, and a single
+    average hides both (``docs/OUTPUT_FORMAT.md`` § Field observations)."""
 
     max_buckets: int = Field(default=DEFAULT_PROBE_MAX_BUCKETS, gt=0)
-    """Cap on how many windows one trial may open, so memory stays bounded.
+    """Cap on how many ``(role, model, window)`` rows one trial may open, so
+    memory stays bounded.
 
-    At the 30 s default width, 4096 windows is ~34 h of a two-role trial — far
-    past any episode budget the invariant permits. Once the cap is reached a
-    recording still lands in the flat and per-``(role, model)`` totals but
-    cannot open a new window, and ``Metrics.probe_dropped_buckets`` counts the
-    lost windows so the truncation is never silent."""
+    Rows, not windows: a two-role trial consumes two rows per window. At the 30 s
+    default width, 4096 rows is ~34 h for a single ``(role, model)`` series and
+    ~17 h for the two-role default — either way far past any episode budget the
+    invariant permits. Once the cap is reached a recording still lands in the flat
+    and per-``(role, model)`` totals but cannot open a new row, and
+    ``Metrics.probe_dropped_buckets`` counts the refused rows so the truncation is
+    never silent. The cap is global rather than per series, so a high-volume role
+    can consume the whole budget."""
 
     def for_simulator(self) -> "RateLimitProbeConfig":
         """This mode with the *simulator's* per-call budget in force.
@@ -807,7 +821,13 @@ class RateLimitProbeConfig(BaseModel):
         The client only reads ``per_call_budget_s``, so the simulator's shorter
         budget is applied by handing its client a block whose per-call budget
         *is* the simulator budget. Idempotent — re-deriving from the result
-        yields the same block."""
+        yields the same block.
+
+        ``bucket_width_s`` / ``max_buckets`` are carried for block fidelity and
+        are inert on this copy: the accumulator is built once per trial from the
+        *agent* block (``conductor._build_probe_stats``) precisely so both roles
+        share one window grid. Dropping them here would make the copy lossy and
+        break the idempotence above."""
         return RateLimitProbeConfig(
             enabled=self.enabled,
             retry_interval_s=self.retry_interval_s,

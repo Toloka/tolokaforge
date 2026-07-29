@@ -445,7 +445,7 @@ side (429 retries and the sleep they cost); `probe_*` is the **success** side
 | `probe_success_duration_s` | Summed client-observed duration of those successful calls |
 | `probe_prompt_tokens` / `probe_completion_tokens` | Tokens the provider reported for those successful calls |
 | `probe_bucket_width_s` | Width of a `probe_buckets` window, seconds — the denominator of every per-window rate |
-| `probe_dropped_buckets` | Windows lost to `max_buckets`. Non-zero means `probe_buckets` is a truncated *prefix* and only the flat / per-`(role, model)` totals are complete |
+| `probe_dropped_buckets` | `(role, model, window)` **rows** refused by `max_buckets` — the same unit as the cap, so one window lost on a two-role trial counts 2. Non-zero means `probe_buckets` is a truncated *prefix* and only the flat / per-`(role, model)` totals are complete |
 | `probe_buckets` | The same counters per `(role, model, absolute window)`, sorted by window then role then model |
 
 ```yaml
@@ -526,14 +526,29 @@ The 429 count alone is not a measurement:
 - It is **schedule-dependent**. It counts how often *your* clients chose to poll,
   which is why the retry interval is fixed — `retries / (1 / retry_interval_s)`
   recovers blocked client-time only because the interval is constant.
-- It is **silent for some providers**. A model with no provider pin produced
-  **zero** 429s across four probe runs up to 33k input tokens/s while inflating
-  per-call latency 41 %. Nothing in the 429 census showed the ceiling; goodput and
-  latency did.
+- It is **silent for some providers** — a provider can throttle by slowing calls
+  down instead of rejecting them, and then the 429 census shows no ceiling at all
+  while goodput and latency both do.
 
 `probe_success_duration_s / wall_seconds` is the Little's-law in-flight
 concurrency the provider actually served. It is computed on **successful calls
 only**, which is what makes it schedule-independent.
+
+#### Field observations
+
+The single record of the measurements the design above is justified by. The code
+and the rest of these docs state the *invariants* and point here rather than
+restating figures that a second probe run will change.
+
+| Observation | Measured |
+|---|---|
+| Silent throttling — a provider can hold the 429 count at zero and pay for it in latency instead | A model with no provider pin produced **zero** 429s across four probe runs up to **33k input tokens/s**, while per-call latency inflated **41 %**. Only goodput and latency showed the ceiling. |
+| Non-stationarity — a cumulative average reports neither end of a decay, which is why `probe_buckets` exists | At a **constant** 70-way offered concurrency, goodput fell **1.70 → 0.43** successful calls/s over ~12 minutes while the rejection rate climbed **66 % → 86 %**. The blended average is ~1.07. |
+| 429 volume at the cap | **3,176** absorbed 429s on one 70-way probe leg. |
+| Token profiles differ ~4x between domains, so tokens/s — not calls/s — is what sums across legs | **369,857** vs **89,984** input tokens per trial. |
+
+Measured on OpenRouter, 2026-07. Re-measure before quoting: none of these is a
+property of the harness.
 
 #### Computing goodput, tokens/s and served concurrency
 
@@ -586,9 +601,9 @@ number. The rules:
    epoch-anchored.
 3. **Use the same `bucket_width_s` in every leg.** Different widths do not align.
 4. **Sum tokens/s, not calls/s.** Measured token profiles differ ~4x between
-   domains (369,857 vs 89,984 input tokens per trial), so a call in one leg is not
-   the same unit of work as a call in another. Tokens are the additive quantity;
-   calls/s across mixed domains is not.
+   domains (see [Field observations](#field-observations)), so a call in one leg is
+   not the same unit of work as a call in another. Tokens are the additive
+   quantity; calls/s across mixed domains is not.
 5. **Filter to the roles you are measuring.** Keep `role: agent` rows if the model
    under test is the agent; the simulator is a different, unmeasured model sharing
    the same quota.
@@ -597,6 +612,13 @@ number. The rules:
    low.
 7. **Check `probe_dropped_buckets`.** Non-zero on any leg means that leg's series
    is a truncated prefix; the flat totals are still complete, the series is not.
+   It counts refused `(role, model, window)` **rows**, so divide by the number of
+   roles to get windows. `max_buckets` is a global cap on rows rather than a
+   per-series one, so a high-volume role can consume the whole budget and a
+   low-volume role's series can be absent entirely while its
+   `rate_limit_by_role_model` row is non-zero — the counter does not say which
+   series truncated. Both are unreachable at the 4096 default within any episode
+   budget the invariant permits.
 
 ```python
 # Merge one leg's trials into a per-window series, then add legs together.
