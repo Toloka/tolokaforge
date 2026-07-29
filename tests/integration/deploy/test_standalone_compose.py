@@ -15,9 +15,11 @@ Two modes drive the same recipe:
   brings the same recipe up against it; skip-guarded on tag availability (absent
   until the first stable publish), mirroring the parity suite's published source.
 
-A third, gated test drives one real bundled trial through the composed runner over
-the ADR-0024 ``run-trial`` exec wire (``requires_api``), proving a trial reaches a
-graded ``TrialResult`` through the stack.
+Two gated tests each drive one real trial through the composed runner over the
+ADR-0024 ``run-trial`` exec wire (``requires_api``): a bundled db-service trial
+(the ``tool_use`` pack) and a mock-web booking trial (``http_request`` → mock-web),
+each proving its peer functionally participates in a graded ``TrialResult`` through
+the stack.
 
 ``docker compose up --wait`` blocks on all four healthchecks. rag-service loads
 ``all-MiniLM-L6-v2`` eagerly and downloads it from HuggingFace on a cold cache, so
@@ -30,7 +32,8 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -43,6 +46,9 @@ from tests.integration.deploy.conftest import (
     pull_published,
 )
 from tests.utils.docker_helpers import wait_for_health
+
+if TYPE_CHECKING:
+    from tolokaforge.core.trial import TrialResult
 
 pytestmark = [
     pytest.mark.integration,
@@ -63,6 +69,10 @@ _PAID_TASK = (
     REPO_ROOT
     / "examples/native/tool_use/dataset/tasks/tool_use/tool_use_public_example_01/task.yaml"
 )
+
+# A native http_request-only pack that books a room on mock-web and reports the
+# site-issued confirmation number — the trial that functionally drives mock-web.
+_MOCK_WEB_TASK = REPO_ROOT / "examples/native/mock_web_booking/dataset/tasks/booking_01/task.yaml"
 
 
 @pytest.fixture(scope="module", params=["local", "published"])
@@ -144,19 +154,16 @@ def _models(provider: str, model: str) -> dict[str, dict[str, Any]]:
     }
 
 
-@pytest.mark.requires_api
-@pytest.mark.llm
-def test_bundled_trial_through_composed_stack(composed_stack: StackHandle) -> None:
-    """One real bundled trial drives to a graded ``TrialResult`` through the stack.
+def _run_trial_through_stack(handle: StackHandle, task_path: Path) -> TrialResult:
+    """Drive one real trial to a ``TrialResult`` through the composed runner.
 
-    The trial runs over the ADR-0024 ``run-trial`` exec wire inside the composed
-    runner: the task pack is copied into the container so the wire task's relative
-    file assets resolve, and ``EXECUTOR_ADDRESS`` points the shared runtime at the
-    runner's own gRPC server. Exactly one ``result`` wire line must carry a
-    completed, graded ``TrialResult``.
+    Skips unless the stack is local-mode and a provider key is available. Copies
+    the task pack into the runner so the wire task's relative file assets resolve,
+    runs ``tolokaforge run-trial`` with ``EXECUTOR_ADDRESS`` pointed at the runner's
+    own gRPC server, and returns the single ``result`` wire line's ``TrialResult``.
     """
-    if composed_stack.mode != "local":
-        pytest.skip("the paid bundled trial runs against the local-mode stack")
+    if handle.mode != "local":
+        pytest.skip("the paid trial runs against the local-mode stack")
     provider = _pick_provider()
     if provider is None:
         pytest.skip("needs an ANTHROPIC or OPENROUTER key")
@@ -164,7 +171,7 @@ def test_bundled_trial_through_composed_stack(composed_stack: StackHandle) -> No
     from tolokaforge.adapters._task_loader import load_task_yaml
     from tolokaforge.core.trial import TrialResult
 
-    task, task_dir = load_task_yaml(_PAID_TASK)
+    task, task_dir = load_task_yaml(task_path)
     start = {
         "v": 1,
         "type": "start",
@@ -175,13 +182,11 @@ def test_bundled_trial_through_composed_stack(composed_stack: StackHandle) -> No
     }
 
     container_task_dir = f"/tmp/{task_dir.name}"
-    copied = compose(
-        composed_stack.project, ["cp", str(task_dir), "runner:/tmp/"], composed_stack.tag
-    )
+    copied = compose(handle.project, ["cp", str(task_dir), "runner:/tmp/"], handle.tag)
     assert copied.returncode == 0, f"copying the task pack into the runner failed: {copied.stderr}"
 
     proc = compose(
-        composed_stack.project,
+        handle.project,
         [
             "exec",
             "-T",
@@ -193,7 +198,7 @@ def test_bundled_trial_through_composed_stack(composed_stack: StackHandle) -> No
             "tolokaforge",
             "run-trial",
         ],
-        composed_stack.tag,
+        handle.tag,
         input_text=json.dumps(start) + "\n",
     )
     assert proc.returncode == 0, (
@@ -204,6 +209,40 @@ def test_bundled_trial_through_composed_stack(composed_stack: StackHandle) -> No
     assert len(lines) == 1, f"expected exactly one wire line, got: {proc.stdout!r}"
     envelope = json.loads(lines[0])
     assert envelope["type"] == "result", f"trial did not reach a result: {envelope!r}"
-    result = TrialResult.model_validate(envelope["result"])
+    return TrialResult.model_validate(envelope["result"])
+
+
+@pytest.mark.requires_api
+@pytest.mark.llm
+def test_bundled_trial_through_composed_stack(composed_stack: StackHandle) -> None:
+    """One real bundled db-service trial drives to a graded ``TrialResult``.
+
+    The ``tool_use`` pack exercises db_query/db_update plus the filesystem tools
+    over the ``run-trial`` exec wire, proving db-service participates in a real
+    graded trial through the composed stack.
+    """
+    result = _run_trial_through_stack(composed_stack, _PAID_TASK)
     assert result.trajectory.status.value == "completed", result.trajectory.status
     assert result.trajectory.grade is not None, "trial produced no grade"
+
+
+@pytest.mark.requires_api
+@pytest.mark.llm
+def test_mock_web_trial_through_composed_stack(composed_stack: StackHandle) -> None:
+    """One real mock-web booking trial drives to a graded pass through the stack.
+
+    The ``mock_web_booking`` pack gives the agent only ``http_request``; it books a
+    room on mock-web and reports the site-issued confirmation number. A graded pass
+    proves mock-web functionally participated — and the trajectory must show the
+    ``http_request`` round-trip to ``mock-web`` and the confirmation token, so a
+    grading regression that passes for the wrong reason is caught.
+    """
+    result = _run_trial_through_stack(composed_stack, _MOCK_WEB_TASK)
+    assert result.trajectory.status.value == "completed", result.trajectory.status
+    grade = result.trajectory.grade
+    assert grade is not None, "trial produced no grade"
+    assert grade.binary_pass is True, f"mock-web trial did not grade as a pass: {grade.reasons}"
+
+    transcript = json.dumps(result.trajectory.model_dump(mode="json"))
+    assert "mock-web" in transcript, "no http_request to mock-web appears in the trajectory"
+    assert "BKSEA12345" in transcript, "confirmation token absent — graded pass may be spurious"
