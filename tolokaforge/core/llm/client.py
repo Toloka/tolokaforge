@@ -670,49 +670,30 @@ class LLMClient:
     ) -> RateLimitProbeConfig | None:
         """Resolve rate-limit probe mode for this client.
 
-        Priority is the inverse of :meth:`_load_api_timeout_retries`: the run
-        config wins over the env var. The run-config block is archived in the
-        run artifacts, so an analysis agent can prove from the artifacts alone
-        whether the mode was active; letting an invisible env var override an
-        explicit block would let those artifacts lie.
-        ``TOLOKAFORGE_RATE_LIMIT_PROBE`` therefore only applies when no block
-        was passed at all, and exists for local debugging.
+        The passed block is the *only* activation channel — there is
+        deliberately no env override. An env var could not reach the agent
+        client (the orchestrator always passes an explicit block, so the var
+        would be dead there) while it *would* reach every site that omits the
+        kwarg: the rubric judge, a ``--fallback-models`` chain, and
+        :func:`~tolokaforge.core.run_trial.run_trial`. Those are exactly the
+        paths that must never probe, and an env-armed probe would also skip
+        both budget assertions and the fallback-chain rejection, which only run
+        on the config block. ``None`` therefore means "never probe" rather than
+        "unspecified".
 
-        Returns ``None`` when the mode is off from every source, which is what
-        keeps :meth:`_build_retrying` on its default path.
+        Returns ``None`` for a missing or disabled block, which is what keeps
+        :meth:`_build_retrying` on its default path.
         """
-        if configured is not None:
-            if configured.enabled:
-                self._log_rate_limit_probe(configured, source="run_config")
-                return configured
+        if configured is None or not configured.enabled:
             return None
-
-        if os.getenv("TOLOKAFORGE_RATE_LIMIT_PROBE", "").lower() not in {"1", "true", "yes", "on"}:
-            return None
-
-        defaults = RateLimitProbeConfig()
-        probe = RateLimitProbeConfig(
-            enabled=True,
-            retry_interval_s=self._parse_env_positive_float(
-                "TOLOKAFORGE_RATE_LIMIT_PROBE_INTERVAL_S",
-                default=defaults.retry_interval_s,
-            ),
-            per_call_budget_s=self._parse_env_positive_float(
-                "TOLOKAFORGE_RATE_LIMIT_PROBE_BUDGET_S",
-                default=defaults.per_call_budget_s,
-            ),
-        )
-        self._log_rate_limit_probe(probe, source="env")
-        return probe
-
-    def _log_rate_limit_probe(self, probe: RateLimitProbeConfig, *, source: str) -> None:
         self.logger.info(
             "Rate-limit probe mode enabled",
-            source=source,
-            retry_interval_s=probe.retry_interval_s,
-            per_call_budget_s=probe.per_call_budget_s,
+            retry_interval_s=configured.retry_interval_s,
+            jitter_fraction=configured.jitter_fraction,
+            per_call_budget_s=configured.per_call_budget_s,
             model=self.model_name,
         )
+        return configured
 
     def _parse_env_positive_float(self, name: str, default: float | None) -> float | None:
         raw = os.getenv(name)
