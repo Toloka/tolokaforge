@@ -149,17 +149,35 @@ episode budget after the `min(task trial_seconds, run episode_s)` clamp:
 
 - `episode_s > 3600` — a probe on a minutes-long episode budget dies on the
   episode timeout instead of measuring anything.
-- `per_call_budget_s + simulator_per_call_budget_s < episode_s` — the episode
-  timeout is only evaluated *between* turns, and one turn issues **two**
-  probe-capable calls (the agent's `generate`, then the simulator's `reply`), so
-  worst-case trial wall time is `episode_s + per_call_budget_s +
-  simulator_per_call_budget_s`. Keeping that pair below the episode budget bounds
-  the trial under the `max(300, episode_s * 2)` queue lease, and the strict
-  inequality is what leaves slack for the per-call overshoot above (10200 s of it
-  at the defaults).
+- the whole **per-turn 429 ceiling** must be strictly below `episode_s`:
+
+  ```
+  turn_wall_ceiling_s = per_call_budget_s + simulator_per_call_budget_s
+                      + 2 x (retry_interval_s x (1 + jitter_fraction) + 737)
+  ```
+
+  The episode timeout is only evaluated *between* turns, one turn issues **two**
+  probe-capable calls (the agent's `generate`, then the simulator's `reply`), and
+  `stop` is evaluated on an attempt's *outcome* — so each call can overrun its
+  budget by one jitter-maximum retry interval plus one attempt's own ceiling
+  (`737 s` = the client's `6 x 120 s` timeout budget plus its inner backoff).
+  Worst-case trial wall time is therefore `episode_s + turn_wall_ceiling_s`, and
+  holding the ceiling below `episode_s` bounds it under the
+  `max(300, episode_s * 2)` queue lease. At the defaults the ceiling is
+  `4200 + 1510 = 5710 s` against a 14400 s budget.
+
+  `retry_interval_s` and `jitter_fraction` are part of the invariant on purpose:
+  the defaults plus a large `retry_interval_s` alone can blow the lease.
+
+This bounds what the *probe* adds. It does not bound tool execution, grading, or
+a runaway upstream stream — the loop has no per-turn timeout, and an attempt's
+`timeout` is a per-read httpx timeout unless a model preset sets
+`api_call_wall_timeout_s`. Those components behave identically on a probe-off
+run, so the guarantee is "enabling the mode cannot be what pushes a trial past
+its lease", not "a trial can never outlive its lease".
 
 `episode_s` is the only ceiling that has to move: the queue lease is derived
-from it, and the loop has no per-turn timeout.
+from it.
 
 The mode reaches the agent client, the user-simulator client, and the
 per-trial counters (both censuses). It deliberately does **not** reach the rubric

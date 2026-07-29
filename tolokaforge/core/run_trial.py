@@ -20,7 +20,11 @@ from pydantic import BaseModel
 from tolokaforge.adapters import get_adapter
 from tolokaforge.adapters.base import BaseAdapter
 from tolokaforge.core.compose_materialisation import LogCaptureConfig
-from tolokaforge.core.conductor import Conductor, ConductorContext
+from tolokaforge.core.conductor import (
+    Conductor,
+    ConductorContext,
+    require_rate_limit_probe_support,
+)
 from tolokaforge.core.llm import LLMClient
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import (
@@ -109,10 +113,11 @@ def run_trial(
         rate_limit_probe: Rate-limit probe mode for the agent and simulator
             clients. ``None`` (default) runs the standard bounded-exponential
             retry path. Enabling it raises the composed run config's episode
-            budget to twice the probe's per-*turn* 429 budget (a probe absorbs
-            429s by sleeping, and episode wall-time counts that sleep), which is
-            what keeps the ``turn_budget_s < episode_s`` invariant true for this
-            composed-config surface.
+            budget to twice the probe's per-*turn* 429 wall ceiling (a probe
+            absorbs 429s by sleeping, and episode wall-time counts that sleep),
+            which is what keeps the budget invariant true by construction for
+            this composed-config surface. ``conductor`` must name an
+            implementation that supports the mode.
 
     Returns:
         The trial's :class:`TrialResult`.
@@ -121,7 +126,8 @@ def run_trial(
         pydantic.ValidationError: ``models`` is missing ``agent`` or malformed,
             or the composed run config is invalid.
         ValueError: ``rate_limit_probe`` is enabled with budgets that cannot
-            fit inside the episode budget.
+            fit inside the episode budget, or with a ``conductor`` that does not
+            support the mode.
         UnknownImplementationError: ``runtime`` / ``grader`` / ``conductor``
             names no registered implementation.
         ProvisionError: The substrate failed to provision (propagated, not
@@ -177,6 +183,13 @@ def run_trial(
             output_dir=output_path,
             request_limiter=None,
         )
+    )
+    # ``conductor`` names any registered implementation, and the agent client
+    # above is already armed — the same split the orchestrator guards.
+    require_rate_limit_probe_support(
+        conductor_impl,
+        config.orchestrator.rate_limit_probe,
+        source=f"run_trial(conductor={conductor!r})",
     )
 
     spec = TrialSpec(
@@ -295,14 +308,15 @@ def _build_run_config(
 
 
 def _probe_episode_s(probe: RateLimitProbeConfig) -> int:
-    """Episode budget wide enough for *probe*'s per-turn 429 budget to fit inside.
+    """Episode budget wide enough for *probe*'s per-turn 429 handling to fit inside.
 
-    Twice ``turn_budget_s`` (the agent's per-call budget plus the simulator's,
-    which one turn spends back to back), floored at the mode's minimum, so a
-    fully blocked turn can spend its whole budget and the trial still has room
-    for the rest of the episode.
+    Twice ``turn_wall_ceiling_s`` — both per-call budgets, which one turn spends
+    back to back, plus the overshoot each of those calls can add — floored at the
+    mode's minimum. Doubling the *ceiling* rather than the bare budget is what
+    makes :func:`validate_rate_limit_probe_budget` pass by construction for any
+    legal block, including one with a large ``retry_interval_s``.
     """
     return max(
-        int(probe.turn_budget_s * 2),
+        int(probe.turn_wall_ceiling_s * 2) + 1,
         RATE_LIMIT_PROBE_MIN_EPISODE_S + 1,
     )
