@@ -223,6 +223,7 @@ examples/             # Reference task layouts with runnable run_config.yaml
 | Security model | [docs/SECURITY.md](docs/SECURITY.md) |
 | Docker runtime | [docs/BENCHMARK_BACKEND_DESIGNS.md](docs/BENCHMARK_BACKEND_DESIGNS.md) |
 | Benchmark types | [docs/BENCHMARK_TYPES.md](docs/BENCHMARK_TYPES.md) |
+| Releasing (PyPI + Docker images) | [docs/RELEASING.md](docs/RELEASING.md) |
 | Testing guide | [tests/README.md](tests/README.md) |
 
 ## Examples
