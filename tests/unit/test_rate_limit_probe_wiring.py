@@ -14,10 +14,15 @@ Three things are load-bearing beyond the retry controller itself
   a fallback chain never carry it — asserted against the clients those paths
   actually build, with the (removed) env activation variable set.
 - A trial's absorbed 429s reach ``Metrics``, split per ``(role, model)``.
+- So does the SUCCESS census, plus the absolute-time window series a consumer
+  computes goodput / tokens-per-second / Little's-law concurrency from — with
+  the bucket boundary an exact epoch multiple, the series sorted as a timeline,
+  the bucket cap visible, and every field left at its default with the mode off.
 """
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -31,6 +36,7 @@ from tolokaforge.core.llm.fallback_client import FallbackLLMClient
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import (
     EvaluationConfig,
+    Metrics,
     ModelConfig,
     OrchestratorConfig,
     RateLimitProbeConfig,
@@ -214,6 +220,23 @@ class TestBudgetInvariantAgainstTheEffectiveTimeout:
         kwargs = runner_cls.call_args.kwargs
         assert kwargs["episode_timeout_s"] == 14400
         assert isinstance(kwargs["probe_stats"], RateLimitProbeStats)
+
+    def test_the_bucketing_knobs_reach_the_trials_accumulator(self, tmp_path: Path) -> None:
+        """The window grid is declared once, in the config block that armed the
+        mode, and reaches every trial. Simultaneous run legs must share the grid
+        to be summable, so a per-trial default would defeat the design."""
+        probe = _PROBE.model_copy(update={"bucket_width_s": 60, "max_buckets": 7})
+        conductor = self._conductor(_run_config(probe=probe), tmp_path)
+        task = TaskConfig(task_id="bucketed", description="d")
+
+        with (
+            patch.object(InProcessConductor, "_build_system_prompt", return_value="sys"),
+            patch("tolokaforge.core.conductor.TrialRunner") as runner_cls,
+        ):
+            conductor._run_agent_loop(MagicMock(), task, self._setup(tmp_path))
+
+        stats = runner_cls.call_args.kwargs["probe_stats"]
+        assert (stats.bucket_width_s, stats.max_buckets) == (60, 7)
 
     def test_the_simulator_the_conductor_builds_carries_the_shorter_budget(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -426,6 +449,231 @@ class TestProbeCountersReachMetrics:
         assert runner.metrics.rate_limit_first_ts is None
         assert runner.metrics.rate_limit_last_ts is None
         assert runner.metrics.rate_limit_by_role_model == []
+        assert runner.metrics.probe_successful_calls == 0
+        assert runner.metrics.probe_success_duration_s == 0.0
+        assert runner.metrics.probe_prompt_tokens == 0
+        assert runner.metrics.probe_completion_tokens == 0
+        assert runner.metrics.probe_bucket_width_s == 0
+        assert runner.metrics.probe_dropped_buckets == 0
+        assert runner.metrics.probe_buckets == []
+        # A normal run's metrics.yaml must be byte-identical to a pre-feature
+        # one for these fields, i.e. every default untouched.
+        assert runner.metrics == Metrics()
+
+
+class TestGoodputReachesMetrics:
+    """The serialised surface a consumer computes goodput / tokens-per-second /
+    Little's-law concurrency from, without parsing a single log line.
+
+    ``Metrics.usage`` cannot serve: ``usage.calls`` holds agent calls only and
+    carries no role, so a hand count conflated the agent model with the
+    user-simulator model and inflated the number.
+    """
+
+    _AGENT = "openrouter/deepseek/deepseek-v3.2-exp"
+    _USER = "openrouter/anthropic/claude-sonnet-4.6"
+    _EPOCH = 1_700_000_000.0
+    _BUCKET = datetime(2023, 11, 14, 22, 13, tzinfo=timezone.utc)
+    """``1_699_999_980`` — the 30 s window ``_EPOCH`` falls in, as UTC."""
+
+    def _runner(self, probe_stats: RateLimitProbeStats | None) -> TrialRunner:
+        runner = TrialRunner(
+            task_id="t1",
+            trial_index=0,
+            agent_client=MagicMock(),
+            user_simulator=MagicMock(),
+            tool_executor=MagicMock(),
+            tool_schemas=[],
+            probe_stats=probe_stats,
+        )
+        runner.logger = get_logger("probe-goodput", strict=False)
+        return runner
+
+    def _stats(self, **kwargs: Any) -> RateLimitProbeStats:
+        return RateLimitProbeStats(**kwargs)
+
+    def test_the_bucket_start_is_an_exact_utc_epoch_boundary(self) -> None:
+        """The join key across legs. ``1_699_999_980`` is a multiple of 30 from
+        the Unix epoch, so two legs render the identical ISO timestamp and a
+        consumer groups on it directly — no float drift, no run-start offset."""
+        stats = self._stats(bucket_width_s=30)
+        stats.record_success(
+            role="agent",
+            model=self._AGENT,
+            duration_s=2.0,
+            prompt_tokens=10,
+            completion_tokens=1,
+            ts=self._EPOCH,
+        )
+        runner = self._runner(stats)
+
+        runner._apply_probe_stats()
+
+        (bucket,) = runner.metrics.probe_buckets
+        assert bucket.bucket_start_ts == self._BUCKET
+        assert bucket.bucket_start_ts.timestamp() == 1_699_999_980
+        assert int(bucket.bucket_start_ts.timestamp()) % 30 == 0
+        assert runner.metrics.probe_bucket_width_s == 30
+
+    def test_flat_success_counters_are_the_sum_across_rows(self) -> None:
+        """A single trial's goodput *ratio* is meaningless, so every field is an
+        additive count: sum first across trials and legs, form the ratio last."""
+        stats = self._stats()
+        for _ in range(3):
+            stats.record_success(
+                role="agent",
+                model=self._AGENT,
+                duration_s=10.0,
+                prompt_tokens=369_857,
+                completion_tokens=500,
+                ts=self._EPOCH,
+            )
+        stats.record_success(
+            role="user",
+            model=self._USER,
+            duration_s=1.0,
+            prompt_tokens=89_984,
+            completion_tokens=40,
+            ts=self._EPOCH,
+        )
+        runner = self._runner(stats)
+
+        runner._apply_probe_stats()
+
+        metrics = runner.metrics
+        rows = metrics.rate_limit_by_role_model
+        assert [(r.role, r.model, r.successful_calls, r.prompt_tokens) for r in rows] == [
+            ("agent", self._AGENT, 3, 1_109_571),
+            ("user", self._USER, 1, 89_984),
+        ]
+        assert metrics.probe_successful_calls == sum(r.successful_calls for r in rows) == 4
+        assert metrics.probe_prompt_tokens == sum(r.prompt_tokens for r in rows) == 1_199_555
+        assert metrics.probe_completion_tokens == sum(r.completion_tokens for r in rows) == 1540
+        assert metrics.probe_success_duration_s == sum(r.success_duration_s for r in rows) == 31.0
+
+    def test_the_rows_carry_both_censuses_for_the_same_model(self) -> None:
+        """Goodput and the 429 count for one model sit on one row. The 429 census
+        alone is not enough: a model with no provider pin produced ZERO 429s
+        across four runs while inflating per-call latency 41 %, which only the
+        success side catches."""
+        stats = self._stats()
+        stats.record_success(
+            role="agent",
+            model=self._AGENT,
+            duration_s=8.0,
+            prompt_tokens=100,
+            completion_tokens=10,
+            ts=self._EPOCH,
+        )
+        stats.record_retry(role="agent", model=self._AGENT, wait_s=15.0, ts=self._EPOCH + 1)
+        runner = self._runner(stats)
+
+        runner._apply_probe_stats()
+
+        (row,) = runner.metrics.rate_limit_by_role_model
+        assert (row.successful_calls, row.success_duration_s) == (1, 8.0)
+        assert (row.retries, row.wait_s) == (1, 15.0)
+        assert row.first_ts is not None and row.last_ts is not None
+
+    def test_buckets_are_sorted_window_first_then_role_then_model(self) -> None:
+        """Deterministic order so the serialised series reads as a timeline and
+        two runs of the same trial diff cleanly."""
+        stats = self._stats(bucket_width_s=30)
+        for role, model, ts in (
+            ("user", self._USER, self._EPOCH + 60),
+            ("agent", self._AGENT, self._EPOCH + 60),
+            ("agent", self._AGENT, self._EPOCH),
+        ):
+            stats.record_success(
+                role=role,  # type: ignore[arg-type]
+                model=model,
+                duration_s=1.0,
+                prompt_tokens=1,
+                completion_tokens=1,
+                ts=ts,
+            )
+        runner = self._runner(stats)
+
+        runner._apply_probe_stats()
+
+        emitted = [(b.bucket_start_ts, b.role) for b in runner.metrics.probe_buckets]
+        assert emitted == sorted(emitted)
+        assert emitted == [
+            (self._BUCKET, "agent"),
+            (self._BUCKET + timedelta(seconds=60), "agent"),
+            (self._BUCKET + timedelta(seconds=60), "user"),
+        ]
+
+    def test_a_windowed_series_survives_the_non_stationarity_a_total_hides(self) -> None:
+        """The motivating measurement: goodput decayed 1.70 -> 0.43 calls/s at
+        CONSTANT offered concurrency. The cumulative average is ~1.07 and reports
+        neither end; the windows report both."""
+        stats = self._stats(bucket_width_s=30)
+        # 51 successful calls in the first window, 13 in the fourth.
+        for window_offset, calls in ((0.0, 51), (90.0, 13)):
+            for _ in range(calls):
+                stats.record_success(
+                    role="agent",
+                    model=self._AGENT,
+                    duration_s=1.0,
+                    prompt_tokens=100,
+                    completion_tokens=10,
+                    ts=self._EPOCH + window_offset,
+                )
+        runner = self._runner(stats)
+
+        runner._apply_probe_stats()
+
+        width = runner.metrics.probe_bucket_width_s
+        per_window = [b.successful_calls / width for b in runner.metrics.probe_buckets]
+        assert per_window == [1.7, pytest.approx(0.4333, abs=1e-4)]
+        # The flat total blends them into one number that is neither.
+        assert runner.metrics.probe_successful_calls == 64
+
+    def test_dropped_buckets_are_visible_on_the_metrics(self) -> None:
+        """The truncation is never silent, and the cumulative record stays
+        complete so the run is still usable."""
+        stats = self._stats(bucket_width_s=30, max_buckets=1)
+        for offset in (0.0, 30.0, 60.0):
+            stats.record_success(
+                role="agent",
+                model=self._AGENT,
+                duration_s=1.0,
+                prompt_tokens=10,
+                completion_tokens=1,
+                ts=self._EPOCH + offset,
+            )
+        runner = self._runner(stats)
+
+        runner._apply_probe_stats()
+
+        metrics = runner.metrics
+        assert metrics.probe_dropped_buckets == 2
+        assert len(metrics.probe_buckets) == 1
+        assert metrics.probe_successful_calls == 3
+        assert metrics.probe_prompt_tokens == 30
+        assert metrics.rate_limit_by_role_model[0].successful_calls == 3
+
+    def test_the_serialised_metrics_round_trip(self) -> None:
+        """The fields cross a serialisation boundary (metrics.yaml /
+        trajectory.yaml), so the JSON round-trip has to be exact."""
+        stats = self._stats(bucket_width_s=30)
+        stats.record_success(
+            role="agent",
+            model=self._AGENT,
+            duration_s=2.5,
+            prompt_tokens=100,
+            completion_tokens=10,
+            ts=self._EPOCH,
+        )
+        stats.record_retry(role="agent", model=self._AGENT, wait_s=15.0, ts=self._EPOCH)
+        runner = self._runner(stats)
+        runner._apply_probe_stats()
+
+        dumped = runner.metrics.model_dump(mode="json")
+        assert Metrics(**dumped).model_dump(mode="json") == dumped
+        assert dumped["probe_buckets"][0]["bucket_start_ts"].startswith("2023-11-14T22:13:00")
+        assert dumped["probe_bucket_width_s"] == 30
 
 
 class TestSeedMessageRetryLoop:

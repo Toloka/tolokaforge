@@ -16,14 +16,19 @@ Locks the behaviour the mode exists for:
 - The counters that reach ``Metrics`` come from real controller runs, not from
   a hand-driven accumulator, and they are keyed by ``(role, model)`` so an
   agent's and a simulator's 429s can never be blended.
+- The SUCCESS census — successful calls, their duration and their tokens —
+  records from the same runs, under the same two-part gate, into absolute-time
+  windows; and records **nothing** with the mode off.
 - There is no env activation channel: the mode arms only from a passed config
   block.
 
 Every case drives the real ``LLMClient.generate`` outer controller with
 ``tolokaforge.core.llm.client.completion`` patched — no provider is contacted.
-Wall time is faked by swapping ``tenacity``'s clock for a counter that only
-advances when the injected ``sleep`` hook runs, so budget exhaustion is exact
-and the suite stays instant.
+Two independent clocks are faked: ``tenacity``'s (a counter advanced only by the
+injected ``sleep`` hook, so budget exhaustion is exact) and ``client.py``'s own
+``time`` module (:class:`_FakeWallClock`, so the bucket a success lands in and
+the ``duration_s`` it contributes are both deterministic). The suite stays
+instant.
 """
 
 from __future__ import annotations
@@ -128,7 +133,12 @@ def _context_length_error() -> Exception:
     )
 
 
-def _completion_response(content: str = "ok") -> MagicMock:
+def _completion_response(
+    content: str = "ok",
+    *,
+    prompt_tokens: int = 1,
+    completion_tokens: int = 1,
+) -> MagicMock:
     response = MagicMock()
     choice = MagicMock()
     message = MagicMock()
@@ -142,15 +152,63 @@ def _completion_response(content: str = "ok") -> MagicMock:
     choice.provider_specific_fields = None
     response.choices = [choice]
     response.usage = MagicMock(
-        prompt_tokens=1,
-        completion_tokens=1,
-        total_tokens=2,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=prompt_tokens + completion_tokens,
         prompt_tokens_details=None,
         completion_tokens_details=None,
         cache_creation_input_tokens=0,
         cache_read_input_tokens=0,
     )
     return response
+
+
+class _FakeWallClock:
+    """Stands in for the ``time`` module inside ``client.py``.
+
+    Two independent needs, both deterministic:
+
+    * ``time()`` is the epoch second the probe buckets a success into, so
+      driving it drives the absolute-time window a call lands in.
+    * ``monotonic()`` advances a fixed step per read, so the per-attempt
+      ``duration_s`` the success recorder sums is exact rather than a real
+      sub-millisecond measurement.
+
+    Independent of the ``_FakeClock`` swapped into ``tenacity`` — that one fakes
+    the retry budget, this one fakes what ``client.py`` itself reads.
+    """
+
+    def __init__(self, *, epoch: float, monotonic_step: float = 0.5) -> None:
+        self.epoch = epoch
+        self._monotonic = 0.0
+        self._step = monotonic_step
+
+    def time(self) -> float:
+        return self.epoch
+
+    def monotonic(self) -> float:
+        now = self._monotonic
+        self._monotonic += self._step
+        return now
+
+
+@pytest.fixture
+def wall(monkeypatch: pytest.MonkeyPatch) -> _FakeWallClock:
+    fake = _FakeWallClock(epoch=_PROBE_EPOCH)
+    monkeypatch.setattr("tolokaforge.core.llm.client.time", fake)
+    return fake
+
+
+_PROBE_EPOCH = 1_700_000_000.0
+"""Epoch second the goodput cases start at.
+
+Deliberately NOT a multiple of the 30 s bucket width — ``1_700_000_000 // 30 *
+30 == 1_699_999_980`` — so a bucket start anchored on the first call instead of
+on the epoch grid is visible as a wrong window key.
+"""
+
+_PROBE_EPOCH_BUCKET = 1_699_999_980
+"""The window ``_PROBE_EPOCH`` falls in on the 30 s epoch grid."""
 
 
 def _make_client(
@@ -754,3 +812,413 @@ class TestNoEnvActivationChannel:
         monkeypatch.delenv("TOLOKAFORGE_RATE_LIMIT_PROBE", raising=False)
         client = _make_client(monkeypatch)
         assert client._rate_limit_probe is None
+
+
+class TestGoodputCounters:
+    """The SUCCESS side, recorded from real controller runs.
+
+    ``usage.calls`` cannot answer these questions: it holds agent calls only and
+    carries no role field, so per-model goodput and latency are not computable
+    from it. In a real measurement that gap forced counting litellm log lines by
+    hand, which conflated the agent model with the user-simulator model and
+    inflated the number.
+    """
+
+    def _observation(
+        self, stats: RateLimitProbeStats | None, *, role: str = "agent"
+    ) -> LLMCallObservation:
+        return LLMCallObservation(
+            events=_NULL_EVENTS,
+            trial_id="task_x:0",
+            role=role,  # type: ignore[arg-type]
+            probe_stats=stats,
+        )
+
+    def test_a_successful_call_records_calls_duration_and_tokens(
+        self, monkeypatch: pytest.MonkeyPatch, clock: _FakeClock, wall: _FakeWallClock
+    ) -> None:
+        client = _make_client(monkeypatch, probe=_probe(), clock=clock)
+        stats = RateLimitProbeStats()
+
+        with (
+            patch(
+                "tolokaforge.core.llm.client.completion",
+                return_value=_completion_response(prompt_tokens=1234, completion_tokens=56),
+            ),
+            patch("tolokaforge.core.llm.client.estimate_cost", return_value=0.0),
+        ):
+            _generate(client, observation=self._observation(stats))
+
+        assert stats.successes == 1
+        assert stats.success_duration_s == 0.5
+        assert (stats.prompt_tokens, stats.completion_tokens) == (1234, 56)
+        row = stats.by_role_model[("agent", "openrouter/anthropic/claude-3-haiku")]
+        assert (row.successes, row.prompt_tokens, row.completion_tokens) == (1, 1234, 56)
+        # No 429 happened, so the failure census stays untouched — the two are
+        # independent, which is the point of recording both.
+        assert (stats.retries, stats.wait_s, stats.first_ts) == (0, 0.0, None)
+
+    def test_tokens_are_counted_once_and_agree_with_usage(
+        self, monkeypatch: pytest.MonkeyPatch, clock: _FakeClock, wall: _FakeWallClock
+    ) -> None:
+        """The counters reuse the ``Usage`` ``_assemble_result`` already built for
+        the call, so three calls give 3x the tokens — not 6x from a second
+        extraction — and the trial's ``usage.calls`` list is unaffected."""
+        client = _make_client(monkeypatch, probe=_probe(), clock=clock)
+        stats = RateLimitProbeStats()
+        observation = self._observation(stats)
+        results = []
+
+        with (
+            patch(
+                "tolokaforge.core.llm.client.completion",
+                return_value=_completion_response(prompt_tokens=100, completion_tokens=10),
+            ),
+            patch("tolokaforge.core.llm.client.estimate_cost", return_value=0.0),
+        ):
+            for _ in range(3):
+                results.append(_generate(client, observation=observation))
+
+        assert stats.successes == 3
+        assert (stats.prompt_tokens, stats.completion_tokens) == (300, 30)
+        # Same numbers the per-call usage rows carry, counted once each.
+        assert stats.prompt_tokens == sum(
+            call.prompt_tokens for result in results for call in result.usage.calls
+        )
+        assert stats.successes == sum(len(result.usage.calls) for result in results)
+
+    def test_a_429_then_a_success_records_both_censuses_for_one_model(
+        self, monkeypatch: pytest.MonkeyPatch, clock: _FakeClock, wall: _FakeWallClock
+    ) -> None:
+        client = _make_client(monkeypatch, probe=_probe(), clock=clock)
+        stats = RateLimitProbeStats()
+
+        with (
+            patch(
+                "tolokaforge.core.llm.client.completion",
+                side_effect=[_rate_limit_error()] * 2
+                + [_completion_response(prompt_tokens=90, completion_tokens=9)],
+            ),
+            patch("tolokaforge.core.llm.client.estimate_cost", return_value=0.0),
+        ):
+            _generate(client, observation=self._observation(stats))
+
+        row = stats.by_role_model[("agent", "openrouter/anthropic/claude-3-haiku")]
+        assert (row.retries, row.wait_s) == (2, 30.0)
+        assert (row.successes, row.prompt_tokens) == (1, 90)
+        # One retried call is one success, not three: only the returning attempt
+        # counts, so goodput is completions and not attempts.
+        assert stats.successes == 1
+
+    def test_a_failed_call_records_no_success(
+        self, monkeypatch: pytest.MonkeyPatch, clock: _FakeClock, wall: _FakeWallClock
+    ) -> None:
+        """Goodput must count only what the provider actually served."""
+        client = _make_client(monkeypatch, probe=_probe(), clock=clock)
+        stats = RateLimitProbeStats()
+
+        with (
+            patch(
+                "tolokaforge.core.llm.client.completion",
+                side_effect=[_server_error()] * 6,
+            ),
+            patch("tolokaforge.core.llm.client.estimate_cost", return_value=0.0),
+            pytest.raises(RuntimeError),
+        ):
+            _generate(client, observation=self._observation(stats))
+
+        assert (stats.successes, stats.success_duration_s) == (0, 0.0)
+        assert (stats.prompt_tokens, stats.completion_tokens) == (0, 0)
+        assert stats.by_bucket == {}
+
+    def test_a_default_path_client_records_no_goodput(
+        self, monkeypatch: pytest.MonkeyPatch, clock: _FakeClock, wall: _FakeWallClock
+    ) -> None:
+        """Probe OFF must record nothing, even when the observation carries an
+        accumulator. The gate is the same two-part one the 429 side uses, so a
+        rubric judge or a fallback-chain member cannot contribute to a
+        measurement it is not part of."""
+        client = _make_client(monkeypatch, clock=clock)
+        assert client._rate_limit_probe is None
+        stats = RateLimitProbeStats()
+
+        with (
+            patch(
+                "tolokaforge.core.llm.client.completion",
+                return_value=_completion_response(prompt_tokens=999, completion_tokens=99),
+            ),
+            patch("tolokaforge.core.llm.client.estimate_cost", return_value=0.0),
+        ):
+            result = _generate(client, observation=self._observation(stats))
+
+        # The call really did succeed and really did report tokens...
+        assert result.usage.prompt_tokens == 999
+        # ...and none of it was recorded.
+        assert (stats.successes, stats.prompt_tokens, stats.completion_tokens) == (0, 0, 0)
+        assert stats.success_duration_s == 0.0
+        assert stats.by_role_model == {}
+        assert stats.by_bucket == {}
+
+    def test_no_observation_records_nothing_and_still_returns(
+        self, monkeypatch: pytest.MonkeyPatch, clock: _FakeClock, wall: _FakeWallClock
+    ) -> None:
+        client = _make_client(monkeypatch, probe=_probe(), clock=clock)
+
+        with (
+            patch(
+                "tolokaforge.core.llm.client.completion",
+                return_value=_completion_response(),
+            ),
+            patch("tolokaforge.core.llm.client.estimate_cost", return_value=0.0),
+        ):
+            assert _generate(client, observation=None).usage.prompt_tokens == 1
+
+    def test_an_observation_without_stats_records_nothing(
+        self, monkeypatch: pytest.MonkeyPatch, clock: _FakeClock, wall: _FakeWallClock
+    ) -> None:
+        client = _make_client(monkeypatch, probe=_probe(), clock=clock)
+
+        with (
+            patch(
+                "tolokaforge.core.llm.client.completion",
+                return_value=_completion_response(),
+            ),
+            patch("tolokaforge.core.llm.client.estimate_cost", return_value=0.0),
+        ):
+            _generate(client, observation=self._observation(None))
+
+
+class TestGoodputPerModelAttribution:
+    """Per-``(role, model)`` separation of the SUCCESS side, driven end to end.
+
+    The measured live case: 3,176 429s on a 70-way probe, all attributed to the
+    agent and zero to the simulator. The same attribution has to hold for
+    goodput, or a leg's agent tokens/s is inflated by its simulator's traffic.
+    """
+
+    _AGENT_MODEL = "deepseek/deepseek-v3.2-exp"
+    _USER_MODEL = "anthropic/claude-sonnet-4.6"
+
+    def _drive(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        clock: _FakeClock,
+        stats: RateLimitProbeStats,
+        *,
+        role: str,
+        model: str,
+        calls: int,
+        prompt_tokens: int,
+        completion_tokens: int = 10,
+    ) -> None:
+        client = _make_client(monkeypatch, probe=_probe(), clock=clock, model=model)
+        observation = LLMCallObservation(
+            events=_NULL_EVENTS,
+            trial_id="task_x:0",
+            role=role,  # type: ignore[arg-type]
+            probe_stats=stats,
+        )
+        with (
+            patch(
+                "tolokaforge.core.llm.client.completion",
+                return_value=_completion_response(
+                    prompt_tokens=prompt_tokens, completion_tokens=completion_tokens
+                ),
+            ),
+            patch("tolokaforge.core.llm.client.estimate_cost", return_value=0.0),
+        ):
+            for _ in range(calls):
+                _generate(client, observation=observation)
+
+    def test_mixed_roles_keep_separate_goodput_rows(
+        self, monkeypatch: pytest.MonkeyPatch, clock: _FakeClock, wall: _FakeWallClock
+    ) -> None:
+        """One trial, two models, asymmetric in BOTH call count and token
+        profile — 3 calls of 369,857 prompt tokens against 1 of 89,984, the ~4x
+        cross-domain spread that was actually measured. A shared bucket reports
+        4 calls and 1,199,555 tokens against whichever model was recorded, so
+        every assertion here fails if the buckets were merged."""
+        stats = RateLimitProbeStats()
+        self._drive(
+            monkeypatch,
+            clock,
+            stats,
+            role="agent",
+            model=self._AGENT_MODEL,
+            calls=3,
+            prompt_tokens=369_857,
+        )
+        self._drive(
+            monkeypatch,
+            clock,
+            stats,
+            role="user",
+            model=self._USER_MODEL,
+            calls=1,
+            prompt_tokens=89_984,
+        )
+
+        agent_key = ("agent", f"openrouter/{self._AGENT_MODEL}")
+        user_key = ("user", f"openrouter/{self._USER_MODEL}")
+        assert sorted(stats.by_role_model) == sorted([agent_key, user_key])
+        agent, user = stats.by_role_model[agent_key], stats.by_role_model[user_key]
+        assert (agent.successes, agent.prompt_tokens) == (3, 1_109_571)
+        assert (user.successes, user.prompt_tokens) == (1, 89_984)
+        assert stats.successes == 4
+        assert stats.prompt_tokens == agent.prompt_tokens + user.prompt_tokens == 1_199_555
+        # Little's law is per model too: summed duration over wall time.
+        assert agent.success_duration_s == 1.5
+        assert user.success_duration_s == 0.5
+
+    def test_same_model_on_two_roles_still_splits_goodput(
+        self, monkeypatch: pytest.MonkeyPatch, clock: _FakeClock, wall: _FakeWallClock
+    ) -> None:
+        """A config pointing both roles at one model must not merge them: the
+        agent is the measured role and the simulator is not."""
+        stats = RateLimitProbeStats()
+        self._drive(
+            monkeypatch,
+            clock,
+            stats,
+            role="agent",
+            model=self._AGENT_MODEL,
+            calls=2,
+            prompt_tokens=100,
+        )
+        self._drive(
+            monkeypatch,
+            clock,
+            stats,
+            role="user",
+            model=self._AGENT_MODEL,
+            calls=1,
+            prompt_tokens=7,
+        )
+
+        slug = f"openrouter/{self._AGENT_MODEL}"
+        assert sorted(stats.by_role_model) == [("agent", slug), ("user", slug)]
+        assert stats.by_role_model[("agent", slug)].prompt_tokens == 200
+        assert stats.by_role_model[("user", slug)].prompt_tokens == 7
+
+    def test_goodput_and_429s_of_two_models_stay_independent(
+        self, monkeypatch: pytest.MonkeyPatch, clock: _FakeClock, wall: _FakeWallClock
+    ) -> None:
+        """The live shape: every 429 on the agent, none on the simulator, while
+        both serve successful calls."""
+        stats = RateLimitProbeStats()
+        agent = _make_client(monkeypatch, probe=_probe(), clock=clock, model=self._AGENT_MODEL)
+        agent_obs = LLMCallObservation(
+            events=_NULL_EVENTS, trial_id="t:0", role="agent", probe_stats=stats
+        )
+        with (
+            patch(
+                "tolokaforge.core.llm.client.completion",
+                side_effect=[_rate_limit_error()] * 3 + [_completion_response(prompt_tokens=50)],
+            ),
+            patch("tolokaforge.core.llm.client.estimate_cost", return_value=0.0),
+        ):
+            _generate(agent, observation=agent_obs)
+        self._drive(
+            monkeypatch,
+            clock,
+            stats,
+            role="user",
+            model=self._USER_MODEL,
+            calls=2,
+            prompt_tokens=5,
+        )
+
+        agent_row = stats.by_role_model[("agent", f"openrouter/{self._AGENT_MODEL}")]
+        user_row = stats.by_role_model[("user", f"openrouter/{self._USER_MODEL}")]
+        assert (agent_row.retries, agent_row.successes) == (3, 1)
+        assert (user_row.retries, user_row.successes) == (0, 2)
+
+
+class TestGoodputBucketsFromRealCalls:
+    """Absolute-time windows, filled by the real controller.
+
+    A cumulative counter hides non-stationarity: at CONSTANT 70-way offered
+    concurrency a measured probe's goodput fell 1.70 -> 0.43 successful calls/s
+    over ~12 minutes while rejections climbed 66 % -> 86 %. The windows are how
+    that curve survives into the artifacts.
+    """
+
+    def _observation(self, stats: RateLimitProbeStats) -> LLMCallObservation:
+        return LLMCallObservation(
+            events=_NULL_EVENTS, trial_id="t:0", role="agent", probe_stats=stats
+        )
+
+    def test_calls_land_in_epoch_aligned_windows(
+        self, monkeypatch: pytest.MonkeyPatch, clock: _FakeClock, wall: _FakeWallClock
+    ) -> None:
+        client = _make_client(monkeypatch, probe=_probe(), clock=clock)
+        stats = RateLimitProbeStats(bucket_width_s=30)
+        observation = self._observation(stats)
+
+        with (
+            patch(
+                "tolokaforge.core.llm.client.completion",
+                return_value=_completion_response(prompt_tokens=10, completion_tokens=1),
+            ),
+            patch("tolokaforge.core.llm.client.estimate_cost", return_value=0.0),
+        ):
+            for offset in (0.0, 5.0, 35.0):
+                wall.epoch = _PROBE_EPOCH + offset
+                _generate(client, observation=observation)
+
+        slug = "openrouter/anthropic/claude-3-haiku"
+        # First two calls (epoch +0, +5) share the window _PROBE_EPOCH falls in;
+        # the third (+35) is one window later. Both starts are multiples of 30
+        # from the Unix epoch, not from the first call.
+        assert sorted(stats.by_bucket) == [
+            ("agent", slug, _PROBE_EPOCH_BUCKET),
+            ("agent", slug, _PROBE_EPOCH_BUCKET + 30),
+        ]
+        assert stats.by_bucket[("agent", slug, _PROBE_EPOCH_BUCKET)].successes == 2
+        assert stats.by_bucket[("agent", slug, _PROBE_EPOCH_BUCKET + 30)].successes == 1
+        assert all(start % 30 == 0 for (_r, _m, start) in stats.by_bucket)
+        assert stats.successes == 3
+
+    def test_the_window_records_the_served_and_rejected_side_together(
+        self, monkeypatch: pytest.MonkeyPatch, clock: _FakeClock, wall: _FakeWallClock
+    ) -> None:
+        client = _make_client(monkeypatch, probe=_probe(), clock=clock)
+        stats = RateLimitProbeStats(bucket_width_s=30)
+
+        with (
+            patch(
+                "tolokaforge.core.llm.client.completion",
+                side_effect=[_rate_limit_error(), _completion_response(prompt_tokens=10)],
+            ),
+            patch("tolokaforge.core.llm.client.estimate_cost", return_value=0.0),
+        ):
+            _generate(client, observation=self._observation(stats))
+
+        (window,) = stats.by_bucket.values()
+        assert (window.successes, window.retries) == (1, 1)
+        assert window.prompt_tokens == 10
+
+    def test_the_bucket_cap_drops_visibly_and_keeps_the_totals(
+        self, monkeypatch: pytest.MonkeyPatch, clock: _FakeClock, wall: _FakeWallClock
+    ) -> None:
+        client = _make_client(monkeypatch, probe=_probe(), clock=clock)
+        stats = RateLimitProbeStats(bucket_width_s=30, max_buckets=1)
+        observation = self._observation(stats)
+
+        with (
+            patch(
+                "tolokaforge.core.llm.client.completion",
+                return_value=_completion_response(prompt_tokens=10, completion_tokens=1),
+            ),
+            patch("tolokaforge.core.llm.client.estimate_cost", return_value=0.0),
+        ):
+            for offset in (0.0, 30.0, 60.0):
+                wall.epoch = _PROBE_EPOCH + offset
+                _generate(client, observation=observation)
+
+        assert len(stats.by_bucket) == 1
+        assert stats.dropped_buckets == 2
+        # The series truncated; the cumulative record did not.
+        assert stats.successes == 3
+        assert stats.prompt_tokens == 30
+        assert stats.by_role_model[("agent", "openrouter/anthropic/claude-3-haiku")].successes == 3

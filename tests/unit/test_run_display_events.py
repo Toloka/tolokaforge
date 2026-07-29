@@ -20,6 +20,10 @@ These tests lock:
 - :class:`LLMCallObservation` is a frozen dataclass carrying the seam
   reference + call identity (``trial_id`` + ``role``) that
   ``LLMClient.generate`` will thread through per call.
+- :class:`RateLimitProbeStats` accumulates both censuses of rate-limit
+  probe throughput — 429s and successful calls — per ``(role, model)``
+  and per fixed-width **absolute-time** window, with a bounded bucket
+  count whose drop policy keeps the retained series a contiguous prefix.
 """
 
 from __future__ import annotations
@@ -32,6 +36,8 @@ import pytest
 
 from tolokaforge.core.run_display_events import (
     _NULL_EVENTS,
+    DEFAULT_PROBE_BUCKET_WIDTH_S,
+    DEFAULT_PROBE_MAX_BUCKETS,
     ContainerSnapshot,
     LLMCallObservation,
     RateLimitProbeStats,
@@ -262,3 +268,364 @@ def test_rate_limit_probe_stats_requires_an_attribution() -> None:
     unattributable bucket — every call site already knows both."""
     with pytest.raises(TypeError):
         RateLimitProbeStats().record_retry(wait_s=15.0, ts=100.0)  # type: ignore[call-arg]
+
+
+def test_rate_limit_probe_stats_requires_an_attribution_for_successes() -> None:
+    """Same for the success side: an unattributed success would make per-model
+    goodput unrecoverable, which is the whole point of recording it."""
+    with pytest.raises(TypeError):
+        RateLimitProbeStats().record_success(  # type: ignore[call-arg]
+            duration_s=1.0, prompt_tokens=1, completion_tokens=1, ts=100.0
+        )
+
+
+# ---------------------------------------------------------------------------
+# Goodput: the SUCCESS side of throughput
+# ---------------------------------------------------------------------------
+
+
+_EPOCH = 1_700_000_000.0
+"""An epoch second that is deliberately NOT a multiple of the bucket width.
+
+``1_700_000_000 // 30 * 30 == 1_699_999_980``, so any test that accidentally
+anchored a bucket on this timestamp instead of on the epoch grid shows up as a
+wrong ``bucket_start``.
+"""
+
+
+def test_probe_stats_accumulates_the_success_side() -> None:
+    """Goodput needs successful calls, their duration and their tokens; the 429
+    census alone is schedule-dependent and, for some providers, silent."""
+    stats = RateLimitProbeStats()
+    assert (stats.successes, stats.success_duration_s) == (0, 0.0)
+    assert (stats.prompt_tokens, stats.completion_tokens) == (0, 0)
+    assert stats.by_bucket == {}
+    assert stats.dropped_buckets == 0
+
+    stats.record_success(
+        role="agent", model="m", duration_s=2.5, prompt_tokens=100, completion_tokens=10, ts=_EPOCH
+    )
+    stats.record_success(
+        role="agent",
+        model="m",
+        duration_s=3.5,
+        prompt_tokens=200,
+        completion_tokens=20,
+        ts=_EPOCH + 1,
+    )
+
+    assert stats.successes == 2
+    assert stats.success_duration_s == 6.0
+    assert (stats.prompt_tokens, stats.completion_tokens) == (300, 30)
+    # The 429 window is NOT moved by successes: rate_limit_first_ts keeps
+    # meaning "when was this trial first throttled".
+    assert (stats.retries, stats.wait_s, stats.first_ts, stats.last_ts) == (0, 0.0, None, None)
+
+
+def test_probe_stats_keeps_success_counters_separate_per_role_and_model() -> None:
+    """The asymmetric mixed case. The agent is the measured model and the user
+    simulator is an unrelated one, so 3-vs-1 calls and 4x-different token
+    profiles must stay apart. A shared bucket reports one blended row and the
+    per-model goodput this feature exists for becomes unrecoverable."""
+    stats = RateLimitProbeStats()
+    for i in range(3):
+        stats.record_success(
+            role="agent",
+            model="openrouter/agent-model",
+            duration_s=10.0,
+            prompt_tokens=369_857,
+            completion_tokens=500,
+            ts=_EPOCH + i,
+        )
+    stats.record_success(
+        role="user",
+        model="openrouter/user-model",
+        duration_s=1.0,
+        prompt_tokens=89_984,
+        completion_tokens=40,
+        ts=_EPOCH + 3,
+    )
+
+    agent = stats.by_role_model[("agent", "openrouter/agent-model")]
+    user = stats.by_role_model[("user", "openrouter/user-model")]
+    assert (agent.successes, agent.success_duration_s) == (3, 30.0)
+    assert (agent.prompt_tokens, agent.completion_tokens) == (1_109_571, 1500)
+    assert (user.successes, user.success_duration_s) == (1, 1.0)
+    assert (user.prompt_tokens, user.completion_tokens) == (89_984, 40)
+    # A blended counter would report 4 successes / 1_199_555 prompt tokens
+    # against whichever model happened to be recorded.
+    assert stats.successes == agent.successes + user.successes == 4
+    assert stats.prompt_tokens == agent.prompt_tokens + user.prompt_tokens == 1_199_555
+
+
+def test_probe_stats_keeps_the_two_censuses_on_one_row() -> None:
+    """One ``(role, model)`` row carries the served and the rejected side, so a
+    consumer reads goodput and the 429 count for the same model together."""
+    stats = RateLimitProbeStats()
+    stats.record_success(
+        role="agent", model="m", duration_s=4.0, prompt_tokens=10, completion_tokens=1, ts=_EPOCH
+    )
+    stats.record_retry(role="agent", model="m", wait_s=15.0, ts=_EPOCH + 1)
+
+    row = stats.by_role_model[("agent", "m")]
+    assert (row.successes, row.success_duration_s) == (1, 4.0)
+    assert (row.retries, row.wait_s) == (1, 15.0)
+    assert row.first_ts == row.last_ts == _EPOCH + 1
+
+
+class TestAbsoluteTimeBucketAlignment:
+    """The bucket boundary is derived from the Unix epoch, never from run start.
+
+    That is the only reason windows produced by seven simultaneous run legs — in
+    seven separate processes, potentially on seven machines — can be summed
+    window by window into a global throughput number.
+    """
+
+    def test_bucket_start_floors_onto_the_epoch_grid(self) -> None:
+        stats = RateLimitProbeStats(bucket_width_s=30)
+
+        # 1_700_000_000 is not on the grid; 1_699_999_980 is.
+        assert stats.bucket_start(_EPOCH) == 1_699_999_980
+        assert stats.bucket_start(1_699_999_980.0) == 1_699_999_980
+        assert stats.bucket_start(1_700_000_009.999) == 1_699_999_980
+        assert stats.bucket_start(1_700_000_010.0) == 1_700_000_010
+
+    def test_every_bucket_start_is_a_multiple_of_the_width(self) -> None:
+        """The invariant a cross-leg join relies on: starts come from one global
+        grid, so two legs cannot land on interleaved boundaries."""
+        stats = RateLimitProbeStats(bucket_width_s=30)
+        for offset in (0.0, 0.4, 7.0, 29.999, 30.0, 61.5, 3600.0):
+            assert stats.bucket_start(_EPOCH + offset) % 30 == 0
+
+    def test_two_independent_stats_objects_agree_on_the_window(self) -> None:
+        """Two run legs are two processes with two accumulators. Same instant,
+        same window key — which is what makes the per-leg series joinable."""
+        leg_a = RateLimitProbeStats(bucket_width_s=30)
+        leg_b = RateLimitProbeStats(bucket_width_s=30)
+        instant = _EPOCH + 17.25
+
+        leg_a.record_success(
+            role="agent",
+            model="m",
+            duration_s=1.0,
+            prompt_tokens=5,
+            completion_tokens=1,
+            ts=instant,
+        )
+        leg_b.record_success(
+            role="agent",
+            model="m",
+            duration_s=2.0,
+            prompt_tokens=7,
+            completion_tokens=2,
+            ts=instant,
+        )
+
+        assert list(leg_a.by_bucket) == list(leg_b.by_bucket) == [("agent", "m", 1_700_000_010)]
+
+    def test_the_boundary_cannot_depend_on_when_the_run_started(self) -> None:
+        """The negative control. Two legs launched 15 s apart see the same instant
+        at different offsets from their own start, so a run-start-relative grid
+        puts it in different windows (30 vs 0 here) and the legs cannot be summed.
+
+        The accumulator has no run-start or creation-time state at all — every
+        field is a counter or a config knob — so ``bucket_start`` is a pure
+        function of ``(ts, bucket_width_s)`` and cannot drift into that bug.
+        """
+        instant = _EPOCH + 40.0
+        leg_a_start, leg_b_start = _EPOCH, _EPOCH + 15.0
+
+        relative_a = int((instant - leg_a_start) // 30) * 30
+        relative_b = int((instant - leg_b_start) // 30) * 30
+        assert (relative_a, relative_b) == (30, 0)
+
+        field_names = {f.name for f in dataclasses.fields(RateLimitProbeStats)}
+        assert not {name for name in field_names if "start" in name or "created" in name}
+        assert RateLimitProbeStats(bucket_width_s=30).bucket_start(instant) == RateLimitProbeStats(
+            bucket_width_s=30
+        ).bucket_start(instant)
+
+    def test_successive_calls_land_in_successive_windows(self) -> None:
+        """Non-stationarity is only visible if calls separated by more than a
+        window width are recorded separately: at constant offered concurrency a
+        measured probe's goodput fell 1.70 -> 0.43 calls/s over ~12 minutes."""
+        stats = RateLimitProbeStats(bucket_width_s=30)
+        for i in range(3):
+            stats.record_success(
+                role="agent",
+                model="m",
+                duration_s=1.0,
+                prompt_tokens=10,
+                completion_tokens=1,
+                ts=_EPOCH + i * 30,
+            )
+
+        starts = sorted(start for (_role, _model, start) in stats.by_bucket)
+        assert starts == [1_699_999_980, 1_700_000_010, 1_700_000_040]
+        assert all(counters.successes == 1 for counters in stats.by_bucket.values())
+        # The cumulative total is unchanged — the windows are an extra view, not
+        # a replacement.
+        assert stats.successes == 3
+
+    def test_buckets_are_keyed_by_role_and_model_as_well_as_time(self) -> None:
+        """Two roles active in the same window keep separate rows, so a leg's
+        agent throughput is never inflated by its simulator's."""
+        stats = RateLimitProbeStats(bucket_width_s=30)
+        stats.record_success(
+            role="agent",
+            model="a",
+            duration_s=9.0,
+            prompt_tokens=900,
+            completion_tokens=90,
+            ts=_EPOCH,
+        )
+        stats.record_success(
+            role="user",
+            model="u",
+            duration_s=1.0,
+            prompt_tokens=100,
+            completion_tokens=10,
+            ts=_EPOCH,
+        )
+
+        assert sorted(stats.by_bucket) == [
+            ("agent", "a", 1_699_999_980),
+            ("user", "u", 1_699_999_980),
+        ]
+        assert stats.by_bucket[("agent", "a", 1_699_999_980)].prompt_tokens == 900
+        assert stats.by_bucket[("user", "u", 1_699_999_980)].prompt_tokens == 100
+
+    def test_retries_and_successes_share_a_window(self) -> None:
+        """The served and rejected sides of one interval sit on one row, which is
+        what makes a rejection *rate* per window computable."""
+        stats = RateLimitProbeStats(bucket_width_s=30)
+        stats.record_success(
+            role="agent",
+            model="m",
+            duration_s=2.0,
+            prompt_tokens=10,
+            completion_tokens=1,
+            ts=_EPOCH,
+        )
+        stats.record_retry(role="agent", model="m", wait_s=15.0, ts=_EPOCH + 5)
+
+        (window,) = stats.by_bucket.values()
+        assert (window.successes, window.retries) == (1, 1)
+
+    def test_the_width_is_configurable(self) -> None:
+        stats = RateLimitProbeStats(bucket_width_s=120)
+        assert stats.bucket_start(_EPOCH) == 1_699_999_920
+        assert stats.bucket_start(_EPOCH) % 120 == 0
+
+    def test_the_defaults_are_the_documented_ones(self) -> None:
+        stats = RateLimitProbeStats()
+        assert (stats.bucket_width_s, stats.max_buckets) == (
+            DEFAULT_PROBE_BUCKET_WIDTH_S,
+            DEFAULT_PROBE_MAX_BUCKETS,
+        )
+        assert DEFAULT_PROBE_BUCKET_WIDTH_S == 30
+        # 480 windows per (role, model) for a 4 h run at 30 s; the cap has to
+        # sit far above that or a legal run would truncate.
+        assert DEFAULT_PROBE_MAX_BUCKETS >= 2 * (4 * 3600 // DEFAULT_PROBE_BUCKET_WIDTH_S)
+
+
+class TestBucketCapDropPolicy:
+    """Memory is bounded, and the truncation is never silent.
+
+    Refusing to open a *new* window (rather than evicting an old one) keeps the
+    retained series a contiguous prefix in absolute time. A series with a hole
+    would let a cross-leg window-by-window sum silently undercount.
+    """
+
+    def _stats(self) -> RateLimitProbeStats:
+        return RateLimitProbeStats(bucket_width_s=30, max_buckets=2)
+
+    def _success(self, stats: RateLimitProbeStats, ts: float) -> None:
+        stats.record_success(
+            role="agent", model="m", duration_s=1.0, prompt_tokens=10, completion_tokens=1, ts=ts
+        )
+
+    def test_recording_into_an_existing_window_is_never_refused(self) -> None:
+        stats = self._stats()
+        self._success(stats, _EPOCH)
+        self._success(stats, _EPOCH + 30)
+        # Cap reached, but both of these land in windows that already exist.
+        self._success(stats, _EPOCH + 1)
+        self._success(stats, _EPOCH + 31)
+
+        assert len(stats.by_bucket) == 2
+        assert stats.dropped_buckets == 0
+        assert sum(w.successes for w in stats.by_bucket.values()) == 4
+
+    def test_a_new_window_past_the_cap_is_dropped_and_counted(self) -> None:
+        stats = self._stats()
+        self._success(stats, _EPOCH)
+        self._success(stats, _EPOCH + 30)
+        self._success(stats, _EPOCH + 60)
+
+        assert len(stats.by_bucket) == 2
+        assert stats.dropped_buckets == 1
+
+    def test_the_retained_series_is_a_contiguous_prefix(self) -> None:
+        stats = self._stats()
+        for i in range(6):
+            self._success(stats, _EPOCH + i * 30)
+
+        starts = sorted(start for (_role, _model, start) in stats.by_bucket)
+        assert starts == [1_699_999_980, 1_700_000_010]
+        # Earliest windows kept, later ones dropped — no hole in the middle.
+        assert stats.dropped_buckets == 4
+
+    def test_dropped_totals_still_reach_the_flat_and_per_model_counters(self) -> None:
+        """A dropped window loses the *time resolution* of those calls, never the
+        calls themselves — the cumulative records stay complete."""
+        stats = self._stats()
+        for i in range(6):
+            self._success(stats, _EPOCH + i * 30)
+
+        assert stats.successes == 6
+        assert stats.prompt_tokens == 60
+        assert stats.by_role_model[("agent", "m")].successes == 6
+        assert sum(w.successes for w in stats.by_bucket.values()) == 2
+
+    def test_repeated_drops_inside_one_window_count_once(self) -> None:
+        """``dropped_buckets`` counts lost *windows*, not lost recordings, so the
+        number reads as "how much of the series is missing"."""
+        stats = self._stats()
+        self._success(stats, _EPOCH)
+        self._success(stats, _EPOCH + 30)
+        # All three fall in the window [1_700_000_040, 1_700_000_070).
+        for offset in (60.0, 61.0, 65.0):
+            self._success(stats, _EPOCH + offset)
+
+        assert stats.dropped_buckets == 1
+        assert stats.successes == 5
+
+    def test_a_dropped_window_is_counted_per_role_and_model(self) -> None:
+        """Two roles losing the same window lose two rows, so the count matches
+        the number of missing series entries."""
+        stats = self._stats()
+        self._success(stats, _EPOCH)
+        self._success(stats, _EPOCH + 30)
+        for role, model in (("agent", "m"), ("user", "u")):
+            stats.record_success(
+                role=role,  # type: ignore[arg-type]
+                model=model,
+                duration_s=1.0,
+                prompt_tokens=1,
+                completion_tokens=1,
+                ts=_EPOCH + 60,
+            )
+
+        assert stats.dropped_buckets == 2
+
+    def test_a_dropped_429_window_is_counted_too(self) -> None:
+        stats = self._stats()
+        self._success(stats, _EPOCH)
+        self._success(stats, _EPOCH + 30)
+        stats.record_retry(role="agent", model="m", wait_s=15.0, ts=_EPOCH + 60)
+
+        assert stats.dropped_buckets == 1
+        # The 429 itself is still fully accounted for.
+        assert (stats.retries, stats.wait_s) == (1, 15.0)
+        assert stats.by_role_model[("agent", "m")].retries == 1
