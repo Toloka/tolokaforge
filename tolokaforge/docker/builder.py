@@ -126,7 +126,9 @@ IMAGE_DEFINITIONS: dict[str, dict[str, Any]] = {
         "name": "tolokaforge-mock-web",
         "dockerfile": "tolokaforge/docker/dockerfiles/mock_web.Dockerfile",
         "context": ".",
-        "context_files": [],
+        "context_files": [
+            "tolokaforge/env/mock_web_service/",
+        ],
         "build_args": dict(_PYTHON_BUILD_ARGS),
     },
 }
