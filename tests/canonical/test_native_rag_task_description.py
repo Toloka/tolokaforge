@@ -1,8 +1,8 @@
 """Keyless shape lock for the native RAG cross-stage contract.
 
 The ``TaskDescription`` a native RAG pack serializes is the wire the runner
-consumes to index the per-trial corpus (issue #107). This locks that contract at
-the serialization boundary — the shape Stage 2's runner resolves against:
+consumes to index the per-trial corpus. This locks that contract at the
+serialization boundary — the shape the runner resolves against:
 
 - ``search.enabled`` is ``True`` with ``documents_path`` equal to the pack's
   declared ``corpus_dir`` **verbatim** (the pinned convention the runner resolves
