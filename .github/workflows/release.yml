@@ -4,7 +4,9 @@ name: Release (cz bump)
 # version in pyproject.toml, regenerates CHANGELOG.md from the Conventional
 # Commit history, commits, and pushes a vX.Y.Z tag. That tag then triggers
 # publish-tolokaforge.yml (PyPI trusted publishing + GitHub Release) and
-# release-gate.yml. No manual version/changelog edits required.
+# release-gate.yml. It also pushes the image-vX.Y.Z-rc.1 tag, which triggers
+# publish-images.yml to build and push the four :X.Y.Z-rc.1 images. No manual
+# version/changelog edits required.
 #
 # See CONTRIBUTING.md ("Cutting a Release").
 
@@ -118,3 +120,16 @@ jobs:
         if: ${{ !inputs.dry_run && steps.bump.outputs.released == 'true' }}
         run: |
           git push --atomic origin HEAD:main "refs/tags/${{ steps.bump.outputs.new_tag }}"
+
+      # Cut the release-candidate image tag so publish-images.yml builds and pushes
+      # the four :X.Y.Z-rc.1 images automatically. Pushed on its own, non-atomic
+      # push: a transient failure here must not abort the already-published PyPI
+      # release, so it fails loud (no `|| true`) and the operator re-pushes by hand.
+      - name: Push rc image tag
+        if: ${{ !inputs.dry_run && steps.bump.outputs.released == 'true' }}
+        env:
+          NEW_TAG: ${{ steps.bump.outputs.new_tag }}
+        run: |
+          rc_tag="image-${NEW_TAG}-rc.1"
+          git tag "$rc_tag" HEAD
+          git push origin "refs/tags/$rc_tag"
