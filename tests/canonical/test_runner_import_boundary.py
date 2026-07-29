@@ -26,17 +26,21 @@ is reported with the first-party import chain that pulled it.
    ``core.grading.*``, ``core.llm.*``, ``core.models``, ``core.trial``,
    ``core.deprecations``, and ``secrets``.
 
-3. **Static-AST forbidden-import-statement guard.** A source-level walk of every
+3. **Static-AST forbidden-import guard.** A source-level walk of every
    ``*.py`` under ``tolokaforge/runner/`` flags any ``import`` / ``from … import``
-   statement that names a module under a forbidden prefix, *at any nesting depth*
-   — including deferred function-body imports that never execute at module load
-   and so slip past locks 1 and 2. A module is named either by the ``from``
-   target (``from tolokaforge.adapters import …``, absolute or relative
-   ``from ..adapters import …``) or by an imported name resolved against a
-   non-forbidden parent (``from tolokaforge import adapters`` reaches the
-   forbidden ``tolokaforge.adapters`` leaf). It matches statements only;
-   ``importlib.import_module("<target>")`` string indirection is out of this
-   guard's scope.
+   statement — *and* any ``importlib.import_module("<string literal>")`` or bare
+   ``import_module("<literal>")`` call — that names a module under a forbidden
+   prefix, *at any nesting depth*, including deferred function-body imports that
+   never execute at module load and so slip past locks 1 and 2. A statement names
+   a module either by the ``from`` target (``from tolokaforge.adapters import …``,
+   absolute or relative ``from ..adapters import …``) or by an imported name
+   resolved against a non-forbidden parent (``from tolokaforge import adapters``
+   reaches the forbidden ``tolokaforge.adapters`` leaf). A call names a module by
+   its string-literal first argument. ``ALLOWED_DYNAMIC_TARGETS`` lists the
+   sanctioned lazy re-exports whose string-literal ``import_module`` calls are
+   permitted to name a forbidden-prefix module; the allowance applies to the call
+   form only, never to import statements. Calls whose argument is a variable or
+   f-string are out of static reach and are never flagged.
 
 All three consume one ``FORBIDDEN_PREFIXES`` definition: locks 1/2 receive it as
 a literal in the subprocess source, lock 3 imports it directly.
@@ -67,6 +71,13 @@ FORBIDDEN_PREFIXES = (
     "tolokaforge.docker",
     "tolokaforge.runtime.reset_recipes",
 )
+
+# Forbidden-prefix module strings the runner's ``__getattr__`` may name via a
+# lazy ``importlib.import_module("<literal>")`` re-export. This is the falsifiable
+# record of which forbidden surfaces the runner is permitted to reach by string
+# indirection; adding a lazy re-export requires extending this tuple in the same
+# commit, or the whole-tree lock fails loud.
+ALLOWED_DYNAMIC_TARGETS = ("tolokaforge.adapters._task_loader",)
 
 _ANALYSIS = r"""
 import builtins
@@ -245,21 +256,46 @@ def _resolve_import_from(node: ast.ImportFrom, package: str) -> str | None:
     return f"{base}.{node.module}" if node.module else base
 
 
+def _import_module_literal(node: ast.Call) -> str | None:
+    """Return the string-literal target of an ``import_module`` call, or None.
+
+    Matches ``importlib.import_module("…")`` and bare ``import_module("…")`` whose
+    first positional argument is a string constant; anything else (aliased
+    receiver, variable / f-string argument, no argument) returns None so it stays
+    out of static reach.
+    """
+    func = node.func
+    is_import_module = (
+        isinstance(func, ast.Attribute)
+        and func.attr == "import_module"
+        and isinstance(func.value, ast.Name)
+        and func.value.id == "importlib"
+    ) or (isinstance(func, ast.Name) and func.id == "import_module")
+    if not is_import_module or not node.args:
+        return None
+    first = node.args[0]
+    if isinstance(first, ast.Constant) and isinstance(first.value, str):
+        return first.value
+    return None
+
+
 def _forbidden_imports_in_source(
     source: str, module_qualname: str, is_package: bool
 ) -> list[tuple[int, str]]:
-    """Return ``(lineno, target)`` for each forbidden import statement in *source*.
+    """Return ``(lineno, target)`` for each forbidden import in *source*.
 
     Every ``ast.Import`` / ``ast.ImportFrom`` at any nesting depth is collected;
     a target under a ``FORBIDDEN_PREFIXES`` entry is a violation. For a
     ``from … import`` whose module target is not itself forbidden, each imported
     name is also checked as a submodule of that target, so
     ``from tolokaforge import adapters`` is flagged as ``tolokaforge.adapters``.
-    *module_qualname* is the file's dotted module name (e.g.
-    ``tolokaforge.runner.service``); *is_package* is True for an ``__init__``
-    module. Relative imports resolve against the module's package: a non-package
-    module's own name is dropped first, so ``from ..adapters`` in
-    ``tolokaforge.runner.foo`` targets ``tolokaforge.adapters`` — not
+    An ``importlib.import_module("<literal>")`` or bare ``import_module("<literal>")``
+    call is a violation when its string-literal argument names a forbidden surface
+    and is not in ``ALLOWED_DYNAMIC_TARGETS``. *module_qualname* is the file's
+    dotted module name (e.g. ``tolokaforge.runner.service``); *is_package* is True
+    for an ``__init__`` module. Relative imports resolve against the module's
+    package: a non-package module's own name is dropped first, so ``from ..adapters``
+    in ``tolokaforge.runner.foo`` targets ``tolokaforge.adapters`` — not
     ``tolokaforge.runner.adapters``.
     """
     package = module_qualname if is_package else module_qualname.rpartition(".")[0]
@@ -280,6 +316,10 @@ def _forbidden_imports_in_source(
                     full = f"{target}.{alias.name}"
                     if _matches_forbidden(full):
                         violations.append((node.lineno, full))
+        elif isinstance(node, ast.Call):
+            literal = _import_module_literal(node)
+            if literal and _matches_forbidden(literal) and literal not in ALLOWED_DYNAMIC_TARGETS:
+                violations.append((node.lineno, literal))
     return violations
 
 
@@ -292,7 +332,7 @@ def _module_qualname(path: Path) -> tuple[str, bool]:
     return ".".join(parts), is_package
 
 
-def test_runner_has_no_forbidden_import_statements() -> None:
+def test_runner_has_no_forbidden_imports() -> None:
     violations: list[str] = []
     for path in sorted(RUNNER_ROOT.rglob("*.py")):
         module_qualname, is_package = _module_qualname(path)
@@ -301,8 +341,9 @@ def test_runner_has_no_forbidden_import_statements() -> None:
         ):
             violations.append(f"{path.relative_to(REPO_ROOT)}:{lineno} imports {target!r}")
     assert not violations, (
-        "runner source has import statements to a forbidden surface "
-        "(deferred/function-body imports included):\n" + "\n".join(f"  - {v}" for v in violations)
+        "runner source reaches a forbidden surface via an import statement or an "
+        "import_module string-literal call (deferred/function-body included):\n"
+        + "\n".join(f"  - {v}" for v in violations)
     )
 
 
@@ -326,3 +367,52 @@ def test_forbidden_import_detector_flags_deferred_imports() -> None:
     assert _forbidden_imports_in_source(
         parent_import_forbidden_leaf, "tolokaforge.runner.service", is_package=False
     ) == [(2, "tolokaforge.core.orchestrator")]
+
+    nested_call = 'def _init():\n    importlib.import_module("tolokaforge.core.orchestrator.x")\n'
+    assert _forbidden_imports_in_source(
+        nested_call, "tolokaforge.runner.service", is_package=False
+    ) == [(2, "tolokaforge.core.orchestrator.x")]
+
+    bare_call = "def _init():\n    import_module('tolokaforge.adapters.foo')\n"
+    assert _forbidden_imports_in_source(
+        bare_call, "tolokaforge.runner.service", is_package=False
+    ) == [(2, "tolokaforge.adapters.foo")]
+
+    module_level_call = 'importlib.import_module("tolokaforge.core.orchestrator.x")\n'
+    assert _forbidden_imports_in_source(
+        module_level_call, "tolokaforge.runner.service", is_package=False
+    ) == [(1, "tolokaforge.core.orchestrator.x")]
+
+    allowlisted_call = 'importlib.import_module("tolokaforge.adapters._task_loader")\n'
+    assert (
+        _forbidden_imports_in_source(
+            allowlisted_call, "tolokaforge.runner.service", is_package=False
+        )
+        == []
+    )
+
+    non_forbidden_call = 'importlib.import_module("tolokaforge.core.run_trial")\n'
+    assert (
+        _forbidden_imports_in_source(
+            non_forbidden_call, "tolokaforge.runner.service", is_package=False
+        )
+        == []
+    )
+
+    variable_arg_call = "def _init(module_path):\n    importlib.import_module(module_path)\n"
+    assert (
+        _forbidden_imports_in_source(
+            variable_arg_call, "tolokaforge.runner.service", is_package=False
+        )
+        == []
+    )
+
+    fstring_arg_call = (
+        'def _init(name):\n    importlib.import_module(f"tolokaforge.adapters.{name}")\n'
+    )
+    assert (
+        _forbidden_imports_in_source(
+            fstring_arg_call, "tolokaforge.runner.service", is_package=False
+        )
+        == []
+    )
