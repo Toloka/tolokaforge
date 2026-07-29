@@ -17,6 +17,7 @@ present locally instead of pulling from the registry.
 from __future__ import annotations
 
 import os
+import platform
 import re
 import subprocess
 import time
@@ -35,6 +36,17 @@ COMPOSE_FILE = REPO_ROOT / "deploy" / "standalone" / "docker-compose.yaml"
 HEALTHY_TIMEOUT_S = 120.0
 _POLL_INTERVAL_S = 2.0
 _TRUTHY = frozenset({"1", "true", "yes"})
+
+# Locally-built images are tagged ``:local`` and carry the build host's native
+# architecture, unlike the published amd64-only images the compose default
+# targets.
+_LOCAL_TAG = "local"
+_MACHINE_TO_PLATFORM: dict[str, str] = {
+    "arm64": "linux/arm64",
+    "aarch64": "linux/arm64",
+    "x86_64": "linux/amd64",
+    "amd64": "linux/amd64",
+}
 
 # The runner image's own HEALTHCHECK treats the gRPC server as serving once a
 # client channel becomes ready; reused verbatim so the debugging-runbook health
@@ -69,6 +81,31 @@ class StackHandle:
     tag: str
 
 
+def _host_platform() -> str:
+    """Docker platform string matching the host CPU (via ``platform.machine()``)."""
+    machine = platform.machine().lower()
+    try:
+        return _MACHINE_TO_PLATFORM[machine]
+    except KeyError:
+        raise RuntimeError(f"unsupported host architecture: {machine!r}") from None
+
+
+def _compose_env(tag: str) -> dict[str, str]:
+    """Subprocess env for ``docker compose`` at ``tag``.
+
+    ``TOLOKAFORGE_IMAGE_TAG`` rides the env (Compose interpolation reads it with
+    precedence over any sibling ``.env``), so the keyless lane needs no ``.env``
+    file — provider keys, when present, are inherited from ``os.environ`` the same
+    way. The ``:local`` tag holds native-arch images, so its platform is pinned to
+    the host arch to match; an explicit ``TOLOKAFORGE_PLATFORM`` is never
+    overridden, and other tags keep the recipe's amd64 default.
+    """
+    env = {**os.environ, "TOLOKAFORGE_IMAGE_TAG": tag}
+    if tag == _LOCAL_TAG and "TOLOKAFORGE_PLATFORM" not in os.environ:
+        env["TOLOKAFORGE_PLATFORM"] = _host_platform()
+    return env
+
+
 def compose(
     project: str,
     args: list[str],
@@ -77,14 +114,8 @@ def compose(
     input_text: str | None = None,
     check: bool = False,
 ) -> subprocess.CompletedProcess[str]:
-    """Run ``docker compose`` against the standalone recipe for one project.
-
-    ``TOLOKAFORGE_IMAGE_TAG`` rides the subprocess env (Compose interpolation
-    reads it with precedence over any sibling ``.env``), so the keyless lane needs
-    no ``.env`` file — provider keys, when present, are inherited from
-    ``os.environ`` the same way.
-    """
-    env = {**os.environ, "TOLOKAFORGE_IMAGE_TAG": tag}
+    """Run ``docker compose`` against the standalone recipe for one project."""
+    env = _compose_env(tag)
     return subprocess.run(
         ["docker", "compose", "-p", project, "-f", str(COMPOSE_FILE), *args],
         capture_output=True,
