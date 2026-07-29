@@ -58,7 +58,13 @@ from tolokaforge.core.run_display_events import LLMCallObservation
 # "LiteLLM completion() model= ...") - pure noise in probe/eval logs; no effect on behavior/results.
 litellm.suppress_debug_info = True
 
-__all__ = ["GenerationResult", "LLMApiTimeoutError", "LLMClient", "UserSimulator"]
+__all__ = [
+    "AllApiKeysExhaustedError",
+    "GenerationResult",
+    "LLMApiTimeoutError",
+    "LLMClient",
+    "UserSimulator",
+]
 
 
 _module_logger = get_logger("llm_client_cost")
@@ -78,6 +84,26 @@ class LLMApiTimeoutError(RuntimeError):
     Carries through ``_call_with_key_rotation`` un‑wrapped so the outer
     :class:`tenacity.Retrying` controller in :meth:`LLMClient.generate` can
     decline to re‑attempt (see :func:`_should_retry_exception`).
+    """
+
+
+class AllApiKeysExhaustedError(RuntimeError):
+    """Raised when every rotatable API key has hit its own quota / credit cap.
+
+    A :class:`RuntimeError` subclass carrying the same message the engine has
+    always raised here, so :func:`_should_retry_exception` and the engine's
+    three string-only 429 classifiers
+    (:func:`tolokaforge.core.loop.classify_error`,
+    ``TrialRunner._is_rate_limit_error``, ``core/resume.py``) behave exactly as
+    before.
+
+    The type exists so :func:`_is_rate_limit_exception` can tell this apart from
+    a transient 429. ``_call_with_key_rotation`` enters its rotation branch on
+    the provider's own 429 ("Key limit exceeded") and chains it as ``__cause__``,
+    so a ``__cause__`` walk would otherwise classify a **terminal** condition as
+    a rate limit and hand it rate-limit probe mode's multi-hour fixed-interval
+    budget. :meth:`LLMClient._rotate_key` only ever advances its index, so the
+    condition never clears for the rest of the run.
     """
 
 
@@ -281,6 +307,14 @@ message links to rate-limit docs. Under probe mode a false positive hands a
 keyword, the HTTP reason phrase, or rate-limit prose in an error construction.
 A bare ``429`` with no such context is deliberately NOT a match — guessing
 would misroute control flow.
+
+These are shapes an *engine* wrapper produces, not a catalogue of provider
+quota prose. Vertex's ``RESOURCE_EXHAUSTED: Quota exceeded for quota metric``,
+OpenAI's ``insufficient_quota``, ``TPM limit reached``, ``Requests limit
+exceeded`` and Anthropic's ``overloaded_error`` all match **nothing** here and
+are meant to: they arrive typed through litellm, so tier 1 of
+:func:`_is_rate_limit_exception` catches them and the text miss is harmless.
+Adding prose for them would widen the false-positive surface for no gain.
 """
 
 
@@ -289,16 +323,33 @@ def _matches_rate_limit_text(text: str) -> bool:
 
 
 def _is_rate_limit_exception(exc: BaseException) -> bool:
-    """True when *exc* is an upstream 429.
+    """True when *exc* is a **transient** upstream 429.
 
-    Type- and status-first: ``litellm.exceptions.RateLimitError`` subclasses
-    ``openai.RateLimitError``, so one ``isinstance`` covers every provider
-    litellm routes, and ``status_code == 429`` catches a bare
-    ``APIStatusError``. Both are checked along the ``__cause__`` chain
-    because the outer controller never sees the provider's exception
-    directly (see :data:`_EXCEPTION_CAUSE_DEPTH`). Text matching is the last
-    resort, for a wrapper that stringified the provider error instead of
-    chaining it, and is anchored — see :data:`_RATE_LIMIT_TEXT_PATTERNS`.
+    Three tiers, strongest evidence first, all walked along the ``__cause__``
+    chain because the outer controller never sees the provider's exception
+    directly (see :data:`_EXCEPTION_CAUSE_DEPTH`):
+
+    1. **Type / status.** ``litellm.exceptions.RateLimitError`` subclasses
+       ``openai.RateLimitError``, so one ``isinstance`` covers every provider
+       litellm routes, and ``status_code == 429`` catches a bare
+       ``APIStatusError``.
+    2. **Terminal-condition veto.** :class:`AllApiKeysExhaustedError` chains the
+       provider's own 429 as its ``__cause__`` but is *not* transient — every
+       rotatable key is spent and :meth:`LLMClient._rotate_key` never resets its
+       index. It stops the walk and returns ``False`` so the condition takes the
+       ordinary bounded-exponential branch instead of probe mode's multi-hour
+       fixed-interval budget.
+    3. **Anchored text**, last resort — see :data:`_RATE_LIMIT_TEXT_PATTERNS`.
+       It runs only when *no* link in the chain carried an HTTP status at all,
+       i.e. for the shape the tier exists for: a wrapper that stringified the
+       provider error instead of chaining it. An authoritative non-429 status
+       beats prose, because the outermost message is
+       ``RuntimeError(f"LLM API call failed: {e}")`` and ``e``'s message can
+       embed a provider response body that echoes request content — a task
+       conversation about rate limiting would otherwise hand a deterministic
+       400 the multi-hour budget. This is deliberately *not* a narrowing of
+       tiers 1-2: an untyped chain still text-matches, so a real 429 that
+       arrives only as prose is still absorbed.
 
     Used only by the rate-limit probe controller. The engine's three
     existing 429 classifiers (:func:`tolokaforge.core.loop.classify_error`,
@@ -307,16 +358,24 @@ def _is_rate_limit_exception(exc: BaseException) -> bool:
     existing classification.
     """
     candidate: BaseException | None = exc
+    saw_http_status = False
     for _ in range(_EXCEPTION_CAUSE_DEPTH):
         if candidate is None:
             break
         if isinstance(candidate, openai.RateLimitError):
             return True
-        if getattr(candidate, "status_code", None) == 429:
+        status = getattr(candidate, "status_code", None)
+        if status == 429:
             return True
+        if isinstance(status, int):
+            saw_http_status = True
+        if isinstance(candidate, AllApiKeysExhaustedError):
+            return False
         cause = candidate.__cause__
         candidate = cause if cause is not candidate else None
 
+    if saw_http_status:
+        return False
     return _matches_rate_limit_text(str(exc))
 
 
@@ -1729,8 +1788,10 @@ class LLMClient:
         RuntimeError
             - ``"NOVA_API_KEY environment variable is required for Nova
                provider"`` when the Nova path fires without a key.
-            - ``"All API keys exhausted"`` after the last OpenRouter key
-               hit a quota error.
+            - :class:`AllApiKeysExhaustedError` (``"All API keys exhausted"``)
+               after the last OpenRouter key hit a quota error. A dedicated
+               subclass because the condition is terminal — see the class
+               docstring and :func:`_is_rate_limit_exception`.
             - ``LLMApiTimeoutError`` when the call times out repeatedly.
             - ``f"LLM API call failed: {e}"`` for any other provider error.
         """
@@ -1786,7 +1847,7 @@ class LLMClient:
                         )
                         continue
                     self.logger.error("All API keys exhausted")
-                    raise RuntimeError("All API keys exhausted") from e
+                    raise AllApiKeysExhaustedError("All API keys exhausted") from e
                 raise RuntimeError(f"LLM API call failed: {e}") from e
 
     def _assemble_result(
