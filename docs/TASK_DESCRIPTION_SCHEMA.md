@@ -237,11 +237,18 @@ class StateChecksConfig(BaseModel):
     env_assertions: List[EnvAssertion] = Field(default_factory=list)
 
 
+class ToolExpectations(BaseModel):
+    """Tools the agent must use and tools it must not touch."""
+    required_tools: List[str] = Field(default_factory=list)     # must be called successfully
+    disallowed_tools: List[str] = Field(default_factory=list)    # must not be called, any status
+
+
 class TranscriptRulesConfig(BaseModel):
     """Transcript-based grading configuration."""
     must_contain: List[str] = Field(default_factory=list)
     disallow_regex: List[str] = Field(default_factory=list)
     max_turns: Optional[int] = None
+    tool_expectations: Optional[ToolExpectations] = None
     required_actions: List[RequiredAction] = Field(default_factory=list)
     communicate_info: List[Dict[str, Any]] = Field(default_factory=list)
 

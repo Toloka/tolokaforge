@@ -213,12 +213,12 @@ class GradingEngine:
                 disallow_regex=self.config.transcript_rules.disallow_regex,
                 max_turns=self.config.transcript_rules.max_turns,
                 required_tools=(
-                    self.config.transcript_rules.tool_expectations.get("required_tools")
+                    self.config.transcript_rules.tool_expectations.required_tools
                     if self.config.transcript_rules.tool_expectations
                     else None
                 ),
                 disallowed_tools=(
-                    self.config.transcript_rules.tool_expectations.get("disallowed_tools")
+                    self.config.transcript_rules.tool_expectations.disallowed_tools
                     if self.config.transcript_rules.tool_expectations
                     else None
                 ),

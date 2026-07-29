@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Fix
+
+- **grading**: `transcript_rules.tool_expectations` now grades on the runner (production) path. The key was declared core-side and dropped in adapter translation, so `required_tools` / `disallowed_tools` produced no signal on real runs. `evaluate_transcript_rules` decomposes it into one sub-check per declared tool: a required tool must have been called with `status == "success"`, and a disallowed tool must not appear in the tool history at **any** status (an attempted forbidden call is the violation). Failing sub-checks are now named individually in `grade.reasons` instead of only being counted. **Runner-image version lock**: `tool_expectations` is declared on the runner-side `TranscriptRulesConfig` (`extra="forbid"`), so an engine emitting the key needs a runner image built from the same release — `RegisterTrial` rejects it otherwise. Old engine + new runner is unaffected. A misspelled *tool name* is still not detected at grade time; load-time validation against the task's declared tool set is tracked in #679 (#675)
+
 ## v0.12.0 (2026-07-29)
 
 ### Feat

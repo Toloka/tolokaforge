@@ -51,12 +51,11 @@ key both substrates declare must survive adapter translation non-default.
 
 | Key | kind | coverage | enforcement | Why only one substrate | Tracked |
 |---|---|---|---|---|---|
-| `combine.method` | `AGGREGATION` | `RUNNER_ONLY` | field resolution | the core engine always computes a weighted average and never reads the key, so `method: all_pass` scores 0.5 core-side and 0.0 runner-side for the same components | #684 |
-| `state_checks.hash.expected_state_hash` | `SCORED_CHECK` | `CORE_ONLY` | field resolution | translated onto the runner's `expected_hash` field, which no runner code path reads — runner hash grading always recomputes a golden hash from `golden_actions` | #684 |
+| `combine.method` | `AGGREGATION` | `RUNNER_ONLY` | field resolution | the core engine always computes a weighted average and never reads the key, so `method: all_pass` scores 0.5 core-side and 0.0 runner-side for the same components | #692 |
+| `state_checks.hash.expected_state_hash` | `SCORED_CHECK` | `CORE_ONLY` | field resolution | translated onto the runner's `expected_hash` field, which no runner code path reads — runner hash grading always recomputes a golden hash from `golden_actions` | #693 |
 | `state_checks.hash.weight` | `CONFIG_INPUT` | `CORE_ONLY` | field resolution | core blends the hash score against the jsonpath score by this weight; the runner multiplies the two and has no weight concept | #686 |
 | `state_checks.env_assertions` | `SCORED_CHECK` | `CORE_ONLY` | field resolution | the runner declares the field and evaluates nothing; core resolves assertion functions from an external task-pack module | #675 |
 | `state_checks.db_hash_check` | `SCORED_CHECK` | `CORE_ONLY` | field resolution | dropped in adapter translation, so the runner never sees the key | #675 |
-| `transcript_rules.tool_expectations` | `SCORED_CHECK` | `CORE_ONLY` | field resolution | dropped in adapter translation, so the runner never sees the key | #675 |
 | `custom_checks` | `SCORED_CHECK` | `CORE_ONLY` | field resolution | the runner reports `custom_checks=-1.0`; running author-supplied Python inside the runner is a sandboxing project | #684 |
 | `state_checks.db_probes` | `SCORED_CHECK` | `RUNNER_ONLY` | integration differential | the probe DSN resolves only inside the task's docker network, which the runner joins and the host-side core engine does not | architectural |
 | `llm_judge` | `SCORED_CHECK` | `RUNNER_ONLY` | integration differential | the rubric judge runs runner-side on the shared `ToolCallingLoop`; the core engine deliberately leaves the component unset | architectural |
@@ -235,6 +234,58 @@ runner is safe (core-side `extra="ignore"`).
 - Declare non-`id` primary keys per table (`id_fields`); leave `id`-keyed tables unset
 - Use `relaxed_validation` only as a short-lived escape hatch for legacy tasks
 - Combine with JSONPath assertions using `weight: 0.8` for flexibility
+
+---
+
+## Transcript Rules
+
+`transcript_rules` grades the *process* — what the agent said and which tools it
+reached for — rather than the final state. Both substrates consume every key in
+the block.
+
+### `tool_expectations`
+
+Names the tools the agent must use and the tools it must not touch:
+
+```yaml
+transcript_rules:
+  tool_expectations:
+    required_tools: ["db_update"]        # each must have been called successfully
+    disallowed_tools: ["bash"]           # none may be called, at any status
+```
+
+**One sub-check per declared tool** on the runner path, the same decomposition
+`must_contain` and `disallow_regex` get: the component score is the fraction of
+sub-checks that passed, and every failure is named in `grade.reasons`. A task
+declaring two required and two disallowed tools yields four independent
+sub-checks.
+
+**The two lists treat call status differently, deliberately.** A `required_tools`
+entry is satisfied only by a call with `status == "success"` — an errored call did
+not do the work the author required, the same rule `required_actions` applies. A
+`disallowed_tools` entry fails on a call at **any** status, errors included:
+attempting a forbidden action is itself the violation, so a `delete_customer` call
+that happened to blow up still fails the check.
+
+`extra="forbid"` on the block means a misspelled key (`required_toolz`) fails at
+load rather than grading as an empty list.
+
+**Known limitation — a misspelled *tool name* is not caught here.** Grade-time
+evaluation cannot tell `required_tools: ["db_updat"]` from "the agent never called
+it", and a typo in `disallowed_tools` passes trivially because no call ever matches
+it. Validating tool names against the task's declared tool set belongs at load
+time and is owned by **#679**; do not read a green `tool_expectations` check as
+evidence that the names are spelled correctly.
+
+**Score parity:** signal, not score. Both substrates discriminate, but the core
+`GradingEngine` folds both lists into one of four averaged buckets, so a violation
+that scores `0.0` on the runner scores `0.75` core-side (#685). Core also ignores
+call status. See [Substrate Parity](#substrate-parity).
+
+**Runner-engine version lock**: `tool_expectations` is declared on the runner-side
+`TranscriptRulesConfig` (`extra="forbid"`), so a new engine emitting the key
+requires a runner image built from the same release — `RegisterTrial` rejects it
+otherwise. Old engine + new runner is safe (core-side `extra="ignore"`).
 
 ---
 

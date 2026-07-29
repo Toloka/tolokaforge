@@ -318,9 +318,9 @@ transcript_rules:
   must_contain: ["confirmed"]
   disallow_regex: ["(?i)password"]
   max_turns: 40
-  tool_expectations:
-    required_tools: ["browser"]
-    disallowed_tools: []
+  tool_expectations:                       # one sub-check per declared tool,
+    required_tools: ["browser"]             # graded on both substrates —
+    disallowed_tools: []                    # see docs/GRADING.md § Transcript Rules
 
 llm_judge:                                 # the judge MODEL is set once per run
                                            # under models.judge — NOT here

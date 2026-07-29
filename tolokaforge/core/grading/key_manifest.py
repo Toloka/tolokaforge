@@ -127,7 +127,7 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
             "combine.method, so `method: all_pass` scores 0.5 core-side and 0.0 "
             "runner-side for the same components"
         ),
-        tracking_issue=684,
+        tracking_issue=692,
     ),
     GradingKey(
         author_key="combine.weights",
@@ -199,7 +199,7 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
             "from golden_actions, and the proto's precomputed_expected_hash is never "
             "populated by the host"
         ),
-        tracking_issue=684,
+        tracking_issue=693,
     ),
     GradingKey(
         author_key="state_checks.hash.weight",
@@ -365,15 +365,20 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
     GradingKey(
         author_key="transcript_rules.tool_expectations",
         kind=KeyKind.SCORED_CHECK,
-        coverage=SubstrateCoverage.CORE_ONLY,
-        enforcement=Enforcement.FIELD_RESOLUTION_ONLY,
+        coverage=SubstrateCoverage.BOTH_SIGNAL_PARITY,
+        enforcement=Enforcement.DIFFERENTIAL_CANONICAL,
         core_field="TranscriptRulesConfig.tool_expectations",
-        runner_field=None,
+        runner_field="TranscriptRulesConfig.tool_expectations",
         core_evaluator=(
             "tolokaforge.core.grading.transcript.TranscriptChecker.check_tool_expectations"
         ),
-        reason="dropped in adapter translation, so the runner never sees the key",
-        tracking_issue=675,
+        runner_evaluator=_RUNNER_TRANSCRIPT_EVALUATOR,
+        reason=(
+            "core folds both tool lists into one of four averaged buckets and ignores call "
+            "status; the runner scores one sub-check per declared tool and requires a "
+            "required tool's call to have succeeded (#685)"
+        ),
+        tracking_issue=685,
     ),
     GradingKey(
         author_key="llm_judge",

@@ -441,6 +441,7 @@ class NativeAdapter(BaseAdapter):
             RequiredAction,
             StateChecksConfig,
             TaskDescription,
+            ToolExpectations,
             ToolSchema,
             ToolSource,
             TranscriptRulesConfig,
@@ -702,10 +703,16 @@ class NativeAdapter(BaseAdapter):
                         )
                     )
 
+                tool_expectations_data = transcript_data.get("tool_expectations")
                 transcript_rules = TranscriptRulesConfig(
                     must_contain=transcript_data.get("must_contain", []),
                     disallow_regex=transcript_data.get("disallow_regex", []),
                     max_turns=transcript_data.get("max_turns"),
+                    tool_expectations=(
+                        ToolExpectations(**tool_expectations_data)
+                        if tool_expectations_data
+                        else None
+                    ),
                     required_actions=required_actions,
                     communicate_info=transcript_data.get("communicate_info", []),
                 )

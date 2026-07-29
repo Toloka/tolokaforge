@@ -348,12 +348,26 @@ class StateChecksConfig(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class ToolExpectations(BaseModel):
+    """Tools the agent must use and tools it must not touch.
+
+    ``extra="forbid"`` inside the ``extra="ignore"`` core parent so a
+    ``required_toolz`` typo fails at load instead of grading as an empty list.
+    """
+
+    required_tools: list[str] = Field(default_factory=list)
+    disallowed_tools: list[str] = Field(default_factory=list)
+
+    model_config = {"extra": "forbid"}
+
+
 class TranscriptRulesConfig(BaseModel):
     """Transcript-based grading configuration."""
 
     must_contain: list[str] = Field(default_factory=list)
     disallow_regex: list[str] = Field(default_factory=list)
     max_turns: int | None = None
+    tool_expectations: ToolExpectations | None = None
     required_actions: list[RequiredAction] = Field(default_factory=list)
     communicate_info: list[dict[str, Any]] = Field(default_factory=list)
 

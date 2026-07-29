@@ -76,7 +76,6 @@ _DRIFT_EXEMPTIONS = frozenset(
         "state_checks.hash.weight",
         "state_checks.env_assertions",
         "state_checks.db_hash_check",
-        "transcript_rules.tool_expectations",
         "custom_checks",
     }
 )

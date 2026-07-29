@@ -23,12 +23,15 @@ from tolokaforge.core.deprecations import (
 from tolokaforge.core.llm.reasoning import ReasoningConfig, StructuredReasoning
 from tolokaforge.core.llm.usage import CostSource, ProviderRawCall, Usage
 
-# Rubric / Criterion / LLMJudgeConfig have a single canonical home in
-# tolokaforge.runner.models — they cross both the YAML grading block and the
-# gRPC wire (serialized inside TrialSpec). Re-exported here so existing
+# Rubric / Criterion / LLMJudgeConfig / ToolExpectations have a single canonical
+# home in tolokaforge.runner.models — they cross both the YAML grading block and
+# the gRPC wire (serialized inside TrialSpec). Re-exported here so existing
 # ``core.models`` references (e.g. GradingConfig.llm_judge) resolve without a
 # second, drifting definition. CriterionResult is the judge's per-criterion
 # output and is consumed by the host-side Grade model below.
+#
+# The direction is forced: this import is top-of-file, so a runner-side import of
+# ``core.models`` would deadlock on a partially-initialised module.
 from tolokaforge.runner.models import Criterion as Criterion
 from tolokaforge.runner.models import CriterionResult as CriterionResult
 from tolokaforge.runner.models import EnvironmentManifest as EnvironmentManifest
@@ -41,6 +44,7 @@ from tolokaforge.runner.models import ServiceIsolation as ServiceIsolation
 from tolokaforge.runner.models import ServiceNetworkAccess as ServiceNetworkAccess
 from tolokaforge.runner.models import ServiceSpec as ServiceSpec
 from tolokaforge.runner.models import StackPatch as StackPatch
+from tolokaforge.runner.models import ToolExpectations as ToolExpectations
 
 
 class MessageRole(str, Enum):
@@ -1495,7 +1499,7 @@ class TranscriptRulesConfig(BaseModel):
     must_contain: list[str] = Field(default_factory=list)
     disallow_regex: list[str] = Field(default_factory=list)
     max_turns: int | None = None
-    tool_expectations: dict[str, list[str]] | None = None
+    tool_expectations: ToolExpectations | None = None
     required_actions: list[RequiredAction] = Field(default_factory=list)  # NEW
     communicate_info: list[CommunicateInfo] = Field(default_factory=list)  # NEW
 
