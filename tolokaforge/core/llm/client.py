@@ -40,7 +40,13 @@ from tolokaforge.core.llm.prompt_policy import detect_dict_maps
 from tolokaforge.core.llm.reasoning import ReasoningConfig, StructuredReasoning
 from tolokaforge.core.llm.usage import CostSource, Usage, UsageExtractor
 from tolokaforge.core.logging import get_logger
-from tolokaforge.core.models import Message, MessageRole, ModelConfig, ToolCall
+from tolokaforge.core.models import (
+    Message,
+    MessageRole,
+    ModelConfig,
+    RateLimitProbeConfig,
+    ToolCall,
+)
 from tolokaforge.core.pricing import estimate_cost
 from tolokaforge.core.run_display_events import LLMCallObservation
 
@@ -216,15 +222,75 @@ def _should_retry_exception(exc: BaseException) -> bool:
       of exponential-backoff wall time per trial and hides the actual
       failure signal from the operator.
 
-    Rate limits (429) still ride the same outer exponential backoff as
-    other transient errors — the long waits (up to 60s between attempts)
-    give provider quota time to recover.
+    Rate limits (429) ride the same outer exponential backoff as other
+    transient errors — the long waits (up to 60s between attempts) give
+    provider quota time to recover. This predicate stays 429-agnostic on
+    both controllers; rate-limit probe mode differentiates 429s in ``stop``
+    and ``wait`` (see :meth:`LLMClient._build_probe_retrying`), not here.
     """
     if isinstance(exc, LLMApiTimeoutError):
         return False
     if isinstance(exc, openai.AuthenticationError):
         return False
     return True
+
+
+_EXCEPTION_CAUSE_DEPTH = 4
+"""How far :func:`_is_rate_limit_exception` walks ``__cause__``.
+
+``_call_with_key_rotation`` re-raises every non-timeout provider error as
+``RuntimeError(f"LLM API call failed: {e}") from e``, so the typed 429 the
+provider raised is one link down the chain by the time the outer controller
+sees it. Four links cover that wrap plus any future one without risking an
+unbounded walk on a self-referencing chain.
+"""
+
+
+def _is_rate_limit_exception(exc: BaseException) -> bool:
+    """True when *exc* is an upstream 429.
+
+    Type- and status-first: ``litellm.exceptions.RateLimitError`` subclasses
+    ``openai.RateLimitError``, so one ``isinstance`` covers every provider
+    litellm routes, and ``status_code == 429`` catches a bare
+    ``APIStatusError``. Both are checked along the ``__cause__`` chain
+    because the outer controller never sees the provider's exception
+    directly (see :data:`_EXCEPTION_CAUSE_DEPTH`). String matching is the
+    last resort, for a wrapper that dropped the cause.
+
+    Used only by the rate-limit probe controller. The engine's three
+    existing 429 classifiers (:func:`tolokaforge.core.loop.classify_error`,
+    ``TrialRunner._is_rate_limit_error``, ``core/resume.py``) are string-only
+    and are deliberately left untouched, so this predicate cannot alter any
+    existing classification.
+    """
+    candidate: BaseException | None = exc
+    for _ in range(_EXCEPTION_CAUSE_DEPTH):
+        if candidate is None:
+            break
+        if isinstance(candidate, openai.RateLimitError):
+            return True
+        if getattr(candidate, "status_code", None) == 429:
+            return True
+        cause = candidate.__cause__
+        candidate = cause if cause is not candidate else None
+
+    text = str(exc)
+    return "429" in text or "RateLimitError" in text or "rate limit" in text.lower()
+
+
+def _is_rate_limit_retry_state(retry_state: RetryCallState) -> bool:
+    """:func:`_is_rate_limit_exception` for a tenacity retry state.
+
+    ``outcome`` is ``None`` before the first attempt has produced anything;
+    tenacity does not reach ``stop`` / ``wait`` / ``before_sleep`` in that
+    state, but the hooks stay total so a tenacity change cannot turn this into
+    an ``AttributeError`` mid-run.
+    """
+    outcome = retry_state.outcome
+    if outcome is None:
+        return False
+    exc = outcome.exception()
+    return exc is not None and _is_rate_limit_exception(exc)
 
 
 # Native finish_reason values that indicate the upstream provider produced
@@ -379,7 +445,12 @@ class GenerationResult:
 class LLMClient:
     """Provider-agnostic LLM client using LiteLLM."""
 
-    def __init__(self, config: ModelConfig):
+    def __init__(
+        self,
+        config: ModelConfig,
+        *,
+        rate_limit_probe: RateLimitProbeConfig | None = None,
+    ):
         self.config = config
         self.model_name = self._format_model_name()
         self.capabilities = build_capabilities(
@@ -415,6 +486,7 @@ class LLMClient:
         self._api_call_timeout_s = self._load_api_timeout()
         self._api_timeout_retries = self._load_api_timeout_retries()
         self._api_call_wall_timeout_s = self._load_api_wall_timeout()
+        self._rate_limit_probe = self._load_rate_limit_probe(rate_limit_probe)
 
         # Sleep hook the outer-retry ``Retrying`` controller in ``generate``
         # binds per call. Tests replace it with a no-op to make the 5-attempt
@@ -554,6 +626,55 @@ class LLMClient:
         if self.capabilities.api_call_wall_timeout_s is not None:
             return self.capabilities.api_call_wall_timeout_s
         return DEFAULT_API_CALL_WALL_TIMEOUT_S
+
+    def _load_rate_limit_probe(
+        self, configured: RateLimitProbeConfig | None
+    ) -> RateLimitProbeConfig | None:
+        """Resolve rate-limit probe mode for this client.
+
+        Priority is the inverse of :meth:`_load_api_timeout_retries`: the run
+        config wins over the env var. The run-config block is archived in the
+        run artifacts, so an analysis agent can prove from the artifacts alone
+        whether the mode was active; letting an invisible env var override an
+        explicit block would let those artifacts lie.
+        ``TOLOKAFORGE_RATE_LIMIT_PROBE`` therefore only applies when no block
+        was passed at all, and exists for local debugging.
+
+        Returns ``None`` when the mode is off from every source, which is what
+        keeps :meth:`_build_retrying` on its default path.
+        """
+        if configured is not None:
+            if configured.enabled:
+                self._log_rate_limit_probe(configured, source="run_config")
+                return configured
+            return None
+
+        if os.getenv("TOLOKAFORGE_RATE_LIMIT_PROBE", "").lower() not in {"1", "true", "yes", "on"}:
+            return None
+
+        defaults = RateLimitProbeConfig()
+        probe = RateLimitProbeConfig(
+            enabled=True,
+            retry_interval_s=self._parse_env_positive_float(
+                "TOLOKAFORGE_RATE_LIMIT_PROBE_INTERVAL_S",
+                default=defaults.retry_interval_s,
+            ),
+            per_call_budget_s=self._parse_env_positive_float(
+                "TOLOKAFORGE_RATE_LIMIT_PROBE_BUDGET_S",
+                default=defaults.per_call_budget_s,
+            ),
+        )
+        self._log_rate_limit_probe(probe, source="env")
+        return probe
+
+    def _log_rate_limit_probe(self, probe: RateLimitProbeConfig, *, source: str) -> None:
+        self.logger.info(
+            "Rate-limit probe mode enabled",
+            source=source,
+            retry_interval_s=probe.retry_interval_s,
+            per_call_budget_s=probe.per_call_budget_s,
+            model=self.model_name,
+        )
 
     def _parse_env_positive_float(self, name: str, default: float | None) -> float | None:
         raw = os.getenv(name)
@@ -967,7 +1088,11 @@ class LLMClient:
         ``stop_after_attempt(5)`` / ``wait_exponential(multiplier=2, min=4,
         max=60)`` and :func:`_should_retry_exception` — the outer semantic
         retry that bounds cascading provider failures (rate limits, 5xx,
-        synthetic-envelope re-raises). Each attempt runs the four-phase
+        synthetic-envelope re-raises). Under rate-limit probe mode the
+        controller instead comes from :meth:`_build_probe_retrying`, which
+        retries 429s at a fixed interval against a wall-clock budget and
+        leaves every other error class on the five-attempt exponential
+        bound. Each attempt runs the four-phase
         request pipeline via :meth:`_generate_once`
         (:meth:`_prepare_prompt_and_tools` -> :meth:`_build_kwargs` ->
         :meth:`_call_with_key_rotation` -> :meth:`_assemble_result`);
@@ -1026,13 +1151,83 @@ class LLMClient:
         the observation of *this* call — the client instance is shared across
         concurrent trials.
         """
+        probe = self._rate_limit_probe
+        if probe is not None:
+            return self._build_probe_retrying(probe, observation)
+
+        return Retrying(
+            stop=stop_after_attempt(5),
+            wait=wait_exponential(multiplier=2, min=4, max=60),
+            retry=retry_if_exception(_should_retry_exception),
+            before_sleep=self._make_before_sleep(observation),
+            sleep=self._retry_sleep,
+            reraise=True,
+        )
+
+    def _build_probe_retrying(
+        self,
+        probe: RateLimitProbeConfig,
+        observation: LLMCallObservation | None,
+    ) -> Retrying:
+        """Build the rate-limit-probe outer :class:`Retrying` controller.
+
+        429s retry at a fixed interval until the per-call wall-clock budget is
+        spent; every other error keeps the standard bounded exponential path.
+        The split accounting is load-bearing — a hard 5xx must not inherit the
+        multi-hour 429 budget, or one dead upstream hangs a whole run leg.
+
+        Non-429 attempts are counted separately from 429 attempts, so a long
+        429 stretch can never consume another error class's five attempts.
+        tenacity 9.x runs ``wait`` before ``stop`` within one iteration, so the
+        ``seen_429`` counter lags the current attempt inside ``wait``; that is
+        immaterial because only ``stop`` reads it.
+        """
+        standard_wait = wait_exponential(multiplier=2, min=4, max=60)
+        seen_429 = 0
+
+        def _probe_stop(retry_state: RetryCallState) -> bool:
+            nonlocal seen_429
+            if _is_rate_limit_retry_state(retry_state):
+                seen_429 += 1
+                elapsed = retry_state.seconds_since_start or 0.0
+                return elapsed >= probe.per_call_budget_s
+            return (retry_state.attempt_number - seen_429) >= 5
+
+        def _probe_wait(retry_state: RetryCallState) -> float:
+            if _is_rate_limit_retry_state(retry_state):
+                return probe.retry_interval_s
+            return standard_wait(retry_state)
+
+        return Retrying(
+            stop=_probe_stop,
+            wait=_probe_wait,
+            retry=retry_if_exception(_should_retry_exception),
+            before_sleep=self._make_before_sleep(observation),
+            sleep=self._retry_sleep,
+            reraise=True,
+        )
+
+    def _make_before_sleep(
+        self, observation: LLMCallObservation | None
+    ) -> Callable[[RetryCallState], None]:
+        """Build the shared ``before_sleep`` hook both controllers install.
+
+        Emits ``llm_retry_scheduled`` and, in probe mode, accumulates the 429
+        counters onto the trial's :class:`RateLimitProbeStats`. tenacity only
+        runs ``before_sleep`` when ``stop`` returned False, so this fires once
+        per *retried* attempt and never after the final one.
+        """
         log_hook = before_sleep_log(get_logger("llm_retry").logger, logging.WARNING)
 
         def _before_sleep(retry_state: RetryCallState) -> None:
             log_hook(retry_state)
+            next_action = retry_state.next_action
+            sleep_s = float(next_action.sleep) if next_action else 0.0
+            probe_stats = observation.probe_stats if observation is not None else None
+            if probe_stats is not None and _is_rate_limit_retry_state(retry_state):
+                probe_stats.record_retry(wait_s=sleep_s, ts=time.time())
             if observation is None:
                 return
-            next_action = retry_state.next_action
             outcome = retry_state.outcome
             exc = outcome.exception() if outcome is not None else None
             observation.events.llm_retry_scheduled(
@@ -1041,18 +1236,11 @@ class LLMClient:
                 provider=self.provider,
                 model=self.model_name,
                 attempt=retry_state.attempt_number,
-                next_attempt_in_s=float(next_action.sleep) if next_action else 0.0,
+                next_attempt_in_s=sleep_s,
                 reason=f"{type(exc).__name__}: {exc}" if exc is not None else "",
             )
 
-        return Retrying(
-            stop=stop_after_attempt(5),
-            wait=wait_exponential(multiplier=2, min=4, max=60),
-            retry=retry_if_exception(_should_retry_exception),
-            before_sleep=_before_sleep,
-            sleep=self._retry_sleep,
-            reraise=True,
-        )
+        return _before_sleep
 
     def _fire_call_started(self, observation: LLMCallObservation | None, attempt: int) -> None:
         if observation is None:
@@ -1609,13 +1797,19 @@ class UserSimulator:
         backstory: str | None = None,
         scripted_flow: list[dict[str, str]] | None = None,
         tool_schemas: list[dict[str, Any]] | None = None,
+        *,
+        rate_limit_probe: RateLimitProbeConfig | None = None,
     ):
         self.mode = mode
         self.persona = persona
         self.backstory = backstory
         self.scripted_flow = scripted_flow or []
         self.tool_schemas = tool_schemas or []
-        self.llm_client = LLMClient(llm_config) if llm_config and mode == "llm" else None
+        self.llm_client = (
+            LLMClient(llm_config, rate_limit_probe=rate_limit_probe)
+            if llm_config and mode == "llm"
+            else None
+        )
         # Stage 7 (P5) — the last system prompt emitted on an LLM reply. Scripted
         # simulators stay ``None`` forever. Callers (``TrialRunner``) capture
         # this after the first user turn and thread it onto ``Trajectory``.
