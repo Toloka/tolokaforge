@@ -1,0 +1,29 @@
+# Deterministic, keyless-gradable grading for kb_lookup_01.
+#
+# transcript_rules is the only family (weight 1.0, pass_threshold 1.0), and its
+# two checks are product-scored so BOTH must hold for a pass:
+#   required_actions — the agent called `search_kb` (proves the rag-service
+#     participated; a no-search trajectory fails). compare_args: [] gates on
+#     the call's presence, not any particular query string.
+#   must_contain     — the planted authorization code `HX49-QORVEN-7731`
+#     appears in the transcript. The code exists only in one corpus document
+#     and on no agent-visible surface (not the task text, not any initial
+#     state), so the agent can only obtain it through a real `search_kb`
+#     retrieval. Paired with the search_kb gate, this locks the answer to the
+#     rag-service round-trip.
+combine:
+  method: weighted
+  weights:
+    transcript_rules: 1.0
+  pass_threshold: 1.0
+
+transcript_rules:
+  max_turns: 5
+  must_contain:
+    - "HX49-QORVEN-7731"
+  required_actions:
+    - action_id: "searched_knowledge_base"
+      requestor: assistant
+      name: search_kb
+      arguments: {}
+      compare_args: []

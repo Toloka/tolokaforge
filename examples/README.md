@@ -9,6 +9,7 @@ by adapter type.
     │   ├── coding/                      # file-write grading
     │   ├── mock_web_booking/            # http_request against the mock-web service
     │   ├── native_shared_domain/        # _shared/domain.yaml pattern (FastMCP)
+    │   ├── rag_search/                  # search_kb against the rag-service
     │   └── tool_use/                    # structured tool-call grading
     └── terminal_bench/                  # `terminal_bench` adapter (Docker compose)
         ├── fix-billing-holds/
@@ -23,6 +24,9 @@ by adapter type.
 - **HTTP against a service**: see `native/mock_web_booking/` — `http_request`
   drives the mock-web service and grading locks a mock-web-issued token (needs
   Docker for mock-web).
+- **Knowledge-base retrieval**: see `native/rag_search/` — `search_kb` retrieves
+  a planted fact from a per-trial rag-service index and grading locks that
+  retrieval-only token (needs Docker with the full stack for the rag-service).
 - **Browser tasks**: see `native/browser_task/` (needs Docker for mock-web).
 - **Terminal-bench tasks** (Docker compose + `tests/test.sh`): see
   `terminal_bench/`.
