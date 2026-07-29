@@ -73,10 +73,11 @@ _PROJECT_SCOPED_DEFAULT_KEYS = frozenset(TaskDefaults.model_fields) - frozenset(
 def validate_grading_yaml(grading_path: Path) -> None:
     """Validate a task's ``grading.yaml``, failing loud on schema breaks.
 
-    Run by ``tolokaforge validate`` so a malformed grading block — most notably
-    the pre-Stage-2 free-text ``llm_judge.rubric: str`` / removed
-    ``output_schema`` shape — is rejected at validate time with a clear
-    migration message (raised by :class:`LLMJudgeConfig`), not only at run time.
+    Run by ``tolokaforge validate`` so a malformed grading block is rejected at
+    validate time with a clear migration message, not only at run time. Two blocks
+    carry removals: ``llm_judge`` (the free-text ``rubric: str`` / ``output_schema``
+    / ``model_ref`` shapes, raised by :class:`LLMJudgeConfig`) and ``state_checks``
+    (``env_assertions`` / ``db_hash_check``, raised by :class:`StateChecksConfig`).
 
     A missing grading file is not an error here: ``load_task_yaml`` already
     validates the ``grading`` path field, and some adapters synthesise grading
@@ -107,6 +108,16 @@ def validate_grading_yaml(grading_path: Path) -> None:
         from tolokaforge.runner.models import LLMJudgeConfig
 
         LLMJudgeConfig(**llm_judge)
+
+    # Same shape for the removed state-check keys: construct the block only when a
+    # removed key is present, so the sole new failure mode is its migration error.
+    state_checks = grading_data.get("state_checks")
+    if isinstance(state_checks, dict) and (
+        "env_assertions" in state_checks or "db_hash_check" in state_checks
+    ):
+        from tolokaforge.core.models import StateChecksConfig
+
+        StateChecksConfig(**state_checks)
 
 
 def load_task_yaml(

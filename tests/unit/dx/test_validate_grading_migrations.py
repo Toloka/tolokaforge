@@ -1,11 +1,17 @@
-"""Load-time schema rejection of the ``grading.llm_judge`` block.
+"""Load-time schema rejection of removed / malformed ``grading.yaml`` blocks.
 
-Two contracts are locked here, both surfacing at load time (``validate`` /
-``validate_grading_yaml``), not deferred to run time:
+Every contract here surfaces at load time (``validate`` /
+``validate_grading_yaml``), not deferred to run time, and each rejection is
+asserted on its **remediation text** — for a removal, the message *is* the
+migration:
 
-* The removed free-text ``rubric: str`` (+ ignored ``output_schema``) shape is
-  an intentional, non-back-compatible break (docs/RUBRIC_GRADING_DESIGN.md) —
-  rejected with a message that names the field and shows the new shape.
+* ``llm_judge``: the removed free-text ``rubric: str`` (+ ignored
+  ``output_schema``) shape and the relocated ``model_ref`` are intentional,
+  non-back-compatible breaks (docs/RUBRIC_GRADING_DESIGN.md), rejected with a
+  message naming the field and showing the new shape.
+* ``state_checks``: ``env_assertions`` and ``db_hash_check`` are removed —
+  neither ever produced grading signal on either substrate — and are rejected
+  naming the check that replaces each.
 * The ``llm_judge.customization`` block (and its project-defaults twin
   ``grading_defaults.llm_judge.customization``) rejects malformed values and
   unknown keys, the message naming the offending field.
@@ -20,7 +26,7 @@ import pytest
 from click.testing import CliRunner
 
 from tolokaforge.adapters._task_loader import validate_grading_yaml
-from tolokaforge.core.models import GradingDefaults
+from tolokaforge.core.models import GradingDefaults, StateChecksConfig
 from tolokaforge.dx.cli.main import cli
 
 pytestmark = pytest.mark.unit
@@ -135,6 +141,81 @@ def test_validate_accepts_structured_rubric(tmp_path: Path):
 
     result = CliRunner(mix_stderr=False).invoke(cli, ["validate", "--tasks", str(task_file)])
     assert "1 valid, 0 invalid" in result.stderr
+
+
+def test_validate_rejects_env_assertions(tmp_path: Path):
+    """``state_checks.env_assertions`` is removed; validate must name the replacements."""
+    task_file = _write_task(
+        tmp_path / "removed_env_assertions",
+        """
+        combine:
+          method: weighted
+          weights:
+            state_checks: 1.0
+        state_checks:
+          env_assertions:
+            - env_type: user
+              func_name: assert_order_cancelled
+              arguments:
+                order_id: O1
+        """,
+    )
+
+    result = CliRunner(mix_stderr=False).invoke(cli, ["validate", "--tasks", str(task_file)])
+
+    out = result.stderr
+    assert "0 valid, 1 invalid" in out
+    assert "state_checks.env_assertions has been removed" in out
+    # The message is the migration: every replacement is named.
+    assert "jsonpaths" in out
+    assert "hash" in out
+    assert "db_probes" in out
+
+
+def test_validate_rejects_db_hash_check(tmp_path: Path):
+    """``state_checks.db_hash_check`` is removed; validate must name hash grading."""
+    task_file = _write_task(
+        tmp_path / "removed_db_hash_check",
+        """
+        combine:
+          method: weighted
+          weights:
+            state_checks: 1.0
+        state_checks:
+          db_hash_check: true
+        """,
+    )
+
+    result = CliRunner(mix_stderr=False).invoke(cli, ["validate", "--tasks", str(task_file)])
+
+    out = result.stderr
+    assert "0 valid, 1 invalid" in out
+    assert "state_checks.db_hash_check has been removed" in out
+    assert "enabled: true" in out
+
+
+def test_removed_state_check_keys_are_rejected_at_grading_load(tmp_path: Path):
+    """The rejection lives on the model, so the run path fails too — not just validate.
+
+    ``StateChecksConfig`` is ``extra="ignore"``, so without this the populated key
+    would be dropped in silence on the very path that grades a trial.
+    """
+    with pytest.raises(ValueError, match="env_assertions has been removed"):
+        StateChecksConfig(env_assertions=[{"env_type": "user", "func_name": "assert_x"}])
+    with pytest.raises(ValueError, match="db_hash_check has been removed"):
+        StateChecksConfig(db_hash_check=True)
+
+
+def test_inert_removed_keys_still_load(tmp_path: Path):
+    """An empty declaration requests nothing, so it is ignored rather than rejected.
+
+    Recorded trial bundles serialize the full grading config, including these keys at
+    their old defaults; re-reading such a bundle must not raise.
+    """
+    config = StateChecksConfig(env_assertions=[], db_hash_check=False, jsonpaths=[])
+
+    assert not hasattr(config, "env_assertions")
+    assert not hasattr(config, "db_hash_check")
 
 
 def test_validate_accepts_customization_block(tmp_path: Path):

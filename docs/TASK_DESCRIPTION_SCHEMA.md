@@ -201,19 +201,6 @@ class GoldenAction(BaseModel):
     arguments: Dict[str, Any] = Field(default_factory=dict)
 
 
-class EnvAssertion(BaseModel):
-    """
-    Assertion on environment state after trial.
-    
-    Used by Native adapter for checking device state.
-    """
-    env_type: Literal["assistant", "user"]
-    func_name: str
-    arguments: Dict[str, Any] = Field(default_factory=dict)
-    assert_value: Any = True
-    message: Optional[str] = None
-
-
 class RequiredAction(BaseModel):
     """Tool call that must appear in the trajectory."""
     action_id: str
@@ -223,18 +210,30 @@ class RequiredAction(BaseModel):
     compare_args: Optional[List[str]] = None      # Which args to compare, None = all
 
 
+class DbProbe(BaseModel):
+    """A read-only SQL assertion against a task-declared postgres DSN."""
+    name: str
+    dsn: str
+    query: str
+    expect: List[Dict[str, Any]]                  # JSONPath assertions over {rows, row_count}
+    description: str = ""
+
+
 class StateChecksConfig(BaseModel):
     """State-based grading configuration."""
     # Hash comparison
     hash_enabled: bool = False
     expected_hash: Optional[str] = None           # Pre-computed (if available)
     golden_actions: List[GoldenAction] = Field(default_factory=list)
-    
+    numeric_string_fields: List[str] = Field(default_factory=list)  # per-field string folding
+    id_fields: Dict[str, str] = Field(default_factory=dict)         # per-table PK; absent => "id"
+    relaxed_validation: bool = False              # legacy escape hatch for the id_fields check
+
     # JSONPath assertions
     jsonpath_checks: List[Dict[str, Any]] = Field(default_factory=list)
-    
-    # Environment assertions (Native adapter)
-    env_assertions: List[EnvAssertion] = Field(default_factory=list)
+
+    # Substrate SQL assertions against a task-declared postgres DSN
+    db_probes: List[DbProbe] = Field(default_factory=list)
 
 
 class ToolExpectations(BaseModel):
@@ -625,9 +624,9 @@ class TaskDescription(BaseModel):
     "weights": {"state_checks": 0.67, "transcript_rules": 0.33},
     "pass_threshold": 1.0,
     "state_checks": {
-      "env_assertions": [
-        {"env_type": "user", "func_name": "assert_mobile_data_status", "arguments": {"expected_status": true}},
-        {"env_type": "user", "func_name": "assert_internet_speed", "arguments": {"expected_speed": 200}}
+      "jsonpath_checks": [
+        {"path": "$.db.devices[0].mobile_data_enabled", "equals": true, "description": "mobile data is on"},
+        {"path": "$.db.devices[0].downlink_mbps", "equals": 200, "description": "downlink restored to 200"}
       ]
     },
     "transcript_rules": {

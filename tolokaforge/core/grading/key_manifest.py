@@ -101,9 +101,6 @@ class GradingKey:
 
 _CORE_TRANSCRIPT_EVALUATOR = "tolokaforge.core.grading.transcript.TranscriptChecker.grade"
 _RUNNER_TRANSCRIPT_EVALUATOR = "tolokaforge.runner.grading.evaluate_transcript_rules"
-_CORE_ENV_EVALUATOR = (
-    "tolokaforge.core.evaluators.environment_evaluator.EnvironmentEvaluator.evaluate_state_checks"
-)
 _CORE_HASH_EVALUATOR = "tolokaforge.core.grading.state_checks.StateChecker.check_hash"
 _RUNNER_HASH_EVALUATOR = "tolokaforge.runner.service.RunnerServiceImpl._execute_hash_grading"
 _ID_FIELDS_LOAD_CHECK = "tolokaforge.runner.id_resolution.check_id_fields_reference_known_tables"
@@ -272,32 +269,6 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
             "runner container joins and the host-side core engine does not; the core "
             "config keeps the field for round-trip fidelity and must not evaluate it"
         ),
-    ),
-    GradingKey(
-        author_key="state_checks.env_assertions",
-        kind=KeyKind.SCORED_CHECK,
-        coverage=SubstrateCoverage.CORE_ONLY,
-        enforcement=Enforcement.FIELD_RESOLUTION_ONLY,
-        core_field="StateChecksConfig.env_assertions",
-        runner_field="StateChecksConfig.env_assertions",
-        core_evaluator=_CORE_ENV_EVALUATOR,
-        reason=(
-            "the runner declares the field and no runner code path evaluates it; "
-            "core resolves assertion functions from an external task-pack module and "
-            "hard-zeroes when that module is absent"
-        ),
-        tracking_issue=675,
-    ),
-    GradingKey(
-        author_key="state_checks.db_hash_check",
-        kind=KeyKind.SCORED_CHECK,
-        coverage=SubstrateCoverage.CORE_ONLY,
-        enforcement=Enforcement.FIELD_RESOLUTION_ONLY,
-        core_field="StateChecksConfig.db_hash_check",
-        runner_field=None,
-        core_evaluator=_CORE_ENV_EVALUATOR,
-        reason="dropped in adapter translation, so the runner never sees the key",
-        tracking_issue=675,
     ),
     GradingKey(
         author_key="transcript_rules.must_contain",

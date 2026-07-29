@@ -255,22 +255,6 @@ class GoldenAction(BaseModel):
     model_config = {"extra": "forbid"}
 
 
-class EnvAssertion(BaseModel):
-    """
-    Assertion on environment state after trial.
-
-    Used by Native adapter for checking device state.
-    """
-
-    env_type: Literal["assistant", "user"]
-    func_name: str
-    arguments: dict[str, Any] = Field(default_factory=dict)
-    assert_value: Any = True
-    message: str | None = None
-
-    model_config = {"extra": "forbid"}
-
-
 class RequiredAction(BaseModel):
     """Tool call that must appear in the trajectory."""
 
@@ -325,9 +309,6 @@ class StateChecksConfig(BaseModel):
 
     # JSONPath assertions
     jsonpath_checks: list[dict[str, Any]] = Field(default_factory=list)
-
-    # Environment assertions (Native adapter)
-    env_assertions: list[EnvAssertion] = Field(default_factory=list)
 
     # Substrate SQL assertions against a task-declared postgres DSN
     db_probes: list[DbProbe] = Field(default_factory=list)

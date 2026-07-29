@@ -23,7 +23,6 @@ state_checks:
   id_fields:
     widgets: widget_id
   relaxed_validation: true
-  db_hash_check: true
   db_probes:
     - name: widget_closed
       dsn: "postgresql://grader:grader_pw@app-db:5432/widgets"
@@ -33,16 +32,6 @@ state_checks:
           equals: closed
           description: widget row is closed
       description: the widget row is closed
-  # The core StateChecksConfig parses ``func_name`` and the adapter reads
-  # ``tool_name`` for the runner, so a pack that must satisfy both declares both.
-  env_assertions:
-    - env_type: assistant
-      func_name: assert_widget_closed
-      tool_name: assert_widget_closed
-      arguments:
-        widget_id: W1
-      assert_value: true
-      message: widget W1 must be closed
 
 transcript_rules:
   must_contain:
