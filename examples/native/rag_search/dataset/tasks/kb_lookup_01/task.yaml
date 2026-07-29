@@ -1,0 +1,31 @@
+task_id: "kb_lookup_01"
+name: "Retrieve the Halden Substation Failover Authorization Code from the Knowledge Base"
+category: "rag_search"
+description: "The agent answers an operations question that can only be resolved by searching the knowledge base: find and report the emergency failover authorization code for the Halden substation, a code that appears only in the KB corpus and on no other agent-visible surface."
+max_turns: 5
+adapter_type: "native"
+initial_user_message: |
+  We're prepping a failover drill for the Halden substation and I can't
+  remember the emergency failover authorization code — it lives in our
+  operations knowledge base, not anywhere I have to hand. Can you look it up
+  and tell me the exact code? Search the knowledge base for the Halden
+  substation's emergency failover procedure and report the authorization code
+  it lists.
+initial_state:
+  rag:
+    corpus_dir: "rag/corpus"
+tools:
+  agent:
+    enabled: ["search_kb"]
+  user:
+    enabled: []
+actors:
+  user:
+    mode: llm
+    persona: cooperative
+    backstory: "You are a grid operations engineer prepping a failover drill and need the Halden substation's emergency failover authorization code. That code lives only in the operations knowledge base — you do not know it yourself, so do not guess it or supply it. Answer brief clarifying questions plainly (it is the Halden substation, the emergency failover authorization code). End with ###STOP### once the agent reports the exact code."
+policies:
+  guidance:
+    - "The failover authorization code is not in this conversation — it lives only in the operations knowledge base. Use the `search_kb` tool to find the Halden substation's emergency failover procedure."
+    - "Report the exact authorization code the knowledge base lists; do not invent or approximate it."
+grading: "grading.yaml"

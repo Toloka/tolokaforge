@@ -16,7 +16,9 @@ Tolokaforge exposes built-in tools via function calling. Enable them per task in
 - `db_update`: JSONPath updates against JSON DB service.
 - `sql_query`: SQL query against JSON DB service.
 - `get_db_schema`: SQL schema inspection for JSON DB tables.
-- `search_kb`: RAG search over indexed corpus.
+- `search_kb`: RAG search over a per-trial corpus index. Functional for native
+  tasks — declare `initial_state.rag.corpus_dir` and the runner indexes that
+  corpus into the rag-service per trial (see `docs/TASKS.md`).
 - `http_request`: Restricted HTTP client for mock web services.
 - `calculator`: Safe arithmetic calculator.
 

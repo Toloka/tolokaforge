@@ -1,0 +1,31 @@
+# Project spec for the rag_search example.
+#
+# A single native task that drives the first-party rag-service over the
+# `search_kb` builtin: the agent searches a per-trial knowledge-base index for
+# an operations fact and reports it. The task declares a corpus via
+# `initial_state.rag.corpus_dir`; the corpus travels with the task and is
+# indexed into the rag-service per trial. The task declares no
+# `environment_manifest` — the rag-service is reached by Docker DNS on the
+# composed standalone stack (deploy/standalone/docker-compose.yaml), the same
+# way the mock_web_booking pack reaches mock-web.
+#
+# See docs/PROJECTS.md for the full Project model.
+
+name: "rag-search"
+version: 1
+description: >
+  Single-task project demonstrating search_kb against the first-party
+  rag-service: the agent retrieves a planted operations fact from a per-trial
+  knowledge-base index and reports it, graded deterministically on that
+  retrieval-only token.
+
+tasks:
+  discovery:
+    glob: "dataset/tasks/**/task.yaml"
+
+task_defaults:
+  adapter_type: "native"
+  actors:
+    user:
+      mode: "llm"
+      persona: "cooperative"

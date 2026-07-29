@@ -21,7 +21,7 @@ from tolokaforge.core.project_loader import resolve as resolve_environment
 from tolokaforge.runner.id_resolution import check_id_fields_reference_known_tables
 
 if TYPE_CHECKING:
-    from tolokaforge.runner.models import TaskDescription
+    from tolokaforge.runner.models import SearchConfig, TaskDescription
 
 logger = get_logger(__name__)
 
@@ -39,9 +39,10 @@ def _builtin_tool_schemas(
     (``MobileTool.apps`` populates ``actions[].app_name.enum``) need the
     config; tools that take no args (bash, calculator) ignore it.
 
-    Tools requiring runtime context that's only available on the runner
-    side (file tools' ``base_path``, search_kb's RAG client) are skipped
-    quietly — the runner provides their schemas via its own machinery.
+    Tools whose construction needs runtime context only available on the
+    runner side (file tools' ``base_path``) are skipped quietly — the runner
+    provides their schemas via its own machinery. ``search_kb`` is handled
+    separately by :meth:`to_task_description` via ``create_search_kb_schema``.
     """
     from tolokaforge.tools.builtin import registry
 
@@ -438,7 +439,6 @@ class NativeAdapter(BaseAdapter):
             InitializationAction,
             InvocationStyle,
             RequiredAction,
-            SearchConfig,
             StateChecksConfig,
             TaskDescription,
             ToolSchema,
@@ -454,6 +454,7 @@ class NativeAdapter(BaseAdapter):
         from tolokaforge.runner.models import (
             UserSimulatorConfig as RunnerUserSimulatorConfig,
         )
+        from tolokaforge.runner.tool_factory import create_search_kb_schema
 
         logger.info(
             "Building TaskDescription", task_id=task_id, adapter_type=AdapterType.NATIVE.value
@@ -481,6 +482,8 @@ class NativeAdapter(BaseAdapter):
         agent_tools: list[ToolSchema] = []
         user_tools: list[ToolSchema] = []  # always empty: user.enabled is [] in all native tasks
 
+        enabled_agent_tools: list[str] = task.tools.agent.get("enabled", [])
+
         # Get MCP server path for agent tools
         mcp_server_ref: str | None = None
         if task.tools and task.tools.agent:
@@ -491,7 +494,7 @@ class NativeAdapter(BaseAdapter):
                     raise RuntimeError(f"MCP server script not found: {mcp_server_path}")
 
             # Build tool schemas for enabled agent tools
-            enabled_tools = task.tools.agent.get("enabled", [])
+            enabled_tools = enabled_agent_tools
 
             # Lift per-tool kwargs from ``tools.agent.<name>: {...}`` blocks so
             # they reach the runner via ``ToolSchema.tool_config`` and the
@@ -523,6 +526,12 @@ class NativeAdapter(BaseAdapter):
                 rich_schemas = _builtin_tool_schemas(enabled_tools, tool_configs)
 
             for tool_name in enabled_tools:
+                if tool_name == "search_kb":
+                    # The runner reconstructs search_kb as a RAGSearchToolWrapper
+                    # (source-less, RAG dispatch). Carry the canonical schema so
+                    # the LLM sees the real {query, top_k, alpha} parameters.
+                    agent_tools.append(create_search_kb_schema())
+                    continue
                 rich = rich_schemas.get(tool_name, {})
                 # Only wire up MCP_SERVER source when the task provides an mcp_server
                 # script. Builtin tools (read_file, write_file, bash, …) have no
@@ -812,6 +821,15 @@ class NativeAdapter(BaseAdapter):
                     "ascii"
                 )
 
+        # Resolve per-trial RAG search from ``initial_state.rag``. When a
+        # corpus is declared, its files travel in ``tool_artifacts`` (keyed
+        # under the declared ``corpus_dir``) so the runner can index them.
+        search_config = self._resolve_search_config(task, task_dir, task_id, enabled_agent_tools)
+        if search_config.documents_path:
+            tool_artifacts.update(
+                self._bundle_corpus_artifacts(task_dir, search_config.documents_path)
+            )
+
         # Bind the project's default_environment patch to the task's own
         # patch via :func:`resolve_environment`; the resolver merges them
         # (with the atomic-``stack`` rule) and constructs the
@@ -835,7 +853,7 @@ class NativeAdapter(BaseAdapter):
             initial_state=initial_state,
             initialization_actions=initialization_actions,
             user_simulator=user_simulator,
-            search=SearchConfig(enabled=False),
+            search=search_config,
             grading=grading_config,
             source_files=source_files,
             generated_at=datetime.now(timezone.utc),
@@ -1003,6 +1021,85 @@ class NativeAdapter(BaseAdapter):
                 )
 
         return schemas
+
+    def _resolve_search_config(
+        self,
+        task: TaskConfig,
+        task_dir: Path,
+        task_id: str,
+        enabled_agent_tools: list[str],
+    ) -> "SearchConfig":
+        """Build the trial's ``SearchConfig`` from ``initial_state.rag``.
+
+        A task that declares ``initial_state.rag.corpus_dir`` opts into
+        per-trial RAG indexing: the corpus files travel in ``tool_artifacts``
+        and the runner indexes them so ``search_kb`` returns the corpus's
+        documents. ``documents_path`` is the declared ``corpus_dir`` verbatim,
+        resolved runner-side against the extracted artifacts dir. Tasks that
+        declare no corpus keep search disabled.
+
+        Raises:
+            ValueError: if a corpus is declared without ``search_kb`` in the
+                agent tools (the corpus could never be searched), or the
+                declared ``corpus_dir`` does not resolve to a directory.
+        """
+        from tolokaforge.runner.models import SearchConfig
+
+        rag = task.initial_state.rag
+        corpus_dir = rag.get("corpus_dir") if rag else None
+        if not corpus_dir:
+            return SearchConfig(enabled=False)
+        if not isinstance(corpus_dir, str):
+            raise ValueError(
+                f"Task {task_id!r} initial_state.rag.corpus_dir must be a string path, "
+                f"got {type(corpus_dir).__name__}={corpus_dir!r}"
+            )
+
+        if "search_kb" not in enabled_agent_tools:
+            raise ValueError(
+                f"Task {task_id!r} declares initial_state.rag.corpus_dir "
+                f"{corpus_dir!r} but does not enable the 'search_kb' agent tool; "
+                f"the corpus would never be searchable. Add 'search_kb' to "
+                f"tools.agent.enabled or drop the rag corpus."
+            )
+
+        corpus_path = task_dir / corpus_dir
+        if not corpus_path.is_dir():
+            raise ValueError(
+                f"Task {task_id!r} declares initial_state.rag.corpus_dir "
+                f"{corpus_dir!r} but {corpus_path} is not a directory."
+            )
+
+        return SearchConfig(
+            enabled=True,
+            domain_name=task.category or task_id,
+            documents_path=corpus_dir,
+        )
+
+    def _bundle_corpus_artifacts(self, task_dir: Path, corpus_dir: str) -> dict[str, str]:
+        """Bundle the RAG corpus's ``.md``/``.txt`` files as base64 artifacts.
+
+        Only the corpus files travel, keyed under the declared *corpus_dir*
+        prefix, so the runner resolves ``artifacts_dir / documents_path`` to
+        the same tree. Globs are flat (non-recursive), matching
+        ``load_documents_from_directory``. The whole task directory is
+        deliberately NOT bundled — that would ship ``grading.yaml`` (which may
+        carry a planted retrieval fact) into the runner.
+
+        Raises:
+            ValueError: if the corpus directory holds no ``.md``/``.txt`` files.
+        """
+        corpus_path = task_dir / corpus_dir
+        artifacts: dict[str, str] = {}
+        for pattern in ("*.md", "*.txt"):
+            for file_path in sorted(corpus_path.glob(pattern)):
+                if not file_path.is_file():
+                    continue
+                rel_path = f"{corpus_dir}/{file_path.name}"
+                artifacts[rel_path] = base64.b64encode(file_path.read_bytes()).decode("ascii")
+        if not artifacts:
+            raise ValueError(f"RAG corpus at {corpus_path} contains no .md or .txt files to index.")
+        return artifacts
 
     def _bundle_task_artifacts(self, task_dir: Path) -> dict[str, str]:
         """Bundle task directory files as base64-encoded artifacts.

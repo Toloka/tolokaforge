@@ -1,0 +1,38 @@
+# RAG search example — search_kb against the first-party rag-service,
+# deterministic retrieval-fact grading.
+#
+#   agent → search_kb → rag-service (/trials/{id}/search over the per-trial index)
+#
+# Two model roles: the `agent` under test and the `user` simulator. Grading is
+# transcript-only (no judge), so no judge model is needed.
+#
+# Requirements:
+#   - Docker daemon running with the standalone stack up on the full profile
+#     (rag-service reachable on the runner network).
+#   - OPENROUTER_API_KEY in .env.
+#
+# Run:
+#   scripts/with_env.sh uv run tolokaforge run --config examples/native/rag_search/run_configs/dev.yaml
+models:
+  agent:
+    provider: "openrouter"
+    name: "anthropic/claude-haiku-4-5"
+    temperature: 0.0
+    max_tokens: 4096
+  user:
+    provider: "openrouter"
+    name: "anthropic/claude-haiku-4-5"
+    temperature: 0.2
+
+orchestrator:
+  workers: 1
+  repeats: 1
+  max_turns: 5
+  runtime: shared
+  queue_backend: sqlite
+
+evaluation:
+  projects:
+    - "examples/native/rag_search/dataset"
+  tasks_glob: "tasks/kb_lookup_01/task.yaml"
+  output_dir: "results/rag_search_example"

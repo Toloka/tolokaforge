@@ -595,6 +595,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     self._index_documents_for_trial(
                         trial_id=trial_id,
                         search_config=search_config,
+                        artifacts_dir=artifacts_dir,
                     )
                 )
                 rag_client_for_trial = self.rag_client
@@ -2300,19 +2301,29 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         self,
         trial_id: str,
         search_config: Any,  # SearchConfig from models
+        artifacts_dir: Path | None,
     ) -> None:
         """
-        Index documents for a trial's search corpus.
+        Index a trial's search corpus into the RAG service.
 
-        Loads documents from the configured path and indexes them
-        in the RAG service for this trial.
+        The corpus travels in ``tool_artifacts`` and is extracted to
+        *artifacts_dir*; a relative ``documents_path`` (the pack's declared
+        ``corpus_dir``) is resolved against it as ``artifacts_dir /
+        documents_path``, mirroring :meth:`_resolve_mcp_server_scripts`. An
+        absolute ``documents_path`` is used literally (escape hatch).
 
         Args:
             trial_id: Unique trial identifier
             search_config: SearchConfig with documents_path and domain_name
+            artifacts_dir: Directory the trial's tool_artifacts were extracted
+                to, or ``None`` when the task shipped none
 
         Raises:
-            RAGServiceError: If indexing fails
+            RAGServiceError: if the RAG client is not configured, a relative
+                corpus path cannot be resolved, or the resolved directory
+                holds no documents — a declared corpus that indexes empty is a
+                bundling bug, not an agent failure, so the trial hard-fails
+                here rather than running against an empty index.
         """
         if self.rag_client is None:
             raise RAGServiceError("RAG client not configured")
@@ -2321,22 +2332,33 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         domain_name = search_config.domain_name or "default"
 
         if not documents_path:
-            logger.warning(f"No documents_path configured for trial {trial_id}")
-            return
+            raise RAGServiceError(
+                f"Trial {trial_id}: search is enabled but documents_path is unset"
+            )
 
-        # Load documents from directory
-        documents = load_documents_from_directory(documents_path, domain_name)
+        corpus_path = Path(documents_path)
+        if not corpus_path.is_absolute():
+            if artifacts_dir is None:
+                raise RAGServiceError(
+                    f"Trial {trial_id}: relative documents_path {documents_path!r} cannot be "
+                    f"resolved — the task shipped no extracted artifacts directory"
+                )
+            corpus_path = artifacts_dir / corpus_path
+
+        documents = load_documents_from_directory(str(corpus_path), domain_name)
 
         if not documents:
-            logger.warning(f"No documents found in {documents_path} for trial {trial_id}")
-            return
+            raise RAGServiceError(
+                f"Trial {trial_id}: no documents in resolved corpus {corpus_path} "
+                f"(documents_path={documents_path!r}) — corpus bundling is broken"
+            )
 
         logger.info(
             f"Indexing {len(documents)} documents for trial {trial_id}",
             extra={
                 "trial_id": trial_id,
                 "domain_name": domain_name,
-                "documents_path": documents_path,
+                "documents_path": str(corpus_path),
             },
         )
 
