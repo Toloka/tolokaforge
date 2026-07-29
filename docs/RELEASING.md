@@ -5,12 +5,15 @@ each with its own GitHub Actions workflow:
 
 - **The PyPI package** — `vX.Y.Z` tags, cut automatically by the "Release (cz
   bump)" workflow.
-- **The Docker images** — `image-vX.Y.Z` tags, pushed by hand.
+- **The Docker images** — the `image-vX.Y.Z-rc.1` release-candidate tag is cut
+  automatically by the same "Release (cz bump)" workflow; the stable
+  `image-vX.Y.Z` tag is pushed by hand once the rc is verified.
 
 Both axes are locked to a single version number. The PyPI release sets that
 number (it owns `[project].version` in `pyproject.toml`); the image workflow
-refuses to publish unless the image tag agrees with it. Cut the package release
-first, then push the image tags.
+refuses to publish unless the image tag agrees with it. Cutting the package
+release also cuts the rc image tag; the stable image tag is pushed by hand
+afterwards.
 
 ## PyPI package — `vX.Y.Z` (automated)
 
@@ -49,15 +52,16 @@ Pushing the `vX.Y.Z` tag then triggers two tag-driven workflows automatically:
 If `auto` finds no releasable commits since the last tag, the workflow exits
 cleanly without cutting a release.
 
-## Docker images — `image-vX.Y.Z` (manual)
+## Docker images — `image-vX.Y.Z-rc.1` (auto) and `image-vX.Y.Z` (manual)
 
 The four first-party images —
 `tolokasoft1/tolokaforge-{runner,db-service,rag-service,mock-web}` — are published
-by [`publish-images.yml`](../.github/workflows/publish-images.yml). Nothing
-creates the `image-v*` tag for you; a human pushes it, which triggers the build.
-The workflow builds the wheel once; only the images that ship it — `runner` and
-`rag-service` — are layered from that artifact, while `db-service` and `mock-web`
-build without it.
+by [`publish-images.yml`](../.github/workflows/publish-images.yml), which fires on
+any pushed `image-v*` tag. The release workflow cuts the release-candidate tag
+`image-vX.Y.Z-rc.1` for you; the stable tag `image-vX.Y.Z` is pushed by hand once
+the rc is verified. The workflow builds the wheel once; only the images that ship
+it — `runner` and `rag-service` — are layered from that artifact, while
+`db-service` and `mock-web` build without it.
 
 Images are `linux/amd64` only. The standalone compose recipe pins
 `platform: ${TOLOKAFORGE_PLATFORM:-linux/amd64}`, so Apple-Silicon hosts run the
@@ -72,18 +76,13 @@ release. The two axes share one version number but are separate tag pushes.
 
 ### Release-candidate, then stable
 
-Every image release goes through a release candidate first. Do both steps:
+Every image release goes through a release candidate first.
 
-1. **Push the rc tag.**
-
-   ```bash
-   git tag image-vX.Y.Z-rc.1
-   git push origin image-vX.Y.Z-rc.1
-   ```
-
-   This routes through the `pre-stable` deployment environment, pushes the
-   immutable `:X.Y.Z-rc.1` tags, and runs a keyless rc-smoke against the
-   freshly-pushed images. It does **not** move `:latest` or `:X.Y`.
+1. **The rc tag is cut for you.** When "Release (cz bump)" cuts `vX.Y.Z`, it also
+   pushes `image-vX.Y.Z-rc.1`. That routes through the `pre-stable` deployment
+   environment, pushes the immutable `:X.Y.Z-rc.1` tags, and runs a keyless
+   rc-smoke against the freshly-pushed images. It does **not** move `:latest` or
+   `:X.Y`.
 
 2. **Verify the rc** — pull the `:X.Y.Z-rc.1` images and smoke them yourself.
 
@@ -107,11 +106,10 @@ Dockerfiles and wheel still build.
 
 ## Typical order
 
-1. Run "Release (cz bump)" to cut `vX.Y.Z` — this sets the version and publishes
-   the package.
-2. `git tag image-vX.Y.Z-rc.1 && git push origin image-vX.Y.Z-rc.1`.
-3. Verify the rc images.
-4. `git tag image-vX.Y.Z && git push origin image-vX.Y.Z` to publish the stable
+1. Run "Release (cz bump)" to cut `vX.Y.Z` — this sets the version, publishes the
+   package, and pushes `image-vX.Y.Z-rc.1` to build the rc images.
+2. Verify the rc images.
+3. `git tag image-vX.Y.Z && git push origin image-vX.Y.Z` to publish the stable
    images and move `:latest`.
 
 ## See also
