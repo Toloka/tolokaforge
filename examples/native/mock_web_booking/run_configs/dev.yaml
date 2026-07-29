@@ -1,0 +1,38 @@
+# Mock-web booking example — http_request against the first-party mock-web
+# service, deterministic confirmation-number grading.
+#
+#   agent → http_request → mock-web:8080 (/booking form → /booking/confirm)
+#
+# Two model roles: the `agent` under test and the `user` simulator. Grading is
+# transcript-only (no judge), so no judge model is needed.
+#
+# Requirements:
+#   - Docker daemon running with the standalone stack up (mock-web reachable on
+#     the runner network at mock-web:8080).
+#   - OPENROUTER_API_KEY in .env.
+#
+# Run:
+#   scripts/with_env.sh uv run tolokaforge run --config examples/native/mock_web_booking/run_configs/dev.yaml
+models:
+  agent:
+    provider: "openrouter"
+    name: "anthropic/claude-haiku-4-5"
+    temperature: 0.0
+    max_tokens: 4096
+  user:
+    provider: "openrouter"
+    name: "anthropic/claude-haiku-4-5"
+    temperature: 0.2
+
+orchestrator:
+  workers: 1
+  repeats: 1
+  max_turns: 6
+  runtime: shared
+  queue_backend: sqlite
+
+evaluation:
+  projects:
+    - "examples/native/mock_web_booking/dataset"
+  tasks_glob: "tasks/booking_01/task.yaml"
+  output_dir: "results/mock_web_booking_example"

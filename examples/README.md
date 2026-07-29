@@ -7,6 +7,7 @@ by adapter type.
     ├── native/                          # default `native` adapter
     │   ├── browser_task/                # browser tool + mock-web fixtures
     │   ├── coding/                      # file-write grading
+    │   ├── mock_web_booking/            # http_request against the mock-web service
     │   ├── native_shared_domain/        # _shared/domain.yaml pattern (FastMCP)
     │   └── tool_use/                    # structured tool-call grading
     └── terminal_bench/                  # `terminal_bench` adapter (Docker compose)
@@ -19,6 +20,9 @@ by adapter type.
 - **Tool-heavy tasks**: see `native/tool_use/` or `native/native_shared_domain/`
   (the latter shows the `_shared/domain.yaml` + FastMCP `mcp_server.py` pattern
   for sharing tools across test-cases).
+- **HTTP against a service**: see `native/mock_web_booking/` — `http_request`
+  drives the mock-web service and grading locks a mock-web-issued token (needs
+  Docker for mock-web).
 - **Browser tasks**: see `native/browser_task/` (needs Docker for mock-web).
 - **Terminal-bench tasks** (Docker compose + `tests/test.sh`): see
   `terminal_bench/`.

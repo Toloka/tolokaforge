@@ -1,0 +1,31 @@
+task_id: "booking_01"
+name: "Book a Hotel Room over the Mock-Web Booking Site"
+category: "mock_web"
+description: "The agent books a hotel room through the mock-web booking site using only the http_request tool: GET the form to learn its fields, POST the booking as form data, and report the confirmation number the site issues."
+max_turns: 6
+adapter_type: "native"
+initial_user_message: |
+  Hi — can you book a room for me on our booking site? It's at
+  http://mock-web:8080/booking. I want the Seaside Resort, checking in on
+  2026-08-01 and checking out on 2026-08-04, under the name Dana Rivera.
+
+  Once it's booked, tell me the confirmation number the site gives back — I
+  need it for my records.
+tools:
+  agent:
+    enabled: ["http_request"]
+    http_request:
+      allowed_hosts: ["mock-web:8080"]
+  user:
+    enabled: []
+actors:
+  user:
+    mode: llm
+    persona: cooperative
+    backstory: "You are booking a hotel room and rely on the agent to drive the booking site for you. Answer brief clarifying questions plainly with the details already given (Seaside Resort, 2026-08-01 to 2026-08-04, name Dana Rivera); do not describe the HTTP calls or spell out the form. End with ###STOP### once the agent reports the confirmation number."
+policies:
+  guidance:
+    - "Reach the booking site with the `http_request` tool against `http://mock-web:8080`. GET `/booking` first to read the form and learn its fields before submitting."
+    - "Submit the booking by POSTing to `/booking/confirm` as the form's own fields (`name`, `hotel`, `checkin`, `checkout`) — send them as form data, not a JSON body, since the site reads an HTML form submission."
+    - "Read the POST response and report back the confirmation number the site issues; do not invent one."
+grading: "grading.yaml"
