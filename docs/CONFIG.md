@@ -108,6 +108,12 @@ generous per-call wall-clock budget is spent, instead of riding the standard
 five-attempt exponential backoff. Everything that is not a 429 keeps the
 standard bounded path, so a dead upstream cannot inherit the long budget.
 
+The mode also records the **goodput** telemetry the measurement is actually made
+from — successful calls, their duration and their tokens, per `(role, model)` and
+per fixed-width absolute-time window. See
+[OUTPUT_FORMAT.md](OUTPUT_FORMAT.md:1) § `probe_*` for the arithmetic and the
+cross-leg summing rule.
+
 ```yaml
 orchestrator:
   timeouts:
@@ -118,6 +124,8 @@ orchestrator:
     jitter_fraction: 0.2          # +/- 20 % so clients don't poll in lockstep
     per_call_budget_s: 3600       # "effectively infinite" per agent call
     simulator_per_call_budget_s: 600   # shorter: the simulator isn't measured
+    bucket_width_s: 30            # goodput window; MUST match across run legs
+    max_buckets: 4096             # per-trial window cap (memory bound)
 ```
 
 | Field | Default | Meaning |
@@ -127,6 +135,13 @@ orchestrator:
 | `jitter_fraction` | `0.2` | Symmetric jitter as a fraction of the interval (`interval x (1 +/- f)`). Without it, every client blocked at the cap retries in lockstep — burst, all rejected, wait, burst — which biases the measurement and is harsher on the provider. The mean interval is unchanged, so the poll-rate inversion still holds in expectation. `0.0` restores the exact fixed interval. |
 | `per_call_budget_s` | `3600.0` | Wall-clock budget for one **agent** call's 429 retries. Exhausting it reraises the last 429, which surfaces as `termination_reason: rate_limit`. A *floor*, not an exact ceiling: `stop` is evaluated on an attempt's outcome, so a call overshoots by up to one retry interval plus one attempt's own timeout budget. |
 | `simulator_per_call_budget_s` | `600.0` | Same, for the user-simulator client. Deliberately shorter: the simulator shares the agent's quota so it must absorb 429s (otherwise a simulator 429 kills the trial the agent-side probe kept alive), but its throughput is not what the probe measures, so agent-sized wall time here only eats lease headroom. |
+| `bucket_width_s` | `30` | Width of one goodput window, **whole seconds**. Windows are anchored on the Unix epoch, not on run start, so simultaneous run legs emit the same boundaries and can be summed window by window. **Every leg of one measurement must use the same width** or the series do not align. Whole seconds keep every boundary an exact integer epoch, so the timestamps match byte-for-byte across legs. |
+| `max_buckets` | `4096` | Per-trial cap on how many windows may be opened, so memory is bounded (~34 h of a two-role trial at 30 s). Past the cap a recording still lands in the flat and per-`(role, model)` totals but cannot open a new window; `Metrics.probe_dropped_buckets` counts the lost windows, so truncation is never silent. Refusing *new* windows rather than evicting old ones keeps the retained series a contiguous prefix — a series with a hole would let a cross-leg sum silently undercount. |
+
+Cumulative totals alone are not sufficient, which is why the windows exist: at a
+**constant** 70-way offered concurrency a measured probe's goodput fell from 1.70
+to 0.43 successful calls/s over ~12 minutes while the rejection rate climbed
+66 % -> 86 %. A single average reports neither number.
 
 Two invariants are enforced by raising — at config load against
 `orchestrator.timeouts.episode_s`, and again per task against the *effective*
@@ -147,8 +162,8 @@ episode budget after the `min(task trial_seconds, run episode_s)` clamp:
 from it, and the loop has no per-turn timeout.
 
 The mode reaches the agent client, the user-simulator client, and the
-per-trial 429 counters. It deliberately does **not** reach the rubric judge
-(grading must not probe) or a `--fallback-models` chain — a chain plus
+per-trial counters (both censuses). It deliberately does **not** reach the rubric
+judge (grading must not probe) or a `--fallback-models` chain — a chain plus
 `enabled: true` is rejected, because switching models mid-probe attributes one
 model's 429s to another. There is no env override: the config block is the only
 activation channel, so a client built without one never probes regardless of the
@@ -163,11 +178,18 @@ probe run is inflated by 429 sleep; `metrics.yaml` records
 
 **What the artifacts do and do not prove.** A non-zero `rate_limit_wait_s`
 proves the mode was on. The converse does not hold: a probe run that found
-headroom and hit no 429s leaves every counter at zero, which is
-indistinguishable from a normal run. The engine does not archive the resolved
-run config into the output bundle, so a mode-consistency gate has to compare
-against the config it dispatched — that gate belongs to whatever dispatches the
-run, not here.
+headroom and hit no 429s leaves every 429 counter at zero, which is
+indistinguishable from a normal run *on the 429 census alone* — the `probe_*`
+goodput census is populated either way and does distinguish them, but it is not a
+gate. The engine does not archive the resolved run config into the output bundle,
+so a mode-consistency gate has to compare against the config it dispatched — that
+gate belongs to whatever dispatches the run, not here.
+
+**Do not trust the 429 census on its own.** It is schedule-dependent (it counts
+how often *your* clients chose to poll) and, for some providers, silent: a model
+with no provider pin produced **zero** 429s across four probe runs up to 33k
+input tokens/s while inflating per-call latency 41 %. Goodput and latency caught
+that; the 429 count did not. That is why the success census is recorded.
 
 ### `reasoning:` — declarative thinking configuration
 

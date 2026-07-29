@@ -786,11 +786,41 @@ request ids (`req_8f429ab2`) and JSON bodies, which under probe mode would hand 
 string-only classifiers (`core/loop.py`, `core/runner.py`, `core/resume.py`) are
 separate and unaffected.
 
-The probe's `before_sleep` hook is also where the 429 counters accumulate, keyed
-by the call's `role` and the client's model slug — both already in scope there.
+### Probe telemetry recording sites
+
+Both sides of throughput are recorded by the two ends of the same pair of hooks
+`generate()` already installs, so no new plumbing crosses the client boundary:
+
+| Census | Hook | Recorded |
+|---|---|---|
+| failure (429s) | `_make_before_sleep` | `retries`, `wait_s`, the 429 window |
+| success (goodput) | `_record_probe_success`, called from `_fire_call_finished` | successful calls, summed `duration_s`, prompt + completion tokens |
+
+Both are keyed by the call's `role` and the client's model slug — both already in
+scope at those sites, which is the whole reason the recording lives there — and
+both are gated the same two ways: the trial must carry a `RateLimitProbeStats`
+*and* this client's own probe must be active. The second half is load-bearing: a
+default-path client (the rubric judge, a fallback-chain member) must never
+contribute to a measurement it is not part of.
+
 The agent and the user simulator are different models in an arena config, so
-their 429s never share a counter; see
-[OUTPUT_FORMAT.md](OUTPUT_FORMAT.md:1) § `rate_limit_*`.
+their counters never merge; and `Metrics.usage` cannot answer the same questions —
+`usage.calls` holds agent calls only and carries no role field. See
+[OUTPUT_FORMAT.md](OUTPUT_FORMAT.md:1) § `rate_limit_*` / `probe_*`.
+
+`duration_s` is the *outer* per-attempt wall time (`generate` brackets
+`_generate_once`), i.e. how long the client actually held the call in flight —
+summed over successes and divided by wall time it is the Little's-law in-flight
+concurrency the provider served. Tokens come off the `Usage` that
+`_assemble_result` already built for that call, so nothing is re-extracted and
+`usage.calls` is never double-counted.
+
+Successes are additionally bucketed into fixed-width windows whose boundary is
+`floor(epoch / bucket_width_s) * bucket_width_s` — **absolute time, not run
+start** — so windows emitted by simultaneous run legs in separate processes align
+and can be summed window by window. See
+`RateLimitProbeStats.bucket_start` for the boundary contract and the bucket-cap
+drop policy.
 
 Probe mode is a run policy, not a model property: it is configured under
 `orchestrator.rate_limit_probe` (see

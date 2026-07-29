@@ -401,6 +401,13 @@ rate_limit_wait_s: 0.0
 rate_limit_first_ts: null
 rate_limit_last_ts: null
 rate_limit_by_role_model: []
+probe_successful_calls: 0
+probe_success_duration_s: 0.0
+probe_prompt_tokens: 0
+probe_completion_tokens: 0
+probe_bucket_width_s: 0
+probe_dropped_buckets: 0
+probe_buckets: []
 ```
 
 Semantics per `usage` field (see
@@ -417,18 +424,29 @@ table):
 | `cache_read_input_tokens` | Anthropic | Tokens re-used from the ephemeral cache this call |
 | `provider_raw` | — | Best-effort dump of the *last* call's raw usage block |
 
-### `rate_limit_*` — rate-limit probe accounting
+### `rate_limit_*` / `probe_*` — rate-limit probe accounting
 
 Populated only by runs with
 [`orchestrator.rate_limit_probe.enabled: true`](CONFIG.md:1); zero / `null` /
 empty on every other run.
 
+Two prefixes, two censuses of the same mode. `rate_limit_*` is the **failure**
+side (429 retries and the sleep they cost); `probe_*` is the **success** side
+(goodput, served concurrency, tokens). Both are needed — see
+[Why both censuses](#why-both-censuses) below.
+
 | Field | Meaning |
 |---|---|
 | `rate_limit_retries` | 429 retries the probe absorbed across every LLM call in the trial (agent + user simulator) |
 | `rate_limit_wait_s` | Summed retry sleep scheduled for those retries |
-| `rate_limit_first_ts` / `rate_limit_last_ts` | UTC timestamps bracketing the window the trial spent blocked on 429s |
-| `rate_limit_by_role_model` | The same accounting split per `(role, model)`; the flat fields above are the sum across these rows |
+| `rate_limit_first_ts` / `rate_limit_last_ts` | UTC timestamps bracketing the window the trial spent blocked on 429s. The **429** window — successful calls do not move it |
+| `rate_limit_by_role_model` | Both censuses split per `(role, model)`; every flat field above and below is the sum across these rows |
+| `probe_successful_calls` | LLM calls that returned a result. `>=` the number of `usage.calls` rows: a call whose provider returned no usage block still succeeded but adds no usage row |
+| `probe_success_duration_s` | Summed client-observed duration of those successful calls |
+| `probe_prompt_tokens` / `probe_completion_tokens` | Tokens the provider reported for those successful calls |
+| `probe_bucket_width_s` | Width of a `probe_buckets` window, seconds — the denominator of every per-window rate |
+| `probe_dropped_buckets` | Windows lost to `max_buckets`. Non-zero means `probe_buckets` is a truncated *prefix* and only the flat / per-`(role, model)` totals are complete |
+| `probe_buckets` | The same counters per `(role, model, absolute window)`, sorted by window then role then model |
 
 ```yaml
 rate_limit_retries: 4
@@ -440,18 +458,53 @@ rate_limit_by_role_model:
     wait_s: 45.0
     first_ts: "2026-07-29T10:00:00Z"
     last_ts: "2026-07-29T10:00:30Z"
+    successful_calls: 18
+    success_duration_s: 214.5
+    prompt_tokens: 369857
+    completion_tokens: 4120
   - role: user
     model: openrouter/anthropic/claude-sonnet-4.6
     retries: 1
     wait_s: 15.0
     first_ts: "2026-07-29T10:01:00Z"
     last_ts: "2026-07-29T10:01:00Z"
+    successful_calls: 9
+    success_duration_s: 11.2
+    prompt_tokens: 89984
+    completion_tokens: 380
+probe_successful_calls: 27
+probe_success_duration_s: 225.7
+probe_prompt_tokens: 459841
+probe_completion_tokens: 4500
+probe_bucket_width_s: 30
+probe_dropped_buckets: 0
+probe_buckets:
+  - bucket_start_ts: "2026-07-29T10:00:00Z"
+    role: agent
+    model: openrouter/deepseek/deepseek-v3.2-exp
+    successful_calls: 12
+    success_duration_s: 138.0
+    prompt_tokens: 240110
+    completion_tokens: 2700
+    retries: 3
+    wait_s: 45.0
+  - bucket_start_ts: "2026-07-29T10:00:30Z"
+    role: agent
+    model: openrouter/deepseek/deepseek-v3.2-exp
+    successful_calls: 6
+    success_duration_s: 76.5
+    prompt_tokens: 129747
+    completion_tokens: 1420
+    retries: 0
+    wait_s: 0.0
 ```
 
-The breakdown exists because the roles are different models: in an arena config
-the agent is the model under test and the user simulator is a fixed, unrelated
-one, so a single flat counter blends a measured model's 429s with an unmeasured
-one's. Rows are sorted by `(role, model)`.
+The `(role, model)` breakdown exists because the roles are different models: in
+an arena config the agent is the model under test and the user simulator is a
+fixed, unrelated one, so a single flat counter blends a measured model's numbers
+with an unmeasured one's. `Metrics.usage` cannot substitute — `usage.calls` holds
+agent calls only and carries **no role field**, so per-model goodput and latency
+are not computable from it at all. Rows are sorted by `(role, model)`.
 
 `model` is the raw provider-qualified slug the client called. Grouping slugs into
 an upstream-provider taxonomy is the consumer's job. Attributing a 429 to the
@@ -462,8 +515,108 @@ engine does not capture the upstream identity.
 `latency_total_s` is trial wall time and therefore *includes*
 `rate_limit_wait_s`. A non-zero `rate_limit_wait_s` is the mechanical marker
 that this trial's latency figures are not comparable with a normal run's, and
-that the run must not produce a leaderboard number. The zero case proves nothing:
-a probe that found headroom looks exactly like a normal run here.
+that the run must not produce a leaderboard number. The zero case proves nothing
+about the *mode*: a probe that found headroom looks exactly like a normal run on
+the 429 census.
+
+#### Why both censuses
+
+The 429 count alone is not a measurement:
+
+- It is **schedule-dependent**. It counts how often *your* clients chose to poll,
+  which is why the retry interval is fixed — `retries / (1 / retry_interval_s)`
+  recovers blocked client-time only because the interval is constant.
+- It is **silent for some providers**. A model with no provider pin produced
+  **zero** 429s across four probe runs up to 33k input tokens/s while inflating
+  per-call latency 41 %. Nothing in the 429 census showed the ceiling; goodput and
+  latency did.
+
+`probe_success_duration_s / wall_seconds` is the Little's-law in-flight
+concurrency the provider actually served. It is computed on **successful calls
+only**, which is what makes it schedule-independent.
+
+#### Computing goodput, tokens/s and served concurrency
+
+Every emitted field is an **additive count over an absolute-time window**, never
+a rate. A single trial's goodput ratio is meaningless — goodput is a run-level
+quantity — so sum the counts first and form the ratio last.
+
+For one window `W` (one `probe_buckets` row, or the sum of the rows sharing a
+`bucket_start_ts`), with `width = probe_bucket_width_s`:
+
+```
+goodput (successful calls/s) = W.successful_calls   / width
+input tokens/s               = W.prompt_tokens      / width
+output tokens/s              = W.completion_tokens  / width
+served concurrency           = W.success_duration_s / width      # Little's law
+mean served latency (s)      = W.success_duration_s / W.successful_calls
+rejection rate               = W.retries / (W.retries + W.successful_calls)
+```
+
+Whole-run figures replace `width` with the run's wall seconds and use the flat
+`probe_*` totals summed across trials:
+
+```
+run goodput = sum(trial.probe_successful_calls) / run_wall_seconds
+```
+
+**A whole-run average understates the peak.** A batch of `N` trials at `N`
+workers has a spike-then-drain profile: every worker starts at once, so offered
+concurrency is `N` at the beginning and decays to 1 as the last trials finish.
+Averaging across the whole run divides peak work by a wall time that includes the
+drain. Read the per-window series for the sustained plateau and take the whole-run
+average only as a lower bound. For the same reason a probe sample set needs at
+least as many trials as the offered concurrency, or it measures the sample size
+instead of the provider.
+
+#### Summing across simultaneous run legs
+
+One runner process serves one domain, so a full measurement runs all legs
+**simultaneously**, one process each, and sums their throughput into a global
+number. The rules:
+
+1. **Launch the legs simultaneously.** Sequential legs never load the provider at
+   the intended total concurrency, so their sum is not a measurement of anything.
+2. **Align on `bucket_start_ts`, not on run start.** The boundary is
+   `floor(epoch_seconds / bucket_width_s) * bucket_width_s`, so two processes on
+   two machines with synchronised clocks emit the *identical* value for the same
+   instant. Group every leg's rows by that timestamp and add the counts
+   window-by-window. A run-start-relative boundary would give every leg its own
+   grid and make the sum meaningless — which is the whole reason the field is
+   epoch-anchored.
+3. **Use the same `bucket_width_s` in every leg.** Different widths do not align.
+4. **Sum tokens/s, not calls/s.** Measured token profiles differ ~4x between
+   domains (369,857 vs 89,984 input tokens per trial), so a call in one leg is not
+   the same unit of work as a call in another. Tokens are the additive quantity;
+   calls/s across mixed domains is not.
+5. **Filter to the roles you are measuring.** Keep `role: agent` rows if the model
+   under test is the agent; the simulator is a different, unmeasured model sharing
+   the same quota.
+6. **Drop the first and last window of the merged series.** Legs do not start and
+   stop on a window boundary, so the edge windows are partially covered and read
+   low.
+7. **Check `probe_dropped_buckets`.** Non-zero on any leg means that leg's series
+   is a truncated prefix; the flat totals are still complete, the series is not.
+
+```python
+# Merge one leg's trials into a per-window series, then add legs together.
+from collections import defaultdict
+import yaml, glob
+
+series = defaultdict(lambda: {"calls": 0, "prompt_tokens": 0, "duration_s": 0.0})
+for path in glob.glob("output/<leg>/trials/*/metrics.yaml"):
+    metrics = yaml.safe_load(open(path))
+    for row in metrics["probe_buckets"]:
+        if row["role"] != "agent":
+            continue
+        window = series[row["bucket_start_ts"]]
+        window["calls"] += row["successful_calls"]
+        window["prompt_tokens"] += row["prompt_tokens"]
+        window["duration_s"] += row["success_duration_s"]
+```
+
+`yaml.safe_load` is deliberate: parsing with a *pinned older* `tolokaforge`
+`Metrics` model raises on the new keys (`extra="forbid"`).
 
 ### `provisioning_duration_s` — wall-clock provisioning latency
 
