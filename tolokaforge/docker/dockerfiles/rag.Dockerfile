@@ -36,7 +36,13 @@ ENV PYTHONUNBUFFERED=1
 EXPOSE 8001
 
 # python-urllib probe avoids a curl dependency on the slim base.
-HEALTHCHECK --interval=10s --timeout=5s --retries=3 --start-period=5s \
+# start-period is long because the service eagerly loads the all-MiniLM-L6-v2
+# embedding model at startup (~45s standalone, longer under container
+# contention). Probe failures during start-period don't count toward retries,
+# so a healthy rag still flips to healthy the instant /health returns 200 — the
+# only effect of the wide grace is to stop `compose up --wait` from declaring a
+# still-loading container unhealthy before the model finishes.
+HEALTHCHECK --interval=10s --timeout=5s --retries=3 --start-period=120s \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')" || exit 1
 
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8001"]
