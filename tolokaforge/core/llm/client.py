@@ -31,8 +31,12 @@ from tenacity import (
     retry,
     retry_if_exception,
     stop_after_attempt,
+    wait_combine,
     wait_exponential,
+    wait_fixed,
+    wait_random,
 )
+from tenacity.wait import wait_base
 
 from tolokaforge.core.llm.capabilities import ModelCapabilities
 from tolokaforge.core.llm.presets import build_capabilities
@@ -314,6 +318,28 @@ def _is_rate_limit_exception(exc: BaseException) -> bool:
         candidate = cause if cause is not candidate else None
 
     return _matches_rate_limit_text(str(exc))
+
+
+def _build_rate_limit_wait(probe: RateLimitProbeConfig) -> wait_base:
+    """The probe's 429 wait strategy: a fixed interval plus symmetric jitter.
+
+    Without jitter every client blocked at the provider's cap retries in
+    lockstep — burst, all rejected, wait, burst — which biases the served-
+    throughput measurement the mode exists to produce and is harsher on the
+    provider than steady polling. The jitter is uniform on
+    ``[-f x interval, +f x interval]`` with ``f = jitter_fraction < 1``, so
+    every wait stays positive and the *mean* interval is exactly
+    ``retry_interval_s``: the ``1 / retry_interval_s`` poll-rate inversion the
+    estimator does still holds in expectation.
+
+    ``jitter_fraction == 0`` returns the bare :func:`tenacity.wait_fixed`, i.e.
+    byte-for-byte the pre-jitter fixed-interval behaviour.
+    """
+    fixed = wait_fixed(probe.retry_interval_s)
+    spread = probe.retry_interval_s * probe.jitter_fraction
+    if spread == 0.0:
+        return fixed
+    return wait_combine(fixed, wait_random(min=-spread, max=spread))
 
 
 def _is_rate_limit_retry_state(retry_state: RetryCallState) -> bool:
@@ -1200,8 +1226,14 @@ class LLMClient:
         tenacity 9.x runs ``wait`` before ``stop`` within one iteration, so the
         ``seen_429`` counter lags the current attempt inside ``wait``; that is
         immaterial because only ``stop`` reads it.
+
+        The 429 wait carries symmetric jitter (see
+        :attr:`RateLimitProbeConfig.jitter_fraction`) so blocked clients do not
+        retry in lockstep; ``jitter_fraction=0`` collapses it to
+        :func:`tenacity.wait_fixed`, the exact fixed interval.
         """
         standard_wait = wait_exponential(multiplier=2, min=4, max=60)
+        rate_limit_wait = _build_rate_limit_wait(probe)
         seen_429 = 0
 
         def _probe_stop(retry_state: RetryCallState) -> bool:
@@ -1214,7 +1246,7 @@ class LLMClient:
 
         def _probe_wait(retry_state: RetryCallState) -> float:
             if _is_rate_limit_retry_state(retry_state):
-                return probe.retry_interval_s
+                return rate_limit_wait(retry_state)
             return standard_wait(retry_state)
 
         return Retrying(
