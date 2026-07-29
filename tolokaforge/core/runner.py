@@ -23,7 +23,12 @@ from tolokaforge.core.models import (
     TrialStatus,
 )
 from tolokaforge.core.rate_limiter import GlobalRateLimiter
-from tolokaforge.core.run_display_events import _NULL_EVENTS, LLMCallObservation, RunDisplayEvents
+from tolokaforge.core.run_display_events import (
+    _NULL_EVENTS,
+    LLMCallObservation,
+    RateLimitProbeStats,
+    RunDisplayEvents,
+)
 from tolokaforge.core.stuck import StuckDetector
 from tolokaforge.tools.registry import ToolExecutor
 
@@ -54,6 +59,7 @@ class TrialRunner:
         verbose: bool = False,
         strict: bool = False,
         events: RunDisplayEvents = _NULL_EVENTS,
+        probe_stats: RateLimitProbeStats | None = None,
     ):
         self.task_id = task_id
         self.trial_index = trial_index
@@ -70,6 +76,10 @@ class TrialRunner:
         self.verbose = verbose
         self.strict = strict
         self._events = events
+        # Non-``None`` only under rate-limit probe mode. Shared by the agent and
+        # user observations so both roles' 429s land in one per-trial total, and
+        # copied onto ``Metrics`` when the trial finalises.
+        self._probe_stats = probe_stats
 
         self.messages: list[Message] = []
         self.metrics = Metrics()
@@ -117,6 +127,15 @@ class TrialRunner:
         a simulator turn.
         """
         return self._user_system_prompt_captured
+
+    @property
+    def _rate_limit_probe_active(self) -> bool:
+        """True when rate-limit probe mode is on for this trial.
+
+        The stats accumulator exists exactly when the mode is enabled — the
+        conductor builds one only in that case — so it doubles as the flag.
+        """
+        return self._probe_stats is not None
 
     @staticmethod
     def _is_rate_limit_error(exc: Exception) -> bool:
@@ -208,7 +227,10 @@ class TrialRunner:
             # shared across concurrent trials — the identity must ride the call,
             # not the client.
             self._user_observation = LLMCallObservation(
-                events=self._events, trial_id=trial_id, role="user"
+                events=self._events,
+                trial_id=trial_id,
+                role="user",
+                probe_stats=self._probe_stats,
             )
 
             try:
@@ -233,7 +255,10 @@ class TrialRunner:
                     normalize_tool_arguments=self._normalize_tool_arguments,
                     logger=self.logger,
                     call_observation=LLMCallObservation(
-                        events=self._events, trial_id=trial_id, role="agent"
+                        events=self._events,
+                        trial_id=trial_id,
+                        role="agent",
+                        probe_stats=self._probe_stats,
                     ),
                 ).run(system_prompt, self.messages, self.start_time)
 
@@ -265,6 +290,7 @@ class TrialRunner:
             end_ts = datetime.now(tz=timezone.utc)
             self.metrics.latency_total_s = time.time() - self.start_time
             self.metrics.turns = len([m for m in self.messages if m.role == MessageRole.ASSISTANT])
+            self._apply_probe_stats()
 
             # Calculate tool success rate (combine agent and user tool logs)
             tool_logs = self.tool_executor.get_logs()
@@ -319,6 +345,31 @@ class TrialRunner:
 
             return trajectory
 
+    def _apply_probe_stats(self) -> None:
+        """Copy the trial's rate-limit probe accounting onto :class:`Metrics`.
+
+        No-op outside probe mode, which leaves the counters at their defaults so
+        a normal run's ``metrics.yaml`` carries zeros rather than a signal that
+        does not exist.
+        """
+        stats = self._probe_stats
+        if stats is None:
+            return
+        self.metrics.rate_limit_retries = stats.retries
+        self.metrics.rate_limit_wait_s = stats.wait_s
+        if stats.first_ts is not None:
+            self.metrics.rate_limit_first_ts = datetime.fromtimestamp(
+                stats.first_ts, tz=timezone.utc
+            )
+        if stats.last_ts is not None:
+            self.metrics.rate_limit_last_ts = datetime.fromtimestamp(stats.last_ts, tz=timezone.utc)
+        if stats.retries:
+            self.logger.warning(
+                "Rate-limit probe absorbed 429s",
+                rate_limit_retries=stats.retries,
+                rate_limit_wait_s=round(stats.wait_s, 3),
+            )
+
     def _is_done(self, text: str) -> bool:
         """Check if agent signals completion"""
         done_markers = [
@@ -334,6 +385,9 @@ class TrialRunner:
         style). Otherwise generate it via the user simulator (legacy behaviour),
         retrying on rate limits. The task instruction lives in the simulator's
         backstory and is NOT sent to the agent.
+
+        This runs *before* the agent loop, so it is outside the episode
+        timeout — the only bound on it is this loop's own attempt count.
         """
         if initial_user_message.strip():
             first_user_text = initial_user_message
@@ -347,7 +401,12 @@ class TrialRunner:
                 )
             ]
             first_user_result = None
-            init_attempts = 4
+            # Probe mode collapses this to one attempt: the simulator's own
+            # client already polls 429s for up to ``per_call_budget_s``, and
+            # multiplying that by 4 outside the episode timeout would push
+            # worst-case trial wall time past the trial's
+            # ``max(300, episode_s * 2)`` queue lease.
+            init_attempts = 1 if self._rate_limit_probe_active else 4
             for attempt in range(1, init_attempts + 1):
                 try:
                     first_user_result = self.user_simulator.reply(

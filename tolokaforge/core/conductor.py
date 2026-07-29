@@ -47,11 +47,13 @@ from tolokaforge.core.models import (
     TaskConfig,
     Trajectory,
     TrialStatus,
+    validate_rate_limit_probe_budget,
 )
 from tolokaforge.core.output.artifacts import TrialArtifactWriter
 from tolokaforge.core.rate_limiter import GlobalRateLimiter
 from tolokaforge.core.run_display_events import (
     _NULL_EVENTS,
+    RateLimitProbeStats,
     RunDisplayEvents,
     _NullRunDisplayEvents,
 )
@@ -542,6 +544,10 @@ class InProcessConductor:
 
         sim = task.resolve_user_simulator()
         user_llm_config = user_config if sim.mode == "llm" else None
+        # The simulator hits the same provider quota as the agent, so a probe
+        # run has to cover it too — otherwise a simulator 429 kills the trial
+        # the agent-side probe was keeping alive.
+        rate_limit_probe = self.config.orchestrator.rate_limit_probe
         user_simulator = UserSimulator(
             mode=sim.mode,
             llm_config=user_llm_config,
@@ -549,6 +555,7 @@ class InProcessConductor:
             backstory=sim.backstory,
             scripted_flow=sim.scripted_flow,
             tool_schemas=user_tool_schemas if user_tool_executor else None,
+            rate_limit_probe=rate_limit_probe,
         )
 
         # Task-scope stuck_heuristics is canonical (populated by the M2
@@ -597,6 +604,14 @@ class InProcessConductor:
             turn_timeout_s = run_turn_s
             episode_timeout_s = run_episode_s
 
+        # Checked against the post-clamp value: a pack declaring trial_seconds
+        # shrinks the ceiling the probe's per-call budget has to fit inside.
+        validate_rate_limit_probe_budget(
+            rate_limit_probe,
+            episode_timeout_s,
+            source=f"task {task.task_id}",
+        )
+
         runner = TrialRunner(
             task_id=task.task_id,
             trial_index=setup.trial_idx,
@@ -613,6 +628,7 @@ class InProcessConductor:
             verbose=self.verbose,
             strict=self.strict,
             events=self.events,
+            probe_stats=RateLimitProbeStats() if rate_limit_probe.enabled else None,
         )
 
         # Use initial_user_message if provided (e.g., tool-use style tasks).
