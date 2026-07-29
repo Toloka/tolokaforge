@@ -578,6 +578,8 @@ class TestTheConductorMustSupportTheMode:
         assert self._build(orch, tmp_path) is conductor
 
     def test_a_supporting_conductor_passes_the_guard(self, tmp_path: Path) -> None:
+        # mypy cannot resolve a base class reached through ``self`` on the
+        # enclosing test class; subclassing keeps the two stubs one edit apart.
         class _SupportingConductor(self._UnsupportingConductor):  # type: ignore[misc,name-defined]
             supports_rate_limit_probe = True
 
