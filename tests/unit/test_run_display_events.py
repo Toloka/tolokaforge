@@ -267,6 +267,7 @@ def test_rate_limit_probe_stats_requires_an_attribution() -> None:
     """``role`` / ``model`` are keyword-required so no 429 can land in an
     unattributable bucket — every call site already knows both."""
     with pytest.raises(TypeError):
+        # Deliberately missing role/model — the raise is what is under test.
         RateLimitProbeStats().record_retry(wait_s=15.0, ts=100.0)  # type: ignore[call-arg]
 
 
@@ -274,6 +275,7 @@ def test_rate_limit_probe_stats_requires_an_attribution_for_successes() -> None:
     """Same for the success side: an unattributed success would make per-model
     goodput unrecoverable, which is the whole point of recording it."""
     with pytest.raises(TypeError):
+        # Deliberately missing role/model — the raise is what is under test.
         RateLimitProbeStats().record_success(  # type: ignore[call-arg]
             duration_s=1.0, prompt_tokens=1, completion_tokens=1, ts=100.0
         )
@@ -447,8 +449,9 @@ class TestAbsoluteTimeBucketAlignment:
 
     def test_successive_calls_land_in_successive_windows(self) -> None:
         """Non-stationarity is only visible if calls separated by more than a
-        window width are recorded separately: at constant offered concurrency a
-        measured probe's goodput fell 1.70 -> 0.43 calls/s over ~12 minutes."""
+        window width are recorded separately — measured goodput decays at a
+        constant offered concurrency (``docs/OUTPUT_FORMAT.md`` § Field
+        observations)."""
         stats = RateLimitProbeStats(bucket_width_s=30)
         for i in range(3):
             stats.record_success(
@@ -528,6 +531,16 @@ class TestAbsoluteTimeBucketAlignment:
         # sit far above that or a legal run would truncate.
         assert DEFAULT_PROBE_MAX_BUCKETS >= 2 * (4 * 3600 // DEFAULT_PROBE_BUCKET_WIDTH_S)
 
+    def test_the_documented_capacity_is_per_series_not_per_trial(self) -> None:
+        """A bucket is one ``(role, model, window)`` row, so the two-role default
+        consumes two rows per window and reaches the cap in HALF the wall time a
+        single-role trial would. The docs state both figures."""
+        single_role_h = DEFAULT_PROBE_MAX_BUCKETS * DEFAULT_PROBE_BUCKET_WIDTH_S / 3600
+        two_role_h = single_role_h / 2
+
+        assert round(single_role_h, 1) == 34.1
+        assert round(two_role_h, 1) == 17.1
+
 
 class TestBucketCapDropPolicy:
     """Memory is bounded, and the truncation is never silent.
@@ -589,8 +602,9 @@ class TestBucketCapDropPolicy:
         assert sum(w.successes for w in stats.by_bucket.values()) == 2
 
     def test_repeated_drops_inside_one_window_count_once(self) -> None:
-        """``dropped_buckets`` counts lost *windows*, not lost recordings, so the
-        number reads as "how much of the series is missing"."""
+        """``dropped_buckets`` counts refused ``(role, model, window)`` *rows*,
+        not refused recordings, so the number reads as "how many series entries
+        are missing"."""
         stats = self._stats()
         self._success(stats, _EPOCH)
         self._success(stats, _EPOCH + 30)
@@ -602,14 +616,23 @@ class TestBucketCapDropPolicy:
         assert stats.successes == 5
 
     def test_a_dropped_window_is_counted_per_role_and_model(self) -> None:
-        """Two roles losing the same window lose two rows, so the count matches
-        the number of missing series entries."""
+        """The counter's unit, pinned: ONE lost window across TWO roles is **2**,
+        because two ``(role, model, window)`` rows were refused.
+
+        That is the same unit as ``max_buckets`` (a cap on
+        ``len(by_bucket)``), which is why the count is rows rather than windows —
+        ``dropped_buckets + len(by_bucket)`` is then commensurable, and a consumer
+        filtering the series to one role gets a number in its own unit. Divide by
+        the role count to read it as windows.
+        """
         stats = self._stats()
         self._success(stats, _EPOCH)
         self._success(stats, _EPOCH + 30)
-        for role, model in (("agent", "m"), ("user", "u")):
+        distinct_windows_lost = 1
+        roles = (("agent", "m"), ("user", "u"))
+        for role, model in roles:
             stats.record_success(
-                role=role,  # type: ignore[arg-type]
+                role=role,  # type: ignore[arg-type]  # LLMCallRole literal, from the table
                 model=model,
                 duration_s=1.0,
                 prompt_tokens=1,
@@ -617,7 +640,25 @@ class TestBucketCapDropPolicy:
                 ts=_EPOCH + 60,
             )
 
-        assert stats.dropped_buckets == 2
+        assert stats.dropped_buckets == len(roles) * distinct_windows_lost == 2
+
+    def test_the_cap_is_global_so_one_role_can_starve_the_other(self) -> None:
+        """``max_buckets`` bounds ``len(by_bucket)`` across every series, not each
+        series, so a high-volume role can consume the whole budget and leave a
+        low-volume role with no window rows at all — while its cumulative
+        ``by_role_model`` row stays complete. ``dropped_buckets`` says how many
+        rows were refused, never which series lost them."""
+        stats = RateLimitProbeStats(bucket_width_s=30, max_buckets=3)
+        for i in range(3):
+            self._success(stats, _EPOCH + i * 30)
+        stats.record_success(
+            role="user", model="u", duration_s=1.0, prompt_tokens=7, completion_tokens=1, ts=_EPOCH
+        )
+
+        assert {role for (role, _model, _start) in stats.by_bucket} == {"agent"}
+        assert stats.by_role_model[("user", "u")].successes == 1
+        assert stats.by_role_model[("user", "u")].prompt_tokens == 7
+        assert stats.dropped_buckets == 1
 
     def test_a_dropped_429_window_is_counted_too(self) -> None:
         stats = self._stats()

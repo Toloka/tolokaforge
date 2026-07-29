@@ -12,15 +12,19 @@ Locks the behaviour the mode exists for:
 - A non-429 error keeps today's five-attempt exponential bound even after a
   long 429 stretch, so one dead upstream cannot inherit the multi-hour budget.
   That bound depends on the 429 classifier not firing on incidental digits, so
-  the false-positive surface is pinned here too.
+  the false-positive surface is pinned here too — including the two cases where
+  a 429 *fingerprint* is present but the condition is not transient: the engine's
+  own ``AllApiKeysExhaustedError`` (which chains the provider's 429) and a
+  deterministic typed non-429 whose message echoes rate-limit prose. Both
+  directions are pinned, because missing a real 429 costs the absorption the
+  whole mode is built on.
 - The counters that reach ``Metrics`` come from real controller runs, not from
   a hand-driven accumulator, and they are keyed by ``(role, model)`` so an
   agent's and a simulator's 429s can never be blended.
 - The SUCCESS census — successful calls, their duration and their tokens —
   records from the same runs, under the same two-part gate, into absolute-time
   windows; and records **nothing** with the mode off.
-- There is no env activation channel: the mode arms only from a passed config
-  block.
+- The passed config block is the mode's only activation channel.
 
 Every case drives the real ``LLMClient.generate`` outer controller with
 ``tolokaforge.core.llm.client.completion`` patched — no provider is contacted.
@@ -36,6 +40,8 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import httpx
+import openai
 import pytest
 import tenacity
 import tenacity.wait
@@ -43,11 +49,17 @@ from litellm.exceptions import RateLimitError
 from tenacity import stop_after_attempt, wait_exponential, wait_fixed
 
 from tolokaforge.core.llm.client import (
+    DEFAULT_API_CALL_TIMEOUT_S,
+    DEFAULT_API_TIMEOUT_RETRIES,
+    AllApiKeysExhaustedError,
     LLMClient,
     _build_rate_limit_wait,
     _is_rate_limit_exception,
+    _matches_rate_limit_text,
+    _should_retry_exception,
 )
 from tolokaforge.core.models import (
+    RATE_LIMIT_PROBE_ATTEMPT_CEILING_S,
     Message,
     MessageRole,
     ModelConfig,
@@ -118,6 +130,12 @@ def _rate_limit_error(message: str = "Rate limit exceeded") -> RateLimitError:
 def _server_error() -> Exception:
     """A 5xx with no 429 fingerprint in its type, status, or text."""
     return ValueError("upstream returned 503 service unavailable")
+
+
+def _bad_request_error(message: str) -> openai.BadRequestError:
+    """A typed, deterministic provider 400 — an authoritative non-429 status."""
+    request = httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
+    return openai.BadRequestError(message, response=httpx.Response(400, request=request), body=None)
 
 
 def _context_length_error() -> Exception:
@@ -511,6 +529,207 @@ class TestRateLimitClassification:
         assert (stats.retries, stats.wait_s, stats.by_role_model) == (0, 0.0, {})
 
 
+class TestTerminalKeyExhaustionIsNotARateLimit:
+    """``AllApiKeysExhaustedError`` chains the provider's own 429 but is terminal.
+
+    ``_call_with_key_rotation`` enters its rotation branch on OpenRouter's 429
+    ("Key limit exceeded") and, after the last key, re-raises ``from`` that typed
+    429. A ``__cause__`` walk therefore used to classify a **terminal**
+    credential-exhaustion state as a transient 429 and hand it the multi-hour
+    fixed-interval budget — for the rest of the run, because ``_rotate_key``
+    only ever advances its index. This is the one defect that fires on the
+    documented default config.
+
+    Both directions are pinned: the terminal wrapper must NOT be a rate limit,
+    and a genuinely wrapped 429 must still be one.
+    """
+
+    def _exhausted(self) -> AllApiKeysExhaustedError:
+        """The exact shape ``_call_with_key_rotation`` raises."""
+        try:
+            raise _rate_limit_error("Key limit exceeded")
+        except RateLimitError as inner:
+            exhausted = AllApiKeysExhaustedError("All API keys exhausted")
+            exhausted.__cause__ = inner
+        return exhausted
+
+    def test_the_terminal_wrapper_is_not_a_rate_limit(self) -> None:
+        assert _is_rate_limit_exception(self._exhausted()) is False
+
+    def test_a_real_wrapped_429_is_still_a_rate_limit(self) -> None:
+        """The negative case above must not cost the absorption the mode exists
+        for: the same wrap shape with a non-terminal outer type still classifies.
+        """
+        try:
+            raise _rate_limit_error("Key limit exceeded")
+        except RateLimitError as inner:
+            wrapped = RuntimeError(f"LLM API call failed: {inner}")
+            wrapped.__cause__ = inner
+        assert _is_rate_limit_exception(wrapped) is True
+
+    def test_the_default_retry_predicate_is_unchanged(self) -> None:
+        """The fix lives in the 429 classifier only. ``_should_retry_exception``
+        still returns True, so a probe-off run retries key exhaustion exactly as
+        it always did — five attempts of exponential backoff."""
+        assert _should_retry_exception(self._exhausted()) is True
+
+    def test_it_is_a_runtime_error_carrying_the_unchanged_message(self) -> None:
+        """Every string-only classifier in the engine (``core/loop.py``,
+        ``core/runner.py``, ``core/resume.py``) and every ``except RuntimeError``
+        keeps matching, so the new type cannot change an existing run."""
+        exhausted = self._exhausted()
+        assert isinstance(exhausted, RuntimeError)
+        assert str(exhausted) == "All API keys exhausted"
+
+    def test_key_exhaustion_raises_the_terminal_type_from_the_typed_429(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The raise site, not a hand-built exception: one key, a provider 429
+        whose text triggers rotation, nothing left to rotate to."""
+        client = _make_client(monkeypatch)
+        client._api_keys = ["only-key"]
+        client._current_key_index = 0
+
+        with (
+            patch(
+                "tolokaforge.core.llm.client.completion",
+                side_effect=_rate_limit_error("Key limit exceeded"),
+            ),
+            pytest.raises(AllApiKeysExhaustedError) as excinfo,
+        ):
+            client._call_with_key_rotation({"model": "m", "messages": []})
+
+        assert str(excinfo.value) == "All API keys exhausted"
+        assert isinstance(excinfo.value.__cause__, RateLimitError)
+
+    def test_exhausted_keys_under_probe_mode_take_the_bounded_default_path(
+        self, monkeypatch: pytest.MonkeyPatch, clock: _FakeClock
+    ) -> None:
+        """The failure scenario, end to end. A dead credential set must die on
+        the five-attempt exponential — byte-for-byte the probe-off behaviour —
+        instead of polling for ``per_call_budget_s``, and must contribute
+        nothing to the 429 census the mode exists to produce."""
+        client = _make_client(monkeypatch, probe=_probe(), clock=clock)
+        client._api_keys = ["only-key"]
+        client._current_key_index = 0
+        stats = RateLimitProbeStats()
+        observation = LLMCallObservation(
+            events=_NULL_EVENTS, trial_id="task_x:0", role="agent", probe_stats=stats
+        )
+
+        with (
+            patch(
+                "tolokaforge.core.llm.client.completion",
+                side_effect=[_rate_limit_error("Key limit exceeded")] * 10,
+            ),
+            patch("tolokaforge.core.llm.client.estimate_cost", return_value=0.0),
+            pytest.raises(AllApiKeysExhaustedError),
+        ):
+            _generate(client, observation=observation)
+
+        assert clock.sleeps == _DEFAULT_BACKOFF
+        assert (stats.retries, stats.wait_s, stats.by_role_model) == (0, 0.0, {})
+
+    def test_a_rotatable_429_still_rotates_before_giving_up(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Rotation itself is untouched: with two keys the second is tried, and
+        only the exhausted state raises the terminal type."""
+        client = _make_client(monkeypatch)
+        client._api_keys = ["first-key", "second-key"]
+        client._current_key_index = 0
+
+        with (
+            patch(
+                "tolokaforge.core.llm.client.completion",
+                side_effect=[
+                    _rate_limit_error("Key limit exceeded"),
+                    _completion_response(),
+                ],
+            ),
+        ):
+            client._call_with_key_rotation({"model": "m", "messages": []})
+
+        assert client._current_key_index == 1
+
+
+class TestTheAttemptCeilingMatchesTheClient:
+    """``RATE_LIMIT_PROBE_ATTEMPT_CEILING_S`` is restated in ``core/models.py``.
+
+    It cannot be imported from here — ``core/llm/client.py`` imports
+    ``core/models.py``, so the dependency only runs one way. The budget invariant
+    reads it, so a drift between the two would silently loosen the lease bound.
+    This case is the lock.
+    """
+
+    def test_the_ceiling_equals_the_clients_own_timeout_budget(self) -> None:
+        attempts = DEFAULT_API_TIMEOUT_RETRIES + 1
+        # ``wait_exponential(multiplier=1, min=1, max=5)`` over the five sleeps
+        # between those six attempts: 1 + 2 + 4 + 5 + 5.
+        inner_backoff_s = sum(min(max(2 ** (attempt - 1), 1), 5) for attempt in range(1, attempts))
+        assert inner_backoff_s == 17
+        assert (
+            attempts * DEFAULT_API_CALL_TIMEOUT_S + inner_backoff_s
+            == RATE_LIMIT_PROBE_ATTEMPT_CEILING_S
+        )
+
+
+class TestAnAuthoritativeStatusBeatsProse:
+    """The anchored text tier is a fallback for a *stringified* provider error.
+
+    The outermost production message is
+    ``RuntimeError(f"LLM API call failed: {e}")`` and ``e``'s message can embed
+    the provider's response body, which some providers use to echo request
+    content. A task conversation about rate limiting could then put
+    ``rate limit exceeded`` inside a deterministic 400 — and the text tier used
+    to run on every wrapped non-429, so the 400 inherited the multi-hour budget.
+    An HTTP status anywhere in the chain now settles it.
+
+    The tier is NOT narrowed for untyped chains: under-matching a real 429 is
+    the more expensive direction, because the whole feature is the absorption.
+    """
+
+    def test_a_typed_400_echoing_rate_limit_prose_is_not_a_rate_limit(self) -> None:
+        inner = _bad_request_error(
+            "Error code: 400 - {'error': {'message': 'Invalid tool call', 'metadata': "
+            "{'raw': 'user: our gateway logged rate limit exceeded on the vendor "
+            "API, please open a ticket'}}}"
+        )
+        wrapped = RuntimeError(f"LLM API call failed: {inner}")
+        wrapped.__cause__ = inner
+
+        assert _matches_rate_limit_text(str(wrapped)) is True
+        assert _is_rate_limit_exception(wrapped) is False
+
+    def test_an_untyped_chain_still_text_matches(self) -> None:
+        """The shape the tier exists for. No link carries a status, so prose is
+        the only evidence available and it is still honoured."""
+        inner = ValueError("Error code: 429 - {'error': 'slow down'}")
+        wrapped = RuntimeError(f"LLM API call failed: {inner}")
+        wrapped.__cause__ = inner
+
+        assert _is_rate_limit_exception(wrapped) is True
+
+    def test_a_bare_stringified_429_with_no_cause_still_text_matches(self) -> None:
+        assert (
+            _is_rate_limit_exception(
+                RuntimeError("LLM API call failed: HTTP/1.1 429 Too Many Requests")
+            )
+            is True
+        )
+
+    def test_a_429_deeper_in_the_chain_beats_a_non_429_status_above_it(self) -> None:
+        """The status tier is evaluated per link, so a genuine 429 under a
+        wrapper that happens to carry its own status is still absorbed."""
+        deepest = _rate_limit_error("slow down")
+        middle = _bad_request_error("Error code: 400 - upstream relay")
+        middle.__cause__ = deepest
+        outer = RuntimeError(f"LLM API call failed: {middle}")
+        outer.__cause__ = middle
+
+        assert _is_rate_limit_exception(outer) is True
+
+
 class TestJitter:
     """The fixed interval ships with symmetric jitter so blocked clients do not
     retry in lockstep. The estimator uses the *mean* interval, which the jitter
@@ -760,40 +979,31 @@ class TestPerModelAccounting:
         assert stats.by_role_model[("user", f"openrouter/{self._AGENT_MODEL}")].retries == 1
 
 
-class TestNoEnvActivationChannel:
-    """There is deliberately no ``TOLOKAFORGE_RATE_LIMIT_PROBE``.
+class TestTheConfigBlockIsTheOnlyActivationChannel:
+    """The mode arms from the constructor argument and from nothing else.
 
-    An env override could not reach the agent client (the orchestrator always
-    passes an explicit block, so the var would be dead there) while it *would*
-    reach every kwarg-less site — the rubric judge, a ``--fallback-models``
-    chain, ``run_trial`` — which are exactly the paths that must never probe,
-    and would skip both budget assertions on the way. These cases pin the
-    absence.
+    That is what keeps the paths which must never probe off it — the rubric
+    judge, a ``--fallback-models`` chain, a bare ``run_trial`` — because they all
+    build their clients without the argument, and it is what makes both budget
+    assertions unskippable.
     """
 
-    @pytest.mark.parametrize("value", ["1", "true", "yes", "on", "TRUE"], ids=lambda v: f"env-{v}")
     def test_a_client_built_without_a_block_never_probes(
-        self, monkeypatch: pytest.MonkeyPatch, value: str
-    ) -> None:
-        monkeypatch.setenv("TOLOKAFORGE_RATE_LIMIT_PROBE", value)
-        monkeypatch.setenv("TOLOKAFORGE_RATE_LIMIT_PROBE_INTERVAL_S", "7.5")
-        monkeypatch.setenv("TOLOKAFORGE_RATE_LIMIT_PROBE_BUDGET_S", "900")
-
-        assert _make_client(monkeypatch)._rate_limit_probe is None
-
-    def test_a_disabled_block_still_never_probes_with_the_env_var_set(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("TOLOKAFORGE_RATE_LIMIT_PROBE", "1")
+        assert _make_client(monkeypatch)._rate_limit_probe is None
+
+    def test_a_disabled_block_is_the_same_as_no_block(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         client = _make_client(monkeypatch, probe=RateLimitProbeConfig(enabled=False))
         assert client._rate_limit_probe is None
 
-    def test_a_429_storm_on_an_env_armed_client_still_dies_after_five_attempts(
+    def test_a_429_storm_on_a_blockless_client_dies_after_five_attempts(
         self, monkeypatch: pytest.MonkeyPatch, clock: _FakeClock
     ) -> None:
-        """Behavioural, not shape: with the var set, the controller is still the
-        default five-attempt exponential."""
-        monkeypatch.setenv("TOLOKAFORGE_RATE_LIMIT_PROBE", "1")
+        """Behavioural, not shape: without a block the controller is still the
+        default five-attempt exponential even under a persistent 429."""
         client = _make_client(monkeypatch, clock=clock)
 
         with (
@@ -807,11 +1017,6 @@ class TestNoEnvActivationChannel:
             _generate(client)
 
         assert clock.sleeps == _DEFAULT_BACKOFF
-
-    def test_unset_env_var_leaves_the_mode_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("TOLOKAFORGE_RATE_LIMIT_PROBE", raising=False)
-        client = _make_client(monkeypatch)
-        assert client._rate_limit_probe is None
 
 
 class TestGoodputCounters:
@@ -830,7 +1035,7 @@ class TestGoodputCounters:
         return LLMCallObservation(
             events=_NULL_EVENTS,
             trial_id="task_x:0",
-            role=role,  # type: ignore[arg-type]
+            role=role,  # type: ignore[arg-type]  # LLMCallRole literal, given per case
             probe_stats=stats,
         )
 
@@ -991,9 +1196,10 @@ class TestGoodputCounters:
 class TestGoodputPerModelAttribution:
     """Per-``(role, model)`` separation of the SUCCESS side, driven end to end.
 
-    The measured live case: 3,176 429s on a 70-way probe, all attributed to the
-    agent and zero to the simulator. The same attribution has to hold for
-    goodput, or a leg's agent tokens/s is inflated by its simulator's traffic.
+    In the measured live case every absorbed 429 belonged to the agent and none
+    to the simulator (``docs/OUTPUT_FORMAT.md`` § Field observations). The same
+    attribution has to hold for goodput, or a leg's agent tokens/s is inflated by
+    its simulator's traffic.
     """
 
     _AGENT_MODEL = "deepseek/deepseek-v3.2-exp"
@@ -1015,7 +1221,7 @@ class TestGoodputPerModelAttribution:
         observation = LLMCallObservation(
             events=_NULL_EVENTS,
             trial_id="task_x:0",
-            role=role,  # type: ignore[arg-type]
+            role=role,  # type: ignore[arg-type]  # LLMCallRole literal, given per case
             probe_stats=stats,
         )
         with (
@@ -1034,8 +1240,8 @@ class TestGoodputPerModelAttribution:
         self, monkeypatch: pytest.MonkeyPatch, clock: _FakeClock, wall: _FakeWallClock
     ) -> None:
         """One trial, two models, asymmetric in BOTH call count and token
-        profile — 3 calls of 369,857 prompt tokens against 1 of 89,984, the ~4x
-        cross-domain spread that was actually measured. A shared bucket reports
+        profile — the token values are the measured ~4x cross-domain spread
+        (``docs/OUTPUT_FORMAT.md`` § Field observations). A shared bucket reports
         4 calls and 1,199,555 tokens against whichever model was recorded, so
         every assertion here fails if the buckets were merged."""
         stats = RateLimitProbeStats()
@@ -1137,10 +1343,10 @@ class TestGoodputPerModelAttribution:
 class TestGoodputBucketsFromRealCalls:
     """Absolute-time windows, filled by the real controller.
 
-    A cumulative counter hides non-stationarity: at CONSTANT 70-way offered
-    concurrency a measured probe's goodput fell 1.70 -> 0.43 successful calls/s
-    over ~12 minutes while rejections climbed 66 % -> 86 %. The windows are how
-    that curve survives into the artifacts.
+    A cumulative counter hides non-stationarity: measured goodput decays at a
+    CONSTANT offered concurrency while rejections climb (``docs/OUTPUT_FORMAT.md``
+    § Field observations). The windows are how that curve survives into the
+    artifacts.
     """
 
     def _observation(self, stats: RateLimitProbeStats) -> LLMCallObservation:

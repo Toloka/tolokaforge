@@ -1,18 +1,22 @@
 """Rate-limit probe mode: config validation and the roles it reaches.
 
-Three things are load-bearing beyond the retry controller itself
+What is load-bearing beyond the retry controller itself
 (``tests/unit/llm/test_rate_limit_probe_retry.py`` covers that):
 
-- The budget invariant (``per_call_budget_s + simulator_per_call_budget_s <
-  episode_s``, and an episode budget measured in hours) is enforced by raising —
-  at config-load time against the configured episode budget, and in the
-  conductor against the *effective* one after the task-pack ``min()`` clamp. One
-  turn issues both calls back to back, which is why the invariant covers the
-  *pair* rather than a single call.
+- The budget invariant is enforced by raising — at config-load time against the
+  configured episode budget, and in the conductor against the *effective* one
+  after the task-pack ``min()`` clamp. It bounds the whole per-turn 429 ceiling
+  (both per-call budgets **plus** both calls' overshoot), because one turn issues
+  both calls back to back and ``stop`` is evaluated on an attempt's outcome.
+  Configs that clear the budgets but not the overshoot are pinned as rejected.
+- The mode cannot arm on a conductor that does not wire it: the orchestrator arms
+  the agent client, the conductor wires the simulator probe, the per-task
+  re-check and the telemetry, so a mismatch raises instead of producing
+  artifacts that read all-default.
 - The agent client, the user-simulator client, and the per-trial counters carry
   the mode; the simulator gets the shorter per-call budget. The rubric judge and
   a fallback chain never carry it — asserted against the clients those paths
-  actually build, with the (removed) env activation variable set.
+  actually build.
 - A trial's absorbed 429s reach ``Metrics``, split per ``(role, model)``.
 - So does the SUCCESS census, plus the absolute-time window series a consumer
   computes goodput / tokens-per-second / Little's-law concurrency from — with
@@ -29,12 +33,18 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tolokaforge.core.conductor import InProcessConductor
+from tolokaforge.core.conductor import (
+    InMemoryConductor,
+    InProcessConductor,
+    conductor_supports_rate_limit_probe,
+    require_rate_limit_probe_support,
+)
 from tolokaforge.core.grading.judge import JudgeStatus, LLMJudge
 from tolokaforge.core.llm import LLMClient, UserSimulator
 from tolokaforge.core.llm.fallback_client import FallbackLLMClient
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import (
+    RATE_LIMIT_PROBE_ATTEMPT_CEILING_S,
     EvaluationConfig,
     Metrics,
     ModelConfig,
@@ -99,7 +109,7 @@ class TestBudgetInvariantAtLoadTime:
         ``per_call_budget_s < episode_s`` but its worst case is
         ``7200 + 7199 + 600 = 14999s`` against a ``2 x 7200 = 14400s`` lease, so
         the trial would outlive its lease and be re-run by another worker."""
-        with pytest.raises(ValueError, match="per-turn 429 budget"):
+        with pytest.raises(ValueError, match="per-turn 429 wall time"):
             OrchestratorConfig(
                 timeouts=TimeoutConfig(episode_s=7200),
                 rate_limit_probe=RateLimitProbeConfig(enabled=True, per_call_budget_s=7199.0),
@@ -111,10 +121,10 @@ class TestBudgetInvariantAtLoadTime:
         fits = OrchestratorConfig(
             timeouts=TimeoutConfig(episode_s=7200),
             rate_limit_probe=RateLimitProbeConfig(
-                enabled=True, per_call_budget_s=3600.0, simulator_per_call_budget_s=3599.0
+                enabled=True, per_call_budget_s=3600.0, simulator_per_call_budget_s=1600.0
             ),
         )
-        assert fits.rate_limit_probe.turn_budget_s == 7199.0
+        assert fits.rate_limit_probe.turn_budget_s == 5200.0
 
         with pytest.raises(ValueError, match="simulator_per_call_budget_s"):
             OrchestratorConfig(
@@ -135,9 +145,10 @@ class TestBudgetInvariantAtLoadTime:
             rate_limit_probe=RateLimitProbeConfig(enabled=True),
         )
         probe = config.rate_limit_probe
-        # 14400 (episode) + 3600 (agent) + 600 (simulator) = 18600 < 28800 lease.
-        assert probe.turn_budget_s < config.timeouts.episode_s
-        assert config.timeouts.episode_s + probe.turn_budget_s < config.timeouts.episode_s * 2
+        # 14400 (episode) + 4200 (both budgets) + 1510 (both overshoots)
+        # = 20110 < 28800 lease.
+        assert probe.turn_wall_ceiling_s < config.timeouts.episode_s
+        assert config.timeouts.episode_s + probe.turn_wall_ceiling_s < config.timeouts.episode_s * 2
 
     def test_hours_long_episode_budget_with_a_smaller_per_call_budget_is_accepted(self) -> None:
         config = OrchestratorConfig(
@@ -162,6 +173,128 @@ class TestBudgetInvariantAtLoadTime:
 
     def test_helper_is_a_no_op_for_a_missing_block(self) -> None:
         validate_rate_limit_probe_budget(None, 60.0, source="test")
+
+
+class TestTheOvershootIsPartOfTheInvariant:
+    """``per_call_budget_s`` is a floor, so the invariant has to model the
+    overshoot rather than trust the slack to absorb it.
+
+    ``stop`` is evaluated on an attempt's *outcome*, so a call whose elapsed time
+    is a hair under its budget still gets one more jitter-maximum wait plus one
+    more attempt. Two calls per turn, so twice that. Three configs below pass
+    ``turn_budget_s < episode_s`` yet exceed the ``max(300, episode_s * 2)``
+    lease — the third with the *documented default* budgets and only
+    ``retry_interval_s`` raised, a knob a budget-only invariant never reads.
+    """
+
+    def _lease_s(self, episode_s: int) -> int:
+        """``Orchestrator``'s queue lease horizon for this episode budget."""
+        return max(300, episode_s * 2)
+
+    def test_the_call_overshoot_reads_the_interval_the_jitter_and_the_attempt(
+        self,
+    ) -> None:
+        probe = RateLimitProbeConfig(enabled=True, retry_interval_s=15.0, jitter_fraction=0.2)
+        assert probe.call_overshoot_s == 15.0 * 1.2 + RATE_LIMIT_PROBE_ATTEMPT_CEILING_S
+        assert probe.turn_overshoot_s == 2 * probe.call_overshoot_s
+        assert probe.turn_wall_ceiling_s == probe.turn_budget_s + probe.turn_overshoot_s
+
+    @pytest.mark.parametrize(
+        ("episode_s", "probe"),
+        [
+            pytest.param(
+                3601,
+                RateLimitProbeConfig(
+                    enabled=True, per_call_budget_s=3000.0, simulator_per_call_budget_s=599.0
+                ),
+                id="two-seconds-of-budget-slack",
+            ),
+            pytest.param(
+                14400,
+                RateLimitProbeConfig(enabled=True, retry_interval_s=6000.0),
+                id="documented-budgets-with-only-the-interval-raised",
+            ),
+            pytest.param(
+                3601,
+                RateLimitProbeConfig(
+                    enabled=True,
+                    per_call_budget_s=1.0,
+                    simulator_per_call_budget_s=1.0,
+                    retry_interval_s=7200.0,
+                ),
+                id="tiny-budgets-huge-interval",
+            ),
+        ],
+    )
+    def test_a_config_whose_overshoot_breaks_the_lease_is_rejected(
+        self, episode_s: int, probe: RateLimitProbeConfig
+    ) -> None:
+        # Each of these satisfies the budget-only comparison the invariant used
+        # to make, and each still outlives its lease.
+        assert probe.turn_budget_s < episode_s
+        assert episode_s + probe.turn_wall_ceiling_s > self._lease_s(episode_s)
+
+        with pytest.raises(ValueError, match="per-turn 429 wall time"):
+            validate_rate_limit_probe_budget(probe, float(episode_s), source="probe")
+
+    def test_the_documented_defaults_still_fit_under_the_lease(self) -> None:
+        """The fix must not reject the shipped configuration."""
+        probe = RateLimitProbeConfig(enabled=True)
+        validate_rate_limit_probe_budget(probe, 14400.0, source="probe")
+        assert 14400 + probe.turn_wall_ceiling_s < self._lease_s(14400)
+
+    def test_the_error_names_every_knob_it_read(self) -> None:
+        """An operator has to be able to see which knob to lower."""
+        with pytest.raises(ValueError) as excinfo:
+            validate_rate_limit_probe_budget(
+                RateLimitProbeConfig(enabled=True, retry_interval_s=6000.0),
+                14400.0,
+                source="probe",
+            )
+        message = str(excinfo.value)
+        for knob in (
+            "per_call_budget_s",
+            "simulator_per_call_budget_s",
+            "retry_interval_s",
+            "jitter_fraction",
+        ):
+            assert knob in message
+
+    def test_the_conductor_applies_the_same_bound_to_the_effective_budget(
+        self, tmp_path: Path
+    ) -> None:
+        """The per-task re-check reads the same ceiling, so a pack's
+        ``trial_seconds`` clamp cannot smuggle an unfittable overshoot through."""
+        probe = RateLimitProbeConfig(enabled=True, retry_interval_s=1200.0)
+        # Legal at the run level: 4200 + 2 x (1440 + 737) = 8554 < 14400.
+        config = _run_config(probe=probe)
+        assert config.orchestrator.rate_limit_probe.turn_wall_ceiling_s < 14400
+
+        conductor = InProcessConductor(
+            adapter=MagicMock(),
+            artifact_writer=MagicMock(),
+            config=config,
+            logger=get_logger("probe-overshoot", strict=False),
+            agent_client=MagicMock(),
+            runtime_backend=MagicMock(),
+            trial_grader=MagicMock(),
+            output_dir=tmp_path,
+        )
+        setup = MagicMock()
+        setup.trial_idx = 0
+        setup.task_dir = tmp_path
+        setup.tool_schemas = []
+        task = TaskConfig(
+            task_id="clamped-overshoot",
+            description="d",
+            timeouts=TimeoutDefaults(trial_seconds=7200),
+        )
+
+        with (
+            patch.object(InProcessConductor, "_build_system_prompt", return_value="sys"),
+            pytest.raises(ValueError, match="task clamped-overshoot"),
+        ):
+            conductor._run_agent_loop(MagicMock(), task, setup)
 
 
 class TestBudgetInvariantAgainstTheEffectiveTimeout:
@@ -371,6 +504,106 @@ class TestAgentClientConstruction:
         assert orch._build_agent_client(_AGENT) is sentinel
 
 
+class TestTheConductorMustSupportTheMode:
+    """Arming and wiring live at different layers, so the seam needs a guard.
+
+    ``Orchestrator`` arms the agent client (it owns the client); the simulator
+    probe, the per-task effective-budget re-check and the per-trial telemetry
+    accumulator are ``InProcessConductor``'s. Conductors are a plugin group, so
+    ``run_trial(conductor=...)`` and ``OrchestratorDeps.conductor_factory`` can
+    resolve anything. On an unsupporting conductor the mode still arms — the run
+    really does absorb 429s and its latency really is inflated — while every
+    ``rate_limit_*`` / ``probe_*`` field stays at its default, so the artifacts
+    would prove nothing. Fail fast instead.
+    """
+
+    class _UnsupportingConductor:
+        """A conductor written without the mode: no capability attribute."""
+
+        def run(self, spec: object, task_config: object) -> object:  # pragma: no cover
+            raise AssertionError("not invoked by these cases")
+
+    def _orchestrator(self, config: RunConfig, conductor: object) -> Orchestrator:
+        # ``OrchestratorDeps.conductor_factory`` is a typed callable; the lambda
+        # returns a duck-typed stand-in, which is the point of these cases.
+        orch = Orchestrator(
+            config,
+            deps=OrchestratorDeps(conductor_factory=lambda _ctx: conductor),  # type: ignore[arg-type]
+        )
+        orch.adapter = MagicMock()
+        orch._artifact_writer = MagicMock()
+        return orch
+
+    def _build(self, orch: Orchestrator, tmp_path: Path) -> object:
+        with patch("tolokaforge.core.orchestrator.load_trial_grader", return_value=MagicMock()):
+            return orch._build_conductor(
+                agent_client=MagicMock(),
+                runtime_backend=MagicMock(),
+                output_dir=tmp_path,
+                request_limiter=None,
+            )
+
+    def test_the_in_process_conductor_declares_support(self) -> None:
+        assert InProcessConductor.supports_rate_limit_probe is True
+        assert conductor_supports_rate_limit_probe(InProcessConductor) is True
+
+    def test_a_conductor_without_the_attribute_is_unsupported(self) -> None:
+        """Fails closed — a conductor predating the mode must not be assumed
+        able to wire it."""
+        assert conductor_supports_rate_limit_probe(self._UnsupportingConductor()) is False
+        assert conductor_supports_rate_limit_probe(InMemoryConductor()) is False
+
+    def test_an_armed_run_on_an_unsupporting_conductor_raises(self, tmp_path: Path) -> None:
+        orch = self._orchestrator(_run_config(probe=_PROBE), self._UnsupportingConductor())
+
+        with pytest.raises(ValueError, match="does not declare supports_rate_limit_probe"):
+            self._build(orch, tmp_path)
+
+    def test_the_message_names_the_conductor_and_the_fix(self, tmp_path: Path) -> None:
+        orch = self._orchestrator(_run_config(probe=_PROBE), self._UnsupportingConductor())
+
+        with pytest.raises(ValueError) as excinfo:
+            self._build(orch, tmp_path)
+
+        message = str(excinfo.value)
+        assert "_UnsupportingConductor" in message
+        assert "in_process" in message
+
+    def test_the_same_conductor_is_fine_with_the_mode_off(self, tmp_path: Path) -> None:
+        """The guard is scoped to an enabled probe; it cannot break an ordinary
+        run on a custom conductor."""
+        conductor = self._UnsupportingConductor()
+        orch = self._orchestrator(_run_config(), conductor)
+
+        assert self._build(orch, tmp_path) is conductor
+
+    def test_a_supporting_conductor_passes_the_guard(self, tmp_path: Path) -> None:
+        class _SupportingConductor(self._UnsupportingConductor):  # type: ignore[misc,name-defined]
+            supports_rate_limit_probe = True
+
+        conductor = _SupportingConductor()
+        orch = self._orchestrator(_run_config(probe=_PROBE), conductor)
+
+        assert self._build(orch, tmp_path) is conductor
+
+    def test_the_helper_is_a_no_op_for_a_disabled_block(self) -> None:
+        require_rate_limit_probe_support(
+            self._UnsupportingConductor(),
+            RateLimitProbeConfig(enabled=False),
+            source="test",
+        )
+
+    def test_run_trial_guards_the_same_seam(self) -> None:
+        """``run_trial(conductor=...)`` resolves a name from the same plugin
+        group and arms the agent client itself, so it needs the same guard."""
+        with pytest.raises(ValueError, match="run_trial"):
+            require_rate_limit_probe_support(
+                self._UnsupportingConductor(),
+                _PROBE,
+                source="run_trial(conductor='in_memory')",
+            )
+
+
 class TestProbeCountersReachMetrics:
     def _runner(self, probe_stats: RateLimitProbeStats | None) -> TrialRunner:
         return TrialRunner(
@@ -553,9 +786,9 @@ class TestGoodputReachesMetrics:
 
     def test_the_rows_carry_both_censuses_for_the_same_model(self) -> None:
         """Goodput and the 429 count for one model sit on one row. The 429 census
-        alone is not enough: a model with no provider pin produced ZERO 429s
-        across four runs while inflating per-call latency 41 %, which only the
-        success side catches."""
+        alone is not enough: a provider can throttle by slowing calls down rather
+        than rejecting them, which only the success side catches
+        (``docs/OUTPUT_FORMAT.md`` § Field observations)."""
         stats = self._stats()
         stats.record_success(
             role="agent",
@@ -585,7 +818,7 @@ class TestGoodputReachesMetrics:
             ("agent", self._AGENT, self._EPOCH),
         ):
             stats.record_success(
-                role=role,  # type: ignore[arg-type]
+                role=role,  # type: ignore[arg-type]  # LLMCallRole literal, from the table
                 model=model,
                 duration_s=1.0,
                 prompt_tokens=1,
@@ -605,9 +838,10 @@ class TestGoodputReachesMetrics:
         ]
 
     def test_a_windowed_series_survives_the_non_stationarity_a_total_hides(self) -> None:
-        """The motivating measurement: goodput decayed 1.70 -> 0.43 calls/s at
-        CONSTANT offered concurrency. The cumulative average is ~1.07 and reports
-        neither end; the windows report both."""
+        """The motivating measurement, reproduced as fixture data: goodput decayed
+        at CONSTANT offered concurrency (``docs/OUTPUT_FORMAT.md`` § Field
+        observations). The cumulative average is ~1.07 and reports neither end;
+        the windows report both."""
         stats = self._stats(bucket_width_s=30)
         # 51 successful calls in the first window, 13 in the fourth.
         for window_offset, calls in ((0.0, 51), (90.0, 13)):
@@ -745,17 +979,15 @@ class TestSeedMessageRetryLoop:
 class TestNonProbingRolesStayOnTheDefaultPath:
     """Grading must not probe, and a fallback chain must not either.
 
-    Both build their clients with no ``rate_limit_probe`` argument, so these
-    cases also pin the absence of an env activation channel: they set
-    ``TOLOKAFORGE_RATE_LIMIT_PROBE=1`` — which used to arm the mode on exactly
-    these paths — and assert the constructed clients still do not probe.
+    Both build their clients with no ``rate_limit_probe`` argument, and that
+    argument is the mode's only activation channel — which is what these cases
+    pin, against the clients those paths actually construct.
     """
 
     @pytest.fixture(autouse=True)
     def _env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("OPENROUTER_API_KEY", "test-sk-probe-nonprobing")
         monkeypatch.setenv("OPENAI_API_KEY", "test-sk-probe-nonprobing")
-        monkeypatch.setenv("TOLOKAFORGE_RATE_LIMIT_PROBE", "1")
 
     def test_the_rubric_judge_builds_a_non_probing_client(self) -> None:
         """Drives the real ``LLMJudge.run()`` client construction and inspects
@@ -789,15 +1021,30 @@ class TestNonProbingRolesStayOnTheDefaultPath:
 
     def test_run_trials_composed_config_leaves_the_mode_off_by_default(self) -> None:
         """``run_trial(rate_limit_probe=None)`` composes a config with the mode
-        off, so its clients cannot pick the mode up from the environment either."""
+        off, so nothing downstream of it can arm a probe."""
         config = _build_run_config(_AGENT, _AGENT, None, Path("out"), None)
 
         assert config.orchestrator.rate_limit_probe.enabled is False
 
     def test_run_trials_composed_config_sizes_the_episode_budget_for_both_calls(self) -> None:
-        """With the mode on, the composed episode budget has to clear the
-        per-*turn* budget, not just one call's."""
+        """With the mode on, the composed episode budget has to clear the whole
+        per-*turn* 429 ceiling — both per-call budgets *and* both overshoots —
+        not just one call's budget."""
         config = _build_run_config(_AGENT, _AGENT, None, Path("out"), _PROBE)
 
         assert config.orchestrator.rate_limit_probe.enabled is True
-        assert config.orchestrator.timeouts.episode_s == int(_PROBE.turn_budget_s * 2) == 8400
+        assert (
+            config.orchestrator.timeouts.episode_s
+            == int(_PROBE.turn_wall_ceiling_s * 2) + 1
+            == 11421
+        )
+
+    def test_run_trials_composed_config_fits_the_invariant_for_any_legal_block(self) -> None:
+        """``_probe_episode_s`` doubles the *ceiling*, so a block with a large
+        ``retry_interval_s`` composes a config that validates rather than one
+        that raises at ``OrchestratorConfig`` construction."""
+        probe = _PROBE.model_copy(update={"retry_interval_s": 6000.0})
+
+        config = _build_run_config(_AGENT, _AGENT, None, Path("out"), probe)
+
+        assert probe.turn_wall_ceiling_s < config.orchestrator.timeouts.episode_s
