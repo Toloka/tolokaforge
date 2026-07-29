@@ -55,7 +55,9 @@ The four first-party images —
 `tolokasoft1/tolokaforge-{runner,db-service,rag-service,mock-web}` — are published
 by [`publish-images.yml`](../.github/workflows/publish-images.yml). Nothing
 creates the `image-v*` tag for you; a human pushes it, which triggers the build.
-The workflow builds the wheel once and layers all four images from it.
+The workflow builds the wheel once; only the images that ship it — `runner` and
+`rag-service` — are layered from that artifact, while `db-service` and `mock-web`
+build without it.
 
 Images are `linux/amd64` only. The standalone compose recipe pins
 `platform: ${TOLOKAFORGE_PLATFORM:-linux/amd64}`, so Apple-Silicon hosts run the
