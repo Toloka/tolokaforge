@@ -383,11 +383,14 @@ class TrialRunner:
 
         If ``initial_user_message`` is provided, use it directly (tool-use / Tau
         style). Otherwise generate it via the user simulator (legacy behaviour),
-        retrying on rate limits. The task instruction lives in the simulator's
-        backstory and is NOT sent to the agent.
+        retrying on rate limits — and *only* on rate limits: any other error is
+        re-raised on the first attempt. The task instruction lives in the
+        simulator's backstory and is NOT sent to the agent.
 
-        This runs *before* the agent loop, so it is outside the episode
-        timeout — the only bound on it is this loop's own attempt count.
+        This runs before the loop, so no episode-timeout check can interrupt it
+        mid-flight, but its wall time is *consumed from* the episode budget
+        rather than added to it: ``run()`` sets ``self.start_time`` before
+        calling this and hands that same ``start_time`` to the loop.
         """
         if initial_user_message.strip():
             first_user_text = initial_user_message
@@ -401,11 +404,17 @@ class TrialRunner:
                 )
             ]
             first_user_result = None
-            # Probe mode collapses this to one attempt: the simulator's own
-            # client already polls 429s for up to ``per_call_budget_s``, and
-            # multiplying that by 4 outside the episode timeout would push
-            # worst-case trial wall time past the trial's
-            # ``max(300, episode_s * 2)`` queue lease.
+            # Probe mode collapses this to one attempt. This loop only ever
+            # retries 429s (see the ``is_rate_limit and`` guard below), and under
+            # probe mode the simulator's own client already polls 429s at a fixed
+            # interval for up to its per-call budget — strictly more tolerant
+            # than 4 attempts of 2/4/8 s backoff — so the outer attempts are
+            # redundant. Dropping them also keeps this step's worst case at one
+            # simulator budget instead of ``init_attempts`` of them, which is
+            # what makes the budget invariant alone sufficient to bound the trial
+            # under its ``max(300, episode_s * 2)`` queue lease. Non-429 errors
+            # are unaffected: they were never retried here, and the client's own
+            # five-attempt exponential path still covers them under probe mode.
             init_attempts = 1 if self._rate_limit_probe_active else 4
             for attempt in range(1, init_attempts + 1):
                 try:

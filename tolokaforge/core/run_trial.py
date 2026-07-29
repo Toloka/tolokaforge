@@ -109,10 +109,10 @@ def run_trial(
         rate_limit_probe: Rate-limit probe mode for the agent and simulator
             clients. ``None`` (default) runs the standard bounded-exponential
             retry path. Enabling it raises the composed run config's episode
-            budget to twice the probe's per-call budget (a probe absorbs 429s
-            by sleeping, and episode wall-time counts that sleep), which is
-            what keeps the ``per_call_budget_s < episode_s`` invariant true
-            for this composed-config surface.
+            budget to twice the probe's per-*turn* 429 budget (a probe absorbs
+            429s by sleeping, and episode wall-time counts that sleep), which is
+            what keeps the ``turn_budget_s < episode_s`` invariant true for this
+            composed-config surface.
 
     Returns:
         The trial's :class:`TrialResult`.
@@ -295,13 +295,14 @@ def _build_run_config(
 
 
 def _probe_episode_s(probe: RateLimitProbeConfig) -> int:
-    """Episode budget wide enough for *probe*'s per-call budget to fit inside.
+    """Episode budget wide enough for *probe*'s per-turn 429 budget to fit inside.
 
-    Twice the per-call budget, floored at the mode's minimum, so a single
-    blocked call can spend its whole budget and the trial still has room for
-    the rest of the episode.
+    Twice ``turn_budget_s`` (the agent's per-call budget plus the simulator's,
+    which one turn spends back to back), floored at the mode's minimum, so a
+    fully blocked turn can spend its whole budget and the trial still has room
+    for the rest of the episode.
     """
     return max(
-        int(probe.per_call_budget_s * 2),
+        int(probe.turn_budget_s * 2),
         RATE_LIMIT_PROBE_MIN_EPISODE_S + 1,
     )

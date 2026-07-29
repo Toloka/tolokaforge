@@ -546,7 +546,9 @@ class InProcessConductor:
         user_llm_config = user_config if sim.mode == "llm" else None
         # The simulator hits the same provider quota as the agent, so a probe
         # run has to cover it too — otherwise a simulator 429 kills the trial
-        # the agent-side probe was keeping alive.
+        # the agent-side probe was keeping alive. It gets the shorter
+        # simulator-scoped per-call budget: its throughput is not what the probe
+        # measures, and both budgets are spent inside one uninterruptible turn.
         rate_limit_probe = self.config.orchestrator.rate_limit_probe
         user_simulator = UserSimulator(
             mode=sim.mode,
@@ -555,7 +557,7 @@ class InProcessConductor:
             backstory=sim.backstory,
             scripted_flow=sim.scripted_flow,
             tool_schemas=user_tool_schemas if user_tool_executor else None,
-            rate_limit_probe=rate_limit_probe,
+            rate_limit_probe=rate_limit_probe.for_simulator(),
         )
 
         # Task-scope stuck_heuristics is canonical (populated by the M2

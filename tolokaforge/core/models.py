@@ -553,10 +553,12 @@ class RateLimitProbeConfig(BaseModel):
     OFF unless ``enabled`` is True; when off, every retry controller in the
     engine keeps its default bounded-exponential behaviour.
 
-    The fixed interval is the point: a blocked client polls exactly
+    The fixed interval is the point: a blocked client polls
     ``1 / retry_interval_s`` times per second, so blocked client-time is
     recoverable from the 429 count. Exponential backoff hides a different
     wait behind every retry and makes that arithmetic non-invertible.
+    ``jitter_fraction`` decorrelates blocked clients without disturbing that
+    arithmetic — it is symmetric, so the mean interval is unchanged.
 
     A probe run's latency metrics are structurally invalid —
     ``Metrics.latency_total_s`` is trial wall time, which includes 429 sleep —
@@ -567,7 +569,62 @@ class RateLimitProbeConfig(BaseModel):
 
     enabled: bool = False
     retry_interval_s: float = Field(default=15.0, gt=0.0)
+
+    jitter_fraction: float = Field(default=0.2, ge=0.0, lt=1.0)
+    """Symmetric jitter applied to ``retry_interval_s``, as a fraction of it.
+
+    Every client blocked at the cap would otherwise retry in lockstep — burst,
+    all rejected, wait, burst — which biases the very throughput the mode
+    measures and is harsher on the provider than steady polling. The jitter is
+    ``interval x (1 +/- jitter_fraction)``, so the *mean* interval is still
+    exactly ``retry_interval_s`` and the ``1 / retry_interval_s`` poll-rate
+    arithmetic survives in expectation, which is what the estimator consumes.
+    ``0.0`` restores the exact fixed interval."""
+
     per_call_budget_s: float = Field(default=3600.0, gt=0.0)
+    """Wall-clock budget for one *agent* call's 429 retries.
+
+    A floor, not a ceiling: ``stop`` is evaluated on an attempt's outcome, so a
+    call overshoots by up to one retry interval plus one attempt's own timeout
+    budget. :func:`validate_rate_limit_probe_budget` keeps enough slack under
+    the queue lease to absorb that."""
+
+    simulator_per_call_budget_s: float = Field(default=600.0, gt=0.0)
+    """Per-call 429 budget for the user-simulator client.
+
+    Shorter than the agent's on purpose. The simulator shares the agent's
+    provider quota, so it has to absorb 429s or a simulator 429 kills the trial
+    the agent-side probe was keeping alive — but the simulator's throughput is
+    not what the probe measures, so paying agent-sized wall time for it only
+    eats the trial's lease headroom. It is part of the budget invariant because
+    one turn issues one call of each (see
+    :func:`validate_rate_limit_probe_budget`)."""
+
+    def for_simulator(self) -> "RateLimitProbeConfig":
+        """This mode with the *simulator's* per-call budget in force.
+
+        The client only reads ``per_call_budget_s``, so the simulator's shorter
+        budget is applied by handing its client a block whose per-call budget
+        *is* the simulator budget. Idempotent — re-deriving from the result
+        yields the same block."""
+        return RateLimitProbeConfig(
+            enabled=self.enabled,
+            retry_interval_s=self.retry_interval_s,
+            jitter_fraction=self.jitter_fraction,
+            per_call_budget_s=self.simulator_per_call_budget_s,
+            simulator_per_call_budget_s=self.simulator_per_call_budget_s,
+        )
+
+    @property
+    def turn_budget_s(self) -> float:
+        """Worst-case 429 wall time one *uninterrupted turn* can spend.
+
+        A turn issues one probe-capable call per role — the agent's
+        ``generate`` and then the user simulator's ``reply``
+        (``ToolCallingLoop._run_turn`` -> ``_advance_user_turn``) — and the
+        episode timeout is only evaluated *between* turns, so both budgets can
+        be spent back to back with nothing able to interrupt them."""
+        return self.per_call_budget_s + self.simulator_per_call_budget_s
 
 
 def validate_rate_limit_probe_budget(
@@ -576,15 +633,25 @@ def validate_rate_limit_probe_budget(
     *,
     source: str,
 ) -> None:
-    """Raise when a probe's per-call budget cannot fit inside the episode budget.
+    """Raise when a probe's per-turn 429 budget cannot fit inside the episode budget.
 
     A call already blocked in 429 backoff is not interrupted mid-flight — the
-    episode timeout is only evaluated between turns — so the worst-case trial
-    wall time is ``episode_timeout_s + per_call_budget_s``. Keeping
-    ``per_call_budget_s`` strictly below the episode budget bounds that at
+    episode timeout is only evaluated between turns — and one turn issues *two*
+    probe-capable calls (the agent's, then the user simulator's). So the
+    worst-case trial wall time is
+    ``episode_timeout_s + per_call_budget_s + simulator_per_call_budget_s``,
+    i.e. ``episode_timeout_s + probe.turn_budget_s``. Keeping that turn budget
+    strictly below the episode budget bounds the trial at
     ``2 x episode_timeout_s``, which is exactly the queue-lease horizon
     (``max(300, episode_s * 2)``), so a probe trial can never outlive its lease
     and get re-run by another worker.
+
+    ``per_call_budget_s`` is a floor rather than an exact ceiling (``stop`` is
+    evaluated on an attempt's *outcome*), so each call can overshoot by one
+    retry interval plus one attempt's timeout budget. The strict inequality is
+    what leaves ``episode_timeout_s - turn_budget_s`` of lease slack for that
+    overshoot; at the documented defaults (14400 / 3600 / 600) the slack is
+    10200 s against an overshoot of minutes.
 
     ``episode_timeout_s`` must be the *effective* budget — the value after the
     task-pack ``min()`` clamp — not the configured run-level value, or a pack
@@ -601,12 +668,16 @@ def validate_rate_limit_probe_budget(
             f"effective episode budget is {episode_timeout_s}s. Raise "
             "orchestrator.timeouts.episode_s."
         )
-    if probe.per_call_budget_s >= episode_timeout_s:
+    if probe.turn_budget_s >= episode_timeout_s:
         raise ValueError(
-            f"{source}: rate_limit_probe.per_call_budget_s "
-            f"({probe.per_call_budget_s}s) must be strictly below the "
-            f"effective episode budget ({episode_timeout_s}s), or a single "
-            "blocked call can outlive the trial's queue lease."
+            f"{source}: rate_limit_probe per-turn 429 budget "
+            f"({probe.turn_budget_s}s = per_call_budget_s "
+            f"{probe.per_call_budget_s}s + simulator_per_call_budget_s "
+            f"{probe.simulator_per_call_budget_s}s) must be strictly below the "
+            f"effective episode budget ({episode_timeout_s}s). One turn issues "
+            "both calls back to back and the episode timeout is only checked "
+            "between turns, so a larger budget lets the trial outlive its "
+            "queue lease."
         )
 
 
