@@ -183,6 +183,34 @@ def test_expected_image_ref_matches_real_content_hash() -> None:
     assert expected_image_ref("runner") == f"{definition['name']}:{content_hash[:8]}"
 
 
+def test_mock_web_context_scoped_to_service_files() -> None:
+    """The real ``mock-web`` definition assembles an isolated context holding
+    only its service files, so its content-hash moves with mock-web's own
+    inputs and nothing else.
+
+    Drives the real ``IMAGE_DEFINITIONS['mock-web']`` (no stubbing) through
+    ``_prepared_build_context``. Assertion (3) is load-bearing: if no repo-root
+    file (e.g. ``pyproject.toml``) reaches the context, then only
+    ``tolokaforge/env/mock_web_service/**`` can move the content-hash — which is
+    what makes the hash stable against unrelated repo edits. No Docker daemon.
+    """
+    from tolokaforge.docker.builder import _prepared_build_context
+
+    with _prepared_build_context("mock-web") as (dockerfile, context, _name, _build_args):
+        build_dir = Path(context)
+        # (1) An assembled temp dir, not the literal repo ".".
+        assert context != "."
+        assert "tolokaforge-build-" in context
+        # (2) The service files the Dockerfile COPYs are present, and the
+        #     yielded Dockerfile path resolves under the assembled context.
+        assert (build_dir / "tolokaforge/env/mock_web_service/requirements.txt").exists()
+        assert (build_dir / "tolokaforge/env/mock_web_service/app.py").exists()
+        assert dockerfile.startswith(context)
+        assert Path(dockerfile).exists()
+        # (3) No repo-root file leaks into the context.
+        assert not (build_dir / "pyproject.toml").exists()
+
+
 @pytest.mark.usefixtures("_mock_wheel")
 def test_runner_build_context_contains_wheel() -> None:
     """The runner image context should contain the resolved wheel (not source)."""
