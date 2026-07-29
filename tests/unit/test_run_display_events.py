@@ -229,11 +229,36 @@ def test_rate_limit_probe_stats_accumulates_counts_waits_and_window() -> None:
     timestamps, so a trial's metrics carry the window the probe was blocked."""
     stats = RateLimitProbeStats()
     assert (stats.retries, stats.wait_s, stats.first_ts, stats.last_ts) == (0, 0.0, None, None)
+    assert stats.by_role_model == {}
 
-    stats.record_retry(wait_s=15.0, ts=100.0)
-    stats.record_retry(wait_s=15.0, ts=130.0)
+    stats.record_retry(role="agent", model="openrouter/m", wait_s=15.0, ts=100.0)
+    stats.record_retry(role="agent", model="openrouter/m", wait_s=15.0, ts=130.0)
 
     assert stats.retries == 2
     assert stats.wait_s == 30.0
     assert stats.first_ts == 100.0
     assert stats.last_ts == 130.0
+
+
+def test_rate_limit_probe_stats_keys_buckets_by_role_and_model() -> None:
+    """A trial's roles are different models, so their 429s never share a bucket;
+    the flat fields stay the sum across buckets."""
+    stats = RateLimitProbeStats()
+
+    stats.record_retry(role="agent", model="openrouter/agent-model", wait_s=15.0, ts=100.0)
+    stats.record_retry(role="agent", model="openrouter/agent-model", wait_s=15.0, ts=110.0)
+    stats.record_retry(role="user", model="openrouter/user-model", wait_s=5.0, ts=120.0)
+
+    agent = stats.by_role_model[("agent", "openrouter/agent-model")]
+    user = stats.by_role_model[("user", "openrouter/user-model")]
+    assert (agent.retries, agent.wait_s, agent.first_ts, agent.last_ts) == (2, 30.0, 100.0, 110.0)
+    assert (user.retries, user.wait_s, user.first_ts, user.last_ts) == (1, 5.0, 120.0, 120.0)
+    assert stats.retries == agent.retries + user.retries == 3
+    assert stats.wait_s == agent.wait_s + user.wait_s == 35.0
+
+
+def test_rate_limit_probe_stats_requires_an_attribution() -> None:
+    """``role`` / ``model`` are keyword-required so no 429 can land in an
+    unattributable bucket — every call site already knows both."""
+    with pytest.raises(TypeError):
+        RateLimitProbeStats().record_retry(wait_s=15.0, ts=100.0)  # type: ignore[call-arg]
