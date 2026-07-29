@@ -56,13 +56,23 @@ class TestNetworkIsolation:
 
             # Now verify: runner can reach db-service on the internal network
             exit_code, output = runner_container.exec(
-                ["curl", "-f", "--max-time", "5", "http://db-service:8000/health"]
+                [
+                    "python",
+                    "-c",
+                    "import urllib.request,sys; urllib.request.urlopen(sys.argv[1], timeout=5)",
+                    "http://db-service:8000/health",
+                ]
             )
             assert exit_code == 0, f"Runner cannot reach db-service on internal network: {output}"
 
             # Verify: runner can NOT reach the external internet
             exit_code, output = runner_container.exec(
-                ["curl", "-f", "--max-time", "5", "http://google.com"]
+                [
+                    "python",
+                    "-c",
+                    "import urllib.request,sys; urllib.request.urlopen(sys.argv[1], timeout=5)",
+                    "http://google.com",
+                ]
             )
             assert exit_code != 0, (
                 "SECURITY VIOLATION: Runner container can access external internet. "

@@ -19,12 +19,14 @@ LLM), so the verdicts are pinned.
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import pytest
 
+from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient
+from tolokaforge.core.trial import EnvEndpoints, TrialSpec
+from tolokaforge.runner.models import TaskDescription
 
 pytestmark = [pytest.mark.integration, pytest.mark.requires_docker]
 
@@ -83,6 +85,24 @@ def _task_description(jsonpath_checks: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _trial_spec_json(trial_id: str, jsonpath_checks: list[dict[str, Any]]) -> str:
+    """Build a valid ``TrialSpec`` JSON wrapping the JSONPath-graded task description.
+
+    The runner-side ``RegisterTrial`` handler validates the full ``TrialSpec``
+    (not just ``spec.task``), so the wire payload must be a complete spec.
+    """
+    return TrialSpec(
+        trial_id=trial_id,
+        run_id="jsonpath_state_e2e_run",
+        task=TaskDescription.model_validate(_task_description(jsonpath_checks)),
+        agent_model_config=ModelConfig(name="test-model", provider="test"),
+        env_endpoints=EnvEndpoints(
+            db_url="http://db.test:8000",
+            runner_url="http://runner.test:50051",
+        ),
+    ).model_dump_json()
+
+
 @pytest.fixture
 def runner_client(runner_container) -> GrpcRunnerClient:
     """RunnerClient connected to the testcontainer Runner over gRPC."""
@@ -100,8 +120,8 @@ def _register_and_grade(
     jsonpath_checks: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Register a trial with the given checks, grade it, clean up, return the grade."""
-    td_json = json.dumps(_task_description(jsonpath_checks))
-    registered = runner_client.register_trial(trial_id=trial_id, task_description_json=td_json)
+    spec_json = _trial_spec_json(trial_id, jsonpath_checks)
+    registered = runner_client.register_trial(trial_id=trial_id, trial_spec_json=spec_json)
     assert registered["success"] is True, registered["error"]
     try:
         result = runner_client.grade_trial(trial_id=trial_id)

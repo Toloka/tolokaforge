@@ -112,7 +112,9 @@ class TestSubprocessInheritance:
 
     def test_subprocess_reads_queue_state_overlay(self, tmp_path: Path) -> None:
         queue_overlay = _write_empty_overlay(tmp_path, "queue.yaml")
-        write_engine_run_state(tmp_path, presets_file=queue_overlay)
+        write_engine_run_state(
+            tmp_path, run_id="overlay_subprocess_e2e", presets_file=queue_overlay
+        )
         result = _run_resolver(run_dir=tmp_path, cli_value=None, config_value=None)
         assert result["resolved"] == queue_overlay
         assert result["installed"] == queue_overlay
@@ -120,14 +122,18 @@ class TestSubprocessInheritance:
     def test_subprocess_cli_flag_beats_queue_state(self, tmp_path: Path) -> None:
         queue_overlay = _write_empty_overlay(tmp_path, "queue.yaml")
         cli_overlay = _write_empty_overlay(tmp_path, "cli.yaml")
-        write_engine_run_state(tmp_path, presets_file=queue_overlay)
+        write_engine_run_state(
+            tmp_path, run_id="overlay_subprocess_e2e", presets_file=queue_overlay
+        )
         result = _run_resolver(run_dir=tmp_path, cli_value=cli_overlay, config_value=None)
         assert result["resolved"] == cli_overlay
 
     def test_subprocess_queue_state_beats_config_field(self, tmp_path: Path) -> None:
         queue_overlay = _write_empty_overlay(tmp_path, "queue.yaml")
         config_overlay = _write_empty_overlay(tmp_path, "config.yaml")
-        write_engine_run_state(tmp_path, presets_file=queue_overlay)
+        write_engine_run_state(
+            tmp_path, run_id="overlay_subprocess_e2e", presets_file=queue_overlay
+        )
         result = _run_resolver(run_dir=tmp_path, cli_value=None, config_value=config_overlay)
         assert result["resolved"] == queue_overlay
 
@@ -141,7 +147,7 @@ class TestSubprocessInheritance:
         # ``prepare`` ran without an overlay → persisted as null →
         # subprocess falls through to engine.presets_file.
         config_overlay = _write_empty_overlay(tmp_path, "config.yaml")
-        write_engine_run_state(tmp_path, presets_file=None)
+        write_engine_run_state(tmp_path, run_id="overlay_subprocess_e2e", presets_file=None)
         result = _run_resolver(run_dir=tmp_path, cli_value=None, config_value=config_overlay)
         assert result["resolved"] == config_overlay
 
@@ -196,7 +202,7 @@ class TestRealCLISubprocessConfigValidate:
         # We accept exit 0 (no errors) — API-key warnings don't fail validate
         # without --strict.
         assert proc.returncode == 0, f"validate failed unexpectedly:\n{proc.stdout}\n{proc.stderr}"
-        normalized = _collapse(proc.stdout)
+        normalized = _collapse(proc.stdout + proc.stderr)
         assert "PresetoverlayOK" in normalized
         assert _collapse(str(overlay)) in normalized
 
@@ -225,7 +231,7 @@ class TestRealCLISubprocessConfigValidate:
             check=False,
         )
         assert proc.returncode != 0, "validate should exit non-zero on bad overlay"
-        normalized = _collapse(proc.stdout)
+        normalized = _collapse(proc.stdout + proc.stderr)
         assert "unknownresponse_policy" in normalized
         # Error message must name the file path.
         assert _collapse(str(overlay)) in normalized
@@ -248,7 +254,7 @@ class TestRealCLISubprocessConfigValidate:
             check=False,
         )
         assert proc.returncode != 0
-        normalized = _collapse(proc.stdout).lower()
+        normalized = _collapse(proc.stdout + proc.stderr).lower()
         assert "notfound" in normalized or "does_not_exist" in normalized
 
 
