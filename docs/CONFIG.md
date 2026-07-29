@@ -111,18 +111,22 @@ standard bounded path, so a dead upstream cannot inherit the long budget.
 ```yaml
 orchestrator:
   timeouts:
-    episode_s: 14400          # 4 h — a probe absorbs 429s by sleeping
+    episode_s: 14400              # 4 h — a probe absorbs 429s by sleeping
   rate_limit_probe:
     enabled: true
-    retry_interval_s: 15      # the fixed poll interval
-    per_call_budget_s: 3600   # "effectively infinite" per call
+    retry_interval_s: 15          # the mean poll interval
+    jitter_fraction: 0.2          # +/- 20 % so clients don't poll in lockstep
+    per_call_budget_s: 3600       # "effectively infinite" per agent call
+    simulator_per_call_budget_s: 600   # shorter: the simulator isn't measured
 ```
 
 | Field | Default | Meaning |
 |---|---|---|
 | `enabled` | `false` | Arms the mode. Nothing changes while it is `false`. |
-| `retry_interval_s` | `15.0` | Wait between 429 retries. Constant by design: a blocked client polls exactly `1 / retry_interval_s` times per second, so blocked client-time is recoverable from the 429 count. |
-| `per_call_budget_s` | `3600.0` | Wall-clock budget for one LLM call's 429 retries. Exhausting it reraises the last 429, which surfaces as `termination_reason: rate_limit`. |
+| `retry_interval_s` | `15.0` | Mean wait between 429 retries. Constant by design: a blocked client polls `1 / retry_interval_s` times per second, so blocked client-time is recoverable from the 429 count. |
+| `jitter_fraction` | `0.2` | Symmetric jitter as a fraction of the interval (`interval x (1 +/- f)`). Without it, every client blocked at the cap retries in lockstep — burst, all rejected, wait, burst — which biases the measurement and is harsher on the provider. The mean interval is unchanged, so the poll-rate inversion still holds in expectation. `0.0` restores the exact fixed interval. |
+| `per_call_budget_s` | `3600.0` | Wall-clock budget for one **agent** call's 429 retries. Exhausting it reraises the last 429, which surfaces as `termination_reason: rate_limit`. A *floor*, not an exact ceiling: `stop` is evaluated on an attempt's outcome, so a call overshoots by up to one retry interval plus one attempt's own timeout budget. |
+| `simulator_per_call_budget_s` | `600.0` | Same, for the user-simulator client. Deliberately shorter: the simulator shares the agent's quota so it must absorb 429s (otherwise a simulator 429 kills the trial the agent-side probe kept alive), but its throughput is not what the probe measures, so agent-sized wall time here only eats lease headroom. |
 
 Two invariants are enforced by raising — at config load against
 `orchestrator.timeouts.episode_s`, and again per task against the *effective*
@@ -130,10 +134,14 @@ episode budget after the `min(task trial_seconds, run episode_s)` clamp:
 
 - `episode_s > 3600` — a probe on a minutes-long episode budget dies on the
   episode timeout instead of measuring anything.
-- `per_call_budget_s < episode_s` — the episode timeout is only evaluated
-  between turns, so worst-case trial wall time is
-  `episode_s + per_call_budget_s`; keeping the per-call budget below the
-  episode budget bounds that under the `max(300, episode_s * 2)` queue lease.
+- `per_call_budget_s + simulator_per_call_budget_s < episode_s` — the episode
+  timeout is only evaluated *between* turns, and one turn issues **two**
+  probe-capable calls (the agent's `generate`, then the simulator's `reply`), so
+  worst-case trial wall time is `episode_s + per_call_budget_s +
+  simulator_per_call_budget_s`. Keeping that pair below the episode budget bounds
+  the trial under the `max(300, episode_s * 2)` queue lease, and the strict
+  inequality is what leaves slack for the per-call overshoot above (10200 s of it
+  at the defaults).
 
 `episode_s` is the only ceiling that has to move: the queue lease is derived
 from it, and the loop has no per-turn timeout.
@@ -142,13 +150,24 @@ The mode reaches the agent client, the user-simulator client, and the
 per-trial 429 counters. It deliberately does **not** reach the rubric judge
 (grading must not probe) or a `--fallback-models` chain — a chain plus
 `enabled: true` is rejected, because switching models mid-probe attributes one
-model's 429s to another.
+model's 429s to another. There is no env override: the config block is the only
+activation channel, so a client built without one never probes regardless of the
+environment.
 
 **A probe run must never produce a leaderboard number.**
 `Metrics.latency_total_s` is trial wall time, so every latency figure on a
 probe run is inflated by 429 sleep; `metrics.yaml` records
-`rate_limit_retries` / `rate_limit_wait_s` as the mechanical marker (see
+`rate_limit_retries` / `rate_limit_wait_s` and the per-`(role, model)`
+`rate_limit_by_role_model` breakdown as the mechanical marker (see
 [OUTPUT_FORMAT.md](OUTPUT_FORMAT.md:1) § `metrics.yaml`).
+
+**What the artifacts do and do not prove.** A non-zero `rate_limit_wait_s`
+proves the mode was on. The converse does not hold: a probe run that found
+headroom and hit no 429s leaves every counter at zero, which is
+indistinguishable from a normal run. The engine does not archive the resolved
+run config into the output bundle, so a mode-consistency gate has to compare
+against the config it dispatched — that gate belongs to whatever dispatches the
+run, not here.
 
 ### `reasoning:` — declarative thinking configuration
 
@@ -441,15 +460,6 @@ Common keys:
 - `AZURE_API_KEY`, `AZURE_API_BASE`
 - `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
 - `OLLAMA_API_BASE`
-
-Local-debug overrides (the run config wins whenever it declares the block, so
-a run's artifacts always match the controller that ran):
-
-| Variable | Effect |
-|---|---|
-| `TOLOKAFORGE_RATE_LIMIT_PROBE` | `1` / `true` / `yes` / `on` enables [rate-limit probe mode](#rate_limit_probe--measure-a-providers-served-throughput) for clients built without a `rate_limit_probe` block. |
-| `TOLOKAFORGE_RATE_LIMIT_PROBE_INTERVAL_S` | Fixed 429 retry interval for that env-enabled mode. |
-| `TOLOKAFORGE_RATE_LIMIT_PROBE_BUDGET_S` | Per-call 429 wall-clock budget for that env-enabled mode. |
 
 ## Output Structure
 

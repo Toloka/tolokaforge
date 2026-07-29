@@ -756,7 +756,7 @@ See § `usage` above for the full Usage schema and accumulation contract.
 | Controller | Selected when | `stop` | `wait` |
 |---|---|---|---|
 | default (`_build_retrying`) | always, unless probe mode is on | `stop_after_attempt(5)` | `wait_exponential(multiplier=2, min=4, max=60)` |
-| probe (`_build_probe_retrying`) | `rate_limit_probe` resolves to an enabled config | 429: `seconds_since_start >= per_call_budget_s`; other: 5 **non-429** attempts | 429: `retry_interval_s` (fixed); other: the same exponential |
+| probe (`_build_probe_retrying`) | `rate_limit_probe` resolves to an enabled config | 429: `seconds_since_start >= per_call_budget_s`; other: 5 **non-429** attempts | 429: `wait_fixed(retry_interval_s)`, combined with `wait_random(+/- jitter_fraction x interval)` unless the fraction is `0`; other: the same exponential |
 
 Both install the same `before_sleep` hook (`_make_before_sleep`), so
 `llm_retry_scheduled` events are identical on either path. `retry` is
@@ -766,19 +766,37 @@ The probe's split accounting is load-bearing: a 5xx must not inherit the
 multi-hour 429 budget, so the non-429 attempt cap counts only non-429
 attempts. The non-429 exponential reads the *global* attempt number, so after
 a long 429 stretch a later 5xx resumes the curve rather than restarting it —
-waits only ever get longer, and the five-attempt cap is unchanged.
+waits only ever get longer, and the five-attempt cap is unchanged. The jitter
+applies only to the 429 wait; it is symmetric, so the mean interval is exactly
+`retry_interval_s` and the `1 / retry_interval_s` poll-rate arithmetic the mode
+exists for survives in expectation.
 
 429 classification on the probe path is `_is_rate_limit_exception`: it checks
 `isinstance(exc, openai.RateLimitError)` (which litellm's `RateLimitError`
 subclasses) and `status_code == 429` along the `__cause__` chain, because
 `_call_with_key_rotation` re-raises provider errors as
-`RuntimeError(...) from e`. String matching is the last resort. The engine's
-three string-only classifiers (`core/loop.py`, `core/runner.py`,
-`core/resume.py`) are separate and unaffected.
+`RuntimeError(...) from e`. Text matching is the last resort and is **anchored**
+(`_RATE_LIMIT_TEXT_PATTERNS`): a 429 must sit in a status position
+(`Error code: 429`, `status_code=429`, `HTTP/1.1 429`), or the message must carry
+the HTTP reason phrase or rate-limit prose in an error construction. An
+unanchored `"429" in str(exc)` matched token counts (`you requested 4429`),
+request ids (`req_8f429ab2`) and JSON bodies, which under probe mode would hand a
+*deterministic* failure the multi-hour budget and pollute the 429 census. A bare
+`429` with no such context is deliberately not a match. The engine's three
+string-only classifiers (`core/loop.py`, `core/runner.py`, `core/resume.py`) are
+separate and unaffected.
+
+The probe's `before_sleep` hook is also where the 429 counters accumulate, keyed
+by the call's `role` and the client's model slug — both already in scope there.
+The agent and the user simulator are different models in an arena config, so
+their 429s never share a counter; see
+[OUTPUT_FORMAT.md](OUTPUT_FORMAT.md:1) § `rate_limit_*`.
 
 Probe mode is a run policy, not a model property: it is configured under
 `orchestrator.rate_limit_probe` (see
 [CONFIG.md](CONFIG.md:1) § `rate_limit_probe`), never through the preset
 registry, so `effective_preset` in the run artifacts stays the model's real
-preset. `TOLOKAFORGE_RATE_LIMIT_PROBE` (+ `_INTERVAL_S` / `_BUDGET_S`) is a
-local-debug override that applies only when no config block was passed.
+preset. There is no env override — the passed config block is the only
+activation channel, so the paths that must never probe (the rubric judge, a
+`--fallback-models` chain) cannot be armed by an environment variable, and the
+budget assertions cannot be bypassed.

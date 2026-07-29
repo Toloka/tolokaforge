@@ -400,6 +400,7 @@ rate_limit_retries: 0
 rate_limit_wait_s: 0.0
 rate_limit_first_ts: null
 rate_limit_last_ts: null
+rate_limit_by_role_model: []
 ```
 
 Semantics per `usage` field (see
@@ -419,19 +420,50 @@ table):
 ### `rate_limit_*` — rate-limit probe accounting
 
 Populated only by runs with
-[`orchestrator.rate_limit_probe.enabled: true`](CONFIG.md:1); zero / `null`
-on every other run.
+[`orchestrator.rate_limit_probe.enabled: true`](CONFIG.md:1); zero / `null` /
+empty on every other run.
 
 | Field | Meaning |
 |---|---|
 | `rate_limit_retries` | 429 retries the probe absorbed across every LLM call in the trial (agent + user simulator) |
-| `rate_limit_wait_s` | Summed fixed-interval sleep scheduled for those retries |
+| `rate_limit_wait_s` | Summed retry sleep scheduled for those retries |
 | `rate_limit_first_ts` / `rate_limit_last_ts` | UTC timestamps bracketing the window the trial spent blocked on 429s |
+| `rate_limit_by_role_model` | The same accounting split per `(role, model)`; the flat fields above are the sum across these rows |
+
+```yaml
+rate_limit_retries: 4
+rate_limit_wait_s: 60.0
+rate_limit_by_role_model:
+  - role: agent
+    model: openrouter/deepseek/deepseek-v3.2-exp
+    retries: 3
+    wait_s: 45.0
+    first_ts: "2026-07-29T10:00:00Z"
+    last_ts: "2026-07-29T10:00:30Z"
+  - role: user
+    model: openrouter/anthropic/claude-sonnet-4.6
+    retries: 1
+    wait_s: 15.0
+    first_ts: "2026-07-29T10:01:00Z"
+    last_ts: "2026-07-29T10:01:00Z"
+```
+
+The breakdown exists because the roles are different models: in an arena config
+the agent is the model under test and the user simulator is a fixed, unrelated
+one, so a single flat counter blends a measured model's 429s with an unmeasured
+one's. Rows are sorted by `(role, model)`.
+
+`model` is the raw provider-qualified slug the client called. Grouping slugs into
+an upstream-provider taxonomy is the consumer's job. Attributing a 429 to the
+specific OpenRouter upstream that served the request is **not** available here —
+`provider` is `openrouter` for every role in an OpenRouter-routed config, and the
+engine does not capture the upstream identity.
 
 `latency_total_s` is trial wall time and therefore *includes*
 `rate_limit_wait_s`. A non-zero `rate_limit_wait_s` is the mechanical marker
 that this trial's latency figures are not comparable with a normal run's, and
-that the run must not produce a leaderboard number.
+that the run must not produce a leaderboard number. The zero case proves nothing:
+a probe that found headroom looks exactly like a normal run here.
 
 ### `provisioning_duration_s` — wall-clock provisioning latency
 
