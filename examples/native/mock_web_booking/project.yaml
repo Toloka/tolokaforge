@@ -1,0 +1,29 @@
+# Project spec for the mock_web_booking example.
+#
+# A single native task that drives the first-party mock-web service over the
+# `http_request` builtin: the agent GETs a booking form, POSTs the booking as
+# form data, and reports the confirmation number mock-web issues. The task
+# declares no `environment_manifest` — mock-web is reached by Docker DNS on the
+# composed standalone stack (deploy/standalone/docker-compose.yaml), the same
+# way the bundled `tool_use` pack reaches db-service.
+#
+# See docs/PROJECTS.md for the full Project model.
+
+name: "mock-web-booking"
+version: 1
+description: >
+  Single-task project demonstrating http_request against the first-party
+  mock-web service: the agent completes a hotel booking over an HTML form and
+  reports the confirmation number, graded deterministically on that
+  mock-web-issued token.
+
+tasks:
+  discovery:
+    glob: "dataset/tasks/**/task.yaml"
+
+task_defaults:
+  adapter_type: "native"
+  actors:
+    user:
+      mode: "llm"
+      persona: "cooperative"

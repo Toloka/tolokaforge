@@ -1,0 +1,27 @@
+# Deterministic, keyless-gradable grading for booking_01.
+#
+# transcript_rules is the only family (weight 1.0, pass_threshold 1.0), and its
+# two checks are product-scored so BOTH must hold for a pass:
+#   required_actions — the agent POSTed over http_request (the booking round-trip
+#     to mock-web actually happened; a GET-only or no-call trajectory fails).
+#   must_contain      — the confirmation number `BKSEA12345` appears in the
+#     transcript. The site issues it from the submitted hotel (BK<hotel[:3]>12345
+#     → BKSEA12345 for Seaside Resort). Paired with the required_actions POST gate
+#     above, this locks the round-trip to the site-issued token — it does not rest
+#     on token entropy (the derivation template is public).
+combine:
+  method: weighted
+  weights:
+    transcript_rules: 1.0
+  pass_threshold: 1.0
+
+transcript_rules:
+  max_turns: 6
+  must_contain:
+    - "BKSEA12345"
+  required_actions:
+    - action_id: "submit_booking_over_http"
+      requestor: assistant
+      name: http_request
+      arguments: {method: "POST"}
+      compare_args: ["method"]
