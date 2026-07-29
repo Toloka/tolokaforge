@@ -19,7 +19,7 @@ description: >
 
 tasks:
   discovery:
-    glob: "tasks/**/task.yaml"
+    glob: "dataset/tasks/**/task.yaml"
 
 task_defaults:
   adapter_type: "native"

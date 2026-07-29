@@ -22,10 +22,12 @@ agent → http_request → mock-web:8080  (/booking form → POST /booking/confi
   submission (`request.form()`), so the agent must GET `/booking` to learn the
   fields (`name`, `hotel`, `checkin`, `checkout`) and POST them as **form
   data** — a JSON body would not populate the form and the booking would fail.
-- **Deterministic grading on a non-guessable, agent-produced outcome.** The
-  confirmation number `BKSEA12345` is derived by mock-web from the submitted
-  hotel (`BK<hotel[:3].upper()>12345`); it cannot be produced without the POST
-  response. Grading is transcript-only:
+- **Deterministic grading on the site-issued booking outcome.** mock-web issues
+  the confirmation number `BKSEA12345` from the submitted hotel
+  (`BK<hotel[:3].upper()>12345`). The round-trip is enforced by the
+  `required_actions` POST gate together with reporting that site-issued token —
+  not by the token being unguessable (the template is public). Grading is
+  transcript-only:
 
   | Check | What it asserts |
   |---|---|
@@ -33,8 +35,8 @@ agent → http_request → mock-web:8080  (/booking form → POST /booking/confi
   | `must_contain: BKSEA12345` | the mock-web-issued confirmation number is reported |
 
   Both are product-scored under `transcript_rules` with `pass_threshold: 1.0`,
-  so dropping either — a GET-only trajectory, or a guessed/omitted confirmation
-  number — fails the task.
+  so dropping either — a GET-only trajectory, or a missing confirmation number —
+  fails the task.
 
 ## Validate
 

@@ -48,6 +48,7 @@ from tests.integration.deploy.conftest import (
 from tests.utils.docker_helpers import wait_for_health
 
 if TYPE_CHECKING:
+    from tolokaforge.core.models import Trajectory
     from tolokaforge.core.trial import TrialResult
 
 pytestmark = [
@@ -133,6 +134,26 @@ def test_stack_runner_health_check_serving(composed_stack: StackHandle) -> None:
         client.close()
     assert health["status"] == "healthy", f"runner HealthCheck not serving: {health}"
     assert health["db_service_connected"], f"runner reports db-service disconnected: {health}"
+
+
+def _agent_posted_to_mock_web(trajectory: Trajectory) -> bool:
+    """True when an assistant ``http_request`` tool call POSTed to mock-web.
+
+    Walks the assistant tool calls the grader's ``required_actions`` gate scores
+    (``Message.tool_calls`` on assistant messages) and matches the booking
+    submission itself: ``name == "http_request"``, ``method == "POST"``, target
+    host ``mock-web``. This is the round-trip, not its echo in the seed message.
+    """
+    from tolokaforge.core.models import MessageRole
+
+    for message in trajectory.messages:
+        if message.role is not MessageRole.ASSISTANT or not message.tool_calls:
+            continue
+        for call in message.tool_calls:
+            if call.name == "http_request" and call.arguments.get("method") == "POST":
+                if "mock-web" in str(call.arguments.get("url", "")):
+                    return True
+    return False
 
 
 def _pick_provider() -> tuple[str, str] | None:
@@ -233,9 +254,11 @@ def test_mock_web_trial_through_composed_stack(composed_stack: StackHandle) -> N
 
     The ``mock_web_booking`` pack gives the agent only ``http_request``; it books a
     room on mock-web and reports the site-issued confirmation number. A graded pass
-    proves mock-web functionally participated — and the trajectory must show the
-    ``http_request`` round-trip to ``mock-web`` and the confirmation token, so a
-    grading regression that passes for the wrong reason is caught.
+    proves mock-web functionally participated. The assertions then independently
+    re-check the round-trip so a grading regression that passes for the wrong reason
+    is caught: an assistant ``http_request`` POST to ``mock-web`` must appear in the
+    tool calls (not merely the seed-message URL), and the site-issued confirmation
+    token — which enters the transcript only via the POST response — must be present.
     """
     result = _run_trial_through_stack(composed_stack, _MOCK_WEB_TASK)
     assert result.trajectory.status.value == "completed", result.trajectory.status
@@ -243,6 +266,9 @@ def test_mock_web_trial_through_composed_stack(composed_stack: StackHandle) -> N
     assert grade is not None, "trial produced no grade"
     assert grade.binary_pass is True, f"mock-web trial did not grade as a pass: {grade.reasons}"
 
+    assert _agent_posted_to_mock_web(result.trajectory), (
+        "no assistant http_request POST to mock-web in the tool calls — "
+        "the booking round-trip did not happen"
+    )
     transcript = json.dumps(result.trajectory.model_dump(mode="json"))
-    assert "mock-web" in transcript, "no http_request to mock-web appears in the trajectory"
     assert "BKSEA12345" in transcript, "confirmation token absent — graded pass may be spurious"
