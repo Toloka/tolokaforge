@@ -1153,6 +1153,11 @@ class LLMClient:
         pause is still in flight. ``observation=None`` fires nothing and
         keeps output byte-identical.
 
+        Under probe mode the two ends of the same pair of hooks also record the
+        two sides of throughput onto ``observation.probe_stats``: 429s in
+        :meth:`_make_before_sleep`, successful calls in
+        :meth:`_record_probe_success`.
+
         Returns a :class:`GenerationResult` with text, tool-calls, full
         :class:`Usage` counters, latency, cost, and structured reasoning.
         """
@@ -1181,10 +1186,12 @@ class LLMClient:
                     )
                 except BaseException as exc:
                     self._fire_call_finished(
-                        observation, attempt_num, time.monotonic() - start, exc
+                        observation, attempt_num, time.monotonic() - start, exc, None
                     )
                     raise
-                self._fire_call_finished(observation, attempt_num, time.monotonic() - start, None)
+                self._fire_call_finished(
+                    observation, attempt_num, time.monotonic() - start, None, result
+                )
                 return result
         raise RuntimeError("Retrying controller exited without a result")
 
@@ -1275,6 +1282,9 @@ class LLMClient:
         contribute exponential waits to ``rate_limit_wait_s``; today the
         conductor derives both from one config, and this keeps the invariant
         local instead of an emergent property of a distant caller.
+
+        :meth:`_record_probe_success` is the exact mirror on the success side,
+        with the same key and the same two-part gate.
         """
         log_hook = before_sleep_log(get_logger("llm_retry").logger, logging.WARNING)
 
@@ -1327,9 +1337,18 @@ class LLMClient:
         attempt: int,
         duration_s: float,
         exc: BaseException | None,
+        result: GenerationResult | None,
     ) -> None:
+        """Emit ``llm_call_finished`` and, in probe mode, record the success.
+
+        *result* is the attempt's :class:`GenerationResult` on success and
+        ``None`` on failure; it carries this call's already-extracted
+        :class:`~tolokaforge.core.llm.usage.Usage`, which is where the token
+        counts come from — nothing is re-derived here.
+        """
         if observation is None:
             return
+        self._record_probe_success(observation, duration_s, exc, result)
         observation.events.llm_call_finished(
             trial_id=observation.trial_id,
             role=observation.role,
@@ -1338,6 +1357,59 @@ class LLMClient:
             attempt=attempt,
             duration_s=duration_s,
             error=None if exc is None else f"{type(exc).__name__}: {exc}",
+        )
+
+    def _record_probe_success(
+        self,
+        observation: LLMCallObservation,
+        duration_s: float,
+        exc: BaseException | None,
+        result: GenerationResult | None,
+    ) -> None:
+        """Accumulate this call's SUCCESS side onto the trial's probe stats.
+
+        The mirror image of the 429 recording in :meth:`_make_before_sleep`, and
+        gated identically: the trial must carry an accumulator *and* this
+        client's own probe must be active. Without the second half a
+        default-path client — the rubric judge, a fallback-chain member — could
+        contribute to a measurement it is not part of.
+
+        Keyed by this call's ``role`` and this client's model slug, both already
+        in scope. That attribution is the gap this closes: ``Metrics.usage``
+        accumulates every role's calls into one object with no role field, so
+        counting log lines conflated the agent's model with the user
+        simulator's and inflated the number.
+
+        Recorded quantities and why:
+
+        * ``duration_s`` is the outer per-attempt wall time
+          (:meth:`generate` brackets :meth:`_generate_once`), i.e. how long the
+          client actually held this call in flight. Summed and divided by wall
+          time it is the Little's-law in-flight concurrency the provider served
+          — the schedule-independent estimator, computed on SUCCESSFUL calls
+          only. The 429 census is schedule-dependent and, for some providers,
+          silent: a model with no provider pin produced zero 429s across four
+          runs up to 33k input tokens/s while inflating per-call latency 41 %.
+        * Tokens come off ``result.usage``, which :meth:`_assemble_result`
+          already built for exactly this call, so nothing is re-extracted and
+          the trial's ``usage.calls`` list is untouched — no double counting.
+
+        ``exc is None and result is not None`` are the same condition in
+        practice; both are checked so a future caller that forgets the result
+        records nothing rather than a call with zero tokens.
+        """
+        if exc is not None or result is None:
+            return
+        probe_stats = observation.probe_stats
+        if probe_stats is None or self._rate_limit_probe is None:
+            return
+        probe_stats.record_success(
+            role=observation.role,
+            model=self.model_name,
+            duration_s=duration_s,
+            prompt_tokens=result.usage.prompt_tokens,
+            completion_tokens=result.usage.completion_tokens,
+            ts=time.time(),
         )
 
     def _generate_once(
