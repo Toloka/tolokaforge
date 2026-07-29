@@ -84,7 +84,15 @@ description: "Add a POST /orders endpoint backed by the orders table."
 - `json_db`: JSON file loaded into the JSON DB service. Use this for any task state that needs to be verified by grading.
 - `filesystem.copy`: files copied into `/env/fs/agent-visible`.
 - `mock_web.base_url`: base URL for mock web service (`http://mock-web:8080`).
-- `rag.corpus_dir`: directory of `.txt` files for RAG indexing.
+- `rag.corpus_dir`: directory of knowledge-base documents for per-trial RAG
+  indexing. The reader indexes the `.md` and `.txt` files sitting directly in
+  that directory (flat, non-recursive). Declaring `corpus_dir` requires
+  `search_kb` in `tools.agent.enabled` — the corpus files travel with the task,
+  the runner indexes them into the rag-service per trial, and the agent's
+  `search_kb` tool queries that index. The full stack must include the
+  rag-service (reached by DNS, like `db-service`/`mock-web`). Declaring
+  `corpus_dir` without `search_kb`, or pointing it at a directory that does not
+  exist, is rejected at validation time.
 
 ## Multi-container environments (`environment_manifest`)
 
