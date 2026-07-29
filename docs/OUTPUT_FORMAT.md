@@ -396,6 +396,10 @@ tool_usage:
     count: 2
     success: 2
     fail: 0
+rate_limit_retries: 0
+rate_limit_wait_s: 0.0
+rate_limit_first_ts: null
+rate_limit_last_ts: null
 ```
 
 Semantics per `usage` field (see
@@ -411,6 +415,23 @@ table):
 | `cache_creation_input_tokens` | Anthropic | Tokens written to the ephemeral cache this call |
 | `cache_read_input_tokens` | Anthropic | Tokens re-used from the ephemeral cache this call |
 | `provider_raw` | — | Best-effort dump of the *last* call's raw usage block |
+
+### `rate_limit_*` — rate-limit probe accounting
+
+Populated only by runs with
+[`orchestrator.rate_limit_probe.enabled: true`](CONFIG.md:1); zero / `null`
+on every other run.
+
+| Field | Meaning |
+|---|---|
+| `rate_limit_retries` | 429 retries the probe absorbed across every LLM call in the trial (agent + user simulator) |
+| `rate_limit_wait_s` | Summed fixed-interval sleep scheduled for those retries |
+| `rate_limit_first_ts` / `rate_limit_last_ts` | UTC timestamps bracketing the window the trial spent blocked on 429s |
+
+`latency_total_s` is trial wall time and therefore *includes*
+`rate_limit_wait_s`. A non-zero `rate_limit_wait_s` is the mechanical marker
+that this trial's latency figures are not comparable with a normal run's, and
+that the run must not produce a leaderboard number.
 
 ### `provisioning_duration_s` — wall-clock provisioning latency
 

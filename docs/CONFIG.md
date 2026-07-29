@@ -51,6 +51,8 @@ orchestrator:
   timeouts:
     turn_s: 60
     episode_s: 1200
+  rate_limit_probe:            # off by default — see below
+    enabled: false
   stuck_heuristics:
     max_repeated_tool_calls: 5
     max_idle_turns: 8
@@ -98,6 +100,55 @@ Notes:
   `tolokaforge worker --config examples/native/coding/run_configs/dev.yaml --run-dir <run_dir>`
 - For multi-runner distributed execution (e.g., GitHub Actions matrix), use
   `queue_backend: postgres` with a shared `queue_postgres_dsn`.
+
+### `rate_limit_probe:` — measure a provider's served throughput
+
+Off by default. When enabled, 429s retry at a **fixed** interval until a
+generous per-call wall-clock budget is spent, instead of riding the standard
+five-attempt exponential backoff. Everything that is not a 429 keeps the
+standard bounded path, so a dead upstream cannot inherit the long budget.
+
+```yaml
+orchestrator:
+  timeouts:
+    episode_s: 14400          # 4 h — a probe absorbs 429s by sleeping
+  rate_limit_probe:
+    enabled: true
+    retry_interval_s: 15      # the fixed poll interval
+    per_call_budget_s: 3600   # "effectively infinite" per call
+```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | Arms the mode. Nothing changes while it is `false`. |
+| `retry_interval_s` | `15.0` | Wait between 429 retries. Constant by design: a blocked client polls exactly `1 / retry_interval_s` times per second, so blocked client-time is recoverable from the 429 count. |
+| `per_call_budget_s` | `3600.0` | Wall-clock budget for one LLM call's 429 retries. Exhausting it reraises the last 429, which surfaces as `termination_reason: rate_limit`. |
+
+Two invariants are enforced by raising — at config load against
+`orchestrator.timeouts.episode_s`, and again per task against the *effective*
+episode budget after the `min(task trial_seconds, run episode_s)` clamp:
+
+- `episode_s > 3600` — a probe on a minutes-long episode budget dies on the
+  episode timeout instead of measuring anything.
+- `per_call_budget_s < episode_s` — the episode timeout is only evaluated
+  between turns, so worst-case trial wall time is
+  `episode_s + per_call_budget_s`; keeping the per-call budget below the
+  episode budget bounds that under the `max(300, episode_s * 2)` queue lease.
+
+`episode_s` is the only ceiling that has to move: the queue lease is derived
+from it, and the loop has no per-turn timeout.
+
+The mode reaches the agent client, the user-simulator client, and the
+per-trial 429 counters. It deliberately does **not** reach the rubric judge
+(grading must not probe) or a `--fallback-models` chain — a chain plus
+`enabled: true` is rejected, because switching models mid-probe attributes one
+model's 429s to another.
+
+**A probe run must never produce a leaderboard number.**
+`Metrics.latency_total_s` is trial wall time, so every latency figure on a
+probe run is inflated by 429 sleep; `metrics.yaml` records
+`rate_limit_retries` / `rate_limit_wait_s` as the mechanical marker (see
+[OUTPUT_FORMAT.md](OUTPUT_FORMAT.md:1) § `metrics.yaml`).
 
 ### `reasoning:` — declarative thinking configuration
 
@@ -390,6 +441,15 @@ Common keys:
 - `AZURE_API_KEY`, `AZURE_API_BASE`
 - `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
 - `OLLAMA_API_BASE`
+
+Local-debug overrides (the run config wins whenever it declares the block, so
+a run's artifacts always match the controller that ran):
+
+| Variable | Effect |
+|---|---|
+| `TOLOKAFORGE_RATE_LIMIT_PROBE` | `1` / `true` / `yes` / `on` enables [rate-limit probe mode](#rate_limit_probe--measure-a-providers-served-throughput) for clients built without a `rate_limit_probe` block. |
+| `TOLOKAFORGE_RATE_LIMIT_PROBE_INTERVAL_S` | Fixed 429 retry interval for that env-enabled mode. |
+| `TOLOKAFORGE_RATE_LIMIT_PROBE_BUDGET_S` | Per-call 429 wall-clock budget for that env-enabled mode. |
 
 ## Output Structure
 
