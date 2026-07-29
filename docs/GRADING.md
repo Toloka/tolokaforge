@@ -10,6 +10,80 @@ Scores are weighted and combined into a final score. See [REFERENCE.md](REFERENC
 
 ---
 
+## Substrate Parity
+
+Two substrates grade a trial. The **core** substrate is the in-process
+`GradingEngine` (`tolokaforge/core/grading/combine.py`) used by `validate`, the
+`NativeAdapter` helpers and the test suite. The **runner** substrate is the gRPC
+`GradeTrial` path (`tolokaforge/runner/service.py`), which is what production
+runs use. A key an author writes in `grading.yaml` reaches the runner only
+through `NativeAdapter.to_task_description`, so a key the translation misses is
+a key that silently scores nothing in production while still grading locally.
+
+[`tolokaforge/core/grading/key_manifest.py`](../tolokaforge/core/grading/key_manifest.py)
+is the single source of truth for which substrate consumes which key. Every
+author-facing key is one `GradingKey` entry declaring three axes:
+
+- **`kind`** — `SCORED_CHECK` (produces a component score), `CONFIG_INPUT`
+  (shapes another check; no score of its own), `AGGREGATION` (combines component
+  scores). Only `SCORED_CHECK` keys have a violating trajectory, so only they can
+  be differentially tested.
+- **`coverage`** — `BOTH_SCORE_PARITY` (both substrates consume it and produce the
+  same component score), `BOTH_SIGNAL_PARITY` (both consume it and both
+  discriminate; the magnitudes differ because the two substrates aggregate
+  differently), `CORE_ONLY`, `RUNNER_ONLY`. Anything other than a `BOTH_*` value
+  requires a written `reason`.
+- **`enforcement`** — how strongly the coverage claim is proven.
+  `DIFFERENTIAL_CANONICAL`: a satisfying/violating pair moves both substrates'
+  scores in-process. `DIFFERENTIAL_INTEGRATION`: the differential needs real
+  services, and `enforcing_test` names the integration test that runs it.
+  `FIELD_RESOLUTION_ONLY`: only "the field exists and resolves" is proven.
+
+[`tests/canonical/test_grading_substrate_parity.py`](../tests/canonical/test_grading_substrate_parity.py)
+makes the manifest load-bearing. Adding a grading field to either substrate's
+config model without a manifest entry fails that suite naming the field; a scored
+key that claims both substrates at `DIFFERENTIAL_CANONICAL` must move both
+substrates' component scores against
+[`tests/data/grading_parity/`](../tests/data/grading_parity/) fixtures; and every
+key both substrates declare must survive adapter translation non-default.
+
+### Single-substrate keys
+
+| Key | kind | coverage | enforcement | Why only one substrate | Tracked |
+|---|---|---|---|---|---|
+| `combine.method` | `AGGREGATION` | `RUNNER_ONLY` | field resolution | the core engine always computes a weighted average and never reads the key, so `method: all_pass` scores 0.5 core-side and 0.0 runner-side for the same components | #684 |
+| `state_checks.hash.expected_state_hash` | `SCORED_CHECK` | `CORE_ONLY` | field resolution | translated onto the runner's `expected_hash` field, which no runner code path reads — runner hash grading always recomputes a golden hash from `golden_actions` | #684 |
+| `state_checks.hash.weight` | `CONFIG_INPUT` | `CORE_ONLY` | field resolution | core blends the hash score against the jsonpath score by this weight; the runner multiplies the two and has no weight concept | #686 |
+| `state_checks.env_assertions` | `SCORED_CHECK` | `CORE_ONLY` | field resolution | the runner declares the field and evaluates nothing; core resolves assertion functions from an external task-pack module | #675 |
+| `state_checks.db_hash_check` | `SCORED_CHECK` | `CORE_ONLY` | field resolution | dropped in adapter translation, so the runner never sees the key | #675 |
+| `transcript_rules.tool_expectations` | `SCORED_CHECK` | `CORE_ONLY` | field resolution | dropped in adapter translation, so the runner never sees the key | #675 |
+| `custom_checks` | `SCORED_CHECK` | `CORE_ONLY` | field resolution | the runner reports `custom_checks=-1.0`; running author-supplied Python inside the runner is a sandboxing project | #684 |
+| `state_checks.db_probes` | `SCORED_CHECK` | `RUNNER_ONLY` | integration differential | the probe DSN resolves only inside the task's docker network, which the runner joins and the host-side core engine does not | architectural |
+| `llm_judge` | `SCORED_CHECK` | `RUNNER_ONLY` | integration differential | the rubric judge runs runner-side on the shared `ToolCallingLoop`; the core engine deliberately leaves the component unset | architectural |
+| `grading_method` | `AGGREGATION` | `RUNNER_ONLY` | field resolution | a runner-side dispatch selector with no `grading.yaml` counterpart; the dispatch returns before the component phase | architectural |
+
+Architectural entries can never be both substrates and carry no tracking issue.
+Every other row is drift and names the issue that closes it. The exemption sets
+live in the test module, not beside the manifest, so widening one is an edit a
+reviewer sees in the same commit.
+
+The `state_checks.hash` family (`hash`, `hash.enabled`, `hash.golden_actions`)
+claims both substrates at `FIELD_RESOLUTION_ONLY`: the runner's evaluator drives
+db-service over HTTP, so no service-free differential exists (#687). Mocking the
+DB client to make the canonical guard pass would defeat the guard.
+
+### What the guard cannot see
+
+`model_fields` introspection enumerates typed config fields, and all four core
+grading models are `extra="ignore"`. So `state_checks.hash.*`, the
+`state_checks.jsonpaths[*]` operator vocabulary, and `custom_checks.*` internals
+are structurally outside the enumeration — the manifest records nested dict keys
+as **declared data**, verified only to live inside a dict-typed field. And a green
+parity suite proves each key *discriminates*, not that its discrimination is
+*correct*.
+
+---
+
 ## Hash-Based Grading (Tau-Bench Compatible)
 
 Hash grading canonicalizes the final state and the golden state, hashes both
@@ -90,9 +164,9 @@ state_checks:
 
 Only list fields that are genuinely numeric quantities. Do NOT list identifier
 or code fields (`payment_method_last4`, `id`, `organization_id`): folding those
-would treat `"0042"`-style values as numbers. This key is honored identically on
-both grading substrates (the core `GradingEngine`/`to_hashable` path and the
-runner gRPC/`compute_stable_hash` path).
+would treat `"0042"`-style values as numbers. Both substrates consume this key
+with score parity — see [Substrate Parity](#substrate-parity) for what that
+claim covers and how it is enforced.
 
 ### Declaring a table's primary key for non-`id` tables
 
@@ -136,7 +210,9 @@ state_checks:
 
 `relaxed_validation` defaults to `false`; new tasks should fix typos rather than
 enable it. The runner also runs the same check as belt-and-suspenders for engines
-that bypass `NativeAdapter.to_task_description`.
+that bypass `NativeAdapter.to_task_description`. Both keys are consumed at load
+time / `RegisterTrial` on both substrates rather than in the grade-time component
+phase — see [Substrate Parity](#substrate-parity).
 
 **Tables materialized only by `initialization_actions`**: the cross-check reads
 `initial_state.tables` (typically populated from `initial_state.json_db`). A

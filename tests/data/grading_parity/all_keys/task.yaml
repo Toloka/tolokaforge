@@ -1,0 +1,33 @@
+task_id: all_keys
+name: "Every author-facing grading key"
+category: test
+description: |
+  Substrate-parity fixture whose grading.yaml declares every key the manifest
+  enumerates with a core config field. Drives
+  tests/canonical/test_grading_substrate_parity.py's adapter-translation test:
+  each key the runner also declares must survive
+  NativeAdapter.to_task_description non-default.
+
+initial_state:
+  json_db:
+    widgets:
+      - widget_id: W1
+        status: open
+
+tools:
+  agent:
+    enabled:
+      - write_file
+  user:
+    enabled: []
+
+actors:
+  user:
+    mode: scripted
+    scripted_flow: []
+
+policies:
+  disallowed_actions: []
+  guidance: []
+
+grading: grading.yaml

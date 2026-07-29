@@ -89,6 +89,7 @@ tests/
 │   └── docker/              # Docker foundation layer tests
 ├── data/                    # Test data
 │   ├── tasks/               # Task fixtures (calc_basic, browser_basic, calc_custom_checks)
+│   ├── grading_parity/      # Substrate-parity packs; own glob, outside tasks/**
 │   ├── projects/            # Full project snapshots (food_delivery_2, tau_retail_mini)
 │   └── configs/             # Config fixtures
 └── utils/                   # Shared test utilities
@@ -119,6 +120,11 @@ Compare output against committed golden snapshots in `snapshots/`.
 - Grading pipeline results
 - Custom checks with real project data (food_delivery_2)
 - Golden-set hash grading verification
+- Grading substrate parity (`test_grading_substrate_parity.py`) — a failure means a
+  `grading.yaml` key is unaccounted for, claims a substrate that does not evaluate
+  it, or no longer survives adapter translation. Fix the manifest entry in
+  `tolokaforge/core/grading/key_manifest.py` or the drift it exposed; widening a
+  frozen exemption set in the test module is the deliberate last resort.
 
 Use `--update-canon` flag to regenerate snapshots after intentional changes.
 

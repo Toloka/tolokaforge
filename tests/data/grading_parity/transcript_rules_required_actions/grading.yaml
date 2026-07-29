@@ -1,0 +1,15 @@
+combine:
+  method: weighted
+  weights:
+    transcript_rules: 1.0
+  pass_threshold: 0.8
+
+transcript_rules:
+  required_actions:
+    - action_id: cancel_the_order
+      requestor: assistant
+      name: cancel_order
+      arguments:
+        order_id: O1
+      compare_args:
+        - order_id

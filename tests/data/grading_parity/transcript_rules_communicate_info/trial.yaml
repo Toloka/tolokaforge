@@ -1,0 +1,13 @@
+satisfying:
+  messages:
+    - role: assistant
+      content: "All set — your refund will arrive in 3 business days."
+  tool_calls: []
+  state: {}
+
+violating:
+  messages:
+    - role: assistant
+      content: "All set — I closed the ticket."
+  tool_calls: []
+  state: {}

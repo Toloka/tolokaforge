@@ -1,0 +1,29 @@
+satisfying:
+  messages:
+    - role: assistant
+      content: "Order O1 has been shipped."
+  tool_calls: []
+  state:
+    db:
+      orders:
+        - id: O1
+          status: shipped
+    tables:
+      orders:
+        - id: O1
+          status: shipped
+
+violating:
+  messages:
+    - role: assistant
+      content: "Order O1 has been shipped."
+  tool_calls: []
+  state:
+    db:
+      orders:
+        - id: O1
+          status: pending
+    tables:
+      orders:
+        - id: O1
+          status: pending
