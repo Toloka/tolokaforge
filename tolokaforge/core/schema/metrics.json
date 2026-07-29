@@ -37,7 +37,7 @@
         "rate_limit_last_ts": {"type": ["string", "null"], "format": "date-time"},
         "rate_limit_by_role_model": {
             "type": "array",
-            "description": "Per-(role, model slug) breakdown of the same 429s; the flat rate_limit_* fields are the sum across these rows. Empty on every non-probe run.",
+            "description": "Per-(role, model slug) cumulative probe accounting: the 429 side (retries / wait_s) and the success side (successful_calls / success_duration_s / tokens). The flat rate_limit_* and probe_* fields are the sum across these rows. Empty on every non-probe run.",
             "items": {
                 "type": "object",
                 "properties": {
@@ -46,9 +46,56 @@
                     "retries": {"type": "integer"},
                     "wait_s": {"type": "number"},
                     "first_ts": {"type": ["string", "null"], "format": "date-time"},
-                    "last_ts": {"type": ["string", "null"], "format": "date-time"}
+                    "last_ts": {"type": ["string", "null"], "format": "date-time"},
+                    "successful_calls": {"type": "integer"},
+                    "success_duration_s": {"type": "number"},
+                    "prompt_tokens": {"type": "integer"},
+                    "completion_tokens": {"type": "integer"}
                 },
                 "required": ["role", "model"]
+            }
+        },
+        "probe_successful_calls": {
+            "type": "integer",
+            "description": "LLM calls that returned a result, across every role. 0 on every non-probe run."
+        },
+        "probe_success_duration_s": {
+            "type": "number",
+            "description": "Summed client-observed duration of those successful calls. Divided by wall time this is the Little's-law in-flight concurrency the provider served."
+        },
+        "probe_prompt_tokens": {
+            "type": "integer",
+            "description": "Prompt tokens the provider reported for those successful calls. Tokens/s, not calls/s, is what sums across run legs."
+        },
+        "probe_completion_tokens": {
+            "type": "integer",
+            "description": "Completion tokens the provider reported for those successful calls."
+        },
+        "probe_bucket_width_s": {
+            "type": "integer",
+            "description": "Width of a probe_buckets window in whole seconds; the denominator of every per-window rate. 0 on every non-probe run."
+        },
+        "probe_dropped_buckets": {
+            "type": "integer",
+            "description": "Windows lost to rate_limit_probe.max_buckets. Non-zero means probe_buckets is a truncated prefix and only the flat / per-(role, model) totals are complete."
+        },
+        "probe_buckets": {
+            "type": "array",
+            "description": "Per-(role, model slug, absolute window) throughput, sorted by window then role then model. bucket_start_ts is floor(epoch / probe_bucket_width_s) * probe_bucket_width_s in UTC — anchored on the Unix epoch, NOT on run start, so windows emitted by simultaneous run legs on different machines align and can be summed window by window. Empty on every non-probe run.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "bucket_start_ts": {"type": "string", "format": "date-time"},
+                    "role": {"type": "string"},
+                    "model": {"type": "string"},
+                    "successful_calls": {"type": "integer"},
+                    "success_duration_s": {"type": "number"},
+                    "prompt_tokens": {"type": "integer"},
+                    "completion_tokens": {"type": "integer"},
+                    "retries": {"type": "integer"},
+                    "wait_s": {"type": "number"}
+                },
+                "required": ["bucket_start_ts", "role", "model"]
             }
         }
     },

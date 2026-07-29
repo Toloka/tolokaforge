@@ -18,6 +18,7 @@ from tolokaforge.core.models import (
     Message,
     MessageRole,
     Metrics,
+    RateLimitProbeBucketMetrics,
     RateLimitProbeRoleMetrics,
     TerminationReason,
     Trajectory,
@@ -356,12 +357,14 @@ class TrialRunner:
     def _apply_probe_stats(self) -> None:
         """Copy the trial's rate-limit probe accounting onto :class:`Metrics`.
 
-        No-op outside probe mode, which leaves the counters at their defaults so
-        a normal run's ``metrics.yaml`` carries zeros rather than a signal that
+        No-op outside probe mode, which leaves every counter at its default so a
+        normal run's ``metrics.yaml`` carries zeros rather than a signal that
         does not exist.
 
-        The per-``(role, model)`` rows are emitted in sorted key order so the
-        serialised metrics are deterministic across trials.
+        Both censuses are copied: the 429 side into ``rate_limit_*`` and the
+        success side into ``probe_*``. The per-``(role, model)`` rows carry both
+        and are emitted in sorted key order; ``probe_buckets`` is sorted
+        window-first so the series reads as a timeline.
         """
         stats = self._probe_stats
         if stats is None:
@@ -378,9 +381,45 @@ class TrialRunner:
                 wait_s=counters.wait_s,
                 first_ts=_as_utc(counters.first_ts),
                 last_ts=_as_utc(counters.last_ts),
+                successful_calls=counters.successes,
+                success_duration_s=counters.success_duration_s,
+                prompt_tokens=counters.prompt_tokens,
+                completion_tokens=counters.completion_tokens,
             )
             for (role, model), counters in sorted(stats.by_role_model.items())
         ]
+        self.metrics.probe_successful_calls = stats.successes
+        self.metrics.probe_success_duration_s = stats.success_duration_s
+        self.metrics.probe_prompt_tokens = stats.prompt_tokens
+        self.metrics.probe_completion_tokens = stats.completion_tokens
+        self.metrics.probe_bucket_width_s = stats.bucket_width_s
+        self.metrics.probe_dropped_buckets = stats.dropped_buckets
+        self.metrics.probe_buckets = [
+            RateLimitProbeBucketMetrics(
+                # ``bucket_start`` is already an exact integer epoch second, so
+                # this render is lossless and identical across run legs.
+                bucket_start_ts=datetime.fromtimestamp(start, tz=timezone.utc),
+                role=role,
+                model=model,
+                successful_calls=counters.successes,
+                success_duration_s=counters.success_duration_s,
+                prompt_tokens=counters.prompt_tokens,
+                completion_tokens=counters.completion_tokens,
+                retries=counters.retries,
+                wait_s=counters.wait_s,
+            )
+            for (start, role, model), counters in sorted(
+                ((start, role, model), counters)
+                for (role, model, start), counters in stats.by_bucket.items()
+            )
+        ]
+        if stats.dropped_buckets:
+            self.logger.warning(
+                "Rate-limit probe dropped throughput buckets at the cap",
+                probe_dropped_buckets=stats.dropped_buckets,
+                probe_max_buckets=stats.max_buckets,
+                probe_bucket_width_s=stats.bucket_width_s,
+            )
         if stats.retries:
             self.logger.warning(
                 "Rate-limit probe absorbed 429s",

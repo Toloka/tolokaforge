@@ -43,6 +43,7 @@ from tolokaforge.core.models import (
     GradeComponents,
     Metrics,
     ModelConfig,
+    RateLimitProbeConfig,
     RunConfig,
     TaskConfig,
     Trajectory,
@@ -226,6 +227,24 @@ class ConductorCallLog:
     """
 
     runs: list[dict[str, Any]] = field(default_factory=list)
+
+
+def _build_probe_stats(probe: RateLimitProbeConfig) -> RateLimitProbeStats | None:
+    """The trial's probe accumulator, or ``None`` when the mode is off.
+
+    ``None`` is what keeps a normal run's ``Metrics`` at its defaults: the
+    runner treats the accumulator's presence as the mode flag, and every
+    recording site is gated on it. The bucketing knobs come from the same config
+    block that armed the mode, so a run leg's window grid is declared in one
+    place — which matters because simultaneous legs must share it to be summable
+    (see :meth:`RateLimitProbeStats.bucket_start`).
+    """
+    if not probe.enabled:
+        return None
+    return RateLimitProbeStats(
+        bucket_width_s=probe.bucket_width_s,
+        max_buckets=probe.max_buckets,
+    )
 
 
 def _default_success_trajectory(task_id: str, trial_idx: int) -> Trajectory:
@@ -630,7 +649,7 @@ class InProcessConductor:
             verbose=self.verbose,
             strict=self.strict,
             events=self.events,
-            probe_stats=RateLimitProbeStats() if rate_limit_probe.enabled else None,
+            probe_stats=_build_probe_stats(rate_limit_probe),
         )
 
         # Use initial_user_message if provided (e.g., tool-use style tasks).

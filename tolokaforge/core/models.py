@@ -23,6 +23,14 @@ from tolokaforge.core.deprecations import (
 from tolokaforge.core.llm.reasoning import ReasoningConfig, StructuredReasoning
 from tolokaforge.core.llm.usage import CostSource, ProviderRawCall, Usage
 
+# The probe's bucketing defaults live next to the accumulator that applies them
+# (``run_display_events`` has no ``core.models`` dependency, so this direction
+# is the only one that does not create a cycle).
+from tolokaforge.core.run_display_events import (
+    DEFAULT_PROBE_BUCKET_WIDTH_S,
+    DEFAULT_PROBE_MAX_BUCKETS,
+)
+
 # Rubric / Criterion / LLMJudgeConfig have a single canonical home in
 # tolokaforge.runner.models — they cross both the YAML grading block and the
 # gRPC wire (serialized inside TrialSpec). Re-exported here so existing
@@ -142,8 +150,20 @@ class RateLimitProbeRoleMetrics(BaseModel):
 
     A trial's roles are different *models* in a real arena config — the agent
     is the model under test and the user simulator is a fixed, unrelated one —
-    so their 429s must never share a counter. ``role`` + ``model`` is the key;
-    the flat ``Metrics.rate_limit_*`` fields are the sum across these rows.
+    so their counters must never be shared. ``role`` + ``model`` is the key;
+    the flat ``Metrics.rate_limit_*`` / ``Metrics.probe_*`` scalars are the sum
+    across these rows.
+
+    Both censuses live on the row: the FAILURE side (``retries`` / ``wait_s``)
+    and the SUCCESS side (``successful_calls`` / ``success_duration_s`` and the
+    token counts). The pair is the point — the 429 census is schedule-dependent
+    and, for some providers, silent. A model with no provider pin produced ZERO
+    429s across four probe runs up to 33k input tokens/s while inflating
+    per-call latency 41 %; only goodput and latency caught that.
+
+    ``Metrics.usage`` cannot answer the same question: ``usage.calls`` holds
+    agent calls only and carries no role field, so per-model goodput and latency
+    are not computable from it. These rows are the role-attributed record.
 
     ``model`` is the raw provider-qualified slug the client called
     (``openrouter/anthropic/claude-sonnet-4.6``). The engine deliberately does
@@ -159,7 +179,70 @@ class RateLimitProbeRoleMetrics(BaseModel):
     retries: int = 0
     wait_s: float = 0.0
     first_ts: datetime | None = None
+    """UTC timestamp of the first 429 on this row — the 429 window, not the
+    first call. Successful calls deliberately do not move it."""
+
     last_ts: datetime | None = None
+    """UTC timestamp of the most recent 429 on this row."""
+
+    successful_calls: int = 0
+    """LLM calls that returned a result for this ``(role, model)``.
+
+    Counts successful ``LLMClient.generate`` returns, so it is ``>=`` the number
+    of ``usage.calls`` rows this role contributed: a call whose provider
+    returned no usage block still succeeded but adds no usage row."""
+
+    success_duration_s: float = 0.0
+    """Summed client-observed duration of those successful calls.
+
+    ``success_duration_s / wall_seconds`` is the Little's-law in-flight
+    concurrency the provider actually served. Computed on successes only, which
+    is what makes it schedule-independent — unlike the 429 census, it does not
+    depend on how often a blocked client chose to poll."""
+
+    prompt_tokens: int = 0
+    """Prompt tokens the provider reported for those successful calls.
+
+    Tokens, not calls, are what sums across run legs: measured token profiles
+    differ ~4x between domains (369,857 vs 89,984 input tokens per trial)."""
+
+    completion_tokens: int = 0
+    """Completion tokens the provider reported for those successful calls."""
+
+
+class RateLimitProbeBucketMetrics(BaseModel):
+    """One fixed-width absolute-time window of one ``(role, model)``'s throughput.
+
+    **The window boundary is anchored on the Unix epoch, not on run start.**
+    That is the whole reason this row exists. The intended measurement runs all
+    seven domain legs simultaneously, each in its own runner process, and sums
+    per-leg throughput into a global number; the sum is only valid if the legs'
+    windows can be aligned in absolute time. ``bucket_start_ts`` is
+    ``floor(epoch_seconds / bucket_width_s) * bucket_width_s`` rendered as UTC,
+    so two processes on two machines with synchronised clocks emit the *same*
+    value for the same instant and a consumer joins on it directly.
+
+    Cumulative totals cannot replace these rows. At a CONSTANT 70-way offered
+    concurrency a measured probe's goodput fell from 1.70 to 0.43 successful
+    calls/s over ~12 minutes while the rejection rate climbed 66 % -> 86 %. One
+    blended average reports neither number.
+
+    A call is counted in the window it *finished* in — goodput is completions
+    per window. ``retries`` / ``wait_s`` are the 429s scheduled inside the same
+    window, so the served and rejected sides of one interval sit side by side.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    bucket_start_ts: datetime
+    role: str
+    model: str
+    successful_calls: int = 0
+    success_duration_s: float = 0.0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    retries: int = 0
+    wait_s: float = 0.0
 
 
 _VALID_COST_SOURCES: frozenset[str] = frozenset(get_args(CostSource))
@@ -210,14 +293,31 @@ class Metrics(BaseModel):
     (each :class:`ProviderRawCall` carries its own ``cost_source``). The
     earlier ``cost_usd_est`` / ``cost_usd_provider`` split is gone.
 
-    The ``rate_limit_*`` counters are populated only while
+    The ``rate_limit_*`` and ``probe_*`` counters are populated only while
     :class:`RateLimitProbeConfig` is enabled; on every other run they stay at
-    their zero / ``None`` / empty defaults. ``latency_total_s`` is trial wall
-    time and therefore *includes* the probe's 429 sleep — a non-zero
-    ``rate_limit_wait_s`` is the mechanical marker that this trial's latency
-    figures are not comparable with a normal run's. The flat counters are the
-    sum across ``rate_limit_by_role_model``, whose rows keep the agent's and
-    the simulator's 429s apart (they are different models).
+    their zero / ``None`` / empty defaults. Two prefixes, two censuses of the
+    same mode: ``rate_limit_*`` is the FAILURE side (429 retries and the sleep
+    they cost) and ``probe_*`` is the SUCCESS side (goodput, served
+    concurrency, tokens). Both are needed — the 429 census is
+    schedule-dependent and, for some providers, silent, while goodput and
+    latency are not.
+
+    ``latency_total_s`` is trial wall time and therefore *includes* the probe's
+    429 sleep — a non-zero ``rate_limit_wait_s`` is the mechanical marker that
+    this trial's latency figures are not comparable with a normal run's.
+
+    The flat counters of both censuses are the sum across
+    ``rate_limit_by_role_model``, whose rows keep the agent's and the
+    simulator's numbers apart (they are different models). ``probe_buckets``
+    resolves the same rows into fixed-width absolute-time windows, because a
+    cumulative total hides non-stationarity: measured at CONSTANT offered
+    concurrency, goodput fell 1.70 -> 0.43 successful calls/s over ~12 minutes.
+
+    A single trial's goodput *ratio* is meaningless — goodput is a run-level
+    quantity. Every field here is therefore an additive count over an
+    absolute-time window, never a rate: a consumer sums the counts across
+    trials and legs first, and forms the ratio last. See
+    ``docs/OUTPUT_FORMAT.md`` § ``probe_*`` for the arithmetic.
     """
 
     model_config = {"extra": "forbid"}
@@ -236,6 +336,33 @@ class Metrics(BaseModel):
     rate_limit_first_ts: datetime | None = None
     rate_limit_last_ts: datetime | None = None
     rate_limit_by_role_model: list[RateLimitProbeRoleMetrics] = Field(default_factory=list)
+    probe_successful_calls: int = 0
+    """Successful LLM calls across every role in the trial (probe mode only)."""
+
+    probe_success_duration_s: float = 0.0
+    """Summed client-observed duration of those successful calls."""
+
+    probe_prompt_tokens: int = 0
+    """Prompt tokens the provider reported for those successful calls."""
+
+    probe_completion_tokens: int = 0
+    """Completion tokens the provider reported for those successful calls."""
+
+    probe_bucket_width_s: int = 0
+    """Width of a ``probe_buckets`` window, seconds. ``0`` when not probing.
+
+    Emitted so a consumer never has to assume the width the run was configured
+    with; it is the denominator of every per-window rate."""
+
+    probe_dropped_buckets: int = 0
+    """Windows lost to ``RateLimitProbeConfig.max_buckets``.
+
+    Non-zero means ``probe_buckets`` is a truncated *prefix* of the trial and
+    only the flat / per-``(role, model)`` totals are complete. Never silent."""
+
+    probe_buckets: list[RateLimitProbeBucketMetrics] = Field(default_factory=list)
+    """Per-``(role, model, absolute window)`` throughput, sorted by window then
+    role then model. See :class:`RateLimitProbeBucketMetrics`."""
 
     @field_validator("usage", mode="before")
     @classmethod
@@ -628,6 +755,30 @@ class RateLimitProbeConfig(BaseModel):
     one turn issues one call of each (see
     :func:`validate_rate_limit_probe_budget`)."""
 
+    bucket_width_s: int = Field(default=DEFAULT_PROBE_BUCKET_WIDTH_S, gt=0)
+    """Width of one goodput-measurement window, in whole seconds.
+
+    The probe records throughput into fixed-width windows anchored on the Unix
+    epoch, not on run start, so windows produced by simultaneous run legs on
+    different machines line up and can be summed window by window — see
+    :meth:`~tolokaforge.core.run_display_events.RateLimitProbeStats.bucket_start`.
+    Whole seconds keep every boundary an exact integer epoch, so the serialised
+    timestamps match across legs with no float drift.
+
+    Cumulative totals are not a substitute: at a *constant* 70-way offered
+    concurrency a measured probe's goodput fell 1.70 -> 0.43 successful calls/s
+    over ~12 minutes while rejections climbed 66 % -> 86 %. A single average
+    hides that."""
+
+    max_buckets: int = Field(default=DEFAULT_PROBE_MAX_BUCKETS, gt=0)
+    """Cap on how many windows one trial may open, so memory stays bounded.
+
+    At the 30 s default width, 4096 windows is ~34 h of a two-role trial — far
+    past any episode budget the invariant permits. Once the cap is reached a
+    recording still lands in the flat and per-``(role, model)`` totals but
+    cannot open a new window, and ``Metrics.probe_dropped_buckets`` counts the
+    lost windows so the truncation is never silent."""
+
     def for_simulator(self) -> "RateLimitProbeConfig":
         """This mode with the *simulator's* per-call budget in force.
 
@@ -641,6 +792,8 @@ class RateLimitProbeConfig(BaseModel):
             jitter_fraction=self.jitter_fraction,
             per_call_budget_s=self.simulator_per_call_budget_s,
             simulator_per_call_budget_s=self.simulator_per_call_budget_s,
+            bucket_width_s=self.bucket_width_s,
+            max_buckets=self.max_buckets,
         )
 
     @property
