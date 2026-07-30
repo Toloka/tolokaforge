@@ -1,0 +1,33 @@
+task_id: "reconcile_ledger"
+name: "Reconcile Customer Ledger"
+category: "custom_checks"
+description: >
+  Reconcile customer C-1's balance against the pending transaction list:
+  read every transaction, sum credits and debits, and update the customer
+  record so `balance == sum(credit.amount) - sum(debit.amount)` starting
+  from the recorded opening balance.
+initial_user_message: >
+  Customer `C-1` has an opening balance of 500 and five pending
+  transactions in the `transactions` table. Read every transaction, sum
+  the credits minus debits, and update `customers[id='C-1'].balance` so
+  it matches the reconciled total. Confirm the new balance in your reply
+  and list the transaction ids you applied.
+initial_state:
+  json_db: "initial_state.json"
+tools:
+  agent:
+    enabled: ["db_query", "db_update"]
+  user:
+    enabled: []
+actors:
+  user:
+    backstory: >
+      Operations reviewer verifying the agent reconciled every listed
+      transaction and updated the balance. Acknowledge and end with
+      ###STOP### once the reconciled balance and the applied
+      transaction ids are quoted.
+policies:
+  guidance:
+    - "Enumerate every transaction — cite each id in your reply."
+    - "Compute the net effect explicitly (sum of credits minus sum of debits)."
+grading: "grading.yaml"

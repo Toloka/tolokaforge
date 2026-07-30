@@ -172,7 +172,7 @@ Test each configured provider:
 | Transcript rules | calc_custom_checks | `transcript_checks.required_phrases` pattern matching |
 | State assertions | tool_use_public_example_01 | `state_checks.assertions` JSONPath checks |
 | LLM judge | (create test task) | `judge` config calls LLM and returns structured score |
-| Custom checks | order_modify_with_checks | `custom_checks.script` executes Python grading logic |
+| Custom checks | reconcile_ledger (`examples/native/custom_checks/`) | `custom_checks.enabled: true` + `custom_checks.file` runs the pack's `checks.py`; the aggregate score fills `Grade.components.custom_checks` and per-check `CustomCheckResult`s ride the wire |
 | Combined grading | (create test task) | Multiple grading methods compose correctly |
 
 ### 12.2 Unstable fields verification

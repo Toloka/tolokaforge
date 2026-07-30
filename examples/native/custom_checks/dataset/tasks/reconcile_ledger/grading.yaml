@@ -1,0 +1,18 @@
+combine:
+  method: weighted
+  weights:
+    state_checks: 0.4
+    custom_checks: 0.6
+  pass_threshold: 0.8
+state_checks:
+  jsonpaths:
+    - path: "$.db.customers[0].balance"
+      equals: 700
+      description: "Customer balance reflects the reconciled total"
+custom_checks:
+  enabled: true
+  file: "checks.py"
+  interface_version: "1.0"
+  timeout_seconds: 30
+  weight: 1.0
+  fail_on_error: true

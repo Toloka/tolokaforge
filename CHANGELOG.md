@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Feat
+
+- **grading**: runner-side `custom_checks` execution — a pack declaring `custom_checks.enabled: true` with a `checks.py` now has its `@init` + `@check` functions executed inside the runner container over the trial's `CheckContext` (initial/final state + transcript + task metadata). Per-check verdicts ride the wire as `CustomCheckResult` entries (`Grade.custom_checks_details`), the aggregate score fills `Grade.components.custom_checks`, and the `combine.weights.custom_checks` weight is applied to the final score alongside `state_checks` / `transcript_rules` / `llm_judge`. An unsupported `interface_version` or a broken `checks.py` module now rejects the trial at `RegisterTrial` (before the agent loop) instead of at trial end. `checks.py` is bundled into `TaskDescription.tool_artifacts` for packs with or without an MCP server. The `CheckExecutor` Protocol seam ([ADR-0012](docs/adr/0012-custom-checks-extension.md)) lifts the executor to ADR-0011 Pattern A with `CheckRunner` as the in-process production impl and `InMemoryCheckExecutor` as the test fixture; no public class was renamed. See [docs/custom_checks.md](docs/custom_checks.md) and [`examples/native/custom_checks/`](examples/native/custom_checks/) — the runnable reference pack that reconciles a customer ledger arithmetically. Closes #669, #406, #217.
+
 ## v0.13.0 (2026-07-30)
 
 ### Feat

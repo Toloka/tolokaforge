@@ -6,10 +6,8 @@ not silently regress:
 1. :func:`combine_grade_components` includes the ``custom_checks`` score
    as a weighted contributor when it is present (``>= 0``).
 2. A custom-checks-only pack whose executor produced no score falls into
-   the empty-active-components guard — returns ``(0.0, False)``, NOT the
-   ``(1.0, True)`` silent-pass the pre-Stage-2 runner emitted. This is
-   the exact regression this stage exists to close (AGENTS.md Rule 1 —
-   surface failures, don't drop them).
+   the empty-active-components guard — returns ``(0.0, False)`` rather
+   than a silent ``(1.0, True)`` (AGENTS.md Rule 1: surface failures).
 3. :func:`_parse_grade_result` decodes the wire ``custom_checks`` list
    into :class:`~tolokaforge.core.models.CustomCheckDetail` on the host
    :class:`~tolokaforge.core.models.Grade`, including the
@@ -81,15 +79,14 @@ class TestCombineGradeComponentsRoutesCustomChecks:
 
 
 class TestCombineGradeComponentsGuardsAgainstSilentPass:
-    """Regression lock for the silent-pass that shipped before Stage 2.
+    """A custom-checks-only pack whose score comes back absent fails loud.
 
-    Pre-Stage-2: a custom-checks-only pack whose score came back absent
-    (``-1.0`` — the "Not implemented yet" stub) yielded an empty
-    ``active_components`` set. Because ``custom_checks`` was not in the
-    fail-loud ``actually_configured`` guard, the function returned
-    ``(1.0, True)`` — a false success. Stage 2 closes both halves: the
-    score is really computed AND the guard recognises custom_checks as a
-    configured component.
+    Empty ``active_components`` + a configured ``custom_checks`` weight
+    must yield ``(0.0, False)`` via the fail-loud
+    ``actually_configured`` guard — not a silent ``(1.0, True)``
+    (AGENTS Rule 1). Both halves are load-bearing: the score is really
+    computed AND the guard recognises ``custom_checks`` as a configured
+    component.
     """
 
     def test_custom_checks_only_config_absent_score_fails_via_guard(self) -> None:

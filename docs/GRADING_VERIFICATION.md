@@ -244,13 +244,7 @@ Output files are written by [`tolokaforge/core/output_writer.py`](../tolokaforge
 
 ---
 
-## C) What's Missing / Placeholder
-
-### Custom Checks placeholder
-
-```python
-custom_checks=-1.0,  # Not implemented yet
-```
+## C) Optional Components
 
 ### Transcript Rules
 
@@ -266,20 +260,33 @@ custom_checks=-1.0,  # Not implemented yet
 - `max_turns` - Verify conversation under turn limit
 
 **Current behavior:**
-- `transcript_rules` field in `GradeComponents` is usually `null`
-- Rules are evaluated if configured in `grading.yaml`
+- `transcript_rules` field in `GradeComponents` is `null` when the pack ships
+  no `transcript_rules` block.
+- Rules are evaluated when configured in `grading.yaml`.
 
 ### Custom Checks
 
-**Status: Implemented but not used in Docker architecture**
+**Status: Live in the runner grading path.**
 
 **Implementation at:**
-- [`tolokaforge/core/grading/check_runner.py`](../tolokaforge/core/grading/check_runner.py) - `CheckRunner`, `run_custom_checks()`
-- [`tolokaforge/core/grading/checks_interface.py`](../tolokaforge/core/grading/checks_interface.py) - Interface definitions
+- [`tolokaforge/core/grading/check_runner.py`](../tolokaforge/core/grading/check_runner.py) — `CheckRunner` (in-process production impl of the `CheckExecutor` Protocol).
+- [`tolokaforge/core/grading/checks_interface.py`](../tolokaforge/core/grading/checks_interface.py) — authoring API (`@init`, `@check`, `CheckContext`, `CustomChecksConfig`).
+- [`tolokaforge/core/grading/checks_helpers.py`](../tolokaforge/core/grading/checks_helpers.py) — `build_check_context` shared by both grading paths.
+- [`tolokaforge/runner/service.py`](../tolokaforge/runner/service.py) — `RunnerService.GradeTrial` runs the executor when `grading.custom_checks.enabled`.
 
 **Current behavior:**
-- `custom_checks` field in `GradeComponents` is always `null`
-- Runner service sets `custom_checks=-1.0` (not implemented)
+- `RegisterTrial` validates `custom_checks.file` at startup — an
+  unsupported `interface_version` or a broken module rejects the trial
+  before the agent loop runs.
+- `GradeTrial` runs each `@check`, fills `GradeComponents.custom_checks`
+  with the aggregate score, and rides per-check `CustomCheckResult`s on
+  `Grade.custom_checks` (the host maps them into
+  `Grade.custom_checks_details`).
+
+See [GRADING.md § Custom Checks](GRADING.md#custom-checks) for the mechanism,
+[custom_checks.md](custom_checks.md) for the authoring API + network doctrine,
+and [ADR-0012](adr/0012-custom-checks-extension.md) for the `CheckExecutor`
+seam.
 
 ---
 

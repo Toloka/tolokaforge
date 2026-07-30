@@ -611,9 +611,10 @@ class GradingConfig(BaseModel):
     # Custom Python checks (``@init`` + ``@check`` in a pack's ``checks.py``).
     # Loose ``dict[str, Any]`` here — the runner validates it into
     # :class:`~tolokaforge.core.grading.checks_interface.CustomChecksConfig` at
-    # ``GradeTrial`` time (and, once Stage 4 lands, at ``RegisterTrial`` too);
-    # mirrors the host-side :class:`~tolokaforge.core.models.GradingConfig`
-    # so an unchanged ``task.yaml`` round-trips through both.
+    # both ``RegisterTrial`` (fail-loud on interface_version / module load) and
+    # ``GradeTrial`` (before executor dispatch); mirrors the host-side
+    # :class:`~tolokaforge.core.models.GradingConfig` so an unchanged
+    # ``task.yaml`` round-trips through both.
     custom_checks: dict[str, Any] | None = None
 
     model_config = {"extra": "forbid"}

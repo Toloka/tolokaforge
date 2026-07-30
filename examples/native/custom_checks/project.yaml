@@ -1,0 +1,28 @@
+# Project spec for the custom-checks reference pack.
+#
+# One deterministic-Python task: reconcile a customer's ledger by summing
+# per-transaction credits/debits and verifying the balance matches. The
+# scoring is arithmetic on final state + transcript evidence — the gap
+# `custom_checks` exists for (see docs/custom_checks.md, ADR-0012).
+# No Docker substrate: state lives in `initial_state.json_db`.
+
+name: "custom-checks-ledger"
+version: 1
+description: >
+  Custom-checks reference: reconcile a customer's ledger from a list of
+  transactions and verify the balance arithmetically. Demonstrates
+  `custom_checks.enabled: true` alongside `state_checks.jsonpaths`, with
+  the weight declared in `combine.weights` applied to the final score.
+
+tasks:
+  reconcile_ledger:
+    glob: "dataset/tasks/**/task.yaml"
+
+# ── Task defaults — base for every task ─────────────────────────
+task_defaults:
+  adapter_type: "native"
+  max_turns: 6
+  actors:
+    user:
+      mode: "llm"
+      persona: "cooperative"
